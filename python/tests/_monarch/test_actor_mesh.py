@@ -17,7 +17,6 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    Alloc,
     AllocConstraints,
     AllocSpec,
 )
@@ -27,7 +26,8 @@ from monarch._rust_bindings.monarch_hyperactor.pickle import (
     pickle as monarch_pickle,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Slice
-from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
+from monarch._src.actor.allocator import ProcessAllocator
+from monarch._src.actor.host_mesh import this_host
 from monarch._src.actor.proc_mesh import _get_bootstrap_args
 
 
@@ -61,19 +61,18 @@ def run_on_tokio(
     return lambda: PythonTask.from_coroutine(fn()).block_on()
 
 
-async def alloc() -> Alloc:
-    spec = AllocSpec(AllocConstraints(), replicas=3, hosts=8, gpus=8)
-    allocator = LocalAllocator()
-    return await allocator.allocate_nonblocking(spec)
+def task() -> Shared[ProcMesh]:
+    host_mesh = this_host()
 
-
-def allocate() -> Shared[ProcMesh]:
-    async def task() -> ProcMesh:
-        return await ProcMesh.allocate_nonblocking(
-            context().actor_instance._as_rust(), await alloc(), "proc_mesh"
+    async def coro() -> ProcMesh:
+        hy_host_mesh = await host_mesh._hy_host_mesh
+        return await hy_host_mesh.spawn_nonblocking(
+            context().actor_instance._as_rust(),
+            "proc_mesh",
+            Extent(["gpus"], [8]),
         )
 
-    return PythonTask.from_coroutine(task()).spawn()
+    return PythonTask.from_coroutine(coro()).spawn()
 
 
 class MyActor:
@@ -116,7 +115,7 @@ class MyActor:
 async def test_bind_and_pickling() -> None:
     @run_on_tokio
     async def run() -> None:
-        proc_mesh_task = allocate()
+        proc_mesh_task = task()
         actor_mesh = spawn_actor_mesh(proc_mesh_task)
 
         # Need to make sure the mesh is initialized before pickling to
@@ -217,11 +216,9 @@ async def verify_cast_to_call(
 async def test_cast_handle() -> None:
     @run_on_tokio
     async def run() -> None:
-        proc_mesh_task = allocate()
+        proc_mesh_task = task()
         actor_mesh = spawn_actor_mesh(proc_mesh_task)
-        await verify_cast_to_call(
-            actor_mesh, context().actor_instance, list(range(3 * 8 * 8))
-        )
+        await verify_cast_to_call(actor_mesh, context().actor_instance, list(range(8)))
 
         proc_mesh = await proc_mesh_task
         instance = context().actor_instance._as_rust()
@@ -236,12 +233,12 @@ async def test_cast_handle() -> None:
 async def test_cast_ref() -> None:
     @run_on_tokio
     async def run() -> None:
-        proc_mesh_task = allocate()
+        proc_mesh_task = task()
         actor_mesh = spawn_actor_mesh(proc_mesh_task)
         proc_mesh = await proc_mesh_task
         actor_mesh_ref = actor_mesh.new_with_region(proc_mesh.region)
         await verify_cast_to_call(
-            actor_mesh_ref, context().actor_instance, list(range(3 * 8 * 8))
+            actor_mesh_ref, context().actor_instance, list(range(8))
         )
         instance = context().actor_instance._as_rust()
         await proc_mesh.stop_nonblocking(instance, "test cleanup")

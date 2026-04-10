@@ -117,8 +117,8 @@ pub enum HostError {
     ProcExists(String),
 
     /// Failures occuring while spawning a subprocess.
-    #[error("proc '{0}' failed to spawn process: {1}")]
-    ProcessSpawnFailure(reference::ProcId, #[source] std::io::Error),
+    #[error("proc '{0}' (command: {1}) failed to spawn process: {2}")]
+    ProcessSpawnFailure(reference::ProcId, String, #[source] std::io::Error),
 
     /// Failures occuring while configuring a subprocess.
     #[error("proc '{0}' failed to configure process: {1}")]
@@ -549,15 +549,23 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
     /// A [`TerminateSummary`] with counts of attempted/ok/failed
     /// terminations.
     pub async fn terminate_children(
-        &self,
+        &mut self,
         cx: &impl context::Actor,
         timeout: Duration,
         max_in_flight: usize,
         reason: &str,
     ) -> TerminateSummary {
-        self.manager
+        let summary = self
+            .manager
             .terminate_all(cx, timeout, max_in_flight, reason)
-            .await
+            .await;
+        // Unbind procs from the router so if new procs are made with the same
+        // names, they can use the same slot.
+        for name in self.procs.drain() {
+            let proc_id = reference::ProcId::with_name(self.frontend_addr.clone(), &name);
+            self.router.unbind(&proc_id.into());
+        }
+        summary
     }
 }
 
@@ -895,10 +903,11 @@ where
         max_in_flight: usize,
         reason: &str,
     ) -> TerminateSummary {
-        // Snapshot procs so we don't hold the lock across awaits.
+        // Drain procs so we don't hold the lock across awaits and subsequent
+        // calls to terminate_all don't try to re-terminate.
         let procs: Vec<Proc> = {
-            let guard = self.procs.lock().await;
-            guard.values().cloned().collect()
+            let mut guard = self.procs.lock().await;
+            guard.drain().map(|(_, v)| v).collect()
         };
 
         let attempted = procs.len();
@@ -1302,9 +1311,9 @@ where
         // Kill the child when its handle is dropped.
         cmd.kill_on_drop(true);
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| HostError::ProcessSpawnFailure(proc_id.clone(), e))?;
+        let child = cmd.spawn().map_err(|e| {
+            HostError::ProcessSpawnFailure(proc_id.clone(), self.program.display().to_string(), e)
+        })?;
 
         // Retain the handle so it lives for the life of the
         // manager/host.

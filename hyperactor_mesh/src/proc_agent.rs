@@ -58,10 +58,10 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::Name;
-use crate::pyspy::PySpyOpts;
-use crate::pyspy::PySpyResult;
+use crate::config_dump::ConfigDump;
+use crate::config_dump::ConfigDumpResult;
+use crate::pyspy::PySpyDump;
 use crate::pyspy::PySpyWorker;
-use crate::pyspy::RunPySpyDump;
 use crate::resource;
 
 /// Actor name used when spawning the proc agent on user procs.
@@ -91,29 +91,6 @@ pub enum GspawnResult {
 }
 wirevalue::register_type!(GspawnResult);
 
-/// Request a py-spy stack dump from this process.
-///
-/// The ProcAgent runs inside the target OS process (1:1 mapping).
-/// py-spy attaches to `std::process::id()` to capture Python stacks.
-/// See PS-1 in `introspect` module doc.
-#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
-pub struct PySpyDump {
-    /// Include per-thread stacks.
-    pub threads: bool,
-    /// Include native C/C++ frames for threads that have Python frames
-    /// (`--native`).
-    pub native: bool,
-    /// Include native C/C++ frames for all threads, even those without
-    /// Python frames (`--native-all`).
-    pub native_all: bool,
-    /// Use nonblocking mode (py-spy reads without pausing the target).
-    pub nonblocking: bool,
-    /// Reply port for the result.
-    #[reply]
-    pub result: hyperactor_reference::OncePortRef<crate::pyspy::PySpyResult>,
-}
-wirevalue::register_type!(PySpyDump);
-
 /// Deferred republish of introspect properties.
 ///
 /// Sent as a zero-delay self-message from the supervision event
@@ -136,17 +113,21 @@ wirevalue::register_type!(RepublishIntrospect);
 /// lookups. This avoids the convoy starvation from `all_actor_ids()`
 /// which holds shard read locks while doing heavy per-entry work.
 /// See S12 in `introspect` module doc.
-fn collect_live_children(proc: &hyperactor::Proc) -> (Vec<String>, Vec<String>) {
+fn collect_live_children(
+    proc: &hyperactor::Proc,
+) -> (
+    Vec<hyperactor::introspect::IntrospectRef>,
+    Vec<crate::introspect::NodeRef>,
+) {
     let all_keys = proc.all_instance_keys();
     let mut children = Vec::with_capacity(all_keys.len());
     let mut system_children = Vec::new();
     for id in all_keys {
         if let Some(cell) = proc.get_instance(&id) {
-            let ref_str = id.to_string();
             if cell.is_system() {
-                system_children.push(ref_str.clone());
+                system_children.push(crate::introspect::NodeRef::Actor(id.clone()));
             }
-            children.push(ref_str);
+            children.push(hyperactor::introspect::IntrospectRef::Actor(id));
         }
     }
     (children, system_children)
@@ -399,6 +380,7 @@ struct SelfCheck {}
         resource::WaitRankStatus { cast = true },
         RepublishIntrospect { cast = true },
         PySpyDump,
+        ConfigDump,
     ]
 )]
 pub struct ProcAgent {
@@ -491,8 +473,16 @@ impl ProcAgent {
         let has_errors = self.actor_states.values().any(|state| state.has_errors());
         let exit_code = if has_errors { 1 } else { 0 };
 
-        if let Err(err) = self.proc.flush().await {
-            tracing::warn!("failed to flush forwarder during shutdown: {}", err);
+        let flush_timeout =
+            hyperactor_config::global::get(hyperactor::config::FORWARDER_FLUSH_TIMEOUT);
+        match tokio::time::timeout(flush_timeout, self.proc.flush()).await {
+            Ok(Err(err)) => {
+                tracing::warn!("forwarder flush failed during shutdown: {}", err);
+            }
+            Err(_elapsed) => {
+                tracing::warn!("forwarder flush timed out during shutdown");
+            }
+            Ok(Ok(())) => {}
         }
 
         tracing::info!(
@@ -527,12 +517,11 @@ impl ProcAgent {
         // Terminated actors appear as children but don't inflate
         // the actor count. Track them in stopped_children so the
         // TUI can filter/gray without per-child fetches.
-        let mut stopped_children: Vec<String> = Vec::new();
+        let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
         for id in self.proc.all_terminated_actor_ids() {
-            let ref_str = id.to_string();
-            stopped_children.push(ref_str.clone());
-            // Terminated system actors must also appear in
-            // system_children for correct filtering.
+            let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
+            let node_ref = crate::introspect::NodeRef::Actor(id.clone());
+            stopped_children.push(node_ref.clone());
             if let Some(snapshot) = self.proc.terminated_snapshot(&id) {
                 let snapshot_attrs: hyperactor_config::Attrs =
                     serde_json::from_str(&snapshot.attrs).unwrap_or_default();
@@ -541,11 +530,11 @@ impl ProcAgent {
                     .copied()
                     .unwrap_or(false)
                 {
-                    system_children.push(ref_str.clone());
+                    system_children.push(node_ref);
                 }
             }
-            if !children.contains(&ref_str) {
-                children.push(ref_str);
+            if !children.contains(&child_ref) {
+                children.push(child_ref);
             }
         }
 
@@ -612,10 +601,11 @@ impl Actor for ProcAgent {
                 if proc_id == proc.proc_id() {
                     let (mut children, mut system_children) = collect_live_children(&proc);
 
-                    let mut stopped_children: Vec<String> = Vec::new();
+                    let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
                     for id in proc.all_terminated_actor_ids() {
-                        let ref_str = id.to_string();
-                        stopped_children.push(ref_str.clone());
+                        let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
+                        let node_ref = crate::introspect::NodeRef::Actor(id.clone());
+                        stopped_children.push(node_ref.clone());
                         if let Some(snapshot) = proc.terminated_snapshot(&id) {
                             let snapshot_attrs: hyperactor_config::Attrs =
                                 serde_json::from_str(&snapshot.attrs).unwrap_or_default();
@@ -624,11 +614,11 @@ impl Actor for ProcAgent {
                                 .copied()
                                 .unwrap_or(false)
                             {
-                                system_children.push(ref_str.clone());
+                                system_children.push(node_ref);
                             }
                         }
-                        if !children.contains(&ref_str) {
-                            children.push(ref_str);
+                        if !children.contains(&child_ref) {
+                            children.push(child_ref);
                         }
                     }
 
@@ -670,12 +660,11 @@ impl Actor for ProcAgent {
                         serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
 
                     return IntrospectResult {
-                        identity: proc_id.to_string(),
+                        identity: hyperactor::introspect::IntrospectRef::Proc(proc_id.clone()),
                         attrs: attrs_json,
                         children,
                         parent: None,
-                        as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
-                            .to_string(),
+                        as_of: std::time::SystemTime::now(),
                     };
                 }
             }
@@ -687,13 +676,23 @@ impl Actor for ProcAgent {
                     hyperactor::introspect::ERROR_MESSAGE,
                     format!("child {} not found", child_ref),
                 );
+                let identity = match child_ref {
+                    hyperactor::reference::Reference::Proc(id) => {
+                        hyperactor::introspect::IntrospectRef::Proc(id.clone())
+                    }
+                    hyperactor::reference::Reference::Actor(id) => {
+                        hyperactor::introspect::IntrospectRef::Actor(id.clone())
+                    }
+                    hyperactor::reference::Reference::Port(id) => {
+                        hyperactor::introspect::IntrospectRef::Actor(id.actor_id().clone())
+                    }
+                };
                 IntrospectResult {
-                    identity: String::new(),
+                    identity,
                     attrs: serde_json::to_string(&error_attrs).unwrap_or_else(|_| "{}".to_string()),
                     children: Vec::new(),
                     parent: None,
-                    as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
-                        .to_string(),
+                    as_of: std::time::SystemTime::now(),
                 }
             }
         });
@@ -926,41 +925,21 @@ impl Handler<PySpyDump> for ProcAgent {
         cx: &Context<Self>,
         message: PySpyDump,
     ) -> Result<(), anyhow::Error> {
-        // Spawn a short-lived child actor to run py-spy without
-        // blocking the ProcAgent message loop. The worker replies
-        // directly to the original caller and self-terminates.
-        let worker = match PySpyWorker.spawn(cx) {
-            Ok(handle) => handle,
-            Err(e) => {
-                let fail = PySpyResult::Failed {
-                    pid: std::process::id(),
-                    binary: String::new(),
-                    exit_code: None,
-                    stderr: format!("failed to spawn pyspy worker: {}", e),
-                };
-                message.result.send(cx, fail)?;
-                return Ok(());
-            }
-        };
-        let opts = PySpyOpts {
-            threads: message.threads,
-            native: message.native,
-            native_all: message.native_all,
-            nonblocking: message.nonblocking,
-        };
-        // Once message.result moves into RunPySpyDump, we lose the
-        // reply port. MailboxSenderError does not carry the unsent
-        // message, so on send failure the caller will observe a
-        // timeout rather than an explicit Failed reply.
-        if let Err(e) = worker.send(
-            cx,
-            RunPySpyDump {
-                opts,
-                reply_port: message.result,
-            },
-        ) {
-            tracing::error!("failed to send to pyspy worker: {}", e);
-        }
+        PySpyWorker::spawn_and_forward(cx, message.opts, message.result)
+    }
+}
+
+#[async_trait]
+impl Handler<ConfigDump> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: ConfigDump,
+    ) -> Result<(), anyhow::Error> {
+        let entries = hyperactor_config::global::config_entries();
+        // Reply is best-effort: the caller may have timed out and dropped
+        // the once-port.  That must not crash this actor.
+        let _ = message.result.send(cx, ConfigDumpResult { entries });
         Ok(())
     }
 }
@@ -1736,7 +1715,7 @@ mod tests {
             payload
                 .children
                 .iter()
-                .any(|c| c.contains(PROC_AGENT_ACTOR_NAME)),
+                .any(|c| c.to_string().contains(PROC_AGENT_ACTOR_NAME)),
             "initial children {:?} should contain proc_agent",
             payload.children
         );
@@ -1758,7 +1737,10 @@ mod tests {
             payload2.attrs
         );
         assert!(
-            payload2.children.iter().any(|c| c.contains("extra_actor")),
+            payload2
+                .children
+                .iter()
+                .any(|c| c.to_string().contains("extra_actor")),
             "after direct spawn, children {:?} should contain extra_actor",
             payload2.children
         );

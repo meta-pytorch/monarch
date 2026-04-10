@@ -22,6 +22,7 @@ The authoritative API contract is machine-readable:
 
 - `GET {base}/v1/openapi.json` — OpenAPI 3.1 spec
 - `GET {base}/v1/schema` — JSON Schema for `NodePayload` responses
+- `GET {base}/v1/schema/admin` — JSON Schema for `AdminInfo` responses
 - `GET {base}/v1/schema/error` — JSON Schema for error responses
 
 Schema is authoritative over prose in this document. Fetch schema
@@ -68,11 +69,21 @@ failed), `note` (role), `phase` (AdminInfra or Mesh), and `outcome`
 
 ## Endpoints
 
-All endpoints are read-only (`GET`). All return `application/json`
-except `/SKILL.md` (`text/markdown`).
+Most endpoints are read-only (`GET`). Two endpoints accept `POST`:
+`/v1/query` (SQL queries) and `/v1/pyspy_dump/{proc_reference}`
+(dump-and-store). All endpoints return `application/json` except
+`/SKILL.md` (`text/markdown`).
+
+- `GET {base}/v1/admin`
+  Admin self-identification: returns `AdminInfo` with `actor_id`,
+  `proc_id`, `host`, and `url`. Use to verify placement and discover
+  the admin's identity.
 
 - `GET {base}/v1/schema`
   JSON Schema for `NodePayload` (authoritative contract).
+
+- `GET {base}/v1/schema/admin`
+  JSON Schema for `AdminInfo`.
 
 - `GET {base}/v1/schema/error`
   JSON Schema for error envelope.
@@ -100,7 +111,108 @@ except `/SKILL.md` (`text/markdown`).
   - `{"BinaryNotFound": {"searched": [...]}}` — py-spy not available
   - `{"Failed": {"pid": N, "binary": "...", "exit_code": N, "stderr": "..."}}` — py-spy error
 
+  The endpoint supports worker procs and the service proc. A
+  proc supports py-spy iff its stable handler actor is
+  reachable: the service proc requires `host_agent`; non-service
+  procs require `proc_agent[0]`. On worker procs, the request is
+  handled by ProcAgent. On the service proc (which hosts
+  HostAgent instead of ProcAgent), the bridge automatically
+  routes to HostAgent. If the target agent is not reachable, an
+  immediate `not_found` error is returned instead of waiting for
+  the full bridge timeout. If the probe send itself fails (a
+  bridge-side infrastructure problem), `internal_error` is
+  returned.
+
   Timeout returns the standard `gateway_timeout` error envelope.
+
+- `GET {base}/v1/config/{proc_reference}`
+  Returns the effective CONFIG-marked configuration entries from the
+  process hosting `{proc_reference}`. The reference must be a valid
+  ProcId (percent-encoded in the URL path).
+
+  Success returns a `ConfigDumpResult` JSON object:
+  ```json
+  {
+    "entries": [
+      {
+        "name": "hyperactor::config::codec_max_frame_length",
+        "value": "1048576",
+        "default_value": "1048576",
+        "source": "Default",
+        "changed_from_default": false,
+        "env_var": "HYPERACTOR_CODEC_MAX_FRAME_LENGTH"
+      }
+    ]
+  }
+  ```
+
+  Each entry contains:
+  - `name` — fully-qualified config key (module_path::key_name)
+  - `value` — current resolved value (display string)
+  - `default_value` — declared default (null if none)
+  - `source` — which layer provided the value: Default,
+    ClientOverride, File, Env, Runtime, or TestOverride
+  - `changed_from_default` — true when value differs from default
+  - `env_var` — environment variable name (null if not env-backed)
+
+  Entries are sorted by `name`. Only CONFIG-marked keys are
+  included (not INTROSPECT keys).
+
+  The endpoint supports worker procs and the service proc. Same
+  routing as py-spy: ProcAgent for worker procs, HostAgent for the
+  service proc. If the target agent is not reachable, an immediate
+  `not_found` error is returned. Timeout returns `gateway_timeout`.
+
+  Automated integration test:
+  ```
+  buck2 test fbcode//monarch/hyperactor_mesh:config_integration_test
+  ```
+
+- `POST {base}/v1/query`
+  Execute a SQL query to distributed telemetry DataFusion engine.
+  Requires `telemetry_url` to be configured.
+
+  Request body (`QueryRequest`):
+  ```json
+  {"sql": "SELECT * FROM actors LIMIT 10"}
+  ```
+
+  Success returns a `QueryResponse`:
+  ```json
+  {"rows": [ ... ]}
+  ```
+
+  `rows` contains the DataFusion result set as a JSON array. On
+  invalid SQL or query failure, a non-200 status is returned with
+  the dashboard's error message.
+
+  Discover tables with: `SELECT table_name FROM information_schema.tables`.
+
+- `POST {base}/v1/pyspy_dump/{proc_reference}`
+  Captures a py-spy stack dump from the process hosting
+  `{proc_reference}` and persists the result in the telemetry
+  store. The reference must be a valid ProcId (percent-encoded
+  in the URL path). Requires `telemetry_url` to be configured.
+
+  The endpoint performs two steps:
+  1. Sends a `PySpyDump` message to the target proc's agent
+     (same routing as `GET /v1/pyspy/{proc_reference}`).
+  2. Stores the result in DataFusion via the dashboard, keyed
+     by a generated UUID.
+
+  Success returns a `PyspyDumpAndStoreResponse`:
+  ```json
+  {"dump_id": "550e8400-e29b-41d4-a716-446655440000"}
+  ```
+
+  Use `dump_id` to retrieve the stored dump via `/v1/query`:
+  ```json
+  {"sql": "SELECT * FROM pyspy_dumps WHERE dump_id = '550e8400-...'"}
+  ```
+
+  Error handling follows the same conventions as
+  `GET /v1/pyspy/{proc_reference}`: `not_found` if the target
+  agent is unreachable, `gateway_timeout` on timeout.
 
 - `GET {base}/SKILL.md`
   This document.
@@ -109,7 +221,7 @@ except `/SKILL.md` (`text/markdown`).
 
 Successful resolves return a JSON object:
 
-- `identity` — the resolved reference string
+- `identity` — the resolved reference string (opaque; round-trip it exactly)
 - `properties` — externally-tagged variant, one of:
   `{"Root": {...}}`, `{"Host": {...}}`, `{"Proc": {...}}`,
   `{"Actor": {...}}`, `{"Error": {...}}`
@@ -117,7 +229,8 @@ Successful resolves return a JSON object:
 - `parent` — optional parent reference (navigation context)
 - `as_of` — ISO 8601 timestamp of when this data was captured
 
-Each child reference can be resolved via `/v1/{reference}`.
+Each child reference can be resolved via `/v1/{reference}` (URL-encode first).
+Clients should treat reference strings as opaque tokens.
 
 ## Key fields
 

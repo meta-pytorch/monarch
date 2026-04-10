@@ -9,18 +9,11 @@
 """Tests for distributed telemetry with automatic callback registration."""
 
 import json
-import os
-
-from isolate_in_subprocess import isolate_in_subprocess
-
-# Enable the unified telemetry layer BEFORE importing monarch
-# This is required for the TraceEventDispatcher to be created, which processes sinks
-os.environ["USE_UNIFIED_LAYER"] = "1"
-
 from typing import cast
 
 import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor.actor_mesh import Actor, ActorMesh
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.proc_mesh import (
@@ -29,7 +22,8 @@ from monarch._src.actor.proc_mesh import (
     unregister_proc_mesh_spawn_callback,
 )
 from monarch.distributed_telemetry.actor import start_telemetry
-from monarch.job import ProcessJob
+from monarch.job import ProcessJob, TelemetryConfig
+from scoped_state import scoped_state
 
 
 class WorkerActor(Actor):
@@ -78,6 +72,7 @@ def cleanup_callbacks():
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_record_batch_tracing(cleanup_callbacks) -> None:
     """Test that RecordBatchSink captures trace events as RecordBatches."""
     try:
@@ -101,557 +96,571 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
     enable_record_batch_tracing(batch_size=5)
 
     # Spawn some workers to generate trace events
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    hosts.spawn_procs(per_host={"workers": 2})
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        hosts = state.hosts
+        hosts.spawn_procs(per_host={"workers": 2})
 
-    # The sink should have received and flushed some batches
-    # Note: The exact count depends on the number of trace events generated
-    final_count = get_record_batch_flush_count()
-    assert final_count >= 0, "Flush count should be non-negative"
-
-    # Clean up
-    hosts.shutdown().get()
+        # The sink should have received and flushed some batches
+        # Note: The exact count depends on the number of trace events generated
+        final_count = get_record_batch_flush_count()
+        assert final_count >= 0, "Flush count should be non-negative"
 
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_actors_table() -> None:
     """Test that the actors table is populated when actors are spawned."""
-    # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn some worker actors - this should trigger notify_actor_created
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
-    workers = worker_procs.spawn("test_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 2})
+        workers = worker_procs.spawn("test_worker", WorkerActor)
+        workers.initialized.get()
 
-    # Query the actors table to verify actors were recorded
-    result = engine.query("SELECT * FROM actors")
-    result_dict = result.to_pydict()
+        # Query the actors table to verify actors were recorded
+        result = engine.query("SELECT * FROM actors")
+        result_dict = result.to_pydict()
 
-    # We should have at least some actors recorded
-    # (the exact count depends on internal actors created)
-    actor_count = len(result_dict.get("id", []))
-    assert actor_count > 0, f"Expected at least one actor, got {actor_count}"
+        # We should have at least some actors recorded
+        # (the exact count depends on internal actors created)
+        actor_count = len(result_dict.get("id", []))
+        assert actor_count > 0, f"Expected at least one actor, got {actor_count}"
 
-    # Verify the schema has the expected columns
-    expected_columns = {
-        "id",
-        "timestamp_us",
-        "mesh_id",
-        "rank",
-        "full_name",
-        "display_name",
-    }
-    actual_columns = set(result_dict.keys())
-    assert expected_columns == actual_columns, (
-        f"Expected columns {expected_columns}, got {actual_columns}"
-    )
+        # Verify the schema has the expected columns
+        expected_columns = {
+            "id",
+            "timestamp_us",
+            "mesh_id",
+            "rank",
+            "full_name",
+            "display_name",
+        }
+        actual_columns = set(result_dict.keys())
+        assert expected_columns == actual_columns, (
+            f"Expected columns {expected_columns}, got {actual_columns}"
+        )
 
-    # Verify full_name contains our worker actor name
-    full_names = result_dict.get("full_name", [])
-    has_test_worker = any("test_worker" in name for name in full_names)
-    assert has_test_worker, (
-        f"Expected to find 'test_worker' in actor names, got: {full_names}"
-    )
+        # Verify full_name contains our worker actor name
+        full_names = result_dict.get("full_name", [])
+        has_test_worker = any("test_worker" in name for name in full_names)
+        assert has_test_worker, (
+            f"Expected to find 'test_worker' in actor names, got: {full_names}"
+        )
 
-    # Verify that the bootstrap client actor is recorded with display_name "client"
-    display_names = result_dict.get("display_name", [])
-    assert "<root>" in display_names, (
-        f"Expected bootstrap client actor with display_name '<root>', got: {display_names}"
-    )
-
-    # Clean up
-    hosts.shutdown().get()
+        # Verify that the bootstrap client actor is recorded with display_name "client"
+        display_names = result_dict.get("display_name", [])
+        assert "<root>" in display_names, (
+            f"Expected bootstrap client actor with display_name '<root>', got: {display_names}"
+        )
 
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_meshes_table() -> None:
     """Test that the meshes table is populated when actor meshes are spawned."""
-    # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn some worker actors - this should trigger notify_mesh_created
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
-    workers = worker_procs.spawn("test_mesh_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 2})
+        workers = worker_procs.spawn("test_mesh_worker", WorkerActor)
+        workers.initialized.get()
 
-    # Query the meshes table to verify actor meshes were recorded
-    result = engine.query("SELECT * FROM meshes")
-    result_dict = result.to_pydict()
+        # Query the meshes table to verify actor meshes were recorded
+        result = engine.query("SELECT * FROM meshes")
+        result_dict = result.to_pydict()
 
-    # We should have at least some actor meshes recorded
-    mesh_count = len(result_dict.get("id", []))
-    assert mesh_count > 0, f"Expected at least one actor mesh, got {mesh_count}"
+        # We should have at least some actor meshes recorded
+        mesh_count = len(result_dict.get("id", []))
+        assert mesh_count > 0, f"Expected at least one actor mesh, got {mesh_count}"
 
-    # Verify the schema has the expected columns
-    expected_columns = {
-        "id",
-        "timestamp_us",
-        "class",
-        "given_name",
-        "full_name",
-        "shape_json",
-        "parent_mesh_id",
-        "parent_view_json",
-    }
-    actual_columns = set(result_dict.keys())
-    assert expected_columns == actual_columns, (
-        f"Expected columns {expected_columns}, got {actual_columns}"
-    )
+        # Verify the schema has the expected columns
+        expected_columns = {
+            "id",
+            "timestamp_us",
+            "class",
+            "given_name",
+            "full_name",
+            "shape_json",
+            "parent_mesh_id",
+            "parent_view_json",
+        }
+        actual_columns = set(result_dict.keys())
+        assert expected_columns == actual_columns, (
+            f"Expected columns {expected_columns}, got {actual_columns}"
+        )
 
-    # Verify given_name is the user-provided name (not the full name with UUID suffix)
-    given_names = result_dict.get("given_name", [])
-    full_names = result_dict.get("full_name", [])
-    assert "test_mesh_worker" in given_names, (
-        f"Expected exact 'test_mesh_worker' in given_names, got: {given_names}"
-    )
-    for gn, fn in zip(given_names, full_names):
-        if gn == "test_mesh_worker":
-            # full_name includes a UUID suffix, so it should differ from given_name
-            assert fn != gn, (
-                f"Expected full_name to differ from given_name, but both are '{gn}'"
-            )
-            assert fn.startswith("test_mesh_worker"), (
-                f"Expected full_name to start with 'test_mesh_worker', got: {fn}"
-            )
+        # Verify given_name is the user-provided name (not the full name with UUID suffix)
+        given_names = result_dict.get("given_name", [])
+        full_names = result_dict.get("full_name", [])
+        assert "test_mesh_worker" in given_names, (
+            f"Expected exact 'test_mesh_worker' in given_names, got: {given_names}"
+        )
+        for gn, fn in zip(given_names, full_names):
+            if gn == "test_mesh_worker":
+                # full_name includes a UUID suffix, so it should differ from given_name
+                assert fn != gn, (
+                    f"Expected full_name to differ from given_name, but both are '{gn}'"
+                )
+                assert fn.startswith("test_mesh_worker"), (
+                    f"Expected full_name to start with 'test_mesh_worker', got: {fn}"
+                )
 
-    # Verify parent_view_json is populated (serialized Region from ndslice)
-    parent_views = result_dict.get("parent_view_json", [])
-    for name, view in zip(given_names, parent_views):
-        if name == "test_mesh_worker":
-            assert view is not None, (
-                f"Expected parent_view_json to be populated for '{name}', got None"
-            )
-            parsed_view = json.loads(view)
-            # Region serializes as {"labels": [...], "slice": {"offset": ..., "sizes": [...], "strides": [...]}}
-            assert "slice" in parsed_view, (
-                f"Expected parent_view_json to contain 'slice' key (ndslice Region), got: {parsed_view}"
-            )
-            assert "labels" in parsed_view, (
-                f"Expected parent_view_json to contain 'labels' key, got: {parsed_view}"
-            )
+        # Verify parent_view_json is populated (serialized Region from ndslice)
+        parent_views = result_dict.get("parent_view_json", [])
+        for name, view in zip(given_names, parent_views):
+            if name == "test_mesh_worker":
+                assert view is not None, (
+                    f"Expected parent_view_json to be populated for '{name}', got None"
+                )
+                parsed_view = json.loads(view)
+                # Region serializes as {"labels": [...], "slice": {"offset": ..., "sizes": [...], "strides": [...]}}
+                assert "slice" in parsed_view, (
+                    f"Expected parent_view_json to contain 'slice' key (ndslice Region), got: {parsed_view}"
+                )
+                assert "labels" in parsed_view, (
+                    f"Expected parent_view_json to contain 'labels' key, got: {parsed_view}"
+                )
 
-    # Verify shape_json describes the actor mesh's shape (serialized Extent from ndslice)
-    shape_jsons = result_dict.get("shape_json", [])
-    for name, shape in zip(given_names, shape_jsons):
-        if name == "test_mesh_worker":
-            assert shape is not None and shape != "", (
-                f"Expected shape_json to be populated for '{name}', got '{shape}'"
-            )
-            parsed_shape = json.loads(shape)
-            # Extent serializes as {"inner": {"labels": [...], "sizes": [...]}}
-            assert "inner" in parsed_shape, (
-                f"Expected shape_json to contain 'inner' key (ndslice Extent), got: {parsed_shape}"
-            )
-            labels = parsed_shape["inner"]["labels"]
-            sizes = parsed_shape["inner"]["sizes"]
-            assert "workers" in labels, (
-                f"Expected shape_json labels to contain 'workers', got: {labels}"
-            )
-            workers_idx = labels.index("workers")
-            assert sizes[workers_idx] == 2, (
-                f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
-            )
-
-    # Clean up
-    hosts.shutdown().get()
+        # Verify shape_json describes the actor mesh's shape (serialized Extent from ndslice)
+        shape_jsons = result_dict.get("shape_json", [])
+        for name, shape in zip(given_names, shape_jsons):
+            if name == "test_mesh_worker":
+                assert shape is not None and shape != "", (
+                    f"Expected shape_json to be populated for '{name}', got '{shape}'"
+                )
+                parsed_shape = json.loads(shape)
+                # Extent serializes as {"inner": {"labels": [...], "sizes": [...]}}
+                assert "inner" in parsed_shape, (
+                    f"Expected shape_json to contain 'inner' key (ndslice Extent), got: {parsed_shape}"
+                )
+                labels = parsed_shape["inner"]["labels"]
+                sizes = parsed_shape["inner"]["sizes"]
+                assert "workers" in labels, (
+                    f"Expected shape_json labels to contain 'workers', got: {labels}"
+                )
+                workers_idx = labels.index("workers")
+                assert sizes[workers_idx] == 2, (
+                    f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
+                )
 
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_proc_mesh_in_meshes_table() -> None:
     """Test that ProcMesh creation is recorded in the meshes table with class 'Proc'."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn a named proc mesh — this should emit a mesh event with class "Proc"
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="proc_mesh_test")
-    workers = worker_procs.spawn("proc_mesh_test_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="proc_mesh_test")
+        workers = worker_procs.spawn("proc_mesh_test_worker", WorkerActor)
+        workers.initialized.get()
 
-    # Query meshes with class "Proc"
-    result = engine.query(
-        "SELECT given_name, full_name, class, shape_json, parent_mesh_id, parent_view_json "
-        "FROM meshes WHERE class = 'Proc'"
-    )
-    result_dict = result.to_pydict()
+        # Query meshes with class "Proc"
+        result = engine.query(
+            "SELECT given_name, full_name, class, shape_json, parent_mesh_id, parent_view_json "
+            "FROM meshes WHERE class = 'Proc'"
+        )
+        result_dict = result.to_pydict()
 
-    # Verify our named proc mesh appears with the correct given_name.
-    # The bootstrap path also emits a "local" proc mesh, so filter for ours.
-    given_names = result_dict.get("given_name", [])
-    assert "proc_mesh_test" in given_names, (
-        f"Expected 'proc_mesh_test' in given_names, got: {given_names}"
-    )
+        # Verify our named proc mesh appears with the correct given_name.
+        # The bootstrap path also emits a "local" proc mesh, so filter for ours.
+        given_names = result_dict.get("given_name", [])
+        assert "proc_mesh_test" in given_names, (
+            f"Expected 'proc_mesh_test' in given_names, got: {given_names}"
+        )
 
-    # Verify full_name differs from given_name (includes UUID suffix)
-    full_names = result_dict.get("full_name", [])
-    for gn, fn in zip(given_names, full_names):
-        if gn == "proc_mesh_test":
-            assert fn != gn, (
-                f"Expected full_name to differ from given_name, but both are '{gn}'"
-            )
-            assert fn.startswith("proc_mesh_test"), (
-                f"Expected full_name to start with 'proc_mesh_test', got: {fn}"
-            )
+        # Verify full_name differs from given_name (includes UUID suffix)
+        full_names = result_dict.get("full_name", [])
+        for gn, fn in zip(given_names, full_names):
+            if gn == "proc_mesh_test":
+                assert fn != gn, (
+                    f"Expected full_name to differ from given_name, but both are '{gn}'"
+                )
+                assert fn.startswith("proc_mesh_test"), (
+                    f"Expected full_name to start with 'proc_mesh_test', got: {fn}"
+                )
 
-    # Verify shape_json is populated for the proc mesh
-    shape_jsons = result_dict.get("shape_json", [])
-    for gn, shape in zip(given_names, shape_jsons):
-        if gn == "proc_mesh_test":
-            assert shape is not None and shape != "", (
-                f"Expected shape_json to be populated for '{gn}', got '{shape}'"
-            )
-            parsed_shape = json.loads(shape)
-            assert "inner" in parsed_shape, (
-                f"Expected shape_json to contain 'inner' key (ndslice Extent), got: {parsed_shape}"
-            )
-            labels = parsed_shape["inner"]["labels"]
-            sizes = parsed_shape["inner"]["sizes"]
-            assert "workers" in labels, (
-                f"Expected shape_json labels to contain 'workers', got: {labels}"
-            )
-            workers_idx = labels.index("workers")
-            assert sizes[workers_idx] == 2, (
-                f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
-            )
-
-    # Clean up
-    hosts.shutdown().get()
+        # Verify shape_json is populated for the proc mesh
+        shape_jsons = result_dict.get("shape_json", [])
+        for gn, shape in zip(given_names, shape_jsons):
+            if gn == "proc_mesh_test":
+                assert shape is not None and shape != "", (
+                    f"Expected shape_json to be populated for '{gn}', got '{shape}'"
+                )
+                parsed_shape = json.loads(shape)
+                assert "inner" in parsed_shape, (
+                    f"Expected shape_json to contain 'inner' key (ndslice Extent), got: {parsed_shape}"
+                )
+                labels = parsed_shape["inner"]["labels"]
+                sizes = parsed_shape["inner"]["sizes"]
+                assert "workers" in labels, (
+                    f"Expected shape_json labels to contain 'workers', got: {labels}"
+                )
+                workers_idx = labels.index("workers")
+                assert sizes[workers_idx] == 2, (
+                    f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
+                )
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     """Test that actors.mesh_id matches meshes.id, enabling joins."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn actors — this populates both the actors and meshes tables
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
-    workers = worker_procs.spawn("join_test_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 2})
+        workers = worker_procs.spawn("join_test_worker", WorkerActor)
+        workers.initialized.get()
 
-    # Join actors with meshes on mesh_id = id
-    result = engine.query(
-        """SELECT a.full_name AS actor_name,
-                  a.mesh_id,
-                  a.rank,
-                  m.given_name AS mesh_name,
-                  m.class AS mesh_class
-           FROM actors a
-           INNER JOIN meshes m ON a.mesh_id = m.id
-           WHERE a.full_name LIKE '%join_test_worker%'
-           ORDER BY a.rank"""
-    )
-    result_dict = result.to_pydict()
+        # Join actors with meshes on mesh_id = id
+        result = engine.query(
+            """SELECT a.full_name AS actor_name,
+                      a.mesh_id,
+                      a.rank,
+                      m.given_name AS mesh_name,
+                      m.class AS mesh_class
+               FROM actors a
+               INNER JOIN meshes m ON a.mesh_id = m.id
+               WHERE a.full_name LIKE '%join_test_worker%'
+               ORDER BY a.rank"""
+        )
+        result_dict = result.to_pydict()
 
-    # The join should produce results — if mesh_id doesn't match, this is empty
-    joined_count = len(result_dict.get("actor_name", []))
-    assert joined_count > 0, (
-        "Expected actors to join with meshes on mesh_id, but got 0 rows. "
-        "This means actors.mesh_id does not match any meshes.id."
-    )
+        # The join should produce results — if mesh_id doesn't match, this is empty
+        joined_count = len(result_dict.get("actor_name", []))
+        assert joined_count > 0, (
+            "Expected actors to join with meshes on mesh_id, but got 0 rows. "
+            "This means actors.mesh_id does not match any meshes.id."
+        )
 
-    # Every joined row should reference our mesh name
-    mesh_names = result_dict.get("mesh_name", [])
-    assert all("join_test_worker" in name for name in mesh_names), (
-        f"Expected all joined rows to reference 'join_test_worker', got: {mesh_names}"
-    )
+        # Every joined row should reference our mesh name
+        mesh_names = result_dict.get("mesh_name", [])
+        assert all("join_test_worker" in name for name in mesh_names), (
+            f"Expected all joined rows to reference 'join_test_worker', got: {mesh_names}"
+        )
 
-    # With 2 workers, we should see 2 joined rows
-    assert joined_count == 2, (
-        f"Expected 2 joined rows for 2 workers, got: {joined_count}"
-    )
-
-    # Clean up
-    hosts.shutdown().get()
+        # With 2 workers, we should see 2 joined rows
+        assert joined_count == 2, (
+            f"Expected 2 joined rows for 2 workers, got: {joined_count}"
+        )
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn a named proc mesh and user actors
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
-    workers = worker_procs.spawn("worker_actors", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
+        workers = worker_procs.spawn("worker_actors", WorkerActor)
+        workers.initialized.get()
 
-    # Get the proc mesh entry so we can filter child meshes by parent_mesh_id
-    proc_result = engine.query(
-        "SELECT id FROM meshes WHERE class = 'Proc' AND given_name = 'workers_procs'"
-    )
-    proc_ids = proc_result.to_pydict().get("id", [])
-    assert len(proc_ids) == 1, f"Expected exactly 1 proc mesh, got {len(proc_ids)}"
-    proc_mesh_id = proc_ids[0]
+        # Get the proc mesh entry so we can filter child meshes by parent_mesh_id
+        proc_result = engine.query(
+            "SELECT id FROM meshes WHERE class = 'Proc' AND given_name = 'workers_procs'"
+        )
+        proc_ids = proc_result.to_pydict().get("id", [])
+        assert len(proc_ids) == 1, f"Expected exactly 1 proc mesh, got {len(proc_ids)}"
+        proc_mesh_id = proc_ids[0]
 
-    # ProcAgent actors have mesh_id pointing directly to the proc mesh
-    proc_agents = engine.query(f"SELECT id FROM actors WHERE mesh_id = {proc_mesh_id}")
-    proc_agents_count = len(proc_agents.to_pydict().get("id", []))
-    assert proc_agents_count == 2, (
-        f"Expected 2 ProcAgent actors, got {proc_agents_count}"
-    )
-
-    # Query all child actor meshes of this proc mesh
-    child_meshes = engine.query(
-        f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {proc_mesh_id}"
-    )
-    child_dict = child_meshes.to_pydict()
-    child_classes = set(child_dict.get("class", []))
-    child_names = child_dict.get("given_name", [])
-    child_ids = child_dict.get("id", [])
-
-    assert set(child_names) == {
-        "worker_actors",
-        "telemetry",
-        "logger",
-        "setup",
-        "comm",
-    }
-
-    # For every child actor mesh, verify that actors exist in the actors table
-    for mesh_id, mesh_class, mesh_name in zip(child_ids, child_classes, child_names):
-        actor_result = engine.query(f"SELECT id FROM actors WHERE mesh_id = {mesh_id}")
-        actor_dict = actor_result.to_pydict()
-        actor_count = len(actor_dict.get("id", []))
-
-        # Each mesh on a 2-worker proc mesh should have exactly 2 actors
-        assert actor_count == 2, (
-            f"Expected 2 actors for mesh '{mesh_name}' (class={mesh_class}), "
-            f"got {actor_count}"
+        # ProcAgent actors have mesh_id pointing directly to the proc mesh
+        proc_agents = engine.query(
+            f"SELECT id FROM actors WHERE mesh_id = {proc_mesh_id}"
+        )
+        proc_agents_count = len(proc_agents.to_pydict().get("id", []))
+        assert proc_agents_count == 2, (
+            f"Expected 2 ProcAgent actors, got {proc_agents_count}"
         )
 
-    # Clean up
-    hosts.shutdown().get()
+        # Query all child actor meshes of this proc mesh
+        child_meshes = engine.query(
+            f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {proc_mesh_id}"
+        )
+        child_dict = child_meshes.to_pydict()
+        child_classes = set(child_dict.get("class", []))
+        child_names = child_dict.get("given_name", [])
+        child_ids = child_dict.get("id", [])
+
+        assert set(child_names) == {
+            "worker_actors",
+            "telemetry",
+            "logger",
+            "setup",
+            "comm",
+        }
+
+        # For every child actor mesh, verify that actors exist in the actors table
+        for mesh_id, mesh_class, mesh_name in zip(
+            child_ids, child_classes, child_names
+        ):
+            actor_result = engine.query(
+                f"SELECT id FROM actors WHERE mesh_id = {mesh_id}"
+            )
+            actor_dict = actor_result.to_pydict()
+            actor_count = len(actor_dict.get("id", []))
+
+            # Each mesh on a 2-worker proc mesh should have exactly 2 actors
+            assert actor_count == 2, (
+                f"Expected 2 actors for mesh '{mesh_name}' (class={mesh_class}), "
+                f"got {actor_count}"
+            )
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn a named proc mesh and user actors
-    job = ProcessJob({"hosts": 2})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
-    workers = worker_procs.spawn("worker_actors", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 2}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
+        workers = worker_procs.spawn("worker_actors", WorkerActor)
+        workers.initialized.get()
 
-    # Get the hosts mesh entry so we can filter child meshes by parent_mesh_id
-    host_mesh_result = engine.query(
-        "SELECT id FROM meshes WHERE class = 'Host' AND given_name = 'hosts'"
-    )
-    host_mesh_ids = host_mesh_result.to_pydict().get("id", [])
-    assert len(host_mesh_ids) == 1, (
-        f"Expected exactly 1 hosts mesh, got {len(host_mesh_ids)}"
-    )
-    host_mesh_id = host_mesh_ids[0]
+        # Get the hosts mesh entry so we can filter child meshes by parent_mesh_id
+        host_mesh_result = engine.query(
+            "SELECT id FROM meshes WHERE class = 'Host' AND given_name = 'hosts'"
+        )
+        host_mesh_ids = host_mesh_result.to_pydict().get("id", [])
+        assert len(host_mesh_ids) == 1, (
+            f"Expected exactly 1 hosts mesh, got {len(host_mesh_ids)}"
+        )
+        host_mesh_id = host_mesh_ids[0]
 
-    # HostAgent actors have mesh_id pointing directly to the host mesh
-    host_agents = engine.query(f"SELECT id FROM actors WHERE mesh_id = {host_mesh_id}")
-    host_agents_count = len(host_agents.to_pydict().get("id", []))
-    assert host_agents_count == 2, (
-        f"Expected 2 HostAgent actors, got {host_agents_count}"
-    )
-
-    # Query all proc meshes of this hosts mesh
-    proc_meshes = engine.query(
-        f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {host_mesh_id}"
-    )
-    proc_dict = proc_meshes.to_pydict()
-    proc_given_names = set(proc_dict.get("given_name", []))
-    assert proc_given_names == {"workers_procs"}
-
-    # Query all child actor meshes of this hosts mesh
-    child_meshes = engine.query(
-        f"""
-        SELECT m.id, m.class, m.given_name
-        FROM meshes m
-        INNER JOIN meshes proc ON m.parent_mesh_id = proc.id
-        INNER JOIN meshes hosts ON proc.parent_mesh_id = hosts.id
-        WHERE hosts.id = {host_mesh_id}
-        """
-    )
-    child_dict = child_meshes.to_pydict()
-    child_classes = set(child_dict.get("class", []))
-    child_names = child_dict.get("given_name", [])
-    child_ids = child_dict.get("id", [])
-
-    # The proc mesh should contain user-spawned actor and telemetry, logger, setup, agent, and comm actors.
-    assert set(child_names) == {
-        "worker_actors",
-        "telemetry",
-        "logger",
-        "setup",
-        "comm",
-    }
-
-    # For every child actor mesh, verify that actors exist in the actors table
-    for mesh_id, mesh_class, mesh_name in zip(child_ids, child_classes, child_names):
-        actor_result = engine.query(f"SELECT id FROM actors WHERE mesh_id = {mesh_id}")
-        actor_dict = actor_result.to_pydict()
-        actor_count = len(actor_dict.get("id", []))
-        assert actor_count == 4, (
-            f"Expected 4 actors for mesh '{mesh_name}' (class={mesh_class}), "
-            f"got {actor_count}"
+        # HostAgent actors have mesh_id pointing directly to the host mesh
+        host_agents = engine.query(
+            f"SELECT id FROM actors WHERE mesh_id = {host_mesh_id}"
+        )
+        host_agents_count = len(host_agents.to_pydict().get("id", []))
+        assert host_agents_count == 2, (
+            f"Expected 2 HostAgent actors, got {host_agents_count}"
         )
 
-    # Clean up
-    hosts.shutdown().get()
+        # Query all proc meshes of this hosts mesh
+        proc_meshes = engine.query(
+            f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {host_mesh_id}"
+        )
+        proc_dict = proc_meshes.to_pydict()
+        proc_given_names = set(proc_dict.get("given_name", []))
+        assert proc_given_names == {"workers_procs"}
+
+        # Query all child actor meshes of this hosts mesh
+        child_meshes = engine.query(
+            f"""
+            SELECT m.id, m.class, m.given_name
+            FROM meshes m
+            INNER JOIN meshes proc ON m.parent_mesh_id = proc.id
+            INNER JOIN meshes hosts ON proc.parent_mesh_id = hosts.id
+            WHERE hosts.id = {host_mesh_id}
+            """
+        )
+        child_dict = child_meshes.to_pydict()
+        child_classes = set(child_dict.get("class", []))
+        child_names = child_dict.get("given_name", [])
+        child_ids = child_dict.get("id", [])
+
+        # The proc mesh should contain user-spawned actor and telemetry, logger, setup, agent, and comm actors.
+        assert set(child_names) == {
+            "worker_actors",
+            "telemetry",
+            "logger",
+            "setup",
+            "comm",
+        }
+
+        # For every child actor mesh, verify that actors exist in the actors table
+        for mesh_id, mesh_class, mesh_name in zip(
+            child_ids, child_classes, child_names
+        ):
+            actor_result = engine.query(
+                f"SELECT id FROM actors WHERE mesh_id = {mesh_id}"
+            )
+            actor_dict = actor_result.to_pydict()
+            actor_count = len(actor_dict.get("id", []))
+            assert actor_count == 4, (
+                f"Expected 4 actors for mesh '{mesh_name}' (class={mesh_class}), "
+                f"got {actor_count}"
+            )
 
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_actor_status_events_table() -> None:
     """Test that the actor_status_events table is populated when actors change status."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn worker actors — actors go through status transitions during spawn
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
-    workers = worker_procs.spawn("status_test_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 2})
+        workers = worker_procs.spawn("status_test_worker", WorkerActor)
+        workers.initialized.get()
 
-    # Query the actor_status_events table
-    result = engine.query("SELECT * FROM actor_status_events")
-    result_dict = result.to_pydict()
+        # Query the actor_status_events table
+        result = engine.query("SELECT * FROM actor_status_events")
+        result_dict = result.to_pydict()
 
-    # Verify the schema has the expected columns
-    expected_columns = {
-        "id",
-        "timestamp_us",
-        "actor_id",
-        "new_status",
-        "reason",
-    }
-    actual_columns = set(result_dict.keys())
-    assert expected_columns == actual_columns, (
-        f"Expected columns {expected_columns}, got {actual_columns}"
-    )
+        # Verify the schema has the expected columns
+        expected_columns = {
+            "id",
+            "timestamp_us",
+            "actor_id",
+            "new_status",
+            "reason",
+        }
+        actual_columns = set(result_dict.keys())
+        assert expected_columns == actual_columns, (
+            f"Expected columns {expected_columns}, got {actual_columns}"
+        )
 
-    # We should have at least some status events (actors transition through
-    # Created -> Initializing -> Idle at minimum)
-    event_count = len(result_dict.get("timestamp_us", []))
-    assert event_count > 0, (
-        f"Expected at least one actor status event, got {event_count}"
-    )
+        # We should have at least some status events (actors transition through
+        # Created -> Initializing -> Idle at minimum)
+        event_count = len(result_dict.get("timestamp_us", []))
+        assert event_count > 0, (
+            f"Expected at least one actor status event, got {event_count}"
+        )
 
-    # Verify new_status values are valid ActorStatus arm names
-    valid_statuses = {
-        "Unknown",
-        "Created",
-        "Initializing",
-        "Client",
-        "Idle",
-        "Processing",
-        "Saving",
-        "Loading",
-        "Stopping",
-        "Stopped",
-        "Failed",
-    }
-    new_statuses = set(result_dict.get("new_status", []))
-    assert new_statuses.issubset(valid_statuses), (
-        f"Found unexpected status values: {new_statuses - valid_statuses}"
-    )
-
-    # Clean up
-    hosts.shutdown().get()
+        # Verify new_status values are valid ActorStatus arm names
+        valid_statuses = {
+            "Unknown",
+            "Created",
+            "Initializing",
+            "Client",
+            "Idle",
+            "Processing",
+            "Saving",
+            "Loading",
+            "Stopping",
+            "Stopped",
+            "Failed",
+        }
+        new_statuses = set(result_dict.get("new_status", []))
+        assert new_statuses.issubset(valid_statuses), (
+            f"Found unexpected status values: {new_statuses - valid_statuses}"
+        )
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
     """Test that rank and parent_view_json are correct for sliced and full actor meshes."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn 3 workers so we can slice a subset
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 3}, name="rank_test_procs")
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 3}, name="rank_test_procs"
+        )
 
-    # Full view: spawn on the unsliced proc mesh (all 3 workers)
-    full_actors = worker_procs.spawn("full_view_actor", WorkerActor)
-    full_actors.initialized.get()
+        # Full view: spawn on the unsliced proc mesh (all 3 workers)
+        full_actors = worker_procs.spawn("full_view_actor", WorkerActor)
+        full_actors.initialized.get()
 
-    # Sliced view: take workers 1..3 (indices 1 and 2)
-    sliced_procs = worker_procs.slice(workers=slice(1, 3))
-    sliced_actors = sliced_procs.spawn("sliced_view_actor", WorkerActor)
-    sliced_actors.initialized.get()
+        # Sliced view: take workers 1..3 (indices 1 and 2)
+        sliced_procs = worker_procs.slice(workers=slice(1, 3))
+        sliced_actors = sliced_procs.spawn("sliced_view_actor", WorkerActor)
+        sliced_actors.initialized.get()
 
-    # -- Verify full-view actor mesh --
-    full_mesh = engine.query(
-        "SELECT id, shape_json, parent_view_json FROM meshes "
-        "WHERE given_name = 'full_view_actor'"
-    )
-    full_mesh_dict = full_mesh.to_pydict()
-    assert len(full_mesh_dict["id"]) == 1, (
-        f"Expected 1 full_view_actor mesh, got {len(full_mesh_dict['id'])}"
-    )
-    full_mesh_id = full_mesh_dict["id"][0]
+        # -- Verify full-view actor mesh --
+        full_mesh = engine.query(
+            "SELECT id, shape_json, parent_view_json FROM meshes "
+            "WHERE given_name = 'full_view_actor'"
+        )
+        full_mesh_dict = full_mesh.to_pydict()
+        assert len(full_mesh_dict["id"]) == 1, (
+            f"Expected 1 full_view_actor mesh, got {len(full_mesh_dict['id'])}"
+        )
+        full_mesh_id = full_mesh_dict["id"][0]
 
-    # parent_view_json for full view should have offset 0
-    full_view = json.loads(full_mesh_dict["parent_view_json"][0])
-    assert full_view["slice"]["offset"] == 0, (
-        f"Expected full view offset=0, got {full_view['slice']['offset']}"
-    )
-    # Full view should cover all 3 workers
-    workers_label_idx = full_view["labels"].index("workers")
-    assert full_view["slice"]["sizes"][workers_label_idx] == 3, (
-        f"Expected full view size=3, got {full_view['slice']['sizes'][workers_label_idx]}"
-    )
+        # parent_view_json for full view should have offset 0
+        full_view = json.loads(full_mesh_dict["parent_view_json"][0])
+        assert full_view["slice"]["offset"] == 0, (
+            f"Expected full view offset=0, got {full_view['slice']['offset']}"
+        )
+        # Full view should cover all 3 workers
+        workers_label_idx = full_view["labels"].index("workers")
+        assert full_view["slice"]["sizes"][workers_label_idx] == 3, (
+            f"Expected full view size=3, got {full_view['slice']['sizes'][workers_label_idx]}"
+        )
 
-    # Actors in the full mesh should have ranks 0, 1, 2
-    full_actors_result = engine.query(
-        f"SELECT rank FROM actors WHERE mesh_id = {full_mesh_id} ORDER BY rank"
-    )
-    full_ranks = full_actors_result.to_pydict()["rank"]
-    assert full_ranks == [0, 1, 2], f"Expected ranks [0, 1, 2], got {full_ranks}"
+        # Actors in the full mesh should have ranks 0, 1, 2
+        full_actors_result = engine.query(
+            f"SELECT rank FROM actors WHERE mesh_id = {full_mesh_id} ORDER BY rank"
+        )
+        full_ranks = full_actors_result.to_pydict()["rank"]
+        assert full_ranks == [0, 1, 2], f"Expected ranks [0, 1, 2], got {full_ranks}"
 
-    # -- Verify sliced-view actor mesh --
-    sliced_mesh = engine.query(
-        "SELECT id, shape_json, parent_view_json FROM meshes "
-        "WHERE given_name = 'sliced_view_actor'"
-    )
-    sliced_mesh_dict = sliced_mesh.to_pydict()
-    assert len(sliced_mesh_dict["id"]) == 1, (
-        f"Expected 1 sliced_view_actor mesh, got {len(sliced_mesh_dict['id'])}"
-    )
-    sliced_mesh_id = sliced_mesh_dict["id"][0]
+        # -- Verify sliced-view actor mesh --
+        sliced_mesh = engine.query(
+            "SELECT id, shape_json, parent_view_json FROM meshes "
+            "WHERE given_name = 'sliced_view_actor'"
+        )
+        sliced_mesh_dict = sliced_mesh.to_pydict()
+        assert len(sliced_mesh_dict["id"]) == 1, (
+            f"Expected 1 sliced_view_actor mesh, got {len(sliced_mesh_dict['id'])}"
+        )
+        sliced_mesh_id = sliced_mesh_dict["id"][0]
 
-    # parent_view_json for sliced view should have offset > 0 (starts at worker 1)
-    sliced_view = json.loads(sliced_mesh_dict["parent_view_json"][0])
-    assert sliced_view["slice"]["offset"] > 0, (
-        f"Expected sliced view offset > 0, got {sliced_view['slice']['offset']}"
-    )
-    # Sliced view should cover 2 workers
-    workers_label_idx = sliced_view["labels"].index("workers")
-    assert sliced_view["slice"]["sizes"][workers_label_idx] == 2, (
-        f"Expected sliced view size=2, got {sliced_view['slice']['sizes'][workers_label_idx]}"
-    )
+        # parent_view_json for sliced view should have offset > 0 (starts at worker 1)
+        sliced_view = json.loads(sliced_mesh_dict["parent_view_json"][0])
+        assert sliced_view["slice"]["offset"] > 0, (
+            f"Expected sliced view offset > 0, got {sliced_view['slice']['offset']}"
+        )
+        # Sliced view should cover 2 workers
+        workers_label_idx = sliced_view["labels"].index("workers")
+        assert sliced_view["slice"]["sizes"][workers_label_idx] == 2, (
+            f"Expected sliced view size=2, got {sliced_view['slice']['sizes'][workers_label_idx]}"
+        )
 
-    # Actors in the sliced mesh should have ranks 0, 1 (0-indexed within the slice)
-    sliced_actors_result = engine.query(
-        f"SELECT rank FROM actors WHERE mesh_id = {sliced_mesh_id} ORDER BY rank"
-    )
-    sliced_ranks = sliced_actors_result.to_pydict()["rank"]
-    assert sliced_ranks == [0, 1], f"Expected ranks [0, 1], got {sliced_ranks}"
-
-    # Clean up
-    hosts.shutdown().get()
+        # Actors in the sliced mesh should have ranks 0, 1 (0-indexed within the slice)
+        sliced_actors_result = engine.query(
+            f"SELECT rank FROM actors WHERE mesh_id = {sliced_mesh_id} ORDER BY rank"
+        )
+        sliced_ranks = sliced_actors_result.to_pydict()["rank"]
+        assert sliced_ranks == [0, 1], f"Expected ranks [0, 1], got {sliced_ranks}"
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 @pytest.mark.parametrize(
     "send_path, expected_view_labels",
     [
@@ -678,389 +687,437 @@ def test_sent_messages_table(
       - view_json: serialized ndslice::Region of the current view
       - shape_json: serialized ndslice::Shape (converted from the Region)
     """
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 2})
+        mesh_name = f"sent_msg_{send_path}_worker"
+        workers = worker_procs.spawn(mesh_name, WorkerActor)
+        workers.initialized.get()
 
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
-    mesh_name = f"sent_msg_{send_path}_worker"
-    workers = worker_procs.spawn(mesh_name, WorkerActor)
-    workers.initialized.get()
+        for _ in range(42):
+            if send_path == "call":
+                workers.ping.call().get()
+            elif send_path == "call_one":
+                workers.slice(workers=0).ping.call_one().get()
+            elif send_path == "broadcast":
+                workers.ping.broadcast()
+            elif send_path == "choose":
+                workers.ping.choose().get()
 
-    for _ in range(42):
+        # Verify the schema matches SentMessage struct in entity_dispatcher.rs
+        # (only check once, for the "call" path)
         if send_path == "call":
-            workers.ping.call().get()
-        elif send_path == "call_one":
-            workers.slice(workers=0).ping.call_one().get()
-        elif send_path == "broadcast":
-            workers.ping.broadcast()
-        elif send_path == "choose":
-            workers.ping.choose().get()
+            result = engine.query(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'sent_messages' ORDER BY ordinal_position"
+            )
+            column_names = result.to_pydict().get("column_name", [])
+            assert column_names == [
+                "id",
+                "timestamp_us",
+                "sender_actor_id",
+                "actor_mesh_id",
+                "view_json",
+                "shape_json",
+            ], f"Unexpected columns: {column_names}"
 
-    # Verify the schema matches SentMessage struct in entity_dispatcher.rs
-    # (only check once, for the "call" path)
-    if send_path == "call":
+        # Verify 42 sent_messages join with the correct mesh
+        joined = engine.query(
+            "SELECT sm.id FROM sent_messages sm LEFT JOIN meshes m "
+            f"ON sm.actor_mesh_id = m.id WHERE m.given_name = '{mesh_name}'"
+        )
+        joined_count = len(joined.to_pydict().get("id", []))
+        assert joined_count == 42, (
+            f"Expected 42 sent_messages via {send_path}, got {joined_count}"
+        )
+
+        # Verify view_json (ndslice Region) and shape_json (ndslice Shape).
+        # Region serializes as {"labels": [...], "slice": {"offset": ..., "sizes": [...], "strides": [...]}}.
+        # Shape is Region converted via Region::into::<Shape>, same serialization format.
+        mesh = engine.query(f"SELECT id FROM meshes WHERE given_name = '{mesh_name}'")
+        mesh_id = mesh.to_pydict()["id"][0]
+        msgs = engine.query(
+            f"SELECT view_json, shape_json FROM sent_messages "
+            f"WHERE actor_mesh_id = {mesh_id} LIMIT 1"
+        )
+        msgs_dict = msgs.to_pydict()
+        view = json.loads(msgs_dict["view_json"][0])
+        shape = json.loads(msgs_dict["shape_json"][0])
+
+        assert view["labels"] == expected_view_labels, (
+            f"Expected {send_path}() view labels={expected_view_labels}, got {view['labels']}"
+        )
+        assert shape["labels"] == expected_view_labels, (
+            f"Expected {send_path}() shape labels={expected_view_labels}, got {shape['labels']}"
+        )
+
+        # For paths that target the full mesh, verify workers size=2
+        if "workers" in expected_view_labels:
+            workers_idx = view["labels"].index("workers")
+            assert view["slice"]["sizes"][workers_idx] == 2, (
+                f"Expected {send_path}() view workers size=2, "
+                f"got {view['slice']['sizes'][workers_idx]}"
+            )
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_messages_table(cleanup_callbacks) -> None:
+    """Test that the messages table is populated when messages are received."""
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="msg_workers_procs"
+        )
+        workers = worker_procs.spawn("msg_test_worker", WorkerActor)
+        workers.initialized.get()
+
+        # Send several messages to trigger telemetry
+        for _ in range(5):
+            workers.ping.call().get()
+
+        # Verify schema
         result = engine.query(
             "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'sent_messages' ORDER BY ordinal_position"
+            "WHERE table_name = 'messages' ORDER BY ordinal_position"
         )
         column_names = result.to_pydict().get("column_name", [])
         assert column_names == [
             "id",
             "timestamp_us",
-            "sender_actor_id",
-            "actor_mesh_id",
-            "view_json",
-            "shape_json",
+            "from_actor_id",
+            "to_actor_id",
+            "endpoint",
+            "port_id",
         ], f"Unexpected columns: {column_names}"
 
-    # Verify 42 sent_messages join with the correct mesh
-    joined = engine.query(
-        "SELECT sm.id FROM sent_messages sm LEFT JOIN meshes m "
-        f"ON sm.actor_mesh_id = m.id WHERE m.given_name = '{mesh_name}'"
-    )
-    joined_count = len(joined.to_pydict().get("id", []))
-    assert joined_count == 42, (
-        f"Expected 42 sent_messages via {send_path}, got {joined_count}"
-    )
+        # Verify rows exist
+        result = engine.query("SELECT * FROM messages")
+        result_dict = result.to_pydict()
+        row_count = len(result_dict.get("id", []))
+        assert row_count > 0, f"Expected messages, got {row_count}"
 
-    # Verify view_json (ndslice Region) and shape_json (ndslice Shape).
-    # Region serializes as {"labels": [...], "slice": {"offset": ..., "sizes": [...], "strides": [...]}}.
-    # Shape is Region converted via Region::into::<Shape>, same serialization format.
-    mesh = engine.query(f"SELECT id FROM meshes WHERE given_name = '{mesh_name}'")
-    mesh_id = mesh.to_pydict()["id"][0]
-    msgs = engine.query(
-        f"SELECT view_json, shape_json FROM sent_messages "
-        f"WHERE actor_mesh_id = {mesh_id} LIMIT 1"
-    )
-    msgs_dict = msgs.to_pydict()
-    view = json.loads(msgs_dict["view_json"][0])
-    shape = json.loads(msgs_dict["shape_json"][0])
-
-    assert view["labels"] == expected_view_labels, (
-        f"Expected {send_path}() view labels={expected_view_labels}, got {view['labels']}"
-    )
-    assert shape["labels"] == expected_view_labels, (
-        f"Expected {send_path}() shape labels={expected_view_labels}, got {shape['labels']}"
-    )
-
-    # For paths that target the full mesh, verify workers size=2
-    if "workers" in expected_view_labels:
-        workers_idx = view["labels"].index("workers")
-        assert view["slice"]["sizes"][workers_idx] == 2, (
-            f"Expected {send_path}() view workers size=2, "
-            f"got {view['slice']['sizes'][workers_idx]}"
+        # Verify to_actor_id joins with actors table (receiver is a known actor)
+        joined = engine.query(
+            "SELECT m.id FROM messages m "
+            "JOIN actors a ON m.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'msg_test_worker'"
+        )
+        joined_count = len(joined.to_pydict().get("id", []))
+        # 5 casts x 2 workers = 10 messages received by msg_test_worker actors
+        assert joined_count == 10, (
+            f"Expected 10 messages received by msg_test_worker, got {joined_count}"
         )
 
-    # Clean up
-    hosts.shutdown().get()
-
 
 @pytest.mark.timeout(120)
-def test_messages_table(cleanup_callbacks) -> None:
-    """Test that the messages table is populated when messages are received."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="msg_workers_procs")
-    workers = worker_procs.spawn("msg_test_worker", WorkerActor)
+@isolate_in_subprocess
+def test_messages_endpoint(cleanup_callbacks) -> None:
+    """Test that the messages table endpoint column is populated with the method name."""
+    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10))
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="ep_workers_procs")
+    workers = worker_procs.spawn("ep_test_worker", WorkerActor)
     workers.initialized.get()
 
-    # Send several messages to trigger telemetry
-    for _ in range(5):
+    # Call the "ping" endpoint
+    for _ in range(3):
         workers.ping.call().get()
 
-    # Verify schema
+    # Query for messages with a non-null endpoint received by our workers
     result = engine.query(
-        "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'messages' ORDER BY ordinal_position"
-    )
-    column_names = result.to_pydict().get("column_name", [])
-    assert column_names == [
-        "id",
-        "timestamp_us",
-        "from_actor_id",
-        "to_actor_id",
-        "endpoint",
-        "port_id",
-    ], f"Unexpected columns: {column_names}"
-
-    # Verify rows exist
-    result = engine.query("SELECT * FROM messages")
-    result_dict = result.to_pydict()
-    row_count = len(result_dict.get("id", []))
-    assert row_count > 0, f"Expected messages, got {row_count}"
-
-    # Verify to_actor_id joins with actors table (receiver is a known actor)
-    joined = engine.query(
-        "SELECT m.id FROM messages m "
+        "SELECT m.endpoint FROM messages m "
         "JOIN actors a ON m.to_actor_id = a.id "
         "JOIN meshes mesh ON a.mesh_id = mesh.id "
-        "WHERE mesh.given_name = 'msg_test_worker'"
-    )
-    joined_count = len(joined.to_pydict().get("id", []))
-    # 5 casts x 2 workers = 10 messages received by msg_test_worker actors
-    assert joined_count == 10, (
-        f"Expected 10 messages received by msg_test_worker, got {joined_count}"
-    )
-
-    # Clean up
-    hosts.shutdown().get()
-
-
-@pytest.mark.timeout(120)
-def test_message_status_events_table(cleanup_callbacks) -> None:
-    """Test that message_status_events captures queued/active/complete transitions."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(
-        per_host={"workers": 1}, name="status_workers_procs"
-    )
-    workers = worker_procs.spawn("status_test_worker", WorkerActor)
-    workers.initialized.get()
-
-    workers.ping.call().get()
-
-    # Verify schema
-    result = engine.query(
-        "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'message_status_events' ORDER BY ordinal_position"
-    )
-    column_names = result.to_pydict().get("column_name", [])
-    assert column_names == [
-        "id",
-        "timestamp_us",
-        "message_id",
-        "status",
-    ], f"Unexpected columns: {column_names}"
-
-    # Verify status values include queued, active, complete
-    result = engine.query("SELECT DISTINCT status FROM message_status_events")
-    statuses = set(result.to_pydict().get("status", []))
-    expected_statuses = {"queued", "active", "complete"}
-    assert expected_statuses.issubset(statuses), (
-        f"Expected statuses {expected_statuses} to be subset of {statuses}"
-    )
-
-    # Verify at least one message has all 3 status events (queued, active, complete)
-    result = engine.query(
-        "SELECT message_id, COUNT(*) as cnt "
-        "FROM message_status_events "
-        "GROUP BY message_id "
-        "HAVING COUNT(*) = 3"
+        "WHERE mesh.given_name = 'ep_test_worker' AND m.endpoint IS NOT NULL"
     )
     result_dict = result.to_pydict()
-    assert len(result_dict.get("message_id", [])) > 0, (
-        "Expected at least one message with all 3 status events"
-    )
+    endpoints = result_dict.get("endpoint", [])
 
-    # Clean up
-    hosts.shutdown().get()
+    # 3 casts x 2 workers = 6 messages, all with endpoint "ping"
+    assert len(endpoints) == 6, (
+        f"Expected 6 messages with endpoint, got {len(endpoints)}"
+    )
+    assert all(ep == "ping" for ep in endpoints), (
+        f"Expected all endpoints to be 'ping', got {set(endpoints)}"
+    )
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_message_status_events_table(cleanup_callbacks) -> None:
+    """Test that message_status_events captures queued/active/complete transitions."""
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 1}, name="status_workers_procs"
+        )
+        workers = worker_procs.spawn("status_test_worker", WorkerActor)
+        workers.initialized.get()
+
+        workers.ping.call().get()
+
+        # Verify schema
+        result = engine.query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'message_status_events' ORDER BY ordinal_position"
+        )
+        column_names = result.to_pydict().get("column_name", [])
+        assert column_names == [
+            "id",
+            "timestamp_us",
+            "message_id",
+            "status",
+        ], f"Unexpected columns: {column_names}"
+
+        # Verify status values include queued, active, complete
+        result = engine.query("SELECT DISTINCT status FROM message_status_events")
+        statuses = set(result.to_pydict().get("status", []))
+        expected_statuses = {"queued", "active", "complete"}
+        assert expected_statuses.issubset(statuses), (
+            f"Expected statuses {expected_statuses} to be subset of {statuses}"
+        )
+
+        # Verify at least one message has all 3 status events (queued, active, complete)
+        result = engine.query(
+            "SELECT message_id, COUNT(*) as cnt "
+            "FROM message_status_events "
+            "GROUP BY message_id "
+            "HAVING COUNT(*) = 3"
+        )
+        result_dict = result.to_pydict()
+        assert len(result_dict.get("message_id", [])) > 0, (
+            "Expected at least one message with all 3 status events"
+        )
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 4}, name="sm_slice_procs")
 
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 4}, name="sm_slice_procs")
+        # Spawn actors on the full proc mesh
+        actors = worker_procs.spawn("sm_actors", WorkerActor)
+        actors.initialized.get()
 
-    # Spawn actors on the full proc mesh
-    actors = worker_procs.spawn("sm_actors", WorkerActor)
-    actors.initialized.get()
+        # Cast to the full actor mesh (all 4 workers)
+        actors.ping.call().get()
 
-    # Cast to the full actor mesh (all 4 workers)
-    actors.ping.call().get()
+        # Slice the actor mesh and cast to the slice (workers 1..3, i.e. 2 workers)
+        sliced_actors = actors.slice(workers=slice(1, 3))
+        sliced_actors.ping.call().get()
 
-    # Slice the actor mesh and cast to the slice (workers 1..3, i.e. 2 workers)
-    sliced_actors = actors.slice(workers=slice(1, 3))
-    sliced_actors.ping.call().get()
+        # Both casts target the same actor mesh, so actor_mesh_id is the same.
+        # The view_json distinguishes full vs sliced.
+        mesh = engine.query("SELECT id FROM meshes WHERE given_name = 'sm_actors'")
+        mesh_id = mesh.to_pydict()["id"][0]
 
-    # Both casts target the same actor mesh, so actor_mesh_id is the same.
-    # The view_json distinguishes full vs sliced.
-    mesh = engine.query("SELECT id FROM meshes WHERE given_name = 'sm_actors'")
-    mesh_id = mesh.to_pydict()["id"][0]
+        msgs = engine.query(
+            f"SELECT view_json, shape_json FROM sent_messages "
+            f"WHERE actor_mesh_id = {mesh_id} ORDER BY timestamp_us"
+        )
+        msgs_dict = msgs.to_pydict()
+        assert len(msgs_dict["view_json"]) == 2, (
+            f"Expected 2 sent messages, got {len(msgs_dict['view_json'])}"
+        )
 
-    msgs = engine.query(
-        f"SELECT view_json, shape_json FROM sent_messages "
-        f"WHERE actor_mesh_id = {mesh_id} ORDER BY timestamp_us"
-    )
-    msgs_dict = msgs.to_pydict()
-    assert len(msgs_dict["view_json"]) == 2, (
-        f"Expected 2 sent messages, got {len(msgs_dict['view_json'])}"
-    )
+        # First cast: full mesh (all 4 workers)
+        full_view = json.loads(msgs_dict["view_json"][0])
+        workers_idx = full_view["labels"].index("workers")
+        assert full_view["slice"]["sizes"][workers_idx] == 4, (
+            f"Expected full view size=4, got {full_view['slice']['sizes'][workers_idx]}"
+        )
 
-    # First cast: full mesh (all 4 workers)
-    full_view = json.loads(msgs_dict["view_json"][0])
-    workers_idx = full_view["labels"].index("workers")
-    assert full_view["slice"]["sizes"][workers_idx] == 4, (
-        f"Expected full view size=4, got {full_view['slice']['sizes'][workers_idx]}"
-    )
-
-    # Second cast: sliced mesh (2 workers, offset > 0)
-    sliced_view = json.loads(msgs_dict["view_json"][1])
-    workers_idx = sliced_view["labels"].index("workers")
-    assert sliced_view["slice"]["sizes"][workers_idx] == 2, (
-        f"Expected sliced view size=2, got {sliced_view['slice']['sizes'][workers_idx]}"
-    )
-    assert sliced_view["slice"]["offset"] > 0, (
-        f"Expected sliced view offset > 0, got {sliced_view['slice']['offset']}"
-    )
-
-    # Clean up
-    hosts.shutdown().get()
+        # Second cast: sliced mesh (2 workers, offset > 0)
+        sliced_view = json.loads(msgs_dict["view_json"][1])
+        workers_idx = sliced_view["labels"].index("workers")
+        assert sliced_view["slice"]["sizes"][workers_idx] == 2, (
+            f"Expected sliced view size=2, got {sliced_view['slice']['sizes'][workers_idx]}"
+        )
+        assert sliced_view["slice"]["offset"] > 0, (
+            f"Expected sliced view offset > 0, got {sliced_view['slice']['offset']}"
+        )
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
     """Test that sender_actor_id identifies the actor that initiated the cast,
     not the target actor, when one actor casts to another actor mesh."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="sender_test_procs")
-
-    # Spawn target actors on the full proc mesh
-    targets = worker_procs.spawn("target_workers", WorkerActor)
-    targets.initialized.get()
-
-    # Spawn a single sender actor on worker 0
-    sender = worker_procs.slice(workers=0).spawn("sender_actor", SenderActor)
-    sender.initialized.get()
-
-    # SenderActor casts to the target actor mesh from within its endpoint
-    sender.send_ping.call_one(targets).get()
-
-    # Find the sent_messages row targeting the "target_workers" mesh
-    target_mesh = engine.query(
-        "SELECT id FROM meshes WHERE given_name = 'target_workers'"
-    )
-    target_mesh_id = target_mesh.to_pydict()["id"][0]
-
-    msgs = engine.query(
-        f"SELECT sender_actor_id FROM sent_messages "
-        f"WHERE actor_mesh_id = {target_mesh_id}"
-    )
-    msgs_dict = msgs.to_pydict()
-    assert len(msgs_dict["sender_actor_id"]) > 0, (
-        "Expected at least one sent message targeting 'target_workers'"
-    )
-
-    # The sender_actor_id should match an actor in the "sender_actor" mesh,
-    # not an actor in the "target_workers" mesh.
-    sender_mesh = engine.query(
-        "SELECT id FROM meshes WHERE given_name = 'sender_actor'"
-    )
-    sender_mesh_id = sender_mesh.to_pydict()["id"][0]
-
-    sender_actors = engine.query(
-        f"SELECT id, display_name FROM actors WHERE mesh_id = {sender_mesh_id}"
-    )
-    sender_actor_ids = set(sender_actors.to_pydict()["id"])
-
-    target_actors = engine.query(
-        f"SELECT id FROM actors WHERE mesh_id = {target_mesh_id}"
-    )
-    target_actor_ids = set(target_actors.to_pydict()["id"])
-
-    for sender_id in msgs_dict["sender_actor_id"]:
-        assert sender_id in sender_actor_ids, (
-            f"sender_actor_id {sender_id} should be a sender actor, "
-            f"not a target actor. sender_actor_ids={sender_actor_ids}, "
-            f"target_actor_ids={target_actor_ids}"
-        )
-        assert sender_id not in target_actor_ids, (
-            f"sender_actor_id {sender_id} should NOT be a target actor"
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="sender_test_procs"
         )
 
-    # Clean up
-    hosts.shutdown().get()
+        # Spawn target actors on the full proc mesh
+        targets = worker_procs.spawn("target_workers", WorkerActor)
+        targets.initialized.get()
+
+        # Spawn a single sender actor on worker 0
+        sender = worker_procs.slice(workers=0).spawn("sender_actor", SenderActor)
+        sender.initialized.get()
+
+        # SenderActor casts to the target actor mesh from within its endpoint
+        sender.send_ping.call_one(targets).get()
+
+        # Find the sent_messages row targeting the "target_workers" mesh
+        target_mesh = engine.query(
+            "SELECT id FROM meshes WHERE given_name = 'target_workers'"
+        )
+        target_mesh_id = target_mesh.to_pydict()["id"][0]
+
+        msgs = engine.query(
+            f"SELECT sender_actor_id FROM sent_messages "
+            f"WHERE actor_mesh_id = {target_mesh_id}"
+        )
+        msgs_dict = msgs.to_pydict()
+        assert len(msgs_dict["sender_actor_id"]) > 0, (
+            "Expected at least one sent message targeting 'target_workers'"
+        )
+
+        # The sender_actor_id should match an actor in the "sender_actor" mesh,
+        # not an actor in the "target_workers" mesh.
+        sender_mesh = engine.query(
+            "SELECT id FROM meshes WHERE given_name = 'sender_actor'"
+        )
+        sender_mesh_id = sender_mesh.to_pydict()["id"][0]
+
+        sender_actors = engine.query(
+            f"SELECT id, display_name FROM actors WHERE mesh_id = {sender_mesh_id}"
+        )
+        sender_actor_ids = set(sender_actors.to_pydict()["id"])
+
+        target_actors = engine.query(
+            f"SELECT id FROM actors WHERE mesh_id = {target_mesh_id}"
+        )
+        target_actor_ids = set(target_actors.to_pydict()["id"])
+
+        for sender_id in msgs_dict["sender_actor_id"]:
+            assert sender_id in sender_actor_ids, (
+                f"sender_actor_id {sender_id} should be a sender actor, "
+                f"not a target actor. sender_actor_ids={sender_actor_ids}, "
+                f"target_actor_ids={target_actor_ids}"
+            )
+            assert sender_id not in target_actor_ids, (
+                f"sender_actor_id {sender_id} should NOT be a target actor"
+            )
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
     """Test that query still works after a user-spawned actor's proc mesh is stopped."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="stop_test_procs"
+        )
 
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="stop_test_procs")
+        # Spawn and initialize a user actor
+        workers = worker_procs.spawn("stop_test_worker", WorkerActor)
+        workers.initialized.get()
 
-    # Spawn and initialize a user actor
-    workers = worker_procs.spawn("stop_test_worker", WorkerActor)
-    workers.initialized.get()
+        # Send messages to the workers so the messages table is populated
+        # on the child processes (notify_message fires on the receiver's process).
+        workers.ping.call().get()
 
-    # Send messages to the workers so the messages table is populated
-    # on the child processes (notify_message fires on the receiver's process).
-    workers.ping.call().get()
+        # Verify the actor appears in the actors table before stopping
+        result = engine.query(
+            "SELECT full_name FROM actors WHERE full_name LIKE '%stop_test_worker%'"
+        )
+        pre_stop_count = len(result.to_pydict().get("full_name", []))
+        assert pre_stop_count > 0, "Expected stop_test_worker actors before stopping"
 
-    # Verify the actor appears in the actors table before stopping
-    result = engine.query(
-        "SELECT full_name FROM actors WHERE full_name LIKE '%stop_test_worker%'"
-    )
-    pre_stop_count = len(result.to_pydict().get("full_name", []))
-    assert pre_stop_count > 0, "Expected stop_test_worker actors before stopping"
+        # Verify received messages exist before stopping. The messages table is
+        # populated on the child process via notify_message, so these records
+        # come from the child scanner.
+        pre_stop_msgs = engine.query(
+            "SELECT m.id FROM messages m "
+            "JOIN actors a ON m.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'stop_test_worker'"
+        )
+        pre_stop_msg_count = len(pre_stop_msgs.to_pydict().get("id", []))
+        assert pre_stop_msg_count > 0, (
+            "Expected received messages for stop_test_worker before stopping"
+        )
 
-    # Verify received messages exist before stopping. The messages table is
-    # populated on the child process via notify_message, so these records
-    # come from the child scanner.
-    pre_stop_msgs = engine.query(
-        "SELECT m.id FROM messages m "
-        "JOIN actors a ON m.to_actor_id = a.id "
-        "JOIN meshes mesh ON a.mesh_id = mesh.id "
-        "WHERE mesh.given_name = 'stop_test_worker'"
-    )
-    pre_stop_msg_count = len(pre_stop_msgs.to_pydict().get("id", []))
-    assert pre_stop_msg_count > 0, (
-        "Expected received messages for stop_test_worker before stopping"
-    )
+        # Stop the proc mesh — this kills both user actors AND telemetry actors on it.
+        # The coordinator's _children list still references the dead telemetry actors.
+        worker_procs.stop().get()
 
-    # Stop the proc mesh — this kills both user actors AND telemetry actors on it.
-    # The coordinator's _children list still references the dead telemetry actors.
-    worker_procs.stop().get()
+        # Query should still work after the proc mesh is stopped.
+        # The distributed telemetry scan must handle stopped children gracefully.
+        result = engine.query("SELECT * FROM actors")
+        result_dict = result.to_pydict()
+        actor_count = len(result_dict.get("id", []))
+        assert actor_count > 0, (
+            f"Expected actors in query result after stopping proc mesh, got {actor_count}"
+        )
 
-    # Query should still work after the proc mesh is stopped.
-    # The distributed telemetry scan must handle stopped children gracefully.
-    result = engine.query("SELECT * FROM actors")
-    result_dict = result.to_pydict()
-    actor_count = len(result_dict.get("id", []))
-    assert actor_count > 0, (
-        f"Expected actors in query result after stopping proc mesh, got {actor_count}"
-    )
+        # The stopped actor should still appear in historical data since
+        # it's event was emitted from the root client process.
+        full_names = result_dict.get("full_name", [])
+        assert any("stop_test_worker" in name for name in full_names), (
+            f"Expected 'stop_test_worker' in actors after stop, got: {full_names}"
+        )
 
-    # The stopped actor should still appear in historical data since
-    # it's event was emitted from the root client process.
-    full_names = result_dict.get("full_name", [])
-    assert any("stop_test_worker" in name for name in full_names), (
-        f"Expected 'stop_test_worker' in actors after stop, got: {full_names}"
-    )
-
-    # Received messages are lost after stopping the proc mesh because
-    # notify_message fires on the receiver's process. The child scanner
-    # that held those records is gone.
-    post_stop_msgs = engine.query(
-        "SELECT m.id FROM messages m "
-        "JOIN actors a ON m.to_actor_id = a.id "
-        "JOIN meshes mesh ON a.mesh_id = mesh.id "
-        "WHERE mesh.given_name = 'stop_test_worker'"
-    )
-    post_stop_msg_count = len(post_stop_msgs.to_pydict().get("id", []))
-    assert post_stop_msg_count == 0, (
-        f"Expected 0 received messages after stopping proc mesh, "
-        f"got {post_stop_msg_count} (was {pre_stop_msg_count} before stop)"
-    )
-
-    # Clean up
-    hosts.shutdown().get()
+        # Received messages are lost after stopping the proc mesh because
+        # notify_message fires on the receiver's process. The child scanner
+        # that held those records is gone.
+        post_stop_msgs = engine.query(
+            "SELECT m.id FROM messages m "
+            "JOIN actors a ON m.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'stop_test_worker'"
+        )
+        post_stop_msg_count = len(post_stop_msgs.to_pydict().get("id", []))
+        assert post_stop_msg_count == 0, (
+            f"Expected 0 received messages after stopping proc mesh, "
+            f"got {post_stop_msg_count} (was {pre_stop_msg_count} before stop)"
+        )
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
     """Test that stopping a user ActorMesh does not affect telemetry queries.
 
@@ -1069,115 +1126,453 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
     ProcMesh remain alive, so all data (including process-local tables like
     messages) is still queryable.
     """
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="actor_stop_test_procs"
+        )
 
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(
-        per_host={"workers": 2}, name="actor_stop_test_procs"
+        # Spawn and initialize a user actor
+        workers = worker_procs.spawn("actor_stop_worker", WorkerActor)
+        workers.initialized.get()
+
+        # Send messages so the messages table is populated on child processes
+        workers.ping.call().get()
+
+        # Verify received messages exist before stopping
+        pre_stop_msgs = engine.query(
+            "SELECT m.id FROM messages m "
+            "JOIN actors a ON m.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'actor_stop_worker'"
+        )
+        pre_stop_msg_count = len(pre_stop_msgs.to_pydict().get("id", []))
+        assert pre_stop_msg_count > 0, (
+            "Expected received messages for actor_stop_worker before stopping"
+        )
+
+        # Stop only the user ActorMesh, not the ProcMesh.
+        # The telemetry actors on the ProcMesh remain alive.
+        cast(ActorMesh[WorkerActor], workers).stop().get()
+
+        # The actor_status_events table should show a Stopped status for the
+        # stopped actors. This event fires on the child process, and is
+        # queryable because the ProcMesh (and its telemetry actor) is still alive.
+        status_result = engine.query(
+            "SELECT ase.new_status FROM actor_status_events ase "
+            "JOIN actors a ON ase.actor_id = a.id "
+            "JOIN meshes m ON a.mesh_id = m.id "
+            "WHERE m.given_name = 'actor_stop_worker'"
+        )
+        statuses = set(status_result.to_pydict().get("new_status", []))
+        assert "Stopped" in statuses, (
+            f"Expected 'Stopped' in actor status events after ActorMesh.stop(), "
+            f"got: {statuses}"
+        )
+
+        # Query should still work — the telemetry children are unaffected
+        result = engine.query("SELECT * FROM actors")
+        result_dict = result.to_pydict()
+        actor_count = len(result_dict.get("id", []))
+        assert actor_count > 0, (
+            f"Expected actors after stopping user ActorMesh, got {actor_count}"
+        )
+
+        # The stopped actor should still appear in the actors table
+        full_names = result_dict.get("full_name", [])
+        assert any("actor_stop_worker" in name for name in full_names), (
+            f"Expected 'actor_stop_worker' in actors after stop, got: {full_names}"
+        )
+
+        # Unlike stopping a ProcMesh, received messages are NOT lost because
+        # the telemetry actors and their scanners are still alive.
+        post_stop_msgs = engine.query(
+            "SELECT m.id FROM messages m "
+            "JOIN actors a ON m.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'actor_stop_worker'"
+        )
+        post_stop_msg_count = len(post_stop_msgs.to_pydict().get("id", []))
+        assert post_stop_msg_count == pre_stop_msg_count, (
+            f"Expected {pre_stop_msg_count} received messages after stopping ActorMesh, "
+            f"got {post_stop_msg_count} (data should be preserved)"
+        )
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
+    """Store a py-spy dump via actor endpoint, query it back via SQL."""
+    engine, _ = start_telemetry(include_dashboard=False)
+
+    pyspy_json = json.dumps(
+        {
+            "Ok": {
+                "pid": 1234,
+                "binary": "python3",
+                "stack_traces": [
+                    {
+                        "pid": 1234,
+                        "thread_id": 1,
+                        "thread_name": "MainThread",
+                        "os_thread_id": 100,
+                        "active": True,
+                        "owns_gil": True,
+                        "frames": [
+                            {
+                                "name": "stalling_fn",
+                                "filename": "app.py",
+                                "module": "app",
+                                "short_filename": "app.py",
+                                "line": 10,
+                                "locals": [
+                                    {
+                                        "name": "x",
+                                        "addr": 100,
+                                        "arg": True,
+                                        "repr": "42",
+                                    },
+                                    {
+                                        "name": "y",
+                                        "addr": 200,
+                                        "arg": False,
+                                        "repr": None,
+                                    },
+                                ],
+                                "is_entry": False,
+                            },
+                            {
+                                "name": "main",
+                                "filename": "app.py",
+                                "module": "app",
+                                "short_filename": "app.py",
+                                "line": 5,
+                                "locals": [
+                                    {
+                                        "name": "z",
+                                        "addr": 300,
+                                        "arg": True,
+                                        "repr": "'hello'",
+                                    },
+                                ],
+                                "is_entry": True,
+                            },
+                        ],
+                    }
+                ],
+                "warnings": [],
+            }
+        }
     )
 
-    # Spawn and initialize a user actor
-    workers = worker_procs.spawn("actor_stop_worker", WorkerActor)
-    workers.initialized.get()
+    engine._actor.store_pyspy_dump.call("dump-1", "proc[0]", pyspy_json).get()
 
-    # Send messages so the messages table is populated on child processes
-    workers.ping.call().get()
-
-    # Verify received messages exist before stopping
-    pre_stop_msgs = engine.query(
-        "SELECT m.id FROM messages m "
-        "JOIN actors a ON m.to_actor_id = a.id "
-        "JOIN meshes mesh ON a.mesh_id = mesh.id "
-        "WHERE mesh.given_name = 'actor_stop_worker'"
+    result = engine.query(
+        "SELECT name, line FROM pyspy_frames "
+        "WHERE dump_id = 'dump-1' ORDER BY frame_depth"
     )
-    pre_stop_msg_count = len(pre_stop_msgs.to_pydict().get("id", []))
-    assert pre_stop_msg_count > 0, (
-        "Expected received messages for actor_stop_worker before stopping"
-    )
-
-    # Stop only the user ActorMesh, not the ProcMesh.
-    # The telemetry actors on the ProcMesh remain alive.
-    cast(ActorMesh[WorkerActor], workers).stop().get()
-
-    # The actor_status_events table should show a Stopped status for the
-    # stopped actors. This event fires on the child process, and is
-    # queryable because the ProcMesh (and its telemetry actor) is still alive.
-    status_result = engine.query(
-        "SELECT ase.new_status FROM actor_status_events ase "
-        "JOIN actors a ON ase.actor_id = a.id "
-        "JOIN meshes m ON a.mesh_id = m.id "
-        "WHERE m.given_name = 'actor_stop_worker'"
-    )
-    statuses = set(status_result.to_pydict().get("new_status", []))
-    assert "Stopped" in statuses, (
-        f"Expected 'Stopped' in actor status events after ActorMesh.stop(), "
-        f"got: {statuses}"
-    )
-
-    # Query should still work — the telemetry children are unaffected
-    result = engine.query("SELECT * FROM actors")
     result_dict = result.to_pydict()
-    actor_count = len(result_dict.get("id", []))
-    assert actor_count > 0, (
-        f"Expected actors after stopping user ActorMesh, got {actor_count}"
-    )
+    assert len(result_dict["name"]) == 2
+    assert result_dict["name"] == ["stalling_fn", "main"]
 
-    # The stopped actor should still appear in the actors table
-    full_names = result_dict.get("full_name", [])
-    assert any("actor_stop_worker" in name for name in full_names), (
-        f"Expected 'actor_stop_worker' in actors after stop, got: {full_names}"
+    # Query local variables
+    locals_result = engine.query(
+        "SELECT name, addr, arg, repr, frame_depth FROM pyspy_local_variables "
+        "WHERE dump_id = 'dump-1' ORDER BY frame_depth, name"
     )
+    locals_dict = locals_result.to_pydict()
+    assert len(locals_dict["name"]) == 3
+    assert locals_dict["name"] == ["x", "y", "z"]
+    assert locals_dict["addr"] == [100, 200, 300]
+    assert locals_dict["arg"] == [True, False, True]
+    assert locals_dict["repr"] == ["42", None, "'hello'"]
+    assert locals_dict["frame_depth"] == [0, 0, 1]
 
-    # Unlike stopping a ProcMesh, received messages are NOT lost because
-    # the telemetry actors and their scanners are still alive.
-    post_stop_msgs = engine.query(
-        "SELECT m.id FROM messages m "
-        "JOIN actors a ON m.to_actor_id = a.id "
-        "JOIN meshes mesh ON a.mesh_id = mesh.id "
-        "WHERE mesh.given_name = 'actor_stop_worker'"
-    )
-    post_stop_msg_count = len(post_stop_msgs.to_pydict().get("id", []))
-    assert post_stop_msg_count == pre_stop_msg_count, (
-        f"Expected {pre_stop_msg_count} received messages after stopping ActorMesh, "
-        f"got {post_stop_msg_count} (data should be preserved)"
-    )
 
-    # Clean up
-    hosts.shutdown().get()
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
+    """py-spy tables are visible in information_schema."""
+    engine, _ = start_telemetry(include_dashboard=False)
+    result = engine.query(
+        "SELECT table_name FROM information_schema.tables ORDER BY table_name"
+    )
+    table_names = result.to_pydict().get("table_name", [])
+    assert "pyspy_dumps" in table_names
+    assert "pyspy_stack_traces" in table_names
+    assert "pyspy_frames" in table_names
+    assert "pyspy_local_variables" in table_names
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
+    """store_pyspy_dump stores data with a child proc_ref."""
+    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10))
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="pyspy_route_procs")
+    workers = worker_procs.spawn("pyspy_route_worker", WorkerActor)
+    workers.initialized.get()
+
+    coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
+
+    # Discover child proc_ids by querying ProcAgent actors from the actors table.
+    # ProcAgent full_name = "{proc_id},proc_agent[0]"
+    proc_agents = engine.query(
+        "SELECT full_name FROM actors WHERE full_name LIKE '%,proc_agent[0]'"
+    )
+    child_proc_refs = [
+        row.rsplit(",proc_agent[0]", 1)[0]
+        for row in proc_agents.to_pydict()["full_name"]
+        if row.rsplit(",proc_agent[0]", 1)[0] != coordinator_proc_id
+    ]
+    assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"
+    child_proc_ref = child_proc_refs[0]
+
+    pyspy_json = json.dumps(
+        {
+            "Ok": {
+                "pid": 9999,
+                "binary": "python3",
+                "stack_traces": [
+                    {
+                        "pid": 9999,
+                        "thread_id": 1,
+                        "thread_name": "MainThread",
+                        "os_thread_id": 200,
+                        "active": True,
+                        "owns_gil": True,
+                        "frames": [
+                            {
+                                "name": "child_fn",
+                                "filename": "child.py",
+                                "module": "child",
+                                "short_filename": "child.py",
+                                "line": 42,
+                                "locals": [],
+                                "is_entry": True,
+                            }
+                        ],
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+    )
+
+    # Store a pyspy dump targeting the child proc_ref on the root actor.
+    result = engine._actor.store_pyspy_dump.call_one(
+        "child-dump-1", child_proc_ref, pyspy_json
+    ).get()
+    assert result
+
+    # The dump should be queryable via distributed scan.
+    frames = engine.query(
+        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'child-dump-1'"
+    )
+    frames_dict = frames.to_pydict()
+    assert frames_dict["name"] == ["child_fn"]
+    assert frames_dict["line"] == [42]
+
+    # Verify the dump's proc_ref is stored correctly.
+    dumps = engine.query(
+        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'child-dump-1'"
+    )
+    assert dumps.to_pydict()["proc_ref"] == [child_proc_ref]
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
+    """store_pyspy_dump stores data even for unknown proc_ref values."""
+    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10))
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
+    worker_procs = hosts.spawn_procs(
+        per_host={"workers": 2}, name="pyspy_fallback_procs"
+    )
+    workers = worker_procs.spawn("pyspy_fallback_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Trigger child spawning.
+    engine.query("SELECT COUNT(*) AS cnt FROM actors")
+
+    pyspy_json = json.dumps(
+        {
+            "Ok": {
+                "pid": 7777,
+                "binary": "python3",
+                "stack_traces": [
+                    {
+                        "pid": 7777,
+                        "thread_id": 1,
+                        "thread_name": "MainThread",
+                        "os_thread_id": 300,
+                        "active": True,
+                        "owns_gil": False,
+                        "frames": [
+                            {
+                                "name": "orphan_fn",
+                                "filename": "orphan.py",
+                                "module": "orphan",
+                                "short_filename": "orphan.py",
+                                "line": 99,
+                                "locals": [],
+                                "is_entry": True,
+                            }
+                        ],
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+    )
+
+    # Store with a proc_ref that doesn't exist in the tree.
+    result = engine._actor.store_pyspy_dump.call_one(
+        "orphan-dump-1", "nonexistent.proc[999]", pyspy_json
+    ).get()
+    assert result
+
+    # The dump should be queryable (stored on root).
+    frames = engine.query(
+        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'orphan-dump-1'"
+    )
+    frames_dict = frames.to_pydict()
+    assert frames_dict["name"] == ["orphan_fn"]
+    assert frames_dict["line"] == [99]
+
+    # Verify proc_ref is preserved even though it didn't match any proc.
+    dumps = engine.query(
+        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'orphan-dump-1'"
+    )
+    assert dumps.to_pydict()["proc_ref"] == ["nonexistent.proc[999]"]
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_json_columns_are_valid_json() -> None:
+    """Test that all view_json and shape_json columns contain valid JSON."""
+    engine, _ = start_telemetry(batch_size=10)
+
+    # Spawn actors and send messages to populate all tables that have JSON columns:
+    # - meshes: shape_json, parent_view_json
+    # - sent_messages: view_json, shape_json
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="json_test_procs"
+        )
+        workers = worker_procs.spawn("json_test_worker", WorkerActor)
+        workers.initialized.get()
+
+        # Send messages to populate sent_messages
+        workers.ping.call().get()
+
+        # -- Verify meshes.shape_json --
+        result = engine.query("SELECT given_name, shape_json FROM meshes")
+        result_dict = result.to_pydict()
+        for name, shape in zip(result_dict["given_name"], result_dict["shape_json"]):
+            assert shape is not None and shape != "", (
+                f"meshes.shape_json is empty for mesh '{name}'"
+            )
+            try:
+                json.loads(shape)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"meshes.shape_json is not valid JSON for mesh '{name}': {shape!r}"
+                ) from e
+
+        # -- Verify meshes.parent_view_json (nullable) --
+        result = engine.query(
+            "SELECT given_name, parent_view_json FROM meshes "
+            "WHERE parent_view_json IS NOT NULL"
+        )
+        result_dict = result.to_pydict()
+        for name, view in zip(
+            result_dict["given_name"], result_dict["parent_view_json"]
+        ):
+            try:
+                json.loads(view)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"meshes.parent_view_json is not valid JSON for mesh '{name}': {view!r}"
+                ) from e
+
+        # -- Verify sent_messages.view_json --
+        result = engine.query("SELECT id, view_json FROM sent_messages")
+        result_dict = result.to_pydict()
+        assert len(result_dict["id"]) > 0, "Expected sent_messages rows"
+        for msg_id, view in zip(result_dict["id"], result_dict["view_json"]):
+            assert view is not None and view != "", (
+                f"sent_messages.view_json is empty for id={msg_id}"
+            )
+            try:
+                json.loads(view)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"sent_messages.view_json is not valid JSON for id={msg_id}: {view!r}"
+                ) from e
+
+        # -- Verify sent_messages.shape_json --
+        result = engine.query("SELECT id, shape_json FROM sent_messages")
+        result_dict = result.to_pydict()
+        for msg_id, shape in zip(result_dict["id"], result_dict["shape_json"]):
+            assert shape is not None and shape != "", (
+                f"sent_messages.shape_json is empty for id={msg_id}"
+            )
+            try:
+                json.loads(shape)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"sent_messages.shape_json is not valid JSON for id={msg_id}: {shape!r}"
+                ) from e
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_per_table_row_retention(cleanup_callbacks) -> None:
     """Test that time-based retention deletes old rows from message tables."""
     import time
 
     # Use a 1-second retention window so rows expire quickly.
-    engine = start_telemetry(batch_size=2, retention_secs=1, include_dashboard=False)
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(
+            TelemetryConfig(batch_size=2, retention_secs=1)
+        ),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 8}, name="worker_procs")
+        workers = worker_procs.spawn("workers", WorkerActor)
+        workers.initialized.get()
 
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 8}, name="worker_procs")
-    workers = worker_procs.spawn("workers", WorkerActor)
-    workers.initialized.get()
+        for _ in range(50):
+            workers.ping.call().get()
 
-    for _ in range(50):
-        workers.ping.call().get()
+        # Verify events exist before retention kicks in.
+        before = engine.query("SELECT COUNT(*) AS cnt FROM message_status_events")
+        before_count = before.to_pydict()["cnt"][0]
+        assert before_count > 0, "Expected message_status_events rows before retention"
 
-    # Verify events exist before retention kicks in.
-    before = engine.query("SELECT COUNT(*) AS cnt FROM message_status_events")
-    before_count = before.to_pydict()["cnt"][0]
-    assert before_count > 0, "Expected message_status_events rows before retention"
+        # Wait for the 1-second retention window to expire, then query again.
+        # The query triggers flush(), which applies retention and trims old rows.
+        time.sleep(2)
 
-    # Wait for the 1-second retention window to expire, then query again.
-    # The query triggers flush(), which applies retention and trims old rows.
-    time.sleep(2)
-
-    after = engine.query("SELECT COUNT(*) AS cnt FROM message_status_events")
-    after_count = after.to_pydict()["cnt"][0]
-    assert after_count < before_count, (
-        f"Expected fewer rows after retention, got {after_count} vs {before_count}"
-    )
-
-    # Clean up
-    hosts.shutdown().get()
+        after = engine.query("SELECT COUNT(*) AS cnt FROM message_status_events")
+        after_count = after.to_pydict()["cnt"][0]
+        assert after_count < before_count, (
+            f"Expected fewer rows after retention, got {after_count} vs {before_count}"
+        )

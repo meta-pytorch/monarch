@@ -39,7 +39,8 @@ import argparse
 import asyncio
 import time
 
-from monarch.actor import Actor, endpoint, this_host
+from monarch.actor import Actor, endpoint
+from monarch.job import ProcessJob
 
 
 # -- Work helpers with named frames for py-spy visibility ----------
@@ -128,9 +129,13 @@ def parse_args() -> argparse.Namespace:
 
 async def async_main() -> None:
     args = parse_args()
-    host = this_host()
 
-    admin_url = await host._spawn_admin()
+    job = ProcessJob({"hosts": 1}).enable_admin()
+    state = job.state(cached_path=None)
+    host = state.hosts
+
+    admin_url = state.admin_url
+    assert admin_url is not None
     mtls_flags = (
         "--cacert /var/facebook/rootcanal/ca.pem "
         "--cert /var/facebook/x509_identities/server.pem "
@@ -147,9 +152,11 @@ async def async_main() -> None:
     print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
     print("\nVerify with:")
     print("  buck2 run fbcode//monarch/python/examples:verify_pyspy -- \\")
-    print(f"    --admin-url {admin_url} --mode {args.mode} --samples 10")
     if mtls_flags:
+        print(f"    --admin-url {admin_url} --mode {args.mode} --samples 10 \\")
         print(f"    {mtls_flags.strip()}")
+    else:
+        print(f"    --admin-url {admin_url} --mode {args.mode} --samples 10")
     print("\nPress Ctrl+C to stop.\n", flush=True)
 
     # Spawn worker procs. The actor name pyspy_worker lets the

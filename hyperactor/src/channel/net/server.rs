@@ -169,6 +169,26 @@ pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
 
                         let recoverable =
                             matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));
+
+                        match &result {
+                            Ok(()) => {
+                                tracing::info!(
+                                    %dest,
+                                    %session_id,
+                                    "recv_connected returned EOF, awaiting reconnect"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::info!(
+                                    %dest,
+                                    %session_id,
+                                    error = %e,
+                                    recoverable,
+                                    "recv_connected returned error"
+                                );
+                            }
+                        }
+
                         session = connected.release();
 
                         if recoverable {
