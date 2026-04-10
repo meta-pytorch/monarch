@@ -1,0 +1,84 @@
+name: Set Matrix
+
+on:
+  workflow_call:
+    inputs:
+      runner-rocm:
+        description: 'Override default ROCm runner label'
+        required: false
+        type: string
+        default: linux.rocm.gpu.gfx942.1.meta-pytorch
+      runner-cuda:
+        description: 'Override default CUDA runner label'
+        required: false
+        type: string
+        default: linux.g5.4xlarge.nvidia.gpu
+    outputs:
+      test-matrix:
+        description: Test matrix (py3.10 only)
+        value: ${{ jobs.set.outputs.test-matrix }}
+      build-matrix:
+        description: Build matrix (includes all python versions)
+        value: ${{ jobs.set.outputs.build-matrix }}
+
+jobs:
+  set:
+    runs-on: ubuntu-latest
+    outputs:
+      test-matrix: ${{ steps.set.outputs.test-matrix }}
+      build-matrix: ${{ steps.set.outputs.build-matrix }}
+    env:
+      IS_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads') }}
+      IS_SCHEDULE: ${{ github.event_name == 'schedule' }}
+      IS_ROCM_TAG: ${{ startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
+      HAS_ROCM_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ciflow/rocm') }}
+
+    steps:
+      - id: set
+        run: |
+          set -euox pipefail
+
+          # Define test matrices (py3.10 only)
+          CUDA='{"name": "cuda", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "12.8", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
+          ROCM_71='{"name": "rocm7.1", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.1", "docker-image": "pytorch/manylinux2_28-builder:rocm7.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
+          ROCM_72='{"name": "rocm7.2", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.2", "docker-image": "pytorch/manylinux2_28-builder:rocm7.2", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
+
+          # Define build matrices (includes python-version)
+          CUDA_PY310='{"name": "cuda", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
+          CUDA_PY312='{"name": "cuda", "python-version": "3.12", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
+          ROCM_71_PY310='{"name": "rocm7.1", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.1", "torch-spec": "torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
+          ROCM_72_PY310='{"name": "rocm7.2", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.2", "torch-spec": "torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
+
+          # Build matrix logic:
+          # - ROCm tag: ROCm only (CUDA already built in PR run)
+          # - Push/schedule: CUDA + ROCm
+          # - PR with ciflow/rocm label: CUDA only (ROCm will be built by tag run)
+          # - PR without label: CUDA + ROCm (catch build failures early)
+          if [[ "$IS_ROCM_TAG" == "true" ]]; then
+            BUILD_MATRIX="[$ROCM_71_PY310, $ROCM_72_PY310]"
+          elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
+            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312, $ROCM_71_PY310, $ROCM_72_PY310]"
+          elif [[ "$HAS_ROCM_LABEL" == "true" ]]; then
+            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312]"
+          else
+            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312, $ROCM_71_PY310, $ROCM_72_PY310]"
+          fi
+
+          # Test matrix: ROCm tested only on push/schedule/tag
+          if [[ "$IS_ROCM_TAG" == "true" ]]; then
+            TEST_MATRIX="[$ROCM_71, $ROCM_72]"
+          elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
+            TEST_MATRIX="[$CUDA, $ROCM_71, $ROCM_72]"
+          else
+            TEST_MATRIX="[$CUDA]"
+          fi
+
+          # Export matrices to job outputs
+          {
+            echo 'test-matrix<<EOF'
+            echo "{\"include\": $TEST_MATRIX}"
+            echo 'EOF'
+            echo 'build-matrix<<EOF'
+            echo "{\"include\": $BUILD_MATRIX}"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
