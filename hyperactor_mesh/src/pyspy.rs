@@ -13,7 +13,10 @@
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::Context;
+use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::RefClient;
+use hyperactor::reference as hyperactor_reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -24,7 +27,15 @@ use crate::config::PYSPY_BIN;
 /// Result of a py-spy stack dump request.
 ///
 /// See PS-2, PS-4 in `introspect` module doc.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Named,
+    schemars::JsonSchema
+)]
 pub enum PySpyResult {
     /// Successful stack dump with structured traces.
     Ok {
@@ -59,7 +70,7 @@ pub enum PySpyResult {
 wirevalue::register_type!(PySpyResult);
 
 /// A single thread's stack trace from py-spy `--json` output.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PySpyStackTrace {
     /// OS process ID that owns this thread.
     pub pid: i32,
@@ -78,7 +89,7 @@ pub struct PySpyStackTrace {
 }
 
 /// A single frame in a py-spy stack trace.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PySpyFrame {
     /// Function or method name.
     pub name: String,
@@ -97,7 +108,7 @@ pub struct PySpyFrame {
 }
 
 /// A local variable captured in a py-spy frame.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PySpyLocalVariable {
     /// Variable name.
     pub name: String,
@@ -123,6 +134,23 @@ pub struct PySpyOpts {
     /// target process (`--nonblocking`). Enables retry logic (PS-10).
     pub nonblocking: bool,
 }
+
+/// Request a py-spy stack dump from this process.
+///
+/// Both ProcAgent and HostAgent handle this message. The handler
+/// delegates to [`PySpyWorker::spawn_and_forward`] which runs py-spy
+/// against `std::process::id()`.
+///
+/// See PS-1 in `introspect` module doc.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct PySpyDump {
+    /// Capture options (threads, native frames, nonblocking mode).
+    pub opts: PySpyOpts,
+    /// Reply port for the result.
+    #[reply]
+    pub result: hyperactor_reference::OncePortRef<PySpyResult>,
+}
+wirevalue::register_type!(PySpyDump);
 
 /// Runs py-spy against the current process.
 ///
@@ -186,6 +214,39 @@ wirevalue::register_type!(RunPySpyDump);
 pub struct PySpyWorker;
 
 impl Actor for PySpyWorker {}
+
+impl PySpyWorker {
+    /// Spawn a PySpyWorker, forward the py-spy request, and let
+    /// the worker reply directly to the caller. On spawn failure,
+    /// sends a `Failed` result back via `reply_port`.
+    pub(crate) fn spawn_and_forward(
+        cx: &impl hyperactor::context::Actor,
+        opts: PySpyOpts,
+        reply_port: hyperactor::reference::OncePortRef<PySpyResult>,
+    ) -> Result<(), anyhow::Error> {
+        let worker = match Self.spawn(cx) {
+            Ok(handle) => handle,
+            Err(e) => {
+                let fail = PySpyResult::Failed {
+                    pid: std::process::id(),
+                    binary: String::new(),
+                    exit_code: None,
+                    stderr: format!("failed to spawn pyspy worker: {}", e),
+                };
+                reply_port.send(cx, fail)?;
+                return Ok(());
+            }
+        };
+        // Once reply_port moves into RunPySpyDump, we lose it.
+        // MailboxSenderError does not carry the unsent message, so
+        // on send failure the caller will observe a timeout rather
+        // than an explicit Failed reply.
+        if let Err(e) = worker.send(cx, RunPySpyDump { opts, reply_port }) {
+            tracing::error!("failed to send to pyspy worker: {}", e);
+        }
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl Handler<RunPySpyDump> for PySpyWorker {
@@ -283,6 +344,49 @@ fn is_unsupported_native_all(result: &PySpyResult) -> bool {
     )
 }
 
+/// Result of a single spawn → collect execution step.
+enum ExecOnce {
+    /// py-spy produced a result (success or failure).
+    Result(PySpyResult),
+    /// The binary was not found (NotFound from spawn).
+    NotFound,
+}
+
+/// Spawn the py-spy binary once, collect output, and return the
+/// result. Factored out of `try_exec` so both the normal attempt
+/// path and the PS-11 native-all downgrade path share one
+/// implementation of deadline check → spawn → collect.
+async fn exec_once(
+    binary: &str,
+    pid: u32,
+    opts: &PySpyOpts,
+    deadline: tokio::time::Instant,
+    timeout: std::time::Duration,
+) -> ExecOnce {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if remaining.is_zero() {
+        return ExecOnce::Result(PySpyResult::Failed {
+            pid,
+            binary: binary.to_string(),
+            exit_code: None,
+            stderr: format!("py-spy subprocess timed out after {}s", timeout.as_secs()),
+        });
+    }
+    let child = match build_command(binary, pid, opts).spawn() {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ExecOnce::NotFound,
+        Err(e) => {
+            return ExecOnce::Result(PySpyResult::Failed {
+                pid,
+                binary: binary.to_string(),
+                exit_code: None,
+                stderr: format!("failed to execute: {}", e),
+            });
+        }
+    };
+    ExecOnce::Result(collect_with_timeout(child, pid, binary, remaining).await)
+}
+
 /// Try to execute py-spy with the given binary path. Returns `None`
 /// if the binary was not found (NotFound error), allowing the caller
 /// to try the next candidate.
@@ -293,8 +397,9 @@ fn is_unsupported_native_all(result: &PySpyResult) -> bool {
 /// never exceeds the caller's timeout budget (PS-5).
 ///
 /// If `native_all` is requested but the py-spy binary does not
-/// support `--native-all` (exit code 2), the flag is dropped and
-/// the command is retried automatically (PS-11).
+/// support `--native-all` (exit code 2), the flag is dropped and the
+/// command is retried immediately within the same attempt (PS-11a
+/// through PS-11e).
 async fn try_exec(
     binary: &str,
     pid: u32,
@@ -310,64 +415,32 @@ async fn try_exec(
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Some(PySpyResult::Failed {
-                pid,
-                binary: binary.to_string(),
-                exit_code: None,
-                stderr: format!("py-spy subprocess timed out after {}s", timeout.as_secs()),
-            });
-        }
-        let child = match build_command(binary, pid, &effective_opts).spawn() {
-            Ok(child) => child,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(e) => {
-                return Some(PySpyResult::Failed {
-                    pid,
-                    binary: binary.to_string(),
-                    exit_code: None,
-                    stderr: format!("failed to execute: {}", e),
-                });
-            }
+        let mut result = match exec_once(binary, pid, &effective_opts, deadline, timeout).await {
+            ExecOnce::NotFound => return None,
+            ExecOnce::Result(r) => r,
         };
-        let result = collect_with_timeout(child, pid, binary, remaining).await;
+        // PS-11a: py-spy too old for --native-all; downgrade and
+        // retry immediately within the same attempt (PS-11b: no
+        // backoff, no retry slot consumed).
+        if is_unsupported_native_all(&result) && effective_opts.native_all {
+            // PS-11e: sticky downgrade — later outer retries keep
+            // native_all = false.
+            effective_opts.native_all = false;
+            result = match exec_once(binary, pid, &effective_opts, deadline, timeout).await {
+                ExecOnce::NotFound => return None,
+                ExecOnce::Result(r) => r,
+            };
+            // PS-11c: inject warning on successful downgraded result.
+            if let PySpyResult::Ok { warnings, .. } = &mut result {
+                warnings.push(
+                    "--native-all unsupported by this py-spy; fell back to --native".to_string(),
+                );
+            }
+            // PS-11d: if the downgraded retry also failed, fall
+            // through to the normal last_result path below.
+        }
         match &result {
             PySpyResult::Ok { .. } => return Some(result),
-            _ if is_unsupported_native_all(&result) && effective_opts.native_all => {
-                // PS-11: py-spy too old for --native-all; downgrade and
-                // retry immediately (does not consume a nonblocking retry).
-                effective_opts.native_all = false;
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    return Some(result);
-                }
-                let child = match build_command(binary, pid, &effective_opts).spawn() {
-                    Ok(child) => child,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-                    Err(e) => {
-                        return Some(PySpyResult::Failed {
-                            pid,
-                            binary: binary.to_string(),
-                            exit_code: None,
-                            stderr: format!("failed to execute: {}", e),
-                        });
-                    }
-                };
-                let mut retry_result = collect_with_timeout(child, pid, binary, remaining).await;
-                if let PySpyResult::Ok { warnings, .. } = &mut retry_result {
-                    warnings.push(
-                        "--native-all unsupported by this py-spy; fell back to --native"
-                            .to_string(),
-                    );
-                }
-                match &retry_result {
-                    PySpyResult::Ok { .. } => return Some(retry_result),
-                    _ => {
-                        last_result = Some(retry_result);
-                    }
-                }
-            }
             _ => {
                 last_result = Some(result);
             }
@@ -718,6 +791,162 @@ mod tests {
                 assert!(exit_code.is_some());
             }
             other => panic!("expected Failed, got {:?}", other),
+        }
+    }
+
+    /// Write a fake py-spy shell script to a temp file, make it
+    /// executable, and return the path. The script logs each
+    /// invocation's argv to `<script>.log`.
+    ///
+    /// Returns a `TempPath` (not `NamedTempFile`) so the write fd is
+    /// closed before exec — Linux returns ETXTBSY if a file with an
+    /// open write fd is executed.
+    fn write_fake_pyspy(script_body: &str) -> tempfile::TempPath {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut f = tempfile::NamedTempFile::new().expect("create temp file");
+        write!(f, "#!/bin/sh\n{script_body}").expect("write script");
+        f.as_file().sync_all().expect("sync");
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x");
+        f.into_temp_path()
+    }
+
+    /// Read the argv log written by the fake script. Each line is one
+    /// invocation's `$@`.
+    fn read_log(script_path: &std::path::Path) -> Vec<String> {
+        let log_path = format!("{}.log", script_path.display());
+        match std::fs::read_to_string(&log_path) {
+            Ok(contents) => contents.lines().map(String::from).collect(),
+            Err(_) => vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn native_all_downgrade_succeeds() {
+        // PS-11a, PS-11b, PS-11c: unsupported --native-all triggers
+        // immediate downgrade in the same attempt, and the successful
+        // result carries the fallback warning.
+        let script = write_fake_pyspy(
+            r#"
+echo "$@" >> "$0.log"
+for arg in "$@"; do
+    if [ "$arg" = "--native-all" ]; then
+        echo "unrecognized option --native-all" >&2
+        exit 2
+    fi
+done
+echo "[]"
+exit 0
+"#,
+        );
+        let opts = PySpyOpts {
+            threads: false,
+            native: true,
+            native_all: true,
+            nonblocking: false,
+        };
+        let result = try_exec(
+            script.to_str().unwrap(),
+            1,
+            &opts,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        // Must succeed with the downgraded result.
+        let result = result.expect("expected Some");
+        match &result {
+            PySpyResult::Ok { warnings, .. } => {
+                assert!(
+                    warnings.iter().any(|w| w.contains("fell back to --native")),
+                    "PS-11c: expected fallback warning, got: {warnings:?}"
+                );
+            }
+            other => panic!("expected Ok, got: {other:?}"),
+        }
+        // Check invocation log.
+        let log = read_log(&script);
+        assert_eq!(
+            log.len(),
+            2,
+            "PS-11b: expected exactly 2 invocations, got {}",
+            log.len()
+        );
+        assert!(
+            log[0].contains("--native-all"),
+            "PS-11a: first invocation must include --native-all, got: {}",
+            log[0]
+        );
+        assert!(
+            !log[1].contains("--native-all"),
+            "PS-11a: second invocation must NOT include --native-all, got: {}",
+            log[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn native_all_downgrade_fails_retries_continue() {
+        // PS-11d, PS-11e: downgraded retry fails, outer nonblocking
+        // retries continue with native_all = false.
+        let script = write_fake_pyspy(
+            r#"
+echo "$@" >> "$0.log"
+for arg in "$@"; do
+    if [ "$arg" = "--native-all" ]; then
+        echo "unrecognized option --native-all" >&2
+        exit 2
+    fi
+done
+echo "Permission denied" >&2
+exit 1
+"#,
+        );
+        let opts = PySpyOpts {
+            threads: false,
+            native: true,
+            native_all: true,
+            nonblocking: true, // 3 outer retries
+        };
+        let result = try_exec(
+            script.to_str().unwrap(),
+            1,
+            &opts,
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+        // Must be a generic failure, not the native-all error.
+        let result = result.expect("expected Some");
+        match &result {
+            PySpyResult::Failed {
+                stderr, exit_code, ..
+            } => {
+                assert!(
+                    stderr.contains("Permission denied"),
+                    "PS-11d: expected generic failure, got: {stderr}"
+                );
+                assert_eq!(*exit_code, Some(1));
+            }
+            other => panic!("expected Failed, got: {other:?}"),
+        }
+        // Check invocation log: 4 calls total.
+        //   Attempt 0: --native-all (fail) → downgrade (fail)
+        //   Attempt 1: without --native-all (fail)
+        //   Attempt 2: without --native-all (fail)
+        let log = read_log(&script);
+        assert_eq!(log.len(), 4, "expected 4 invocations, got {}", log.len());
+        assert!(
+            log[0].contains("--native-all"),
+            "PS-11a: first invocation must include --native-all, got: {}",
+            log[0]
+        );
+        for (i, line) in log[1..].iter().enumerate() {
+            assert!(
+                !line.contains("--native-all"),
+                "PS-11e: invocation {} must NOT include --native-all, got: {}",
+                i + 1,
+                line
+            );
         }
     }
 }

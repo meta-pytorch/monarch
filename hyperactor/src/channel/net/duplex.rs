@@ -29,6 +29,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use backoff::ExponentialBackoffBuilder;
+use backoff::backoff::Backoff;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -38,6 +40,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::ClientError;
 use super::Link;
+use super::LinkStatus;
 use super::ServerError;
 use super::SessionId;
 use super::log_send_error;
@@ -127,10 +130,11 @@ impl<M: RemoteMessage> Tx<M> for DuplexTx<M> {
             self.tx
                 .send((message, return_channel, tokio::time::Instant::now()))
         {
+            let reason = self.status.borrow().as_closed().map(|r| r.to_string());
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message,
-                reason: None,
+                reason,
             });
         }
     }
@@ -309,17 +313,45 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
                         };
 
                         let terminal = match &result {
-                            Ok(()) => false,
+                            Ok(()) => {
+                                tracing::info!(
+                                    session_id = session_id.0,
+                                    "duplex recv_connected returned EOF, awaiting reconnect"
+                                );
+                                false
+                            }
                             Err(Either::Send(session::SendLoopError::Io(err))) => {
                                 tracing::info!(
                                     session_id = session_id.0,
                                     error = %err,
-                                    "duplex send/recv error",
+                                    "duplex send error (recoverable)",
                                 );
                                 false
                             }
-                            Err(Either::Recv(session::RecvLoopError::Io(_))) => false,
-                            _ => true,
+                            Err(Either::Recv(session::RecvLoopError::Io(err))) => {
+                                tracing::info!(
+                                    session_id = session_id.0,
+                                    error = %err,
+                                    "duplex recv error (recoverable)",
+                                );
+                                false
+                            }
+                            Err(Either::Send(e)) => {
+                                tracing::info!(
+                                    session_id = session_id.0,
+                                    error = %e,
+                                    "duplex send terminal error"
+                                );
+                                true
+                            }
+                            Err(Either::Recv(e)) => {
+                                tracing::info!(
+                                    session_id = session_id.0,
+                                    error = %e,
+                                    "duplex recv terminal error"
+                                );
+                                true
+                            }
                         };
                         session = connected.release();
                         if terminal {
@@ -327,7 +359,7 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
                         }
                     }
 
-                    let _ = notify.send(TxStatus::Closed);
+                    let _ = notify.send(TxStatus::Closed("duplex session ended".into()));
                 });
 
                 e.insert(mvar.clone());
@@ -359,6 +391,15 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
         };
         let mut outbound_rx = outbound_rx;
         let mut recv_next = Next { seq: 0, ack: 0 };
+        let mut reconnect_backoff = ExponentialBackoffBuilder::new()
+            .with_initial_interval(std::time::Duration::from_millis(10))
+            .with_multiplier(2.0)
+            .with_randomization_factor(0.1)
+            .with_max_interval(std::time::Duration::from_secs(5))
+            .with_max_elapsed_time(None)
+            .build();
+
+        let mut link_status = LinkStatus::NeverConnected;
 
         loop {
             let connected = match session.connect().await {
@@ -387,6 +428,10 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
                 );
             }
             deliveries.requeue_unacked();
+
+            link_status.connected();
+            let connected_at = tokio::time::Instant::now();
+
             let result = {
                 let send_stream = connected.stream(super::INITIATOR_TO_ACCEPTOR);
                 let recv_stream = connected.stream(super::ACCEPTOR_TO_INITIATOR);
@@ -400,17 +445,55 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
                 }
             };
 
+            link_status.disconnected();
+
+            if connected_at.elapsed() > tokio::time::Duration::from_secs(1) {
+                reconnect_backoff.reset();
+            }
+
             let terminal = match &result {
-                Ok(()) => false, // EOF — reconnect
-                Err(Either::Send(e)) => log_send_error(e, &dest, session_id.0, "duplex"),
+                Ok(()) => {
+                    if let Some(delay) = reconnect_backoff.next_backoff() {
+                        tracing::info!(
+                            dest = %dest,
+                            session_id = session_id.0,
+                            delay_ms = delay.as_millis() as u64,
+                            "duplex send_connected returned EOF, reconnecting after backoff; {link_status}"
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
+                    false
+                }
+                Err(Either::Send(e)) => {
+                    let terminal = log_send_error(e, &dest, session_id.0, "duplex", &link_status);
+                    if !terminal {
+                        // Recoverable send error — reconnect after backoff.
+                        if let Some(delay) = reconnect_backoff.next_backoff() {
+                            tracing::info!(
+                                dest = %dest,
+                                session_id = session_id.0,
+                                error = %e,
+                                delay_ms = delay.as_millis() as u64,
+                                mode = "duplex",
+                                "send error (recoverable), reconnecting after backoff; {link_status}",
+                            );
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
+                    terminal
+                }
                 Err(Either::Recv(session::RecvLoopError::Io(err))) => {
-                    tracing::info!(
-                        dest = %dest,
-                        session_id = session_id.0,
-                        error = %err,
-                        mode = "duplex",
-                        "recv error",
-                    );
+                    if let Some(delay) = reconnect_backoff.next_backoff() {
+                        tracing::info!(
+                            dest = %dest,
+                            session_id = session_id.0,
+                            error = %err,
+                            delay_ms = delay.as_millis() as u64,
+                            mode = "duplex",
+                            "recv error (recoverable), reconnecting after backoff; {link_status}",
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
                     metrics::CHANNEL_ERRORS.add(
                         1,
                         hyperactor_telemetry::kv_pairs!(
@@ -422,7 +505,15 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
                     );
                     false
                 }
-                _ => true, // terminal
+                Err(Either::Recv(e)) => {
+                    tracing::info!(
+                        dest = %dest,
+                        session_id = session_id.0,
+                        error = %e,
+                        "duplex recv terminal error; {link_status}"
+                    );
+                    true
+                }
             };
             session = connected.release();
             if terminal {
@@ -430,7 +521,7 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
             }
         }
 
-        let _ = notify.send(TxStatus::Closed);
+        let _ = notify.send(TxStatus::Closed("duplex session ended".into()));
     });
     (
         DuplexTx::new(outbound_tx, addr.clone(), status),

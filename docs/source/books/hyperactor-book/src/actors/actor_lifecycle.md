@@ -45,14 +45,14 @@ pub enum ActorStatus {
 `Signal` is used to control actor lifecycle transitions externally. These messages are sent internally by the runtime (or explicitly by users) to initiate operations like shutdown.
 ```rust
 pub enum Signal {
-    DrainAndStop,
-    Stop,
+    DrainAndStop(String),
+    Stop(String),
     ChildStopped(Index),
 }
 ```
 Variants
-- `DrainAndStop`: Gracefully stops the actor by first draining all queued messages.
-- `Stop`: Immediately halts the actor, even if messages remain in its mailbox.
+- `DrainAndStop(reason)`: Gracefully stops the actor by first draining all queued messages. The reason string describes why the stop was requested.
+- `Stop(reason)`: Immediately halts the actor, even if messages remain in its mailbox.
 - `ChildStopped`: Internal signal sent when a direct child with the given index was stopped.
 
 These signals are routed like any other message, typically sent using `ActorHandle::send` or by the runtime during supervision and recovery procedures.

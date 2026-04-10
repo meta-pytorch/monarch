@@ -197,5 +197,5 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_actor_scaling, bench_actor_mesh_message_sizes);
+criterion_group!(name=benches; config = Criterion::default().without_plots(); targets=bench_actor_scaling, bench_actor_mesh_message_sizes);
 criterion_main!(benches);

@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
+    _spawn_admin as _hy_spawn_admin,
     BootstrapCommand,
     HostMesh as HyHostMesh,
 )
@@ -88,6 +89,8 @@ class HostMesh(MeshTrait):
         self._stream_logs = stream_logs
         self._is_fake_in_process = is_fake_in_process
         self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = code_sync_proc_mesh
+        self._pending_spawns: list[Shared[HyProcMesh]] = []
+        self._proc_meshes: list["ProcMesh"] = []
 
     @classmethod
     def _allocate_nonblocking(
@@ -171,34 +174,6 @@ class HostMesh(MeshTrait):
             proc_bind,
         )
 
-    def _spawn_admin(self, admin_addr: Optional[str] = None) -> "Future[str]":
-        """
-        Spawn a MeshAdminAgent on the head host's system proc and
-        return its HTTP address.
-
-        The admin agent aggregates topology across all hosts and serves
-        an HTTP API. Use the returned address to connect an admin client::
-
-            head = host_mesh.slice(hosts=0)
-            addr = head._spawn_admin(admin_addr="[::]:1729").get()
-
-        Args:
-            admin_addr: Optional socket address for the admin HTTP server
-                (e.g. ``"[::]:1729"``). When ``None``, reads
-                ``MESH_ADMIN_ADDR`` from config.
-
-        Returns:
-            Future[str]: The admin HTTP URL (e.g. ``"https://myhost.facebook.com:1729"``).
-        """
-
-        async def task() -> str:
-            hy_mesh = await self._hy_host_mesh
-            return await hy_mesh._spawn_admin(
-                context().actor_instance._as_rust(), admin_addr
-            )
-
-        return Future(coro=task())
-
     def _spawn_nonblocking(
         self,
         name: str,
@@ -223,9 +198,12 @@ class HostMesh(MeshTrait):
                 context().actor_instance._as_rust(), name, per_host, proc_bind
             )
 
-        return ProcMesh.from_host_mesh(
+        spawn_shared = PythonTask.from_coroutine(task()).spawn()
+        self._pending_spawns.append(spawn_shared)
+
+        pm = ProcMesh.from_host_mesh(
             self,
-            PythonTask.from_coroutine(task()).spawn(),
+            spawn_shared,
             Extent(
                 self._labels + tuple(per_host.labels),
                 self.region.slice().sizes + list(per_host.sizes),
@@ -233,6 +211,8 @@ class HostMesh(MeshTrait):
             setup,
             _attach_controller_controller,
         )
+        self._proc_meshes.append(pm)
+        return pm
 
     @property
     def _ndslice(self) -> NDSlice:
@@ -359,12 +339,30 @@ class HostMesh(MeshTrait):
     def _initialized_mesh(self) -> HyHostMesh:
         return self._hy_host_mesh.poll() or self._hy_host_mesh.block_on()
 
+    async def _flush_pending_spawns(self) -> None:
+        for shared in self._pending_spawns:
+            try:
+                await shared
+            except Exception:
+                pass
+        self._pending_spawns.clear()
+        for pm in self._proc_meshes:
+            await pm._flush_pending_actor_spawns()
+            try:
+                await pm._logging_manager.flush_async()
+            except Exception:
+                pass
+
     def shutdown(self) -> Future[None]:
         """
         Shutdown the host mesh and all of its processes. It will throw an exception
         if this host mesh is a *reference* rather than *owned*, which can happen
         if this `HostMesh` object was received from a remote actor or if it was
         produced by slicing.
+        After shutting down, the hosts in this mesh will be unusable, and no new
+        HostMeshes will be able to connect to them.
+        If you want to stop everything on the host but keep them available for
+        new clients, use `stop()` instead.
 
         This is run automatically on __aexit__ when used as an async context manager.
 
@@ -373,10 +371,31 @@ class HostMesh(MeshTrait):
         """
 
         async def task() -> None:
+            await self._flush_pending_spawns()
             hy_mesh = await self._hy_host_mesh
             await hy_mesh.shutdown(context().actor_instance._as_rust())
             # Remove the inner host mesh to clean up associated memory.
             self._inner_host_mesh = None
+
+        return Future(coro=task())
+
+    def stop(self) -> Future[None]:
+        """
+        Stop the host mesh, releasing all resources but keeping worker
+        processes alive for reconnection. A new HostMesh can be created that
+        points to the same hosts.
+
+        Like `shutdown`, this throws if the host mesh is a reference
+        rather than owned.
+
+        Returns:
+            Future[None]: A future that completes when the host mesh has been stopped.
+        """
+
+        async def task() -> None:
+            await self._flush_pending_spawns()
+            hy_mesh = await self._hy_host_mesh
+            await hy_mesh.stop(context().actor_instance._as_rust())
 
         return Future(coro=task())
 
@@ -420,7 +439,7 @@ class HostMesh(MeshTrait):
     def initialized(self) -> Future[Literal[True]]:
         """
         Future completes with 'True' when the `HostMesh` has initialized.
-        Because `HostMesh` are remote objects, there is no guarentee that the `HostMesh` is
+        Because `HostMesh` are remote objects, there is no guarantee that the `HostMesh` is
         still usable after this completes, only that at some point in the past it was usable.
         """
         hm: Shared[HyHostMesh] = self._hy_host_mesh
@@ -436,6 +455,54 @@ class HostMesh(MeshTrait):
         if self._inner_host_mesh is None:
             raise RuntimeError("HostMesh has already been shut down")
         return self._inner_host_mesh
+
+
+def _spawn_admin(
+    host_meshes: list["HostMesh"],
+    admin_addr: Optional[str] = None,
+    telemetry_url: Optional[str] = None,
+) -> "Future[str]":
+    """
+    Spawn a MeshAdminAgent aggregating topology across one or more HostMeshes.
+
+    The admin runs on the caller's local proc and serves the
+    mesh-admin HTTP API.
+
+    Use a single-element list for the degenerate single-mesh case::
+
+        host = this_host()
+        admin_url = await _spawn_admin([host], admin_addr="[::]:1729")
+
+    Args:
+        host_meshes: One or more HostMeshes whose hosts the admin
+            will aggregate for introspection. Must not be empty.
+        admin_addr: Optional socket address for the admin HTTP server.
+            When ``None``, reads ``MESH_ADMIN_ADDR`` from config.
+        telemetry_url: Optional base URL of the Monarch telemetry dashboard.
+            When provided, the admin exposes proxy routes (``/v1/query``,
+            ``/v1/pyspy_dump``) that forward to the dashboard.
+
+    Returns:
+        Future[str]: The admin HTTP URL (for example
+            ``"https://myhost.facebook.com:1729"``).
+
+    Raises:
+        ValueError: If host_meshes is empty.
+    """
+    if not host_meshes:
+        raise ValueError("_spawn_admin requires at least one HostMesh")
+
+    async def task() -> str:
+        hy_meshes = [await m._hy_host_mesh for m in host_meshes]
+        url = await _hy_spawn_admin(
+            hy_meshes, context().actor_instance._as_rust(), admin_addr, telemetry_url
+        )
+        # Export admin URL so the dashboard can discover system actors
+        # and build TUI-style DAG hierarchies.
+        os.environ["MONARCH_ADMIN_URL"] = url
+        return url
+
+    return Future(coro=task())
 
 
 def hosts_from_config(name: str) -> HostMesh:

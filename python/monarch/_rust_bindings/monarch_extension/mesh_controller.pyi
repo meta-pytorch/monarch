@@ -26,6 +26,7 @@ class _Controller:
         uses: Sequence[object],
         port: Tuple[PortId, NDSlice] | None,
         tracebacks: List[List[FrameSummary]],
+        accumulate: bool = False,
     ) -> None: ...
     def _drop_refs(self, instance: Instance, refs: Sequence[object]) -> None: ...
     def _send(
