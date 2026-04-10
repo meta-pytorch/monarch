@@ -822,6 +822,14 @@ impl IbvQueuePair {
         raddr: usize,
         rkey: u32,
     ) -> Result<(), anyhow::Error> {
+        if op_type == IbvOperation::WriteWithImm {
+            tracing::warn!(
+                "WriteWithImm requested on EFA — EFA SRD emulates fi_writedata as a \
+                 send/recv pair. The receiver buffer pool exhausts after ~240 operations. \
+                 Use plain Write instead for sustained workloads."
+            );
+        }
+
         let c_op = match op_type {
             IbvOperation::Write => 0,
             IbvOperation::Read => 1,
