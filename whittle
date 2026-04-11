@@ -40,9 +40,20 @@ Commands:
         `whittle`, e.g.:
             whittle flake monarch/python/tests:foo - test_foo.py::test_bar
 
+    whittle skip <test_name>
+        Skip a test temporarily. Skipped tests are not run by sync, but
+        sync cannot succeed while skipped tests remain. Use this to pause
+        a test and come back to it later.
+
+    whittle unskip <test_name>
+    whittle unskip --all
+        Mark a skipped test as pending again. With --all, unskip all
+        skipped tests.
+
     whittle
         Print status: one line per test, tab-separated status and name.
-        Exits 0 if all tests pass, 1 if any are failing or pending.
+        Exits 0 if all tests pass, 1 if any are failing, pending, or
+        skipped.
 
 Output format:
     Lines starting with # are comments (diagnostics/summaries).
@@ -51,6 +62,7 @@ Output format:
     fail	monarch/python/tests:test_foo - test_foo.py::test_bar
     pass	monarch/python/tests:test_foo - test_foo.py::test_baz
     pending	monarch/python/tests:test_foo - test_foo.py::test_qux
+    skip	monarch/python/tests:test_foo - test_foo.py::test_hard_one
     flaky	monarch/python/tests:test_foo - test_foo.py::test_flake
 
 State is stored in .whittle.json in the current directory.
@@ -62,9 +74,13 @@ Example:
     ./whittle               # shows 3 failing, 500 passed
     # ... one test is flaky, not your problem ...
     ./whittle flake monarch/python/tests:foo - test_foo.py::test_flaky_one
-    # ... fix the real failures ...
-    ./whittle sync          # only runs the 2 remaining failures
-    ./whittle               # all passing
+    # ... one test is hard, skip it for now ...
+    ./whittle skip monarch/python/tests:foo - test_foo.py::test_hard_one
+    # ... fix the other failure ...
+    ./whittle sync          # runs the 1 remaining failure, passes
+    # ... come back to the skipped test ...
+    ./whittle unskip --all
+    ./whittle sync          # runs the skipped test
 
 Composing:
     ./whittle | grep '^fail'           # just failing tests
@@ -84,6 +100,94 @@ import threading
 import time
 
 STATE_FILE = ".whittle.json"
+
+AGENT_SKILL = """
+# Whittle: test-driven fix workflow
+
+You are using `whittle` to iteratively fix failing tests. The state file
+`.whittle.json` tracks which tests are pending, passing, failing, skipped,
+or flaky.
+
+## Setup
+
+If `.whittle.json` does not exist, initialize it:
+
+    ./whittle init --smoke
+
+This adds the default monarch smoke-test targets. To add specific targets:
+
+    ./whittle add <target>
+
+## Workflow
+
+Run `./whittle sync` repeatedly until it exits 0. After each sync:
+
+1. Read the output. Lines are tab-separated: `status\\ttest_name`.
+   Lines starting with `#` are comments.
+
+2. If a test fails and the failure is NOT caused by your changes (e.g., it
+   fails on a clean checkout, or the error is unrelated infrastructure),
+   mark it flaky:
+
+       ./whittle flake <test_name>
+
+   The exact command is printed after each failure in the sync output.
+
+3. If a test fails because of your changes but you want to come back to it
+   later (e.g., to focus on other failures first), skip it:
+
+       ./whittle skip <test_name>
+
+   Skipped tests are not run by sync, but sync cannot exit 0 while skipped
+   tests remain. When ready, unskip them:
+
+       ./whittle unskip <test_name>
+       ./whittle unskip --all
+
+4. If a test fails because of your changes, fix the code, then run
+   `./whittle sync` again. Only failing and pending tests are re-run;
+   passing tests are excluded.
+
+5. Repeat until `./whittle sync` exits 0.
+
+## Key behaviors
+
+- `./whittle sync` stops on the first failure (fail-fast). Use
+  `./whittle sync -k` to run all tests regardless of failures.
+- `./whittle` (no args) prints the current state of all tests.
+- `./whittle reset` resets all tests to pending.
+- Exit code 0 means all tests pass and none are skipped. Non-zero means
+  failures, pending, or skipped tests remain.
+
+## Example session
+
+    ./whittle init --smoke
+    ./whittle sync
+    # first failure: test_foo — caused by your change
+    # fix the code...
+    ./whittle sync
+    # first failure: test_bar — unrelated flaky test
+    ./whittle flake monarch/path:target - test_bar
+    ./whittle sync
+    # first failure: test_hard — your change, but complex to fix
+    ./whittle skip monarch/path:target - test_hard
+    ./whittle sync
+    # remaining tests pass, but exit 1 (skipped tests remain)
+    # now fix the hard test...
+    ./whittle unskip --all
+    ./whittle sync
+    # all passing, exit 0 — done
+
+## Rules
+
+- Do NOT skip `./whittle sync`. Always verify your changes pass tests.
+- Do NOT mark a test flaky if the failure is caused by your changes.
+- Use `skip` for tests you intend to fix later. Use `flake` for tests
+  that are broken independently of your changes.
+- If `./whittle sync` exits 0, your changes are verified.
+- If you are unsure whether a failure is flaky, run `./whittle sync` again.
+  Flaky tests often pass on retry; real failures don't.
+"""
 
 
 def comment(msg):
@@ -372,7 +476,7 @@ def summarize_counts(tests, flaky_names=None):
     if flaky_names:
         counts["flaky"] = len(flaky_names)
     parts = []
-    for key in ("fail", "pending", "pass", "removed", "flaky"):
+    for key in ("fail", "pending", "skip", "pass", "removed", "flaky"):
         n = counts.get(key, 0)
         if n:
             parts.append(f"{n} {key}")
@@ -458,10 +562,15 @@ def cmd_sync(keep_going=False):
     to_run = {
         name: st
         for name, st in state["tests"].items()
-        if st not in ("pass", "removed") and name not in flaky_names
+        if st not in ("pass", "removed", "skip") and name not in flaky_names
     }
 
+    skipped = sum(1 for s in state["tests"].values() if s == "skip")
+
     if not to_run:
+        if skipped:
+            comment(f"no tests to run; {skipped} skipped")
+            sys.exit(1)
         comment("all tests passing")
         return
 
@@ -528,7 +637,8 @@ def cmd_sync(keep_going=False):
         total_pending = sum(
             1 for s in state["tests"].values() if s == "pending"
         )
-        if total_fail > 0 or total_pending > 0:
+        total_skip = sum(1 for s in state["tests"].values() if s == "skip")
+        if total_fail > 0 or total_pending > 0 or total_skip > 0:
             sys.exit(1)
     finally:
         try:
@@ -565,6 +675,40 @@ def cmd_reset(refresh=False):
     comment(f"reset {count} test(s) to pending")
 
 
+def cmd_skip(test_name):
+    state = load_state()
+    test_name = test_name.removeprefix("fbcode//")
+    if test_name not in state["tests"]:
+        comment(f"unknown test: {test_name}")
+        sys.exit(1)
+    state["tests"][test_name] = "skip"
+    save_state(state)
+    print(f"skip\t{test_name}")
+
+
+def cmd_unskip(test_name=None, all_=False):
+    state = load_state()
+    if all_:
+        count = 0
+        for name in state["tests"]:
+            if state["tests"][name] == "skip":
+                state["tests"][name] = "pending"
+                count += 1
+        save_state(state)
+        comment(f"unskipped {count} test(s)")
+        return
+    test_name = test_name.removeprefix("fbcode//")
+    if test_name not in state["tests"]:
+        comment(f"unknown test: {test_name}")
+        sys.exit(1)
+    if state["tests"][test_name] != "skip":
+        comment(f"not skipped: {test_name}")
+        return
+    state["tests"][test_name] = "pending"
+    save_state(state)
+    print(f"pending\t{test_name}")
+
+
 def cmd_flake(test_name):
     state = load_state()
     test_name = test_name.removeprefix("fbcode//")
@@ -596,7 +740,8 @@ def cmd_status():
 
     failing = sum(1 for s in state["tests"].values() if s == "fail")
     pending = sum(1 for s in state["tests"].values() if s == "pending")
-    if failing or pending:
+    skipped = sum(1 for s in state["tests"].values() if s == "skip")
+    if failing or pending or skipped:
         sys.exit(1)
 
 
@@ -615,6 +760,9 @@ def main():
 
     if command in ("-h", "--help", "help"):
         print(__doc__.strip())
+        return
+    elif command == "--skill":
+        print(AGENT_SKILL.strip())
         return
     elif command == "init":
         cmd_init(smoke="--smoke" in args)
@@ -636,6 +784,21 @@ def main():
             comment("usage: whittle flake <test_name>")
             sys.exit(1)
         cmd_flake(test_name)
+    elif command == "skip":
+        test_name = " ".join(args[1:])
+        if not test_name:
+            comment("usage: whittle skip <test_name>")
+            sys.exit(1)
+        cmd_skip(test_name)
+    elif command == "unskip":
+        if "--all" in args:
+            cmd_unskip(all_=True)
+        else:
+            test_name = " ".join(a for a in args[1:] if a != "--all")
+            if not test_name:
+                comment("usage: whittle unskip <test_name> | --all")
+                sys.exit(1)
+            cmd_unskip(test_name)
     else:
         comment(f"unknown command: {command}")
         print(__doc__, file=sys.stderr)
