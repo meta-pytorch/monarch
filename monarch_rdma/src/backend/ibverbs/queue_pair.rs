@@ -533,18 +533,26 @@ impl IbvQueuePair {
         let mut wr_ids = Vec::new();
         while remaining > 0 {
             let chunk_size = std::cmp::min(remaining, MAX_RDMA_MSG_SIZE);
+            let is_last_chunk = chunk_size >= remaining;
             let idx = unsafe {
                 rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_wqe_idx(
                     self.qp as *mut rdmaxcel_sys::rdmaxcel_qp,
                 )
             };
-            wr_ids.push(idx);
+            // Only signal the last chunk to reduce CQ pressure. For single-chunk
+            // transfers (the common case), every op is signaled. For multi-chunk
+            // (>1 GiB), only the final chunk generates a CQ entry — the caller
+            // waits on that single wr_id.
+            let signaled = is_last_chunk;
+            if signaled {
+                wr_ids.push(idx);
+            }
             self.post_op(
                 lhandle.addr + offset,
                 lhandle.lkey,
                 chunk_size,
                 idx,
-                true,
+                signaled,
                 IbvOperation::Write,
                 rhandle.addr + offset,
                 rhandle.rkey,
@@ -687,19 +695,24 @@ impl IbvQueuePair {
 
         while remaining > 0 {
             let chunk_size = std::cmp::min(remaining, MAX_RDMA_MSG_SIZE);
+            let is_last_chunk = chunk_size >= remaining;
             let idx = unsafe {
                 rdmaxcel_sys::rdmaxcel_qp_fetch_add_send_wqe_idx(
                     self.qp as *mut rdmaxcel_sys::rdmaxcel_qp,
                 )
             };
-            wr_ids.push(idx);
+            // Selective signaling: only signal the last chunk (see put() comment)
+            let signaled = is_last_chunk;
+            if signaled {
+                wr_ids.push(idx);
+            }
 
             self.post_op(
                 lhandle.addr + offset,
                 lhandle.lkey,
                 chunk_size,
                 idx,
-                true,
+                signaled,
                 IbvOperation::Read,
                 rhandle.addr + offset,
                 rhandle.rkey,

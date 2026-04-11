@@ -1037,6 +1037,11 @@ impl IbvBackend {
         let mut remaining: std::collections::HashSet<u64> =
             expected_wr_ids.iter().copied().collect();
 
+        // Adaptive polling: spin for the first 100us (covers typical RDMA
+        // completion latency), then yield with increasing backoff to avoid
+        // burning CPU on slow transfers.
+        let mut poll_count: u32 = 0;
+
         while start_time.elapsed() < timeout {
             if remaining.is_empty() {
                 return Ok(());
@@ -1051,7 +1056,17 @@ impl IbvBackend {
                     if remaining.is_empty() {
                         return Ok(());
                     }
-                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    poll_count += 1;
+                    if poll_count < 100 {
+                        // Spin-poll for first ~100 iterations (~50-100us)
+                        tokio::task::yield_now().await;
+                    } else if poll_count < 1000 {
+                        // Short sleep after initial spin phase
+                        tokio::time::sleep(Duration::from_micros(100)).await;
+                    } else {
+                        // Long sleep for slow transfers
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
                 }
                 Err(e) => {
                     // When the returned error is WR_FLUSH_ERR, which is generally a
