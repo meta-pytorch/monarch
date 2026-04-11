@@ -18,10 +18,12 @@
 //! - [`push`] — drain `SnapshotData` into `TableStore` tables
 //! - [`service`] — `SnapshotService` capture pipeline
 //! - [`bundle`] — durable snapshot bundle export/import
+//! - [`integration`] — wiring into live telemetry
 
 pub mod bundle;
 pub mod capture;
 pub mod convert;
+pub mod integration;
 pub mod push;
 pub mod schema;
 pub mod service;

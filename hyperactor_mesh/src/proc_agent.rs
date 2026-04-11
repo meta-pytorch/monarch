@@ -554,7 +554,7 @@ impl ProcAgent {
         attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
         attrs.set(
             crate::introspect::PROC_NAME,
-            self.proc.proc_id().to_string(),
+            self.proc.proc_id().name().to_string(),
         );
         attrs.set(crate::introspect::NUM_ACTORS, num_live);
         attrs.set(hyperactor::introspect::CHILDREN, children);
@@ -646,7 +646,7 @@ impl Actor for ProcAgent {
                     let num_live = children.len();
                     let mut attrs = hyperactor_config::Attrs::new();
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
-                    attrs.set(crate::introspect::PROC_NAME, proc_id.to_string());
+                    attrs.set(crate::introspect::PROC_NAME, proc_id.name().to_string());
                     attrs.set(crate::introspect::NUM_ACTORS, num_live);
                     attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
                     attrs.set(crate::introspect::STOPPED_CHILDREN, stopped_children);

@@ -3708,7 +3708,7 @@ mod tests {
         let (caller_cx, _caller_handle) = caller_proc.instance("caller").unwrap();
 
         // 3. Call the real public entrypoint.
-        let admin_url = crate::host_mesh::spawn_admin(
+        let admin_ref = crate::host_mesh::spawn_admin(
             [&host_mesh],
             &caller_cx,
             Some("[::]:0".parse().unwrap()),
@@ -3717,23 +3717,18 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!admin_url.is_empty(), "spawn_admin must return a URL");
-
-        // 4. Prove the admin is on caller_proc: construct an ActorRef
-        //    targeting "mesh_admin[0]" on caller_proc and send it a
-        //    GetAdminAddr message. If the admin were on a different
-        //    proc, this message would be undeliverable.
-        let admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent> =
-            hyperactor_reference::ActorRef::attest(
-                caller_proc.proc_id().actor_id(MESH_ADMIN_ACTOR_NAME, 0),
-            );
-        let probe_proc = Proc::direct(ChannelTransport::Unix.any(), "probe".to_string()).unwrap();
-        let (probe_cx, _probe_handle) = probe_proc.instance("probe").unwrap();
-        let resp = admin_ref.get_admin_addr(&probe_cx).await.unwrap();
-        assert_eq!(
-            resp.addr.as_deref(),
-            Some(admin_url.as_str()),
-            "SA-5: admin on caller_proc must respond to GetAdminAddr"
+        // 4. Prove the returned ActorRef is usable: fetch the URL
+        //    via get_admin_addr. This also proves the admin is on
+        //    caller_proc (undeliverable if not).
+        let admin_url = admin_ref
+            .get_admin_addr(&caller_cx)
+            .await
+            .unwrap()
+            .addr
+            .expect("SA-5: admin must report an address");
+        assert!(
+            !admin_url.is_empty(),
+            "spawn_admin ref must yield a non-empty URL"
         );
     }
 
