@@ -51,9 +51,11 @@ State is stored in .whittle.json in the current directory.
 Example:
     ./whittle init --smoke  # init with default monarch smoke targets
     ./whittle sync          # runs all tests, records pass/fail
-    ./whittle               # shows failing, pending, passed
-    # ... fix the code ...
-    ./whittle sync          # only runs the failing tests
+    ./whittle               # shows 3 failing, 500 passed
+    # ... one test is flaky, not your problem ...
+    ./whittle flake monarch/python/tests:foo - test_foo.py::test_flaky_one
+    # ... fix the real failures ...
+    ./whittle sync          # only runs the 2 remaining failures
     ./whittle               # all passing
 
 Composing:
