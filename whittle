@@ -29,8 +29,8 @@ Commands:
         to Ctrl-C — partial results are saved and unfinished tests remain
         pending.
 
-    whittle reset [--refresh]
-        Reset all tests to pending. With --refresh, also re-enumerate tests
+    whittle reset [--reinit]
+        Reset all tests to pending. With --reinit, also re-enumerate tests
         from TestX (picks up new tests, drops removed ones, updates flaky
         list).
 
@@ -635,7 +635,7 @@ def main():
         keep_going = "-k" in args or "--keep-going" in args
         cmd_sync(keep_going=keep_going)
     elif command == "reset":
-        cmd_reset(refresh="--refresh" in args)
+        cmd_reset(refresh="--reinit" in args)
     elif command == "flake":
         test_name = " ".join(args[1:])
         if not test_name:
