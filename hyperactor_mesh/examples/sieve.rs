@@ -27,6 +27,7 @@ use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::spawn_admin;
+use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
 use hyperactor_mesh::this_host;
 use hyperactor_mesh::this_proc;
 use ndslice::View;
@@ -141,7 +142,12 @@ async fn main() -> Result<ExitCode> {
 
     // Start the mesh admin agent.
     let h = this_host().await;
-    let mesh_admin_url = spawn_admin([&h], instance, None, None).await?;
+    let admin_ref = spawn_admin([&h], instance, None, None).await?;
+    let mesh_admin_url = admin_ref
+        .get_admin_addr(instance)
+        .await?
+        .addr
+        .ok_or_else(|| anyhow::anyhow!("mesh admin did not report an address"))?;
     let mtls_flags = if mesh_admin_url.starts_with("https") {
         "--cacert /var/facebook/rootcanal/ca.pem \
          --cert /var/facebook/x509_identities/server.pem \
