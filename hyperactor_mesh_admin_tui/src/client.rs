@@ -164,12 +164,15 @@ fn add_tls_from_bundle(
 ///
 /// Returns `(base_url, client)` where `base_url` always includes the
 /// scheme selected (`http://...` or `https://...`).
-pub(crate) fn build_client(config: &TuiConfig) -> (String, reqwest::Client) {
+pub(crate) fn build_client(
+    config: &TuiConfig,
+    policy: &crate::timeouts::TuiTimeoutPolicy,
+) -> (String, reqwest::Client) {
     let (explicit_scheme, host) = parse_addr(&config.addr);
 
-    let client_timeout =
-        hyperactor_config::global::get(hyperactor_mesh::config::MESH_ADMIN_PYSPY_CLIENT_TIMEOUT);
-    let mut builder = reqwest::Client::builder().timeout(client_timeout);
+    // TP-7: client timeout sourced from policy, not directly from
+    // mesh-admin config attrs.
+    let mut builder = reqwest::Client::builder().timeout(policy.shared_client_timeout());
     let mut use_tls = explicit_scheme == Some("https");
 
     // 1. Explicit CLI cert paths.

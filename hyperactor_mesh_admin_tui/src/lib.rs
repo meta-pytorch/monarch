@@ -177,6 +177,7 @@ mod model;
 mod overlay;
 mod render;
 mod theme;
+pub(crate) mod timeouts;
 mod tree;
 
 #[cfg(test)]
@@ -259,20 +260,25 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
     Ok(())
 }
 
-async fn run_diagnose(client: reqwest::Client, base_url: String) -> io::Result<()> {
+async fn run_diagnose(
+    client: reqwest::Client,
+    base_url: String,
+    policy: timeouts::TuiTimeoutPolicy,
+) -> io::Result<()> {
     use crate::diagnostics::DiagSummary;
     use crate::diagnostics::run_diagnostics;
 
-    const GLOBAL_TIMEOUT_SECS: u64 = 120;
-
-    let mut rx = run_diagnostics(client, base_url);
+    let mut rx = run_diagnostics(client, base_url, &policy);
     let mut results = Vec::new();
 
-    let timed_out = tokio::time::timeout(Duration::from_secs(GLOBAL_TIMEOUT_SECS), async {
-        while let Some(r) = rx.recv().await {
-            results.push(r);
-        }
-    })
+    let timed_out = tokio::time::timeout(
+        policy.workflow_timeout(timeouts::WorkflowOp::DiagnosticsRun),
+        async {
+            while let Some(r) = rx.recv().await {
+                results.push(r);
+            }
+        },
+    )
     .await
     .is_err();
 
@@ -308,10 +314,11 @@ async fn run_diagnose(client: reqwest::Client, base_url: String) -> io::Result<(
 /// Run the mesh admin TUI. Does not return until the user exits
 /// or diagnostics complete.
 pub async fn run(config: TuiConfig) -> io::Result<()> {
-    let (base_url, client) = client::build_client(&config);
+    let policy = timeouts::TuiTimeoutPolicy::from_config(&config);
+    let (base_url, client) = client::build_client(&config, &policy);
 
     if config.diagnose {
-        return run_diagnose(client, base_url).await;
+        return run_diagnose(client, base_url, policy).await;
     }
 
     if !io::stdout().is_terminal() {
@@ -319,7 +326,7 @@ pub async fn run(config: TuiConfig) -> io::Result<()> {
         return Ok(());
     }
 
-    let mut app = App::new(base_url, client, config.theme, config.lang);
+    let mut app = App::new(base_url, client, config.theme, config.lang, policy);
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::default_spinner()
@@ -340,7 +347,7 @@ pub async fn run(config: TuiConfig) -> io::Result<()> {
     spinner.finish_and_clear();
 
     let mut terminal = setup_terminal()?;
-    let result = run_app(&mut terminal, config.refresh_ms, app).await;
+    let result = run_app(&mut terminal, app).await;
     restore_terminal(&mut terminal)?;
     result
 }

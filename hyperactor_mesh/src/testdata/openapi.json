@@ -452,6 +452,45 @@
         ],
         "type": "object"
       },
+      "PySpyProfileOpts": {
+        "description": "Public JSON-facing options for a py-spy profile capture.\n\nDeserialized from the HTTP POST body. Validated and converted to\n`ValidatedProfileRequest` before any actor messaging.\n\nSee PP-1 in `introspect` module doc.",
+        "properties": {
+          "duration_s": {
+            "description": "Sampling duration in whole seconds. py-spy `--duration`\naccepts integers only. Must be >= 1; upper bound enforced\nat runtime by `MESH_ADMIN_PYSPY_MAX_PROFILE_DURATION`.",
+            "format": "uint32",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "native": {
+            "description": "Include native C/C++ frames.",
+            "type": "boolean"
+          },
+          "nonblocking": {
+            "description": "Use nonblocking mode.",
+            "type": "boolean"
+          },
+          "rate_hz": {
+            "description": "Sampling rate in Hz. Must be 1..=1000.",
+            "format": "uint32",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "threads": {
+            "description": "Include per-thread stacks.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "duration_s",
+          "rate_hz",
+          "native",
+          "threads",
+          "nonblocking"
+        ],
+        "title": "PySpyProfileOpts",
+        "type": "object"
+      },
       "PySpyResult": {
         "description": "Result of a py-spy stack dump request.\n\nSee PS-2, PS-4 in `introspect` module doc.",
         "oneOf": [
@@ -926,6 +965,92 @@
           }
         },
         "summary": "Trigger py-spy dump and store in telemetry"
+      }
+    },
+    "/v1/pyspy_profile_svg/{proc_reference}": {
+      "post": {
+        "description": "Runs py-spy record against the target process for the requested duration and returns an SVG flamegraph. Timeout scales with duration_s.",
+        "operationId": "pyspyProfileSvg",
+        "parameters": [
+          {
+            "description": "URL-encoded proc reference (ProcId)",
+            "in": "path",
+            "name": "proc_reference",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PySpyProfileOpts"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "image/svg+xml": {}
+            },
+            "description": "SVG flamegraph"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad request (invalid duration/rate or malformed proc reference)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Proc not found or handler not reachable"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal error (profile failed or SVG generation failed)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service unavailable (py-spy not available on target host)"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Gateway timeout (subprocess timed out)"
+          }
+        },
+        "summary": "Profile a proc and return SVG flamegraph"
       }
     },
     "/v1/query": {

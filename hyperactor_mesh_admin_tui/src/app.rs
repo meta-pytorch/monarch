@@ -70,6 +70,8 @@ pub(crate) struct App {
     /// Shared HTTP client used for all `GET /v1/{reference}`
     /// requests.
     pub(crate) client: reqwest::Client,
+    /// Central timeout policy (TP-*). See `timeouts.rs`.
+    pub(crate) policy: crate::timeouts::TuiTimeoutPolicy,
     /// Set when the user requests exit (e.g. `q` / `Esc` / `Ctrl-C`).
     pub(crate) should_quit: bool,
 
@@ -141,10 +143,12 @@ impl App {
         client: reqwest::Client,
         theme_name: ThemeName,
         lang_name: LangName,
+        policy: crate::timeouts::TuiTimeoutPolicy,
     ) -> Self {
         Self {
             base_url,
             client,
+            policy,
             should_quit: false,
             tree: None,
             cursor: Cursor::new(0),
@@ -1267,11 +1271,11 @@ async fn recv_active_job(job: &mut Option<ActiveJob>) -> ActiveJobEvent {
 /// each tick, and processes keyboard input until the user exits.
 pub(crate) async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    refresh_ms: u64,
     mut app: App,
 ) -> io::Result<()> {
-    let mut refresh_interval = tokio::time::interval(Duration::from_millis(refresh_ms));
-    app.refresh_interval_label = if refresh_ms >= 1000 && refresh_ms.is_multiple_of(1000) {
+    let refresh_ms = app.policy.refresh_interval.as_millis() as u64;
+    let mut refresh_interval = tokio::time::interval(app.policy.refresh_interval);
+    app.refresh_interval_label = if refresh_ms >= 1000 && refresh_ms % 1000 == 0 {
         format!("{}s", refresh_ms / 1000)
     } else {
         format!("{}ms", refresh_ms)
@@ -1315,6 +1319,7 @@ pub(crate) async fn run_app(
                                 let rx = run_diagnostics(
                                     app.client.clone(),
                                     app.base_url.clone(),
+                                    &app.policy,
                                 );
                                 // PY-5: set_job drops any prior PySpy variant.
                                 app.set_job(ActiveJob::Diagnostics {

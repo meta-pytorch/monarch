@@ -25,6 +25,8 @@ mod chunked_fuse;
 mod fast_pack;
 mod panic;
 mod readonly_fuse;
+#[cfg(feature = "distributed_sql_telemetry")]
+pub mod snapshot_integration;
 mod tls_receiver;
 mod tls_sender;
 mod trace;
@@ -282,6 +284,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         monarch_distributed_telemetry::query_engine::register_python_bindings(
             &get_or_add_new_module(module, "monarch_distributed_telemetry.query_engine")?,
         )?;
+        crate::snapshot_integration::register_python_bindings(&get_or_add_new_module(
+            module,
+            "monarch_extension.snapshot_integration",
+        )?)?;
     }
 
     #[cfg(fbcode_build)]
