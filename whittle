@@ -355,15 +355,9 @@ def run_tests(buck_args, targets, test_filters, event_log_path,
         if name not in results:
             results[name] = status
 
-    if interrupted:
-        comment("interrupted")
-    elif failed_fast:
-        # Find the first failure to report
-        for name, status in results.items():
-            if status == "fail":
-                comment(f"stopped: first failure")
-                break
-    return results, interrupted
+    stopped = interrupted or failed_fast
+    reason = "interrupted" if interrupted else "stopped after failure" if failed_fast else None
+    return results, stopped, reason
 
 
 # ---------------------------------------------------------------------------
@@ -497,7 +491,7 @@ def cmd_sync(keep_going=False):
         event_log_path = tmp.name
 
     try:
-        results, interrupted = run_tests(
+        results, stopped, reason = run_tests(
             buck_args, run_targets, test_filters, event_log_path,
             fail_fast=not keep_going,
         )
@@ -506,7 +500,7 @@ def cmd_sync(keep_going=False):
             state["tests"][name] = status
 
         removed = []
-        if not interrupted:
+        if not stopped:
             for name in to_run:
                 if name not in results and any(
                     test_matches_target(name, t) for t in run_targets
@@ -519,16 +513,16 @@ def cmd_sync(keep_going=False):
         new_pass = sum(1 for s in results.values() if s == "pass")
         new_fail = sum(1 for s in results.values() if s == "fail")
 
-        if interrupted:
-            comment(f"interrupted: {new_pass} pass, {new_fail} fail")
-        else:
-            comment(f"{new_pass} pass, {new_fail} fail")
-
-        # Print changed tests
+        # Print changed tests, with flake hint after each failure
         for name in sorted(results):
             print(f"{results[name]}\t{name}")
+            if results[name] == "fail":
+                comment(f"mark flaky: ./whittle flake {name}")
         for name in sorted(removed):
             print(f"removed\t{name}")
+
+        prefix = f"{reason}: " if reason else ""
+        comment(f"{prefix}{new_pass} pass, {new_fail} fail")
 
         total_fail = sum(1 for s in state["tests"].values() if s == "fail")
         total_pending = sum(
