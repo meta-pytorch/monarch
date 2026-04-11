@@ -730,13 +730,13 @@ def cmd_status():
         comment("no targets; run: whittle add <target>")
         sys.exit(1)
 
-    comment(summarize_counts(state["tests"], state.get("flaky_names")))
-
     for name in sorted(state["tests"]):
         status = state["tests"][name]
         print(f"{status}\t{name}")
     for name in sorted(state.get("flaky_names", [])):
         print(f"flaky\t{name}")
+
+    comment(summarize_counts(state["tests"], state.get("flaky_names")))
 
     failing = sum(1 for s in state["tests"].values() if s == "fail")
     pending = sum(1 for s in state["tests"].values() if s == "pending")
