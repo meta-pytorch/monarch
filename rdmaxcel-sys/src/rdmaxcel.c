@@ -669,6 +669,30 @@ int rdmaxcel_is_efa_dev(struct ibv_context* ctx) {
   return (ret == 0) ? 1 : 0;
 }
 
+// Query whether the EFA device supports RDMA read/write operations.
+// P5/P5en EFA supports RDMA read+write via SRD.
+// P4d EFA only supports send/recv — RDMA read/write will fail.
+// Returns 1 if RDMA read/write is supported, 0 if not.
+int rdmaxcel_efa_supports_rdma(struct ibv_context* ctx) {
+  if (!ctx || !ctx->device) {
+    return 0;
+  }
+
+  // Query device capabilities to check for RDMA read/write support.
+  // The reliable way is to check ibv_query_device_ex for max_rdma read/write
+  // Work Requests. If max_sq_rdma > 0, the device supports RDMA operations.
+  struct ibv_device_attr dev_attr = {};
+  int ret = ibv_query_device(ctx, &dev_attr);
+  if (ret != 0) {
+    return 0;
+  }
+
+  // If the device reports max_qp_rd_atom > 0, it supports RDMA read/atomic.
+  // P4d EFA reports max_qp_rd_atom = 0 (no RDMA read/write).
+  // P5 EFA reports max_qp_rd_atom > 0.
+  return (dev_attr.max_qp_rd_atom > 0) ? 1 : 0;
+}
+
 // ============================================================================
 // EFA QP Creation
 // ============================================================================
@@ -683,6 +707,17 @@ struct ibv_qp* create_efa_qp(
     int max_send_sge,
     int max_recv_sge) {
   // EFA SRD queue pair via efadv_create_qp_ex
+  // Detect RDMA read/write capability. P5/P5en supports RDMA; P4d does not.
+  int has_rdma = rdmaxcel_efa_supports_rdma(context);
+  uint64_t send_ops = IBV_QP_EX_WITH_SEND;
+  if (has_rdma) {
+    send_ops |= IBV_QP_EX_WITH_RDMA_WRITE | IBV_QP_EX_WITH_RDMA_READ;
+  } else {
+    fprintf(stderr,
+        "INFO: EFA device does not support RDMA read/write (P4d-class). "
+        "Using send/recv transport only.\n");
+  }
+
   struct ibv_qp_init_attr_ex initAttributes = {
       .qp_context = NULL,
       .send_cq = send_cq,
@@ -700,8 +735,7 @@ struct ibv_qp* create_efa_qp(
       .sq_sig_all = 0,
       .pd = pd,
       .comp_mask = IBV_QP_INIT_ATTR_PD | IBV_QP_INIT_ATTR_SEND_OPS_FLAGS,
-      .send_ops_flags = IBV_QP_EX_WITH_RDMA_WRITE | IBV_QP_EX_WITH_RDMA_READ |
-          IBV_QP_EX_WITH_SEND,
+      .send_ops_flags = send_ops,
       .create_flags = 0,
   };
 

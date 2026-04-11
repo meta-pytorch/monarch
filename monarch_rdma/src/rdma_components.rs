@@ -117,6 +117,22 @@ impl RdmaRemoteBuffer {
         client: &(impl context::Actor + Send + Sync),
     ) -> Result<RdmaLocalBackend, anyhow::Error> {
         if self.has_ibverbs_backend() {
+            // On EFA devices that don't support RDMA read/write (e.g., P4d),
+            // skip the ibverbs backend entirely and fall back to TCP.
+            // P5/P5en EFA supports RDMA via SRD; P4d only supports send/recv.
+            if crate::efa::is_efa_device() && !crate::efa::efa_supports_rdma() {
+                tracing::warn!(
+                    "EFA device detected but RDMA read/write not supported \
+                     (P4d-class instance). Falling back to TCP transport."
+                );
+                return self
+                    .tcp_fallback_or_bail(
+                        "EFA device does not support RDMA read/write (P4d-class)",
+                        client,
+                    )
+                    .await;
+            }
+
             if let Ok(ibv_handle) = IbvManagerActor::local_handle(client).await {
                 return Ok(RdmaLocalBackend::Ibv(IbvBackend(ibv_handle)));
             }
