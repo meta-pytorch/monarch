@@ -22,10 +22,17 @@ Commands:
         and records them as pending. Flaky tests (per TestX) are excluded by
         default. Pass --include-flaky to include them.
 
-    whittle sync
-        Run all tests that are pending or failing. Tests that pass are marked
-        as passed and excluded from future syncs. Safe to Ctrl-C — partial
-        results are saved and unfinished tests remain pending.
+    whittle sync [-k | --keep-going]
+        Run all tests that are pending or failing. Stops on the first failure
+        by default — use -k/--keep-going to run all tests regardless. Tests
+        that pass are marked as passed and excluded from future syncs. Safe
+        to Ctrl-C — partial results are saved and unfinished tests remain
+        pending.
+
+    whittle reset [--refresh]
+        Reset all tests to pending. With --refresh, also re-enumerate tests
+        from TestX (picks up new tests, drops removed ones, updates flaky
+        list).
 
     whittle flake <test_name>
         Manually mark a test as flaky, excluding it from future syncs. The
@@ -50,7 +57,8 @@ State is stored in .whittle.json in the current directory.
 
 Example:
     ./whittle init --smoke  # init with default monarch smoke targets
-    ./whittle sync          # runs all tests, records pass/fail
+    ./whittle sync          # runs tests, stops on first failure
+    ./whittle sync -k       # run all tests, don't stop on failure
     ./whittle               # shows 3 failing, 500 passed
     # ... one test is flaky, not your problem ...
     ./whittle flake monarch/python/tests:foo - test_foo.py::test_flaky_one
@@ -72,6 +80,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 
 STATE_FILE = ".whittle.json"
 
@@ -244,8 +254,55 @@ def parse_event_log(path):
 # Test running
 # ---------------------------------------------------------------------------
 
-def run_tests(buck_args, targets, test_filters, event_log_path):
-    """Run buck2 test, return parsed results even on interrupt."""
+def _parse_event_line(line):
+    """Parse a single event log line. Returns (name, status) or None."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if "test_name" not in obj:
+        return None
+    name = obj["test_name"]
+    status = obj.get("status")
+    parts = name.split(" - ", 1)
+    if len(parts) == 2 and parts[1] in ("listing", "main"):
+        return None
+    name = name.removeprefix("fbcode//")
+    if status == 1:
+        return (name, "pass")
+    elif status == 2:
+        return (name, "fail")
+    return None
+
+
+def _tail_event_log(path, results, fail_event, stop_event):
+    """Tail the event log, populating results dict. Sets fail_event on
+    first failure."""
+    while not stop_event.is_set() and not os.path.exists(path):
+        time.sleep(0.05)
+    if stop_event.is_set():
+        return
+    with open(path) as f:
+        while not stop_event.is_set():
+            line = f.readline()
+            if not line:
+                time.sleep(0.05)
+                continue
+            parsed = _parse_event_line(line)
+            if parsed:
+                name, status = parsed
+                results[name] = status
+                if status == "fail":
+                    fail_event.set()
+
+
+def run_tests(buck_args, targets, test_filters, event_log_path,
+              fail_fast=False):
+    """Run buck2 test, return parsed results even on interrupt.
+    If fail_fast, kill buck2 on first test failure."""
     cmd = ["buck2", "test", "--skip-incompatible-targets"] + buck_args + targets
     tpx_args = ["--event-log-file", event_log_path]
     tpx_args += test_filters
@@ -255,7 +312,19 @@ def run_tests(buck_args, targets, test_filters, event_log_path):
     sys.stdout.flush()
 
     interrupted = False
+    failed_fast = False
+    results = {}
     proc = subprocess.Popen(cmd)
+
+    # Tail the event log in a background thread
+    fail_event = threading.Event()
+    stop_event = threading.Event()
+    tailer = threading.Thread(
+        target=_tail_event_log,
+        args=(event_log_path, results, fail_event, stop_event),
+        daemon=True,
+    )
+    tailer.start()
 
     old_handler = signal.getsignal(signal.SIGINT)
 
@@ -266,11 +335,34 @@ def run_tests(buck_args, targets, test_filters, event_log_path):
 
     signal.signal(signal.SIGINT, on_sigint)
     try:
-        proc.wait()
+        if fail_fast:
+            # Poll: wait for process exit or first failure
+            while proc.poll() is None:
+                if fail_event.wait(timeout=0.1):
+                    failed_fast = True
+                    proc.send_signal(signal.SIGINT)
+                    proc.wait()
+                    break
+        else:
+            proc.wait()
     finally:
         signal.signal(signal.SIGINT, old_handler)
+        stop_event.set()
+        tailer.join(timeout=2)
 
-    results = parse_event_log(event_log_path)
+    # Pick up any remaining lines the tailer didn't get
+    for name, status in parse_event_log(event_log_path).items():
+        if name not in results:
+            results[name] = status
+
+    if interrupted:
+        comment("interrupted")
+    elif failed_fast:
+        # Find the first failure to report
+        for name, status in results.items():
+            if status == "fail":
+                comment(f"stopped: first failure")
+                break
     return results, interrupted
 
 
@@ -360,7 +452,7 @@ def cmd_add(targets, include_flaky=False):
     comment(f"added {added_tests} test(s), {added_flaky} flaky excluded")
 
 
-def cmd_sync():
+def cmd_sync(keep_going=False):
     state = load_state()
     if not state["targets"]:
         comment("no targets; run: whittle add <target>")
@@ -406,7 +498,8 @@ def cmd_sync():
 
     try:
         results, interrupted = run_tests(
-            buck_args, run_targets, test_filters, event_log_path
+            buck_args, run_targets, test_filters, event_log_path,
+            fail_fast=not keep_going,
         )
 
         for name, status in results.items():
@@ -448,6 +541,34 @@ def cmd_sync():
             os.unlink(event_log_path)
         except OSError:
             pass
+
+
+def cmd_reset(refresh=False):
+    state = load_state()
+    # Reset all tests to pending
+    for name in state["tests"]:
+        state["tests"][name] = "pending"
+    count = len(state["tests"])
+
+    if refresh:
+        # Re-enumerate tests from targets, preserving flaky list
+        state["tests"] = {}
+        flaky_names = set(state.get("flaky_names", []))
+        for target in state["targets"]:
+            tests = query_tests(target)
+            for t in tests:
+                name = t["name"]
+                if name in flaky_names:
+                    continue
+                if t["flaky"] and name not in flaky_names:
+                    flaky_names.add(name)
+                else:
+                    state["tests"][name] = "pending"
+        state["flaky_names"] = sorted(flaky_names)
+        count = len(state["tests"])
+
+    save_state(state)
+    comment(f"reset {count} test(s) to pending")
 
 
 def cmd_flake(test_name):
@@ -511,7 +632,10 @@ def main():
             sys.exit(1)
         cmd_add(targets, include_flaky)
     elif command == "sync":
-        cmd_sync()
+        keep_going = "-k" in args or "--keep-going" in args
+        cmd_sync(keep_going=keep_going)
+    elif command == "reset":
+        cmd_reset(refresh="--refresh" in args)
     elif command == "flake":
         test_name = " ".join(args[1:])
         if not test_name:
