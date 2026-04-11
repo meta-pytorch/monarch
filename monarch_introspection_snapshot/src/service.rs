@@ -18,15 +18,11 @@
 //!
 //! # Usage
 //!
-//! Both [`SnapshotService::capture`] and [`spawn_periodic_capture`]
-//! take a *resolver* — a closure `Fn(&NodeRef) ->
-//! Future<Result<NodePayload>>` that resolves a single node reference
-//! via the mesh admin. In production this calls
+//! [`SnapshotService::capture`] takes a *resolver* — a closure
+//! `Fn(&NodeRef) -> Future<Result<NodePayload>>` that resolves a
+//! single node reference via the mesh admin. In production this calls
 //! `MeshAdminAgent::resolve`; in tests it can be a stub backed by a
 //! `HashMap`.
-//!
-//! For [`spawn_periodic_capture`], a *resolver factory* `Fn() ->
-//! resolver` is passed instead, producing a fresh resolver per tick.
 //!
 //! **One-shot capture** — capture a mesh snapshot on demand:
 //!
@@ -52,40 +48,21 @@
 //! sinks. At least one sink (`table_store` or `export_root`) must be
 //! active.
 //!
-//! **Periodic capture** — run the capture pipeline on a timer:
+//! **Periodic capture** — spawn a [`SnapshotCaptureActor`]:
 //!
 //! ```ignore
-//! // Factory produces a fresh resolver per tick.
-//! let make_resolve = || {
-//!     let admin_ref = admin_ref.clone();
-//!     move |node_ref: &NodeRef| {
-//!         let admin_ref = admin_ref.clone();
-//!         let ref_string = node_ref.to_string();
-//!         async move {
-//!             let resp = admin_ref.resolve(instance, ref_string).await?;
-//!             resp.0.map_err(|e| anyhow::anyhow!("{}", e))
-//!         }
-//!     }
-//! };
-//!
-//! let service = SnapshotService::new(Some(table_store));
-//! let cancel = CancellationToken::new();
-//! let handle = spawn_periodic_capture(
-//!     service.clone(),
+//! let actor = SnapshotCaptureActor::new(
+//!     table_store,
+//!     admin_ref,
 //!     Duration::from_secs(30),
-//!     cancel.clone(),
-//!     make_resolve,
-//! )?;
-//!
-//! // ... later, shut down:
-//! cancel.cancel();
-//! handle.await?;
+//! );
+//! proc.spawn("snapshot_capture", actor)?;
+//! // Actor is stopped by framework lifecycle on proc teardown.
 //! ```
 //!
-//! [`spawn_periodic_capture`] reuses the same capture pipeline but is
-//! live-ingest only (`export_root` is always `None`). Overlapping
-//! ticks are skipped, not queued. Capture errors are logged and do
-//! not stop the timer.
+//! The actor reuses the same capture pipeline but is live-ingest only
+//! (`export_root` is always `None`). Overlapping ticks are skipped,
+//! not queued. Capture errors are logged and do not stop the timer.
 //!
 //! # Service invariants (SV-*)
 //!
@@ -118,14 +95,21 @@
 //!
 //! - **PT-1 (positive interval):** Zero interval rejected before
 //!   spawn.
-//! - **PT-2 (live sink required):** `table_store.is_some()` required.
-//! - **PT-3 (delayed first fire):** First capture after one full
-//!   interval.
+//! - **PT-2 (live sink by construction):** The periodic path takes a
+//!   concrete `TableStore`, not an `Option`. A live sink is guaranteed
+//!   by the API shape.
+//! - **PT-3 (immediate first fire):** First capture fires at spawn
+//!   time. Subsequent captures fire after each interval.
 //! - **PT-4 (single in-flight):** Overlapping ticks skipped via CAS.
 //!   `in_flight` is consulted only by the periodic loop; on-demand
 //!   `capture` calls do not check it.
-//! - **PT-5 (cancellation boundary):** Stops future ticks; does not
-//!   interrupt in-flight capture.
+//! - **PT-5 (actor lifecycle):** The actor is stopped by framework
+//!   lifecycle (proc teardown via `DrainAndStop`). The framework
+//!   guarantees the current handler runs to completion before
+//!   stopping. At most one additional queued capture may execute
+//!   during drain. After stop, snapshot count stabilizes — no
+//!   unbounded reschedule tail. Tested by
+//!   `test_pt5_drain_halts_future_captures`.
 //! - **PT-6 (failure resilience):** Capture `Err` logged, loop
 //!   continues.
 //! - **PT-7 (live-ingest only):** Always `export_root = None`.
@@ -139,14 +123,22 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use async_trait::async_trait;
+use hyperactor::Actor;
+use hyperactor::Context;
+use hyperactor::Handler;
+use hyperactor::Instance;
+use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::Undeliverable;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeRef;
+use hyperactor_mesh::mesh_admin::MeshAdminAgent;
+use hyperactor_mesh::mesh_admin::ResolveReferenceMessageClient;
 use monarch_distributed_telemetry::database_scanner::TableStore;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
-use tokio_util::sync::CancellationToken;
+use typeuri::Named;
 use uuid::Uuid;
 
 use crate::bundle::write_bundle;
@@ -283,132 +275,133 @@ where
 
     // PT-7: always None for export_root.
     match service.capture(resolve, None).await {
-        Ok(_result) => {}
+        Ok(result) => {
+            let c = &result.node_counts;
+            let short_id = &result.snapshot_id[..6];
+            if c.resolution_errors > 0 {
+                tracing::warn!(
+                    "capture partial: {}/{} nodes ({} resolution errors) in {:.0}ms [snap_id={}]",
+                    c.nodes - c.resolution_errors,
+                    c.nodes,
+                    c.resolution_errors,
+                    result.capture_duration_ms,
+                    short_id,
+                );
+            } else {
+                tracing::info!(
+                    "capture ok: {} nodes ({} hosts, {} procs, {} actors) in {:.0}ms [snap_id={}]",
+                    c.nodes,
+                    c.host_nodes,
+                    c.proc_nodes,
+                    c.actor_nodes,
+                    result.capture_duration_ms,
+                    short_id,
+                );
+            }
+        }
         // PT-6: log and continue.
         Err(e) => tracing::warn!("periodic capture failed: {:#}", e),
     }
     true
 }
 
-/// Tick source for the periodic capture loop.
+/// Self-message that triggers one periodic capture cycle. See PT-3,
+/// PT-5.
+#[derive(Debug, Serialize, Deserialize, Named)]
+pub struct CaptureSnapshot;
+wirevalue::register_type!(CaptureSnapshot);
+
+/// Periodic snapshot capture actor. Owns scheduling and lifecycle;
+/// delegates per-tick execution to [`run_periodic_tick`].
 ///
-/// Production uses [`IntervalTick`]; tests use [`NotifyTick`].
-trait TickSource {
-    /// Wait for the next tick.
-    fn tick(&mut self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+/// The spawn site sends the first `CaptureSnapshot` (PT-3). The
+/// handler reschedules after each tick via `self_message_with_delay`.
+/// Stopped by framework lifecycle (`DrainAndStop` on proc teardown).
+#[hyperactor::export(handlers = [CaptureSnapshot])]
+pub struct SnapshotCaptureActor {
+    /// Shared snapshot capture pipeline and live-ingest sink.
+    service: SnapshotService,
+    /// Typed admin actor reference used to resolve `NodeRef`s during
+    /// capture.
+    admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent>,
+    /// Delay between periodic capture ticks after the initial
+    /// immediate fire.
+    interval: Duration,
 }
 
-/// Production tick source backed by `tokio::time::Interval`.
-struct IntervalTick {
-    interval: tokio::time::Interval,
-}
+#[async_trait]
+impl Actor for SnapshotCaptureActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Bind the mailbox before the first tick so outbound sends
+        // from this actor do not hit the generic "no
+        // Undeliverable<MessageEnvelope> bound" warning path.
+        this.bind::<Self>();
+        this.set_system();
+        Ok(())
+    }
 
-impl TickSource for IntervalTick {
-    fn tick(&mut self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(async {
-            self.interval.tick().await;
-        })
+    // Defensive only: periodic capture is best-effort, so an
+    // unexpected undeliverable outbound message should be surfaced in
+    // logs but must not stop future ticks.
+    async fn handle_undeliverable_message(
+        &mut self,
+        _cx: &Instance<Self>,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        // Periodic capture is best-effort. A bounced outbound message
+        // should not fail the actor or stop future ticks; log it and
+        // continue.
+        tracing::error!(
+            sender = %envelope.0.sender(),
+            dest = %envelope.0.dest(),
+            error = envelope.0.error_msg().unwrap_or_default(),
+            "snapshot capture dropped undeliverable outbound message"
+        );
+        Ok(())
     }
 }
 
-/// Per-tick completion callback.
-///
-/// Called after each tick is fully processed (capture completed or
-/// skipped). Production passes [`NoOpDone`]; tests pass
-/// [`NotifyDone`] to synchronize without `yield_now`.
-trait OnTickDone {
-    fn done(&self);
+#[async_trait]
+impl Handler<CaptureSnapshot> for SnapshotCaptureActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        _message: CaptureSnapshot,
+    ) -> Result<(), anyhow::Error> {
+        let admin_ref = self.admin_ref.clone();
+        let resolve = |node_ref: &NodeRef| {
+            let admin_ref = admin_ref.clone();
+            let ref_string = node_ref.to_string();
+            async move {
+                let resp = admin_ref.resolve(cx, ref_string).await?;
+                resp.0.map_err(|e| anyhow::anyhow!("{}", e))
+            }
+        };
+        run_periodic_tick(&self.service, resolve).await;
+
+        // Reschedule. If the actor is stopping, this spawns a
+        // detached task whose eventual port.send() fails harmlessly.
+        if let Err(e) = cx.self_message_with_delay(CaptureSnapshot, self.interval) {
+            tracing::error!("snapshot capture actor failed to reschedule: {:#}", e);
+        }
+        Ok(())
+    }
 }
 
-/// Production no-op completion signal.
-struct NoOpDone;
-impl OnTickDone for NoOpDone {
-    fn done(&self) {}
-}
-
-/// Private loop driver for periodic capture.
-///
-/// Separates tick scheduling from tick handling so tests can drive
-/// ticks manually. Production passes an [`IntervalTick`]; tests
-/// pass a [`NotifyTick`]. The `on_tick_done` callback fires after
-/// each tick is fully processed.
-///
-/// The loop uses `biased` select with cancellation first (PT-5).
-async fn run_periodic_loop<MkResolve, F, Fut>(
-    service: SnapshotService,
-    cancel: CancellationToken,
-    make_resolve: MkResolve,
-    mut ticks: impl TickSource,
-    on_tick_done: impl OnTickDone,
-) where
-    MkResolve: Fn() -> F,
-    F: Fn(&NodeRef) -> Fut,
-    Fut: Future<Output = anyhow::Result<NodePayload>>,
-{
-    loop {
-        tokio::select! {
-            biased;
-
-            // PT-5: cancellation checked first via biased select.
-            _ = cancel.cancelled() => {
-                break;
-            }
-
-            _ = ticks.tick() => {
-                run_periodic_tick(&service, make_resolve()).await;
-                on_tick_done.done();
-            }
+impl SnapshotCaptureActor {
+    /// Create a new snapshot capture actor. Call `proc.spawn()` to
+    /// start it.
+    pub fn new(
+        table_store: TableStore,
+        admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent>,
+        interval: Duration,
+    ) -> Self {
+        Self {
+            service: SnapshotService::new(Some(table_store)),
+            admin_ref,
+            interval,
         }
     }
-}
-
-/// Spawn a periodic snapshot capture timer.
-///
-/// Returns `Err` immediately if `interval` is zero (PT-1) or the
-/// service has no `table_store` (PT-2). On success, returns a
-/// `JoinHandle` for the spawned timer task. The task owns a cloned
-/// `SnapshotService` by value and shares the same `in_flight` guard
-/// and `TableStore` as the original.
-pub fn spawn_periodic_capture<MkResolve, F, Fut>(
-    service: SnapshotService,
-    interval: Duration,
-    cancel: CancellationToken,
-    make_resolve: MkResolve,
-) -> anyhow::Result<JoinHandle<()>>
-where
-    MkResolve: Fn() -> F + Send + Sync + 'static,
-    F: Fn(&NodeRef) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = anyhow::Result<NodePayload>> + Send + 'static,
-{
-    // PT-1: reject zero interval.
-    anyhow::ensure!(
-        !interval.is_zero(),
-        "periodic capture interval must be non-zero"
-    );
-
-    // PT-2: reject if no table_store.
-    anyhow::ensure!(
-        service.table_store.is_some(),
-        "periodic capture requires a table_store"
-    );
-
-    let handle = tokio::spawn(async move {
-        // PT-3: first fire after one full interval.
-        let start = tokio::time::Instant::now() + interval;
-        let mut timer = tokio::time::interval_at(start, interval);
-        timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-        run_periodic_loop(
-            service,
-            cancel,
-            make_resolve,
-            IntervalTick { interval: timer },
-            NoOpDone,
-        )
-        .await;
-    });
-
-    Ok(handle)
 }
 
 /// Result metadata from a snapshot capture operation.
@@ -847,197 +840,6 @@ mod tests {
         assert_eq!(manifest.snapshot_id, result.snapshot_id);
     }
 
-    // --- Periodic trigger tests (PT-*) ---
-    //
-    // Test split:
-    // - PT-1, PT-2: direct spawn_periodic_capture precondition tests
-    // - PT-3, PT-5: deterministic loop tests via run_periodic_loop
-    //   with NotifyTick (manual tick source)
-    // - PT-4, PT-6, PT-7: direct run_periodic_tick tests
-
-    type PinFut = std::pin::Pin<Box<dyn Future<Output = anyhow::Result<NodePayload>> + Send>>;
-
-    /// Test tick source backed by `tokio::sync::Notify`.
-    /// Each `notify_one()` on the held `Arc<Notify>` fires one tick.
-    struct NotifyTick(Arc<tokio::sync::Notify>);
-
-    impl TickSource for NotifyTick {
-        fn tick(&mut self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-            let n = self.0.clone();
-            Box::pin(async move { n.notified().await })
-        }
-    }
-
-    /// Test completion signal. The loop calls `done()` after each
-    /// tick is fully processed; tests await `done_signal.notified()`
-    /// to synchronize deterministically.
-    struct NotifyDone(Arc<tokio::sync::Notify>);
-
-    impl OnTickDone for NotifyDone {
-        fn done(&self) {
-            self.0.notify_one();
-        }
-    }
-
-    /// Build a resolver factory for tests that exercise
-    /// spawn_periodic_capture with a real timer (production timer
-    /// PT-3 test) and for the PT-5 in-flight cancellation test.
-    fn periodic_resolver_factory(
-        payloads: HashMap<NodeRef, NodePayload>,
-        counter: Arc<std::sync::atomic::AtomicUsize>,
-        gate: Option<Arc<tokio::sync::Notify>>,
-    ) -> impl Fn() -> Box<dyn Fn(&NodeRef) -> PinFut + Send + Sync> + Send + Sync + 'static {
-        move || {
-            let payloads = payloads.clone();
-            let counter = counter.clone();
-            let gate = gate.clone();
-            Box::new(move |node_ref: &NodeRef| {
-                let result = payloads
-                    .get(node_ref)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("unknown ref: {}", node_ref));
-                let is_root = *node_ref == NodeRef::Root;
-                let counter = counter.clone();
-                let gate = gate.clone();
-                Box::pin(async move {
-                    if is_root {
-                        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if let Some(g) = gate {
-                            g.notified().await;
-                        }
-                    }
-                    result
-                })
-            })
-        }
-    }
-
-    // --- PT-1, PT-2: spawn precondition tests (sync) ---
-
-    /// Dummy resolver for precondition tests where the resolver is
-    /// never called.
-    fn unused_resolver(_: &NodeRef) -> std::future::Ready<anyhow::Result<NodePayload>> {
-        std::future::ready(Err(anyhow::anyhow!("unused")))
-    }
-
-    // PT-1: zero interval rejected.
-    #[test]
-    fn test_periodic_rejects_zero_interval() {
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(store));
-        let cancel = CancellationToken::new();
-
-        let err = spawn_periodic_capture(service, Duration::ZERO, cancel, || unused_resolver);
-        assert!(err.is_err(), "PT-1: should reject zero interval");
-        assert!(
-            err.unwrap_err().to_string().contains("non-zero"),
-            "PT-1: error should mention non-zero",
-        );
-    }
-
-    // PT-2: no table_store rejected.
-    #[test]
-    fn test_periodic_rejects_no_store() {
-        let service = SnapshotService::new(None);
-        let cancel = CancellationToken::new();
-
-        let err =
-            spawn_periodic_capture(service, Duration::from_secs(1), cancel, || unused_resolver);
-        assert!(err.is_err(), "PT-2: should reject no store");
-        assert!(
-            err.unwrap_err().to_string().contains("table_store"),
-            "PT-2: error should mention table_store",
-        );
-    }
-
-    // PT-3: no capture before a tick is sent; exactly one after. Uses
-    // run_periodic_loop with NotifyTick and NotifyDone for
-    // deterministic synchronization.
-    #[tokio::test]
-    async fn test_periodic_delayed_first_fire() {
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(store.clone()));
-        let cancel = CancellationToken::new();
-        let payloads = minimal_mesh_payloads();
-
-        let tick_signal = Arc::new(tokio::sync::Notify::new());
-        let done_signal = Arc::new(tokio::sync::Notify::new());
-
-        let handle = tokio::spawn({
-            let cancel = cancel.clone();
-            let payloads = payloads.clone();
-            let tick_signal = tick_signal.clone();
-            let done_signal = done_signal.clone();
-            async move {
-                run_periodic_loop(
-                    service,
-                    cancel,
-                    || stub_resolver(payloads.clone()),
-                    NotifyTick(tick_signal),
-                    NotifyDone(done_signal),
-                )
-                .await;
-            }
-        });
-
-        // No tick sent yet — no capture should have occurred. The
-        // loop is blocked on NotifyTick, so the store is empty.
-        assert_eq!(
-            store.table_names().unwrap().len(),
-            0,
-            "PT-3: no capture before tick"
-        );
-
-        // Send one tick and await the completion signal.
-        tick_signal.notify_one();
-        done_signal.notified().await;
-
-        assert_eq!(
-            store.table_names().unwrap().len(),
-            9,
-            "PT-3: one capture after tick"
-        );
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
-    // PT-3 (production timer): spawn_periodic_capture with a real
-    // interval does not fire before one full interval. This is the
-    // one test that exercises the interval_at(now + interval,
-    // interval) construction in spawn_periodic_capture itself.
-    #[tokio::test]
-    async fn test_periodic_production_timer_delay() {
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(store.clone()));
-        let cancel = CancellationToken::new();
-        let payloads = minimal_mesh_payloads();
-        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let factory = periodic_resolver_factory(payloads, counter.clone(), None);
-        let interval = Duration::from_millis(200);
-
-        let handle = spawn_periodic_capture(service, interval, cancel.clone(), factory).unwrap();
-
-        // Well before the first interval — no capture.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(
-            counter.load(std::sync::atomic::Ordering::Relaxed),
-            0,
-            "PT-3: no capture before first interval (production timer)",
-        );
-
-        // Wait long enough for the first tick to fire and capture
-        // to complete.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(
-            counter.load(std::sync::atomic::Ordering::Relaxed) >= 1,
-            "PT-3: at least one capture after interval (production timer)",
-        );
-
-        cancel.cancel();
-        handle.await.unwrap();
-    }
-
     // --- PT-4, PT-6, PT-7: direct run_periodic_tick tests ---
     //
     // These test the per-tick helper directly — no tokio::spawn, no
@@ -1128,116 +930,5 @@ mod tests {
         // PT-7 is structural: run_periodic_tick calls
         // service.capture(resolve, None). No bundle directory
         // was created.
-    }
-
-    // --- PT-5: deterministic loop tests via run_periodic_loop ---
-
-    // PT-5 (idle): cancel before any tick, loop exits, zero captures.
-    #[tokio::test]
-    async fn test_periodic_cancel_while_idle() {
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(store.clone()));
-        let cancel = CancellationToken::new();
-        let payloads = minimal_mesh_payloads();
-        let tick_signal = Arc::new(tokio::sync::Notify::new());
-
-        // Cancel immediately — before any tick is sent.
-        cancel.cancel();
-
-        run_periodic_loop(
-            service,
-            cancel,
-            || stub_resolver(payloads.clone()),
-            NotifyTick(tick_signal),
-            NoOpDone,
-        )
-        .await;
-
-        assert_eq!(
-            store.table_names().unwrap().len(),
-            0,
-            "PT-5: no captures after cancel while idle",
-        );
-    }
-
-    // PT-5 (in-flight): cancel during a gated capture, capture
-    // finishes, then the loop exits. No second capture.
-    //
-    // Synchronization:
-    // - started_signal: resolver notifies when root resolution begins
-    // - resolver_gate: test releases to let the capture finish
-    // - done_signal: loop notifies when tick is fully processed
-    #[tokio::test]
-    async fn test_periodic_cancel_during_inflight() {
-        let store = TableStore::new_empty();
-        let service = SnapshotService::new(Some(store.clone()));
-        let cancel = CancellationToken::new();
-        let payloads = minimal_mesh_payloads();
-        let started_signal = Arc::new(tokio::sync::Notify::new());
-        let resolver_gate = Arc::new(tokio::sync::Notify::new());
-        let tick_signal = Arc::new(tokio::sync::Notify::new());
-        let done_signal = Arc::new(tokio::sync::Notify::new());
-
-        let handle = tokio::spawn({
-            let cancel = cancel.clone();
-            let payloads = payloads.clone();
-            let started_signal = started_signal.clone();
-            let resolver_gate = resolver_gate.clone();
-            let tick_signal = tick_signal.clone();
-            let done_signal = done_signal.clone();
-            async move {
-                run_periodic_loop(
-                    service,
-                    cancel,
-                    move || {
-                        let payloads = payloads.clone();
-                        let started_signal = started_signal.clone();
-                        let resolver_gate = resolver_gate.clone();
-                        move |node_ref: &NodeRef| {
-                            let result = payloads
-                                .get(node_ref)
-                                .cloned()
-                                .ok_or_else(|| anyhow::anyhow!("unknown ref: {}", node_ref));
-                            let is_root = *node_ref == NodeRef::Root;
-                            let started_signal = started_signal.clone();
-                            let resolver_gate = resolver_gate.clone();
-                            Box::pin(async move {
-                                if is_root {
-                                    started_signal.notify_one();
-                                    resolver_gate.notified().await;
-                                }
-                                result
-                            }) as PinFut
-                        }
-                    },
-                    NotifyTick(tick_signal),
-                    NotifyDone(done_signal),
-                )
-                .await;
-            }
-        });
-
-        // Send one tick — capture starts, blocks on resolver_gate.
-        tick_signal.notify_one();
-        // Wait for the resolver to signal that root resolution began.
-        started_signal.notified().await;
-
-        // Cancel while capture is in-flight.
-        cancel.cancel();
-
-        // Task should not have exited — capture is blocked on gate.
-        assert!(
-            !handle.is_finished(),
-            "PT-5: task still running while gated"
-        );
-
-        // Release the capture. The loop completes the tick (fires
-        // done_signal), then sees cancellation and exits.
-        resolver_gate.notify_one();
-        done_signal.notified().await;
-        handle.await.unwrap();
-
-        // Verify the capture actually ingested data.
-        assert_eq!(store.table_names().unwrap().len(), 9);
     }
 }
