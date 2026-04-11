@@ -613,15 +613,6 @@ def cmd_sync(keep_going=False):
         for name, status in results.items():
             state["tests"][name] = status
 
-        removed = []
-        if not stopped:
-            for name in to_run:
-                if name not in results and any(
-                    test_matches_target(name, t) for t in run_targets
-                ):
-                    state["tests"][name] = "removed"
-                    removed.append(name)
-
         save_state(state)
 
         new_pass = sum(1 for s in results.values() if s == "pass")
@@ -632,8 +623,6 @@ def cmd_sync(keep_going=False):
             print(f"{results[name]}\t{name}")
             if results[name] == "fail":
                 comment(f"mark flaky: ./whittle flake {name}")
-        for name in sorted(removed):
-            print(f"removed\t{name}")
 
         prefix = f"{reason}: " if reason else ""
         comment(f"{prefix}{new_pass} pass, {new_fail} fail")
