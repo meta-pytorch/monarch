@@ -117,6 +117,22 @@ impl RdmaRemoteBuffer {
         client: &(impl context::Actor + Send + Sync),
     ) -> Result<RdmaLocalBackend, anyhow::Error> {
         if self.has_ibverbs_backend() {
+            // On EFA devices that don't support RDMA read/write (e.g., P4d),
+            // skip the ibverbs backend entirely and fall back to TCP.
+            // P5/P5en EFA supports RDMA via SRD; P4d only supports send/recv.
+            if crate::efa::is_efa_device() && !crate::efa::efa_supports_rdma() {
+                tracing::warn!(
+                    "EFA device detected but RDMA read/write not supported \
+                     (P4d-class instance). Falling back to TCP transport."
+                );
+                return self
+                    .tcp_fallback_or_bail(
+                        "EFA device does not support RDMA read/write (P4d-class)",
+                        client,
+                    )
+                    .await;
+            }
+
             if let Ok(ibv_handle) = IbvManagerActor::local_handle(client).await {
                 return Ok(RdmaLocalBackend::Ibv(IbvBackend(ibv_handle)));
             }
@@ -257,25 +273,44 @@ impl RdmaRemoteBuffer {
     }
 }
 
-/// Utility to validate execution context.
+/// Utility to validate execution context for GPU Direct RDMA.
 ///
-/// Remote Execution environments do not always have access to the nvidia_peermem module
-/// and/or set the PeerMappingOverride parameter due to security. This function can be
-/// used to validate that the execution context when running operations that need this
-/// functionality (ie. cudaHostRegisterIoMemory).
+/// Remote Execution environments do not always have access to the peermem module
+/// and/or set the PeerMappingOverride parameter due to security. This function
+/// validates that the kernel modules needed for GPU Direct RDMA are loaded.
+///
+/// On **Mellanox/mlx5** hardware, this requires `nvidia_peermem` and
+/// `PeerMappingOverride=1` in the NVIDIA driver params.
+///
+/// On **EFA** hardware, this requires `efa_nv_peermem` (the EFA-specific peermem
+/// module). The `PeerMappingOverride` check is skipped because EFA uses DMA-BUF
+/// for GPU memory registration instead of the Mellanox peermem path.
 ///
 /// # Returns
 ///
 /// * `Ok(())` if the execution context is valid
 /// * `Err(anyhow::Error)` if the execution context is invalid
 pub async fn validate_execution_context() -> Result<(), anyhow::Error> {
-    // Check for nvidia peermem
+    let is_efa = crate::efa::is_efa_device();
+
+    // Check for the appropriate peermem kernel module
     match fs::read_to_string("/proc/modules") {
         Ok(contents) => {
-            if !contents.contains("nvidia_peermem") {
-                return Err(anyhow::anyhow!(
-                    "nvidia_peermem module not found in /proc/modules"
-                ));
+            if is_efa {
+                // EFA uses efa_nv_peermem for GPU Direct RDMA via DMA-BUF
+                if !contents.contains("efa_nv_peermem") {
+                    return Err(anyhow::anyhow!(
+                        "efa_nv_peermem module not found in /proc/modules \
+                         (required for GPU Direct RDMA on EFA)"
+                    ));
+                }
+            } else {
+                // Mellanox uses nvidia_peermem
+                if !contents.contains("nvidia_peermem") {
+                    return Err(anyhow::anyhow!(
+                        "nvidia_peermem module not found in /proc/modules"
+                    ));
+                }
             }
         }
         Err(e) => {
@@ -283,17 +318,19 @@ pub async fn validate_execution_context() -> Result<(), anyhow::Error> {
         }
     }
 
-    // Test file access to nvidia params
-    match fs::read_to_string("/proc/driver/nvidia/params") {
-        Ok(contents) => {
-            if !contents.contains("PeerMappingOverride=1") {
-                return Err(anyhow::anyhow!(
-                    "PeerMappingOverride=1 not found in /proc/driver/nvidia/params"
-                ));
+    // PeerMappingOverride is Mellanox-specific; EFA doesn't need it
+    if !is_efa {
+        match fs::read_to_string("/proc/driver/nvidia/params") {
+            Ok(contents) => {
+                if !contents.contains("PeerMappingOverride=1") {
+                    return Err(anyhow::anyhow!(
+                        "PeerMappingOverride=1 not found in /proc/driver/nvidia/params"
+                    ));
+                }
             }
-        }
-        Err(e) => {
-            return Err(anyhow::anyhow!(e));
+            Err(e) => {
+                return Err(anyhow::anyhow!(e));
+            }
         }
     }
     Ok(())
