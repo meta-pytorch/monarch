@@ -50,10 +50,15 @@ Commands:
         Mark a skipped test as pending again. With --all, unskip all
         skipped tests.
 
-    whittle
+    whittle pass <test_name>
+        Manually mark a test as passed.
+
+    whittle [--state=fail,skip,...] [-v]
         Print status: one line per test, tab-separated status and name.
-        Exits 0 if all tests pass, 1 if any are failing, pending, or
-        skipped.
+        --state filters to specific states (comma-separated).
+        -v adds a comment after each test with the buck command to
+        reproduce it. Exits 0 if all tests pass, 1 if any are failing,
+        pending, or skipped.
 
 Output format:
     Lines starting with # are comments (diagnostics/summaries).
@@ -709,6 +714,17 @@ def cmd_unskip(test_name=None, all_=False):
     print(f"pending\t{test_name}")
 
 
+def cmd_pass(test_name):
+    state = load_state()
+    test_name = test_name.removeprefix("fbcode//")
+    if test_name not in state["tests"]:
+        comment(f"unknown test: {test_name}")
+        sys.exit(1)
+    state["tests"][test_name] = "pass"
+    save_state(state)
+    print(f"pass\t{test_name}")
+
+
 def cmd_flake(test_name):
     state = load_state()
     test_name = test_name.removeprefix("fbcode//")
@@ -724,17 +740,70 @@ def cmd_flake(test_name):
     print(f"flaky\t{test_name}")
 
 
-def cmd_status():
+def _buck_cmd_for_test(name):
+    """Return a buck2 test command to reproduce a single test."""
+    parts = name.split(" - ", 1)
+    if len(parts) != 2:
+        return None
+    target = "fbcode//" + parts[0]
+    test_case = parts[1]
+    buck_args = " ".join(get_buck_args())
+    return f"buck2 test {buck_args} {target} -- {test_case}"
+
+
+def cmd_agent():
+    state = load_state()
+    if not state["targets"]:
+        comment("no targets; run: whittle init --smoke")
+        sys.exit(1)
+
+    failing = [n for n, s in state["tests"].items() if s == "fail"]
+    pending = [n for n, s in state["tests"].items() if s == "pending"]
+    skipped = [n for n, s in state["tests"].items() if s == "skip"]
+
+    print("Read the whittle skill by running: ./whittle --skill")
+    print()
+    print("Your job is to make `./whittle sync` exit 0. Follow the workflow")
+    print("described in the skill output. The current state is:")
+    print()
+    print(f"  {len(failing)} failing, {len(pending)} pending, "
+          f"{len(skipped)} skipped")
+    print()
+    if failing:
+        print("Failing tests:")
+        for name in sorted(failing):
+            print(f"  {name}")
+        print()
+    if skipped:
+        print("Skipped tests (must be resolved before sync can succeed):")
+        for name in sorted(skipped):
+            print(f"  {name}")
+        print()
+    print("Run `./whittle sync` to start. Fix failures, mark flaky tests,")
+    print("and repeat until it exits 0.")
+
+
+def cmd_status(filter_states=None, verbose=False):
     state = load_state()
     if not state["targets"]:
         comment("no targets; run: whittle add <target>")
         sys.exit(1)
 
+    # Build list of (status, name) pairs
+    entries = []
     for name in sorted(state["tests"]):
-        status = state["tests"][name]
-        print(f"{status}\t{name}")
+        entries.append((state["tests"][name], name))
     for name in sorted(state.get("flaky_names", [])):
-        print(f"flaky\t{name}")
+        entries.append(("flaky", name))
+
+    for status, name in entries:
+        if filter_states and status not in filter_states:
+            continue
+        print(f"{status}\t{name}")
+        if verbose:
+            buck_cmd = _buck_cmd_for_test(name)
+            if buck_cmd:
+                comment(buck_cmd)
 
     comment(summarize_counts(state["tests"], state.get("flaky_names")))
 
@@ -752,11 +821,23 @@ def cmd_status():
 def main():
     args = sys.argv[1:]
 
-    if not args:
-        cmd_status()
+    # Parse global flags (before or instead of a command)
+    filter_states = None
+    verbose = False
+    remaining = []
+    for a in args:
+        if a.startswith("--state="):
+            filter_states = set(a.split("=", 1)[1].split(","))
+        elif a == "-v":
+            verbose = True
+        else:
+            remaining.append(a)
+
+    if not remaining:
+        cmd_status(filter_states=filter_states, verbose=verbose)
         return
 
-    command = args[0]
+    command = remaining[0]
 
     if command in ("-h", "--help", "help"):
         print(__doc__.strip())
@@ -764,37 +845,46 @@ def main():
     elif command == "--skill":
         print(AGENT_SKILL.strip())
         return
+    elif command == "agent":
+        cmd_agent()
+        return
     elif command == "init":
-        cmd_init(smoke="--smoke" in args)
+        cmd_init(smoke="--smoke" in remaining)
     elif command == "add":
-        include_flaky = "--include-flaky" in args
-        targets = [a for a in args[1:] if a != "--include-flaky"]
+        include_flaky = "--include-flaky" in remaining
+        targets = [a for a in remaining[1:] if a != "--include-flaky"]
         if not targets:
             comment("usage: whittle add [--include-flaky] <targets...>")
             sys.exit(1)
         cmd_add(targets, include_flaky)
     elif command == "sync":
-        keep_going = "-k" in args or "--keep-going" in args
+        keep_going = "-k" in remaining or "--keep-going" in remaining
         cmd_sync(keep_going=keep_going)
     elif command == "reset":
-        cmd_reset(refresh="--reinit" in args)
+        cmd_reset(refresh="--reinit" in remaining)
+    elif command == "pass":
+        test_name = " ".join(remaining[1:])
+        if not test_name:
+            comment("usage: whittle pass <test_name>")
+            sys.exit(1)
+        cmd_pass(test_name)
     elif command == "flake":
-        test_name = " ".join(args[1:])
+        test_name = " ".join(remaining[1:])
         if not test_name:
             comment("usage: whittle flake <test_name>")
             sys.exit(1)
         cmd_flake(test_name)
     elif command == "skip":
-        test_name = " ".join(args[1:])
+        test_name = " ".join(remaining[1:])
         if not test_name:
             comment("usage: whittle skip <test_name>")
             sys.exit(1)
         cmd_skip(test_name)
     elif command == "unskip":
-        if "--all" in args:
+        if "--all" in remaining:
             cmd_unskip(all_=True)
         else:
-            test_name = " ".join(a for a in args[1:] if a != "--all")
+            test_name = " ".join(a for a in remaining[1:] if a != "--all")
             if not test_name:
                 comment("usage: whittle unskip <test_name> | --all")
                 sys.exit(1)
