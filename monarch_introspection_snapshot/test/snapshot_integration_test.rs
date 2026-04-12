@@ -17,6 +17,8 @@
 //! production than the in-process variant. The `mesh_admin.rs`
 //! white-box tests use `pub(crate)` shortcuts not available here.
 
+use std::time::Duration;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use datafusion::arrow::array::BooleanArray;
@@ -25,18 +27,17 @@ use datafusion::arrow::array::StringArray;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::prelude::SessionContext;
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor_mesh::global_context::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::host_mesh::spawn_admin;
 use hyperactor_mesh::introspect::NodeRef;
-use hyperactor_mesh::mesh_admin::MESH_ADMIN_ACTOR_NAME;
-use hyperactor_mesh::mesh_admin::MeshAdminAgent;
 use hyperactor_mesh::mesh_admin::ResolveReferenceMessageClient;
 use monarch_distributed_telemetry::database_scanner::TableStore;
 use monarch_introspection_snapshot::capture::capture_snapshot;
+use monarch_introspection_snapshot::integration::register_snapshot_schemas;
+use monarch_introspection_snapshot::integration::start_periodic_snapshots;
 use monarch_introspection_snapshot::push::push_snapshot;
 use ndslice::extent;
 use ndslice::view::Ranked;
@@ -142,9 +143,7 @@ async fn test_snapshot_sql_queries() -> Result<()> {
         .await?;
 
     // Step 3: Spawn admin on the caller-local proc.
-    let _admin_url = spawn_admin([&host_mesh], &instance, None, None).await?;
-    let admin_ref: ActorRef<MeshAdminAgent> =
-        ActorRef::attest(instance.proc().proc_id().actor_id(MESH_ADMIN_ACTOR_NAME, 0));
+    let admin_ref = spawn_admin([&host_mesh], &instance, Some("[::]:0".parse()?), None).await?;
 
     // Capture deterministic fixture-owned IDs via typed refs.
     let proc_0_ref = proc_mesh.get(0).expect("proc at rank 0");
@@ -358,6 +357,152 @@ async fn test_snapshot_sql_queries() -> Result<()> {
     // Cleanup: shutdown the mesh.
     let mut host_mesh = host_mesh;
     host_mesh.shutdown(&instance).await?;
+
+    Ok(())
+}
+
+/// PT-1: zero interval rejected at the `start_periodic_snapshots`
+/// boundary.
+#[tokio::test]
+async fn test_pt1_rejects_zero_interval() -> Result<()> {
+    let cx = context().await;
+    let instance = cx.actor_instance;
+    let host_mesh = HostMesh::local().await?;
+    let admin_ref = spawn_admin([&host_mesh], &instance, Some("[::]:0".parse()?), None).await?;
+    let table_store = TableStore::new_empty();
+
+    let err = start_periodic_snapshots(&instance, table_store, admin_ref.clone(), Duration::ZERO);
+    assert!(err.is_err(), "PT-1: zero interval must be rejected");
+    assert!(
+        err.unwrap_err().to_string().contains("non-zero"),
+        "PT-1: error must mention non-zero",
+    );
+
+    let mut host_mesh = host_mesh;
+    host_mesh.shutdown(&instance).await?;
+    Ok(())
+}
+
+/// PT-3: first capture fires at spawn time (immediate, not delayed).
+#[tokio::test]
+async fn test_pt3_immediate_first_capture() -> Result<()> {
+    let cx = context().await;
+    let instance = cx.actor_instance;
+    let host_mesh = HostMesh::local().await?;
+    let admin_ref = spawn_admin([&host_mesh], &instance, Some("[::]:0".parse()?), None).await?;
+
+    let table_store = TableStore::new_empty();
+    register_snapshot_schemas(&table_store).await?;
+
+    // Use a long interval so only the initial immediate capture fires.
+    start_periodic_snapshots(
+        &instance,
+        table_store.clone(),
+        admin_ref.clone(),
+        Duration::from_secs(600),
+    )?;
+
+    // Give the immediate capture time to complete.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let ctx = SessionContext::new();
+    register_all(&table_store, &ctx).await?;
+    let batch = query_batch(&ctx, "SELECT COUNT(*) AS cnt FROM snapshots").await?;
+    let count = col_i64(&batch, "cnt", 0);
+    assert!(
+        count >= 1,
+        "PT-3: at least one capture should fire immediately, got {}",
+        count,
+    );
+
+    // Stop the actor and clean up.
+    let actor_id = instance.proc().proc_id().actor_id("snapshot_capture", 0);
+    instance
+        .proc()
+        .stop_actor(&actor_id, "PT-3 test cleanup".to_string());
+
+    let mut host_mesh = host_mesh;
+    host_mesh.shutdown(&instance).await?;
+    Ok(())
+}
+
+/// PT-5: after proc shutdown, snapshot count stabilizes. The actor
+/// may complete one in-flight or drained capture during DrainAndStop,
+/// but does not reschedule indefinitely.
+#[tokio::test]
+async fn test_pt5_drain_halts_future_captures() -> Result<()> {
+    let cx = context().await;
+    let instance = cx.actor_instance;
+    let host_mesh = HostMesh::local().await?;
+    let admin_ref = spawn_admin([&host_mesh], &instance, Some("[::]:0".parse()?), None).await?;
+
+    let table_store = TableStore::new_empty();
+    register_snapshot_schemas(&table_store).await?;
+
+    // Start periodic capture with a short interval.
+    start_periodic_snapshots(
+        &instance,
+        table_store.clone(),
+        admin_ref.clone(),
+        Duration::from_millis(200),
+    )?;
+
+    // Let a few captures run.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Verify captures actually ran before stopping.
+    let count_before_stop = {
+        let ctx = SessionContext::new();
+        register_all(&table_store, &ctx).await?;
+        let batch = query_batch(&ctx, "SELECT COUNT(*) AS cnt FROM snapshots").await?;
+        col_i64(&batch, "cnt", 0)
+    };
+    assert!(
+        count_before_stop > 0,
+        "PT-5: expected positive snapshot count before stop, got {}",
+        count_before_stop,
+    );
+
+    // Stop the snapshot actor directly. In production, job teardown
+    // stops the proc which stops all actors on it.
+    let actor_id = instance.proc().proc_id().actor_id("snapshot_capture", 0);
+    let status_rx = instance
+        .proc()
+        .stop_actor(&actor_id, "PT-5 test shutdown".to_string());
+    if let Some(mut rx) = status_rx {
+        // Wait for the actor to reach a terminal state.
+        while !rx.borrow().is_terminal() {
+            rx.changed().await.ok();
+        }
+    }
+    // Small headroom for any async cleanup.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Record snapshot count after actor stop.
+    let count_at_shutdown = {
+        let ctx = SessionContext::new();
+        register_all(&table_store, &ctx).await?;
+        let batch = query_batch(&ctx, "SELECT COUNT(*) AS cnt FROM snapshots").await?;
+        col_i64(&batch, "cnt", 0)
+    };
+
+    // Wait to verify no further captures fire.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let count_after_wait = {
+        let ctx = SessionContext::new();
+        register_all(&table_store, &ctx).await?;
+        let batch = query_batch(&ctx, "SELECT COUNT(*) AS cnt FROM snapshots").await?;
+        col_i64(&batch, "cnt", 0)
+    };
+
+    // PT-5: snapshot count must not keep increasing after shutdown.
+    assert_eq!(
+        count_at_shutdown, count_after_wait,
+        "PT-5: snapshot count should stabilize after shutdown \
+         (got {} at shutdown, {} after 2s wait)",
+        count_at_shutdown, count_after_wait,
+    );
 
     Ok(())
 }

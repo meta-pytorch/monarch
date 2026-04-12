@@ -61,6 +61,8 @@ use crate::Name;
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
 use crate::pyspy::PySpyDump;
+use crate::pyspy::PySpyProfile;
+use crate::pyspy::PySpyProfileWorker;
 use crate::pyspy::PySpyWorker;
 use crate::resource;
 
@@ -380,6 +382,7 @@ struct SelfCheck {}
         resource::WaitRankStatus { cast = true },
         RepublishIntrospect { cast = true },
         PySpyDump,
+        PySpyProfile,
         ConfigDump,
     ]
 )]
@@ -554,7 +557,7 @@ impl ProcAgent {
         attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
         attrs.set(
             crate::introspect::PROC_NAME,
-            self.proc.proc_id().to_string(),
+            self.proc.proc_id().name().to_string(),
         );
         attrs.set(crate::introspect::NUM_ACTORS, num_live);
         attrs.set(hyperactor::introspect::CHILDREN, children);
@@ -646,7 +649,7 @@ impl Actor for ProcAgent {
                     let num_live = children.len();
                     let mut attrs = hyperactor_config::Attrs::new();
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
-                    attrs.set(crate::introspect::PROC_NAME, proc_id.to_string());
+                    attrs.set(crate::introspect::PROC_NAME, proc_id.name().to_string());
                     attrs.set(crate::introspect::NUM_ACTORS, num_live);
                     attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
                     attrs.set(crate::introspect::STOPPED_CHILDREN, stopped_children);
@@ -926,6 +929,17 @@ impl Handler<PySpyDump> for ProcAgent {
         message: PySpyDump,
     ) -> Result<(), anyhow::Error> {
         PySpyWorker::spawn_and_forward(cx, message.opts, message.result)
+    }
+}
+
+#[async_trait]
+impl Handler<PySpyProfile> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: PySpyProfile,
+    ) -> Result<(), anyhow::Error> {
+        PySpyProfileWorker::spawn_and_forward(cx, message.request, message.result)
     }
 }
 

@@ -70,6 +70,8 @@ pub(crate) struct App {
     /// Shared HTTP client used for all `GET /v1/{reference}`
     /// requests.
     pub(crate) client: reqwest::Client,
+    /// Central timeout policy (TP-*). See `timeouts.rs`.
+    pub(crate) policy: crate::timeouts::TuiTimeoutPolicy,
     /// Set when the user requests exit (e.g. `q` / `Esc` / `Ctrl-C`).
     pub(crate) should_quit: bool,
 
@@ -141,10 +143,12 @@ impl App {
         client: reqwest::Client,
         theme_name: ThemeName,
         lang_name: LangName,
+        policy: crate::timeouts::TuiTimeoutPolicy,
     ) -> Self {
         Self {
             base_url,
             client,
+            policy,
             should_quit: false,
             tree: None,
             cursor: Cursor::new(0),
@@ -218,6 +222,8 @@ impl App {
             self.refresh_gen,
             &mut self.seq_counter,
             force,
+            self.policy
+                .request_timeout(crate::timeouts::RequestOp::InteractiveFetch),
         )
         .await
     }
@@ -320,6 +326,8 @@ impl App {
                 &failed_keys,
                 self.refresh_gen,
                 &mut self.seq_counter,
+                self.policy
+                    .request_timeout(crate::timeouts::RequestOp::InteractiveFetch),
             )
             .await
             {
@@ -643,6 +651,9 @@ impl App {
         let scheme = self.theme.scheme; // ColorScheme: Copy
         let client = self.client.clone();
         let base_url = self.base_url.clone();
+        let timeout = self
+            .policy
+            .request_timeout(crate::timeouts::RequestOp::PySpyDump);
         let (tx, rx) = oneshot::channel();
         self.set_job(ActiveJob::PySpy {
             rx: Some(rx),
@@ -650,21 +661,37 @@ impl App {
             lines: vec![],
             completed_at: None,
         });
+        // TP-9: timeout covers the full request lifecycle (send +
+        // body + parse) at the operation boundary.
         tokio::spawn(async move {
             let url = format!("{}/v1/pyspy/{}", base_url, urlencoding::encode(&proc_ref));
-            let lines: Vec<Line<'static>> = match client.get(&url).send().await {
-                Err(e) => vec![Line::from(format!("request failed: {e}"))],
-                Ok(resp) if !resp.status().is_success() => {
+            let result = tokio::time::timeout(timeout, async {
+                let resp = client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("request failed: {e}"))?;
+                if !resp.status().is_success() {
                     let status = resp.status();
-                    match resp.json::<serde_json::Value>().await {
+                    let lines = match resp.json::<serde_json::Value>().await {
                         Ok(json) => parse_error_envelope(&json),
                         Err(_) => vec![Line::from(format!("HTTP {status}"))],
-                    }
+                    };
+                    return Ok::<_, String>(lines);
                 }
-                Ok(resp) => match resp.json::<serde_json::Value>().await {
-                    Err(e) => vec![Line::from(format!("parse error: {e}"))],
-                    Ok(json) => pyspy_json_to_lines(&json, &scheme),
-                },
+                match resp.json::<serde_json::Value>().await {
+                    Err(e) => Ok(vec![Line::from(format!("parse error: {e}"))]),
+                    Ok(json) => Ok(pyspy_json_to_lines(&json, &scheme)),
+                }
+            })
+            .await;
+            let lines: Vec<Line<'static>> = match result {
+                Err(_) => vec![Line::from(format!(
+                    "request timed out after {}s",
+                    timeout.as_secs()
+                ))],
+                Ok(Ok(l)) => l,
+                Ok(Err(e)) => vec![Line::from(e)],
             };
             let _ = tx.send(lines);
         });
@@ -680,6 +707,9 @@ impl App {
         let scheme = self.theme.scheme; // ColorScheme: Copy
         let client = self.client.clone();
         let base_url = self.base_url.clone();
+        let timeout = self
+            .policy
+            .request_timeout(crate::timeouts::RequestOp::ConfigDump);
         let (tx, rx) = oneshot::channel();
         self.set_job(ActiveJob::Config {
             rx: Some(rx),
@@ -687,21 +717,37 @@ impl App {
             lines: vec![],
             completed_at: None,
         });
+        // TP-9: timeout covers the full request lifecycle (send +
+        // body + parse) at the operation boundary.
         tokio::spawn(async move {
             let url = format!("{}/v1/config/{}", base_url, urlencoding::encode(&proc_ref));
-            let lines: Vec<Line<'static>> = match client.get(&url).send().await {
-                Err(e) => vec![Line::from(format!("request failed: {e}"))],
-                Ok(resp) if !resp.status().is_success() => {
+            let result = tokio::time::timeout(timeout, async {
+                let resp = client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("request failed: {e}"))?;
+                if !resp.status().is_success() {
                     let status = resp.status();
-                    match resp.json::<serde_json::Value>().await {
+                    let lines = match resp.json::<serde_json::Value>().await {
                         Ok(json) => parse_error_envelope(&json),
                         Err(_) => vec![Line::from(format!("HTTP {status}"))],
-                    }
+                    };
+                    return Ok::<_, String>(lines);
                 }
-                Ok(resp) => match resp.json::<serde_json::Value>().await {
-                    Err(e) => vec![Line::from(format!("parse error: {e}"))],
-                    Ok(json) => config_json_to_lines(&json, &scheme),
-                },
+                match resp.json::<serde_json::Value>().await {
+                    Err(e) => Ok(vec![Line::from(format!("parse error: {e}"))]),
+                    Ok(json) => Ok(config_json_to_lines(&json, &scheme)),
+                }
+            })
+            .await;
+            let lines: Vec<Line<'static>> = match result {
+                Err(_) => vec![Line::from(format!(
+                    "request timed out after {}s",
+                    timeout.as_secs()
+                ))],
+                Ok(Ok(l)) => l,
+                Ok(Err(e)) => vec![Line::from(e)],
             };
             let _ = tx.send(lines);
         });
@@ -1261,17 +1307,36 @@ async fn recv_active_job(job: &mut Option<ActiveJob>) -> ActiveJobEvent {
     }
 }
 
+/// TP-10: derive refresh policy from active job state.
+///
+/// Suspend refresh only while a foreground operation is in flight.
+/// Completed overlays (results displayed, waiting for Esc) do not
+/// suppress refresh — the user is reading results, not waiting for
+/// a network operation. The mapping is local to the app module so
+/// `timeouts::RefreshPolicy` stays independent of UI job types.
+pub(crate) fn refresh_policy_for_job(job: &Option<ActiveJob>) -> crate::timeouts::RefreshPolicy {
+    use crate::timeouts::RefreshPolicy;
+    match job {
+        None => RefreshPolicy::Baseline,
+        Some(ActiveJob::Diagnostics { running: true, .. }) => RefreshPolicy::Suspend,
+        Some(ActiveJob::PySpy { rx: Some(_), .. }) => RefreshPolicy::Suspend,
+        Some(ActiveJob::Config { rx: Some(_), .. }) => RefreshPolicy::Suspend,
+        // Completed overlays: operation finished, user is reading results.
+        Some(_) => RefreshPolicy::Baseline,
+    }
+}
+
 /// Drive the main event loop for the admin TUI.
 ///
 /// Periodically refreshes topology from the admin API, renders the UI
 /// each tick, and processes keyboard input until the user exits.
 pub(crate) async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    refresh_ms: u64,
     mut app: App,
 ) -> io::Result<()> {
-    let mut refresh_interval = tokio::time::interval(Duration::from_millis(refresh_ms));
-    app.refresh_interval_label = if refresh_ms >= 1000 && refresh_ms.is_multiple_of(1000) {
+    let refresh_ms = app.policy.refresh_interval.as_millis() as u64;
+    let mut refresh_interval = tokio::time::interval(app.policy.refresh_interval);
+    app.refresh_interval_label = if refresh_ms >= 1000 && refresh_ms % 1000 == 0 {
         format!("{}s", refresh_ms / 1000)
     } else {
         format!("{}ms", refresh_ms)
@@ -1288,7 +1353,21 @@ pub(crate) async fn run_app(
 
         tokio::select! {
             _ = refresh_interval.tick() => {
-                app.refresh().await;
+                // Phase 3a: the effective refresh policy is the
+                // join of all refresh-pressure sources. Currently
+                // there is one source (foreground job state); later
+                // sources extend by more joins, not by rewriting
+                // the branch. Refresh runs only when effective
+                // policy is Baseline. When the in-flight operation
+                // completes, refresh resumes on the next scheduled
+                // tick, not immediately.
+                use algebra::JoinSemilattice;
+                use crate::timeouts::RefreshPolicy;
+                let effective = RefreshPolicy::Baseline
+                    .join(&refresh_policy_for_job(&app.active_job));
+                if effective == RefreshPolicy::Baseline {
+                    app.refresh().await;
+                }
             }
             maybe_event = events.next() => {
                 match maybe_event {
@@ -1315,6 +1394,7 @@ pub(crate) async fn run_app(
                                 let rx = run_diagnostics(
                                     app.client.clone(),
                                     app.base_url.clone(),
+                                    &app.policy,
                                 );
                                 // PY-5: set_job drops any prior PySpy variant.
                                 app.set_job(ActiveJob::Diagnostics {

@@ -57,9 +57,9 @@ pub(crate) enum DiagPhase {
 /// Outcome of a single diagnostic probe.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) enum DiagOutcome {
-    /// HTTP 200 received within [`SLOW_MS`] milliseconds.
+    /// HTTP 200 received below `diagnostics_probe_slow` threshold.
     Pass { elapsed_ms: u64 },
-    /// HTTP 200 received, but slower than [`SLOW_MS`].
+    /// HTTP 200 received, but at or above `diagnostics_probe_slow`.
     Slow { elapsed_ms: u64 },
     /// HTTP error, non-200 status, or timeout.
     Fail { elapsed_ms: u64, error: String },
@@ -111,13 +111,8 @@ pub(crate) struct DiagResult {
     pub(crate) outcome: DiagOutcome,
 }
 
-// Response latency above which a pass is reported as slow.
-const SLOW_MS: u64 = 500;
-
-// Per-probe timeout. Set above the server's SINGLE_HOST_TIMEOUT (3 s)
-// so server-side 504s are surfaced as Fail(error) rather than our own
-// timeout.
-const TIMEOUT_MS: u64 = 5000;
+// TP-4/TP-8: diagnostics thresholds are sourced from
+// TuiTimeoutPolicy, not file-local literals. See timeouts.rs.
 
 /// Aggregated pass/fail counts across both diagnostic phases.
 /// Computed from a completed (or in-progress) result slice.
@@ -172,10 +167,12 @@ impl DiagSummary {
 pub(crate) fn run_diagnostics(
     client: reqwest::Client,
     base_url: String,
+    policy: &crate::timeouts::TuiTimeoutPolicy,
 ) -> mpsc::Receiver<DiagResult> {
+    let policy = *policy; // Copy into the spawned task.
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
-        walk(&client, &base_url, &tx).await;
+        walk(&client, &base_url, &tx, &policy).await;
     });
     rx
 }
@@ -195,21 +192,26 @@ async fn probe(
     label: impl Into<String>,
     reference: &hyperactor_mesh::introspect::NodeRef,
     phase: DiagPhase,
+    policy: &crate::timeouts::TuiTimeoutPolicy,
 ) -> (DiagResult, Option<hyperactor_mesh::introspect::NodePayload>) {
     let label = label.into();
     let reference_str = reference.to_string();
+    let probe_timeout = policy.probe_timeout(crate::timeouts::ProbeOp::DiagnosticsProbe);
+    let slow_threshold = policy.diagnostics_probe_slow;
     let t0 = Instant::now();
 
-    let result = tokio::time::timeout(
-        Duration::from_millis(TIMEOUT_MS),
-        fetch_node_raw(client, base_url, reference),
-    )
-    .await;
+    // Per-probe timeout. Set above the server's SINGLE_HOST_TIMEOUT
+    // (3 s) so server-side 504s are surfaced as Fail(error) rather
+    // than our own timeout (TP-8).
+    // TP-9: probe owns timeout semantics at the operation boundary.
+    let result =
+        tokio::time::timeout(probe_timeout, fetch_node_raw(client, base_url, reference)).await;
 
     let elapsed_ms = t0.elapsed().as_millis() as u64;
+    let slow_ms = slow_threshold.as_millis() as u64;
 
     let (outcome, payload) = match result {
-        Ok(Ok(p)) if elapsed_ms >= SLOW_MS => (DiagOutcome::Slow { elapsed_ms }, Some(p)),
+        Ok(Ok(p)) if elapsed_ms >= slow_ms => (DiagOutcome::Slow { elapsed_ms }, Some(p)),
         Ok(Ok(p)) => (DiagOutcome::Pass { elapsed_ms }, Some(p)),
         Ok(Err(e)) => (
             DiagOutcome::Fail {
@@ -221,7 +223,7 @@ async fn probe(
         Err(_) => (
             DiagOutcome::Fail {
                 elapsed_ms,
-                error: format!("timed out after {}ms", TIMEOUT_MS),
+                error: format!("timed out after {}ms", probe_timeout.as_millis()),
             },
             None,
         ),
@@ -272,15 +274,27 @@ fn proc_role(proc_name: &str) -> DiagNodeRole {
 }
 
 /// Full diagnostic walk. Probes in order and emits results.
-async fn walk(client: &reqwest::Client, base_url: &str, tx: &mpsc::Sender<DiagResult>) {
+async fn walk(
+    client: &reqwest::Client,
+    base_url: &str,
+    tx: &mpsc::Sender<DiagResult>,
+    policy: &crate::timeouts::TuiTimeoutPolicy,
+) {
     // Phase 1 — Admin Infra
 
     use hyperactor_mesh::introspect::NodeRef;
 
     // Root.
     let root_ref = NodeRef::Root;
-    let (mut result, root_payload) =
-        probe(client, base_url, "root", &root_ref, DiagPhase::AdminInfra).await;
+    let (mut result, root_payload) = probe(
+        client,
+        base_url,
+        "root",
+        &root_ref,
+        DiagPhase::AdminInfra,
+        policy,
+    )
+    .await;
     result.note = Some(DiagNodeRole::AdminServer);
     emit!(tx, result);
     let root_payload = match root_payload {
@@ -310,6 +324,7 @@ async fn walk(client: &reqwest::Client, base_url: &str, tx: &mpsc::Sender<DiagRe
             &host_label,
             host_ref,
             DiagPhase::AdminInfra,
+            policy,
         )
         .await;
         if let Some(p) = &host_payload {
@@ -343,6 +358,7 @@ async fn walk(client: &reqwest::Client, base_url: &str, tx: &mpsc::Sender<DiagRe
                 &proc_label,
                 proc_ref,
                 DiagPhase::AdminInfra,
+                policy,
             )
             .await;
             if let Some(p) = &proc_payload {
@@ -366,6 +382,7 @@ async fn walk(client: &reqwest::Client, base_url: &str, tx: &mpsc::Sender<DiagRe
                         &actor_label,
                         actor_ref,
                         DiagPhase::AdminInfra,
+                        policy,
                     )
                     .await;
                     // Use fetched label if available; otherwise derive
@@ -414,6 +431,7 @@ async fn walk(client: &reqwest::Client, base_url: &str, tx: &mpsc::Sender<DiagRe
                 &proc_label,
                 user_proc_ref,
                 DiagPhase::Mesh,
+                policy,
             )
             .await;
             if let Some(p) = &proc_payload {
@@ -454,8 +472,15 @@ async fn walk(client: &reqwest::Client, base_url: &str, tx: &mpsc::Sender<DiagRe
                     .filter(|r| proc_system_refs.contains(r))
                 {
                     let alabel = actor_ref.to_string();
-                    let (mut r, payload) =
-                        probe(client, base_url, &alabel, actor_ref, DiagPhase::Mesh).await;
+                    let (mut r, payload) = probe(
+                        client,
+                        base_url,
+                        &alabel,
+                        actor_ref,
+                        DiagPhase::Mesh,
+                        policy,
+                    )
+                    .await;
                     if let Some(p) = &payload {
                         r.label = format!("  {}", label_from_payload(actor_ref, p));
                     } else {
@@ -472,8 +497,15 @@ async fn walk(client: &reqwest::Client, base_url: &str, tx: &mpsc::Sender<DiagRe
                     .find(|r| !proc_system_refs.contains(r))
                 {
                     let alabel = actor_ref.to_string();
-                    let (mut r, payload) =
-                        probe(client, base_url, &alabel, actor_ref, DiagPhase::Mesh).await;
+                    let (mut r, payload) = probe(
+                        client,
+                        base_url,
+                        &alabel,
+                        actor_ref,
+                        DiagPhase::Mesh,
+                        policy,
+                    )
+                    .await;
                     if let Some(p) = &payload {
                         r.label = format!("  {}", label_from_payload(actor_ref, p));
                     } else {

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.host_mesh import _spawn_admin
 from monarch._src.job.mount_config import Mounts
@@ -306,12 +307,18 @@ class TelemetryConfig:
             0 disables retention.
         include_dashboard: Whether to start the monarch dashboard web server.
         dashboard_port: Preferred port for the dashboard.
+        snapshot_interval_secs: Interval in seconds between periodic mesh
+            introspection snapshots. Snapshots capture the mesh topology
+            into the telemetry query surface. 0 disables periodic capture
+            (default). Snapshot table schemas are always pre-registered
+            regardless of this setting.
     """
 
     batch_size: int = 1000
     retention_secs: int = 600
     include_dashboard: bool = False
     dashboard_port: int = 8265
+    snapshot_interval_secs: float = 0  # 0 = disabled
 
 
 @dataclass
@@ -426,6 +433,8 @@ class JobTrait(ABC):
         self._query_engine: Optional[QueryEngine] = None
         self._telemetry_url: Optional[str] = None
         self._admin_url: Optional[str] = None
+        self._scanner = None  # DatabaseScanner, set by _start_telemetry_if_configured
+        self._snapshot_started: bool = False
         self._apply_id: Optional[str] = None
         self._mounts: Mounts = Mounts()
         # Per-mesh python executable overrides.  None key means "all meshes".
@@ -438,23 +447,64 @@ class JobTrait(ABC):
             return
 
         cfg = self._telemetry
-        self._query_engine, self._telemetry_url = start_telemetry(
+        self._query_engine, self._telemetry_url, self._scanner = start_telemetry(
             batch_size=cfg.batch_size,
             retention_secs=cfg.retention_secs,
             include_dashboard=cfg.include_dashboard,
             dashboard_port=cfg.dashboard_port,
         )
 
-    def _start_admin_if_configured(self, host_meshes: List[HostMesh]) -> None:
-        """Start the mesh admin agent if configured and not already running."""
-        if self._mesh_admin is None or self._admin_url is not None:
-            return
+    def _start_admin_if_configured(
+        self, host_meshes: List[HostMesh]
+    ) -> Optional[PyMeshAdminRef]:
+        """Start the mesh admin agent if configured and not already running.
 
-        self._admin_url = _spawn_admin(
+        Returns the opaque admin ref for immediate use by snapshot
+        startup, or None if admin is not configured or already running.
+        """
+        if self._mesh_admin is None or self._admin_url is not None:
+            return None
+
+        admin_url, admin_ref = _spawn_admin(
             host_meshes,
             admin_addr=self._mesh_admin.admin_addr,
             telemetry_url=self._telemetry_url,
         ).get()
+        self._admin_url = admin_url
+        return admin_ref
+
+    def _start_periodic_snapshots_if_configured(
+        self, admin_ref: Optional[PyMeshAdminRef]
+    ) -> None:
+        """Start periodic snapshots if configured and not already running.
+
+        Spawns a SnapshotCaptureActor on the local proc. The actor is
+        stopped by framework lifecycle on proc teardown — no manual
+        stop needed. The admin_ref is consumed here and not persisted.
+        """
+        if self._snapshot_started:
+            return
+        if self._telemetry is None or self._scanner is None:
+            return
+        if admin_ref is None:
+            return
+        telemetry = self._telemetry
+        assert telemetry is not None  # guarded above
+        if telemetry.snapshot_interval_secs <= 0:
+            return
+
+        from monarch._rust_bindings.monarch_extension.snapshot_integration import (
+            _start_periodic_snapshots,
+        )
+        from monarch.actor import context
+
+        _start_periodic_snapshots(
+            scanner=self._scanner,
+            admin_ref=admin_ref,
+            instance=context().actor_instance._as_rust(),
+            interval_secs=telemetry.snapshot_interval_secs,
+        )
+        self._snapshot_started = True
 
     def _wrap_state(self, job_state: JobState) -> JobState:
         """Attach telemetry and admin fields to a JobState."""
@@ -566,7 +616,8 @@ class JobTrait(ABC):
             logger.info("Job is running, returning current state")
             job_state = running_job._state()
             self._start_telemetry_if_configured()
-            self._start_admin_if_configured(list(job_state._hosts.values()))
+            admin_ref = self._start_admin_if_configured(list(job_state._hosts.values()))
+            self._start_periodic_snapshots_if_configured(admin_ref)
             return self._wrap_state(job_state)
 
         cached = self._load_cached(cached_path)
@@ -575,14 +626,16 @@ class JobTrait(ABC):
             logger.info("Connecting to cached job")
             job_state = cached._state()
             self._start_telemetry_if_configured()
-            self._start_admin_if_configured(list(job_state._hosts.values()))
+            admin_ref = self._start_admin_if_configured(list(job_state._hosts.values()))
+            self._start_periodic_snapshots_if_configured(admin_ref)
             return self._wrap_state(job_state)
         logger.info("Applying current job")
         self.apply()
         logger.info("Job has started, connecting to current state")
         job_state = self._state()
         self._start_telemetry_if_configured()
-        self._start_admin_if_configured(list(job_state._hosts.values()))
+        admin_ref = self._start_admin_if_configured(list(job_state._hosts.values()))
+        self._start_periodic_snapshots_if_configured(admin_ref)
         result = self._wrap_state(job_state)
         if cached_path is not None:
             # Create the directory for cached_path if it doesn't exist
@@ -657,6 +710,8 @@ class JobTrait(ABC):
         state["_query_engine"] = None
         state["_telemetry_url"] = None
         state["_admin_url"] = None
+        state["_scanner"] = None
+        state["_snapshot_started"] = False
         return state
 
     def dump(self, filename: str) -> None:

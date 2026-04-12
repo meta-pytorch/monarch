@@ -325,7 +325,7 @@ def test_state_query_engine_set_with_telemetry(mock_start):
     """Test that query_engine is set when telemetry is configured."""
     mock_engine = MagicMock()
     mock_url = "http://localhost:8265"
-    mock_start.return_value = (mock_engine, mock_url)
+    mock_start.return_value = (mock_engine, mock_url, MagicMock())
 
     job = MockJobTrait().enable_telemetry(TelemetryConfig())
     state = job.state(cached_path=None)
@@ -338,7 +338,7 @@ def test_state_query_engine_set_with_telemetry(mock_start):
 @patch("monarch._src.job.job.start_telemetry")
 def test_telemetry_started_only_once(mock_start):
     """Test that telemetry is not restarted on subsequent state() calls."""
-    mock_start.return_value = (MagicMock(), "http://localhost:8265")
+    mock_start.return_value = (MagicMock(), "http://localhost:8265", MagicMock())
 
     job = MockJobTrait().enable_telemetry(TelemetryConfig())
     job.state(cached_path=None)
@@ -350,7 +350,7 @@ def test_telemetry_started_only_once(mock_start):
 @patch("monarch._src.job.job.start_telemetry")
 def test_telemetry_dropped_on_pickle(mock_start):
     """Test that query_engine is dropped during pickling and restored after."""
-    mock_start.return_value = (MagicMock(), "http://localhost:8265")
+    mock_start.return_value = (MagicMock(), "http://localhost:8265", MagicMock())
 
     job = MockJobTrait().enable_telemetry(TelemetryConfig())
     job.state(cached_path=None)
@@ -378,7 +378,8 @@ def test_state_admin_url_none_without_mesh_admin():
 def test_state_admin_url_set_with_mesh_admin(mock_spawn):
     """Test that admin_url is available on the first state() call."""
     mock_future = MagicMock()
-    mock_future.get.return_value = "http://localhost:1729"
+    mock_admin_ref = MagicMock()
+    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
     mock_spawn.return_value = mock_future
 
     job = MockJobTrait().enable_admin(MeshAdminConfig())
@@ -392,7 +393,8 @@ def test_state_admin_url_set_with_mesh_admin(mock_spawn):
 def test_mesh_admin_started_only_once(mock_spawn):
     """Test that mesh admin is not restarted on subsequent state() calls."""
     mock_future = MagicMock()
-    mock_future.get.return_value = "http://localhost:1729"
+    mock_admin_ref = MagicMock()
+    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
     mock_spawn.return_value = mock_future
 
     job = MockJobTrait().enable_admin(MeshAdminConfig())
@@ -406,7 +408,8 @@ def test_mesh_admin_started_only_once(mock_spawn):
 def test_mesh_admin_dropped_on_pickle(mock_spawn):
     """Test that admin_url is dropped during pickling and restored after."""
     mock_future = MagicMock()
-    mock_future.get.return_value = "http://localhost:1729"
+    mock_admin_ref = MagicMock()
+    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
     mock_spawn.return_value = mock_future
 
     job = MockJobTrait().enable_admin(MeshAdminConfig())
@@ -427,7 +430,8 @@ def test_mesh_admin_dropped_on_pickle(mock_spawn):
 def test_mesh_admin_receives_custom_addr(mock_spawn):
     """Test that MeshAdminConfig.admin_addr is forwarded to _spawn_admin."""
     mock_future = MagicMock()
-    mock_future.get.return_value = "http://myhost:9999"
+    mock_admin_ref = MagicMock()
+    mock_future.get.return_value = ("http://myhost:9999", mock_admin_ref)
     mock_spawn.return_value = mock_future
 
     job = MockJobTrait().enable_admin(MeshAdminConfig(admin_addr="myhost:9999"))

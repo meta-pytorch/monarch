@@ -206,6 +206,37 @@
 //!   added `warnings: Vec<String>`. Clients reading the old `stack`
 //!   field will see it absent; they must migrate to `stack_traces`.
 //!
+//! ## py-spy profiling (PP-*)
+//!
+//! Profile capture (`py-spy record`) is a separate contract from
+//! dump (`py-spy dump`). Types, messages, workers, and routes are
+//! independent — no shared state, no shared timeout budget.
+//!
+//! - **PP-1 (input validation):** `duration_s` (u32) must be
+//!   non-zero and at most `MESH_ADMIN_PYSPY_MAX_PROFILE_DURATION`.
+//!   `rate_hz` must be 1..1000. Violations → 400 before any
+//!   actor messaging.
+//! - **PP-2 (dynamic timeout cascade):** Subprocess timeout =
+//!   `duration_s + 15s`. Bridge timeout = subprocess + 5s.
+//!   Computed per-request from validated opts, not static config.
+//! - **PP-3 (temp file lifecycle):** `py-spy record` writes to a
+//!   temp file; the worker reads it after successful exit and
+//!   deletes via tempfile drop. On failure or timeout, stderr is
+//!   captured. On timeout, the child is explicitly killed and
+//!   reaped via `start_kill()` + `wait().await`. If the file is
+//!   missing, empty, or unreadable after successful exit, the
+//!   result is `OutputMissing`, `OutputEmpty`, or
+//!   `OutputReadFailure`, not `Ok`.
+//! - **PP-4 (target locality):** Inherits PS-1 — always targets
+//!   `std::process::id()`, never a caller-supplied PID.
+//! - **PP-5 (separate worker):** `PySpyProfileWorker` is a
+//!   distinct actor from `PySpyWorker`. Profile durations block
+//!   for seconds to minutes; isolation prevents starving dumps.
+//! - **PP-6 (wire projection):** `ProfileExecOutcome` maps to
+//!   `PySpyProfileResult` 1:1 via `From`. Every internal variant
+//!   has an identically-named wire variant. The only shape change
+//!   is `TimedOut.timeout: Duration` → `TimedOut.timeout_s: u64`.
+//!
 //! ## Mesh-admin config (MA-*)
 //!
 //! - **MA-C1 (timeout config centralization):** Mesh-admin timeout
