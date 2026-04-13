@@ -22,7 +22,7 @@ serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw
 tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
 tokio-util = { version = "0.7.18", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
-uuid = { version = "1.22.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
+uuid = { version = "1.23.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 
 [dev-dependencies]
 async-trait = "0.1.86"
