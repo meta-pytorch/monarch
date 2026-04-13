@@ -354,10 +354,11 @@ def _parse_event_line(line):
             tid = int(id_parts[1])
         except ValueError:
             pass
-    # tpx status codes: 1=pass, 2=fail
+    # tpx status codes: 1=pass, 2=fail, 3=fatal, others=skip/omit
+    # Treat pass as pass, fail/fatal as fail, ignore skip/omit.
     if status == 1:
         return (name, "pass", tid)
-    elif status == 2:
+    elif status in (2, 3):
         return (name, "fail", tid)
     return None
 
