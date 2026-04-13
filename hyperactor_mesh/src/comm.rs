@@ -11,7 +11,7 @@ use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 use crate::comm::multicast::CastEnvelope;
 use crate::comm::multicast::CastMessageV1;
 use crate::comm::multicast::ForwardMessageV1;
-use crate::reference::ActorMeshId;
+use crate::mesh_id::ActorMeshId;
 use crate::resource;
 pub mod multicast;
 
@@ -748,7 +748,7 @@ mod tests {
 
     /// Common setup for pre-config buffering tests: a single proc with a
     /// TestActor (for observing delivery) and an unconfigured CommActor.
-    /// Returns (client, rx, comm_handle, actor_mesh_name) plus handles
+    /// Returns (client, rx, comm_handle, actor_mesh_id) plus handles
     /// that must be kept alive.
     async fn buffering_fixture(
         proc_name: &str,
@@ -756,7 +756,7 @@ mod tests {
         Instance<()>,
         hyperactor::mailbox::PortReceiver<TestMessage>,
         hyperactor::ActorHandle<CommActor>,
-        crate::Name,
+        crate::mesh_id::ActorMeshId,
         // Drop guards: client handle, test actor handle, test actor ref.
         (
             hyperactor::ActorHandle<()>,
@@ -767,12 +767,13 @@ mod tests {
         use hyperactor::Proc;
         use hyperactor::RemoteSpawn;
         use hyperactor::channel::ChannelTransport;
+        use hyperactor::id::Label;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), proc_name.to_string()).unwrap();
         let (client, client_handle) = proc.instance("client").unwrap();
 
-        let actor_mesh_name = crate::Name::new("test").unwrap();
-        let actor_name = actor_mesh_name.to_string();
+        let actor_mesh_id = crate::mesh_id::ActorMeshId::unique(Label::new("test").unwrap());
+        let actor_name = actor_mesh_id.to_string();
 
         let (tx, rx) = open_port(&client);
         let forward_port = tx.bind();
@@ -788,7 +789,7 @@ mod tests {
             client,
             rx,
             comm_handle,
-            actor_mesh_name,
+            actor_mesh_id,
             (client_handle, test_handle, test_ref),
         )
     }
@@ -807,19 +808,19 @@ mod tests {
     /// and verify both are delivered in order.
     async fn assert_buffered_and_replayed<M: hyperactor::Message>(
         proc_name: &str,
-        mut make_msg: impl FnMut(&Instance<()>, &crate::Name, &str) -> M,
+        mut make_msg: impl FnMut(&Instance<()>, &crate::mesh_id::ActorMeshId, &str) -> M,
     ) where
         CommActor: hyperactor::Handler<M>,
     {
-        let (client, mut rx, comm_handle, actor_mesh_name, _guards) =
+        let (client, mut rx, comm_handle, actor_mesh_id, _guards) =
             buffering_fixture(proc_name).await;
 
         comm_handle
-            .send(&client, make_msg(&client, &actor_mesh_name, "buffered"))
+            .send(&client, make_msg(&client, &actor_mesh_id, "buffered"))
             .unwrap();
         send_config(&client, &comm_handle);
         comm_handle
-            .send(&client, make_msg(&client, &actor_mesh_name, "direct"))
+            .send(&client, make_msg(&client, &actor_mesh_id, "direct"))
             .unwrap();
 
         assert_eq!(
@@ -837,8 +838,8 @@ mod tests {
     async fn cast_before_config_is_buffered_and_replayed() {
         use ndslice::Slice;
 
-        assert_buffered_and_replayed("test_cast", |client, name, payload| {
-            let actor_mesh_id = crate::reference::ActorMeshId(name.clone());
+        assert_buffered_and_replayed("test_cast", |client, actor_mesh_id, payload| {
+            let actor_mesh_id = actor_mesh_id.clone();
             let slice = Slice::new_row_major(vec![1]);
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
@@ -866,8 +867,8 @@ mod tests {
         use ndslice::selection::routing::RoutingFrame;
 
         let mut next_seq: usize = 0;
-        assert_buffered_and_replayed("test_fwd", move |client, name, payload| {
-            let actor_mesh_id = crate::reference::ActorMeshId(name.clone());
+        assert_buffered_and_replayed("test_fwd", move |client, actor_mesh_id, payload| {
+            let actor_mesh_id = actor_mesh_id.clone();
             let slice = Slice::new_row_major(vec![1]);
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
@@ -898,12 +899,12 @@ mod tests {
         use ndslice::Slice;
         use ndslice::selection::routing::RoutingFrame;
 
-        assert_buffered_and_replayed("test_fwd_v1", |client, name, payload| {
+        assert_buffered_and_replayed("test_fwd_v1", |client, actor_mesh_id, payload| {
             let slice = Slice::new_row_major(vec![1]);
             let region = Region::new(vec!["rank".to_string()], slice.clone());
             let cast_msg = multicast::CastMessageV1::new::<TestActor, TestMessage>(
                 client.self_id().clone(),
-                name,
+                actor_mesh_id,
                 region.clone(),
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -942,7 +943,6 @@ mod tests {
 
     use super::*;
     use crate::ActorMesh;
-    use crate::Name;
     use crate::host_mesh::HostMesh;
     use crate::test_utils::local_host_mesh;
     use crate::testing;
@@ -1345,7 +1345,8 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let actor_name = crate::Name::new("test").expect("valid test name");
+        let actor_name =
+            crate::mesh_id::ActorMeshId::unique(hyperactor::id::Label::new("test").unwrap());
         // Make this actor a "system" actor to avoid spawning a controller actor.
         // This test is verifying the whole comm tree, so we want fewer actors
         // involved.
@@ -1527,7 +1528,8 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let actor_name = crate::Name::new("test").expect("valid test name");
+        let actor_name =
+            crate::mesh_id::ActorMeshId::unique(hyperactor::id::Label::new("test").unwrap());
         // Make this actor a "system" actor to avoid spawning a controller actor.
         let actor_mesh: crate::ActorMesh<TestActor> = proc_mesh
             .spawn_with_name(&instance, actor_name, &params, None, true)
@@ -1637,7 +1639,8 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let actor_name = Name::new("test").expect("valid test name");
+        let actor_name =
+            crate::mesh_id::ActorMeshId::unique(hyperactor::id::Label::new("test").unwrap());
         let actor_mesh: ActorMesh<TestActor> = proc_mesh
             .spawn_with_name(&instance, actor_name, &params, None, true)
             .await
