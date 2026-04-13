@@ -705,10 +705,17 @@ pub enum ProcStatus {
     Stopped {
         exit_code: i32,
         stderr_tail: Vec<String>,
+        /// The command that was executed, for diagnostics.
+        command: String,
     },
     /// The process was killed by a signal (e.g. SIGKILL).
     /// (Process-level: abnormal termination.)
-    Killed { signal: i32, core_dumped: bool },
+    Killed {
+        signal: i32,
+        core_dumped: bool,
+        /// The command that was executed, for diagnostics.
+        command: String,
+    },
     /// The proc or its process failed for some other reason
     /// (bootstrap error, unexpected condition, etc.). (Both levels:
     /// catch-all failure.)
@@ -755,15 +762,18 @@ impl std::fmt::Display for ProcStatus {
                     .unwrap_or_default();
                 write!(f, "Stopping{uptime}")
             }
-            ProcStatus::Stopped { exit_code, .. } => write!(f, "Stopped(exit={exit_code})"),
+            ProcStatus::Stopped {
+                exit_code, command, ..
+            } => write!(f, "Stopped(exit={exit_code}, command={command})"),
             ProcStatus::Killed {
                 signal,
                 core_dumped,
+                command,
             } => {
                 if *core_dumped {
-                    write!(f, "Killed(sig={signal}, core)")
+                    write!(f, "Killed(sig={signal}, core, command={command})")
                 } else {
-                    write!(f, "Killed(sig={signal})")
+                    write!(f, "Killed(sig={signal}, command={command})")
                 }
             }
             ProcStatus::Failed { reason } => write!(f, "Failed({reason})"),
@@ -860,6 +870,9 @@ pub struct BootstrapProcHandle {
     /// but for stderr (used for exit-reason enrichment).
     stderr_fwder: Arc<std::sync::Mutex<Option<StreamFwder>>>,
 
+    /// The command that was used to launch this proc, for diagnostics.
+    command: String,
+
     /// Watch sender for status transitions. Every `mark_*` goes
     /// through [`BootstrapProcHandle::transition`], which updates the
     /// snapshot under the lock and then `send`s the new
@@ -902,6 +915,7 @@ impl BootstrapProcHandle {
     pub(crate) fn new(
         proc_id: hyperactor_reference::ProcId,
         launcher: Weak<dyn ProcLauncher>,
+        command: String,
     ) -> Self {
         let (tx, rx) = watch::channel(ProcStatus::Starting);
         Self {
@@ -910,6 +924,7 @@ impl BootstrapProcHandle {
             launcher,
             stdout_fwder: Arc::new(std::sync::Mutex::new(None)),
             stderr_fwder: Arc::new(std::sync::Mutex::new(None)),
+            command,
             tx,
             rx,
         }
@@ -1096,7 +1111,12 @@ impl BootstrapProcHandle {
 
     /// Record that the process has exited normally with the given
     /// exit code.
-    pub(crate) fn mark_stopped(&self, exit_code: i32, stderr_tail: Vec<String>) -> bool {
+    pub(crate) fn mark_stopped(
+        &self,
+        exit_code: i32,
+        stderr_tail: Vec<String>,
+        command: String,
+    ) -> bool {
         self.transition(|st| match *st {
             ProcStatus::Starting
             | ProcStatus::Running { .. }
@@ -1105,6 +1125,7 @@ impl BootstrapProcHandle {
                 *st = ProcStatus::Stopped {
                     exit_code,
                     stderr_tail,
+                    command,
                 };
                 true
             }
@@ -1120,7 +1141,7 @@ impl BootstrapProcHandle {
 
     /// Record that the process was killed by the given signal (e.g.
     /// SIGKILL, SIGTERM).
-    pub(crate) fn mark_killed(&self, signal: i32, core_dumped: bool) -> bool {
+    pub(crate) fn mark_killed(&self, signal: i32, core_dumped: bool, command: String) -> bool {
         self.transition(|st| match *st {
             ProcStatus::Starting
             | ProcStatus::Running { .. }
@@ -1129,6 +1150,7 @@ impl BootstrapProcHandle {
                 *st = ProcStatus::Killed {
                     signal,
                     core_dumped,
+                    command,
                 };
                 true
             }
@@ -1909,15 +1931,17 @@ impl BootstrapProcManager {
                 Some(stderr_tail.join("\n"))
             };
 
+            let command = handle.command.clone();
             match exit_result.kind {
                 ProcExitKind::Exited { code } => {
-                    let _ = handle.mark_stopped(code, stderr_tail);
+                    let _ = handle.mark_stopped(code, stderr_tail, command.clone());
                     tracing::info!(
                         name = "ProcStatus",
                         status = "Exited::ExitWithCode",
                         %proc_id,
                         exit_code = code,
                         tail = tail_str,
+                        command = command.as_str(),
                         "proc exited with code {code}"
                     );
                 }
@@ -1925,12 +1949,13 @@ impl BootstrapProcManager {
                     signal,
                     core_dumped,
                 } => {
-                    let _ = handle.mark_killed(signal, core_dumped);
+                    let _ = handle.mark_killed(signal, core_dumped, command.clone());
                     tracing::info!(
                         name = "ProcStatus",
                         status = "Exited::KilledBySignal",
                         %proc_id,
                         tail = tail_str,
+                        command = command.as_str(),
                         "killed by signal {signal}"
                     );
                 }
@@ -2129,7 +2154,16 @@ impl ProcManager for BootstrapProcManager {
         };
 
         // Create handle with launcher reference for terminate/kill delegation.
-        let handle = BootstrapProcHandle::new(proc_id.clone(), Arc::downgrade(self.launcher()));
+        let command_str = format!(
+            "{} {}",
+            opts.command.program.display(),
+            opts.command.args.join(" ")
+        );
+        let handle = BootstrapProcHandle::new(
+            proc_id.clone(),
+            Arc::downgrade(self.launcher()),
+            command_str,
+        );
         handle.mark_running(launch_result.started_at);
         handle.set_stream_monitors(out_fwder, err_fwder);
 
@@ -2846,7 +2880,7 @@ mod tests {
         fn handle_for_test() -> BootstrapProcHandle {
             let proc_id = test_proc_id("0");
             let launcher: Arc<dyn ProcLauncher> = Arc::new(TestProcLauncher);
-            BootstrapProcHandle::new(proc_id, Arc::downgrade(&launcher))
+            BootstrapProcHandle::new(proc_id, Arc::downgrade(&launcher), String::new())
         }
 
         #[tokio::test]
@@ -2870,7 +2904,7 @@ mod tests {
             assert!(h.mark_running(child_started_at));
             assert!(h.mark_stopping());
             assert!(matches!(h.status(), ProcStatus::Stopping { .. }));
-            assert!(h.mark_stopped(0, Vec::new()));
+            assert!(h.mark_stopped(0, Vec::new(), String::new()));
             assert!(matches!(
                 h.status(),
                 ProcStatus::Stopped { exit_code: 0, .. }
@@ -2882,12 +2916,13 @@ mod tests {
             let h = handle_for_test();
             let child_started_at = std::time::SystemTime::now();
             assert!(h.mark_running(child_started_at));
-            assert!(h.mark_killed(9, true));
+            assert!(h.mark_killed(9, true, String::new()));
             assert!(matches!(
                 h.status(),
                 ProcStatus::Killed {
                     signal: 9,
-                    core_dumped: true
+                    core_dumped: true,
+                    ..
                 }
             ));
         }
@@ -2916,9 +2951,9 @@ mod tests {
             assert!(matches!(h.status(), ProcStatus::Running { .. }));
             // Once Stopped, we can't go to Running/Killed/Failed/etc.
             assert!(h.mark_stopping());
-            assert!(h.mark_stopped(0, Vec::new()));
+            assert!(h.mark_stopped(0, Vec::new(), String::new()));
             assert!(!h.mark_running(child_started_at));
-            assert!(!h.mark_killed(9, false));
+            assert!(!h.mark_killed(9, false, String::new()));
             assert!(!h.mark_failed("nope"));
 
             assert!(matches!(
@@ -2943,7 +2978,7 @@ mod tests {
             // Ready -> Stopping -> Stopped should be legal.
             assert!(h.mark_ready(addr, agent_ref));
             assert!(h.mark_stopping());
-            assert!(h.mark_stopped(0, Vec::new()));
+            assert!(h.mark_stopped(0, Vec::new(), String::new()));
         }
 
         #[tokio::test]
@@ -2962,7 +2997,7 @@ mod tests {
             // Running -> Ready
             assert!(h.mark_ready(addr, agent));
             // Ready -> Killed
-            assert!(h.mark_killed(9, false));
+            assert!(h.mark_killed(9, false, String::new()));
         }
 
         #[tokio::test]
@@ -3021,7 +3056,7 @@ mod tests {
     fn test_handle(proc_id: hyperactor_reference::ProcId) -> BootstrapProcHandle {
         let launcher: std::sync::Arc<dyn crate::proc_launcher::ProcLauncher> =
             std::sync::Arc::new(TestLauncher);
-        BootstrapProcHandle::new(proc_id, std::sync::Arc::downgrade(&launcher))
+        BootstrapProcHandle::new(proc_id, std::sync::Arc::downgrade(&launcher), String::new())
     }
 
     #[tokio::test]
@@ -3042,7 +3077,7 @@ mod tests {
         }
 
         // Running -> Stopped
-        assert!(handle.mark_stopped(0, Vec::new()));
+        assert!(handle.mark_stopped(0, Vec::new(), String::new()));
         rx.changed().await.ok(); // Observe the transition.
         assert!(matches!(
             &*rx.borrow(),
@@ -3058,7 +3093,7 @@ mod tests {
 
         // Simulate the exit monitor doing its job directly here.
         // (Equivalent outcome: terminal state before Running.)
-        assert!(handle.mark_stopped(7, Vec::new()));
+        assert!(handle.mark_stopped(7, Vec::new(), String::new()));
 
         // `ready()` should return Err with the terminal status.
         match handle.ready_inner().await {
@@ -3154,6 +3189,7 @@ mod tests {
         let st = ProcStatus::Stopped {
             exit_code: 7,
             stderr_tail: Vec::new(),
+            command: String::new(),
         };
         let s = format!("{}", st);
         assert!(s.contains("Stopped"));
@@ -3178,6 +3214,7 @@ mod tests {
             ProcStatus::Killed {
                 signal: 9,
                 core_dumped: false,
+                command: String::new(),
             },
             ProcStatus::Failed {
                 reason: "boom".into(),
@@ -3216,7 +3253,7 @@ mod tests {
         let handle = test_handle(proc_id);
 
         // Drive directly to a terminal state before calling wait()
-        assert!(handle.mark_stopped(0, Vec::new()));
+        assert!(handle.mark_stopped(0, Vec::new(), String::new()));
 
         // Call the trait method (not wait_inner)
         let st = <BootstrapProcHandle as hyperactor::host::ProcHandle>::wait(&handle)
@@ -3234,7 +3271,7 @@ mod tests {
         let proc_id = test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "wrap");
         let handle = test_handle(proc_id);
 
-        assert!(handle.mark_stopped(7, Vec::new()));
+        assert!(handle.mark_stopped(7, Vec::new(), String::new()));
 
         match <BootstrapProcHandle as hyperactor::host::ProcHandle>::ready(&handle).await {
             Ok(()) => panic!("expected Err"),
