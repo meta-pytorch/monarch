@@ -98,7 +98,8 @@ impl PyProcMesh {
             })
             .await?;
 
-            let full_name = hyperactor_mesh::Name::new(name).unwrap();
+            let full_name =
+                hyperactor_mesh::mesh_id::ActorMeshId::unique(hyperactor::id::Label::strip(&name));
             let actor_mesh = proc_mesh
                 .spawn_with_name(
                     instance.deref(),

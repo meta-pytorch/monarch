@@ -3019,10 +3019,11 @@ mod tests {
         use hyperactor::channel::ChannelTransport;
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
+        use hyperactor::id::Label;
 
-        use crate::Name;
         use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
+        use crate::mesh_id::ResourceId;
         use crate::proc_agent::ProcAgent;
         use crate::resource;
         use crate::resource::ProcSpec;
@@ -3071,12 +3072,12 @@ mod tests {
         let (client, _handle) = client_proc.instance("client").unwrap();
 
         // Spawn a user proc via CreateOrUpdate<ProcSpec>.
-        let user_proc_name = Name::new("user_proc").unwrap();
+        let user_proc_name = ResourceId::unique(Label::new("user-proc").unwrap());
         host_agent_ref
             .send(
                 &client,
                 resource::CreateOrUpdate {
-                    name: user_proc_name.clone(),
+                    id: user_proc_name.clone(),
                     rank: Rank::new(0),
                     spec: ProcSpec::default(),
                 },
