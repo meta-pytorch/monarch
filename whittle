@@ -5,97 +5,88 @@
 
 Workflow:
     1. whittle init          Create/reset .whittle.json.
-    2. whittle add <target>  Register test targets; discovers tests via TestX.
-    3. whittle sync          Run tests; passing tests are removed from the set.
+    2. whittle add <target>  Register test targets.
+    3. whittle sync          Run tests; passing tests are excluded next time.
     4. whittle               Show what's left.
-    Repeat 3-4 until all tests pass.
+    Repeat 3-4 until sync exits 0.
 
 Commands:
     whittle init [--smoke]
-        Create or reset the .whittle.json state file in the current directory.
-        With --smoke, also add default smoke-test targets (hyperactor,
-        hyperactor_mesh, and key Python test targets).
+        Create or reset .whittle.json. With --smoke, add default smoke
+        targets.
 
     whittle add [--include-flaky] <target> [<target>...]
-        Add one or more buck test targets (e.g. fbcode//monarch/python/tests:foo
-        or just python/tests:foo). Discovers all tests in each target via TestX
-        and records them as pending. Flaky tests (per TestX) are excluded by
-        default. Pass --include-flaky to include them.
+        Register buck test targets. Queries TestX for known flaky tests and
+        pre-marks them (use --include-flaky to skip this). Tests are
+        discovered by running buck, not by pre-enumeration.
 
     whittle sync [-k | --keep-going]
-        Run all tests that are pending or failing. Stops on the first failure
-        by default — use -k/--keep-going to run all tests regardless. Tests
-        that pass are marked as passed and excluded from future syncs. Safe
-        to Ctrl-C — partial results are saved and unfinished tests remain
-        pending.
+        Run all targets via buck2 test, excluding tests already in a
+        non-fail state. New tests are discovered automatically. Stops on
+        first failure by default; -k runs everything.
+        Exits 0 when no tests are in 'fail' state.
 
-    whittle reset [--reinit]
-        Reset all tests to pending. With --reinit, also re-enumerate tests
-        from TestX (picks up new tests, drops removed ones, updates flaky
-        list).
+    whittle mark <state> <test_name>
+        Set a test to any state (slug-formatted). Only 'fail' has special
+        meaning: fail tests are re-executed by sync. Any other state
+        (pass, flaky, skip, todo, ...) excludes the test from sync.
 
-    whittle flake <test_name>
-        Manually mark a test as flaky, excluding it from future syncs. The
-        test name is the full "target - test_case" string as shown by
-        `whittle`, e.g.:
-            whittle flake monarch/python/tests:foo - test_foo.py::test_bar
+    whittle reset
+        Clear all test states. Next sync re-discovers and runs everything.
 
-    whittle skip <test_name>
-        Skip a test temporarily. Skipped tests are not run by sync, but
-        sync cannot succeed while skipped tests remain. Use this to pause
-        a test and come back to it later.
+    whittle [--state=fail,pass,...] [-v]
+        Print status. --state filters to specific states. -v adds buck
+        commands to reproduce each test. Exits 0 when no fail tests.
 
-    whittle unskip <test_name>
-    whittle unskip --all
-        Mark a skipped test as pending again. With --all, unskip all
-        skipped tests.
+    whittle agent
+        Print agent instructions for making sync pass.
 
-    whittle pass <test_name>
-        Manually mark a test as passed.
+    whittle --skill
+        Print the agent skill document.
 
-    whittle [--state=fail,skip,...] [-v]
-        Print status: one line per test, tab-separated status and name.
-        --state filters to specific states (comma-separated).
-        -v adds a comment after each test with the buck command to
-        reproduce it. Exits 0 if all tests pass, 1 if any are failing,
-        pending, or skipped.
+Shorthand:
+    whittle flake <test>     →  whittle mark flaky <test>
+    whittle skip <test>      →  whittle mark skip <test>
+    whittle pass <test>      →  whittle mark pass <test>
+    whittle unskip <test>    →  whittle mark fail <test>
+    whittle unskip --all     →  mark all 'skip' tests as 'fail'
+
+Test states:
+    fail     Re-executed by sync. This is the only "active" state.
+    pass     Excluded from sync. Test passed.
+    flaky    Excluded from sync. Test is flaky (not your problem).
+    skip     Excluded from sync. Paused for later.
+    <any>    Excluded from sync. Any slug is valid.
+
+    Tests not in the state file are new — they run on sync and get
+    recorded as pass or fail.
 
 Output format:
-    Lines starting with # are comments (diagnostics/summaries).
-    Data lines are tab-separated: status<TAB>name.
-
-    fail	monarch/python/tests:test_foo - test_foo.py::test_bar
-    pass	monarch/python/tests:test_foo - test_foo.py::test_baz
-    pending	monarch/python/tests:test_foo - test_foo.py::test_qux
-    skip	monarch/python/tests:test_foo - test_foo.py::test_hard_one
-    flaky	monarch/python/tests:test_foo - test_foo.py::test_flake
-
-State is stored in .whittle.json in the current directory.
+    Lines starting with # are comments. Data lines are tab-separated:
+    status<TAB>test_name.
 
 Example:
-    ./whittle init --smoke  # init with default monarch smoke targets
-    ./whittle sync          # runs tests, stops on first failure
-    ./whittle sync -k       # run all tests, don't stop on failure
-    ./whittle               # shows 3 failing, 500 passed
-    # ... one test is flaky, not your problem ...
-    ./whittle flake monarch/python/tests:foo - test_foo.py::test_flaky_one
-    # ... one test is hard, skip it for now ...
-    ./whittle skip monarch/python/tests:foo - test_foo.py::test_hard_one
-    # ... fix the other failure ...
-    ./whittle sync          # runs the 1 remaining failure, passes
-    # ... come back to the skipped test ...
-    ./whittle unskip --all
-    ./whittle sync          # runs the skipped test
+    ./whittle init --smoke
+    ./whittle sync              # discover and run all tests
+    ./whittle                   # 3 fail, 500 pass
+    ./whittle flake target - flaky_test
+    ./whittle skip target - hard_test
+    ./whittle sync              # re-runs the 1 remaining failure
+    ./whittle mark fail target - hard_test   # ready to try it
+    ./whittle sync              # runs hard_test
+    ./whittle                   # all pass, exit 0
 
 Composing:
     ./whittle | grep '^fail'           # just failing tests
     ./whittle | grep -v '^#'           # strip comments
-    ./whittle | cut -f2 | sort         # sorted test names
+    ./whittle --state=fail,skip        # fail + skip only
+    ./whittle -v --state=fail          # fail tests with buck commands
 """
 
 import json
 import os
 import platform
+import re
 import shlex
 import signal
 import subprocess
@@ -109,9 +100,8 @@ STATE_FILE = ".whittle.json"
 AGENT_SKILL = """
 # Whittle: test-driven fix workflow
 
-You are using `whittle` to iteratively fix failing tests. The state file
-`.whittle.json` tracks which tests are pending, passing, failing, skipped,
-or flaky.
+You are using `whittle` to iteratively fix failing tests. Run
+`./whittle --help` for full command reference.
 
 ## Setup
 
@@ -139,19 +129,18 @@ Run `./whittle sync` repeatedly until it exits 0. After each sync:
    The exact command is printed after each failure in the sync output.
 
 3. If a test fails because of your changes but you want to come back to it
-   later (e.g., to focus on other failures first), skip it:
+   later, skip it:
 
        ./whittle skip <test_name>
 
-   Skipped tests are not run by sync, but sync cannot exit 0 while skipped
-   tests remain. When ready, unskip them:
+   Skipped tests are excluded from sync. To re-enable:
 
        ./whittle unskip <test_name>
        ./whittle unskip --all
 
 4. If a test fails because of your changes, fix the code, then run
-   `./whittle sync` again. Only failing and pending tests are re-run;
-   passing tests are excluded.
+   `./whittle sync` again. Only fail tests and newly added tests run;
+   everything else is excluded.
 
 5. Repeat until `./whittle sync` exits 0.
 
@@ -160,9 +149,9 @@ Run `./whittle sync` repeatedly until it exits 0. After each sync:
 - `./whittle sync` stops on the first failure (fail-fast). Use
   `./whittle sync -k` to run all tests regardless of failures.
 - `./whittle` (no args) prints the current state of all tests.
-- `./whittle reset` resets all tests to pending.
-- Exit code 0 means all tests pass and none are skipped. Non-zero means
-  failures, pending, or skipped tests remain.
+- `./whittle reset` clears all test states; next sync rediscovers everything.
+- `./whittle mark <state> <test>` sets any state. Only `fail` causes re-run.
+- Exit code 0 means no tests are in `fail` state.
 
 ## Example session
 
@@ -171,13 +160,13 @@ Run `./whittle sync` repeatedly until it exits 0. After each sync:
     # first failure: test_foo — caused by your change
     # fix the code...
     ./whittle sync
-    # first failure: test_bar — unrelated flaky test
-    ./whittle flake monarch/path:target - test_bar
+    # test_bar fails — unrelated flaky test
+    ./whittle flake target - test_bar
     ./whittle sync
-    # first failure: test_hard — your change, but complex to fix
-    ./whittle skip monarch/path:target - test_hard
+    # test_hard fails — your change, but complex to fix
+    ./whittle skip target - test_hard
     ./whittle sync
-    # remaining tests pass, but exit 1 (skipped tests remain)
+    # passes (test_hard excluded), exit 0
     # now fix the hard test...
     ./whittle unskip --all
     ./whittle sync
@@ -187,7 +176,7 @@ Run `./whittle sync` repeatedly until it exits 0. After each sync:
 
 - Do NOT skip `./whittle sync`. Always verify your changes pass tests.
 - Do NOT mark a test flaky if the failure is caused by your changes.
-- Use `skip` for tests you intend to fix later. Use `flake` for tests
+- Use `skip` for tests you intend to fix later. Use `flaky` for tests
   that are broken independently of your changes.
 - If `./whittle sync` exits 0, your changes are verified.
 - If you are unsure whether a failure is flaky, run `./whittle sync` again.
@@ -202,10 +191,20 @@ def comment(msg):
 
 # ---------------------------------------------------------------------------
 # State
+#
+# {
+#   "targets": ["hyperactor", ...],
+#   "tests": {
+#     "monarch/hyperactor:hyperactor-unittest - test_foo": {
+#       "state": "pass",
+#       "id": 844425240775561
+#     }
+#   }
+# }
 # ---------------------------------------------------------------------------
 
 def empty_state():
-    return {"targets": [], "flaky_names": [], "tests": {}}
+    return {"targets": [], "tests": {}}
 
 
 def load_state():
@@ -220,6 +219,30 @@ def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
         f.write("\n")
+
+
+def test_state(state, name):
+    entry = state["tests"].get(name)
+    if entry is None:
+        return None
+    return entry["state"] if isinstance(entry, dict) else entry
+
+
+def set_test(state, name, st, test_id=None):
+    old = state["tests"].get(name)
+    if isinstance(old, dict) and test_id is None:
+        test_id = old.get("id")
+    entry = {"state": st}
+    if test_id is not None:
+        entry["id"] = test_id
+    state["tests"][name] = entry
+
+
+def test_id(state, name):
+    entry = state["tests"].get(name)
+    if isinstance(entry, dict):
+        return entry.get("id")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +265,7 @@ def get_buck_args():
 
 
 # ---------------------------------------------------------------------------
-# TestX integration
+# TestX integration (flaky pre-marking only)
 # ---------------------------------------------------------------------------
 
 def normalize_target(target):
@@ -254,9 +277,9 @@ def normalize_target(target):
     return "fbcode//monarch/" + target
 
 
-def query_tests(target):
-    """Query testx for all tests in a target (or wildcard like .../...).
-    Returns list of dicts with 'name' and 'flaky' keys."""
+def query_flaky_tests(target):
+    """Query testx for flaky tests in a target.
+    Returns list of {name, id} dicts."""
     is_wildcard = target.endswith("/...")
     search_prefix = normalize_target(target)
     if is_wildcard:
@@ -264,12 +287,12 @@ def query_tests(target):
     elif ":" not in search_prefix:
         search_prefix = search_prefix.rstrip("/") + ":"
     wildcard_dir = search_prefix.removeprefix("fbcode//") if is_wildcard else None
-    tests = []
+    results = []
     try:
         out = subprocess.check_output(
             ["testx", "--as-json", "tests", "search",
              "--starts-with", search_prefix,
-             "--limit", "5000"],
+             "--status", "flaky", "--limit", "5000"],
             stderr=subprocess.DEVNULL,
             text=True,
         )
@@ -282,8 +305,7 @@ def query_tests(target):
             parts = name.split(" - ", 1)
             if len(parts) != 2:
                 continue
-            test_case = parts[1]
-            if test_case in ("listing", "main"):
+            if parts[1] in ("listing", "main"):
                 continue
             target_part = parts[0]
             if target_part.endswith(("-type-checking", "-library")):
@@ -294,77 +316,20 @@ def query_tests(target):
             ):
                 continue
             seen.add(name)
-            tests.append({
-                "name": name,
-                "flaky": t.get("status") == "FLAKY",
-            })
-    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
+            tid = t["test_id"].removeprefix("testinfra-test-")
+            results.append({"name": name, "id": int(tid)})
+    except (subprocess.CalledProcessError, json.JSONDecodeError,
+            KeyError, ValueError):
         pass
-    return tests
-
-
-# ---------------------------------------------------------------------------
-# Target matching
-# ---------------------------------------------------------------------------
-
-def test_matches_target(test_name, target):
-    """Check if a test name belongs to a target (or wildcard pattern)."""
-    short = target.removeprefix("fbcode//")
-    test_target = test_name.split(" - ", 1)[0]
-    if short.endswith("/..."):
-        prefix = short.removesuffix("/...")
-        return test_target.endswith(prefix + "/") or \
-               ("/" + prefix + "/") in test_target or \
-               ("/" + prefix + ":") in test_target
-    elif ":" in short:
-        return test_target.endswith(short)
-    else:
-        return ("/" + short + ":") in test_target or \
-               test_target.startswith(short + ":")
+    return results
 
 
 # ---------------------------------------------------------------------------
 # Event log parsing
 # ---------------------------------------------------------------------------
 
-def parse_event_log(path):
-    """Parse tpx --event-log-file output. Returns {test_name: "pass"|"fail"}."""
-    results = {}
-    if not os.path.exists(path):
-        return results
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if "test_name" not in obj:
-                continue
-            name = obj["test_name"]
-            status = obj.get("status")
-            parts = name.split(" - ", 1)
-            if len(parts) == 2:
-                test_case = parts[1]
-                if test_case in ("listing", "main"):
-                    continue
-            name = name.removeprefix("fbcode//")
-            # tpx status codes: 1=pass (detailed 201), 2=fail (detailed 501)
-            if status == 1:
-                results[name] = "pass"
-            elif status == 2:
-                results[name] = "fail"
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Test running
-# ---------------------------------------------------------------------------
-
 def _parse_event_line(line):
-    """Parse a single event log line. Returns (name, status) or None."""
+    """Parse a single event log line. Returns (name, status, test_id) or None."""
     line = line.strip()
     if not line:
         return None
@@ -380,11 +345,35 @@ def _parse_event_line(line):
     if len(parts) == 2 and parts[1] in ("listing", "main"):
         return None
     name = name.removeprefix("fbcode//")
+    # Extract test ID from result_id (format: run_id.test_id.timestamp)
+    tid = None
+    result_id = obj.get("result_id", "")
+    id_parts = result_id.split(".")
+    if len(id_parts) >= 2:
+        try:
+            tid = int(id_parts[1])
+        except ValueError:
+            pass
+    # tpx status codes: 1=pass, 2=fail
     if status == 1:
-        return (name, "pass")
+        return (name, "pass", tid)
     elif status == 2:
-        return (name, "fail")
+        return (name, "fail", tid)
     return None
+
+
+def parse_event_log(path):
+    """Parse tpx event log. Returns {name: (status, test_id)}."""
+    results = {}
+    if not os.path.exists(path):
+        return results
+    with open(path) as f:
+        for line in f:
+            parsed = _parse_event_line(line)
+            if parsed:
+                name, status, tid = parsed
+                results[name] = (status, tid)
+    return results
 
 
 def _tail_event_log(path, results, fail_event, stop_event):
@@ -402,19 +391,24 @@ def _tail_event_log(path, results, fail_event, stop_event):
                 continue
             parsed = _parse_event_line(line)
             if parsed:
-                name, status = parsed
-                results[name] = status
+                name, status, tid = parsed
+                results[name] = (status, tid)
                 if status == "fail":
                     fail_event.set()
 
 
-def run_tests(buck_args, targets, test_filters, event_log_path,
+# ---------------------------------------------------------------------------
+# Test running
+# ---------------------------------------------------------------------------
+
+def run_tests(buck_args, targets, exclude_ids, event_log_path,
               fail_fast=False):
-    """Run buck2 test, return parsed results even on interrupt.
-    If fail_fast, kill buck2 on first test failure."""
+    """Run buck2 test with exclusions. Returns (results, stopped, reason).
+    results is {name: (status, test_id)}."""
     cmd = ["buck2", "test", "--skip-incompatible-targets"] + buck_args + targets
     tpx_args = ["--event-log-file", event_log_path]
-    tpx_args += test_filters
+    if exclude_ids:
+        tpx_args += ["--exclude-test-ids"] + [str(tid) for tid in exclude_ids]
     cmd += ["--"] + tpx_args
 
     print(f"$ {shlex.join(cmd)}")
@@ -425,7 +419,6 @@ def run_tests(buck_args, targets, test_filters, event_log_path,
     results = {}
     proc = subprocess.Popen(cmd)
 
-    # Tail the event log in a background thread
     fail_event = threading.Event()
     stop_event = threading.Event()
     tailer = threading.Thread(
@@ -445,7 +438,6 @@ def run_tests(buck_args, targets, test_filters, event_log_path,
     signal.signal(signal.SIGINT, on_sigint)
     try:
         if fail_fast:
-            # Poll: wait for process exit or first failure
             while proc.poll() is None:
                 if fail_event.wait(timeout=0.1):
                     failed_fast = True
@@ -459,13 +451,15 @@ def run_tests(buck_args, targets, test_filters, event_log_path,
         stop_event.set()
         tailer.join(timeout=2)
 
-    # Pick up any remaining lines the tailer didn't get
-    for name, status in parse_event_log(event_log_path).items():
+    # Pick up any remaining lines
+    for name, val in parse_event_log(event_log_path).items():
         if name not in results:
-            results[name] = status
+            results[name] = val
 
     stopped = interrupted or failed_fast
-    reason = "interrupted" if interrupted else "stopped after failure" if failed_fast else None
+    reason = ("interrupted" if interrupted
+              else "stopped after failure" if failed_fast
+              else None)
     return results, stopped, reason
 
 
@@ -473,18 +467,15 @@ def run_tests(buck_args, targets, test_filters, event_log_path,
 # Summaries
 # ---------------------------------------------------------------------------
 
-def summarize_counts(tests, flaky_names=None):
-    """Return a summary string like '10 pass, 2 fail, 3 pending'."""
+def summarize_counts(state):
     counts = {}
-    for st in tests.values():
+    for entry in state["tests"].values():
+        st = entry["state"] if isinstance(entry, dict) else entry
         counts[st] = counts.get(st, 0) + 1
-    if flaky_names:
-        counts["flaky"] = len(flaky_names)
+    # Show fail first, then other non-pass states, then pass
     parts = []
-    for key in ("fail", "pending", "skip", "pass", "removed", "flaky"):
-        n = counts.get(key, 0)
-        if n:
-            parts.append(f"{n} {key}")
+    for key in sorted(counts, key=lambda k: (k == "pass", k)):
+        parts.append(f"{counts[key]} {key}")
     return ", ".join(parts) if parts else "empty"
 
 
@@ -524,35 +515,23 @@ def cmd_add(targets, include_flaky=False):
         save_state(state)
         return
 
-    flaky_names = set(state.get("flaky_names", []))
-    added_tests = 0
-    added_flaky = 0
-
-    for target in new_targets:
-        tests = query_tests(target)
-        n_tests = 0
-        n_flaky = 0
-        for t in tests:
-            name = t["name"]
-            if t["flaky"] and not include_flaky:
-                if name not in flaky_names:
-                    flaky_names.add(name)
-                    added_flaky += 1
-                    n_flaky += 1
-            else:
+    total_flaky = 0
+    if not include_flaky:
+        for target in new_targets:
+            flaky = query_flaky_tests(target)
+            for f in flaky:
+                name = f["name"]
                 if name not in state["tests"]:
-                    state["tests"][name] = "pending"
-                    added_tests += 1
-                    n_tests += 1
-        parts = [str(n_tests)]
-        if n_flaky:
-            parts.append(f"{n_flaky} flaky")
-        print(f"{target}\t{', '.join(parts)}")
+                    set_test(state, name, "flaky", f["id"])
+                    total_flaky += 1
 
-    state["flaky_names"] = sorted(flaky_names)
     save_state(state)
-
-    comment(f"added {added_tests} test(s), {added_flaky} flaky excluded")
+    for t in new_targets:
+        print(f"{t}")
+    if total_flaky:
+        comment(f"added {len(new_targets)} target(s), {total_flaky} flaky pre-marked")
+    else:
+        comment(f"added {len(new_targets)} target(s)")
 
 
 def cmd_sync(keep_going=False):
@@ -562,42 +541,21 @@ def cmd_sync(keep_going=False):
         sys.exit(1)
 
     buck_args = get_buck_args()
-    flaky_names = set(state.get("flaky_names", []))
 
-    to_run = {
-        name: st
-        for name, st in state["tests"].items()
-        if st not in ("pass", "removed", "skip") and name not in flaky_names
-    }
+    # Collect IDs to exclude: all tests NOT in 'fail' state
+    exclude_ids = []
+    fail_count = 0
+    for name, entry in state["tests"].items():
+        st = entry["state"] if isinstance(entry, dict) else entry
+        if st == "fail":
+            fail_count += 1
+        else:
+            tid = test_id(state, name)
+            if tid is not None:
+                exclude_ids.append(tid)
 
-    skipped = sum(1 for s in state["tests"].values() if s == "skip")
-
-    if not to_run:
-        if skipped:
-            comment(f"no tests to run; {skipped} skipped")
-            sys.exit(1)
-        comment("all tests passing")
-        return
-
-    test_filters = []
-    for name in to_run:
-        parts = name.split(" - ", 1)
-        if len(parts) == 2:
-            test_filters.append(parts[1])
-
-    run_targets = []
-    for target in state["targets"]:
-        if any(test_matches_target(name, target) for name in to_run):
-            run_targets.append(target)
-
-    if not run_targets:
-        comment("all tests passing")
-        return
-
-    pending_count = sum(1 for s in to_run.values() if s == "pending")
-    fail_count = sum(1 for s in to_run.values() if s == "fail")
-    comment(f"running {len(to_run)} test(s): "
-            f"{pending_count} pending, {fail_count} failing")
+    comment(f"running targets, excluding {len(exclude_ids)} test(s), "
+            f"{fail_count} known failure(s)")
 
     with tempfile.NamedTemporaryFile(
         suffix=".json", prefix="whittle-", delete=False
@@ -606,33 +564,37 @@ def cmd_sync(keep_going=False):
 
     try:
         results, stopped, reason = run_tests(
-            buck_args, run_targets, test_filters, event_log_path,
+            buck_args, state["targets"], exclude_ids, event_log_path,
             fail_fast=not keep_going,
         )
 
-        for name, status in results.items():
-            state["tests"][name] = status
-
+        # Update state with results
+        for name, (status, tid) in results.items():
+            set_test(state, name, status, tid)
         save_state(state)
 
-        new_pass = sum(1 for s in results.values() if s == "pass")
-        new_fail = sum(1 for s in results.values() if s == "fail")
+        new_pass = sum(1 for s, _ in results.values() if s == "pass")
+        new_fail = sum(1 for s, _ in results.values() if s == "fail")
 
-        # Print changed tests, with flake hint after each failure
-        for name in sorted(results):
-            print(f"{results[name]}\t{name}")
-            if results[name] == "fail":
-                comment(f"mark flaky: ./whittle flake {name}")
+        # Print changed tests: passes first, then summary, then failures
+        passed_names = sorted(n for n in results if results[n][0] == "pass")
+        failed_names = sorted(n for n in results if results[n][0] == "fail")
+
+        for name in passed_names:
+            print(f"pass\t{name}")
 
         prefix = f"{reason}: " if reason else ""
         comment(f"{prefix}{new_pass} pass, {new_fail} fail")
 
-        total_fail = sum(1 for s in state["tests"].values() if s == "fail")
-        total_pending = sum(
-            1 for s in state["tests"].values() if s == "pending"
+        for name in failed_names:
+            print(f"fail\t{name}")
+            comment(f"mark flaky: ./whittle flake {name}")
+
+        total_fail = sum(
+            1 for e in state["tests"].values()
+            if (e["state"] if isinstance(e, dict) else e) == "fail"
         )
-        total_skip = sum(1 for s in state["tests"].values() if s == "skip")
-        if total_fail > 0 or total_pending > 0 or total_skip > 0:
+        if total_fail > 0:
             sys.exit(1)
     finally:
         try:
@@ -641,96 +603,65 @@ def cmd_sync(keep_going=False):
             pass
 
 
-def cmd_reset(refresh=False):
+def cmd_reset():
     state = load_state()
-    # Reset all tests to pending
-    for name in state["tests"]:
-        state["tests"][name] = "pending"
-    count = len(state["tests"])
-
-    if refresh:
-        # Re-enumerate tests from targets, preserving flaky list
-        state["tests"] = {}
-        flaky_names = set(state.get("flaky_names", []))
-        for target in state["targets"]:
-            tests = query_tests(target)
-            for t in tests:
-                name = t["name"]
-                if name in flaky_names:
-                    continue
-                if t["flaky"] and name not in flaky_names:
-                    flaky_names.add(name)
-                else:
-                    state["tests"][name] = "pending"
-        state["flaky_names"] = sorted(flaky_names)
-        count = len(state["tests"])
-
+    state["tests"] = {}
     save_state(state)
-    comment(f"reset {count} test(s) to pending")
+    comment("cleared all test states")
 
 
-def cmd_skip(test_name):
-    state = load_state()
-    test_name = test_name.removeprefix("fbcode//")
-    if test_name not in state["tests"]:
-        comment(f"unknown test: {test_name}")
+def cmd_mark(mark_state, test_name):
+    if not re.match(r'^[a-z][a-z0-9_-]*$', mark_state):
+        comment(f"invalid state slug: {mark_state}")
         sys.exit(1)
-    state["tests"][test_name] = "skip"
-    save_state(state)
-    print(f"skip\t{test_name}")
-
-
-def cmd_unskip(test_name=None, all_=False):
     state = load_state()
-    if all_:
-        count = 0
-        for name in state["tests"]:
-            if state["tests"][name] == "skip":
-                state["tests"][name] = "pending"
-                count += 1
-        save_state(state)
-        comment(f"unskipped {count} test(s)")
-        return
     test_name = test_name.removeprefix("fbcode//")
-    if test_name not in state["tests"]:
-        comment(f"unknown test: {test_name}")
+    set_test(state, test_name, mark_state)
+    save_state(state)
+    print(f"{mark_state}\t{test_name}")
+
+
+def cmd_mark_all(from_state, to_state):
+    state = load_state()
+    count = 0
+    for name in list(state["tests"]):
+        if test_state(state, name) == from_state:
+            set_test(state, name, to_state)
+            count += 1
+    save_state(state)
+    comment(f"marked {count} '{from_state}' test(s) as '{to_state}'")
+
+
+def cmd_agent():
+    state = load_state()
+    if not state["targets"]:
+        comment("no targets; run: whittle init --smoke")
         sys.exit(1)
-    if state["tests"][test_name] != "skip":
-        comment(f"not skipped: {test_name}")
-        return
-    state["tests"][test_name] = "pending"
-    save_state(state)
-    print(f"pending\t{test_name}")
 
+    counts = {}
+    for entry in state["tests"].values():
+        st = entry["state"] if isinstance(entry, dict) else entry
+        counts[st] = counts.get(st, 0) + 1
+    failing = [n for n in state["tests"]
+               if test_state(state, n) == "fail"]
 
-def cmd_pass(test_name):
-    state = load_state()
-    test_name = test_name.removeprefix("fbcode//")
-    if test_name not in state["tests"]:
-        comment(f"unknown test: {test_name}")
-        sys.exit(1)
-    state["tests"][test_name] = "pass"
-    save_state(state)
-    print(f"pass\t{test_name}")
-
-
-def cmd_flake(test_name):
-    state = load_state()
-    test_name = test_name.removeprefix("fbcode//")
-    names = state.get("flaky_names", [])
-    if test_name in names:
-        comment(f"already flaky: {test_name}")
-        return
-    names.append(test_name)
-    names.sort()
-    state["flaky_names"] = names
-    state["tests"].pop(test_name, None)
-    save_state(state)
-    print(f"flaky\t{test_name}")
+    print("Read the whittle skill by running: ./whittle --skill")
+    print()
+    print("Your job is to make `./whittle sync` exit 0. Follow the workflow")
+    print("described in the skill output. The current state is:")
+    print()
+    print(f"  {summarize_counts(state)}")
+    print()
+    if failing:
+        print("Failing tests:")
+        for name in sorted(failing):
+            print(f"  {name}")
+        print()
+    print("Run `./whittle sync` to start. Fix failures, mark flaky tests,")
+    print("and repeat until it exits 0.")
 
 
 def _buck_cmd_for_test(name):
-    """Return a buck2 test command to reproduce a single test."""
     parts = name.split(" - ", 1)
     if len(parts) != 2:
         return None
@@ -740,66 +671,29 @@ def _buck_cmd_for_test(name):
     return f"buck2 test {buck_args} {target} -- {test_case}"
 
 
-def cmd_agent():
-    state = load_state()
-    if not state["targets"]:
-        comment("no targets; run: whittle init --smoke")
-        sys.exit(1)
-
-    failing = [n for n, s in state["tests"].items() if s == "fail"]
-    pending = [n for n, s in state["tests"].items() if s == "pending"]
-    skipped = [n for n, s in state["tests"].items() if s == "skip"]
-
-    print("Read the whittle skill by running: ./whittle --skill")
-    print()
-    print("Your job is to make `./whittle sync` exit 0. Follow the workflow")
-    print("described in the skill output. The current state is:")
-    print()
-    print(f"  {len(failing)} failing, {len(pending)} pending, "
-          f"{len(skipped)} skipped")
-    print()
-    if failing:
-        print("Failing tests:")
-        for name in sorted(failing):
-            print(f"  {name}")
-        print()
-    if skipped:
-        print("Skipped tests (must be resolved before sync can succeed):")
-        for name in sorted(skipped):
-            print(f"  {name}")
-        print()
-    print("Run `./whittle sync` to start. Fix failures, mark flaky tests,")
-    print("and repeat until it exits 0.")
-
-
 def cmd_status(filter_states=None, verbose=False):
     state = load_state()
     if not state["targets"]:
         comment("no targets; run: whittle add <target>")
         sys.exit(1)
 
-    # Build list of (status, name) pairs
-    entries = []
     for name in sorted(state["tests"]):
-        entries.append((state["tests"][name], name))
-    for name in sorted(state.get("flaky_names", [])):
-        entries.append(("flaky", name))
-
-    for status, name in entries:
-        if filter_states and status not in filter_states:
+        st = test_state(state, name)
+        if filter_states and st not in filter_states:
             continue
-        print(f"{status}\t{name}")
+        print(f"{st}\t{name}")
         if verbose:
             buck_cmd = _buck_cmd_for_test(name)
             if buck_cmd:
                 comment(buck_cmd)
 
-    comment(summarize_counts(state["tests"], state.get("flaky_names")))
+    comment(summarize_counts(state))
 
-    failing = sum(1 for s in state["tests"].values() if s == "fail")
-    pending = sum(1 for s in state["tests"].values() if s == "pending")
-    skipped = sum(1 for s in state["tests"].values() if s == "skip")
-    if failing or pending or skipped:
+    total_fail = sum(
+        1 for e in state["tests"].values()
+        if (e["state"] if isinstance(e, dict) else e) == "fail"
+    )
+    if total_fail > 0:
         sys.exit(1)
 
 
@@ -810,7 +704,6 @@ def cmd_status(filter_states=None, verbose=False):
 def main():
     args = sys.argv[1:]
 
-    # Parse global flags (before or instead of a command)
     filter_states = None
     verbose = False
     remaining = []
@@ -850,34 +743,41 @@ def main():
         keep_going = "-k" in remaining or "--keep-going" in remaining
         cmd_sync(keep_going=keep_going)
     elif command == "reset":
-        cmd_reset(refresh="--reinit" in remaining)
-    elif command == "pass":
-        test_name = " ".join(remaining[1:])
-        if not test_name:
-            comment("usage: whittle pass <test_name>")
+        cmd_reset()
+    elif command == "mark":
+        if len(remaining) < 3:
+            comment("usage: whittle mark <state> <test_name>")
             sys.exit(1)
-        cmd_pass(test_name)
+        mark_state = remaining[1]
+        test_name = " ".join(remaining[2:])
+        cmd_mark(mark_state, test_name)
     elif command == "flake":
         test_name = " ".join(remaining[1:])
         if not test_name:
             comment("usage: whittle flake <test_name>")
             sys.exit(1)
-        cmd_flake(test_name)
+        cmd_mark("flaky", test_name)
     elif command == "skip":
         test_name = " ".join(remaining[1:])
         if not test_name:
             comment("usage: whittle skip <test_name>")
             sys.exit(1)
-        cmd_skip(test_name)
+        cmd_mark("skip", test_name)
+    elif command == "pass":
+        test_name = " ".join(remaining[1:])
+        if not test_name:
+            comment("usage: whittle pass <test_name>")
+            sys.exit(1)
+        cmd_mark("pass", test_name)
     elif command == "unskip":
         if "--all" in remaining:
-            cmd_unskip(all_=True)
+            cmd_mark_all("skip", "fail")
         else:
             test_name = " ".join(a for a in remaining[1:] if a != "--all")
             if not test_name:
                 comment("usage: whittle unskip <test_name> | --all")
                 sys.exit(1)
-            cmd_unskip(test_name)
+            cmd_mark("fail", test_name)
     else:
         comment(f"unknown command: {command}")
         print(__doc__, file=sys.stderr)
