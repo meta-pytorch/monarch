@@ -3439,7 +3439,11 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         #[derive(Debug)]
-        struct TestActor(Arc<AtomicBool>, bool);
+        struct TestActor {
+            handled: Arc<AtomicBool>,
+            notify: Arc<tokio::sync::Notify>,
+            should_handle: bool,
+        }
 
         #[async_trait]
         impl Actor for TestActor {
@@ -3448,7 +3452,7 @@ mod tests {
                 _this: &Instance<Self>,
                 _event: &ActorSupervisionEvent,
             ) -> Result<bool, anyhow::Error> {
-                if !self.1 {
+                if !self.should_handle {
                     return Ok(false);
                 }
 
@@ -3457,7 +3461,8 @@ mod tests {
                     _this.self_id(),
                     _event
                 );
-                self.0.store(true, Ordering::SeqCst);
+                self.handled.store(true, Ordering::SeqCst);
+                self.notify.notify_one();
                 Ok(true)
             }
         }
@@ -3474,49 +3479,52 @@ mod tests {
             }
         }
 
+        let make_actor = |handled: &Arc<AtomicBool>, should_handle: bool| TestActor {
+            handled: handled.clone(),
+            notify: Arc::new(tokio::sync::Notify::new()),
+            should_handle,
+        };
+
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
-        let (reported_event, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let root_state = Arc::new(AtomicBool::new(false));
         let root_1_state = Arc::new(AtomicBool::new(false));
+        let root_1_notify = Arc::new(tokio::sync::Notify::new());
         let root_1_1_state = Arc::new(AtomicBool::new(false));
         let root_1_1_1_state = Arc::new(AtomicBool::new(false));
         let root_2_state = Arc::new(AtomicBool::new(false));
         let root_2_1_state = Arc::new(AtomicBool::new(false));
 
         let root = proc
-            .spawn::<TestActor>("root", TestActor(root_state.clone(), false))
+            .spawn::<TestActor>("root", make_actor(&root_state, false))
             .unwrap();
         let root_1 = proc
             .spawn_child::<TestActor>(
                 root.cell().clone(),
-                TestActor(
-                    root_1_state.clone(),
-                    true, /* set true so children's event stops here */
-                ),
+                TestActor {
+                    handled: root_1_state.clone(),
+                    notify: root_1_notify.clone(),
+                    should_handle: true, // children's event stops here
+                },
             )
             .unwrap();
         let root_1_1 = proc
-            .spawn_child::<TestActor>(
-                root_1.cell().clone(),
-                TestActor(root_1_1_state.clone(), false),
-            )
+            .spawn_child::<TestActor>(root_1.cell().clone(), make_actor(&root_1_1_state, false))
             .unwrap();
         let root_1_1_1 = proc
             .spawn_child::<TestActor>(
                 root_1_1.cell().clone(),
-                TestActor(root_1_1_1_state.clone(), false),
+                make_actor(&root_1_1_1_state, false),
             )
             .unwrap();
         let root_2 = proc
-            .spawn_child::<TestActor>(root.cell().clone(), TestActor(root_2_state.clone(), false))
+            .spawn_child::<TestActor>(root.cell().clone(), make_actor(&root_2_state, false))
             .unwrap();
         let root_2_1 = proc
-            .spawn_child::<TestActor>(
-                root_2.cell().clone(),
-                TestActor(root_2_1_state.clone(), false),
-            )
+            .spawn_child::<TestActor>(root_2.cell().clone(), make_actor(&root_2_1_state, false))
             .unwrap();
 
         // fail `root_1_1_1`, the supervision msg should be propagated to
@@ -3527,11 +3535,20 @@ mod tests {
 
         // fail `root_2_1`, the supervision msg should be propagated to
         // ProcSupervisionCoordinator.
+        let root_2_1_id = root_2_1.actor_id().clone();
         root_2_1
             .send::<String>(&client, "some random failure".into())
             .unwrap();
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // Wait for root_1 to handle the supervision event from the
+        // root_1_1_1 -> root_1_1 -> root_1 chain. The Notify provides
+        // a deterministic signal — no polling or timing needed.
+        root_1_notify.notified().await;
+
+        // Wait for the supervision event from root_2_1's failure to
+        // reach the ProcSupervisionCoordinator.
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, root_2_1_id);
 
         assert!(!root_state.load(Ordering::SeqCst));
         assert!(root_1_state.load(Ordering::SeqCst));
@@ -3539,10 +3556,6 @@ mod tests {
         assert!(!root_1_1_1_state.load(Ordering::SeqCst));
         assert!(!root_2_state.load(Ordering::SeqCst));
         assert!(!root_2_1_state.load(Ordering::SeqCst));
-        assert_eq!(
-            reported_event.event().map(|e| e.actor_id.clone()),
-            Some(root_2_1.actor_id().clone())
-        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
