@@ -25,6 +25,7 @@ use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::mailbox::PyPortId;
 use monarch_hyperactor::runtime::get_tokio_runtime;
+use monarch_record_batch::RecordBatchBuffer;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -38,7 +39,6 @@ use crate::pyspy_table::PySpyDumpBuffer;
 use crate::pyspy_table::PySpyFrameBuffer;
 use crate::pyspy_table::PySpyLocalVariableBuffer;
 use crate::pyspy_table::PySpyStackTraceBuffer;
-use crate::record_batch_sink::RecordBatchBuffer;
 use crate::serialize_batch;
 use crate::serialize_schema;
 use crate::timestamp_to_micros;
@@ -114,6 +114,95 @@ impl LiveTableData {
     }
 }
 
+/// Opaque handle to the shared table storage.
+///
+/// External crates receive this capability via
+/// [`DatabaseScanner::table_store()`]. The raw storage map is not
+/// part of the public API.
+///
+/// # Table-store invariants (TS-*)
+///
+/// - **TS-1 (opaque capability):** External crates do not receive
+///   the raw `Arc<StdMutex<HashMap<...>>>`.
+/// - **TS-2 (behavior parity):** [`TableStore::ingest_batch`]
+///   preserves existing ingestion semantics (ID-1 through ID-6).
+/// - **TS-3 (read capability minimality):** [`table_names`](Self::table_names)
+///   and [`table_provider`](Self::table_provider) expose only what
+///   downstream query setup needs. Callers receive
+///   `Arc<dyn TableProvider>`, not the backing `MemTable`.
+/// - **TS-4 (ownership preserved):** Storage ownership remains in
+///   `monarch_distributed_telemetry`. `TableStore` is a handle, not
+///   an independent store.
+#[derive(Clone)]
+pub struct TableStore {
+    inner: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+}
+
+impl TableStore {
+    /// Create an empty standalone table store.
+    ///
+    /// Useful for testing or standalone ingestion scenarios where
+    /// the full [`DatabaseScanner`] lifecycle is not needed.
+    pub fn new_empty() -> Self {
+        Self {
+            inner: Arc::new(StdMutex::new(HashMap::new())),
+        }
+    }
+
+    /// Ingest a `RecordBatch` into a named table (TS-2).
+    ///
+    /// Async so callers in async contexts can await directly without
+    /// hitting the `block_in_place` bridge in `push_batch_to_tables`.
+    ///
+    /// See the ID-* invariants on
+    /// `DatabaseScanner::push_batch_to_tables` for behavioral
+    /// guarantees (this method preserves the same semantics).
+    pub async fn ingest_batch(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
+        let table = {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+            guard
+                .entry(table_name.to_string())
+                .or_insert_with(|| Arc::new(LiveTableData::new(batch.schema())))
+                .clone()
+        };
+        table.push(batch).await;
+        Ok(())
+    }
+
+    /// Return sorted table names currently in storage (TS-3).
+    pub fn table_names(&self) -> anyhow::Result<Vec<String>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+        let mut names: Vec<String> = guard.keys().cloned().collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// Return a [`TableProvider`] for a named table, or `None` if
+    /// the table does not exist (TS-3).
+    ///
+    /// The returned provider can be registered directly with a
+    /// DataFusion `SessionContext`. Callers do not see the backing
+    /// storage type.
+    pub fn table_provider(
+        &self,
+        table_name: &str,
+    ) -> anyhow::Result<Option<Arc<dyn TableProvider>>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+        Ok(guard
+            .get(table_name)
+            .map(|t| t.mem_table() as Arc<dyn TableProvider>))
+    }
+}
+
 /// Default retention duration: 10 minutes in seconds.
 const DEFAULT_RETENTION_SECS: u64 = 10 * 60;
 
@@ -163,20 +252,22 @@ impl DatabaseScanner {
         for (name, batch) in [
             (
                 "pyspy_dumps",
-                PySpyDumpBuffer::default().to_record_batch().unwrap(),
+                PySpyDumpBuffer::default().drain_to_record_batch().unwrap(),
             ),
             (
                 "pyspy_stack_traces",
-                PySpyStackTraceBuffer::default().to_record_batch().unwrap(),
+                PySpyStackTraceBuffer::default()
+                    .drain_to_record_batch()
+                    .unwrap(),
             ),
             (
                 "pyspy_frames",
-                PySpyFrameBuffer::default().to_record_batch().unwrap(),
+                PySpyFrameBuffer::default().drain_to_record_batch().unwrap(),
             ),
             (
                 "pyspy_local_variables",
                 PySpyLocalVariableBuffer::default()
-                    .to_record_batch()
+                    .drain_to_record_batch()
                     .unwrap(),
             ),
         ] {
@@ -311,10 +402,20 @@ impl DatabaseScanner {
 }
 
 impl DatabaseScanner {
-    /// Static method to push a batch to the table_data map.
-    /// This can be used from closures that capture the Arc.
+    /// Push a batch into the named table in `table_data`.
     ///
-    /// If the batch is empty, creates the table with the schema but doesn't append data.
+    /// # Ingestion invariants (ID-*)
+    ///
+    /// - **ID-1 (create on first batch):** If `table_name` is absent,
+    ///   a new `LiveTableData` is created from `batch.schema()`.
+    /// - **ID-2 (empty batch registers schema):** An empty batch
+    ///   creates the table entry and preserves the schema —
+    ///   `LiveTableData::push` is a no-op for zero rows, but the
+    ///   `entry().or_insert_with()` runs unconditionally.
+    /// - **ID-3 (append on existing table):** A non-empty batch for
+    ///   an existing table appends rows.
+    /// - **ID-4 (error surface):** Lock poisoning propagates as
+    ///   `Err`. `push()` itself is infallible.
     fn push_batch_to_tables(
         table_data: &Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
         table_name: &str,
@@ -401,6 +502,8 @@ impl DatabaseScanner {
         proc_ref: &str,
         pyspy_result_json: &str,
     ) -> anyhow::Result<()> {
+        use monarch_record_batch::RecordBatchBuffer;
+
         use crate::pyspy_table::PySpyDump;
         use crate::pyspy_table::PySpyDumpBuffer;
         use crate::pyspy_table::PySpyFrame;
@@ -409,7 +512,6 @@ impl DatabaseScanner {
         use crate::pyspy_table::PySpyLocalVariableBuffer;
         use crate::pyspy_table::PySpyStackTrace;
         use crate::pyspy_table::PySpyStackTraceBuffer;
-        use crate::record_batch_sink::RecordBatchBuffer;
 
         let value: serde_json::Value = serde_json::from_str(pyspy_result_json)?;
         let ok = match value.get("Ok") {
@@ -436,7 +538,11 @@ impl DatabaseScanner {
             binary,
             proc_ref: proc_ref.to_string(),
         });
-        Self::push_batch_to_tables(&self.table_data, "pyspy_dumps", dump_buf.to_record_batch()?)?;
+        Self::push_batch_to_tables(
+            &self.table_data,
+            "pyspy_dumps",
+            dump_buf.drain_to_record_batch()?,
+        )?;
 
         // Insert stack trace, frame, and local variable rows
         let mut trace_buf = PySpyStackTraceBuffer::default();
@@ -531,17 +637,17 @@ impl DatabaseScanner {
         Self::push_batch_to_tables(
             &self.table_data,
             "pyspy_stack_traces",
-            trace_buf.to_record_batch()?,
+            trace_buf.drain_to_record_batch()?,
         )?;
         Self::push_batch_to_tables(
             &self.table_data,
             "pyspy_frames",
-            frame_buf.to_record_batch()?,
+            frame_buf.drain_to_record_batch()?,
         )?;
         Self::push_batch_to_tables(
             &self.table_data,
             "pyspy_local_variables",
-            local_buf.to_record_batch()?,
+            local_buf.drain_to_record_batch()?,
         )?;
         Ok(())
     }
@@ -566,9 +672,11 @@ impl DatabaseScanner {
         Ok(())
     }
 
-    /// Get a clone of the table_data Arc for sharing with sinks.
-    pub fn table_data(&self) -> Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>> {
-        self.table_data.clone()
+    /// Return an opaque [`TableStore`] handle for external callers.
+    pub fn table_store(&self) -> TableStore {
+        TableStore {
+            inner: self.table_data.clone(),
+        }
     }
 
     fn execute_scan_streaming(
@@ -1155,5 +1263,174 @@ mod tests {
         assert_eq!(names.value(1), "f2");
         assert_eq!(frame_thread_ids.value(1), 2);
         assert_eq!(filenames.value(1), "b.py");
+    }
+
+    // --- ingest_batch tests ---
+    // These reference the ID-* invariants defined on ingest_batch.
+
+    // ID-1, ID-2: empty batch creates the table with schema but 0
+    // rows.
+    #[tokio::test]
+    async fn test_ingest_batch_creates_table_for_empty_batch() {
+        let store = TableStore::new_empty();
+        let empty = make_batch(&[]);
+
+        store.ingest_batch("t", empty.clone()).await.unwrap();
+
+        let names = store.table_names().unwrap();
+        assert!(names.contains(&"t".to_owned()), "ID-1: table should exist");
+        assert_eq!(
+            query_row_count("t", store.table_provider("t").unwrap().unwrap()).await,
+            0,
+            "ID-2: 0 rows"
+        );
+    }
+
+    // ID-1, ID-3: non-empty batch creates table and appends rows.
+    #[tokio::test]
+    async fn test_ingest_batch_appends_non_empty_batch() {
+        let store = TableStore::new_empty();
+
+        store
+            .ingest_batch("t", make_batch(&[1, 2, 3]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            query_row_count("t", store.table_provider("t").unwrap().unwrap()).await,
+            3
+        );
+    }
+
+    // ID-3: two batches to the same table accumulate rows.
+    #[tokio::test]
+    async fn test_ingest_batch_reuses_existing_table() {
+        let store = TableStore::new_empty();
+
+        store.ingest_batch("t", make_batch(&[1, 2])).await.unwrap();
+        store
+            .ingest_batch("t", make_batch(&[3, 4, 5]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.table_names().unwrap().len(),
+            1,
+            "ID-3: still one table"
+        );
+        assert_eq!(
+            query_row_count("t", store.table_provider("t").unwrap().unwrap()).await,
+            5
+        );
+    }
+
+    // ID-2, ID-3: empty batch registers schema, then non-empty batch
+    // appends rows using the same schema.
+    #[tokio::test]
+    async fn test_ingest_batch_empty_then_non_empty() {
+        let store = TableStore::new_empty();
+
+        // Register schema with empty batch.
+        store.ingest_batch("t", make_batch(&[])).await.unwrap();
+        assert_eq!(
+            query_row_count("t", store.table_provider("t").unwrap().unwrap()).await,
+            0
+        );
+
+        // Append rows.
+        store
+            .ingest_batch("t", make_batch(&[10, 20]))
+            .await
+            .unwrap();
+        assert_eq!(
+            query_row_count("t", store.table_provider("t").unwrap().unwrap()).await,
+            2
+        );
+    }
+
+    // --- TableStore tests ---
+    // These reference the TS-* invariants defined on TableStore.
+
+    /// Register a provider in a fresh SessionContext and return the
+    /// row count from `SELECT * FROM {table_name}`.
+    async fn query_row_count(table_name: &str, provider: Arc<dyn TableProvider>) -> usize {
+        let ctx = SessionContext::new();
+        ctx.register_table(table_name, provider).unwrap();
+        let df = ctx
+            .sql(&format!("SELECT * FROM {table_name}"))
+            .await
+            .unwrap();
+        df.collect()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum()
+    }
+
+    // TS-2, TS-3: ingest via TableStore, register the returned
+    // table_provider in a SessionContext, and query it. Proves the
+    // opaque handle is sufficient for downstream query setup.
+    #[tokio::test]
+    async fn test_table_store_ingest_and_query() {
+        let store = TableStore::new_empty();
+
+        store
+            .ingest_batch("t", make_batch(&[10, 20, 30]))
+            .await
+            .unwrap();
+
+        let provider = store
+            .table_provider("t")
+            .unwrap()
+            .expect("TS-3: table_provider should return Some");
+
+        assert_eq!(
+            query_row_count("t", provider).await,
+            3,
+            "TS-3: query should return ingested rows"
+        );
+    }
+
+    // TS-3: table_names returns all ingested table names, sorted.
+    #[tokio::test]
+    async fn test_table_store_table_names() {
+        let store = TableStore::new_empty();
+
+        store.ingest_batch("beta", make_batch(&[1])).await.unwrap();
+        store.ingest_batch("alpha", make_batch(&[2])).await.unwrap();
+
+        let names = store.table_names().unwrap();
+        assert_eq!(names, vec!["alpha", "beta"], "TS-3: names should be sorted");
+    }
+
+    // TS-2 (ID-2 passthrough): empty batch registers schema via
+    // TableStore. Proves the table is visible through table_names
+    // and table_provider without re-proving row-count internals.
+    #[tokio::test]
+    async fn test_table_store_empty_batch_registers() {
+        let store = TableStore::new_empty();
+
+        store.ingest_batch("t", make_batch(&[])).await.unwrap();
+
+        assert!(
+            store.table_names().unwrap().contains(&"t".to_owned()),
+            "TS-2: empty batch should register table name"
+        );
+        assert!(
+            store.table_provider("t").unwrap().is_some(),
+            "TS-2: empty batch should make table_provider available"
+        );
+    }
+
+    // TS-3: table_provider for unknown table returns None.
+    #[test]
+    fn test_table_store_missing_table() {
+        let store = TableStore::new_empty();
+
+        assert!(
+            store.table_provider("missing").unwrap().is_none(),
+            "TS-3: unknown table should return None"
+        );
     }
 }

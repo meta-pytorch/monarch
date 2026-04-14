@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 import time
 from typing import Optional
 
@@ -27,6 +28,44 @@ from monarch.remotemount.fast_pack import (  # noqa: F401
 logger: logging.Logger = logging.getLogger(__name__)
 
 CACHE_DIR = "/tmp/monarch_remotemount_cache"
+
+
+def _point_to_key(point: dict) -> str:
+    if not point:
+        return ""
+    return "_".join(f"{k}_{v}" for k, v in point.items())
+
+
+def prepare_mount_point(path: str) -> None:
+    """Create the mount point directory, recovering from dead FUSE mounts.
+
+    ``os.makedirs(exist_ok=True)`` raises ``FileExistsError`` when the path
+    exists but is a stale FUSE mount (``os.path.isdir`` returns False on
+    dead mounts).  Detect this case, unmount, and retry.
+    """
+    try:
+        os.makedirs(path, exist_ok=True)
+    except FileExistsError:
+        # May be a dead FUSE mount — try to clean it up.
+        result = subprocess.run(
+            ["fusermount3", "-u", "-z", path], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            # Not a FUSE mount or unmount failed — try plain umount.
+            subprocess.run(["umount", "-l", path], capture_output=True)
+        os.makedirs(path, exist_ok=True)
+
+
+def _resolve_path(path: str) -> str:
+    """Replace ``$SUBDIR`` with this actor's mesh-coordinate key, if present."""
+    if "$SUBDIR" not in path:
+        return path
+    from monarch.actor import context
+
+    rank = context().actor_instance.rank
+    return path.replace("$SUBDIR", _point_to_key(dict(rank)))
+
+
 RDMA_PARALLEL_TLS_THRESHOLD = (
     8  # blocks <= this: TLS to all workers; above: RDMA fan-out
 )
@@ -95,6 +134,9 @@ class FUSEActor(Actor):
         self._rdma_src_staging_mv = None
         self._rdma_dst_staging = None  # staging for replace_blocks (destination)
         self._rdma_dst_staging_mv = None
+        # Dirty block indices accumulated since the last refresh.
+        # None means a full buffer copy is needed (initial mount or full transfer).
+        self._pending_dirty_blocks: list[int] | None = None
 
     def _alloc_storage(self, total_size, truncate=False):
         """Allocate or resize chunk storage (file-backed or anonymous mmap).
@@ -163,10 +205,12 @@ class FUSEActor(Actor):
         self._block_hashes = block_hashes(self._chunk_storage_mv)
         self._pack_index = load_pack_index(self._cache_path + ".index") or {}
 
-        logger.info(
+        print(
             f"[CACHE] Loaded {self._cache_path}: "
             f"{size // (1024**2)}MiB, "
-            f"{len(self._block_hashes)} block hashes"
+            f"{len(self._block_hashes)} block hashes",
+            file=sys.stderr,
+            flush=True,
         )
 
     @endpoint
@@ -225,9 +269,11 @@ class FUSEActor(Actor):
         self.chunks.append(dst_mv)
         self._next_chunk_idx += 1
         gbs = (chunk_size / 1e9) / max(t2 - t1, 1e-9)
-        logger.info(
+        print(
             f"[WORKER] fetch_chunk {idx}: {chunk_size / (1024**2):.0f}MiB "
-            f"in {t2 - t1:.3f}s ({gbs:.1f} GB/s)"
+            f"in {t2 - t1:.3f}s ({gbs:.1f} GB/s)",
+            file=sys.stderr,
+            flush=True,
         )
 
     @endpoint
@@ -278,10 +324,12 @@ class FUSEActor(Actor):
 
         n = len(flat_peers)
         gbs = (chunk_size * n / 1e9) / max(t3 - t1, 1e-9)
-        logger.info(
+        print(
             f"[WORKER] fanout_chunk {idx}: setup={t1 - t0:.3f}s, "
             f"dispatch={t2 - t1:.3f}s, wait={t3 - t2:.3f}s, "
-            f"total={t3 - t0:.3f}s ({gbs:.1f} GB/s aggregate, {n} peers)"
+            f"total={t3 - t0:.3f}s ({gbs:.1f} GB/s aggregate, {n} peers)",
+            file=sys.stderr,
+            flush=True,
         )
 
     @endpoint
@@ -339,6 +387,9 @@ class FUSEActor(Actor):
 
         The rdma_buffer contains blocks packed contiguously (matching the
         order in block_indices). This reduces RDMA round-trips vs per-block.
+
+        Also updates the Rust FUSE chunk buffer in-place so that a subsequent
+        ``refresh_mount`` only needs to swap metadata (not re-copy all chunks).
         """
         import mmap as _mmap
 
@@ -359,31 +410,103 @@ class FUSEActor(Actor):
                 pos : pos + block_size
             ]
             pos += block_size
+        # Accumulate for atomic application during refresh_mount.
+        if self._pending_dirty_blocks is not None:
+            self._pending_dirty_blocks.extend(block_indices)
+        # If _pending_dirty_blocks is None a full copy is already scheduled.
+
+    def _do_refresh(self, new_block_hashes=None, total_size=0, pack_index=None):
+        """Swap metadata and chunk data into the running FUSE filesystem."""
+        t0 = time.time()
+
+        if self._cache_path and self._chunk_storage is not None:
+            self._chunk_storage.flush()
+        t_flush = time.time()
+
+        if pack_index is not None and self._cache_path:
+            self._pack_index = pack_index
+            save_pack_index(self._cache_path + ".index", pack_index)
+        t_index = time.time()
+
+        # Compute dirty ranges from accumulated pending blocks.
+        # None means a full buffer copy is needed (initial mount).
+        if self._pending_dirty_blocks is None:
+            dirty_ranges = [(0, self._total_size)] if self._total_size > 0 else []
+        else:
+            dirty_ranges = [
+                (
+                    bi * HASH_BLOCK_SIZE,
+                    min(HASH_BLOCK_SIZE, self._total_size - bi * HASH_BLOCK_SIZE),
+                )
+                for bi in self._pending_dirty_blocks
+            ]
+        self._pending_dirty_blocks = []
+
+        chunk_buf = (
+            self._chunk_storage_mv
+            if self._chunk_storage_mv is not None
+            else memoryview(b"")
+        )
+        # Atomically apply chunk patches and swap metadata under one write lock.
+        self._fuse_handle.refresh(
+            self.meta, chunk_buf, dirty_ranges, self._total_size, self.chunk_size
+        )
+        t_fuse = time.time()
+
+        self._block_hashes = new_block_hashes or []
+        self._total_size = total_size
+
+        return {
+            "flush": t_flush - t0,
+            "save_index": t_index - t_flush,
+            "fuse_refresh": t_fuse - t_index,
+            "total": t_fuse - t0,
+        }
 
     @endpoint
     def mount(self, mount_point, new_block_hashes=None, total_size=0, pack_index=None):
+        """Mount an empty FUSE filesystem and populate it via refresh."""
+        mount_point = _resolve_path(mount_point)
         from monarch._rust_bindings.monarch_extension.chunked_fuse import (
             mount_chunked_fuse,
         )
 
-        # Flush mmap to disk so the cache file persists across actor restarts.
-        if self._cache_path and self._chunk_storage is not None:
-            self._chunk_storage.flush()
-
-        # Persist pack index alongside cached data.
-        if pack_index is not None and self._cache_path:
-            self._pack_index = pack_index
-            save_pack_index(self._cache_path + ".index", pack_index)
-
+        now = time.time()
+        empty_meta = {
+            "/": {
+                "attr": {
+                    "st_atime": now,
+                    "st_ctime": now,
+                    "st_gid": os.getgid(),
+                    "st_mode": 0o40755,
+                    "st_mtime": now,
+                    "st_nlink": 2,
+                    "st_size": 4096,
+                    "st_uid": os.getuid(),
+                },
+                "children": [],
+            }
+        }
         self._fuse_handle = mount_chunked_fuse(
-            self.meta,
-            self.chunks,
-            self.chunk_size,
-            mount_point,
+            empty_meta, [], self.chunk_size, mount_point
         )
-        self._block_hashes = new_block_hashes or []
-        self._total_size = total_size
-        return 0
+        # Block transfers ran while _fuse_handle was None, so no dirty blocks
+        # were accumulated. Signal _do_refresh to do a full buffer copy.
+        self._pending_dirty_blocks = None
+        if self.meta is not None:
+            self._do_refresh(new_block_hashes, total_size, pack_index)
+
+    @endpoint
+    def refresh_mount(self, new_block_hashes=None, total_size=0, pack_index=None):
+        """Refresh FUSE mount data without unmounting.
+
+        Atomically swaps metadata and chunk data in the running FUSE
+        filesystem. Open file handles remain valid and subsequent reads
+        see the new data.
+        """
+        if self._fuse_handle is None:
+            raise RuntimeError("no active mount to refresh")
+        return self._do_refresh(new_block_hashes, total_size, pack_index)
 
     @endpoint
     def get_block_hashes(self):
@@ -401,14 +524,14 @@ class FUSEActor(Actor):
         return self._pack_index
 
     @endpoint
-    def prepare_receiver(self, num_streams, total_size):
+    def prepare_receiver(self, num_streams, total_size, cert_path=None, port=0):
         """Create a Rust TLS receiver and return its address."""
         from monarch._rust_bindings.monarch_extension.tls_receiver import TlsReceiver
 
         if self._chunk_storage is None or self._total_size != total_size:
             self._alloc_storage(total_size)
 
-        self._tls_receiver = TlsReceiver(num_streams)
+        self._tls_receiver = TlsReceiver(num_streams, cert_path=cert_path, port=port)
         return (
             self._tls_receiver.addr,
             self._tls_receiver.tls_hostname,
@@ -416,12 +539,23 @@ class FUSEActor(Actor):
         )
 
     @endpoint
-    def receive_blocks(self):
-        """Block until the TLS receiver has finished receiving all blocks."""
+    def receive_blocks(self, dirty_blocks=None):
+        """Block until the TLS receiver has finished receiving all blocks.
+
+        Accumulates ``dirty_blocks`` for atomic application during the
+        subsequent ``refresh_mount`` call. The Rust buffer is not touched
+        here; chunk patches and metadata swap happen together under one
+        write lock in ``refresh()``.
+        """
         if self._tls_receiver is None:
             raise RuntimeError("prepare_receiver() not called")
         self._tls_receiver.wait(self._chunk_storage_mv)
         self._tls_receiver = None
+        if dirty_blocks is not None and self._pending_dirty_blocks is not None:
+            self._pending_dirty_blocks.extend(dirty_blocks)
+        else:
+            # dirty_blocks=None means the full buffer was overwritten.
+            self._pending_dirty_blocks = None
         return True
 
     @endpoint
@@ -435,20 +569,42 @@ class FUSEActor(Actor):
             self._alloc_storage(total_size)
 
         offset = block_idx * HASH_BLOCK_SIZE
-        self._chunk_storage_mv[offset : offset + len(data)] = data
+        self._chunk_storage_mv[offset : offset + len(data)] = data  # noqa: E203
+        # Accumulate for atomic application during refresh_mount.
+        if self._pending_dirty_blocks is not None:
+            self._pending_dirty_blocks.append(block_idx)
 
     @endpoint
     def mkdir(self, path):
         """Create a directory on the worker."""
-        os.makedirs(path, exist_ok=True)
+        prepare_mount_point(_resolve_path(path))
 
     @endpoint
     def unmount(self, mount_point):
-        """Unmount a FUSE filesystem. Returns (returncode, stderr)."""
+        """Unmount a FUSE filesystem.
+
+        Returns (status, detail) where status is one of:
+          "ok"          — unmounted successfully
+          "not_mounted" — path was not a mountpoint (nothing to unmount)
+          "busy"        — mountpoint is in use by another process
+          "error"       — unexpected failure
+        """
+        mount_point = _resolve_path(mount_point)
+        check = subprocess.run(
+            ["mountpoint", "-q", mount_point],
+            capture_output=True,
+        )
+        if check.returncode != 0:
+            return "not_mounted", ""
+
         result = subprocess.run(
             ["fusermount3", "-u", mount_point], capture_output=True, text=True
         )
-        return result.returncode, result.stderr
+        if result.returncode == 0:
+            return "ok", ""
+        if "busy" in result.stderr.lower():
+            return "busy", result.stderr.strip()
+        return "error", result.stderr.strip()
 
 
 class MountHandler:
@@ -461,11 +617,13 @@ class MountHandler:
         backend: str = "slurm",
         num_parallel_streams: int = 8,
         transfer_mode: str = "rust_tls",
+        cert_path: Optional[str] = None,
+        tls_port: int = 0,
     ):
-        self.sourcepath = sourcepath
+        self.sourcepath = os.path.abspath(sourcepath)
         if mntpoint is None:
-            mntpoint = sourcepath
-        self.mntpoint = mntpoint
+            mntpoint = self.sourcepath
+        self.mntpoint = os.path.abspath(mntpoint)
         self.fuse_actors = None
         self.host_mesh = host_mesh
         self.procs = None
@@ -481,40 +639,31 @@ class MountHandler:
                 f"transfer_mode must be 'rust_tls' or 'actor', got {transfer_mode!r}"
             )
         self.transfer_mode = transfer_mode
+        self.cert_path = cert_path
+        self.tls_port = tls_port
         self._staging_mv = None
         self._pack_shm_path = None
+        self._mounted = False
 
-    def open(self):
-        t_open_start = time.time()
+    def _sync(self):
+        """Pack source, diff against workers, transfer dirty blocks, refresh FUSE.
 
-        # Reuse existing actors if available (preserves block hashes
-        # and pack index for incremental update checks).
-        if self.fuse_actors is None:
-            self.procs = self.host_mesh.spawn_procs(per_host={"gpus": 1})
-            self.fuse_actors = self.procs.spawn(
-                "FUSEActor", FUSEActor, self.chunk_size, self.backend
-            )
-            self.fuse_actors.mkdir.call(self.mntpoint).get()
+        Shared by open() and refresh(). Expects self.fuse_actors to be
+        initialized and, for refresh(), an active mount.
+        """
+        t_start = time.time()
 
-            import xxhash
-
-            cache_key = xxhash.xxh64(
-                (self.sourcepath + ":" + self.mntpoint).encode()
-            ).hexdigest()
-            self.fuse_actors.try_load_cache.call(cache_key).get()
-
-        t_actors_ready = time.time()
-
-        # Fire RPCs before packing so the network round-trips overlap
-        # with the CPU-bound walk+pack+hash step.
         flat_actors = self.fuse_actors.flatten("rank")
-        num_workers = len(flat_actors)
         hashes_future = self.fuse_actors.get_block_hashes.call()
         index_future = self.fuse_actors.get_pack_index.call()
 
-        # Get pack index from workers (first non-empty).
-        # This is small JSON so the wait is fast.
         index_result = index_future.get()
+        t_index_done = time.time()
+        print(
+            f"_sync(): get_pack_index RPC took {t_index_done - t_start:.2f}s",
+            file=sys.stderr,
+            flush=True,
+        )
         previous_index = next(
             (idx for _, idx in index_result if idx and idx.get("files")),
             None,
@@ -530,8 +679,14 @@ class MountHandler:
 
         t_pack_done = time.time()
 
-        # Collect worker hashes (should already be available after packing).
         result = hashes_future.get()
+        t_hashes_done = time.time()
+        print(
+            f"_sync(): get_block_hashes RPC wait {t_hashes_done - t_pack_done:.2f}s "
+            f"(overlapped with pack)",
+            file=sys.stderr,
+            flush=True,
+        )
         worker_states = [
             (remote_hashes, remote_size)
             for _point, (remote_hashes, remote_size) in result
@@ -541,50 +696,21 @@ class MountHandler:
         )
 
         t_classify_done = time.time()
+        print(
+            f"_sync(): classify_workers {t_classify_done - t_hashes_done:.2f}s",
+            file=sys.stderr,
+            flush=True,
+        )
 
-        # Always send metadata so newly spawned actors (which loaded
-        # block data from the persistent cache) have filesystem layout.
         self.fuse_actors.set_meta.call(meta).get()
 
         t_meta_done = time.time()
-
-        if not worker_dirty:
-            self.fuse_actors.mount.call(
-                self.mntpoint, client_hashes, client_total_size, new_pack_index
-            ).get()
-            t_mount_done = time.time()
-            logger.info(
-                f"All {num_workers} workers up-to-date — skipping transfer, re-mounting. "
-                f"Timings: actors={t_actors_ready - t_open_start:.2f}s, "
-                f"pack+hash={t_pack_done - t_actors_ready:.2f}s "
-                f"({client_total_size / (1024**2):.0f}MiB), "
-                f"classify={t_classify_done - t_pack_done:.2f}s, "
-                f"set_meta={t_meta_done - t_classify_done:.2f}s, "
-                f"mount={t_mount_done - t_meta_done:.2f}s, "
-                f"total={t_mount_done - t_open_start:.2f}s"
-            )
-            return self
-
-        n_partial = sum(1 for v in worker_dirty.values() if v is not None)
-        n_stale = sum(1 for v in worker_dirty.values() if v is None)
-        logger.info(
-            f"{len(fresh_ranks)} fresh, {n_partial} partial, "
-            f"{n_stale} stale out of {num_workers} workers"
+        print(
+            f"_sync(): set_meta RPC {t_meta_done - t_classify_done:.2f}s",
+            file=sys.stderr,
+            flush=True,
         )
 
-        # Unmount workers that need updating.
-        for rank in worker_dirty:
-            result = flat_actors.slice(rank=rank).unmount.call(self.mntpoint).get()
-            for _point, (rc, stderr) in result:
-                if rc != 0:
-                    logger.warning(
-                        f"fusermount3 -u failed on rank {rank} (rc={rc}): {stderr.strip()}"
-                    )
-
-        t_unmount_done = time.time()
-
-        # Compute dirty blocks: union of all non-fresh workers.
-        # Stale workers (None) need all blocks; partial workers need their list.
         all_blocks = list(range(len(client_hashes)))
         dirty_blocks: set[int] = set()
         for _rank, d in worker_dirty.items():
@@ -597,34 +723,98 @@ class MountHandler:
         target_ranks = sorted(worker_dirty.keys())
 
         if sorted_dirty and target_ranks:
-            logger.info(
-                f"{len(sorted_dirty)}/{len(client_hashes)} blocks dirty "
-                f"across {len(target_ranks)} workers"
+            print(
+                f"_sync(): {len(sorted_dirty)}/{len(client_hashes)} blocks dirty "
+                f"across {len(target_ranks)} workers",
+                file=sys.stderr,
+                flush=True,
             )
             self._transfer_fanout(
                 flat_actors, target_ranks, sorted_dirty, client_total_size
             )
 
         t_transfer_done = time.time()
-
-        # Remount all workers (fresh ones for metadata update).
-        self.fuse_actors.mount.call(
-            self.mntpoint, client_hashes, client_total_size, new_pack_index
-        ).get()
-
-        t_mount_done = time.time()
-
-        logger.info(
-            f"open() timings: actors={t_actors_ready - t_open_start:.2f}s, "
-            f"pack+hash={t_pack_done - t_actors_ready:.2f}s "
-            f"({client_total_size / (1024**2):.0f}MiB), "
-            f"classify={t_classify_done - t_pack_done:.2f}s, "
-            f"set_meta={t_meta_done - t_classify_done:.2f}s, "
-            f"unmount={t_unmount_done - t_meta_done:.2f}s, "
-            f"transfer={t_transfer_done - t_unmount_done:.2f}s, "
-            f"mount={t_mount_done - t_transfer_done:.2f}s, "
-            f"total={t_mount_done - t_open_start:.2f}s"
+        print(
+            f"_sync(): transfer {t_transfer_done - t_meta_done:.2f}s",
+            file=sys.stderr,
+            flush=True,
         )
+
+        # Mount or refresh after transfer succeeds — mounting before
+        # transfer would leak a FUSE mount if the transfer fails
+        # (open() raises before __enter__ completes, so close() never runs).
+        if self._mounted:
+            if os.environ.get("MONARCH_SKIP_REFRESH_MOUNT"):
+                print(
+                    "_sync(): skipping refresh_mount (MONARCH_SKIP_REFRESH_MOUNT set)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                refresh_results = self.fuse_actors.refresh_mount.call(
+                    client_hashes, client_total_size, new_pack_index
+                ).get()
+                t_refresh_done = time.time()
+                for _point, timings in refresh_results:
+                    if timings:
+                        timings_str = ", ".join(
+                            f"{k}={v:.2f}s" for k, v in timings.items()
+                        )
+                        print(
+                            f"_sync(): refresh_mount remote breakdown: {timings_str}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                print(
+                    f"_sync(): refresh_mount RPC {t_refresh_done - t_transfer_done:.2f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        else:
+            self.fuse_actors.mount.call(
+                self.mntpoint, client_hashes, client_total_size, new_pack_index
+            ).get()
+            t_refresh_done = time.time()
+            print(
+                f"_sync(): mount RPC {t_refresh_done - t_transfer_done:.2f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            self._mounted = True
+
+        t_done = time.time()
+
+        print(
+            f"_sync() timings: "
+            f"index_rpc={t_index_done - t_start:.2f}s, "
+            f"pack={t_pack_done - t_index_done:.2f}s "
+            f"({client_total_size / (1024**2):.0f}MiB), "
+            f"hashes_rpc={t_hashes_done - t_pack_done:.2f}s, "
+            f"classify={t_classify_done - t_hashes_done:.2f}s, "
+            f"set_meta={t_meta_done - t_classify_done:.2f}s, "
+            f"transfer={t_transfer_done - t_meta_done:.2f}s, "
+            f"refresh={t_done - t_transfer_done:.2f}s, "
+            f"total={t_done - t_start:.2f}s"
+        )
+
+    def open(self):
+        # Reuse existing actors if available (preserves block hashes
+        # and pack index for incremental update checks).
+        if self.fuse_actors is None:
+            self.procs = self.host_mesh.spawn_procs()
+            self.fuse_actors = self.procs.spawn(
+                "FUSEActor", FUSEActor, self.chunk_size, self.backend
+            )
+            self.fuse_actors.mkdir.call(self.mntpoint).get()
+
+            import xxhash
+
+            cache_key = xxhash.xxh64(
+                (self.sourcepath + ":" + self.mntpoint).encode()
+            ).hexdigest()
+            self.fuse_actors.try_load_cache.call(cache_key).get()
+
+        self._sync()
         return self
 
     def _transfer_blocks_actor(self, fuse_actor, dirty_blocks, total_size):
@@ -648,7 +838,7 @@ class MountHandler:
 
         elapsed = max(t_done - t_start, 1e-9)
         gbs = (total_bytes / 1e9) / elapsed
-        logger.info(
+        print(
             f"Actor block transfer ({len(dirty_blocks)} blocks): "
             f"{total_bytes // (1024**2)}MiB in {elapsed:.1f}s ({gbs:.1f} GB/s)"
         )
@@ -680,14 +870,29 @@ class MountHandler:
 
         # 1. Start receiver on worker (returns address, tls_hostname, cache path).
         t_start = time.time()
-        result = fuse_actor.prepare_receiver.call(num_streams, total_size).get()
+        result = fuse_actor.prepare_receiver.call(
+            num_streams,
+            total_size,
+            cert_path=self.cert_path,
+            port=self.tls_port,
+        ).get()
         addr, tls_hostname, cache_path = [v for _, v in result][0]
         addresses = [addr] * num_streams
 
+        # Hook: let callers rewrite addresses (e.g. for port-forwarding).
+        if hasattr(self, "_address_rewriter") and self._address_rewriter is not None:
+            addresses, tls_hostname = self._address_rewriter(
+                addr, num_streams, tls_hostname
+            )
+
         # 2. Fire receive_blocks (non-blocking) so worker starts waiting.
-        recv_future = fuse_actor.receive_blocks.call()
+        # Pass dirty_blocks so the worker updates only those ranges in the
+        # Rust flat buffer instead of mirroring the entire 11GB mmap.
+        recv_future = fuse_actor.receive_blocks.call(dirty_blocks)
 
         # 3. Send blocks directly from the staging buffer.
+        #    Receiver uses a self-signed cert (or custom cert_path), so
+        #    skip CA verification on the sender side.
         t_setup = time.time()
         send_blocks_from_buffer(
             self._staging_mv,
@@ -696,6 +901,7 @@ class MountHandler:
             addresses,
             cache_path,
             tls_hostname=tls_hostname,
+            ca_path=None,
         )
         t_send = time.time()
 
@@ -704,7 +910,7 @@ class MountHandler:
         t_done = time.time()
 
         gbs = (total_bytes / 1e9) / max(t_send - t_setup, 1e-9)
-        logger.info(
+        print(
             f"Rust TLS block transfer ({len(dirty_blocks)} blocks, "
             f"{num_streams} streams): {total_bytes // (1024**2)}MiB "
             f"in {t_send - t_setup:.1f}s ({gbs:.1f} GB/s), "
@@ -769,7 +975,7 @@ class MountHandler:
                     future.result()  # raises on first failure
 
             t_done = time.time()
-            logger.info(
+            print(
                 f"Parallel transfer to {len(target_ranks)} workers: "
                 f"{total_bytes // (1024**2)}MiB "
                 f"({len(dirty_blocks)} blocks) in {t_done - t0:.1f}s"
@@ -902,20 +1108,44 @@ class MountHandler:
         t_rdma = time.time()
         tls_gbs = (total_bytes / 1e9) / max(t_tls - t0, 1e-9)
         rdma_gbs = (total_bytes * len(peer_ranks) / 1e9) / max(t_rdma - t_tls, 1e-9)
-        logger.info(
+        print(
             f"TLS→{num_leaders} leaders: {total_bytes // (1024**2)}MiB in {t_tls - t0:.1f}s "
             f"({tls_gbs:.1f} GB/s), "
             f"RDMA fan-out: {len(dirty_blocks)} blocks to {len(peer_ranks)} "
-            f"peers in {t_rdma - t_tls:.1f}s ({rdma_gbs:.1f} GB/s)"
+            f"peers in {t_rdma - t_tls:.1f}s ({rdma_gbs:.1f} GB/s)",
+            file=sys.stderr,
+            flush=True,
         )
 
     def close(self) -> None:
         """Unmount FUSE but keep actors alive for incremental updates."""
         if self.fuse_actors is not None:
             result = self.fuse_actors.unmount.call(self.mntpoint).get()
-            for _point, (rc, stderr) in result:
-                if rc != 0:
-                    logger.warning(f"fusermount3 -u failed (rc={rc}): {stderr.strip()}")
+            for _point, (status, detail) in result:
+                if status not in ("ok", "not_mounted"):
+                    logger.warning(f"unmount failed ({status}): {detail}")
+        self._mounted = False
+
+    def refresh(self, sourcepath: str):
+        """Re-pack source directory and refresh all running mounts in-place.
+
+        Unlike close()+open(), this does not unmount the FUSE filesystem.
+        Open file handles remain valid; subsequent reads see the updated
+        data.
+
+        Args:
+            sourcepath: Must match the sourcepath used in open(). Requiring
+                the caller to pass it again prevents accidentally refreshing
+                a mount with a forgotten or wrong source directory.
+        """
+        if sourcepath != self.sourcepath:
+            raise ValueError(
+                f"sourcepath mismatch: refresh called with {sourcepath!r} "
+                f"but mount was opened with {self.sourcepath!r}"
+            )
+        if not self._mounted or self.fuse_actors is None:
+            raise RuntimeError("no active mount to refresh; call open() first")
+        self._sync()
 
     def __enter__(self) -> "MountHandler":
         self.open()
@@ -934,6 +1164,8 @@ def remotemount(
     backend: str = "slurm",
     num_parallel_streams: int = 8,
     transfer_mode: str = "rust_tls",
+    cert_path: Optional[str] = None,
+    tls_port: int = 0,
 ) -> MountHandler:
     """Mount a local directory on remote hosts via RDMA transfer and FUSE.
 
@@ -941,6 +1173,13 @@ def remotemount(
         transfer_mode: "rust_tls" (default) uses custom Rust TLS sender/receiver
             for maximum throughput. "actor" uses monarch's built-in actor message
             passing — slower but works without Meta TLS certs (e.g. CI, local testing).
+        cert_path: Path to a PEM file containing cert + private key for TLS.
+            Used by the receiver (server identity). If None, falls back to
+            Meta's default cert paths. When set, the sender skips server
+            verification (for self-signed certs).
+        tls_port: Port for the TLS receiver to bind to. Default 0 picks a
+            random port. Set to a known port when using pre-established
+            port-forward tunnels.
     """
     if chunk_size is None:
         chunk_size = CHUNK_SIZE
@@ -952,4 +1191,6 @@ def remotemount(
         backend,
         num_parallel_streams,
         transfer_mode,
+        cert_path,
+        tls_port,
     )

@@ -28,4 +28,6 @@ Utility Functions
 
 .. autofunction:: is_ibverbs_available
 
+.. autofunction:: is_rdma_available
+
 .. autofunction:: get_rdma_backend

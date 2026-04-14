@@ -17,8 +17,10 @@ use std::net::Ipv6Addr;
 use std::os::linux::net::SocketAddrExt;
 use std::panic::Location;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use enum_as_inner::EnumAsInner;
 use hyperactor_config::attrs::AttrValue;
 use serde::Deserialize;
 use serde::Serialize;
@@ -107,12 +109,12 @@ impl<M: RemoteMessage> From<SendError<M>> for ChannelError {
 }
 
 /// The possible states of a `Tx`.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, EnumAsInner)]
 pub enum TxStatus {
     /// The tx is good.
     Active,
     /// The tx cannot be used for message delivery.
-    Closed,
+    Closed(Arc<str>),
 }
 
 /// The transmit end of an M-typed channel.
@@ -252,7 +254,9 @@ impl<M: RemoteMessage> MpscRx<M> {
 
 impl<M: RemoteMessage> Drop for MpscRx<M> {
     fn drop(&mut self) {
-        let _ = self.status_sender.send(TxStatus::Closed);
+        let _ = self
+            .status_sender
+            .send(TxStatus::Closed("receiver dropped".into()));
     }
 }
 
@@ -1422,9 +1426,10 @@ mod tests {
 
     fn addrs() -> Vec<ChannelAddr> {
         use rand::Rng;
-        use rand::distributions::Uniform;
+        use rand::distr::Uniform;
 
-        let rng = rand::thread_rng();
+        let rng = rand::rng();
+        let uniform = Uniform::new_inclusive('a', 'z').unwrap();
         vec![
             "tcp:[::1]:0".parse().unwrap(),
             "local:0".parse().unwrap(),
@@ -1433,9 +1438,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             format!(
                 "unix:@{}",
-                rng.sample_iter(Uniform::new_inclusive('a', 'z'))
-                    .take(10)
-                    .collect::<String>()
+                rng.sample_iter(uniform).take(10).collect::<String>()
             )
             .parse()
             .unwrap(),

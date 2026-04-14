@@ -11,6 +11,14 @@ from typing import Any
 
 class FuseMountHandle:
     def unmount(self) -> None: ...
+    def refresh(
+        self,
+        metadata: dict[str, Any],
+        chunk_buf: Any,
+        dirty_ranges: list[tuple[int, int]],
+        new_total_size: int,
+        chunk_size: int,
+    ) -> None: ...
 
 def mount_chunked_fuse(
     metadata: dict[str, Any],

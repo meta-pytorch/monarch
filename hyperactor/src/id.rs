@@ -20,7 +20,6 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::str::FromStr;
 
-use rand::RngCore as _;
 use serde::Deserialize;
 use serde::Serialize;
 use smol_str::SmolStr;
@@ -185,8 +184,7 @@ pub enum UidParseError {
 impl Uid {
     /// Create a fresh instance with a random uid.
     pub fn instance() -> Self {
-        let uid = rand::thread_rng().next_u64();
-        Uid::Instance(uid)
+        Uid::Instance(rand::random())
     }
 
     /// Create a singleton with the given label.

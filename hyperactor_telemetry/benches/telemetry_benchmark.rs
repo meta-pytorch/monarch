@@ -171,21 +171,23 @@ fn main() {
         "--old-no-sqlite" => {
             println!("\n{}", "=".repeat(100));
             println!("Benchmarking OLD implementation (SQLite DISABLED)...");
-            // Don't set USE_UNIFIED_LAYER - uses old implementation
+            // SAFETY: Setting before any telemetry initialization
+            unsafe {
+                std::env::set_var("USE_UNIFIED_LAYER", "0");
+            }
             let _results = benchmark_no_sqlite(iterations);
         }
         "--old-with-sqlite" => {
             println!("\n{}", "=".repeat(100));
             println!("Benchmarking OLD implementation (SQLite ENABLED)...");
+            // SAFETY: Setting before any telemetry initialization
+            unsafe {
+                std::env::set_var("USE_UNIFIED_LAYER", "0");
+            }
             let _results = benchmark_with_sqlite(iterations);
         }
         "--unified" => {
             println!("Benchmarking UNIFIED implementation...");
-            // Set USE_UNIFIED_LAYER to use unified implementation
-            // SAFETY: Setting before any telemetry initialization
-            unsafe {
-                std::env::set_var("USE_UNIFIED_LAYER", "1");
-            }
             println!("\n{}", "=".repeat(100));
             println!(
                 "Benchmarking UNIFIED implementation (SQLite {})...",
