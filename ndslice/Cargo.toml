@@ -16,13 +16,13 @@ path = "tests/fuzz_reshape_selection.rs"
 [dependencies]
 anyhow = "1.0.102"
 cityhasher = "0.1.0"
-clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 enum-as-inner = "0.6.1"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 itertools = "0.14.0"
 nom = "8"
 proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
-proptest = "1.10.0"
+proptest = "1.11.0"
 quote = "1.0.45"
 rand = { version = "0.9", features = ["small_rng"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }

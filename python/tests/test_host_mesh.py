@@ -28,87 +28,94 @@ from monarch._src.actor.host_mesh import HostMesh, this_host
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.proc_mesh import get_or_spawn_controller
 from monarch._src.job.process import ProcessJob
+from scoped_state import scoped_state
 
 
 @pytest.mark.timeout(60)
 def test_process_job_host_mesh() -> None:
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    assert host.extent.labels == ["hosts"]
-    assert host.extent.sizes == [1]
-    assert not host.stream_logs
-    hy_host = host._hy_host_mesh.block_on()
-    assert hy_host.region.labels == host.region.labels
-    assert hy_host.region.slice() == host.region.slice()
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        host = state.hosts
+        assert host.extent.labels == ["hosts"]
+        assert host.extent.sizes == [1]
+        assert not host.stream_logs
+        hy_host = host._hy_host_mesh.block_on()
+        assert hy_host.region.labels == host.region.labels
+        assert hy_host.region.slice() == host.region.slice()
 
 
 @pytest.mark.timeout(60)
 def test_multi_host_mesh() -> None:
-    host = ProcessJob({"hosts": 8}).state(cached_path=None).hosts
-    assert host.extent.labels == ["hosts"]
-    assert host.extent.sizes == [8]
-    assert not host.stream_logs
-    assert host._ndslice == Slice(offset=0, sizes=[8], strides=[1])
-    assert host._labels == ("hosts",)
-    hy_host = host._hy_host_mesh.block_on()
-    assert hy_host.region.labels == host.region.labels
-    assert hy_host.region.slice() == host.region.slice()
+    with scoped_state(ProcessJob({"hosts": 8}), cached_path=None) as state:
+        host = state.hosts
+        assert host.extent.labels == ["hosts"]
+        assert host.extent.sizes == [8]
+        assert not host.stream_logs
+        assert host._ndslice == Slice(offset=0, sizes=[8], strides=[1])
+        assert host._labels == ("hosts",)
+        hy_host = host._hy_host_mesh.block_on()
+        assert hy_host.region.labels == host.region.labels
+        assert hy_host.region.slice() == host.region.slice()
 
-    # Hosts 5 and 7
-    sliced = host._new_with_shape(
-        Shape(labels=["hosts"], slice=Slice(offset=5, sizes=[2], strides=[2]))
-    )
-    assert sliced.extent.labels == ["hosts"]
-    assert sliced.extent.sizes == [2]
-    assert not sliced.stream_logs
-    assert sliced._ndslice == Slice(offset=5, sizes=[2], strides=[2])
-    assert sliced._labels == ("hosts",)
-    hy_sliced = sliced._hy_host_mesh.block_on()
-    assert hy_sliced.region.labels == sliced.region.labels
-    assert hy_sliced.region.slice() == sliced.region.slice()
+        # Hosts 5 and 7
+        sliced = host._new_with_shape(
+            Shape(labels=["hosts"], slice=Slice(offset=5, sizes=[2], strides=[2]))
+        )
+        assert sliced.extent.labels == ["hosts"]
+        assert sliced.extent.sizes == [2]
+        assert not sliced.stream_logs
+        assert sliced._ndslice == Slice(offset=5, sizes=[2], strides=[2])
+        assert sliced._labels == ("hosts",)
+        hy_sliced = sliced._hy_host_mesh.block_on()
+        assert hy_sliced.region.labels == sliced.region.labels
+        assert hy_sliced.region.slice() == sliced.region.slice()
 
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_spawn_proc_mesh() -> None:
-    host = ProcessJob({"hosts": 8}).state(cached_path=None).hosts
-    proc_mesh = host.spawn_procs(name="proc")
-    assert proc_mesh._host_mesh is host
-    assert proc_mesh._ndslice == host._ndslice
-    assert tuple(proc_mesh._labels) == host._labels
-    hy_proc_mesh = proc_mesh._proc_mesh.block_on()
-    assert tuple(hy_proc_mesh.region.labels) == host._labels
-    assert hy_proc_mesh.region.slice() == host.region.slice()
+    with scoped_state(ProcessJob({"hosts": 8}), cached_path=None) as state:
+        host = state.hosts
+        proc_mesh = host.spawn_procs(name="proc")
+        assert proc_mesh._host_mesh is host
+        assert proc_mesh._ndslice == host._ndslice
+        assert tuple(proc_mesh._labels) == host._labels
+        hy_proc_mesh = proc_mesh._proc_mesh.block_on()
+        assert tuple(hy_proc_mesh.region.labels) == host._labels
+        assert hy_proc_mesh.region.slice() == host.region.slice()
 
-    # Hosts 5 and 7
-    sliced_host = host._new_with_shape(
-        Shape(labels=["hosts"], slice=Slice(offset=5, sizes=[2], strides=[2]))
-    )
-    sliced_proc = sliced_host.spawn_procs(
-        name="proc_sliced", per_host={"gpus": 3, "just_for_fun": 4}
-    )
-    hy_sliced_proc = sliced_proc._proc_mesh.block_on()
-    assert sliced_proc._host_mesh is sliced_host
-    assert sliced_proc._ndslice == Slice(offset=0, sizes=[2, 3, 4], strides=[12, 4, 1])
-    assert sliced_proc._labels == ["hosts", "gpus", "just_for_fun"]
-    assert hy_sliced_proc.region.labels == sliced_proc._labels
-    assert hy_sliced_proc.region.slice() == sliced_proc._ndslice
+        # Hosts 5 and 7
+        sliced_host = host._new_with_shape(
+            Shape(labels=["hosts"], slice=Slice(offset=5, sizes=[2], strides=[2]))
+        )
+        sliced_proc = sliced_host.spawn_procs(
+            name="proc_sliced", per_host={"gpus": 3, "just_for_fun": 4}
+        )
+        hy_sliced_proc = sliced_proc._proc_mesh.block_on()
+        assert sliced_proc._host_mesh is sliced_host
+        assert sliced_proc._ndslice == Slice(
+            offset=0, sizes=[2, 3, 4], strides=[12, 4, 1]
+        )
+        assert sliced_proc._labels == ["hosts", "gpus", "just_for_fun"]
+        assert hy_sliced_proc.region.labels == sliced_proc._labels
+        assert hy_sliced_proc.region.slice() == sliced_proc._ndslice
 
 
 @pytest.mark.timeout(60)
 def test_pickle() -> None:
-    host = ProcessJob({"hosts": 8}).state(cached_path=None).hosts
-    host.initialized.get()
-    _unused, pickled = flatten(host, lambda _: False)
-    unpickled = unflatten(pickled.freeze(), _unused)
-    assert isinstance(unpickled, HostMesh)
-    assert host.extent.labels == ["hosts"]
-    assert host.extent.sizes == [8]
-    assert not host.stream_logs
-    assert host._ndslice == Slice(offset=0, sizes=[8], strides=[1])
-    assert host._labels == ("hosts",)
-    hy_host = host._hy_host_mesh.block_on()
-    assert hy_host.region.labels == host.region.labels
-    assert hy_host.region.slice() == host.region.slice()
+    with scoped_state(ProcessJob({"hosts": 8}), cached_path=None) as state:
+        host = state.hosts
+        host.initialized.get()
+        _unused, pickled = flatten(host, lambda _: False)
+        unpickled = unflatten(pickled.freeze(), _unused)
+        assert isinstance(unpickled, HostMesh)
+        assert host.extent.labels == ["hosts"]
+        assert host.extent.sizes == [8]
+        assert not host.stream_logs
+        assert host._ndslice == Slice(offset=0, sizes=[8], strides=[1])
+        assert host._labels == ("hosts",)
+        hy_host = host._hy_host_mesh.block_on()
+        assert hy_host.region.labels == host.region.labels
+        assert hy_host.region.slice() == host.region.slice()
 
 
 class RankActor(Actor):
@@ -133,11 +140,12 @@ def is_process_running(pid: int) -> bool:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_shutdown_host_mesh() -> None:
-    hm = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
-    pm = hm.spawn_procs(per_host={"gpus": 2})
-    am = pm.spawn("actor", RankActor)
-    am.get_rank.choose().get()
-    hm.shutdown().get()
+    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
+        hm = state.hosts
+        pm = hm.spawn_procs(per_host={"gpus": 2})
+        am = pm.spawn("actor", RankActor)
+        am.get_rank.choose().get()
+        hm.shutdown().get()
 
 
 @pytest.mark.timeout(60)
@@ -158,21 +166,22 @@ async def test_host_mesh_context_manager() -> None:
 
 @pytest.mark.timeout(60)
 def test_shutdown_sliced_host_mesh_throws_exception() -> None:
-    hm = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
-    hm_sliced = hm.slice(hosts=1)
-    with pytest.raises(RuntimeError):
-        hm_sliced.shutdown().get()
+    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
+        hm = state.hosts
+        hm_sliced = hm.slice(hosts=1)
+        with pytest.raises(RuntimeError):
+            hm_sliced.shutdown().get()
 
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
-    hm = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
-    hm.initialized.get()
-    hm_unpickled = cloudpickle.loads(cloudpickle.dumps(hm))
-    with pytest.raises(RuntimeError):
-        hm_unpickled.shutdown().get()
-    hm.shutdown().get()
+    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
+        hm = state.hosts
+        hm.initialized.get()
+        hm_unpickled = cloudpickle.loads(cloudpickle.dumps(hm))
+        with pytest.raises(RuntimeError):
+            hm_unpickled.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -207,6 +216,48 @@ def test_stop_and_reconnect() -> None:
     assert len(ranks2) == 2
 
     # Shutdown: fully tear down and exit workers.
+    hm2.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_stop_only_drains_own_mesh_procs() -> None:
+    """Stopping one mesh should not kill procs belonging to another mesh
+    on the same workers.
+
+    Simulates the real scenario where the main process and the mount
+    process each have their own HostMesh (with different names) connected
+    to the same remote workers.
+    """
+    job = ProcessJob({"hosts": 2})
+
+    # First mesh: simulate the main process.
+    state1 = job.state(cached_path=None)
+    hm1 = state1.hosts
+    pm1 = hm1.spawn_procs(per_host={"gpus": 1}, name="proc1")
+    am1 = pm1.spawn("actor", RankActor)
+    pids1 = list(am1.get_pid.call().get().values())
+    assert len(pids1) == 2
+
+    # Second mesh: simulate the mount process reconnecting. This creates
+    # a new HostMesh with a different name via a second state() call.
+    state2 = job.state(cached_path=None)
+    hm2 = state2.hosts
+    pm2 = hm2.spawn_procs(per_host={"gpus": 1}, name="proc2")
+    am2 = pm2.spawn("actor", RankActor)
+    pids2 = list(am2.get_pid.call().get().values())
+    assert len(pids2) == 2
+
+    # Stop the first mesh — should only drain its own procs.
+    hm1.stop().get()
+
+    # Procs from mesh1 should be stopped.
+    assert all(not is_process_running(pid) for pid in pids1)
+
+    # Procs from mesh2 should still be alive.
+    assert all(is_process_running(pid) for pid in pids2)
+
+    # Clean up mesh2.
     hm2.shutdown().get()
 
 
@@ -302,14 +353,16 @@ def test_root_client_does_not_leak_host_meshes() -> None:
 
 @pytest.mark.timeout(60)
 def test_spawn_procs_proc_bind_length_mismatch() -> None:
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    with pytest.raises(
-        ValueError, match=r"proc_bind length \(1\) must equal procs_per_host \(4\)"
-    ):
-        host.spawn_procs(
-            per_host={"gpus": 4},
-            proc_bind=[{"cpunodebind": "0"}],
-        )
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        host = state.hosts
+        with pytest.raises(
+            ValueError,
+            match=r"proc_bind length \(1\) must equal procs_per_host \(4\)",
+        ):
+            host.spawn_procs(
+                per_host={"gpus": 4},
+                proc_bind=[{"cpunodebind": "0"}],
+            )
 
 
 @pytest.mark.timeout(120)
@@ -325,20 +378,21 @@ def test_spawn_procs_with_numactl_bind() -> None:
     node0_cpus = _parse_cpu_list((numa_node0 / "cpulist").read_text())
     assert node0_cpus, "node0 has no CPUs"
 
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    proc_mesh = host.spawn_procs(
-        name="numa_bound",
-        per_host={"gpus": 2},
-        proc_bind=[{"cpunodebind": "0"}, {"cpunodebind": "0"}],
-    )
-    am = proc_mesh.spawn("affinity", CpuAffinityActor)
-    affinities = am.get_affinity.call().get()
-    for rank, cpus in affinities.items():
-        cpu_set = set(cpus)
-        assert cpu_set, f"rank {rank} has empty affinity"
-        assert cpu_set <= node0_cpus, (
-            f"rank {rank} affinity {cpu_set} is not a subset of node0 CPUs {node0_cpus}"
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        host = state.hosts
+        proc_mesh = host.spawn_procs(
+            name="numa_bound",
+            per_host={"gpus": 2},
+            proc_bind=[{"cpunodebind": "0"}, {"cpunodebind": "0"}],
         )
+        am = proc_mesh.spawn("affinity", CpuAffinityActor)
+        affinities = am.get_affinity.call().get()
+        for rank, cpus in affinities.items():
+            cpu_set = set(cpus)
+            assert cpu_set, f"rank {rank} has empty affinity"
+            assert cpu_set <= node0_cpus, (
+                f"rank {rank} affinity {cpu_set} is not a subset of node0 CPUs {node0_cpus}"
+            )
 
 
 @pytest.mark.timeout(120)
@@ -351,18 +405,19 @@ def test_spawn_procs_with_taskset_bind() -> None:
     cpu_a = available[0]
     cpu_b = available[1]
 
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    proc_mesh = host.spawn_procs(
-        name="taskset_bound",
-        per_host={"gpus": 2},
-        proc_bind=[{"cpus": str(cpu_a)}, {"cpus": str(cpu_b)}],
-    )
-    am = proc_mesh.spawn("affinity", CpuAffinityActor)
-    affinities = am.get_affinity.call().get()
-    observed = {frozenset(cpus) for cpus in affinities.values()}
-    assert observed == {frozenset({cpu_a}), frozenset({cpu_b})}, (
-        f"expected affinities {{{cpu_a}}} and {{{cpu_b}}}, got {affinities}"
-    )
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        host = state.hosts
+        proc_mesh = host.spawn_procs(
+            name="taskset_bound",
+            per_host={"gpus": 2},
+            proc_bind=[{"cpus": str(cpu_a)}, {"cpus": str(cpu_b)}],
+        )
+        am = proc_mesh.spawn("affinity", CpuAffinityActor)
+        affinities = am.get_affinity.call().get()
+        observed = {frozenset(cpus) for cpus in affinities.values()}
+        assert observed == {frozenset({cpu_a}), frozenset({cpu_b})}, (
+            f"expected affinities {{{cpu_a}}} and {{{cpu_b}}}, got {affinities}"
+        )
 
 
 class WrapperMarkerActor(Actor):

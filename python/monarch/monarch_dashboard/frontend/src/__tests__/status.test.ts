@@ -12,6 +12,7 @@ import {
   formatShape,
   messageStatusColor,
   leafName,
+  agentDisplayName,
   splitMessages,
 } from "../utils/status";
 
@@ -112,6 +113,38 @@ describe("leafName", () => {
 
   test("returns name as-is when no separators", () => {
     expect(leafName("Trainer")).toBe("Trainer");
+  });
+});
+
+describe("agentDisplayName", () => {
+  test("formats HostAgent as 'Host Unit {rank}'", () => {
+    expect(agentDisplayName("mesh/HostAgent[0]", 0)).toBe("Host Unit 0");
+    expect(agentDisplayName("mesh/HostAgent[3]", 3)).toBe("Host Unit 3");
+  });
+
+  test("formats host_agent as 'Host Unit {rank}'", () => {
+    expect(agentDisplayName("mesh/host_agent[1]", 1)).toBe("Host Unit 1");
+  });
+
+  test("formats proc_agent as 'Proc Unit {rank}'", () => {
+    expect(agentDisplayName("mesh/proc_agent[0]", 0)).toBe("Proc Unit 0");
+    expect(agentDisplayName("mesh/ProcAgent[5]", 5)).toBe("Proc Unit 5");
+  });
+
+  test("extracts rank from name when rank param not given", () => {
+    expect(agentDisplayName("HostAgent[2]")).toBe("Host Unit 2");
+    expect(agentDisplayName("proc_agent[7]")).toBe("Proc Unit 7");
+  });
+
+  test("returns null for non-agent names", () => {
+    expect(agentDisplayName("PythonActor<Trainer>[0]", 0)).toBeNull();
+    expect(agentDisplayName("Python<_SMPD>", 0)).toBeNull();
+  });
+
+  test("returns null for null/undefined fullName", () => {
+    expect(agentDisplayName(null)).toBeNull();
+    expect(agentDisplayName(undefined)).toBeNull();
+    expect(agentDisplayName(null, 0)).toBeNull();
   });
 });
 

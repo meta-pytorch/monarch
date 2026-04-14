@@ -62,6 +62,23 @@ export function leafName(name: string | null | undefined): string {
   return name.split("/").pop()!.split(",").pop()!;
 }
 
+/** Format a host/proc agent name as "Host Unit {rank}" or "Proc Unit {rank}".
+ *  Returns null if the name doesn't match a host/proc agent pattern,
+ *  so the caller can fall back to the default display.
+ */
+export function agentDisplayName(fullName: string | null | undefined, rank?: number | string | null): string | null {
+  if (!fullName) return null;
+  const low = fullName.toLowerCase();
+  const isHost = low.includes("hostagent") || low.includes("host_agent");
+  const isProcAgent = low.includes("procagent") || low.includes("proc_agent");
+  if (!isHost && !isProcAgent) return null;
+  const label = isHost ? "Host Unit" : "Proc Unit";
+  if (rank != null) return `${label} ${rank}`;
+  // Try to extract rank from trailing [N] in the name.
+  const m = fullName.match(/\[(\d+)\]$/);
+  return m ? `${label} ${m[1]}` : label;
+}
+
 /** Split messages into incoming and outgoing for a given actor. */
 export function splitMessages<T extends { from_actor_id: any; to_actor_id: any }>(
   messages: T[],
