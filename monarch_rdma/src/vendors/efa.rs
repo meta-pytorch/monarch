@@ -34,11 +34,11 @@ impl NicBackend for EfaBackend {
     ///
     /// Uses `efadv_query_device()` to detect EFA hardware.
     /// The result is cached after the first call.
-    fn is_detected() -> bool { /// TODO_ANDY: make sure is_efa_device() isn't called elsewhere
+    fn is_detected(&self) -> bool { /// TODO_ANDY: make sure is_efa_device() isn't called elsewhere
         *DETECTED.get_or_init(is_efa_device_impl)
     }
 
-    fn is_efa_device_impl() -> bool {
+    fn is_efa_device_impl(&self) -> bool {
         // SAFETY: We are calling C functions from libibverbs and libefa.
         unsafe { ///TODO_ANDY: this shares a lot of logic as primitives::get_all_devices().
                  ///           can probably swap out this logic with get_all_devices somehow.
@@ -79,7 +79,7 @@ impl NicBackend for EfaBackend {
     /// - GID index 0 (instead of 3)
     /// - Max 1 SGE per work request
     /// - No RDMA atomics support
-    /// TODO_ANDY: make sure apply_efa_defaults isn't called elsewhere (like primitives.rs)
+    // TODO_ANDY: make sure apply_efa_defaults isn't called elsewhere (like primitives.rs)
     pub fn apply_config_defaults(&self, config: &mut IbvConfig) {
         config.gid_index = 0;
         config.max_send_sge = 1;

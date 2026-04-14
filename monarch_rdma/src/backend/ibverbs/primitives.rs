@@ -697,24 +697,8 @@ static MLX5DV_SUPPORTED_CACHE: OnceLock<bool> = OnceLock::new();
 ///
 /// `true` if mlx5dv extensions are supported, `false` otherwise.
 pub fn mlx5dv_supported() -> bool {
-    *MLX5DV_SUPPORTED_CACHE.get_or_init(mlx5dv_supported_impl)
-}
-
-fn mlx5dv_supported_impl() -> bool {
-    // SAFETY: We are calling C functions from libibverbs and libmlx5.
-    unsafe {
-        let mut mlx5dv_supported = false;
-        let mut num_devices = 0;
-        let device_list = rdmaxcel_sys::ibv_get_device_list(&mut num_devices);
-        if !device_list.is_null() && num_devices > 0 {
-            let device = *device_list;
-            if !device.is_null() {
-                mlx5dv_supported = rdmaxcel_sys::mlx5dv_is_supported(device);
-            }
-            rdmaxcel_sys::ibv_free_device_list(device_list);
-        }
-        mlx5dv_supported
-    }
+    let mlx_backend = MlxBackend;
+    mlx_backend.is_detected()
 }
 
 /// Cached result of ibverbs support check.

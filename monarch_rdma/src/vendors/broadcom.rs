@@ -7,11 +7,15 @@
 */
 //! Broadcom (bnxt_re) specific RDMA configuration.
 //!
+//! This module contains broadcom specific helpers for device detection and configuration.
+//! Connect and post operations are handled by C functions in rdmaxcel.c
+//!
 //! Broadcom NICs use standard ibverbs without device-specific extensions.
 use crate::nic_backend::NicBackend;
 use std::sync::OnceLock;
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::ibverbs::primitives::get_all_devices;
+
 /// Cached result of Broadcom device check.
 static DETECTED: OnceLock<bool> = OnceLock::new();
 
@@ -20,7 +24,7 @@ pub struct BroadcomBackend;
 
 impl NicBackend for BroadcomBackend {
 
-    fn name(&self) -> &'static str { "BROADCOM" }
+    fn name(&self) -> &'static str { "Broadcom" }
 
     fn device_prefixes(&self) -> &'static [&'static str] { &["bnxt_re"] }
 
@@ -41,8 +45,8 @@ impl NicBackend for BroadcomBackend {
         })
     }
 
-
-    fn qp_type(&self) -> u32 { rdmaxcel_sys::RDMA_QP_TYPEE_STANDARD }
+    /// Returns the queue-pair type for Broadcom devices.
+    fn qp_type(&self) -> u32 { rdmaxcel_sys::RDMA_QP_TYPE_STANDARD }
 
     /// Applies Broadcom-specific defaults to an `IbvConfig`.
     ///

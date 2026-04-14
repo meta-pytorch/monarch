@@ -488,11 +488,12 @@ impl IbvManagerActor {
 
             // Get or create domain and loopback QP for this device
             let (domain, _qp) = self.get_or_create_device_domain(&device_name, &rdma_device)?;
-
+            //TODO_ANDY: Replace this conditional with unified api, will currently break
+            //compilation
             let access = if crate::efa::is_efa_device() {
                 crate::efa::mr_access_flags()
-            } else if crate::broadcom::is_broadcom_device() {
-                crate::broadcom::mr_access_flags()
+            } else if crate::vendors::broadcom::is_broadcom_device() {
+                crate::vendors::broadcom::mr_access_flags()
             } else {
                 rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
                     | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
