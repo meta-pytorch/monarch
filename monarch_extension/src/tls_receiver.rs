@@ -22,13 +22,13 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::ffi;
 use pyo3::prelude::*;
 
-const CERT_PATH: &str = "/var/facebook/x509_identities/server.pem";
+const DEFAULT_CERT_PATH: &str = "/var/facebook/x509_identities/server.pem";
 
 /// Build a `rustls::ServerConfig` matching the Python `_make_server_ssl_context`.
-fn make_server_tls_config() -> Result<Arc<rustls::ServerConfig>, String> {
+fn make_server_tls_config(cert_path: &str) -> Result<Arc<rustls::ServerConfig>, String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let cert_pem = std::fs::read(CERT_PATH).map_err(|e| format!("read {CERT_PATH} failed: {e}"))?;
+    let cert_pem = std::fs::read(cert_path).map_err(|e| format!("read {cert_path} failed: {e}"))?;
 
     let certs = rustls_pemfile::certs(&mut BufReader::new(&cert_pem[..]))
         .filter_map(Result::ok)
@@ -48,8 +48,8 @@ fn make_server_tls_config() -> Result<Arc<rustls::ServerConfig>, String> {
                     break rustls::pki_types::PrivateKeyDer::Sec1(k);
                 }
                 Ok(Some(_)) => continue,
-                Ok(None) => return Err(format!("no private key found in {CERT_PATH}")),
-                Err(e) => return Err(format!("parse {CERT_PATH} failed: {e}")),
+                Ok(None) => return Err(format!("no private key found in {cert_path}")),
+                Err(e) => return Err(format!("parse {cert_path} failed: {e}")),
             }
         }
     };
@@ -68,14 +68,14 @@ fn make_server_tls_config() -> Result<Arc<rustls::ServerConfig>, String> {
 /// (e.g. `.fbinfra.net` vs `.facebook.com` on Sandcastle).  We use
 /// `openssl x509 -text` to dump the cert and extract the first DNS
 /// SAN entry.  Falls back to `hostname -f` if extraction fails.
-fn get_tls_hostname() -> Result<String, String> {
+fn get_tls_hostname(cert_path: &str) -> Result<String, String> {
     // `openssl x509 -text` is supported since OpenSSL 0.9.x (unlike
     // `-ext subjectAltName` which requires 1.1.1+).  The SAN section
     // looks like:
     //     X509v3 Subject Alternative Name:
     //         DNS:host.facebook.com, IP Address:..., ...
     if let Ok(output) = std::process::Command::new("openssl")
-        .args(["x509", "-in", CERT_PATH, "-noout", "-text"])
+        .args(["x509", "-in", cert_path, "-noout", "-text"])
         .output()
     {
         if output.status.success() {
@@ -149,18 +149,19 @@ struct TlsReceiver {
 #[pymethods]
 impl TlsReceiver {
     #[new]
-    #[pyo3(signature = (num_streams=1))]
-    fn new(num_streams: usize) -> PyResult<Self> {
-        let tls_config = make_server_tls_config().map_err(PyRuntimeError::new_err)?;
+    #[pyo3(signature = (num_streams=1, cert_path=None, port=0))]
+    fn new(num_streams: usize, cert_path: Option<&str>, port: u16) -> PyResult<Self> {
+        let cert = cert_path.unwrap_or(DEFAULT_CERT_PATH);
+        let tls_config = make_server_tls_config(cert).map_err(PyRuntimeError::new_err)?;
 
-        let listener = TcpListener::bind("[::]:0")
+        let listener = TcpListener::bind(format!("[::]:{port}"))
             .map_err(|e| PyRuntimeError::new_err(format!("bind: {e}")))?;
         let port = listener
             .local_addr()
             .map_err(|e| PyRuntimeError::new_err(format!("addr: {e}")))?
             .port();
 
-        let tls_hostname = get_tls_hostname().map_err(PyRuntimeError::new_err)?;
+        let tls_hostname = get_tls_hostname(cert).map_err(PyRuntimeError::new_err)?;
         let connect_hostname = get_fqdn().map_err(PyRuntimeError::new_err)?;
 
         Ok(TlsReceiver {

@@ -6,6 +6,7 @@
 
 # pyre-unsafe
 
+import contextlib
 import logging
 import os
 import pickle
@@ -14,14 +15,320 @@ import signal
 import subprocess
 import sys
 import tempfile
+import traceback
+import uuid
 from abc import ABC, abstractmethod
-from typing import Dict, List, Literal, NamedTuple, Optional, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 
 from monarch._src.actor.bootstrap import attach_to_workers
+from monarch._src.actor.host_mesh import _spawn_admin
+from monarch._src.job.mount_config import Mounts
 
 # note: the jobs api is intended as a library so it should
 # only be importing _public_ monarch API functions.
-from monarch.actor import enable_transport, HostMesh, this_host
+from monarch.actor import (
+    Actor,
+    current_rank,
+    enable_transport,
+    endpoint,
+    Future,
+    HostMesh,
+    Port,
+    this_host,
+)
+from monarch.distributed_telemetry.actor import start_telemetry
+from monarch.distributed_telemetry.engine import QueryEngine
+
+
+@contextlib.contextmanager
+def _redirect_stdio(stdout=None, stderr=None):
+    """Redirect stdout/stderr at the OS fd level.
+
+    Unlike contextlib.redirect_stdout/stderr, subprocesses also inherit the
+    redirect because file descriptors 1 and 2 are replaced via os.dup2.
+
+    *stdout* and *stderr* must be file objects backed by a real OS file
+    descriptor (e.g. from open() or tempfile.TemporaryFile). StringIO is not
+    supported.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    redirects = []
+    if stdout is not None:
+        redirects.append((1, stdout, "stdout"))
+    if stderr is not None:
+        redirects.append((2, stderr, "stderr"))
+
+    saved_fds = {}
+    saved_py = {}
+    for fd, new_file, attr in redirects:
+        saved_fds[fd] = os.dup(fd)
+        os.dup2(new_file.fileno(), fd)
+        saved_py[attr] = getattr(sys, attr)
+        setattr(sys, attr, new_file)
+    try:
+        yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        for fd, _, attr in redirects:
+            setattr(sys, attr, saved_py[attr])
+            os.dup2(saved_fds[fd], fd)
+            os.close(saved_fds[fd])
+
+
+class BashActor(Actor):
+    """Actor that executes bash scripts on remote workers.
+
+    Two execution modes:
+
+    1. **Blocking** — ``run(script)`` runs the script to completion and
+       returns ``{"returncode", "stdout", "stderr"}``.  Output is also
+       printed on the worker for log-forwarding visibility.
+
+    2. **Streaming** — ``start(script)`` launches the script in the
+       background and returns immediately.  The client then calls
+       ``poll_output()`` in a loop to receive incremental stdout/stderr
+       until the process exits.
+    """
+
+    def _rank_env(self) -> Dict[str, str]:
+        from monarch.actor import context
+
+        rank = context().actor_instance.rank
+        return {
+            **{f"MONARCH_RANK_{k}": str(v) for k, v in dict(rank).items()},
+            **{
+                f"MONARCH_SIZE_{k}": str(v)
+                for k, v in zip(rank.extent.keys(), rank.extent.sizes)
+            },
+        }
+
+    def _expand_subdir(self, output_dir: str) -> str:
+        if "$SUBDIR" not in output_dir:
+            return output_dir
+        from monarch.actor import context
+
+        rank = context().actor_instance.rank
+        subdir = "_".join(f"{k}_{v}" for k, v in dict(rank).items())
+        return output_dir.replace("$SUBDIR", subdir)
+
+    @endpoint
+    def run(
+        self,
+        script: str,
+        target_ranks: Optional[list] = None,
+        output_dir: Optional[str] = None,
+    ):
+        my_rank = current_rank().rank
+        if target_ranks is not None and my_rank not in target_ranks:
+            return {"returncode": 0, "stdout": "", "stderr": "", "skipped": True}
+        env = {**os.environ, **self._rank_env()}
+        if output_dir is not None:
+            output_dir = self._expand_subdir(output_dir)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=True) as f:
+            f.write(script)
+            f.flush()
+            if output_dir is not None:
+                os.makedirs(output_dir, exist_ok=True)
+                with (
+                    open(os.path.join(output_dir, "stdout.txt"), "w") as out,
+                    open(os.path.join(output_dir, "stderr.txt"), "w") as err,
+                ):
+                    result = subprocess.run(
+                        ["bash", f.name], stdout=out, stderr=err, env=env
+                    )
+                return {"returncode": result.returncode, "stdout": "", "stderr": ""}
+            else:
+                result = subprocess.run(
+                    ["bash", f.name], capture_output=True, text=True, env=env
+                )
+                return {
+                    "returncode": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                }
+
+    @endpoint
+    def run_python(
+        self,
+        cmd: List[str],
+        env: Optional[Dict[str, str]] = None,
+        workdir: Optional[str] = None,
+        client_cwd: Optional[str] = None,
+        output_dir: Optional[str] = None,
+    ):
+        from unittest.mock import patch
+
+        os.environ.update({**self._rank_env(), **(env or {})})
+
+        if output_dir is not None:
+            output_dir = self._expand_subdir(output_dir)
+
+        effective_workdir = workdir or (
+            client_cwd if client_cwd and os.path.isdir(client_cwd) else None
+        )
+        with (
+            contextlib.chdir(effective_workdir)
+            if effective_workdir
+            else contextlib.nullcontext()
+        ):
+            if cmd[0] == "-m":
+                import importlib.util
+
+                spec = importlib.util.find_spec(cmd[1])
+                assert spec is not None and spec.origin is not None
+                py_file = spec.origin
+                argv = cmd[1:]
+            else:
+                py_file = cmd[0]
+                argv = cmd
+
+            with open(py_file) as f:
+                source = f.read()
+            code = compile(source, py_file, "exec")
+
+            capture = output_dir is None
+            if output_dir is not None:
+                os.makedirs(output_dir, exist_ok=True)
+                out_ctx = open(os.path.join(output_dir, "stdout.txt"), "w")
+                err_ctx = open(os.path.join(output_dir, "stderr.txt"), "w")
+            else:
+                out_ctx = tempfile.TemporaryFile(mode="w+")
+                err_ctx = tempfile.TemporaryFile(mode="w+")
+
+            returncode = 1
+            stdout_val = ""
+            stderr_val = ""
+            with out_ctx as out_f, err_ctx as err_f:
+                with (
+                    patch.object(sys, "argv", argv),
+                    _redirect_stdio(stdout=out_f, stderr=err_f),
+                ):
+                    try:
+                        returncode = 0
+                        exec(code, {"__name__": "__main__", "__file__": py_file})
+                    except Exception:
+                        returncode = 1
+                        traceback.print_exc()
+
+                if capture:
+                    out_f.seek(0)
+                    err_f.seek(0)
+                    stdout_val = out_f.read()
+                    stderr_val = err_f.read()
+
+            return {
+                "returncode": returncode,
+                "stdout": stdout_val,
+                "stderr": stderr_val,
+            }
+
+    @endpoint
+    def run_streaming(
+        self,
+        script: str,
+        output_port: Port[str],
+        target_ranks: list,
+    ):
+        """Run *script* on targeted ranks, streaming output via *output_port*.
+
+        Only actors whose ``current_rank().rank`` is in *target_ranks*
+        execute the script.  Non-targeted actors send ``"skip:<rank>"``
+        and return immediately.
+
+        Each message sent through the port is a tagged line:
+        ``"out:<line>"`` for stdout, ``"err:<line>"`` for stderr,
+        ``"rc:<code>"`` on exit, and ``"skip:<rank>"`` for skipped ranks.
+
+        Args:
+            script: Bash script text to execute.
+            output_port: A :class:`Port` obtained from
+                ``Channel[str].open()``.  Each line of output is pushed
+                through this port as it is produced.
+            target_ranks: List of flat rank indices that should run the
+                script.
+        """
+        my_rank = current_rank().rank
+
+        if my_rank not in target_ranks:
+            output_port.send(f"skip:{my_rank}")
+            return
+
+        env = {**os.environ, **self._rank_env()}
+
+        import selectors
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=True) as f:
+            f.write(script)
+            f.flush()
+            proc = subprocess.Popen(
+                ["bash", f.name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            stdout = proc.stdout
+            stderr = proc.stderr
+            assert stdout is not None
+            assert stderr is not None
+            sel = selectors.DefaultSelector()
+            sel.register(stdout, selectors.EVENT_READ, "stdout")
+            sel.register(stderr, selectors.EVENT_READ, "stderr")
+            while sel.get_map():
+                for key, _ in sel.select():
+                    # pyre-ignore[16]: fileobj is IO[str] here, not int
+                    line = key.fileobj.readline()
+                    if not line:
+                        sel.unregister(key.fileobj)
+                        continue
+                    tag = "out" if key.data == "stdout" else "err"
+                    output_port.send(f"{my_rank}:{tag}:{line}")
+            sel.close()
+            proc.wait()
+        output_port.send(f"{my_rank}:rc:{proc.returncode}")
+
+
+@dataclass
+class TelemetryConfig:
+    """Configuration for automatic telemetry startup.
+
+    When passed to a job constructor, telemetry (and optionally a dashboard)
+    is started automatically when ``state()`` is called.
+
+    Args:
+        batch_size: Number of rows to buffer before flushing to a RecordBatch.
+        retention_secs: Retention window in seconds for message tables.
+            0 disables retention.
+        include_dashboard: Whether to start the monarch dashboard web server.
+        dashboard_port: Preferred port for the dashboard.
+    """
+
+    batch_size: int = 1000
+    retention_secs: int = 600
+    include_dashboard: bool = False
+    dashboard_port: int = 8265
+
+
+@dataclass
+class MeshAdminConfig:
+    """Configuration for automatic mesh admin agent startup.
+
+    When passed to a job constructor, a MeshAdminAgent HTTP server is
+    spawned automatically when ``state()`` is called.  The server
+    aggregates topology across all host meshes and exposes it via a
+    REST API that the admin TUI can attach to.
+
+    Args:
+        admin_addr: Bind address for the admin HTTP server.  When
+            ``None`` the server picks an available address automatically.
+    """
+
+    admin_addr: Optional[str] = None
 
 
 class JobState:
@@ -38,8 +345,17 @@ class JobState:
         state.dataloaders # HostMesh for the "dataloaders" mesh
     """
 
-    def __init__(self, hosts: Dict[str, HostMesh]):
+    def __init__(
+        self,
+        hosts: Dict[str, HostMesh],
+        query_engine: Optional[QueryEngine] = None,
+        telemetry_url: Optional[str] = None,
+        admin_url: Optional[str] = None,
+    ):
         self._hosts = hosts
+        self.query_engine = query_engine
+        self.telemetry_url = telemetry_url
+        self.admin_url = admin_url
 
     def __getattr__(self, attr: str) -> HostMesh:
         try:
@@ -99,8 +415,85 @@ class JobTrait(ABC):
     """
 
     def __init__(self):
+        # WARNING: Do NOT add configuration arguments here.
+        # JobTrait.__init__ must remain argument-free so subclass constructors
+        # stay orthogonal to cross-cutting concerns like telemetry and admin.
+        # Use enable_telemetry() / enable_admin() after construction instead.
         super().__init__()
         self._status: Literal["running", "not_running"] | CachedRunning = "not_running"
+        self._telemetry: Optional[TelemetryConfig] = None
+        self._mesh_admin: Optional[MeshAdminConfig] = None
+        self._query_engine: Optional[QueryEngine] = None
+        self._telemetry_url: Optional[str] = None
+        self._admin_url: Optional[str] = None
+        self._apply_id: Optional[str] = None
+        self._mounts: Mounts = Mounts()
+        # Per-mesh python executable overrides.  None key means "all meshes".
+        self._python_executables: Dict[str, str] = {}
+        self._default_python_exe: Optional[str] = None
+
+    def _start_telemetry_if_configured(self) -> None:
+        """Start telemetry if configured and not already running."""
+        if self._telemetry is None or self._query_engine is not None:
+            return
+
+        cfg = self._telemetry
+        self._query_engine, self._telemetry_url = start_telemetry(
+            batch_size=cfg.batch_size,
+            retention_secs=cfg.retention_secs,
+            include_dashboard=cfg.include_dashboard,
+            dashboard_port=cfg.dashboard_port,
+        )
+
+    def _start_admin_if_configured(self, host_meshes: List[HostMesh]) -> None:
+        """Start the mesh admin agent if configured and not already running."""
+        if self._mesh_admin is None or self._admin_url is not None:
+            return
+
+        self._admin_url = _spawn_admin(
+            host_meshes,
+            admin_addr=self._mesh_admin.admin_addr,
+            telemetry_url=self._telemetry_url,
+        ).get()
+
+    def _wrap_state(self, job_state: JobState) -> JobState:
+        """Attach telemetry and admin fields to a JobState."""
+        if self._query_engine is not None:
+            job_state.query_engine = self._query_engine
+            job_state.telemetry_url = self._telemetry_url
+        if self._admin_url is not None:
+            job_state.admin_url = self._admin_url
+        return job_state
+
+    def enable_telemetry(
+        self, config: "Optional[TelemetryConfig]" = None, **kwargs
+    ) -> "JobTrait":
+        """Configure automatic telemetry startup on the next :meth:`state` call.
+
+        Args:
+            config: A :class:`TelemetryConfig` instance.  If omitted, one is
+                constructed from *kwargs* (forwarded to ``TelemetryConfig``).
+
+        Returns:
+            ``self``, for chaining.
+        """
+        self._telemetry = config if config is not None else TelemetryConfig(**kwargs)
+        return self
+
+    def enable_admin(
+        self, config: "Optional[MeshAdminConfig]" = None, **kwargs
+    ) -> "JobTrait":
+        """Configure automatic mesh admin agent startup on the next :meth:`state` call.
+
+        Args:
+            config: A :class:`MeshAdminConfig` instance.  If omitted, one is
+                constructed from *kwargs*.
+
+        Returns:
+            ``self``, for chaining.
+        """
+        self._mesh_admin = config if config is not None else MeshAdminConfig(**kwargs)
+        return self
 
     @property
     def _running(self) -> "Optional[JobTrait]":
@@ -128,16 +521,30 @@ class JobTrait(ABC):
         """
         if self._running is None:
             self._create(client_script)
+            self._apply_id = str(uuid.uuid4())
             self._status = "running"
+
+    @property
+    def apply_id(self) -> Optional[str]:
+        """A UUID identifying the current allocation of this job.
+
+        Generated fresh each time :meth:`apply` creates a new allocation.
+        ``None`` if the job has not been applied yet. When a job is loaded
+        from a cached file, the original ``apply_id`` is preserved.
+        """
+        running = self._running
+        return running._apply_id if running is not None else None
 
     @property
     def active(self) -> bool:
         return self._running is not None
 
-    def state(self, cached_path: Optional[str] = ".monarch/job_state.pkl") -> JobState:
+    def _connect(
+        self, cached_path: Optional[str] = ".monarch/job_state.pkl"
+    ) -> "JobState":
         """
         Get the current state of this job, containing the host mesh objects of its requires that were requested
-            host_meshes = self.state()
+            host_meshes = self._connect()
             # properties of state hold the requested host meshes:
 
             host_meshes.trainers
@@ -157,17 +564,26 @@ class JobTrait(ABC):
         running_job = self._running
         if running_job is not None:
             logger.info("Job is running, returning current state")
-            return running_job._state()
+            job_state = running_job._state()
+            self._start_telemetry_if_configured()
+            self._start_admin_if_configured(list(job_state._hosts.values()))
+            return self._wrap_state(job_state)
 
         cached = self._load_cached(cached_path)
         if cached is not None:
             self._status = CachedRunning(cached)
             logger.info("Connecting to cached job")
-            return cached._state()
+            job_state = cached._state()
+            self._start_telemetry_if_configured()
+            self._start_admin_if_configured(list(job_state._hosts.values()))
+            return self._wrap_state(job_state)
         logger.info("Applying current job")
         self.apply()
         logger.info("Job has started, connecting to current state")
-        result = self._state()
+        job_state = self._state()
+        self._start_telemetry_if_configured()
+        self._start_admin_if_configured(list(job_state._hosts.values()))
+        result = self._wrap_state(job_state)
         if cached_path is not None:
             # Create the directory for cached_path if it doesn't exist
             cache_dir = os.path.dirname(cached_path)
@@ -176,6 +592,28 @@ class JobTrait(ABC):
             logger.info("Saving job to cache at %s", cached_path)
             self.dump(cached_path)
         return result
+
+    def state(
+        self, cached_path: Optional[str] = ".monarch/job_state.pkl"
+    ) -> "JobState":
+        """Connect to the job and return its state with all configured mounts applied.
+
+        See :meth:`_connect` for the connection logic. After connecting, all
+        mount configs registered via :meth:`remote_mount` and gather mount
+        configs registered via :meth:`gather_mount` are applied before returning.
+        """
+        raw = self._connect(cached_path)
+        apply_id = self.apply_id
+        running = self._running
+        if apply_id is not None and running is not None:
+            self._mounts.ensure_open(running)
+        hosts = {}
+        for mesh_name, mesh in raw._hosts.items():
+            exe = self._python_executables.get(mesh_name, self._default_python_exe)
+            if exe is not None:
+                mesh = mesh.with_python_executable(exe)
+            hosts[mesh_name] = mesh
+        return self._wrap_state(JobState(hosts))
 
     def _load_cached(self, cached_path: Optional[str]) -> "Optional[JobTrait]":
         if cached_path is None:
@@ -197,28 +635,126 @@ class JobTrait(ABC):
                 running._kill()
             except NotImplementedError as e:
                 logger.info("Failed to kill cached job: %s", e)
-            os.remove(cached_path)
+            # Remove the actual state file, not the symlink, so the context
+            # (symlink) remains intact for future applies.
+            state_file = (
+                os.path.realpath(cached_path)
+                if os.path.islink(cached_path)
+                else cached_path
+            )
+            try:
+                os.remove(state_file)
+            except FileNotFoundError:
+                pass
             return None
         return job
 
-    def dump(self, filename: str):
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # QueryEngine holds Rust bindings / network connections and is not
+        # picklable.  Drop it so deserialized jobs re-initialize telemetry
+        # on the next state() call.
+        state["_query_engine"] = None
+        state["_telemetry_url"] = None
+        state["_admin_url"] = None
+        return state
+
+    def dump(self, filename: str) -> None:
+        """Save job to a file, following any symlink at *filename*.
+
+        If *filename* is a symlink, writes to the symlink target rather than
+        replacing the link itself.  Creates the target's parent directory if
+        it does not yet exist.
         """
-            Save job to a file. Helper to make it more apparent
-        Jobs are serializable across processes.
-        """
-        with open(filename, "wb") as file:
+        path = os.path.realpath(filename) if os.path.islink(filename) else filename
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "wb") as f:
             # @lint-ignore PYTHONPICKLEISBAD
-            pickle.dump(self, file)
+            pickle.dump(self, f)
 
     def dumps(self) -> bytes:
         # @lint-ignore PYTHONPICKLEISBAD
         return pickle.dumps(self)
 
     def kill(self):
+        if self._apply_id is not None:
+            self._mounts.ensure_stopped(self._apply_id)
         running = self._running
         if running is not None:
             running._kill()
         self._status = "not_running"
+
+    def remote_mount(
+        self,
+        source: str,
+        mntpoint: Optional[str] = None,
+        meshes: Optional[List[str]] = None,
+        python_exe: Optional[str] = ".venv/bin/python",
+        **kwargs: Any,
+    ) -> None:
+        """Declare a local directory to be mounted on workers via FUSE.
+
+        This is configuration-only — no mount is established immediately.
+        The mount is applied (and re-applied on reconnect) on the next call
+        to :meth:`state`.
+
+        Args:
+            source: Local directory path to mount.
+            mntpoint: Mount point on workers. Defaults to ``source``.
+            meshes: Names of meshes to mount on. ``None`` means all meshes
+                returned by :meth:`state`.
+            python_exe: Path to the Python executable relative to the mount
+                point, used to set ``python_executable`` on the returned mesh.
+                Set to ``None`` to skip. Defaults to ``".venv/bin/python"``.
+            **kwargs: Forwarded to :func:`remotemount`.
+        """
+        self._mounts.remote_mount(
+            source=source, mntpoint=mntpoint, meshes=meshes, **kwargs
+        )
+        if python_exe is not None:
+            abs_source = os.path.abspath(source)
+            local_exe = os.path.join(abs_source, python_exe)
+            if not os.path.isfile(local_exe):
+                raise ValueError(
+                    f"python_exe '{python_exe}' not found locally at '{local_exe}'. "
+                    f"Ensure the virtual environment exists in '{source}' before calling remote_mount."
+                )
+            abs_mntpoint = (
+                os.path.abspath(mntpoint) if mntpoint is not None else abs_source
+            )
+            exe_path = os.path.join(abs_mntpoint, python_exe)
+            if meshes is None:
+                self._default_python_exe = exe_path
+            else:
+                for mesh_name in meshes:
+                    self._python_executables[mesh_name] = exe_path
+
+    def gather_mount(
+        self,
+        remote_mount_point: str,
+        local_mount_point: str,
+        meshes: Optional[List[str]] = None,
+    ) -> None:
+        """Declare a remote directory to be mounted locally via gather mount.
+
+        This is configuration-only — no mount is established immediately.
+        The mount is applied (and re-applied on reconnect) on the next call
+        to :meth:`state`.
+
+        Args:
+            remote_mount_point: Path on workers to expose. The token
+                ``$SUBDIR`` is replaced with each host's mesh-coordinate key
+                (e.g. ``hosts_0``).
+            local_mount_point: Local path where the remote directory will be
+                mounted.
+            meshes: Names of meshes to gather from. ``None`` means all meshes
+                returned by :meth:`state`.
+        """
+        self._mounts.gather_mount(
+            remote_mount_point=remote_mount_point,
+            local_mount_point=local_mount_point,
+            meshes=meshes,
+        )
 
     @abstractmethod
     def _state(self) -> JobState: ...
@@ -267,12 +803,16 @@ def job_loads(data: bytes) -> JobTrait:
     return pickle.loads(data)
 
 
-def job_load(filename: str) -> JobTrait:
+DEFAULT_JOB_PATH: str = ".monarch/job_state.pkl"
+
+
+def job_load(filename: str = DEFAULT_JOB_PATH) -> JobTrait:
     """
     Load a job from a file.
 
     Args:
         filename: Path to the pickled job file, typically from :meth:`JobTrait.dump`.
+            Defaults to ``.monarch/job_state.pkl``.
 
     Returns:
         The deserialized job object.
@@ -281,6 +821,183 @@ def job_load(filename: str) -> JobTrait:
         # @lint-ignore PYTHONPICKLEISBAD
         job: "JobTrait" = pickle.load(file)
         return job
+
+
+_MONARCH_DIR: str = ".monarch"
+_CONTEXT_STATE_FILE: str = "state.pkl"
+_CONTEXT_SPEC_FILE: str = "spec"
+
+
+def _current_spec_file() -> Path:
+    """Return the spec file path for the current context.
+
+    Reads the symlink at ``.monarch/job_state.pkl`` to determine which context
+    is active.  Falls back to ``default/spec`` when the symlink does not exist.
+    """
+    link = Path(DEFAULT_JOB_PATH)
+    if link.is_symlink():
+        target = Path(os.readlink(str(link)))
+        return Path(_MONARCH_DIR) / target.parent / _CONTEXT_SPEC_FILE
+    return Path(_MONARCH_DIR) / "default" / _CONTEXT_SPEC_FILE
+
+
+def _import_job_from_spec(module_path: str) -> JobTrait:
+    """Import and return the ``JobTrait`` at the dotted *module_path*.
+
+    Args:
+        module_path: Dotted import path of the form ``module.attr``
+            (e.g. ``myjob.job``).
+
+    Raises:
+        ValueError: if *module_path* does not contain a ``'.'``.
+        AttributeError: if the named attribute does not exist in the module.
+        TypeError: if the attribute is not a :class:`JobTrait`.
+    """
+    import importlib
+
+    if "." not in module_path:
+        raise ValueError(f"module_path must be 'module.attr', got {module_path!r}")
+    mod_name, attr_name = module_path.rsplit(".", 1)
+    mod = importlib.import_module(mod_name)
+    job = getattr(mod, attr_name, None)
+    if job is None:
+        raise AttributeError(f"Module '{mod_name}' has no '{attr_name}' attribute")
+    if not isinstance(job, JobTrait):
+        raise TypeError(
+            f"'{mod_name}.{attr_name}' must be a JobTrait, got {type(job).__name__}"
+        )
+    return job
+
+
+def set_current_job(module_path: str) -> None:
+    """Save *module_path* as the spec for the current context.
+
+    Ensures ``.monarch/`` exists and that ``job_state.pkl`` is a symlink
+    pointing to the active context's ``state.pkl`` (sets up the ``default``
+    context and symlink on first run; migrates a legacy plain-file
+    ``job_state.pkl`` to ``default/state.pkl`` for backward compatibility).
+    """
+    link = Path(DEFAULT_JOB_PATH)
+    Path(_MONARCH_DIR).mkdir(parents=True, exist_ok=True)
+    if not link.is_symlink():
+        default_dir = Path(_MONARCH_DIR) / "default"
+        default_dir.mkdir(parents=True, exist_ok=True)
+        if link.exists():
+            # Migrate legacy plain file into the default context.
+            link.rename(default_dir / _CONTEXT_STATE_FILE)
+        link.symlink_to(Path("default") / _CONTEXT_STATE_FILE)
+    spec_file = _current_spec_file()
+    spec_file.parent.mkdir(parents=True, exist_ok=True)
+    spec_file.write_text(module_path)
+
+
+def load_current_job() -> JobTrait:
+    """Return a fresh job object for the current context's spec.
+
+    Reads the dotted module path from the current context's ``spec`` file and
+    imports it via :func:`_import_job_from_spec`.  The returned object is a
+    plain spec — not yet connected to any workers.  Call ``.state()`` on it
+    to connect (or apply) the job; that call may load the cached
+    ``state.pkl`` if it is still valid.
+
+    Raises:
+        FileNotFoundError: if no spec file exists in the current context.
+    """
+    spec_file = _current_spec_file()
+    try:
+        module_path = spec_file.read_text().strip()
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"No spec found at {spec_file}. Run 'monarch apply <module.path>' first."
+        ) from None
+    return _import_job_from_spec(module_path)
+
+
+def exec_command(
+    host_mesh: HostMesh,
+    cmd: List[str],
+    env: Optional[Dict[str, str]] = None,
+    workdir: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    rank: Optional[int] = None,
+    point: Optional[Dict[str, int]] = None,
+    per_host: Optional[Dict[str, int]] = None,
+) -> "Future[int]":
+    """Run a command on *host_mesh* via BashActor.
+
+    Args:
+        host_mesh: The HostMesh to execute on.
+        cmd: Command and arguments.
+        env: Extra environment variables.
+        workdir: Working directory on workers.
+        output_dir: If set, redirect stdout/stderr to files in this directory
+            on each worker (``stdout.txt`` / ``stderr.txt``).  If ``None``,
+            stream stdout/stderr to the caller's terminal.
+        rank: Flat rank to execute on (applied after ``flatten("rank")``).
+            ``None`` executes on all ranks.
+        point: Coordinate dict to slice the process mesh (e.g.
+            ``{"host": 4, "gpu": 3}``).  ``None`` executes on all ranks.
+            Mutually exclusive with *rank*.
+        per_host: If set, spawn multiple processes per host with the given
+            dimension sizes (e.g. ``{"gpu": 4}``).  Passed as ``per_host``
+            to :meth:`~monarch.actor.HostMesh.spawn_procs`.
+
+    Returns:
+        A Future resolving to the maximum return code across all ranks (0 = success).
+    """
+
+    async def _impl() -> int:
+        if point is not None:
+            host_mesh_s = host_mesh.slice(**point)
+        elif rank is not None:
+            host_mesh_s = host_mesh.flatten("rank").slice(rank=rank)
+        else:
+            host_mesh_s = host_mesh
+
+        procs = host_mesh_s.spawn_procs(per_host=per_host)
+        try:
+            bash_actors = procs.spawn("BashActor", BashActor)
+
+            client_cwd = os.getcwd()
+
+            if cmd[0].endswith(".py") or cmd[0] == "-m":
+                results = await bash_actors.run_python.call(
+                    cmd,
+                    env=env,
+                    workdir=workdir,
+                    client_cwd=client_cwd,
+                    output_dir=output_dir,
+                )
+            else:
+                lines: List[str] = ["#!/bin/bash"]
+                if env:
+                    for k, v in env.items():
+                        lines.append(f"export {k}={shlex.quote(v)}")
+                if workdir:
+                    lines.append(f"cd {shlex.quote(workdir)}")
+                elif client_cwd:
+                    lines.append(
+                        f"[ -d {shlex.quote(client_cwd)} ] && cd {shlex.quote(client_cwd)}"
+                    )
+                lines.append(shlex.join(cmd))
+                script = "\n".join(lines) + "\n"
+                results = await bash_actors.run.call(script, output_dir=output_dir)
+            max_rc = 0
+            for _rank_key, result in results:
+                rc = result.get("returncode", 1)
+                max_rc = max(max_rc, rc)
+                if output_dir is None:
+                    stdout = result.get("stdout", "")
+                    stderr = result.get("stderr", "")
+                    if stdout:
+                        print(stdout, end="")
+                    if stderr:
+                        print(stderr, end="", file=sys.stderr)
+            return max_rc
+        finally:
+            await procs.stop()
+
+    return Future(coro=_impl())
 
 
 class LocalJob(JobTrait):
@@ -387,6 +1104,10 @@ class BatchJob(JobTrait):
 
     def __init__(self, job: JobTrait):
         super().__init__()
+        # Copy telemetry/admin config from the wrapped job so the batch
+        # client benefits from the same observability setup.
+        self._telemetry = job._telemetry
+        self._mesh_admin = job._mesh_admin
         self._job = job
 
     def can_run(self, spec: JobTrait):

@@ -5,18 +5,23 @@
       "description": "Structured failure information for failed actors.",
       "properties": {
         "error_message": {
+          "description": "Error message describing the failure.",
           "type": "string"
         },
         "is_propagated": {
+          "description": "Whether this failure was propagated from a child.",
           "type": "boolean"
         },
         "occurred_at": {
+          "description": "When the failure occurred (ISO 8601 timestamp string).",
           "type": "string"
         },
         "root_cause_actor": {
+          "description": "Actor that caused the failure (root cause).",
           "type": "string"
         },
         "root_cause_name": {
+          "description": "Display name of the root-cause actor, if available.",
           "type": [
             "string",
             "null"
@@ -176,7 +181,10 @@
                   "type": "string"
                 },
                 "created_at": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "failure_info": {
                   "anyOf": [
@@ -218,7 +226,6 @@
                 "actor_status",
                 "actor_type",
                 "messages_processed",
-                "created_at",
                 "total_processing_time_us",
                 "is_system"
               ],
@@ -259,21 +266,21 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Uniform response for any node in the mesh topology.\n\nEvery addressable entity (root, host, proc, actor) is represented\nas a `NodePayload`. The client navigates the mesh by fetching a\nnode and following its `children` references.\n\nSee IA-1..IA-5 in module doc.",
+  "description": "Uniform response for any node in the mesh topology.\n\nEvery addressable entity (root, host, proc, actor) is represented\nas a `NodePayload`. The client navigates the mesh by fetching a\nnode and following its `children` references.\n\n`identity`, `children`, and `parent` are plain reference strings.\n`as_of` is an ISO 8601 timestamp string.",
   "properties": {
     "as_of": {
-      "description": "ISO 8601 timestamp indicating when this data was captured.",
+      "description": "When this payload was captured (ISO 8601 timestamp string).",
       "type": "string"
     },
     "children": {
-      "description": "Reference strings the client can GET next to descend the tree.",
+      "description": "Child node reference strings the client can URL-encode and\nfetch via `GET /v1/{reference}`.",
       "items": {
         "type": "string"
       },
       "type": "array"
     },
     "identity": {
-      "description": "Canonical reference string for this node.",
+      "description": "Canonical node reference identifying this node.",
       "type": "string"
     },
     "parent": {

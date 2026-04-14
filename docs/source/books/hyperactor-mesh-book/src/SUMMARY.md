@@ -11,6 +11,7 @@
   - [Proc meshes & ProcAgent](meshes/proc-mesh-and-agent.md)
   - [Process-backed hosts: BootstrapProcManager](meshes/bootstrap-proc-manager.md)
   - [Error Handling & Recovery](meshes/mesh-supervision.md)
+  - [Mesh Introspection & Admin](meshes/mesh-introspection-and-admin.md)
   - [Appendix: `bootstrap_canonical_simple`](meshes/bootstrapping-appendix-canonical-test.md)
   - [Appendix: pytokio (Python/Rust async bridge)](meshes/pytokio-appendix.md)
 - [Logging](logging/index.md)

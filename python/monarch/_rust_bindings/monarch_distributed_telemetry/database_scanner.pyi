@@ -27,6 +27,11 @@ class DatabaseScanner:
     def schema_for(self, table: str) -> bytes:
         """Get schema for a table in Arrow IPC format."""
         ...
+    def store_pyspy_dump_py(
+        self, dump_id: str, proc_ref: str, pyspy_result_json: str
+    ) -> None:
+        """Store a py-spy dump result into the pyspy_stacks table."""
+        ...
     def scan(
         self,
         dest: object,

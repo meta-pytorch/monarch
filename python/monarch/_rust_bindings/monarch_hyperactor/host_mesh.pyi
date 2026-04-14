@@ -62,29 +62,6 @@ class HostMesh:
         """
         ...
 
-    def _spawn_admin(
-        self,
-        instance: Instance,
-        admin_addr: str | None = None,
-    ) -> PythonTask[str]:
-        """
-        Spawn a MeshAdminAgent on the head host's system proc and
-        return its HTTP URL (including scheme).
-
-        The admin agent aggregates topology across all hosts and
-        serves an HTTP API. When ``admin_addr`` is provided, the
-        server binds to that socket address; otherwise it reads
-        ``MESH_ADMIN_ADDR`` from config.
-
-        Arguments:
-
-        - `instance`: The actor instance used to spawn the admin
-            agent.
-        - `admin_addr`: Optional socket address (e.g. ``"[::]:1729"``).
-
-        """
-        ...
-
     def sliced(self, region: Region) -> "HostMesh":
         """
         Slice this mesh into a new mesh with the given region.
@@ -187,5 +164,27 @@ def shutdown_local_host_mesh() -> PythonTask[None]:
 
     Raises:
         RuntimeError: If no local host mesh exists (bootstrap_host not called)
+    """
+    ...
+
+def _spawn_admin(
+    host_meshes: list[HostMesh],
+    instance: Instance,
+    admin_addr: str | None = None,
+    telemetry_url: str | None = None,
+) -> PythonTask[str]:
+    """
+    Spawn a MeshAdminAgent aggregating topology across one or more meshes.
+
+    The admin runs on the caller's local proc and serves the mesh-admin
+    HTTP API. Returns the admin HTTP URL.
+
+    Arguments:
+    - `host_meshes`: One or more HostMeshes whose hosts the admin will
+      aggregate for introspection. Must not be empty.
+    - `instance`: The actor instance used to spawn the admin agent.
+    - `admin_addr`: Optional socket address (e.g. ``"[::]:1729"``).
+      When ``None``, reads ``MESH_ADMIN_ADDR`` from config.
+    - `telemetry_url`: Optional base URL of the Monarch telemetry dashboard.
     """
     ...

@@ -347,13 +347,14 @@ fn bench_mailbox_message_rates(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    bench_message_sizes,
+criterion_group! {
+    name = benches;
+    config = Criterion::default().without_plots();
+    targets = bench_message_sizes,
     bench_message_rates,
     bench_mailbox_message_sizes,
     bench_mailbox_message_rates,
     bench_channel_ping_pong,
-);
+}
 
 criterion_main!(benches);

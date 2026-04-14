@@ -1565,7 +1565,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         let mut relay_orders: Vec<usize> = (0..10000).collect();
-        relay_orders.shuffle(&mut rand::thread_rng());
+        relay_orders.shuffle(&mut rand::rng());
         assert_out_of_order_delivery(expected, relay_orders).await;
     }
 
@@ -1606,7 +1606,10 @@ mod tests {
             .unwrap();
         let payload = reply_rx.recv().await.unwrap();
 
-        assert_eq!(payload.identity, handle.actor_id().to_string());
+        assert_eq!(
+            payload.identity,
+            crate::introspect::IntrospectRef::Actor(handle.actor_id().clone())
+        );
         assert_valid_attrs(&payload);
         assert_has_attr(&payload, "status");
         assert_has_attr(&payload, "actor_type");
@@ -1779,7 +1782,12 @@ mod tests {
             .unwrap();
         let payload = reply_rx.recv().await.unwrap();
 
-        assert!(payload.identity.is_empty());
+        assert_eq!(
+            payload.identity,
+            crate::introspect::IntrospectRef::Actor(
+                test_proc_id("nonexistent").actor_id("child", 0)
+            )
+        );
         assert_error_code(&payload, "not_found");
 
         handle.drain_and_stop("test").unwrap();
@@ -1865,7 +1873,10 @@ mod tests {
             .unwrap();
         let child_payload = reply_rx.recv().await.unwrap();
 
-        assert_eq!(child_payload.identity, child_handle.actor_id().to_string(),);
+        assert_eq!(
+            child_payload.identity,
+            crate::introspect::IntrospectRef::Actor(child_handle.actor_id().clone()),
+        );
         // Verify it has actor attrs (status present).
         assert!(
             attrs_get(&child_payload.attrs, "status").is_some(),
@@ -1873,7 +1884,9 @@ mod tests {
         );
         assert_eq!(
             child_payload.parent,
-            Some(parent_handle.actor_id().to_string()),
+            Some(crate::introspect::IntrospectRef::Actor(
+                parent_handle.actor_id().clone()
+            )),
         );
 
         // Query the parent — children should include the child.
@@ -1893,7 +1906,9 @@ mod tests {
         assert!(
             parent_payload
                 .children
-                .contains(&child_handle.actor_id().to_string()),
+                .contains(&crate::introspect::IntrospectRef::Actor(
+                    child_handle.actor_id().clone()
+                )),
         );
 
         child_handle.drain_and_stop("test").unwrap();
@@ -2093,10 +2108,15 @@ mod tests {
         assert!(handle.cell().query_child(&test_ref).is_none());
 
         // Register a callback.
-        handle
-            .cell()
-            .set_query_child_handler(|child_ref| IntrospectResult {
-                identity: child_ref.to_string(),
+        handle.cell().set_query_child_handler(|child_ref| {
+            use crate::introspect::IntrospectRef;
+            let identity = match &child_ref {
+                reference::Reference::Proc(id) => IntrospectRef::Proc(id.clone()),
+                reference::Reference::Actor(id) => IntrospectRef::Actor(id.clone()),
+                reference::Reference::Port(id) => IntrospectRef::Actor(id.actor_id().clone()),
+            };
+            IntrospectResult {
+                identity,
                 attrs: serde_json::json!({
                     "proc_name": "test_proc",
                     "num_actors": 42,
@@ -2104,15 +2124,19 @@ mod tests {
                 .to_string(),
                 children: Vec::new(),
                 parent: None,
-                as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string(),
-            });
+                as_of: std::time::SystemTime::now(),
+            }
+        });
 
         // Now query_child returns the callback's response.
         let payload = handle
             .cell()
             .query_child(&test_ref)
             .expect("callback should produce a payload");
-        assert_eq!(payload.identity, test_ref.to_string());
+        assert_eq!(
+            payload.identity,
+            crate::introspect::IntrospectRef::Actor(test_proc_id("test").actor_id("child", 0))
+        );
         let attrs: serde_json::Value =
             serde_json::from_str(&payload.attrs).expect("attrs must be valid JSON");
         assert_eq!(
@@ -2279,7 +2303,10 @@ mod tests {
 
         // CI-1: introspectable_instance reports status "client"
         // and actor_type "()" (the unit type).
-        assert_eq!(payload.identity, actor_id.to_string());
+        assert_eq!(
+            payload.identity,
+            crate::introspect::IntrospectRef::Actor(actor_id.clone())
+        );
         assert_status(&payload, "client");
         let actor_type = attrs_get(&payload.attrs, "actor_type")
             .and_then(|v| v.as_str().map(String::from))
