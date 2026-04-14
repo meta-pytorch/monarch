@@ -93,7 +93,8 @@ async def test_failed_actor_has_failure_info() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        base = _to_loopback(await _spawn_admin([host], admin_addr="[::]:0"))
+        admin_url, _admin_ref = await _spawn_admin([host], admin_addr="[::]:0")
+        base = _to_loopback(admin_url)
 
         procs = host.spawn_procs(per_host={"replica": 2})
         workers = procs.spawn("worker", FailWorker)
@@ -168,7 +169,8 @@ async def test_healthy_procs_not_poisoned() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        base = _to_loopback(await _spawn_admin([host], admin_addr="[::]:0"))
+        admin_url, _admin_ref = await _spawn_admin([host], admin_addr="[::]:0")
+        base = _to_loopback(admin_url)
 
         procs = host.spawn_procs(per_host={"replica": 3})
         workers = procs.spawn("worker", FailWorker)

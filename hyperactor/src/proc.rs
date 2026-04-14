@@ -34,6 +34,22 @@
 //!   the name is unique proc-wide. Two children with the same name
 //!   under different parents get distinct pids but the same name
 //!   prefix.
+//!
+//! ## Queue depth accounting invariants (PD-5*)
+//!
+//! - **PD-5a:** Per-actor queue depth counts work items enqueued for
+//!   handler execution but not yet received from `work_rx`.
+//! - **PD-5b:** Queue depth is incremented exactly once on every
+//!   enqueue into the actor work queue (in `Ports::get`).
+//! - **PD-5c:** Queue depth is decremented exactly once on every
+//!   dequeue from `work_rx` (in the actor `run` loop).
+//! - **PD-5d:** Queue depth is intended to be non-negative; tests
+//!   must cover ordered/buffered delivery paths to validate the
+//!   accounting.
+//! - **PD-5e:** `queue_depth` and the OTel `ACTOR_MESSAGE_QUEUE_SIZE`
+//!   counter are two consumers of one accounting path. The
+//!   `account_enqueue` / `account_dequeue` helpers update both
+//!   together so they cannot drift.
 
 use std::any::Any;
 use std::any::TypeId;
@@ -121,6 +137,26 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+
+/// Single accounting path for actor work-queue depth. Two consumers:
+/// introspection-readable `queue_depth` state and OTel telemetry
+/// export. Unifying the update in one helper ensures they cannot
+/// drift (PD-5b/PD-5c).
+fn account_enqueue(queue_depth: &AtomicU64, actor_id: &str) {
+    queue_depth.fetch_add(1, Ordering::Relaxed);
+    ACTOR_MESSAGE_QUEUE_SIZE.add(
+        1,
+        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
+    );
+}
+
+fn account_dequeue(queue_depth: &AtomicU64, actor_id: &str) {
+    queue_depth.fetch_sub(1, Ordering::Relaxed);
+    ACTOR_MESSAGE_QUEUE_SIZE.add(
+        -1,
+        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
+    );
+}
 use crate::ordering::OrderedSender;
 use crate::ordering::OrderedSenderError;
 use crate::ordering::SEQ_INFO;
@@ -1230,7 +1266,12 @@ impl<A: Actor> Instance<A> {
             actor_id.to_string(),
             hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
         );
-        let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
+        let queue_depth = Arc::new(AtomicU64::new(0));
+        let ports: Arc<Ports<A>> = Arc::new(Ports::new(
+            mailbox.clone(),
+            work_tx,
+            Arc::clone(&queue_depth),
+        ));
         proc.state().proc_muxer.bind_mailbox(mailbox.clone());
         let (status_tx, status_rx) = watch::channel(ActorStatus::Created);
 
@@ -1270,6 +1311,7 @@ impl<A: Actor> Instance<A> {
             status_rx,
             parent,
             ports.clone(),
+            queue_depth,
         );
         let instance_id = Uuid::now_v7();
         let inner = Arc::new(InstanceState {
@@ -1824,14 +1866,14 @@ impl<A: Actor> Instance<A> {
             .map_err(|err| ActorError::new(self.self_id(), ActorErrorKind::init(err)))?;
         let need_drain;
         let stop_reason;
+        let actor_id_str = self.self_id().to_string();
         'messages: loop {
             self.change_status(ActorStatus::Idle);
-            let metric_pairs =
-                hyperactor_telemetry::kv_pairs!("actor_id" => self.self_id().to_string());
+            let metric_pairs = hyperactor_telemetry::kv_pairs!("actor_id" => actor_id_str.clone());
             tokio::select! {
                 work = work_rx.recv() => {
                     ACTOR_MESSAGES_RECEIVED.add(1, metric_pairs);
-                    ACTOR_MESSAGE_QUEUE_SIZE.add(-1, metric_pairs);
+                    account_dequeue(&self.inner.cell.inner.queue_depth, &actor_id_str);
                     let _ = ACTOR_MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
@@ -1881,6 +1923,8 @@ impl<A: Actor> Instance<A> {
         if need_drain {
             let mut n = 0;
             while let Ok(work) = work_rx.try_recv() {
+                // PD-5c: drained work items must also be accounted.
+                account_dequeue(&self.inner.cell.inner.queue_depth, &actor_id_str);
                 if let Err(err) = work.handle(actor, self).await {
                     return Err(ActorError::new(
                         self.self_id(),
@@ -2268,6 +2312,18 @@ struct InstanceCellState {
     /// Total time spent processing messages, in microseconds.
     total_processing_time_us: AtomicU64,
 
+    /// Current actor work-queue depth.
+    ///
+    /// Two consumers of one accounting path (PD-5e): this field is
+    /// the introspection-readable state; the OTel
+    /// `ACTOR_MESSAGE_QUEUE_SIZE` counter is the telemetry export.
+    /// Both are updated together by `account_enqueue` /
+    /// `account_dequeue`.
+    ///
+    /// Shared with `Ports<A>`: incremented at enqueue in the send
+    /// path, decremented when the actor loop receives from `work_rx`.
+    queue_depth: Arc<AtomicU64>,
+
     /// The log recording associated with this actor. It is used to
     /// store a 'flight record' of events while the actor is running.
     recording: Recording,
@@ -2382,6 +2438,7 @@ impl InstanceCell {
         status: watch::Receiver<ActorStatus>,
         parent: Option<InstanceCell>,
         ports: Arc<dyn Any + Send + Sync>,
+        queue_depth: Arc<AtomicU64>,
     ) -> Self {
         let _ais = actor_id.to_string();
         let cell = Self {
@@ -2399,6 +2456,7 @@ impl InstanceCell {
                 created_at: std::time::SystemTime::now(),
                 last_message_handler: RwLock::new(None),
                 total_processing_time_us: AtomicU64::new(0),
+                queue_depth,
                 recording: hyperactor_telemetry::recorder().record(64),
                 published_attrs: RwLock::new(None),
                 query_child_handler: RwLock::new(None),
@@ -2608,6 +2666,11 @@ impl InstanceCell {
         self.inner.total_processing_time_us.load(Ordering::SeqCst)
     }
 
+    /// Current actor work-queue depth (PD-5).
+    pub fn queue_depth(&self) -> u64 {
+        self.inner.queue_depth.load(Ordering::Relaxed)
+    }
+
     /// Get parent instance cell, if it exists.
     pub fn parent(&self) -> Option<InstanceCell> {
         self.inner.parent.upgrade()
@@ -2815,15 +2878,26 @@ pub struct Ports<A: Actor> {
     bound: DashMap<u64, &'static str>,
     mailbox: Mailbox,
     workq: OrderedSender<WorkCell<A>>,
+    /// Introspection-readable queue depth (PD-5). Shared leaf
+    /// state owned by both the send-side (`Ports`) and the
+    /// runtime-side (`InstanceCellState`) paths — no
+    /// cycle-breaking role. Updated via `account_enqueue` /
+    /// `account_dequeue` helpers alongside the OTel counter.
+    queue_depth: Arc<AtomicU64>,
 }
 
 impl<A: Actor> Ports<A> {
-    fn new(mailbox: Mailbox, workq: OrderedSender<WorkCell<A>>) -> Self {
+    fn new(
+        mailbox: Mailbox,
+        workq: OrderedSender<WorkCell<A>>,
+        queue_depth: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             ports: DashMap::new(),
             bound: DashMap::new(),
             mailbox,
             workq,
+            queue_depth,
         }
     }
 
@@ -2850,6 +2924,7 @@ impl<A: Actor> Ports<A> {
                 let type_info = TypeInfo::get_by_typeid(key);
                 let workq = self.workq.clone();
                 let actor_id = self.mailbox.actor_id().to_string();
+                let enqueue_depth = Arc::clone(&self.queue_depth);
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
                     let seq_info = headers.get(SEQ_INFO);
 
@@ -2863,11 +2938,11 @@ impl<A: Actor> Ports<A> {
                             }
                         })
                     });
-                    ACTOR_MESSAGE_QUEUE_SIZE.add(
-                        1,
-                        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.clone()),
-                    );
-                    if workq.enable_buffering {
+                    // PD-5b: account enqueue only after the work item
+                    // is successfully accepted by the work queue. This
+                    // prevents queue_depth from drifting on send failure
+                    // (channel closed, invalid seq, etc.).
+                    let result = if workq.enable_buffering {
                         match seq_info {
                             Some(SeqInfo::Session { session_id, seq }) => {
                                 // TODO: return the message contained in the error instead of dropping them when converting
@@ -2901,7 +2976,11 @@ impl<A: Actor> Ports<A> {
                         }
                     } else {
                         workq.direct_send(work).map_err(anyhow::Error::from)
+                    };
+                    if result.is_ok() {
+                        account_enqueue(&enqueue_depth, &actor_id);
                     }
+                    result
                 });
                 entry.insert(Box::new(port.clone()));
                 port
@@ -3439,7 +3518,11 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         #[derive(Debug)]
-        struct TestActor(Arc<AtomicBool>, bool);
+        struct TestActor {
+            handled: Arc<AtomicBool>,
+            notify: Arc<tokio::sync::Notify>,
+            should_handle: bool,
+        }
 
         #[async_trait]
         impl Actor for TestActor {
@@ -3448,7 +3531,7 @@ mod tests {
                 _this: &Instance<Self>,
                 _event: &ActorSupervisionEvent,
             ) -> Result<bool, anyhow::Error> {
-                if !self.1 {
+                if !self.should_handle {
                     return Ok(false);
                 }
 
@@ -3457,7 +3540,8 @@ mod tests {
                     _this.self_id(),
                     _event
                 );
-                self.0.store(true, Ordering::SeqCst);
+                self.handled.store(true, Ordering::SeqCst);
+                self.notify.notify_one();
                 Ok(true)
             }
         }
@@ -3474,49 +3558,52 @@ mod tests {
             }
         }
 
+        let make_actor = |handled: &Arc<AtomicBool>, should_handle: bool| TestActor {
+            handled: handled.clone(),
+            notify: Arc::new(tokio::sync::Notify::new()),
+            should_handle,
+        };
+
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
-        let (reported_event, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let root_state = Arc::new(AtomicBool::new(false));
         let root_1_state = Arc::new(AtomicBool::new(false));
+        let root_1_notify = Arc::new(tokio::sync::Notify::new());
         let root_1_1_state = Arc::new(AtomicBool::new(false));
         let root_1_1_1_state = Arc::new(AtomicBool::new(false));
         let root_2_state = Arc::new(AtomicBool::new(false));
         let root_2_1_state = Arc::new(AtomicBool::new(false));
 
         let root = proc
-            .spawn::<TestActor>("root", TestActor(root_state.clone(), false))
+            .spawn::<TestActor>("root", make_actor(&root_state, false))
             .unwrap();
         let root_1 = proc
             .spawn_child::<TestActor>(
                 root.cell().clone(),
-                TestActor(
-                    root_1_state.clone(),
-                    true, /* set true so children's event stops here */
-                ),
+                TestActor {
+                    handled: root_1_state.clone(),
+                    notify: root_1_notify.clone(),
+                    should_handle: true, // children's event stops here
+                },
             )
             .unwrap();
         let root_1_1 = proc
-            .spawn_child::<TestActor>(
-                root_1.cell().clone(),
-                TestActor(root_1_1_state.clone(), false),
-            )
+            .spawn_child::<TestActor>(root_1.cell().clone(), make_actor(&root_1_1_state, false))
             .unwrap();
         let root_1_1_1 = proc
             .spawn_child::<TestActor>(
                 root_1_1.cell().clone(),
-                TestActor(root_1_1_1_state.clone(), false),
+                make_actor(&root_1_1_1_state, false),
             )
             .unwrap();
         let root_2 = proc
-            .spawn_child::<TestActor>(root.cell().clone(), TestActor(root_2_state.clone(), false))
+            .spawn_child::<TestActor>(root.cell().clone(), make_actor(&root_2_state, false))
             .unwrap();
         let root_2_1 = proc
-            .spawn_child::<TestActor>(
-                root_2.cell().clone(),
-                TestActor(root_2_1_state.clone(), false),
-            )
+            .spawn_child::<TestActor>(root_2.cell().clone(), make_actor(&root_2_1_state, false))
             .unwrap();
 
         // fail `root_1_1_1`, the supervision msg should be propagated to
@@ -3527,11 +3614,20 @@ mod tests {
 
         // fail `root_2_1`, the supervision msg should be propagated to
         // ProcSupervisionCoordinator.
+        let root_2_1_id = root_2_1.actor_id().clone();
         root_2_1
             .send::<String>(&client, "some random failure".into())
             .unwrap();
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // Wait for root_1 to handle the supervision event from the
+        // root_1_1_1 -> root_1_1 -> root_1 chain. The Notify provides
+        // a deterministic signal — no polling or timing needed.
+        root_1_notify.notified().await;
+
+        // Wait for the supervision event from root_2_1's failure to
+        // reach the ProcSupervisionCoordinator.
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, root_2_1_id);
 
         assert!(!root_state.load(Ordering::SeqCst));
         assert!(root_1_state.load(Ordering::SeqCst));
@@ -3539,10 +3635,6 @@ mod tests {
         assert!(!root_1_1_1_state.load(Ordering::SeqCst));
         assert!(!root_2_state.load(Ordering::SeqCst));
         assert!(!root_2_1_state.load(Ordering::SeqCst));
-        assert_eq!(
-            reported_event.event().map(|e| e.actor_id.clone()),
-            Some(root_2_1.actor_id().clone())
-        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -4340,5 +4432,142 @@ mod tests {
                 .is_none(),
             "stopped actor must not have failure attrs"
         );
+    }
+
+    // ── PD-5: queue depth accounting ────────────────────────────
+
+    // PD-5b/PD-5c: queue depth increments on enqueue, decrements on
+    // dequeue, and returns to zero after the message is handled. This
+    // tests that the introspection-readable queue_depth is aligned
+    // with the existing OTel ACTOR_MESSAGE_QUEUE_SIZE accounting.
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_queue_depth_increment_decrement() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let handle = proc.spawn("qd_test", TestActor).unwrap();
+        let actor_ref: crate::reference::ActorRef<TestActor> = handle.bind();
+        let actor_id = actor_ref.actor_id().clone();
+
+        // Before any message: queue depth should be 0.
+        let cell = proc.get_instance(&actor_id).expect("actor exists");
+        assert_eq!(cell.queue_depth(), 0, "initial queue depth should be 0");
+
+        // Send a message that blocks until we signal it. This lets
+        // us observe queue depth > 0 while the actor is busy.
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let (gate_tx, gate_rx) = oneshot::channel::<()>();
+        handle.wait(&client, reply_tx, gate_rx).await.unwrap();
+
+        // Wait for the actor to start processing (it sends reply_tx).
+        reply_rx.await.unwrap();
+
+        // Now send a second message — it should be queued.
+        let (reply2_tx, reply2_rx) = oneshot::channel();
+        handle.reply(&client, reply2_tx).await.unwrap();
+
+        // Give the enqueue a moment to propagate.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Queue depth should be >= 1 (the Reply message is queued).
+        let depth = cell.queue_depth();
+        assert!(
+            depth >= 1,
+            "expected queue depth >= 1 while actor is busy, got {depth}"
+        );
+
+        // Unblock the first message.
+        let _ = gate_tx.send(());
+
+        // Wait for the second message to be handled.
+        reply2_rx.await.unwrap();
+
+        // Give the dequeue a moment to propagate.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Queue depth should return to 0.
+        let depth = cell.queue_depth();
+        assert_eq!(
+            depth, 0,
+            "queue depth should return to 0 after all messages handled"
+        );
+    }
+
+    // PD-4/PD-5: proc-level queue pressure aggregation reports
+    // non-zero under induced load. Queue depth is an instantaneous
+    // snapshot of currently queued work, not backlog history.
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_proc_queue_depth_aggregation_under_pressure() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Spawn two actors.
+        let h1 = proc.spawn("a1", TestActor).unwrap();
+        let h2 = proc.spawn("a2", TestActor).unwrap();
+
+        // Block both actors with a Wait message.
+        let (reply1, rx1) = oneshot::channel();
+        let (gate1, grx1) = oneshot::channel::<()>();
+        h1.wait(&client, reply1, grx1).await.unwrap();
+        rx1.await.unwrap();
+
+        let (reply2, rx2) = oneshot::channel();
+        let (gate2, grx2) = oneshot::channel::<()>();
+        h2.wait(&client, reply2, grx2).await.unwrap();
+        rx2.await.unwrap();
+
+        // Queue additional messages while actors are blocked.
+        h1.noop(&client).await.unwrap();
+        h1.noop(&client).await.unwrap();
+        h2.noop(&client).await.unwrap();
+
+        // Poll until aggregated queue depth reaches the expected
+        // level, with a bounded timeout to avoid flakes.
+        let aggregate = || -> (u64, u64) {
+            let mut total: u64 = 0;
+            let mut max: u64 = 0;
+            for actor_id in proc.all_instance_keys() {
+                if let Some(cell) = proc.get_instance(&actor_id) {
+                    let depth = cell.queue_depth();
+                    total = total.saturating_add(depth);
+                    max = max.max(depth);
+                }
+            }
+            (total, max)
+        };
+
+        // Same aggregation logic used by
+        // ProcAgent::publish_introspect_properties.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (total, max) = aggregate();
+            if total >= 3 {
+                assert!(max >= 1, "expected max >= 1, got {max}");
+                assert!(max <= total, "PD-1: max ({max}) <= total ({total})");
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for queue depth >= 3, got {total}",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // Unblock both actors.
+        let _ = gate1.send(());
+        let _ = gate2.send(());
+
+        // Poll until aggregated depth returns to 0.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (total, _) = aggregate();
+            if total == 0 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for queue depth to return to 0, got {total}",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 }

@@ -109,6 +109,7 @@ mod tests {
             addr: "127.0.0.1:1234".to_string(),
             num_procs: 1,
             system_children: vec![],
+            memory: Default::default(),
         };
         assert!(!is_stopped_node(&host));
 
@@ -120,6 +121,7 @@ mod tests {
             stopped_retention_cap: 0,
             is_poisoned: false,
             failed_actor_count: 0,
+            debug: Default::default(),
         };
         assert!(!is_stopped_node(&proc_props));
     }
@@ -161,6 +163,7 @@ mod tests {
             stopped_retention_cap: 0,
             is_poisoned: true,
             failed_actor_count: 1,
+            debug: Default::default(),
         };
         assert!(is_failed_node(&props));
     }
@@ -175,6 +178,7 @@ mod tests {
             stopped_retention_cap: 0,
             is_poisoned: false,
             failed_actor_count: 0,
+            debug: Default::default(),
         };
         assert!(!is_failed_node(&props));
     }
