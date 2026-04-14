@@ -3,17 +3,27 @@ name: Docs
 on:
   push:
     branches:
-      - main
+      - 'docs/**'
   pull_request:
+  # uncomment this to turn on scheduled deploys of nightly docs.
+  # for now, to secure the gh-pages branch, we require PRs to be accepted to
+  # make changes. So nightlies will have too much overhead of requiring accepts.
+  # schedule:
+  #   - cron: '17 8 * * *'  # Daily at ~8:17 AM UTC (nightly docs from main)
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Docs version to build and deploy (e.g. v0.4.0, nightly). If empty, builds dev docs without deploying."
+        required: false
+        default: ""
 
 concurrency:
   group: docs-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
-    name: Build and Deploy Documentation
+  build:
+    name: Build Documentation
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 120
@@ -23,6 +33,18 @@ jobs:
       submodules: recursive
       upload-artifact: docs
       script: |
+        # Detect docs version from workflow input, branch name, or event type
+        if [[ -n "${{ inputs.version }}" ]]; then
+            export DOCS_VERSION="${{ inputs.version }}"
+        elif [[ "$GITHUB_REF" == refs/heads/docs/* ]]; then
+            export DOCS_VERSION="${GITHUB_REF#refs/heads/docs/}"
+        elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+            export DOCS_VERSION="nightly"
+        else
+            export DOCS_VERSION="dev"
+        fi
+        echo "Building docs for version: $DOCS_VERSION"
+
         # Source common setup functions
         source scripts/common-setup.sh
 
@@ -75,27 +97,154 @@ jobs:
         cp -r docs/build/html ${RUNNER_ARTIFACT_DIR}/docs-html
 
   deploy:
-    needs: build-and-deploy
-    if: github.ref == 'refs/heads/main'
+    needs: build
+    if: inputs.version != '' || github.event_name == 'schedule' || startsWith(github.ref, 'refs/heads/docs/')
     permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      contents: write
     runs-on: ubuntu-latest
+    # Add an environment for permissions checks to push.
+    environment: github-pages
     steps:
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages
+          fetch-depth: 1
+        continue-on-error: true
+
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
           name: docs
-          path: .
+          path: artifact
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs-html
+      - name: Determine version
+        id: version
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+            VERSION="nightly"
+          else
+            VERSION="${GITHUB_REF#refs/heads/docs/}"
+          fi
+          # Skip deploy for pre-release versions (e.g. v0.4.0rc1, v1.0.0beta2)
+          if [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z] ]]; then
+            echo "::notice::Skipping deploy for pre-release version: $VERSION"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy versioned docs and update metadata
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          export VERSION="${{ steps.version.outputs.version }}"
+          export SITE_URL="https://meta-pytorch.org/monarch"
+
+          # Copy built docs into versioned subdirectory
+          rm -rf "gh-pages/${VERSION}"
+          cp -r artifact/docs-html "gh-pages/${VERSION}"
+
+          # Update versions.json
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import re
+
+          version = os.environ["VERSION"]
+          site_url = os.environ["SITE_URL"]
+          versions_path = "gh-pages/versions.json"
+
+          # Load existing versions or start fresh
+          if os.path.exists(versions_path):
+              with open(versions_path) as f:
+                  versions = json.load(f)
+          else:
+              versions = []
+
+          # Remove existing entry for this version
+          versions = [v for v in versions if v["version"] != version]
+
+          # Add new entry
+          versions.append({
+              "name": version,
+              "version": version,
+              "url": f"{site_url}/{version}/",
+          })
+
+          # Sort by semver descending (versions like v0.4.0)
+          def sort_key(v):
+              m = re.match(r"v?(\d+)\.(\d+)\.(\d+)(.*)", v["version"])
+              if m:
+                  major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                  # Stable releases (no suffix) sort above pre-releases
+                  is_stable = 1 if m.group(4) == "" else 0
+                  return (1, major, minor, patch, is_stable)
+              return (0, 0, 0, 0, 0)
+
+          versions.sort(key=sort_key, reverse=True)
+
+          def is_stable_release(v):
+              return bool(re.match(r"v?\d+\.\d+\.\d+$", v["version"]))
+
+          # Find the latest stable release (pre-releases are never "stable")
+          latest_stable_idx = next(
+              (i for i, v in enumerate(versions) if is_stable_release(v)),
+              None,
+          )
+
+          for i, v in enumerate(versions):
+              if i == latest_stable_idx:
+                  v["name"] = f"{v['version']} (stable)"
+                  v["preferred"] = True
+              elif v["version"] == "nightly":
+                  v["name"] = "nightly"
+                  v.pop("preferred", None)
+              else:
+                  v["name"] = v["version"]
+                  v.pop("preferred", None)
+
+          with open(versions_path, "w") as f:
+              json.dump(versions, f, indent=2)
+              f.write("\n")
+          PYEOF
+
+          # Generate root index.html redirect to latest stable version
+          LATEST=$(python3 -c "
+          import json, re
+          versions = json.load(open('gh-pages/versions.json'))
+          stable = [v for v in versions if re.match(r'v?\d+\.\d+\.\d+$', v['version'])]
+          print(stable[0]['version'] if stable else 'dev')
+          ")
+
+          cat > gh-pages/index.html <<HTMLEOF
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <meta charset="utf-8">
+              <title>Redirecting to Monarch docs</title>
+              <meta http-equiv="refresh" content="0; url=${LATEST}/">
+              <link rel="canonical" href="${SITE_URL}/${LATEST}/">
+          </head>
+          <body>
+              <p>Redirecting to <a href="${LATEST}/">Monarch ${LATEST} documentation</a>...</p>
+          </body>
+          </html>
+          HTMLEOF
+
+          # Add .nojekyll to prevent Jekyll processing
+          touch gh-pages/.nojekyll
+
+      - name: Push to gh-pages
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          cd gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "No changes to deploy" && exit 0
+          git commit -m "Deploy docs for ${{ steps.version.outputs.version }}"
+          git push origin gh-pages

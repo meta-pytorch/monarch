@@ -6,12 +6,22 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Introspection attr keys — mesh-topology concepts.
+//! Mesh-topology introspection types and attrs.
+//!
+//! This module owns the typed internal model used by mesh-admin and the
+//! TUI: mesh-topology attr keys, typed attrs views, `NodeRef`, and the
+//! domain `NodePayload` / `NodeProperties` / `FailureInfo` values derived
+//! from `hyperactor::introspect::IntrospectResult`.
 //!
 //! These keys are published by `HostMeshAgent`, `ProcAgent`, and
 //! `MeshAdminAgent` to describe mesh topology (hosts, procs, root).
-//! Actor-runtime keys (status, actor_type, messages_processed, etc.)
-//! are declared in `hyperactor::introspect`.
+//! Actor-runtime keys (status, actor_type, messages_processed, etc.) are
+//! declared in `hyperactor::introspect`.
+//!
+//! The HTTP wire representations live in [`dto`]. That submodule owns the
+//! curl-friendly JSON contract, schema/OpenAPI generation, and boundary
+//! invariants for string-encoded references and timestamps. This module
+//! keeps the internal typed invariants.
 //!
 //! See `hyperactor::introspect` for naming convention, invariant
 //! labels, and the `IntrospectAttr` meta-attribute pattern.
@@ -24,6 +34,24 @@
 //! - **MK-2 (short-name uniqueness):** Covered by
 //!   `test_introspect_short_names_are_globally_unique` in
 //!   `hyperactor::introspect` (cross-crate).
+//!
+//! ## HTTP boundary invariants (HB-*)
+//!
+//! These govern the HTTP DTO layer in [`dto`].
+//!
+//! - **HB-1 (typed-internal, string-external):** `NodeRef`, `ActorId`,
+//!   `ProcId`, and `SystemTime` are typed Rust values internally. At the
+//!   HTTP JSON boundary, [`dto::NodePayloadDto`],
+//!   [`dto::NodePropertiesDto`], and [`dto::FailureInfoDto`] encode them
+//!   as canonical strings.
+//! - **HB-2 (round-trip):** The HTTP string forms round-trip through the
+//!   internal typed parsers (`NodeRef::from_str`, `ActorId::from_str`,
+//!   `humantime::parse_rfc3339`). Timestamps are formatted at
+//!   millisecond precision; sub-millisecond values are truncated at
+//!   the boundary.
+//! - **HB-3 (schema-honesty):** Schema/OpenAPI are generated from the DTO
+//!   types, so the published schema reflects the actual wire format rather
+//!   than the internal domain representation.
 //!
 //! ## Attrs invariants (IA-*)
 //!
@@ -120,11 +148,24 @@
 //!   py-spy can segfault reading mutating process memory. All
 //!   attempts share a single deadline bounded by
 //!   `MESH_ADMIN_PYSPY_TIMEOUT` (PS-5).
-//! - **PS-11 (native-all fallback):** If `native_all` is requested
-//!   but the py-spy binary rejects `--native-all` (exit code 2,
-//!   stderr mentions the flag), `try_exec` drops the flag and
-//!   retries automatically. This handles version skew where deployed
-//!   py-spy predates `--native-all` support.
+//! - **PS-11a (native-all-immediate-downgrade):** If py-spy rejects
+//!   `--native-all` with the recognized unsupported-flag signature
+//!   (exit code 2, stderr mentions `--native-all`), `try_exec`
+//!   retries immediately with `native_all = false` in the same outer
+//!   attempt.
+//! - **PS-11b (native-all-no-retry-consumption):** That downgrade
+//!   retry does not consume an outer nonblocking retry slot (PS-10)
+//!   and does not incur the 100ms inter-attempt backoff.
+//! - **PS-11c (native-all-downgrade-warning):** A successful
+//!   downgraded result includes the warning `"--native-all
+//!   unsupported by this py-spy; fell back to --native"`.
+//! - **PS-11d (native-all-failure-passthrough):** If the downgraded
+//!   retry also fails, the failure flows through the normal
+//!   nonblocking retry logic (PS-10) unchanged.
+//! - **PS-11e (native-all-sticky-downgrade):** Once the
+//!   unsupported-flag signature is detected,
+//!   `effective_opts.native_all` remains `false` for all subsequent
+//!   outer retries. The flag is not re-tested on later attempts.
 //! - **PS-12 (universal py-spy):** Worker procs and the service
 //!   proc can handle `PySpyDump`. Worker procs handle it via
 //!   ProcAgent; the service proc handles it via HostAgent (same
@@ -171,6 +212,8 @@
 //!   budgets are read from config attrs at call-time, with defaults
 //!   in `config.rs`. No hardcoded timeout constants in
 //!   `mesh_admin.rs`.
+
+pub mod dto;
 
 use hyperactor_config::Attrs;
 use hyperactor_config::INTROSPECT;
@@ -219,14 +262,14 @@ declare_attrs! {
         name: "system_children".into(),
         desc: "References of system/infrastructure children".into(),
     })
-    pub attr SYSTEM_CHILDREN: Vec<String>;
+    pub attr SYSTEM_CHILDREN: Vec<NodeRef>;
 
     /// References of stopped children (proc only).
     @meta(INTROSPECT = IntrospectAttr {
         name: "stopped_children".into(),
         desc: "References of stopped children".into(),
     })
-    pub attr STOPPED_CHILDREN: Vec<String>;
+    pub attr STOPPED_CHILDREN: Vec<NodeRef>;
 
     /// Cap on stopped children retention.
     @meta(INTROSPECT = IntrospectAttr {
@@ -279,9 +322,9 @@ use hyperactor::introspect::AttrsViewError;
 #[derive(Debug, Clone, PartialEq)]
 pub struct RootAttrsView {
     pub num_hosts: usize,
-    pub started_at: std::time::SystemTime,
+    pub started_at: SystemTime,
     pub started_by: String,
-    pub system_children: Vec<String>,
+    pub system_children: Vec<NodeRef>,
 }
 
 impl RootAttrsView {
@@ -323,7 +366,7 @@ impl RootAttrsView {
 pub struct HostAttrsView {
     pub addr: String,
     pub num_procs: usize,
-    pub system_children: Vec<String>,
+    pub system_children: Vec<NodeRef>,
 }
 
 impl HostAttrsView {
@@ -360,8 +403,8 @@ impl HostAttrsView {
 pub struct ProcAttrsView {
     pub proc_name: String,
     pub num_actors: usize,
-    pub system_children: Vec<String>,
-    pub stopped_children: Vec<String>,
+    pub system_children: Vec<NodeRef>,
+    pub stopped_children: Vec<NodeRef>,
     pub stopped_retention_cap: usize,
     pub is_poisoned: bool,
     pub failed_actor_count: usize,
@@ -452,15 +495,91 @@ impl ErrorAttrsView {
 }
 
 // --- API / presentation types ---
-//
-// These types define the HTTP response shape for
-// GET /v1/{reference}. Derived from internal attrs at the
-// mesh boundary. Shared with the TUI.
 
-use schemars::JsonSchema;
+use std::fmt;
+use std::str::FromStr;
+use std::time::SystemTime;
+
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
+
+/// Typed reference to a node in the mesh-admin navigation tree.
+///
+/// Extends `IntrospectRef` with mesh-only concepts (`Root`, `Host`).
+/// hyperactor does not know about these variants.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+pub enum NodeRef {
+    /// Synthetic mesh root node.
+    /// Serializes as lowercase `"root"` to match the HTTP path convention.
+    #[serde(rename = "root")]
+    Root,
+    /// A host in the mesh, identified by its `HostAgent` actor ID.
+    Host(hyperactor::reference::ActorId),
+    /// A proc running on a host.
+    Proc(hyperactor::reference::ProcId),
+    /// An actor instance within a proc.
+    Actor(hyperactor::reference::ActorId),
+}
+
+hyperactor_config::impl_attrvalue!(NodeRef);
+
+impl fmt::Display for NodeRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Root => write!(f, "root"),
+            Self::Host(id) => write!(f, "host:{}", id),
+            Self::Proc(id) => fmt::Display::fmt(id, f),
+            Self::Actor(id) => fmt::Display::fmt(id, f),
+        }
+    }
+}
+
+/// Error parsing a `NodeRef` from a string.
+#[derive(Debug, thiserror::Error)]
+pub enum NodeRefParseError {
+    #[error("empty reference string")]
+    Empty,
+    #[error("invalid host reference: {0}")]
+    InvalidHost(hyperactor::reference::ReferenceParsingError),
+    #[error("port references are not valid node references")]
+    PortNotAllowed,
+    #[error(transparent)]
+    Reference(#[from] hyperactor::reference::ReferenceParsingError),
+}
+
+impl FromStr for NodeRef {
+    type Err = NodeRefParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err(NodeRefParseError::Empty);
+        }
+        if s == "root" {
+            return Ok(Self::Root);
+        }
+        if let Some(rest) = s.strip_prefix("host:") {
+            let actor_id: hyperactor::reference::ActorId =
+                rest.parse().map_err(NodeRefParseError::InvalidHost)?;
+            return Ok(Self::Host(actor_id));
+        }
+        let r: hyperactor::reference::Reference = s.parse()?;
+        match r {
+            hyperactor::reference::Reference::Proc(id) => Ok(Self::Proc(id)),
+            hyperactor::reference::Reference::Actor(id) => Ok(Self::Actor(id)),
+            hyperactor::reference::Reference::Port(_) => Err(NodeRefParseError::PortNotAllowed),
+        }
+    }
+}
+
+impl From<hyperactor::introspect::IntrospectRef> for NodeRef {
+    fn from(r: hyperactor::introspect::IntrospectRef) -> Self {
+        match r {
+            hyperactor::introspect::IntrospectRef::Proc(id) => Self::Proc(id),
+            hyperactor::introspect::IntrospectRef::Actor(id) => Self::Actor(id),
+        }
+    }
+}
 
 /// Uniform response for any node in the mesh topology.
 ///
@@ -469,44 +588,50 @@ use typeuri::Named;
 /// node and following its `children` references.
 ///
 /// See IA-1..IA-5 in module doc.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, JsonSchema)]
+// Serialize/Deserialize required by wirevalue::register_type! and
+// ResolveReferenceResponse actor messaging. HTTP serialization uses
+// dto::NodePayloadDto, not these derives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct NodePayload {
-    /// Canonical reference string for this node.
-    pub identity: String,
+    /// Canonical node reference identifying this node.
+    pub identity: NodeRef,
     /// Node-specific metadata (type, status, metrics, etc.).
     pub properties: NodeProperties,
-    /// Reference strings the client can GET next to descend the tree.
-    pub children: Vec<String>,
+    /// Child node references for downward navigation.
+    pub children: Vec<NodeRef>,
     /// Parent node reference for upward navigation.
-    pub parent: Option<String>,
-    /// ISO 8601 timestamp indicating when this data was captured.
-    pub as_of: String,
+    pub parent: Option<NodeRef>,
+    /// When this payload was captured.
+    pub as_of: SystemTime,
 }
 wirevalue::register_type!(NodePayload);
 
-/// Node-specific metadata. Externally-tagged enum — the JSON
-/// key is the variant name (Root, Host, Proc, Actor, Error).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, JsonSchema)]
+/// Node-specific metadata. Externally-tagged enum — the variant
+/// name is the discriminator (Root, Host, Proc, Actor, Error).
+// Serialize/Deserialize required by wirevalue::register_type! and
+// ResolveReferenceResponse actor messaging. HTTP serialization uses
+// dto::NodePropertiesDto, not these derives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub enum NodeProperties {
     /// Synthetic mesh root node (not a real actor/proc).
     Root {
         num_hosts: usize,
-        started_at: String,
+        started_at: SystemTime,
         started_by: String,
-        system_children: Vec<String>,
+        system_children: Vec<NodeRef>,
     },
     /// A host in the mesh, represented by its `HostAgent`.
     Host {
         addr: String,
         num_procs: usize,
-        system_children: Vec<String>,
+        system_children: Vec<NodeRef>,
     },
     /// Properties describing a proc running on a host.
     Proc {
         proc_name: String,
         num_actors: usize,
-        system_children: Vec<String>,
-        stopped_children: Vec<String>,
+        system_children: Vec<NodeRef>,
+        stopped_children: Vec<NodeRef>,
         stopped_retention_cap: usize,
         is_poisoned: bool,
         failed_actor_count: usize,
@@ -516,7 +641,7 @@ pub enum NodeProperties {
         actor_status: String,
         actor_type: String,
         messages_processed: u64,
-        created_at: String,
+        created_at: Option<SystemTime>,
         last_message_handler: Option<String>,
         total_processing_time_us: u64,
         flight_recorder: Option<String>,
@@ -529,12 +654,20 @@ pub enum NodeProperties {
 wirevalue::register_type!(NodeProperties);
 
 /// Structured failure information for failed actors.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, JsonSchema)]
+// Serialize/Deserialize required by wirevalue::register_type! and
+// ResolveReferenceResponse actor messaging. HTTP serialization uses
+// dto::FailureInfoDto, not these derives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct FailureInfo {
+    /// Error message describing the failure.
     pub error_message: String,
-    pub root_cause_actor: String,
+    /// Actor that caused the failure (root cause).
+    pub root_cause_actor: hyperactor::reference::ActorId,
+    /// Display name of the root-cause actor, if available.
     pub root_cause_name: Option<String>,
-    pub occurred_at: String,
+    /// When the failure occurred.
+    pub occurred_at: SystemTime,
+    /// Whether this failure was propagated from a child.
     pub is_propagated: bool,
 }
 wirevalue::register_type!(FailureInfo);
@@ -551,7 +684,7 @@ impl IntoNodeProperties for RootAttrsView {
     fn into_node_properties(self) -> NodeProperties {
         NodeProperties::Root {
             num_hosts: self.num_hosts,
-            started_at: humantime::format_rfc3339_millis(self.started_at).to_string(),
+            started_at: self.started_at,
             started_by: self.started_by,
             system_children: self.system_children,
         }
@@ -593,7 +726,6 @@ impl IntoNodeProperties for ErrorAttrsView {
 
 impl IntoNodeProperties for hyperactor::introspect::ActorAttrsView {
     fn into_node_properties(self) -> NodeProperties {
-        // Reconstruct the display status from status + status_reason.
         let actor_status = match &self.status_reason {
             Some(reason) => format!("{}: {}", self.status, reason),
             None => self.status.clone(),
@@ -603,7 +735,7 @@ impl IntoNodeProperties for hyperactor::introspect::ActorAttrsView {
             error_message: fi.error_message,
             root_cause_actor: fi.root_cause_actor,
             root_cause_name: fi.root_cause_name,
-            occurred_at: humantime::format_rfc3339_millis(fi.occurred_at).to_string(),
+            occurred_at: fi.occurred_at,
             is_propagated: fi.is_propagated,
         });
 
@@ -611,10 +743,7 @@ impl IntoNodeProperties for hyperactor::introspect::ActorAttrsView {
             actor_status,
             actor_type: self.actor_type,
             messages_processed: self.messages_processed,
-            created_at: self
-                .created_at
-                .map(|t| humantime::format_rfc3339_millis(t).to_string())
-                .unwrap_or_default(),
+            created_at: self.created_at,
             last_message_handler: self.last_handler,
             total_processing_time_us: self.total_processing_time_us,
             flight_recorder: self.flight_recorder,
@@ -705,16 +834,14 @@ pub fn derive_properties(attrs_json: &str) -> NodeProperties {
     }
 }
 
-/// Convert an internal `IntrospectResult` into an API-facing
-/// `NodePayload` by deriving `properties` from attrs.
-/// Convert an `IntrospectResult` to a presentation `NodePayload`
-/// with `properties` derived from attrs.
+/// Convert an `IntrospectResult` to a presentation `NodePayload`.
+/// Lifts `IntrospectRef` → `NodeRef` and passes through typed timestamps.
 pub fn to_node_payload(result: hyperactor::introspect::IntrospectResult) -> NodePayload {
     NodePayload {
-        identity: result.identity,
+        identity: result.identity.into(),
         properties: derive_properties(&result.attrs),
-        children: result.children,
-        parent: result.parent,
+        children: result.children.into_iter().map(NodeRef::from).collect(),
+        parent: result.parent.map(NodeRef::from),
         as_of: result.as_of,
     }
 }
@@ -723,13 +850,13 @@ pub fn to_node_payload(result: hyperactor::introspect::IntrospectResult) -> Node
 /// identity and parent for correct tree navigation.
 pub fn to_node_payload_with(
     result: hyperactor::introspect::IntrospectResult,
-    identity: String,
-    parent: Option<String>,
+    identity: NodeRef,
+    parent: Option<NodeRef>,
 ) -> NodePayload {
     NodePayload {
         identity,
         properties: derive_properties(&result.attrs),
-        children: result.children,
+        children: result.children.into_iter().map(NodeRef::from).collect(),
         parent,
         as_of: result.as_of,
     }
@@ -791,12 +918,20 @@ mod tests {
         );
     }
 
+    fn test_actor_ref(proc_name: &str, actor_name: &str, pid: usize) -> NodeRef {
+        use hyperactor::channel::ChannelAddr;
+        use hyperactor::reference::ProcId;
+        NodeRef::Actor(
+            ProcId::with_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name, pid),
+        )
+    }
+
     fn root_view() -> RootAttrsView {
         RootAttrsView {
             num_hosts: 3,
             started_at: std::time::UNIX_EPOCH,
             started_by: "testuser".into(),
-            system_children: vec!["child1".into()],
+            system_children: vec![test_actor_ref("proc", "child1", 0)],
         }
     }
 
@@ -804,7 +939,7 @@ mod tests {
         HostAttrsView {
             addr: "10.0.0.1:8080".into(),
             num_procs: 2,
-            system_children: vec!["sys".into()],
+            system_children: vec![test_actor_ref("proc", "sys", 0)],
         }
     }
 
@@ -813,7 +948,7 @@ mod tests {
             proc_name: "worker".into(),
             num_actors: 5,
             system_children: vec![],
-            stopped_children: vec!["old".into()],
+            stopped_children: vec![test_actor_ref("proc", "old", 0)],
             stopped_retention_cap: 10,
             is_poisoned: false,
             failed_actor_count: 0,
@@ -1098,7 +1233,7 @@ mod tests {
 
     #[test]
     fn test_node_payload_schema_snapshot() {
-        let schema = schemars::schema_for!(NodePayload);
+        let schema = schemars::schema_for!(dto::NodePayloadDto);
         let actual: serde_json::Value = serde_json::to_value(&schema).unwrap();
         let expected: serde_json::Value = strip_comment(
             serde_json::from_str(include_str!("testdata/node_payload_schema.json"))
@@ -1113,36 +1248,43 @@ mod tests {
     /// SC-3: real payloads validate against the generated schema.
     #[test]
     fn test_payloads_validate_against_schema() {
-        let schema = schemars::schema_for!(NodePayload);
+        use hyperactor::channel::ChannelAddr;
+        use hyperactor::reference::ProcId;
+
+        let schema = schemars::schema_for!(dto::NodePayloadDto);
         let schema_value = serde_json::to_value(&schema).unwrap();
         let compiled = jsonschema::JSONSchema::compile(&schema_value).expect("schema must compile");
 
+        let epoch = std::time::UNIX_EPOCH;
+        let proc_id = ProcId::with_name(ChannelAddr::Local(0), "worker");
+        let actor_id = proc_id.actor_id("actor", 0);
+
         let samples = [
             NodePayload {
-                identity: "root".into(),
+                identity: NodeRef::Root,
                 properties: NodeProperties::Root {
                     num_hosts: 2,
-                    started_at: "2024-01-01T00:00:00.000Z".into(),
+                    started_at: epoch,
                     started_by: "testuser".into(),
                     system_children: vec![],
                 },
-                children: vec!["host1".into()],
+                children: vec![NodeRef::Host(actor_id.clone())],
                 parent: None,
-                as_of: "2024-01-01T00:00:00.000Z".into(),
+                as_of: epoch,
             },
             NodePayload {
-                identity: "host1".into(),
+                identity: NodeRef::Host(actor_id.clone()),
                 properties: NodeProperties::Host {
                     addr: "10.0.0.1:8080".into(),
                     num_procs: 2,
-                    system_children: vec!["sys".into()],
+                    system_children: vec![test_actor_ref("proc", "sys", 0)],
                 },
-                children: vec!["proc1".into()],
-                parent: Some("root".into()),
-                as_of: "2024-01-01T00:00:00.000Z".into(),
+                children: vec![NodeRef::Proc(proc_id.clone())],
+                parent: Some(NodeRef::Root),
+                as_of: epoch,
             },
             NodePayload {
-                identity: "proc1".into(),
+                identity: NodeRef::Proc(proc_id.clone()),
                 properties: NodeProperties::Proc {
                     proc_name: "worker".into(),
                     num_actors: 5,
@@ -1152,17 +1294,17 @@ mod tests {
                     is_poisoned: false,
                     failed_actor_count: 0,
                 },
-                children: vec!["actor[0]".into()],
-                parent: Some("host1".into()),
-                as_of: "2024-01-01T00:00:00.000Z".into(),
+                children: vec![NodeRef::Actor(actor_id.clone())],
+                parent: Some(NodeRef::Host(actor_id.clone())),
+                as_of: epoch,
             },
             NodePayload {
-                identity: "actor[0]".into(),
+                identity: NodeRef::Actor(actor_id.clone()),
                 properties: NodeProperties::Actor {
                     actor_status: "running".into(),
                     actor_type: "MyActor".into(),
                     messages_processed: 42,
-                    created_at: "2024-01-01T00:00:00.000Z".into(),
+                    created_at: Some(epoch),
                     last_message_handler: Some("handle_ping".into()),
                     total_processing_time_us: 1000,
                     flight_recorder: None,
@@ -1170,23 +1312,24 @@ mod tests {
                     failure_info: None,
                 },
                 children: vec![],
-                parent: Some("proc1".into()),
-                as_of: "2024-01-01T00:00:00.000Z".into(),
+                parent: Some(NodeRef::Proc(proc_id.clone())),
+                as_of: epoch,
             },
             NodePayload {
-                identity: "err".into(),
+                identity: NodeRef::Actor(actor_id.clone()),
                 properties: NodeProperties::Error {
                     code: "not_found".into(),
                     message: "child not found".into(),
                 },
                 children: vec![],
                 parent: None,
-                as_of: "2024-01-01T00:00:00.000Z".into(),
+                as_of: epoch,
             },
         ];
 
         for (i, payload) in samples.iter().enumerate() {
-            let value = serde_json::to_value(payload).unwrap();
+            let dto = dto::NodePayloadDto::from(payload.clone());
+            let value = serde_json::to_value(&dto).unwrap();
             assert!(
                 compiled.is_valid(&value),
                 "sample {i} failed schema validation"
@@ -1200,7 +1343,7 @@ mod tests {
     #[test]
     fn test_served_schema_is_raw_plus_id() {
         let raw: serde_json::Value =
-            serde_json::to_value(schemars::schema_for!(NodePayload)).unwrap();
+            serde_json::to_value(schemars::schema_for!(dto::NodePayloadDto)).unwrap();
 
         // Simulate what the endpoint does.
         let mut served = raw.clone();
@@ -1229,6 +1372,23 @@ mod tests {
         assert_eq!(
             actual, expected,
             "error schema changed — review and update snapshot if intentional"
+        );
+    }
+
+    /// SC-2: AdminInfo schema matches checked-in snapshot.
+    #[test]
+    fn test_admin_info_schema_snapshot() {
+        use crate::mesh_admin::AdminInfo;
+
+        let schema = schemars::schema_for!(AdminInfo);
+        let actual: serde_json::Value = serde_json::to_value(&schema).unwrap();
+        let expected: serde_json::Value = strip_comment(
+            serde_json::from_str(include_str!("testdata/admin_info_schema.json"))
+                .expect("admin info snapshot must be valid JSON"),
+        );
+        assert_eq!(
+            actual, expected,
+            "AdminInfo schema changed — review and update snapshot if intentional"
         );
     }
 

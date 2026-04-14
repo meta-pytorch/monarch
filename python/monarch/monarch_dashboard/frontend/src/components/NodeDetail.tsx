@@ -48,8 +48,8 @@ export function NodeDetail({ node, onClose }: NodeDetailProps) {
           </div>
         </div>
 
-        {isActor && <ActorDetails actorId={node.entityId} />}
-        {!isActor && <MeshDetails meshId={node.entityId} />}
+        {isActor && <ActorDetails actorId={String(node.telemetryActorId ?? node.entityId)} />}
+        {!isActor && <MeshDetails meshId={String(node.entityId)} />}
       </div>
     </div>
   );

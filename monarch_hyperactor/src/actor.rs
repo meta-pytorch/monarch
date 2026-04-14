@@ -31,6 +31,7 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
+use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
@@ -42,6 +43,7 @@ use hyperactor_mesh::transport::default_bind_spec;
 use hyperactor_mesh::value_mesh::ValueOverlay;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
+use monarch_types::py_global;
 use ndslice::Point;
 use ndslice::extent;
 use pyo3::IntoPyObjectExt;
@@ -81,6 +83,12 @@ use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::supervision::PyMeshFailure;
+
+py_global!(
+    unhandled_fault_hook_exception,
+    "monarch._src.actor.supervision",
+    "UnhandledFaultHookException"
+);
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -191,7 +199,61 @@ pub struct PythonMessage {
     pub message: Part,
 }
 
-wirevalue::register_type!(PythonMessage);
+/// Extract the endpoint method name from a [`PythonMessage`].
+fn python_message_endpoint_name(msg: &PythonMessage) -> Option<String> {
+    match &msg.kind {
+        PythonMessageKind::CallMethod { name, .. }
+        | PythonMessageKind::CallMethodIndirect { name, .. } => Some(name.name().to_string()),
+        _ => None,
+    }
+}
+
+// We use manual `submit!` instead of `register_type!` because PythonMessage is a
+// struct, so the default `endpoint_name` (which delegates to `arm_unchecked`)
+// always returns None. The custom implementation inspects `PythonMessageKind` to
+// extract the method name. This registration handles direct (non-cast) dispatch.
+wirevalue::submit! {
+    wirevalue::TypeInfo {
+        typename: <PythonMessage as wirevalue::Named>::typename,
+        typehash: <PythonMessage as wirevalue::Named>::typehash,
+        typeid: <PythonMessage as wirevalue::Named>::typeid,
+        port: <PythonMessage as wirevalue::Named>::port,
+        dump: Some(<PythonMessage as wirevalue::NamedDumpable>::dump),
+        arm_unchecked: <PythonMessage as wirevalue::Named>::arm_unchecked,
+        endpoint_name: |ptr| {
+            // SAFETY: ptr points to a PythonMessage.
+            let msg = unsafe { &*(ptr as *const PythonMessage) };
+            python_message_endpoint_name(msg)
+        },
+    }
+}
+
+// Cast messages arrive as IndexedErasedUnbound<PythonMessage>, which wraps a
+// serialized PythonMessage. This type has no `register_type!` by default (it
+// shares ErasedUnbound's wire format), so we register it explicitly. The
+// endpoint_name deserializes the inner payload to read the method name. This
+// costs one extra deserialization per message, but the Part payload uses
+// zero-copy Bytes refcounting, and Python actor throughput is GIL-bounded,
+// so the serde overhead is negligible relative to Python-side processing.
+wirevalue::submit! {
+    wirevalue::TypeInfo {
+        typename: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typename,
+        typehash: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typehash,
+        typeid: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typeid,
+        port: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::port,
+        dump: None,
+        arm_unchecked: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::arm_unchecked,
+        endpoint_name: |ptr| {
+            // SAFETY: ptr points to an IndexedErasedUnbound<PythonMessage>.
+            let erased = unsafe { &*(ptr as *const IndexedErasedUnbound<PythonMessage>) };
+            erased
+                .inner_any()
+                .deserialized_unchecked::<PythonMessage>()
+                .ok()
+                .and_then(|msg| python_message_endpoint_name(&msg))
+        },
+    }
+}
 
 impl From<ValueOverlay<PythonResponseMessage>> for PythonMessage {
     fn from(overlay: ValueOverlay<PythonResponseMessage>) -> Self {
@@ -207,7 +269,7 @@ impl PythonMessage {
     ///
     /// Handles both already-collected responses and leaf `Result`/`Exception`
     /// messages by wrapping them in a single-run overlay.
-    pub(crate) fn into_overlay(self) -> anyhow::Result<ValueOverlay<PythonResponseMessage>> {
+    pub fn into_overlay(self) -> anyhow::Result<ValueOverlay<PythonResponseMessage>> {
         match self.kind {
             PythonMessageKind::AccumulatedResponses(overlay) => Ok(overlay.0),
             PythonMessageKind::Result { rank, .. } => {
@@ -632,11 +694,32 @@ impl PythonActor {
                     work = work_rx.recv() => {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut actor, instance).await {
+                            // Check for UnhandledFaultHookException on the raw
+                            // anyhow::Error before wrapping in ActorErrorKind.
+                            // If __supervise__ already processed the supervision
+                            // event and the hook raised, don't re-handle it via
+                            // handle_supervision_event — that would call
+                            // __supervise__ a second time.
+                            let is_hook_exception = monarch_with_gil(|py| {
+                                err.downcast_ref::<pyo3::PyErr>()
+                                    .is_some_and(|pyerr| {
+                                        pyerr.is_instance(
+                                            py,
+                                            &unhandled_fault_hook_exception(py),
+                                        )
+                                    })
+                            }).await;
+
                             let kind = ActorErrorKind::processing(err);
                             let err = ActorError {
                                 actor_id: Box::new(instance.self_id().clone()),
                                 kind: Box::new(kind),
                             };
+
+                            if is_hook_exception {
+                                break Some(err);
+                            }
+
                             // Give the actor a chance to handle the error produced
                             // in its own message handler. This is important because
                             // we want Undeliverable<MessageEnvelope>, which returns
@@ -728,6 +811,7 @@ impl PythonActor {
                 });
             } else {
                 tracing::info!(actor_id = %instance.self_id(), "client stopped");
+                instance.change_status(hyperactor::actor::ActorStatus::Stopped("client stopped".into()));
             }
         });
 
@@ -987,8 +1071,8 @@ impl Actor for PythonActor {
             &cx,
             MeshFailure {
                 actor_mesh_name: None,
-                rank: None,
                 event: event.clone(),
+                crashed_ranks: vec![],
             },
         )
         .await
@@ -1321,6 +1405,17 @@ impl Handler<MeshFailure> for PythonActor {
                     }
                 }
                 Err(err) => {
+                    // If __supervise__ raised UnhandledFaultHookException,
+                    // return the PyErr directly without wrapping in
+                    // ActorErrorKind. The custom run loop detects this by
+                    // downcasting the anyhow::Error to PyErr.
+                    if err.is_instance(
+                        py,
+                        &unhandled_fault_hook_exception(py),
+                    ) {
+                        return Err(err.into());
+                    }
+
                     // Any other exception will supersede in the propagation chain,
                     // and will become its own supervision failure.
                     // Include the event it was handling in the error message.

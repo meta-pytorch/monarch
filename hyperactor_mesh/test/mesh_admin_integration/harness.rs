@@ -27,14 +27,19 @@ use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use hyperactor_mesh::introspect::NodePayload;
+use hyperactor_mesh::introspect::dto::NodePayloadDto;
 use reqwest::Client;
 use reqwest::Response;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tempfile::TempDir;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Child;
 use tokio::process::Command;
+
+pub(crate) const QUERY_RETRY_ATTEMPTS: usize = 5;
+pub(crate) const QUERY_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 /// Classified service and worker proc references. See MIT-7
 /// (proc-classification).
@@ -84,6 +89,11 @@ impl WorkloadFixture {
         Ok(builder.build()?)
     }
 
+    /// The fixture's CA PEM, for building custom TLS clients.
+    pub(crate) fn ca_pem(&self) -> &[u8] {
+        &self.ca_pem
+    }
+
     /// GET a path relative to the admin URL.
     pub(crate) async fn get(&self, path: &str) -> Result<Response> {
         let url = format!("{}{}", self.admin_url, path);
@@ -121,6 +131,73 @@ impl WorkloadFixture {
             .with_context(|| format!("deserialize response from GET {url} (HTTP {status}): {body}"))
     }
 
+    /// GET a path and deserialize as `NodePayloadDto`, converting to
+    /// the domain `NodePayload`.
+    pub(crate) async fn get_node_payload(&self, path: &str) -> Result<NodePayload> {
+        let dto: NodePayloadDto = self.get_json(path).await?;
+        NodePayload::try_from(dto).context("DTO → NodePayload conversion")
+    }
+
+    /// POST a path with a JSON body relative to the admin URL.
+    pub(crate) async fn post(&self, path: &str, body: &impl Serialize) -> Result<Response> {
+        let url = format!("{}{}", self.admin_url, path);
+        let resp = self
+            .client
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        Ok(resp)
+    }
+
+    /// POST a path with a JSON body and deserialize the JSON response.
+    pub(crate) async fn post_json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T> {
+        let url = format!("{}{}", self.admin_url, path);
+        let resp = self
+            .client
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            bail!("POST {url}: HTTP {status}: {text}");
+        }
+        serde_json::from_str(&text).with_context(|| {
+            format!("deserialize response from POST {url} (HTTP {status}): {text}")
+        })
+    }
+
+    /// Retry `post_json` with fixed backoff. The DataFusion dashboard
+    /// backend can take longer to initialize in opt builds, so queries
+    /// issued right after the admin sentinel may time out.
+    pub(crate) async fn post_json_with_retry<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T> {
+        let mut last_err = None;
+        for attempt in 0..QUERY_RETRY_ATTEMPTS {
+            match self.post_json::<T>(path, body).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt + 1 < QUERY_RETRY_ATTEMPTS {
+                        tokio::time::sleep(QUERY_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("post_json_with_retry: no attempts made")))
+    }
+
     /// Walk root → hosts → procs → actors and classify service vs
     /// worker procs. MIT-7 (proc-classification).
     ///
@@ -131,7 +208,7 @@ impl WorkloadFixture {
         let mut worker = None;
 
         for _attempt in 1..=15 {
-            let root: NodePayload = match self.get_json("/v1/root").await {
+            let root: NodePayload = match self.get_node_payload("/v1/root").await {
                 Ok(r) => r,
                 Err(_) => {
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -140,33 +217,34 @@ impl WorkloadFixture {
             };
 
             for host_ref in &root.children {
-                let encoded = urlencoding::encode(host_ref);
-                let host: NodePayload = match self.get_json(&format!("/v1/{encoded}")).await {
+                let host_str = host_ref.to_string();
+                let encoded = urlencoding::encode(&host_str);
+                let host: NodePayload = match self.get_node_payload(&format!("/v1/{encoded}")).await
+                {
                     Ok(h) => h,
                     Err(_) => continue,
                 };
 
                 for proc_ref in &host.children {
-                    let encoded = urlencoding::encode(proc_ref);
+                    let proc_str = proc_ref.to_string();
+                    let encoded = urlencoding::encode(&proc_str);
                     let proc_node: NodePayload =
-                        match self.get_json(&format!("/v1/{encoded}")).await {
+                        match self.get_node_payload(&format!("/v1/{encoded}")).await {
                             Ok(p) => p,
                             Err(_) => continue,
                         };
 
-                    let actor_names: Vec<String> = proc_node
-                        .children
-                        .iter()
-                        .map(|r| {
-                            let name = r.rsplit(',').next().unwrap_or(r);
-                            name.split('[').next().unwrap_or(name).to_string()
+                    let has_actor = |name: &str| {
+                        proc_node.children.iter().any(|r| match r {
+                            hyperactor_mesh::introspect::NodeRef::Actor(id) => id.name() == name,
+                            _ => false,
                         })
-                        .collect();
+                    };
 
-                    if actor_names.iter().any(|n| n == "host_agent") {
-                        service = Some(proc_ref.clone());
-                    } else if actor_names.iter().any(|n| n == "proc_agent") && worker.is_none() {
-                        worker = Some(proc_ref.clone());
+                    if has_actor("host_agent") {
+                        service = Some(proc_str.clone());
+                    } else if has_actor("proc_agent") && worker.is_none() {
+                        worker = Some(proc_str.clone());
                     }
                 }
             }
@@ -224,6 +302,13 @@ pub(crate) fn pyspy_workload_binary() -> PathBuf {
         .to_path_buf()
 }
 
+/// Resolve the Rust sieve binary via Buck resources.
+pub(crate) fn sieve_rust_binary() -> PathBuf {
+    buck_resources::get("monarch/hyperactor_mesh/sieve_rs")
+        .expect("sieve_rust resource not found")
+        .to_path_buf()
+}
+
 // Workload launch
 
 /// Start a workload binary and wait for the mesh admin server to
@@ -250,6 +335,8 @@ pub(crate) async fn start_workload(
         .env("HYPERACTOR_TLS_KEY", &combined_path)
         .env("HYPERACTOR_TLS_CA", &ca_path)
         .env("HYPERACTOR_MESH_ADMIN_ADDR", "[::]:0")
+        .env("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE", "120s")
+        .env("HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE", "120s")
         .stdout(std::process::Stdio::piped());
 
     // Match the old shell tests: prefer an fbpkg-fetched py-spy and
@@ -341,10 +428,10 @@ fn install_pyspy() -> Result<(Option<PathBuf>, Option<TempDir>)> {
 // PKI generation
 
 /// Generated PEM material from ephemeral PKI. MIT-4 (ephemeral-pki).
-struct PkiMaterial {
-    ca_pem: Vec<u8>,
-    cert_pem: Vec<u8>,
-    key_pem: Vec<u8>,
+pub(crate) struct PkiMaterial {
+    pub(crate) ca_pem: Vec<u8>,
+    pub(crate) cert_pem: Vec<u8>,
+    pub(crate) key_pem: Vec<u8>,
 }
 
 /// Generate ephemeral CA + server cert with rcgen. MIT-4
@@ -353,7 +440,7 @@ struct PkiMaterial {
 /// Returns separate CA, cert, and key PEM buffers. Also writes ca.crt
 /// and combined.pem to the cert_dir (the combined file is what the
 /// workload process reads via HYPERACTOR_TLS_CERT/KEY).
-fn generate_pki(cert_dir: &Path) -> Result<PkiMaterial> {
+pub(crate) fn generate_pki(cert_dir: &Path) -> Result<PkiMaterial> {
     use rcgen::BasicConstraints;
     use rcgen::CertificateParams;
     use rcgen::DnType;
@@ -439,6 +526,28 @@ fn build_client(ca_pem: &[u8], cert_pem: &[u8], key_pem: &[u8]) -> Result<Client
     );
     if !ok {
         bail!("MIT-5: failed to configure TLS on reqwest client");
+    }
+    Ok(builder.build()?)
+}
+
+/// Build a client with explicit trust root and optional client
+/// identity. Covers both "wrong client cert" (trust fixture CA,
+/// present foreign cert) and "wrong trust root" (trust foreign CA,
+/// present foreign cert).
+pub(crate) fn build_tls_client(
+    trusted_ca_pem: &[u8],
+    cert_pem: Option<&[u8]>,
+    key_pem: Option<&[u8]>,
+) -> Result<Client> {
+    let builder = Client::builder().timeout(Duration::from_secs(30));
+    let (builder, ok) = hyperactor_mesh::mesh_admin_client::add_tls(
+        builder,
+        trusted_ca_pem,
+        cert_pem.map(|b| b.to_vec()),
+        key_pem.map(|b| b.to_vec()),
+    );
+    if !ok {
+        bail!("failed to configure TLS on custom client");
     }
     Ok(builder.build()?)
 }
