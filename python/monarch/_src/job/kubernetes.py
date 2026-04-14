@@ -192,10 +192,10 @@ class KubernetesJob(JobTrait):
             kubeconfig: Path to a kubeconfig file for out-of-cluster configuration (default: None, use in-cluster config)
             attach_to: ZMQ-style address of a duplex endpoint for out-of-cluster
                 access (e.g. `"tcp://127.0.0.1:34000"`).
-                To expose one, use `run_all_worker_loop_forever(..., duplex_address="tcp://hostname:port")`
-                in one of the pods.
-                Then you can use `kubectl port-forward` to expose the pod's port to localhost.
-                Other alternatives are to expose the duplex address from the cluster.
+                To expose one, ensure at least one mesh pod runs
+                ``run_worker_loop_forever(..., duplex_address="tcp://hostname:port")``,
+                then use ``kubectl port-forward pod/<pod-name> <local>:<duplex_port>``
+                to forward the pod to localhost.
                 The user is responsible for ensuring the address is reachable.
                 Should only be used in out-of-cluster mode, where kubeconfig is provided.
         """

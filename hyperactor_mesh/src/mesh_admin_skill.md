@@ -69,10 +69,12 @@ failed), `note` (role), `phase` (AdminInfra or Mesh), and `outcome`
 
 ## Endpoints
 
-Most endpoints are read-only (`GET`). Two endpoints accept `POST`:
-`/v1/query` (SQL queries) and `/v1/pyspy_dump/{proc_reference}`
-(dump-and-store). All endpoints return `application/json` except
-`/SKILL.md` (`text/markdown`).
+Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
+`/v1/query` (SQL queries), `/v1/pyspy_dump/{proc_reference}`
+(dump-and-store), and `/v1/pyspy_profile_svg/{proc_reference}`
+(profile → SVG). All endpoints return `application/json` except
+`/SKILL.md` (`text/markdown`) and
+`/v1/pyspy_profile_svg/{proc_reference}` (`image/svg+xml`).
 
 - `GET {base}/v1/admin`
   Admin self-identification: returns `AdminInfo` with `actor_id`,
@@ -124,6 +126,32 @@ Most endpoints are read-only (`GET`). Two endpoints accept `POST`:
   returned.
 
   Timeout returns the standard `gateway_timeout` error envelope.
+
+- `POST {base}/v1/pyspy_profile_svg/{proc_reference}`
+  Profiles the process for a requested duration and returns an SVG
+  flamegraph. POST body is JSON `PySpyProfileOpts`:
+  `{"duration_s": 5, "rate_hz": 100, "native": true, "threads": false, "nonblocking": false}`
+
+  Returns `image/svg+xml` on success. Long-running — timeout scales
+  with `duration_s`. Max duration is configurable (default 300s).
+
+  Error responses:
+  - 400 — invalid `duration_s` or `rate_hz`
+  - 404 — proc not found or handler not reachable
+  - 503 — py-spy not available on target host
+  - 504 — py-spy record subprocess timed out
+
+  Agent note: `{encoded_proc_ref}` is the percent-encoded ProcId
+  string for the target process. If you save the
+  returned SVG on a remote host for browser viewing, tell the user
+  the remote file path, the serving port, the exact `ssh -L`
+  tunnel command, and the browser URL.
+
+  Example (adapt ports if already in use):
+  `curl {TLS} -X POST -H 'Content-Type: application/json' -d '{"duration_s":5,"rate_hz":100,"native":false,"threads":false,"nonblocking":false}' '{base}/v1/pyspy_profile_svg/{encoded_proc_ref}' -o /tmp/profile.svg`
+  `cd /tmp && python3 -m http.server 8888 --bind 127.0.0.1`
+  User tunnel: `ssh -L <local_port>:127.0.0.1:8888 {host}`
+  Browser: `http://localhost:<local_port>/profile.svg`
 
 - `GET {base}/v1/config/{proc_reference}`
   Returns the effective CONFIG-marked configuration entries from the

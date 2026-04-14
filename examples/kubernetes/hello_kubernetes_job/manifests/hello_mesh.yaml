@@ -44,6 +44,44 @@ roleRef:
   name: hello-controller
   apiGroup: rbac.authorization.k8s.io
 ---
+# Headless Service for mesh1.
+# The MonarchMesh operator may create this automatically; defining it
+# here ensures it exists for out-of-cluster port-forwarding
+# (kubectl port-forward svc/mesh1-svc 34000:34000).
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh1-svc
+  namespace: monarch-tests
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: monarch-worker
+    monarch.pytorch.org/mesh-name: mesh1
+  ports:
+    - name: monarch
+      port: 26600
+      targetPort: 26600
+    - name: duplex
+      port: 34000
+      targetPort: 34000
+---
+# Headless Service for mesh2.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh2-svc
+  namespace: monarch-tests
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: monarch-worker
+    monarch.pytorch.org/mesh-name: mesh2
+  ports:
+    - name: monarch
+      port: 26600
+      targetPort: 26600
+---
 apiVersion: monarch.pytorch.org/v1alpha1
 kind: MonarchMesh
 metadata:

@@ -21,12 +21,15 @@ from kubernetes.client import (
 )
 from kubernetes.client.rest import ApiException
 from monarch._src.job.kubernetes import (
+    _DEFAULT_DUPLEX_PORT,
     _DEFAULT_MONARCH_PORT,
     _MONARCHMESH_GROUP,
     _MONARCHMESH_PLURAL,
     _MONARCHMESH_VERSION,
+    _MonarchMeshPod,
     _WORKER_BOOTSTRAP_SCRIPT,
     ImageSpec,
+    KubeConfig,
     KubernetesJob,
 )
 
@@ -38,11 +41,14 @@ def _make_pod(
     ip: str = "10.0.0.1",
     rank_label: str = "apps.kubernetes.io/pod-index",
     monarch_port: int | None = None,
+    duplex_port: int | None = None,
 ) -> V1Pod:
     """Build a minimal V1Pod for testing."""
     env = []
     if monarch_port is not None:
         env.append(V1EnvVar(name="MONARCH_PORT", value=str(monarch_port)))
+    if duplex_port is not None:
+        env.append(V1EnvVar(name="MONARCH_DUPLEX_PORT", value=str(duplex_port)))
 
     conditions = []
     if ready:
@@ -584,7 +590,17 @@ class TestWaitForReadyPods(unittest.TestCase):
             pod_rank_label="apps.kubernetes.io/pod-index",
         )
 
-        self.assertEqual(result, [("10.0.0.1", 26600), ("10.0.0.2", 26600)])
+        self.assertEqual(
+            result,
+            [
+                _MonarchMeshPod(
+                    name="w-0", ip="10.0.0.1", port=26600, duplex_port=None
+                ),
+                _MonarchMeshPod(
+                    name="w-1", ip="10.0.0.2", port=26600, duplex_port=None
+                ),
+            ],
+        )
         mock_watch.stop.assert_called_once()
 
     @patch("monarch._src.job.kubernetes.watch.Watch")
@@ -615,7 +631,17 @@ class TestWaitForReadyPods(unittest.TestCase):
             pod_rank_label="apps.kubernetes.io/pod-index",
         )
 
-        self.assertEqual(result, [("10.0.0.1", 26600), ("10.0.0.2", 26600)])
+        self.assertEqual(
+            result,
+            [
+                _MonarchMeshPod(
+                    name="w-0", ip="10.0.0.1", port=26600, duplex_port=None
+                ),
+                _MonarchMeshPod(
+                    name="w-1", ip="10.0.0.2", port=26600, duplex_port=None
+                ),
+            ],
+        )
 
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
@@ -650,8 +676,10 @@ class TestWaitForReadyPods(unittest.TestCase):
         )
 
         # Rank 0 should be the replacement IP.
-        self.assertEqual(result[0], ("10.0.0.3", 26600))
-        self.assertEqual(result[1], ("10.0.0.2", 26600))
+        self.assertEqual(result[0].ip, "10.0.0.3")
+        self.assertEqual(result[0].port, 26600)
+        self.assertEqual(result[1].ip, "10.0.0.2")
+        self.assertEqual(result[1].port, 26600)
 
     @patch("monarch._src.job.kubernetes.watch.Watch")
     @patch("monarch._src.job.kubernetes.client.CoreV1Api")
@@ -728,7 +756,10 @@ class TestWaitForReadyPods(unittest.TestCase):
             pod_rank_label="apps.kubernetes.io/pod-index",
         )
 
-        self.assertEqual(result, [("10.0.0.1", 26600)])
+        self.assertEqual(
+            result,
+            [_MonarchMeshPod(name="w-0", ip="10.0.0.1", port=26600, duplex_port=None)],
+        )
 
     @patch(
         "monarch._src.job.kubernetes.config.load_incluster_config",
@@ -769,7 +800,10 @@ class TestWaitForReadyPods(unittest.TestCase):
             pod_rank_label="apps.kubernetes.io/pod-index",
         )
 
-        self.assertEqual(result, [("10.0.0.1", 9999)])
+        self.assertEqual(
+            result,
+            [_MonarchMeshPod(name="w-0", ip="10.0.0.1", port=9999, duplex_port=None)],
+        )
 
 
 class TestKill(unittest.TestCase):
@@ -926,6 +960,267 @@ class TestCanRun(unittest.TestCase):
         spec = self._make_job()
         spec.add_mesh("workers", num_replicas=1)
         self.assertFalse(job.can_run(spec))
+
+
+class TestPortForwardToPod(unittest.TestCase):
+    """Tests for KubernetesJob._port_forward_to_pod."""
+
+    @patch("monarch._src.job.kubernetes.configure")
+    def _make_job(self, mock_configure: MagicMock) -> KubernetesJob:
+        return KubernetesJob(
+            namespace="test-ns",
+            kubeconfig=KubeConfig.from_path("/tmp/kubeconfig"),
+        )
+
+    @patch("monarch._src.job.kubernetes.shutil.which", return_value=None)
+    def test_missing_kubectl_raises(self, mock_which: MagicMock) -> None:
+        job = self._make_job()
+        pod = _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600, duplex_port=34000)
+        with self.assertRaises(RuntimeError, msg="kubectl"):
+            job._port_forward_to_pod(pod)
+
+    def test_no_duplex_port_raises(self) -> None:
+        job = self._make_job()
+        pod = _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600, duplex_port=None)
+        with self.assertRaises(RuntimeError, msg="no duplex port"):
+            job._port_forward_to_pod(pod)
+
+    @patch("monarch._src.job.kubernetes.subprocess.Popen")
+    @patch("monarch._src.job.kubernetes.shutil.which", return_value="/usr/bin/kubectl")
+    def test_port_forward_uses_pod(
+        self, mock_which: MagicMock, mock_popen: MagicMock
+    ) -> None:
+        job = self._make_job()
+        pod = _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600, duplex_port=34000)
+
+        mock_process = MagicMock()
+        mock_process.stdout.readline.return_value = (
+            "Forwarding from 127.0.0.1:45678 -> 34000\n"
+        )
+        mock_popen.return_value = mock_process
+
+        result = job._port_forward_to_pod(pod)
+
+        self.assertEqual(result, "tcp://127.0.0.1:45678")
+        cmd = mock_popen.call_args[0][0]
+        self.assertIn("pod/mesh1-0", cmd)
+        self.assertIn(":34000", cmd)
+        self.assertIn("--namespace", cmd)
+        self.assertIn("test-ns", cmd)
+
+    @patch("monarch._src.job.kubernetes.subprocess.Popen")
+    @patch("monarch._src.job.kubernetes.shutil.which", return_value="/usr/bin/kubectl")
+    def test_port_forward_no_output_raises(
+        self, mock_which: MagicMock, mock_popen: MagicMock
+    ) -> None:
+        job = self._make_job()
+        pod = _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600, duplex_port=34000)
+
+        mock_process = MagicMock()
+        mock_process.stdout.readline.return_value = ""
+        mock_process.stderr.read.return_value = "connection refused"
+        mock_process.wait.return_value = 1
+        mock_popen.return_value = mock_process
+
+        with self.assertRaises(RuntimeError, msg="no output"):
+            job._port_forward_to_pod(pod)
+
+    @patch("monarch._src.job.kubernetes.subprocess.Popen")
+    @patch("monarch._src.job.kubernetes.shutil.which", return_value="/usr/bin/kubectl")
+    def test_port_forward_unparseable_output_raises(
+        self, mock_which: MagicMock, mock_popen: MagicMock
+    ) -> None:
+        job = self._make_job()
+        pod = _MonarchMeshPod(name="mesh1-0", ip="10.0.0.1", port=26600, duplex_port=34000)
+
+        mock_process = MagicMock()
+        mock_process.stdout.readline.return_value = "unexpected output\n"
+        mock_process.kill.return_value = None
+        mock_process.wait.return_value = 1
+        mock_popen.return_value = mock_process
+
+        with self.assertRaises(RuntimeError, msg="could not parse"):
+            job._port_forward_to_pod(pod)
+
+
+class TestStateOutOfCluster(unittest.TestCase):
+    """Tests for KubernetesJob._state in out-of-cluster mode.
+
+    Covers the hello_mesh (attach-only) and hello_provision (provisioned) flows.
+    """
+
+    @patch("monarch._src.job.kubernetes.configure")
+    def _make_job(
+        self,
+        mock_configure: MagicMock,
+        attach_to: str | None = None,
+    ) -> KubernetesJob:
+        return KubernetesJob(
+            namespace="monarch-tests",
+            kubeconfig=KubeConfig.from_path("/tmp/kubeconfig"),
+            attach_to=attach_to,
+        )
+
+    def _mock_watch_for_pods(
+        self,
+        mock_watch_cls: MagicMock,
+        pods_by_call: list[list[V1Pod]],
+    ) -> None:
+        """Set up mock watch to return different pod lists for successive calls."""
+        mock_watch = MagicMock()
+        mock_watch_cls.return_value = mock_watch
+        # Each call to stream returns the next set of pods
+        mock_watch.stream.side_effect = [
+            [{"type": "ADDED", "object": pod} for pod in pods] for pods in pods_by_call
+        ]
+
+    @patch("monarch._src.job.kubernetes.attach_to_workers")
+    @patch("monarch._src.job.kubernetes.context")
+    @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
+    @patch("monarch._src.job.kubernetes.watch.Watch")
+    @patch("monarch._src.job.kubernetes.client.CoreV1Api")
+    @patch("monarch._src.job.kubernetes.config.load_kube_config")
+    def test_hello_mesh_out_of_cluster_auto_forwards(
+        self,
+        mock_load_config: MagicMock,
+        mock_core_api: MagicMock,
+        mock_watch_cls: MagicMock,
+        mock_port_forward: MagicMock,
+        mock_context: MagicMock,
+        mock_attach: MagicMock,
+    ) -> None:
+        """hello_mesh flow: attach-only meshes with duplex port auto port-forward to a pod."""
+        job = self._make_job()
+        job.add_mesh("mesh1", 2)
+
+        self._mock_watch_for_pods(
+            mock_watch_cls,
+            [
+                [
+                    _make_pod("mesh1-0", 0, True, ip="10.0.0.1", duplex_port=34000),
+                    _make_pod("mesh1-1", 1, True, ip="10.0.0.2", duplex_port=34000),
+                ],
+            ],
+        )
+
+        mock_port_forward.return_value = "tcp://127.0.0.1:45678"
+        mock_attach.return_value = MagicMock()
+
+        job._state()
+
+        # Should port-forward to the first pod with a duplex port.
+        mock_port_forward.assert_called_once()
+        forwarded_pod = mock_port_forward.call_args[0][0]
+        self.assertEqual(forwarded_pod.name, "mesh1-0")
+        self.assertEqual(forwarded_pod.duplex_port, 34000)
+        mock_context.assert_called_once_with(attach_to="tcp://127.0.0.1:45678")
+
+    @patch("monarch._src.job.kubernetes.attach_to_workers")
+    @patch("monarch._src.job.kubernetes.context")
+    @patch("monarch._src.job.kubernetes.KubernetesJob._port_forward_to_pod")
+    @patch("monarch._src.job.kubernetes.watch.Watch")
+    @patch("monarch._src.job.kubernetes.client.CoreV1Api")
+    @patch("monarch._src.job.kubernetes.config.load_kube_config")
+    def test_hello_provision_out_of_cluster_auto_forwards(
+        self,
+        mock_load_config: MagicMock,
+        mock_core_api: MagicMock,
+        mock_watch_cls: MagicMock,
+        mock_port_forward: MagicMock,
+        mock_context: MagicMock,
+        mock_attach: MagicMock,
+    ) -> None:
+        """hello_provision flow: provisioned meshes auto-get duplex port and auto port-forward."""
+        job = self._make_job()
+        # Provisioned mesh — out-of-cluster mode auto-adds duplex port
+        job.add_mesh(
+            "mesh1", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
+        )
+
+        self._mock_watch_for_pods(
+            mock_watch_cls,
+            [
+                [
+                    _make_pod(
+                        "mesh1-0",
+                        0,
+                        True,
+                        ip="10.0.0.1",
+                        duplex_port=_DEFAULT_DUPLEX_PORT,
+                    ),
+                    _make_pod(
+                        "mesh1-1",
+                        1,
+                        True,
+                        ip="10.0.0.2",
+                        duplex_port=_DEFAULT_DUPLEX_PORT,
+                    ),
+                ],
+            ],
+        )
+
+        mock_port_forward.return_value = "tcp://127.0.0.1:55555"
+        mock_attach.return_value = MagicMock()
+
+        job._state()
+
+        mock_port_forward.assert_called_once()
+        forwarded_pod = mock_port_forward.call_args[0][0]
+        self.assertEqual(forwarded_pod.name, "mesh1-0")
+        self.assertEqual(forwarded_pod.duplex_port, _DEFAULT_DUPLEX_PORT)
+        mock_context.assert_called_once_with(attach_to="tcp://127.0.0.1:55555")
+
+    @patch("monarch._src.job.kubernetes.attach_to_workers")
+    @patch("monarch._src.job.kubernetes.context")
+    @patch("monarch._src.job.kubernetes.watch.Watch")
+    @patch("monarch._src.job.kubernetes.client.CoreV1Api")
+    @patch("monarch._src.job.kubernetes.config.load_kube_config")
+    def test_explicit_attach_to_skips_port_forward(
+        self,
+        mock_load_config: MagicMock,
+        mock_core_api: MagicMock,
+        mock_watch_cls: MagicMock,
+        mock_context: MagicMock,
+        mock_attach: MagicMock,
+    ) -> None:
+        """When --attach-to is provided, no automatic port-forward should happen."""
+        job = self._make_job(attach_to="tcp://127.0.0.1:34000")
+        job.add_mesh("mesh1", 1)
+
+        self._mock_watch_for_pods(
+            mock_watch_cls,
+            [
+                [_make_pod("mesh1-0", 0, True, ip="10.0.0.1")],
+            ],
+        )
+        mock_attach.return_value = MagicMock()
+
+        job._state()
+
+        mock_context.assert_called_once_with(attach_to="tcp://127.0.0.1:34000")
+
+    @patch("monarch._src.job.kubernetes.watch.Watch")
+    @patch("monarch._src.job.kubernetes.client.CoreV1Api")
+    @patch("monarch._src.job.kubernetes.config.load_kube_config")
+    def test_no_duplex_port_raises(
+        self,
+        mock_load_config: MagicMock,
+        mock_core_api: MagicMock,
+        mock_watch_cls: MagicMock,
+    ) -> None:
+        """Out-of-cluster with no duplex port and no attach_to should raise."""
+        job = self._make_job()
+        job.add_mesh("mesh1", 1)
+
+        self._mock_watch_for_pods(
+            mock_watch_cls,
+            [
+                [_make_pod("mesh1-0", 0, True, ip="10.0.0.1")],
+            ],
+        )
+
+        with self.assertRaises(RuntimeError, msg="duplex address"):
+            job._state()
 
 
 if __name__ == "__main__":

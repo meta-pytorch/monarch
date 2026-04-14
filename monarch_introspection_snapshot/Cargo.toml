@@ -13,21 +13,20 @@ path = "test/snapshot_integration_test.rs"
 
 [dependencies]
 anyhow = "1.0.102"
+async-trait = "0.1.86"
 datafusion = "52.4.0"
+hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 monarch_distributed_telemetry = { version = "0.0.0", path = "../monarch_distributed_telemetry" }
 monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
-tokio-util = { version = "0.7.18", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+typeuri = { version = "0.0.0", path = "../typeuri" }
 uuid = { version = "1.23.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
+wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
-async-trait = "0.1.86"
-hyperactor = { version = "0.0.0", path = "../hyperactor" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 tempfile = "3.27.0"
-typeuri = { version = "0.0.0", path = "../typeuri" }
-wirevalue = { version = "0.0.0", path = "../wirevalue" }
+tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }

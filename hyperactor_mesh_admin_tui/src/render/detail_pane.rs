@@ -39,6 +39,7 @@ use crate::format::format_system_time_iso;
 use crate::format::format_system_time_local;
 use crate::format::format_system_time_relative;
 use crate::format::format_system_time_uptime;
+use crate::format_bytes;
 use crate::theme::ColorScheme;
 use crate::theme::Labels;
 
@@ -104,15 +105,21 @@ pub(crate) fn render_node_detail(
             );
         }
         NodeProperties::Host {
-            addr, num_procs, ..
+            addr,
+            num_procs,
+            memory,
+            ..
         } => {
-            render_host_detail(frame, area, payload, addr, *num_procs, scheme, labels);
+            render_host_detail(
+                frame, area, payload, addr, *num_procs, memory, scheme, labels,
+            );
         }
         NodeProperties::Proc {
             proc_name,
             num_actors,
             is_poisoned,
             failed_actor_count,
+            debug,
             ..
         } => {
             render_proc_detail(
@@ -123,6 +130,7 @@ pub(crate) fn render_node_detail(
                 *num_actors,
                 *is_poisoned,
                 *failed_actor_count,
+                debug,
                 scheme,
                 labels,
             );
@@ -238,6 +246,7 @@ fn render_host_detail(
     payload: &NodePayload,
     addr: &str,
     num_procs: usize,
+    memory: &hyperactor_mesh::introspect::ProcessMemoryStats,
     scheme: &ColorScheme,
     l: &Labels,
 ) {
@@ -249,13 +258,27 @@ fn render_host_detail(
     let mut lines = vec![
         detail_line(l.address, addr, scheme),
         detail_line(l.procs, num_procs.to_string(), scheme),
-        detail_line(
-            l.data_as_of,
-            format_system_time_relative(&payload.as_of),
-            scheme,
-        ),
-        Line::default(),
     ];
+    lines.push(detail_line(
+        l.rss,
+        memory
+            .process_rss_bytes
+            .map_or_else(|| "N/A".to_string(), format_bytes),
+        scheme,
+    ));
+    lines.push(detail_line(
+        l.vm_size,
+        memory
+            .process_vm_size_bytes
+            .map_or_else(|| "N/A".to_string(), format_bytes),
+        scheme,
+    ));
+    lines.push(detail_line(
+        l.data_as_of,
+        format_system_time_relative(&payload.as_of),
+        scheme,
+    ));
+    lines.push(Line::default());
     for child in &payload.children {
         let child_str = child.to_string();
         let short = match child {
@@ -285,6 +308,7 @@ fn render_proc_detail(
     num_actors: usize,
     is_poisoned: bool,
     failed_actor_count: usize,
+    debug: &hyperactor_mesh::introspect::ProcDebugStats,
     scheme: &ColorScheme,
     l: &Labels,
 ) {
@@ -296,12 +320,38 @@ fn render_proc_detail(
     let mut lines = vec![
         detail_line(l.name, proc_name, scheme),
         detail_line(l.actors, num_actors.to_string(), scheme),
-        detail_line(
-            l.data_as_of,
-            format_system_time_relative(&payload.as_of),
-            scheme,
-        ),
     ];
+    // Hosting-process memory — always show so absence is explicit.
+    lines.push(detail_line(
+        l.rss,
+        debug
+            .memory
+            .process_rss_bytes
+            .map_or_else(|| "N/A".to_string(), format_bytes),
+        scheme,
+    ));
+    lines.push(detail_line(
+        l.vm_size,
+        debug
+            .memory
+            .process_vm_size_bytes
+            .map_or_else(|| "N/A".to_string(), format_bytes),
+        scheme,
+    ));
+    // Queue pressure — always show so absence of pressure is explicit.
+    lines.push(detail_line(
+        l.queue_depth,
+        format!(
+            "{} total, {} max",
+            debug.actor_work_queue_depth_total, debug.actor_work_queue_depth_max
+        ),
+        scheme,
+    ));
+    lines.push(detail_line(
+        l.data_as_of,
+        format_system_time_relative(&payload.as_of),
+        scheme,
+    ));
 
     if is_poisoned {
         lines.push(Line::from(vec![
@@ -699,4 +749,137 @@ fn render_overlay(
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     frame.render_widget(paragraph, content_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::SystemTime;
+
+    use hyperactor_mesh::introspect::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+    use crate::theme::LangName;
+
+    /// Render a detail pane into a test buffer and return the
+    /// rendered text as a single string for assertion.
+    fn render_detail_to_string(payload: &NodePayload) -> String {
+        let theme = crate::Theme::new(crate::ThemeName::Nord, LangName::En);
+        let backend = TestBackend::new(60, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_node_detail(frame, area, payload, &theme.scheme, &theme.labels);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    fn mock_host_ref() -> NodeRef {
+        use hyperactor::reference as hyperactor_reference;
+        let id_str = "unix:@test,world,host_agent[0]";
+        NodeRef::Host(hyperactor_reference::ActorId::from_str(id_str).unwrap())
+    }
+
+    fn mock_proc_ref() -> NodeRef {
+        use hyperactor::reference as hyperactor_reference;
+        let id_str = "unix:@test,worker";
+        NodeRef::Proc(hyperactor_reference::ProcId::from_str(id_str).unwrap())
+    }
+
+    use std::str::FromStr;
+
+    // PD-*: host detail shows memory stats when present.
+    #[test]
+    fn render_host_detail_shows_memory_stats() {
+        let payload = NodePayload {
+            identity: mock_host_ref(),
+            properties: NodeProperties::Host {
+                addr: "10.0.0.1:8080".to_string(),
+                num_procs: 3,
+                system_children: vec![],
+                memory: ProcessMemoryStats {
+                    process_rss_bytes: Some(512 * 1024 * 1024), // 512 MiB
+                    process_vm_size_bytes: Some(2 * 1024 * 1024 * 1024), // 2 GiB
+                },
+            },
+            children: vec![],
+            parent: Some(NodeRef::Root),
+            as_of: SystemTime::now(),
+        };
+        let text = render_detail_to_string(&payload);
+        assert!(text.contains("512.0 MiB"), "expected RSS in output: {text}");
+        assert!(
+            text.contains("2.0 GiB"),
+            "expected VM Size in output: {text}"
+        );
+    }
+
+    // PD-*: proc detail shows debug stats with non-default values.
+    #[test]
+    fn render_proc_detail_shows_debug_stats() {
+        let payload = NodePayload {
+            identity: mock_proc_ref(),
+            properties: NodeProperties::Proc {
+                proc_name: "worker".to_string(),
+                num_actors: 10,
+                system_children: vec![],
+                stopped_children: vec![],
+                stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
+                debug: ProcDebugStats {
+                    memory: ProcessMemoryStats {
+                        process_rss_bytes: Some(256 * 1024 * 1024),
+                        process_vm_size_bytes: Some(1024 * 1024 * 1024),
+                    },
+                    actor_work_queue_depth_total: 42,
+                    actor_work_queue_depth_max: 7,
+                },
+            },
+            children: vec![],
+            parent: None,
+            as_of: SystemTime::now(),
+        };
+        let text = render_detail_to_string(&payload);
+        assert!(text.contains("256.0 MiB"), "expected RSS: {text}");
+        assert!(text.contains("1.0 GiB"), "expected VM Size: {text}");
+        assert!(text.contains("42 total"), "expected queue total: {text}");
+        assert!(text.contains("7 max"), "expected queue max: {text}");
+    }
+
+    // PD-2: unavailable memory shows "N/A", not fake zeros.
+    #[test]
+    fn render_host_detail_shows_na_for_unavailable_memory() {
+        let payload = NodePayload {
+            identity: mock_host_ref(),
+            properties: NodeProperties::Host {
+                addr: "10.0.0.1:8080".to_string(),
+                num_procs: 1,
+                system_children: vec![],
+                memory: ProcessMemoryStats {
+                    process_rss_bytes: None,
+                    process_vm_size_bytes: None,
+                },
+            },
+            children: vec![],
+            parent: Some(NodeRef::Root),
+            as_of: SystemTime::now(),
+        };
+        let text = render_detail_to_string(&payload);
+        assert!(
+            text.contains("N/A"),
+            "expected N/A for unavailable memory: {text}"
+        );
+    }
 }
