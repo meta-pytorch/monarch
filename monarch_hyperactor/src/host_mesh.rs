@@ -25,6 +25,7 @@ use hyperactor_mesh::host_mesh::HostMeshRef;
 use hyperactor_mesh::host_mesh::host_agent::GetLocalProcClient;
 use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::host_mesh::host_agent::ShutdownHost;
+use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
 use hyperactor_mesh::proc_agent::GetProcClient;
 use hyperactor_mesh::proc_mesh::ProcRef;
 use hyperactor_mesh::shared_cell::SharedCell;
@@ -526,11 +527,27 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
     })
 }
 
-/// Spawn a MeshAdminAgent aggregating topology across one or more meshes.
-///
-/// The admin runs on the caller's local proc and serves the
-/// mesh-admin HTTP API. Returns the admin HTTP URL. When
-/// `admin_addr` is `None`, the bind address is read from
+/// Opaque capability token for `ActorRef<MeshAdminAgent>` across the
+/// Python boundary. No methods, no getters — Python never inspects
+/// this. It exists solely to transport the typed ref from
+/// `_spawn_admin` to `_start_periodic_snapshots`.
+#[pyclass(
+    name = "PyMeshAdminRef",
+    module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"
+)]
+#[derive(Clone)]
+pub struct PyMeshAdminRef(
+    hyperactor::reference::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent>,
+);
+
+impl PyMeshAdminRef {
+    pub fn actor_ref(
+        &self,
+    ) -> hyperactor::reference::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent> {
+        self.0.clone()
+    }
+}
+
 /// `MESH_ADMIN_ADDR` config.
 ///
 /// Python-facing wrapper around
@@ -560,10 +577,17 @@ fn _spawn_admin(
 
     let instance = instance.clone();
     PyPythonTask::new(async move {
-        let addr = host_mesh::spawn_admin(&mesh_refs, instance.deref(), admin_addr, telemetry_url)
+        let admin_ref =
+            host_mesh::spawn_admin(&mesh_refs, instance.deref(), admin_addr, telemetry_url)
+                .await
+                .map_err(|e| PyException::new_err(e.to_string()))?;
+        let admin_url = admin_ref
+            .get_admin_addr(instance.deref())
             .await
-            .map_err(|e| PyException::new_err(e.to_string()))?;
-        Ok(addr)
+            .map_err(|e| PyException::new_err(e.to_string()))?
+            .addr
+            .ok_or_else(|| PyException::new_err("mesh admin agent did not report an address"))?;
+        Ok((admin_url, PyMeshAdminRef(admin_ref)))
     })
 }
 
@@ -598,5 +622,6 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
     hyperactor_mod.add_class::<PyHostMesh>()?;
     hyperactor_mod.add_class::<PyBootstrapCommand>()?;
+    hyperactor_mod.add_class::<PyMeshAdminRef>()?;
     Ok(())
 }

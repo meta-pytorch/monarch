@@ -86,6 +86,10 @@
                 "addr": {
                   "type": "string"
                 },
+                "memory": {
+                  "$ref": "#/$defs/ProcessMemoryStats",
+                  "description": "Hosting-process memory stats."
+                },
                 "num_procs": {
                   "format": "uint",
                   "minimum": 0,
@@ -101,7 +105,8 @@
               "required": [
                 "addr",
                 "num_procs",
-                "system_children"
+                "system_children",
+                "memory"
               ],
               "type": "object"
             }
@@ -117,6 +122,10 @@
           "properties": {
             "Proc": {
               "properties": {
+                "debug": {
+                  "$ref": "#/$defs/ProcDebugStats",
+                  "description": "Runtime debug/operational stats."
+                },
                 "failed_actor_count": {
                   "format": "uint",
                   "minimum": 0,
@@ -158,7 +167,8 @@
                 "stopped_children",
                 "stopped_retention_cap",
                 "is_poisoned",
-                "failed_actor_count"
+                "failed_actor_count",
+                "debug"
               ],
               "type": "object"
             }
@@ -263,6 +273,57 @@
           "type": "object"
         }
       ]
+    },
+    "ProcDebugStats": {
+      "description": "Proc-level debug/operational stats (DTO mirror of\n`ProcDebugStats`).",
+      "properties": {
+        "actor_work_queue_depth_max": {
+          "description": "Max per-actor queue depth (live actors only).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "actor_work_queue_depth_total": {
+          "description": "Sum of per-actor queue depths (live actors only).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memory": {
+          "$ref": "#/$defs/ProcessMemoryStats",
+          "description": "Hosting-process memory."
+        }
+      },
+      "required": [
+        "memory",
+        "actor_work_queue_depth_total",
+        "actor_work_queue_depth_max"
+      ],
+      "type": "object"
+    },
+    "ProcessMemoryStats": {
+      "description": "Memory stats of the hosting OS process (DTO mirror of\n`ProcessMemoryStats`).",
+      "properties": {
+        "process_rss_bytes": {
+          "description": "RSS of the hosting OS process (bytes).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "process_vm_size_bytes": {
+          "description": "Virtual memory size of the hosting OS process (bytes).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

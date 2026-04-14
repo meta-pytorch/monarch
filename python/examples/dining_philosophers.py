@@ -159,10 +159,13 @@ async def async_main(
 ) -> None:
     job = ProcessJob({"hosts": 1})
     job.enable_admin()
-    if dashboard:
-        job.enable_telemetry(
-            TelemetryConfig(include_dashboard=True, dashboard_port=dashboard_port)
+    job.enable_telemetry(
+        TelemetryConfig(
+            include_dashboard=dashboard,
+            dashboard_port=dashboard_port,
+            snapshot_interval_secs=30.0,
         )
+    )
     state = job.state(cached_path=None)
     host = state.hosts
 

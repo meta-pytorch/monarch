@@ -61,6 +61,8 @@ use crate::Name;
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
 use crate::pyspy::PySpyDump;
+use crate::pyspy::PySpyProfile;
+use crate::pyspy::PySpyProfileWorker;
 use crate::pyspy::PySpyWorker;
 use crate::resource;
 
@@ -380,6 +382,7 @@ struct SelfCheck {}
         resource::WaitRankStatus { cast = true },
         RepublishIntrospect { cast = true },
         PySpyDump,
+        PySpyProfile,
         ConfigDump,
     ]
 )]
@@ -554,7 +557,7 @@ impl ProcAgent {
         attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
         attrs.set(
             crate::introspect::PROC_NAME,
-            self.proc.proc_id().to_string(),
+            self.proc.proc_id().name().to_string(),
         );
         attrs.set(crate::introspect::NUM_ACTORS, num_live);
         attrs.set(hyperactor::introspect::CHILDREN, children);
@@ -566,6 +569,27 @@ impl ProcAgent {
         );
         attrs.set(crate::introspect::IS_POISONED, failed_actor_count > 0);
         attrs.set(crate::introspect::FAILED_ACTOR_COUNT, failed_actor_count);
+
+        // PD-* proc debug stats intentionally join two signal classes:
+        // hosting-process memory for the OS process that owns this
+        // proc, and proc-local queue pressure aggregated over live
+        // actors only.
+        let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
+        memory.to_attrs(&mut attrs);
+
+        // PD-4: aggregate queue depth over live actors only.
+        let mut queue_total: u64 = 0;
+        let mut queue_max: u64 = 0;
+        for actor_id in self.proc.all_instance_keys() {
+            if let Some(cell) = self.proc.get_instance(&actor_id) {
+                let depth = cell.queue_depth();
+                queue_total = queue_total.saturating_add(depth);
+                queue_max = queue_max.max(depth);
+            }
+        }
+        attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL, queue_total);
+        attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX, queue_max);
+
         cx.instance().publish_attrs(attrs);
     }
 }
@@ -646,7 +670,7 @@ impl Actor for ProcAgent {
                     let num_live = children.len();
                     let mut attrs = hyperactor_config::Attrs::new();
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
-                    attrs.set(crate::introspect::PROC_NAME, proc_id.to_string());
+                    attrs.set(crate::introspect::PROC_NAME, proc_id.name().to_string());
                     attrs.set(crate::introspect::NUM_ACTORS, num_live);
                     attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
                     attrs.set(crate::introspect::STOPPED_CHILDREN, stopped_children);
@@ -656,6 +680,23 @@ impl Actor for ProcAgent {
                     );
                     attrs.set(crate::introspect::IS_POISONED, is_poisoned);
                     attrs.set(crate::introspect::FAILED_ACTOR_COUNT, failed_actor_count);
+
+                    // PD-*: include proc debug stats in QueryChild
+                    // to prevent resolution drift from the publish path.
+                    let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
+                    memory.to_attrs(&mut attrs);
+                    let mut queue_total: u64 = 0;
+                    let mut queue_max: u64 = 0;
+                    for aid in proc.all_instance_keys() {
+                        if let Some(cell) = proc.get_instance(&aid) {
+                            let depth = cell.queue_depth();
+                            queue_total = queue_total.saturating_add(depth);
+                            queue_max = queue_max.max(depth);
+                        }
+                    }
+                    attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL, queue_total);
+                    attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX, queue_max);
+
                     let attrs_json =
                         serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
 
@@ -926,6 +967,17 @@ impl Handler<PySpyDump> for ProcAgent {
         message: PySpyDump,
     ) -> Result<(), anyhow::Error> {
         PySpyWorker::spawn_and_forward(cx, message.opts, message.result)
+    }
+}
+
+#[async_trait]
+impl Handler<PySpyProfile> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: PySpyProfile,
+    ) -> Result<(), anyhow::Error> {
+        PySpyProfileWorker::spawn_and_forward(cx, message.request, message.result)
     }
 }
 
@@ -2011,5 +2063,148 @@ mod tests {
             "expected terminating status, got {:?}",
             state.status,
         );
+    }
+
+    // ── PD-4/PD-5: live proc-agent queue pressure test ────────
+
+    // A blocking actor for inducing queue pressure. Uses a shared
+    // Notify for the block/unblock protocol since actor messages
+    // must be Serialize + Clone.
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    #[hyperactor::export(handlers = [BlockMsg])]
+    struct BlockActor {
+        #[serde(skip)]
+        gate: Option<Arc<tokio::sync::Notify>>,
+    }
+    impl hyperactor::Actor for BlockActor {}
+
+    #[derive(
+        Debug,
+        Clone,
+        Serialize,
+        Deserialize,
+        Named,
+        hyperactor::Handler,
+        hyperactor::HandleClient
+    )]
+    enum BlockMsg {
+        /// Block until the shared Notify fires.
+        Block(),
+        /// No-op message to queue behind a blocked Block.
+        Noop(),
+    }
+    wirevalue::register_type!(BlockMsg);
+
+    #[async_trait::async_trait]
+    #[hyperactor::handle(BlockMsg)]
+    impl BlockMsgHandler for BlockActor {
+        async fn block(&mut self, _cx: &hyperactor::Context<Self>) -> Result<(), anyhow::Error> {
+            if let Some(gate) = &self.gate {
+                gate.notified().await;
+            }
+            Ok(())
+        }
+        async fn noop(&mut self, _cx: &hyperactor::Context<Self>) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+    }
+
+    // PD-4/PD-5: QueryChild(Proc) returns non-zero queue stats
+    // while actors are under induced pressure. This proves the
+    // live proc-agent introspection path carries the queue depth
+    // signal that the TUI depends on.
+    //
+    // Queue depth is an instantaneous snapshot at query time,
+    // not backlog history.
+    #[tokio::test]
+    async fn test_query_child_proc_queue_depth_under_pressure() {
+        use hyperactor::Proc;
+        use hyperactor::actor::ActorStatus;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::introspect::IntrospectMessage;
+        use hyperactor::introspect::IntrospectResult;
+        use hyperactor::reference as hyperactor_reference;
+
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "qd_proc".to_string()).unwrap();
+        let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
+
+        agent_handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        let client_proc =
+            Proc::direct(ChannelTransport::Unix.any(), "qd_client".to_string()).unwrap();
+        let (client, _client_handle) = client_proc.instance("client").unwrap();
+
+        // Spawn a blocking actor with a shared gate.
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let blocker = proc
+            .spawn(
+                "blocker",
+                BlockActor {
+                    gate: Some(Arc::clone(&gate)),
+                },
+            )
+            .unwrap();
+
+        // Block the actor and queue additional work behind it.
+        blocker.block(&client).await.unwrap();
+        // Give the actor time to enter the handler.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        blocker.noop(&client).await.unwrap();
+        blocker.noop(&client).await.unwrap();
+
+        // QueryChild(Proc) — same aggregation logic as mesh-admin
+        // resolution.
+        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let port =
+            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+
+        // Poll until queue stats are non-zero.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
+            port.send(
+                &client,
+                IntrospectMessage::QueryChild {
+                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+            let payload = tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx.recv())
+                .await
+                .expect("QueryChild timed out")
+                .expect("reply channel closed");
+
+            let attrs: hyperactor_config::Attrs =
+                serde_json::from_str(&payload.attrs).expect("valid attrs JSON");
+
+            let total = attrs
+                .get(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL)
+                .copied()
+                .unwrap_or(0);
+            let max = attrs
+                .get(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX)
+                .copied()
+                .unwrap_or(0);
+
+            if total > 0 {
+                assert!(max > 0, "max should be > 0 when total is {total}");
+                assert!(max <= total, "PD-1: max ({max}) <= total ({total})");
+                break;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for non-zero queue depth in QueryChild(Proc)",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // Unblock the actor.
+        gate.notify_one();
     }
 }
