@@ -856,6 +856,7 @@ pub enum WorkerMessage {
         /// Optional error reason if the exit is the result of an error, including
         /// - optional actor id to indicate the source of the error
         /// - error message or stacktrace
+        ///
         /// The worker process will be stopped if the error is provided.
         error: Option<(Option<reference::ActorId>, String)>,
     },

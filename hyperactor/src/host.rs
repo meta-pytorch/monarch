@@ -117,8 +117,8 @@ pub enum HostError {
     ProcExists(String),
 
     /// Failures occuring while spawning a subprocess.
-    #[error("proc '{0}' failed to spawn process: {1}")]
-    ProcessSpawnFailure(reference::ProcId, #[source] std::io::Error),
+    #[error("proc '{0}' (command: {1}) failed to spawn process: {2}")]
+    ProcessSpawnFailure(reference::ProcId, String, #[source] std::io::Error),
 
     /// Failures occuring while configuring a subprocess.
     #[error("proc '{0}' failed to configure process: {1}")]
@@ -1311,9 +1311,9 @@ where
         // Kill the child when its handle is dropped.
         cmd.kill_on_drop(true);
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| HostError::ProcessSpawnFailure(proc_id.clone(), e))?;
+        let child = cmd.spawn().map_err(|e| {
+            HostError::ProcessSpawnFailure(proc_id.clone(), self.program.display().to_string(), e)
+        })?;
 
         // Retain the handle so it lives for the life of the
         // manager/host.
