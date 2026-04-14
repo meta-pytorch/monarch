@@ -6,9 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! py-spy integration for remote Python stack dumps.
+//! py-spy integration for remote Python stack dumps and profiles.
 //!
-//! See PS-* invariants in `introspect` module doc.
+//! See PS-* and PP-* invariants in `introspect` module doc.
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -135,6 +135,297 @@ pub struct PySpyOpts {
     pub nonblocking: bool,
 }
 
+/// Public JSON-facing options for a py-spy profile capture.
+///
+/// Deserialized from the HTTP POST body. Validated and converted to
+/// `ValidatedProfileRequest` before any actor messaging.
+///
+/// See PP-1 in `introspect` module doc.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PySpyProfileOpts {
+    /// Sampling duration in whole seconds. py-spy `--duration`
+    /// accepts integers only. Must be >= 1; upper bound enforced
+    /// at runtime by `MESH_ADMIN_PYSPY_MAX_PROFILE_DURATION`.
+    #[schemars(range(min = 1))]
+    pub duration_s: u32,
+    /// Sampling rate in Hz. Must be 1..=1000.
+    #[schemars(range(min = 1, max = 1000))]
+    pub rate_hz: u32,
+    /// Include native C/C++ frames.
+    pub native: bool,
+    /// Include per-thread stacks.
+    pub threads: bool,
+    /// Use nonblocking mode.
+    pub nonblocking: bool,
+}
+
+/// Validated profile duration. Guaranteed non-zero.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct ProfileDurationSecs(std::num::NonZeroU32);
+
+impl ProfileDurationSecs {
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+/// Validated sample rate. Guaranteed 1..=1000.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct SampleRateHz(std::num::NonZeroU32);
+
+impl SampleRateHz {
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+/// Validated profile request. If this exists, it is valid.
+/// Construct only via `try_new`. See PP-1, PP-2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ValidatedProfileRequest {
+    /// Sampling duration (guaranteed non-zero, within max).
+    duration: ProfileDurationSecs,
+    /// Sampling rate (guaranteed 1..=1000).
+    rate: SampleRateHz,
+    /// Include native C/C++ frames.
+    native: bool,
+    /// Include per-thread stacks.
+    threads: bool,
+    /// Use nonblocking mode.
+    nonblocking: bool,
+    /// Kill deadline for the py-spy subprocess.
+    subprocess_timeout: std::time::Duration,
+    /// Bridge reply wait deadline (subprocess + margin).
+    bridge_timeout: std::time::Duration,
+}
+
+impl ValidatedProfileRequest {
+    pub fn duration(&self) -> ProfileDurationSecs {
+        self.duration
+    }
+    pub fn rate(&self) -> SampleRateHz {
+        self.rate
+    }
+    pub fn native(&self) -> bool {
+        self.native
+    }
+    pub fn threads(&self) -> bool {
+        self.threads
+    }
+    pub fn nonblocking(&self) -> bool {
+        self.nonblocking
+    }
+    pub fn subprocess_timeout(&self) -> std::time::Duration {
+        self.subprocess_timeout
+    }
+    pub fn bridge_timeout(&self) -> std::time::Duration {
+        self.bridge_timeout
+    }
+
+    pub fn try_new(
+        opts: &PySpyProfileOpts,
+        max_duration: std::time::Duration,
+    ) -> Result<Self, String> {
+        let duration = std::num::NonZeroU32::new(opts.duration_s)
+            .map(ProfileDurationSecs)
+            .ok_or_else(|| "duration_s must be positive".to_string())?;
+        if std::time::Duration::from_secs(u64::from(duration.get())) > max_duration {
+            return Err(format!(
+                "duration_s {}s exceeds max {}s",
+                duration.get(),
+                max_duration.as_secs()
+            ));
+        }
+        let rate = std::num::NonZeroU32::new(opts.rate_hz)
+            .filter(|n| n.get() <= 1000)
+            .map(SampleRateHz)
+            .ok_or_else(|| format!("rate_hz must be 1..=1000, got {}", opts.rate_hz))?;
+        let subprocess_timeout = std::time::Duration::from_secs(u64::from(duration.get()) + 15);
+        let bridge_timeout = subprocess_timeout + std::time::Duration::from_secs(5);
+        Ok(Self {
+            duration,
+            rate,
+            native: opts.native,
+            threads: opts.threads,
+            nonblocking: opts.nonblocking,
+            subprocess_timeout,
+            bridge_timeout,
+        })
+    }
+}
+
+/// Wire result of a py-spy profile capture. The HTTP handler
+/// unwraps this to produce `image/svg+xml` or `ApiError`.
+/// Not a public JSON contract. See PP-2, PP-3.
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+pub enum PySpyProfileResult {
+    Ok {
+        pid: u32,
+        binary: String,
+        svg: Vec<u8>,
+    },
+    BinaryNotFound {
+        searched: Vec<String>,
+    },
+    TimedOut {
+        pid: u32,
+        binary: String,
+        timeout_s: u64,
+        stderr: String,
+    },
+    ExitFailure {
+        pid: u32,
+        binary: String,
+        exit_code: Option<i32>,
+        stderr: String,
+    },
+    OutputMissing {
+        pid: u32,
+        binary: String,
+    },
+    OutputEmpty {
+        pid: u32,
+        binary: String,
+    },
+    OutputReadFailure {
+        pid: u32,
+        binary: String,
+        error: String,
+    },
+    WorkerSpawnFailure {
+        error: String,
+    },
+    SubprocessSpawnFailure {
+        pid: u32,
+        binary: String,
+        error: String,
+    },
+    WaitFailure {
+        pid: u32,
+        binary: String,
+        error: String,
+    },
+    TempDirFailure {
+        pid: u32,
+        binary: String,
+        error: String,
+    },
+}
+wirevalue::register_type!(PySpyProfileResult);
+
+/// Internal profile execution outcome. Converted to
+/// `PySpyProfileResult` at the actor reply boundary.
+#[derive(Debug)]
+pub(crate) enum ProfileExecOutcome {
+    Ok {
+        pid: u32,
+        binary: String,
+        svg: Vec<u8>,
+    },
+    BinaryNotFound {
+        searched: Vec<String>,
+    },
+    TimedOut {
+        pid: u32,
+        binary: String,
+        timeout: std::time::Duration,
+        stderr: String,
+    },
+    ExitFailure {
+        pid: u32,
+        binary: String,
+        exit_code: Option<i32>,
+        stderr: String,
+    },
+    OutputMissing {
+        pid: u32,
+        binary: String,
+    },
+    OutputEmpty {
+        pid: u32,
+        binary: String,
+    },
+    OutputReadFailure {
+        pid: u32,
+        binary: String,
+        error: String,
+    },
+    WorkerSpawnFailure {
+        error: String,
+    },
+    SubprocessSpawnFailure {
+        pid: u32,
+        binary: String,
+        error: String,
+    },
+    WaitFailure {
+        pid: u32,
+        binary: String,
+        error: String,
+    },
+    TempDirFailure {
+        pid: u32,
+        binary: String,
+        error: String,
+    },
+}
+
+impl From<ProfileExecOutcome> for PySpyProfileResult {
+    fn from(outcome: ProfileExecOutcome) -> Self {
+        match outcome {
+            ProfileExecOutcome::Ok { pid, binary, svg } => {
+                PySpyProfileResult::Ok { pid, binary, svg }
+            }
+            ProfileExecOutcome::BinaryNotFound { searched } => {
+                PySpyProfileResult::BinaryNotFound { searched }
+            }
+            ProfileExecOutcome::TimedOut {
+                pid,
+                binary,
+                timeout,
+                stderr,
+            } => PySpyProfileResult::TimedOut {
+                pid,
+                binary,
+                timeout_s: timeout.as_secs(),
+                stderr,
+            },
+            ProfileExecOutcome::ExitFailure {
+                pid,
+                binary,
+                exit_code,
+                stderr,
+            } => PySpyProfileResult::ExitFailure {
+                pid,
+                binary,
+                exit_code,
+                stderr,
+            },
+            ProfileExecOutcome::OutputMissing { pid, binary } => {
+                PySpyProfileResult::OutputMissing { pid, binary }
+            }
+            ProfileExecOutcome::OutputEmpty { pid, binary } => {
+                PySpyProfileResult::OutputEmpty { pid, binary }
+            }
+            ProfileExecOutcome::OutputReadFailure { pid, binary, error } => {
+                PySpyProfileResult::OutputReadFailure { pid, binary, error }
+            }
+            ProfileExecOutcome::WorkerSpawnFailure { error } => {
+                PySpyProfileResult::WorkerSpawnFailure { error }
+            }
+            ProfileExecOutcome::SubprocessSpawnFailure { pid, binary, error } => {
+                PySpyProfileResult::SubprocessSpawnFailure { pid, binary, error }
+            }
+            ProfileExecOutcome::WaitFailure { pid, binary, error } => {
+                PySpyProfileResult::WaitFailure { pid, binary, error }
+            }
+            ProfileExecOutcome::TempDirFailure { pid, binary, error } => {
+                PySpyProfileResult::TempDirFailure { pid, binary, error }
+            }
+        }
+    }
+}
+
 /// Request a py-spy stack dump from this process.
 ///
 /// Both ProcAgent and HostAgent handle this message. The handler
@@ -151,6 +442,23 @@ pub struct PySpyDump {
     pub result: hyperactor_reference::OncePortRef<PySpyResult>,
 }
 wirevalue::register_type!(PySpyDump);
+
+/// Request a py-spy profile capture from this process.
+///
+/// Runs `py-spy record` for the requested duration. Separate contract
+/// from `PySpyDump` — does not affect the existing dump pipeline.
+///
+/// See PP-4, PP-5 in `introspect` module doc.
+#[allow(private_interfaces)] // pub required by hyperactor macros; actual use is crate-internal
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct PySpyProfile {
+    /// Validated profile request (opts + derived timeouts).
+    pub request: ValidatedProfileRequest,
+    /// Reply port for the result.
+    #[reply]
+    pub result: hyperactor_reference::OncePortRef<PySpyProfileResult>,
+}
+wirevalue::register_type!(PySpyProfile);
 
 /// Runs py-spy against the current process.
 ///
@@ -192,6 +500,31 @@ impl PySpyRunner {
         }
 
         PySpyResult::BinaryNotFound { searched }
+    }
+
+    /// Profile Python stacks for this process over a duration.
+    /// See PP-3, PP-4.
+    pub(crate) async fn profile_self(
+        &self,
+        request: &ValidatedProfileRequest,
+    ) -> ProfileExecOutcome {
+        let pid = std::process::id();
+        let pyspy_bin: String = hyperactor_config::global::get_cloned(PYSPY_BIN);
+        let candidates = resolve_candidates(if pyspy_bin.is_empty() {
+            None
+        } else {
+            Some(pyspy_bin)
+        });
+        let mut searched = vec![];
+
+        for (binary, label) in &candidates {
+            searched.push(label.clone());
+            if let Some(result) = try_profile(binary, pid, request).await {
+                return result;
+            }
+        }
+
+        ProfileExecOutcome::BinaryNotFound { searched }
     }
 }
 
@@ -258,6 +591,73 @@ impl Handler<RunPySpyDump> for PySpyWorker {
         let result = PySpyRunner.dump_self(&message.opts).await;
         message.reply_port.send(cx, result)?;
         cx.stop("pyspy dump complete")?;
+        Ok(())
+    }
+}
+
+/// Internal forwarded message for profile capture.
+#[allow(private_interfaces)] // pub required by hyperactor macros; actual use is crate-internal
+#[derive(Debug, Serialize, Deserialize, Named)]
+pub struct RunPySpyProfile {
+    pub request: ValidatedProfileRequest,
+    pub reply_port: hyperactor::reference::OncePortRef<PySpyProfileResult>,
+}
+wirevalue::register_type!(RunPySpyProfile);
+
+/// Short-lived child actor for profile capture. Separate from
+/// `PySpyWorker` (PP-5).
+#[hyperactor::export(handlers = [RunPySpyProfile])]
+pub struct PySpyProfileWorker;
+
+impl Actor for PySpyProfileWorker {}
+
+impl PySpyProfileWorker {
+    /// Spawn a profile worker and forward the request. On spawn
+    /// failure, sends `WorkerSpawnFailure` back via `reply_port`.
+    pub(crate) fn spawn_and_forward(
+        cx: &impl hyperactor::context::Actor,
+        request: ValidatedProfileRequest,
+        reply_port: hyperactor::reference::OncePortRef<PySpyProfileResult>,
+    ) -> Result<(), anyhow::Error> {
+        let worker = match Self.spawn(cx) {
+            Ok(handle) => handle,
+            Err(e) => {
+                let fail = ProfileExecOutcome::WorkerSpawnFailure {
+                    error: e.to_string(),
+                };
+                reply_port.send(cx, PySpyProfileResult::from(fail))?;
+                return Ok(());
+            }
+        };
+        // Once reply_port moves into RunPySpyProfile, we lose it.
+        // MailboxSenderError does not carry the unsent message, so
+        // on send failure the caller observes a bridge timeout
+        // rather than a typed error. Same limitation as PySpyWorker.
+        if let Err(e) = worker.send(
+            cx,
+            RunPySpyProfile {
+                request,
+                reply_port,
+            },
+        ) {
+            tracing::error!("failed to send to profile worker: {}", e);
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<RunPySpyProfile> for PySpyProfileWorker {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: RunPySpyProfile,
+    ) -> Result<(), anyhow::Error> {
+        let outcome = PySpyRunner.profile_self(&message.request).await;
+        message
+            .reply_port
+            .send(cx, PySpyProfileResult::from(outcome))?;
+        cx.stop("pyspy profile complete")?;
         Ok(())
     }
 }
@@ -516,8 +916,170 @@ async fn collect_with_timeout(
     }
 }
 
+/// Build a `py-spy record --format flamegraph` command.
+fn build_record_command(
+    binary: &str,
+    pid: u32,
+    request: &ValidatedProfileRequest,
+    output_path: &std::path::Path,
+) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(binary);
+    cmd.arg("record")
+        .arg("--pid")
+        .arg(pid.to_string())
+        .arg("--duration")
+        .arg(request.duration().get().to_string())
+        .arg("--rate")
+        .arg(request.rate().get().to_string())
+        .arg("--format")
+        .arg("flamegraph")
+        .arg("--output")
+        .arg(output_path);
+    if request.native() {
+        cmd.arg("--native");
+    }
+    if request.threads() {
+        cmd.arg("--threads");
+    }
+    if request.nonblocking() {
+        cmd.arg("--nonblocking");
+    }
+    // py-spy record writes output to a file, not stdout. Do NOT
+    // pipe stdout — an undrained pipe can deadlock the child.
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd
+}
+
+/// Collect stderr and wait for exit, bounded by `timeout`. On
+/// expiry the child is explicitly killed and reaped. See PP-2, PP-3.
+async fn collect_profile_with_timeout(
+    mut child: tokio::process::Child,
+    pid: u32,
+    binary: &str,
+    timeout: std::time::Duration,
+) -> Result<(std::process::ExitStatus, String), ProfileExecOutcome> {
+    // Drain stderr on a separate task so it does not block the
+    // child.wait() path and so `child` stays in this scope for
+    // explicit kill/reap on timeout.
+    let stderr_handle = child.stderr.take();
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(mut r) = stderr_handle {
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut r, &mut buf).await;
+        }
+        buf
+    });
+
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => {
+            let stderr_bytes = stderr_task.await.unwrap_or_default();
+            let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+            Ok((status, stderr))
+        }
+        Ok(Err(e)) => {
+            stderr_task.abort();
+            Err(ProfileExecOutcome::WaitFailure {
+                pid,
+                binary: binary.to_string(),
+                error: e.to_string(),
+            })
+        }
+        Err(_) => {
+            // Timeout — explicit kill and reap.
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let stderr_bytes = stderr_task.await.unwrap_or_default();
+            let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+            Err(ProfileExecOutcome::TimedOut {
+                pid,
+                binary: binary.to_string(),
+                timeout,
+                stderr,
+            })
+        }
+    }
+}
+
+/// Try to run a profile capture with the given binary. Returns `None`
+/// if the binary was not found (caller tries next candidate).
+async fn try_profile(
+    binary: &str,
+    pid: u32,
+    request: &ValidatedProfileRequest,
+) -> Option<ProfileExecOutcome> {
+    let timeout = request.subprocess_timeout();
+    let tmp_dir = match tempfile::tempdir() {
+        Ok(d) => d,
+        Err(e) => {
+            return Some(ProfileExecOutcome::TempDirFailure {
+                pid,
+                binary: binary.to_string(),
+                error: e.to_string(),
+            });
+        }
+    };
+    let svg_path = tmp_dir.path().join("profile.svg");
+
+    let child = match build_record_command(binary, pid, request, &svg_path).spawn() {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            return Some(ProfileExecOutcome::SubprocessSpawnFailure {
+                pid,
+                binary: binary.to_string(),
+                error: e.to_string(),
+            });
+        }
+    };
+
+    let (status, stderr) = match collect_profile_with_timeout(child, pid, binary, timeout).await {
+        Ok(pair) => pair,
+        Err(outcome) => return Some(outcome),
+    };
+
+    if !status.success() {
+        return Some(ProfileExecOutcome::ExitFailure {
+            pid,
+            binary: binary.to_string(),
+            exit_code: status.code(),
+            stderr,
+        });
+    }
+
+    match std::fs::read(&svg_path) {
+        Ok(bytes) if bytes.is_empty() => Some(ProfileExecOutcome::OutputEmpty {
+            pid,
+            binary: binary.to_string(),
+        }),
+        Ok(svg) => Some(ProfileExecOutcome::Ok {
+            pid,
+            binary: binary.to_string(),
+            svg,
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Some(ProfileExecOutcome::OutputMissing {
+                pid,
+                binary: binary.to_string(),
+            })
+        }
+        Err(e) => Some(ProfileExecOutcome::OutputReadFailure {
+            pid,
+            binary: binary.to_string(),
+            error: e.to_string(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::ExitStatusExt;
+    use std::time::Duration;
+
+    use tokio::process::Command;
+
     use super::*;
 
     #[test]
@@ -652,7 +1214,6 @@ mod tests {
     #[test]
     fn output_nonzero_exit_maps_to_failed() {
         // PS-2: nonzero exit → Failed with stderr.
-        use std::os::unix::process::ExitStatusExt;
         let status = std::process::ExitStatus::from_raw(256); // exit code 1
         let output = std::process::Output {
             status,
@@ -740,8 +1301,6 @@ mod tests {
     async fn collect_timeout_kills_child_and_returns_failed() {
         // PS-5: subprocess that hangs past timeout → Failed with
         // "timed out" message; child is killed and reaped.
-        use tokio::process::Command;
-
         let child = Command::new("sleep")
             .arg("100")
             .stdout(std::process::Stdio::piped())
@@ -802,9 +1361,6 @@ mod tests {
     /// closed before exec — Linux returns ETXTBSY if a file with an
     /// open write fd is executed.
     fn write_fake_pyspy(script_body: &str) -> tempfile::TempPath {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-
         let mut f = tempfile::NamedTempFile::new().expect("create temp file");
         write!(f, "#!/bin/sh\n{script_body}").expect("write script");
         f.as_file().sync_all().expect("sync");
@@ -948,5 +1504,261 @@ exit 1
                 line
             );
         }
+    }
+
+    /// PP-2: subprocess timeout yields `TimedOut` with partial stderr.
+    #[tokio::test]
+    async fn profile_collect_timeout_returns_timed_out() {
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("echo diag >&2; sleep 60")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh must be available");
+
+        let result = collect_profile_with_timeout(
+            child,
+            std::process::id(),
+            "sh",
+            std::time::Duration::from_millis(200),
+        )
+        .await;
+
+        match result {
+            Err(ProfileExecOutcome::TimedOut { stderr, .. }) => {
+                assert!(
+                    stderr.contains("diag"),
+                    "expected partial stderr captured after kill, got: {stderr}"
+                );
+            }
+            other => panic!("expected TimedOut, got: {other:?}"),
+        }
+    }
+
+    fn test_request() -> ValidatedProfileRequest {
+        ValidatedProfileRequest::try_new(
+            &PySpyProfileOpts {
+                duration_s: 1,
+                rate_hz: 100,
+                native: false,
+                threads: false,
+                nonblocking: false,
+            },
+            std::time::Duration::from_secs(300),
+        )
+        .unwrap()
+    }
+
+    /// PP-4, PS-3: missing binary yields `None` (try next candidate).
+    #[tokio::test]
+    async fn profile_try_missing_binary_returns_none() {
+        let result = try_profile("/definitely/not/a/real/binary", 1, &test_request()).await;
+        assert!(result.is_none(), "missing binary must return None");
+    }
+
+    /// PP-3: successful exit with empty output yields `OutputEmpty`.
+    #[tokio::test]
+    async fn profile_success_exit_empty_file_returns_output_empty() {
+        let script = write_fake_pyspy(
+            r#"
+output=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --output) shift; output="$1" ;;
+    esac
+    shift
+done
+touch "$output"
+exit 0
+"#,
+        );
+        let result = try_profile(script.to_str().unwrap(), 1, &test_request()).await;
+        assert!(
+            matches!(result, Some(ProfileExecOutcome::OutputEmpty { .. })),
+            "PP-3: expected OutputEmpty, got: {result:?}"
+        );
+    }
+
+    /// PP-3: successful exit with missing output yields `OutputMissing`.
+    #[tokio::test]
+    async fn profile_success_exit_missing_file_returns_output_missing() {
+        let script = write_fake_pyspy("exit 0\n");
+        let result = try_profile(script.to_str().unwrap(), 1, &test_request()).await;
+        assert!(
+            matches!(result, Some(ProfileExecOutcome::OutputMissing { .. })),
+            "PP-3: expected OutputMissing, got: {result:?}"
+        );
+    }
+
+    /// PP-1: zero duration rejected.
+    #[test]
+    fn validated_request_rejects_zero_duration() {
+        let opts = PySpyProfileOpts {
+            duration_s: 0,
+            rate_hz: 100,
+            native: false,
+            threads: false,
+            nonblocking: false,
+        };
+        let err = ValidatedProfileRequest::try_new(&opts, std::time::Duration::from_secs(300));
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("positive"));
+    }
+
+    /// PP-1: over-max duration rejected.
+    #[test]
+    fn validated_request_rejects_over_max_duration() {
+        let opts = PySpyProfileOpts {
+            duration_s: 999,
+            rate_hz: 100,
+            native: false,
+            threads: false,
+            nonblocking: false,
+        };
+        let err = ValidatedProfileRequest::try_new(&opts, std::time::Duration::from_secs(300));
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("exceeds max"));
+    }
+
+    /// PP-1: zero rate rejected.
+    #[test]
+    fn validated_request_rejects_zero_rate() {
+        let opts = PySpyProfileOpts {
+            duration_s: 5,
+            rate_hz: 0,
+            native: false,
+            threads: false,
+            nonblocking: false,
+        };
+        let err = ValidatedProfileRequest::try_new(&opts, std::time::Duration::from_secs(300));
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("rate_hz"));
+    }
+
+    /// PP-1: excessive rate rejected.
+    #[test]
+    fn validated_request_rejects_excessive_rate() {
+        let opts = PySpyProfileOpts {
+            duration_s: 5,
+            rate_hz: 9999,
+            native: false,
+            threads: false,
+            nonblocking: false,
+        };
+        let err = ValidatedProfileRequest::try_new(&opts, std::time::Duration::from_secs(300));
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("rate_hz"));
+    }
+
+    /// PP-2: timeout arithmetic is correct and deterministic.
+    #[test]
+    fn validated_request_computes_exact_timeouts() {
+        let opts = PySpyProfileOpts {
+            duration_s: 30,
+            rate_hz: 100,
+            native: true,
+            threads: false,
+            nonblocking: false,
+        };
+        let req =
+            ValidatedProfileRequest::try_new(&opts, std::time::Duration::from_secs(300)).unwrap();
+        assert_eq!(req.duration().get(), 30);
+        assert_eq!(req.rate().get(), 100);
+        assert!(req.native());
+        assert_eq!(req.subprocess_timeout(), std::time::Duration::from_secs(45));
+        assert_eq!(req.bridge_timeout(), std::time::Duration::from_secs(50));
+    }
+
+    /// PP-6: internal-to-wire conversion is near-identity.
+    #[test]
+    fn profile_exec_outcome_conversion_is_identity() {
+        // Each internal outcome maps to the identically-named wire variant.
+        let r = PySpyProfileResult::from(ProfileExecOutcome::Ok {
+            pid: 1,
+            binary: "b".into(),
+            svg: vec![1],
+        });
+        assert!(matches!(r, PySpyProfileResult::Ok { pid: 1, .. }));
+
+        let r = PySpyProfileResult::from(ProfileExecOutcome::BinaryNotFound {
+            searched: vec!["x".into()],
+        });
+        assert!(matches!(r, PySpyProfileResult::BinaryNotFound { .. }));
+
+        let r = PySpyProfileResult::from(ProfileExecOutcome::TimedOut {
+            pid: 1,
+            binary: "b".into(),
+            timeout: Duration::from_secs(10),
+            stderr: "s".into(),
+        });
+        assert!(matches!(
+            r,
+            PySpyProfileResult::TimedOut { timeout_s: 10, .. }
+        ));
+
+        let r = PySpyProfileResult::from(ProfileExecOutcome::ExitFailure {
+            pid: 1,
+            binary: "b".into(),
+            exit_code: Some(2),
+            stderr: "e".into(),
+        });
+        assert!(matches!(
+            r,
+            PySpyProfileResult::ExitFailure {
+                exit_code: Some(2),
+                ..
+            }
+        ));
+
+        let r = PySpyProfileResult::from(ProfileExecOutcome::OutputMissing {
+            pid: 1,
+            binary: "b".into(),
+        });
+        assert!(matches!(
+            r,
+            PySpyProfileResult::OutputMissing { pid: 1, .. }
+        ));
+
+        let r = PySpyProfileResult::from(ProfileExecOutcome::OutputEmpty {
+            pid: 1,
+            binary: "b".into(),
+        });
+        assert!(matches!(r, PySpyProfileResult::OutputEmpty { pid: 1, .. }));
+
+        let r = PySpyProfileResult::from(ProfileExecOutcome::OutputReadFailure {
+            pid: 1,
+            binary: "b".into(),
+            error: "permission denied".into(),
+        });
+        assert!(matches!(r, PySpyProfileResult::OutputReadFailure { .. }));
+
+        let r =
+            PySpyProfileResult::from(ProfileExecOutcome::WorkerSpawnFailure { error: "w".into() });
+        assert!(matches!(r, PySpyProfileResult::WorkerSpawnFailure { .. }));
+
+        let r = PySpyProfileResult::from(ProfileExecOutcome::SubprocessSpawnFailure {
+            pid: 1,
+            binary: "b".into(),
+            error: "s".into(),
+        });
+        assert!(matches!(
+            r,
+            PySpyProfileResult::SubprocessSpawnFailure { .. }
+        ));
+
+        let r = PySpyProfileResult::from(ProfileExecOutcome::WaitFailure {
+            pid: 1,
+            binary: "b".into(),
+            error: "w".into(),
+        });
+        assert!(matches!(r, PySpyProfileResult::WaitFailure { .. }));
+
+        let r = PySpyProfileResult::from(ProfileExecOutcome::TempDirFailure {
+            pid: 1,
+            binary: "b".into(),
+            error: "t".into(),
+        });
+        assert!(matches!(r, PySpyProfileResult::TempDirFailure { .. }));
     }
 }

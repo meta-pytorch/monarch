@@ -19,6 +19,7 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
     _spawn_admin as _hy_spawn_admin,
     BootstrapCommand,
     HostMesh as HyHostMesh,
+    PyMeshAdminRef,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
@@ -461,17 +462,12 @@ def _spawn_admin(
     host_meshes: list["HostMesh"],
     admin_addr: Optional[str] = None,
     telemetry_url: Optional[str] = None,
-) -> "Future[str]":
+) -> "Future[tuple[str, PyMeshAdminRef]]":
     """
     Spawn a MeshAdminAgent aggregating topology across one or more HostMeshes.
 
-    The admin runs on the caller's local proc and serves the
-    mesh-admin HTTP API.
-
-    Use a single-element list for the degenerate single-mesh case::
-
-        host = this_host()
-        admin_url = await _spawn_admin([host], admin_addr="[::]:1729")
+    Returns ``(admin_url, admin_ref)`` where ``admin_ref`` is an opaque
+    capability token for immediate use only.
 
     Args:
         host_meshes: One or more HostMeshes whose hosts the admin
@@ -479,12 +475,9 @@ def _spawn_admin(
         admin_addr: Optional socket address for the admin HTTP server.
             When ``None``, reads ``MESH_ADMIN_ADDR`` from config.
         telemetry_url: Optional base URL of the Monarch telemetry dashboard.
-            When provided, the admin exposes proxy routes (``/v1/query``,
-            ``/v1/pyspy_dump``) that forward to the dashboard.
 
     Returns:
-        Future[str]: The admin HTTP URL (for example
-            ``"https://myhost.facebook.com:1729"``).
+        Future[tuple[str, PyMeshAdminRef]]: (admin_url, admin_ref).
 
     Raises:
         ValueError: If host_meshes is empty.
@@ -492,15 +485,13 @@ def _spawn_admin(
     if not host_meshes:
         raise ValueError("_spawn_admin requires at least one HostMesh")
 
-    async def task() -> str:
+    async def task() -> tuple[str, PyMeshAdminRef]:
         hy_meshes = [await m._hy_host_mesh for m in host_meshes]
-        url = await _hy_spawn_admin(
+        admin_url, admin_ref = await _hy_spawn_admin(
             hy_meshes, context().actor_instance._as_rust(), admin_addr, telemetry_url
         )
-        # Export admin URL so the dashboard can discover system actors
-        # and build TUI-style DAG hierarchies.
-        os.environ["MONARCH_ADMIN_URL"] = url
-        return url
+        os.environ["MONARCH_ADMIN_URL"] = admin_url
+        return admin_url, admin_ref
 
     return Future(coro=task())
 

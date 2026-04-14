@@ -167,9 +167,9 @@ fn add_tls_from_bundle(
 pub(crate) fn build_client(config: &TuiConfig) -> (String, reqwest::Client) {
     let (explicit_scheme, host) = parse_addr(&config.addr);
 
-    let client_timeout =
-        hyperactor_config::global::get(hyperactor_mesh::config::MESH_ADMIN_PYSPY_CLIENT_TIMEOUT);
-    let mut builder = reqwest::Client::builder().timeout(client_timeout);
+    // TP-7: no client-level timeout. All timeout enforcement is
+    // per-operation via tokio::time::timeout at the call boundary.
+    let mut builder = reqwest::Client::builder();
     let mut use_tls = explicit_scheme == Some("https");
 
     // 1. Explicit CLI cert paths.

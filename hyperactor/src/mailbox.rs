@@ -2572,14 +2572,15 @@ impl MailboxRouter {
         WeakMailboxRouter(Arc::downgrade(&self.entries))
     }
 
-    /// Returns a new router that will first attempt to find a route for the message
-    /// in the router's table; otherwise post the message to the provided fallback
-    /// sender.
-    pub fn fallback(&self, default: BoxedMailboxSender) -> impl MailboxSender {
+    /// Returns a boxed sender that first attempts to find a route in
+    /// this router's table; otherwise posts the message to the provided
+    /// fallback sender.
+    pub fn fallback(&self, default: BoxedMailboxSender) -> BoxedMailboxSender {
         FallbackMailboxRouter {
             router: self.clone(),
             default,
         }
+        .into_boxed()
     }
 
     /// Bind the provided sender to the given reference. The destination
@@ -2588,6 +2589,12 @@ impl MailboxRouter {
     pub fn bind(&self, dest: reference::Reference, sender: impl MailboxSender + 'static) {
         let mut w = self.entries.write().unwrap();
         w.insert(dest, Arc::new(sender));
+    }
+
+    /// Remove the binding for the given reference.
+    pub fn unbind(&self, dest: &reference::Reference) {
+        let mut w = self.entries.write().unwrap();
+        w.remove(dest);
     }
 
     fn sender(
@@ -2907,79 +2914,6 @@ impl MailboxSender for DialMailboxRouter {
             .collect();
         let mut futs: Vec<_> = senders.iter().map(|s| s.flush()).collect();
         futs.push(self.default.flush());
-        futures::future::try_join_all(futs).await?;
-        Ok(())
-    }
-}
-
-/// A mailbox router with a map of directly-bound senders keyed by
-/// [`ProcId`]. Messages whose destination matches an override entry
-/// are delivered through that sender; all others fall through to the
-/// inner [`DialMailboxRouter`].
-///
-/// Use [`bind_direct`] / [`unbind_direct`] to manage the override
-/// map, and [`bind_addr`] / [`unbind_addr`] to manage the inner
-/// address-based routing table.
-#[derive(Clone)]
-pub struct OverlayDialMailboxRouter {
-    overrides: Arc<DashMap<reference::ProcId, BoxedMailboxSender>>,
-    inner: DialMailboxRouter,
-}
-
-impl OverlayDialMailboxRouter {
-    /// Create a new router wrapping the given [`DialMailboxRouter`].
-    pub fn new(inner: DialMailboxRouter) -> Self {
-        Self {
-            overrides: Arc::new(DashMap::new()),
-            inner,
-        }
-    }
-
-    /// Bind a proc directly to a sender, bypassing address-based routing.
-    pub fn bind_direct(&self, proc_id: reference::ProcId, sender: BoxedMailboxSender) {
-        self.overrides.insert(proc_id, sender);
-    }
-
-    /// Remove a directly-bound sender.
-    pub fn unbind_direct(&self, proc_id: &reference::ProcId) {
-        self.overrides.remove(proc_id);
-    }
-
-    /// Bind a reference to a dialable address in the inner
-    /// [`DialMailboxRouter`].
-    pub fn bind_addr(&self, dest: reference::Reference, addr: ChannelAddr) {
-        self.inner.bind(dest, addr);
-    }
-
-    /// Remove address bindings from the inner [`DialMailboxRouter`].
-    pub fn unbind_addr(&self, dest: &reference::Reference) {
-        self.inner.unbind(dest);
-    }
-}
-
-#[async_trait]
-impl MailboxSender for OverlayDialMailboxRouter {
-    fn post_unchecked(
-        &self,
-        envelope: MessageEnvelope,
-        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
-    ) {
-        let dest_proc_id = envelope.dest().actor_id().proc_id();
-        if let Some(sender) = self.overrides.get(dest_proc_id) {
-            sender.post_unchecked(envelope, return_handle);
-        } else {
-            self.inner.post_unchecked(envelope, return_handle);
-        }
-    }
-
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        let senders: Vec<_> = self
-            .overrides
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect();
-        let mut futs: Vec<_> = senders.iter().map(|s| s.flush()).collect();
-        futs.push(self.inner.flush());
         futures::future::try_join_all(futs).await?;
         Ok(())
     }

@@ -122,6 +122,7 @@ pub(crate) async fn fetch_with_join(
     refresh_gen: u64,
     seq_counter: &mut u64,
     force: bool,
+    timeout: std::time::Duration,
 ) -> FetchState<NodePayload> {
     let cached_state = cache.get(reference);
     let should_fetch = if force {
@@ -147,14 +148,21 @@ pub(crate) async fn fetch_with_join(
             seq: *seq_counter,
         };
 
-        // Fetch and wrap in FetchState.
-        let new_state = match fetch_node_raw(client, base_url, reference).await {
-            Ok(payload) => FetchState::Ready {
+        // TP-9: timeout covers the full fetch lifecycle at the
+        // operation boundary.
+        let fetch_result =
+            tokio::time::timeout(timeout, fetch_node_raw(client, base_url, reference)).await;
+        let new_state = match fetch_result {
+            Err(_) => FetchState::Error {
+                stamp,
+                msg: format!("request timed out after {}s", timeout.as_secs()),
+            },
+            Ok(Ok(payload)) => FetchState::Ready {
                 stamp,
                 generation: refresh_gen,
                 value: payload,
             },
-            Err(e) => FetchState::Error { stamp, msg: e },
+            Ok(Err(e)) => FetchState::Error { stamp, msg: e },
         };
 
         // Join into cache.
@@ -172,6 +180,9 @@ pub(crate) async fn fetch_with_join(
 /// Free-function form of `App::fetch_node` so callers that hold
 /// partial borrows of `App` can avoid borrowing all of `&self`.
 /// The `NodeRef` is converted to its string form for the URL path.
+/// Pure fetch+parse helper. No timeout policy — callers own timeout
+/// semantics via `tokio::time::timeout` at the operation boundary
+/// (TP-9).
 pub(crate) async fn fetch_node_raw(
     client: &reqwest::Client,
     base_url: &str,
@@ -231,6 +242,7 @@ pub(crate) fn build_tree_node<'a>(
     failed_keys: &'a HashSet<(NodeRef, usize)>,
     refresh_gen: u64,
     seq_counter: &'a mut u64,
+    timeout: std::time::Duration,
 ) -> Pin<Box<dyn Future<Output = Option<TreeNode>> + Send + 'a>> {
     Box::pin(async move {
         // Depth guard.
@@ -254,6 +266,7 @@ pub(crate) fn build_tree_node<'a>(
             refresh_gen,
             seq_counter,
             false,
+            timeout,
         )
         .await;
 
@@ -365,6 +378,7 @@ pub(crate) fn build_tree_node<'a>(
                             failed_keys,
                             refresh_gen,
                             seq_counter,
+                            timeout,
                         )
                         .await
                         {
@@ -438,6 +452,7 @@ pub(crate) fn build_tree_node<'a>(
                         failed_keys,
                         refresh_gen,
                         seq_counter,
+                        timeout,
                     )
                     .await
                     {

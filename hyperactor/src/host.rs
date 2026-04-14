@@ -60,12 +60,12 @@ use async_trait::async_trait;
 use futures::Future;
 use futures::StreamExt;
 use futures::stream;
-use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate as hyperactor;
@@ -83,16 +83,15 @@ use crate::channel::Rx;
 use crate::channel::Tx;
 use crate::channel::net::ServerError;
 use crate::context;
+use crate::mailbox::BoxableMailboxSender as _;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::MailboxClient;
-use crate::mailbox::MailboxSender;
-use crate::mailbox::OverlayDialMailboxRouter;
+use crate::mailbox::MailboxRouter;
 use crate::mailbox::MailboxServer;
 use crate::mailbox::MailboxServerHandle;
 use crate::mailbox::MessageEnvelope;
-use crate::mailbox::monitored_return_handle;
 use crate::reference;
 
 /// Name of the system service proc on a host — hosts the admin actor
@@ -118,6 +117,61 @@ pub struct BootstrapAssignment {
     pub proc_id: reference::ProcId,
 }
 wirevalue::register_type!(BootstrapAssignment);
+
+/// Wire protocol for the host -> client direction on a duplex attach
+/// connection. The host sends [`Bootstrap`](Host2Client::Bootstrap)
+/// as the first message, followed by
+/// [`Envelope`](Host2Client::Envelope) for all subsequent traffic.
+#[derive(Debug, Serialize, Deserialize, typeuri::Named)]
+pub enum Host2Client {
+    /// First message: identity assignment from the host.
+    Bootstrap(BootstrapAssignment),
+    /// Subsequent messages: routed envelopes.
+    Envelope(MessageEnvelope),
+}
+wirevalue::register_type!(Host2Client);
+
+/// [`MailboxSender`] adapter that wraps outbound [`MessageEnvelope`]s
+/// in [`Host2Client::Envelope`] before posting to a
+/// [`DuplexTx<Host2Client>`].
+#[derive(Clone)]
+struct AttachSender(channel::duplex::DuplexTx<Host2Client>);
+
+#[async_trait]
+impl crate::mailbox::MailboxSender for AttachSender {
+    fn post_unchecked(
+        &self,
+        envelope: MessageEnvelope,
+        _return_handle: crate::mailbox::PortHandle<crate::mailbox::Undeliverable<MessageEnvelope>>,
+    ) {
+        self.0.post(Host2Client::Envelope(envelope));
+    }
+}
+
+/// [`Rx<MessageEnvelope>`](channel::Rx) adapter that unwraps
+/// [`Host2Client::Envelope`] from a
+/// [`DuplexRx<Host2Client>`](channel::duplex::DuplexRx).
+pub struct AttachRx(pub channel::duplex::DuplexRx<Host2Client>);
+
+#[async_trait]
+impl channel::Rx<MessageEnvelope> for AttachRx {
+    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
+        match self.0.recv().await? {
+            Host2Client::Envelope(e) => Ok(e),
+            Host2Client::Bootstrap(_) => Err(ChannelError::Other(anyhow::anyhow!(
+                "unexpected bootstrap message after handshake"
+            ))),
+        }
+    }
+
+    fn addr(&self) -> ChannelAddr {
+        self.0.addr()
+    }
+
+    async fn join(self) {
+        self.0.join().await
+    }
+}
 
 /// The type of error produced by host operations.
 #[derive(Debug, thiserror::Error)]
@@ -161,9 +215,12 @@ pub struct Host<M> {
     procs: HashSet<String>,
     frontend_addr: ChannelAddr,
     backend_addr: ChannelAddr,
-    /// Routes messages to known senders (local procs, attached procs)
-    /// or falls back to address-based dialing.
-    router: OverlayDialMailboxRouter,
+    /// Routes messages to known procs (local, attached) by prefix.
+    router: MailboxRouter,
+    /// Address-based routing for dialed connections (child procs,
+    /// remote hosts); used as the fallback when the prefix router
+    /// has no match.
+    dial_router: DialMailboxRouter,
     manager: M,
     service_proc: Proc,
     local_proc: Proc,
@@ -197,7 +254,7 @@ impl<M: ProcManager> Host<M> {
             Some(d) => DialMailboxRouter::new_with_default(d),
             None => DialMailboxRouter::new(),
         };
-        let router = OverlayDialMailboxRouter::new(dial_router);
+        let router = MailboxRouter::new();
 
         // Establish a backend channel on the preferred transport.
         let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
@@ -205,7 +262,7 @@ impl<M: ProcManager> Host<M> {
         // Bind the duplex listener (sync) if requested; resolve address but
         // defer the accept loop until we have the procs for routing.
         let duplex_server = match &duplex_addr {
-            Some(da) => Some(channel::duplex::serve::<MessageEnvelope, MessageEnvelope>(
+            Some(da) => Some(channel::duplex::serve::<MessageEnvelope, Host2Client>(
                 da.clone(),
             )?),
             None => None,
@@ -219,22 +276,24 @@ impl<M: ProcManager> Host<M> {
         let service_proc_id =
             reference::ProcId::with_name(frontend_addr.clone(), SERVICE_PROC_NAME);
         let local_proc_id = reference::ProcId::with_name(frontend_addr.clone(), LOCAL_PROC_NAME);
-        let service_proc =
-            Proc::configured(service_proc_id.clone(), router.clone().into_boxed());
-        let local_proc = Proc::configured(local_proc_id.clone(), router.clone().into_boxed());
+        let combined = router.fallback(dial_router.boxed());
+        let service_proc = Proc::configured(service_proc_id.clone(), combined.clone());
+        let local_proc = Proc::configured(local_proc_id.clone(), combined);
 
-        // Register the local procs so the host muxer delivers to them
+        // Register the local procs so the router delivers to them
         // without dialing.
-        router.bind_direct(service_proc_id.clone(), service_proc.clone().into_boxed());
-        router.bind_direct(local_proc_id.clone(), local_proc.clone().into_boxed());
+        router.bind(service_proc_id.clone().into(), service_proc.clone());
+        router.bind(local_proc_id.clone().into(), local_proc.clone());
 
         // Start the duplex accept loop now that we have procs and router.
         let duplex_cancel = CancellationToken::new();
         if let Some(ds) = duplex_server {
+            let forwarder = router.fallback(dial_router.boxed());
             tokio::spawn(duplex_accept_loop(
                 ds,
                 frontend_addr.clone(),
                 router.clone(),
+                forwarder,
                 duplex_cancel.clone(),
             ));
         }
@@ -255,6 +314,7 @@ impl<M: ProcManager> Host<M> {
             frontend_addr,
             backend_addr,
             router,
+            dial_router,
             manager,
             service_proc,
             local_proc,
@@ -332,8 +392,8 @@ impl<M: ProcManager> Host<M> {
             HostError::ProcessConfigurationFailure(proc_id.clone(), anyhow::anyhow!("{e:?}"))
         })?;
 
-        self.router
-            .bind_addr(proc_id.clone().into(), ready.addr().clone());
+        self.dial_router
+            .bind(proc_id.clone().into(), ready.addr().clone());
         self.procs.insert(name.clone());
 
         Ok((proc_id, ready.agent_ref().clone()))
@@ -344,8 +404,8 @@ impl<M: ProcManager> Host<M> {
         self.duplex_addr.as_ref()
     }
 
-    fn forwarder(&self) -> OverlayDialMailboxRouter {
-        self.router.clone()
+    fn forwarder(&self) -> BoxedMailboxSender {
+        self.router.fallback(self.dial_router.boxed())
     }
 }
 
@@ -355,25 +415,44 @@ impl<M> Drop for Host<M> {
     }
 }
 
-/// Accept loop that listens for remote procs attaching to this host.
-/// Each new connection is assigned a unique [`ProcId`], registered in
-/// the router's overrides for outbound routing, and a per-connection
-/// task forwards inbound messages through the router. When a
-/// connection closes or the cancel token fires, the route entry is
-/// removed.
+/// Accept loop for the duplex attach protocol.
+///
+/// Remote procs attach to this host by dialing its duplex server.
+/// The protocol proceeds as follows:
+///
+/// 1. The remote proc dials the duplex address, establishing a
+///    bidirectional [`MessageEnvelope`] channel.
+/// 2. The host accepts the connection and assigns the remote proc a
+///    unique [`ProcId`] of the form `remote_N` under the host's
+///    frontend address.
+/// 3. The host sends a [`BootstrapAssignment`] as the first message
+///    on the channel, informing the remote proc of its assigned
+///    identity.
+/// 4. The host registers the duplex sender in the router so that
+///    outbound messages addressed to the remote proc are forwarded
+///    over the duplex channel.
+/// 5. A per-connection task reads inbound messages from the duplex
+///    channel and routes them through the host's router. Undeliverable
+///    messages are bounced back to the original sender.
+///
+/// When a connection closes or the cancellation token fires, the
+/// route entry is removed. All per-connection tasks are joined before
+/// this function returns.
 async fn duplex_accept_loop(
-    mut duplex_server: channel::duplex::DuplexServer<MessageEnvelope, MessageEnvelope>,
+    mut duplex_server: channel::duplex::DuplexServer<MessageEnvelope, Host2Client>,
     frontend_addr: ChannelAddr,
-    router: OverlayDialMailboxRouter,
+    router: MailboxRouter,
+    forwarder: BoxedMailboxSender,
     cancel: CancellationToken,
 ) {
+    let mut tasks = JoinSet::new();
     let mut counter: u64 = 0;
     loop {
         let accept = tokio::select! {
             result = duplex_server.accept() => result,
             () = cancel.cancelled() => break,
         };
-        let (mut duplex_rx, duplex_tx) = match accept {
+        let (duplex_rx, duplex_tx) = match accept {
             Ok(pair) => pair,
             Err(e) => {
                 tracing::info!(
@@ -389,99 +468,42 @@ async fn duplex_accept_loop(
         counter += 1;
         let proc_id = reference::ProcId::with_name(frontend_addr.clone(), &name);
 
-        // Send BootstrapAssignment as the first message.
-        let sender_id =
-            reference::ActorId::root(proc_id.clone(), SERVICE_PROC_NAME.to_string());
-        let dest = reference::PortId::new(sender_id.clone(), 0);
+        // Send BootstrapAssignment as the first message (step 3).
         let assignment = BootstrapAssignment {
             proc_id: proc_id.clone(),
         };
-        let envelope = MessageEnvelope::serialize(sender_id, dest, &assignment, Flattrs::new())
-            .expect("failed to serialize BootstrapAssignment");
         tracing::info!(
             proc_id = proc_id.to_string(),
             "duplex accepted new connection"
         );
-        duplex_tx.post(envelope);
+        duplex_tx.post(Host2Client::Bootstrap(assignment));
 
-        // Register for outbound routing.
-        router.bind_direct(proc_id.clone(), MailboxClient::new(duplex_tx).into_boxed());
+        // Register for outbound routing (step 4).
+        router.bind(proc_id.clone().into(), AttachSender(duplex_tx));
 
-        // Inbound: route messages through the router until the
-        // connection closes or the host is shut down. We set up an
-        // undeliverable supervisor (mirroring MailboxServer::serve) so
-        // that bounced messages are returned to the original sender
-        // through the router.
-        let forwarder = router.clone();
+        // Serve inbound messages through the router (step 5).
+        // MailboxServer::serve handles the recv loop and
+        // undeliverable routing.
+        let mut handle = forwarder.clone().serve(duplex_rx);
         let cleanup_router = router.clone();
         let conn_cancel = cancel.child_token();
-        tokio::spawn(async move {
-            let cleanup_proc_id = proc_id.clone();
-            let (return_handle, mut undeliverable_rx) = crate::mailbox::Mailbox::new_detached(
-                proc_id.actor_id("undeliverable_supervisor", 0),
-            )
-            .open_port::<crate::mailbox::Undeliverable<MessageEnvelope>>();
-
-            // Supervisor: forward undeliverables back to the envelope's
-            // original sender via the router. Uses a unique proc_id so
-            // that outbound messages go through the router rather than
-            // matching locally.
-            // Supervisor: route undeliverables back to the original
-            // sender through the router. Nested undeliverables (an
-            // Undeliverable wrapping an Undeliverable) are dropped to
-            // prevent loops.
-            let undeliverable_router = forwarder.clone();
-            let supervisor_cancel = conn_cancel.child_token();
-            tokio::spawn(async move {
-                use crate::mailbox::Undeliverable;
-                loop {
-                    let msg = tokio::select! {
-                        msg = undeliverable_rx.recv() => msg,
-                        () = supervisor_cancel.cancelled() => break,
-                    };
-                    let Ok(Undeliverable(mut envelope)) = msg else {
-                        break;
-                    };
-                    if envelope.deserialized::<Undeliverable<MessageEnvelope>>().is_ok() {
-                        // Nested undeliverable — drop to prevent loops.
-                        continue;
-                    }
-                    envelope.set_error(crate::mailbox::DeliveryError::BrokenLink(
-                        "message was undeliverable".to_owned(),
-                    ));
-                    let sender_id = envelope.sender().clone();
-                    let dest = sender_id.port_id(
-                        <Undeliverable<MessageEnvelope> as typeuri::Named>::port(),
-                    );
-                    let return_envelope = MessageEnvelope::serialize(
-                        sender_id,
-                        dest,
-                        &Undeliverable(envelope),
-                        Flattrs::new(),
-                    )
-                    .expect("failed to serialize undeliverable return envelope");
-                    undeliverable_router.post(return_envelope, monitored_return_handle());
-                }
-            });
-
-            loop {
-                tokio::select! {
-                    result = duplex_rx.recv() => {
-                        match result {
-                            Ok(envelope) => forwarder.post(envelope, return_handle.clone()),
-                            Err(_) => break,
-                        }
-                    }
-                    () = conn_cancel.cancelled() => break,
+        tasks.spawn(async move {
+            tokio::select! {
+                _ = &mut handle => {}
+                () = conn_cancel.cancelled() => {
+                    handle.stop("host duplex cancel");
+                    let _ = handle.await;
                 }
             }
-            cleanup_router.unbind_direct(&cleanup_proc_id);
+            cleanup_router.unbind(&proc_id.clone().into());
             tracing::info!(
-                proc_id = cleanup_proc_id.to_string(),
+                proc_id = proc_id.to_string(),
                 "duplex connection closed, removed route"
             );
         });
     }
+
+    while tasks.join_next().await.is_some() {}
 }
 
 /// Error returned by [`ProcHandle::ready`].
@@ -713,7 +735,7 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
         // names, they can use the same slot.
         for name in self.procs.drain() {
             let proc_id = reference::ProcId::with_name(self.frontend_addr.clone(), &name);
-            self.router.unbind_addr(&proc_id.into());
+            self.dial_router.unbind(&proc_id.into());
         }
         summary
     }

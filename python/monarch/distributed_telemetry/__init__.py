@@ -17,7 +17,7 @@ Three-component architecture:
 Usage:
     from monarch.distributed_telemetry.actor import start_telemetry
 
-    engine, telemetry_url = start_telemetry()
+    engine, telemetry_url, scanner = start_telemetry()
     # ... spawn procs, they're automatically tracked ...
     result = engine.query("SELECT * FROM metrics")
 """
