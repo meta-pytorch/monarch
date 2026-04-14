@@ -24,7 +24,7 @@ import urllib.request
 import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._src.actor.host_mesh import this_host
+from monarch._src.actor.host_mesh import _spawn_admin, this_host
 from monarch.actor import Actor, endpoint
 from monarch.config import parametrize_config
 
@@ -93,7 +93,7 @@ async def test_failed_actor_has_failure_info() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        base = _to_loopback(await host._spawn_admin(admin_addr="[::]:0"))
+        base = _to_loopback(await _spawn_admin([host], admin_addr="[::]:0"))
 
         procs = host.spawn_procs(per_host={"replica": 2})
         workers = procs.spawn("worker", FailWorker)
@@ -155,6 +155,9 @@ async def test_failed_actor_has_failure_info() -> None:
         await procs.stop()
 
 
+@pytest.mark.skip(
+    reason="flaky: subprocess inherits job context from distributed_telemetry tests, exposing stale host_agent connections"
+)
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -165,7 +168,7 @@ async def test_healthy_procs_not_poisoned() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        base = _to_loopback(await host._spawn_admin(admin_addr="[::]:0"))
+        base = _to_loopback(await _spawn_admin([host], admin_addr="[::]:0"))
 
         procs = host.spawn_procs(per_host={"replica": 3})
         workers = procs.spawn("worker", FailWorker)

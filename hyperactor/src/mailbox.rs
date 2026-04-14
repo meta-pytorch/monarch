@@ -1092,9 +1092,9 @@ impl<T: Message> Buffer<T> {
     fn send(
         &self,
         item: (T, PortHandle<Undeliverable<T>>),
-    ) -> Result<(), mpsc::error::SendError<(T, PortHandle<Undeliverable<T>>)>> {
+    ) -> Result<(), Box<mpsc::error::SendError<(T, PortHandle<Undeliverable<T>>)>>> {
         self.seq.fetch_add(1, Ordering::SeqCst);
-        self.queue.send(item)?;
+        self.queue.send(item).map_err(Box::new)?;
         Ok(())
     }
 }
@@ -1198,8 +1198,9 @@ impl MailboxClient {
             loop {
                 tokio::select! {
                     changed = rx.changed() => {
-                        if changed.is_err() || *rx.borrow() == TxStatus::Closed {
-                            tracing::warn!("connection to {} lost", addr);
+                        if changed.is_err() || rx.borrow().is_closed() {
+                            let reason = rx.borrow().as_closed().map(|r| r.to_string()).unwrap_or_else(|| "unknown".to_string());
+                            tracing::warn!("connection to {} lost: {}", addr, reason);
                             // TODO: Potential for supervision event
                             // interaction here.
                             break;
@@ -1223,9 +1224,8 @@ impl MailboxSender for MailboxClient {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.actor_id(), "port"= envelope.dest.index(), "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
-        if let Err(mpsc::error::SendError((envelope, return_handle))) =
-            self.buffer.send((envelope, return_handle))
-        {
+        if let Err(err) = self.buffer.send((envelope, return_handle)) {
+            let mpsc::error::SendError((envelope, return_handle)) = *err;
             let err = DeliveryError::BrokenLink(
                 "failed to enqueue in MailboxClient; buffer's queue is closed".to_string(),
             );
@@ -2907,6 +2907,79 @@ impl MailboxSender for DialMailboxRouter {
             .collect();
         let mut futs: Vec<_> = senders.iter().map(|s| s.flush()).collect();
         futs.push(self.default.flush());
+        futures::future::try_join_all(futs).await?;
+        Ok(())
+    }
+}
+
+/// A mailbox router with a map of directly-bound senders keyed by
+/// [`ProcId`]. Messages whose destination matches an override entry
+/// are delivered through that sender; all others fall through to the
+/// inner [`DialMailboxRouter`].
+///
+/// Use [`bind_direct`] / [`unbind_direct`] to manage the override
+/// map, and [`bind_addr`] / [`unbind_addr`] to manage the inner
+/// address-based routing table.
+#[derive(Clone)]
+pub struct OverlayDialMailboxRouter {
+    overrides: Arc<DashMap<reference::ProcId, BoxedMailboxSender>>,
+    inner: DialMailboxRouter,
+}
+
+impl OverlayDialMailboxRouter {
+    /// Create a new router wrapping the given [`DialMailboxRouter`].
+    pub fn new(inner: DialMailboxRouter) -> Self {
+        Self {
+            overrides: Arc::new(DashMap::new()),
+            inner,
+        }
+    }
+
+    /// Bind a proc directly to a sender, bypassing address-based routing.
+    pub fn bind_direct(&self, proc_id: reference::ProcId, sender: BoxedMailboxSender) {
+        self.overrides.insert(proc_id, sender);
+    }
+
+    /// Remove a directly-bound sender.
+    pub fn unbind_direct(&self, proc_id: &reference::ProcId) {
+        self.overrides.remove(proc_id);
+    }
+
+    /// Bind a reference to a dialable address in the inner
+    /// [`DialMailboxRouter`].
+    pub fn bind_addr(&self, dest: reference::Reference, addr: ChannelAddr) {
+        self.inner.bind(dest, addr);
+    }
+
+    /// Remove address bindings from the inner [`DialMailboxRouter`].
+    pub fn unbind_addr(&self, dest: &reference::Reference) {
+        self.inner.unbind(dest);
+    }
+}
+
+#[async_trait]
+impl MailboxSender for OverlayDialMailboxRouter {
+    fn post_unchecked(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        let dest_proc_id = envelope.dest().actor_id().proc_id();
+        if let Some(sender) = self.overrides.get(dest_proc_id) {
+            sender.post_unchecked(envelope, return_handle);
+        } else {
+            self.inner.post_unchecked(envelope, return_handle);
+        }
+    }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        let senders: Vec<_> = self
+            .overrides
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        let mut futs: Vec<_> = senders.iter().map(|s| s.flush()).collect();
+        futs.push(self.inner.flush());
         futures::future::try_join_all(futs).await?;
         Ok(())
     }

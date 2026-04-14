@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import sys
-import warnings
 from contextlib import AbstractContextManager
 from functools import cache
 from pathlib import Path
@@ -39,7 +38,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shape, Slice
+from monarch._rust_bindings.monarch_hyperactor.shape import Region, Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.actor.actor_mesh import (
     _Actor,
@@ -50,7 +49,6 @@ from monarch._src.actor.actor_mesh import (
     ActorMesh,
     context,
 )
-from monarch._src.actor.allocator import AllocHandle
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
     CodeSyncMethod,
@@ -286,12 +284,13 @@ class ProcMesh(MeshTrait):
         self._logging_manager = LoggingManager()
         self._controller_controller: Optional["_ControllerController"] = None
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
+        self._pending_actor_spawns: List[ActorMesh[Any]] = []
 
     @property
     def initialized(self) -> Future[Literal[True]]:
         """
         Future completes with 'True' when the ProcMesh has initialized.
-        Because ProcMesh are remote objects, there is no guarentee that the ProcMesh is
+        Because ProcMesh are remote objects, there is no guarantee that the ProcMesh is
         still usable after this completes, only that at some point in the past it was usable.
         """
         pm: Shared[HyProcMesh] = self._proc_mesh
@@ -500,6 +499,7 @@ class ProcMesh(MeshTrait):
         )
 
         mesh = ActorMesh(Class, name, actor_mesh, self._region.as_shape(), self)
+        self._pending_actor_spawns.append(mesh)
 
         # We don't start the supervision polling loop until the first call to
         # supervision_event, which needs an Instance. Initialize here so events
@@ -579,6 +579,14 @@ class ProcMesh(MeshTrait):
             raise RuntimeError("`ProcMesh` has already been stopped")
         return self
 
+    async def _flush_pending_actor_spawns(self) -> None:
+        for mesh in self._pending_actor_spawns:
+            try:
+                await mesh.initialized
+            except Exception:
+                pass
+        self._pending_actor_spawns.clear()
+
     def stop(self, reason: str = "stopped by client") -> Future[None]:
         """
         This will stop all processes (and actors) in the mesh and
@@ -588,6 +596,7 @@ class ProcMesh(MeshTrait):
         instance = context().actor_instance._as_rust()
 
         async def _stop_nonblocking(instance: HyInstance) -> None:
+            await self._flush_pending_actor_spawns()
             pm = await self._proc_mesh
             await self._logging_manager.flush_async()
             await pm.stop_nonblocking(instance, reason)
@@ -790,32 +799,6 @@ class ProcMesh(MeshTrait):
             workspaces=list(workspaces.values()),
             auto_reload=auto_reload,
         )
-
-    @classmethod
-    def _from_alloc(
-        self,
-        alloc: AllocHandle,
-        setup: Callable[[], None] | None = None,
-        _attach_controller_controller: bool = True,
-    ) -> "ProcMesh":
-        warnings.warn(
-            (
-                "DEPRECATION WARNING: this function is deprecated. "
-                "Use `attach_to_workers` instead, or if applicable, one of the "
-                "JobTrait classes directly."
-            ),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        from monarch._src.actor.host_mesh import HostMesh
-
-        return HostMesh._allocate_nonblocking(
-            "host_mesh_from_alloc",
-            Extent(*zip(*alloc._extent.items())),
-            alloc._allocator,
-            alloc._constraints,
-        ).spawn_procs(bootstrap=setup)
 
 
 class _ControllerController(Actor):

@@ -14,9 +14,7 @@
 //! - `pyspy_frames`: one row per frame (matches `PySpyFrame`)
 //! - `pyspy_local_variables`: one row per local variable (matches `PySpyLocalVariable`)
 
-use record_batch_derive::RecordBatchRow;
-
-use crate::record_batch_sink::RecordBatchBuffer;
+use monarch_record_batch::RecordBatchRow;
 
 /// Row data for the pyspy_dumps table.
 #[derive(RecordBatchRow)]

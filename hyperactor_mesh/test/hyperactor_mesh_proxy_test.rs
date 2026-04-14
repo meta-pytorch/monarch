@@ -99,7 +99,8 @@ impl Handler<Echo> for TestActor {
     ],
 )]
 pub struct ProxyActor {
-    proc_mesh: &'static Arc<ProcMesh>,
+    exe_path: String,
+    proc_mesh: Option<Arc<ProcMesh>>,
     actor_mesh: Option<ActorMesh<TestActor>>,
 }
 
@@ -114,23 +115,8 @@ impl fmt::Debug for ProxyActor {
 
 #[async_trait]
 impl Actor for ProxyActor {
-    async fn init(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        let cx = context().await;
-        let instance = cx.actor_instance;
-        self.actor_mesh = Some(self.proc_mesh.spawn(instance, "echo", &()).await.unwrap());
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl RemoteSpawn for ProxyActor {
-    type Params = String;
-
-    async fn new(
-        exe_path: Self::Params,
-        _environment: Flattrs,
-    ) -> anyhow::Result<Self, anyhow::Error> {
-        let mut cmd = Command::new(PathBuf::from(&exe_path));
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        let mut cmd = Command::new(PathBuf::from(&self.exe_path));
         cmd.arg("--bootstrap");
 
         let mut allocator = ProcessAllocator::new(cmd);
@@ -145,16 +131,28 @@ impl RemoteSpawn for ProxyActor {
             })
             .await
             .unwrap();
-        let cx = context().await;
-        let instance = cx.actor_instance;
         let proc_mesh = Arc::new(
-            ProcMesh::allocate(instance, Box::new(alloc), "proxy")
+            ProcMesh::allocate(this, Box::new(alloc), "proxy")
                 .await
                 .unwrap(),
         );
-        let leaked: &'static Arc<ProcMesh> = Box::leak(Box::new(proc_mesh));
+        self.actor_mesh = Some(proc_mesh.spawn(this, "echo", &()).await.unwrap());
+        self.proc_mesh = Some(proc_mesh);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RemoteSpawn for ProxyActor {
+    type Params = String;
+
+    async fn new(
+        exe_path: Self::Params,
+        _environment: Flattrs,
+    ) -> anyhow::Result<Self, anyhow::Error> {
         Ok(Self {
-            proc_mesh: leaked,
+            exe_path,
+            proc_mesh: None,
             actor_mesh: None,
         })
     }

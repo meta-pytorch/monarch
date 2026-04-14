@@ -108,7 +108,7 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE".to_string()),
         Some("max_cast_dimension_size".to_string()),
     ))
-    pub attr MAX_CAST_DIMENSION_SIZE: usize = usize::MAX;
+    pub attr MAX_CAST_DIMENSION_SIZE: usize = 16;
 
     /// Which builtin process launcher backend to use.
     /// Accepted values: "native" (default), "systemd".
@@ -125,8 +125,7 @@ declare_attrs! {
     ///
     /// Parsed as a `SocketAddr` (e.g. `[::]:1729`, `0.0.0.0:8080`).
     /// Used as the bind address when no explicit address is provided
-    /// to `MeshAdminAgent`, and as the default address assumed by
-    /// admin clients connecting via `mast_conda:///`.
+    /// to `MeshAdminAgent`.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_ADMIN_ADDR".to_string()),
         Some("mesh_admin_addr".to_string()),

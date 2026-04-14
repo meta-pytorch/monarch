@@ -188,6 +188,12 @@ struct ProcState {
     /// The actor ID of the supervision coordinator, if it lives on this proc.
     /// Used to ensure the coordinator is shut down last during proc teardown.
     supervision_coordinator_actor_id: OnceLock<reference::ActorId>,
+
+    /// Handle to the mailbox server task, if this proc was created with
+    /// `Proc::direct()` or had `serve()` called on it. Used to
+    /// gracefully stop the server and join it (flushing receive-side
+    /// acks) during shutdown.
+    mailbox_server_handle: std::sync::Mutex<Option<crate::mailbox::MailboxServerHandle>>,
 }
 
 impl Drop for ProcState {
@@ -239,6 +245,7 @@ impl Proc {
                 terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
+                mailbox_server_handle: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -248,7 +255,8 @@ impl Proc {
         let (addr, rx) = channel::serve(addr)?;
         let proc_id = reference::ProcId::with_name(addr, name);
         let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
-        proc.clone().serve(rx);
+        let handle = proc.clone().serve(rx);
+        *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
         Ok(proc)
     }
 
@@ -487,11 +495,9 @@ impl Proc {
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
 
-        let introspect_cell = instance.inner.cell.clone();
-        let introspect_mailbox = instance.inner.mailbox.clone();
         tokio::spawn(crate::introspect::serve_introspect(
-            introspect_cell,
-            introspect_mailbox,
+            instance.inner.cell.clone(),
+            instance.inner.mailbox.clone(),
             receivers.introspect,
         ));
 
@@ -1001,6 +1007,22 @@ impl Proc {
     pub async fn flush(&self) -> Result<(), anyhow::Error> {
         self.state().forwarder.flush().await
     }
+
+    /// Stop and join the mailbox server, flushing receive-side acks.
+    ///
+    /// This stops the `MailboxServer::serve` loop and awaits its
+    /// completion, which runs `Rx::join()` to flush any pending
+    /// transport-level acks before the channel is torn down.
+    ///
+    /// No-op if no mailbox server handle is stored (e.g. for
+    /// `Proc::configured` or `Proc::local` procs that don't serve).
+    pub async fn join_mailbox_server(&self) {
+        let handle = self.inner.mailbox_server_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            handle.stop("proc shutting down");
+            let _ = handle.await;
+        }
+    }
 }
 
 #[async_trait]
@@ -1293,7 +1315,7 @@ impl<A: Actor> Instance<A> {
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
     #[track_caller]
-    fn change_status(&self, new: ActorStatus) {
+    pub fn change_status(&self, new: ActorStatus) {
         let old = self.inner.status_tx.send_replace(new.clone());
         // 2 cases are allowed:
         // * non-terminal -> non-terminal
@@ -1319,8 +1341,9 @@ impl<A: Actor> Instance<A> {
             || old == new)
         {
             let new_status = new.arm().unwrap_or("unknown");
-            let change_reason = match new {
+            let change_reason = match &new {
                 ActorStatus::Failed(reason) => reason.to_string(),
+                ActorStatus::Stopped(reason) => reason.clone(),
                 _ => "".to_string(),
             };
             tracing::info!(
@@ -1573,11 +1596,9 @@ impl<A: Actor> Instance<A> {
         // Spawn the introspect task — a separate tokio task that
         // reads InstanceCell directly and replies via the actor's
         // Mailbox. The actor loop never sees IntrospectMessage.
-        let introspect_cell = self.inner.cell.clone();
-        let introspect_mailbox = self.inner.mailbox.clone();
         tokio::spawn(crate::introspect::serve_introspect(
-            introspect_cell,
-            introspect_mailbox,
+            self.inner.cell.clone(),
+            self.inner.mailbox.clone(),
             receivers.introspect,
         ));
 
@@ -1951,8 +1972,14 @@ impl<A: Actor> Instance<A> {
                 HandlerInfo::from_static(std::any::type_name::<M>(), None)
             }
         };
+
+        let endpoint = type_info.and_then(|info| {
+            // SAFETY: The caller promises to pass the correct type info.
+            unsafe { info.endpoint_name(&message as *const M as *const ()) }
+        });
+
         // Use a helper function for a better instrument log.
-        self.handle_message_with_handler_info(actor, handler_info, headers, message)
+        self.handle_message_with_handler_info(actor, handler_info, headers, message, endpoint)
             .await
     }
 
@@ -1964,6 +1991,7 @@ impl<A: Actor> Instance<A> {
         handler_info: HandlerInfo,
         headers: Flattrs,
         message: M,
+        endpoint: Option<String>,
     ) -> Result<(), anyhow::Error>
     where
         A: Handler<M>,
@@ -1990,8 +2018,7 @@ impl<A: Actor> Instance<A> {
                 id: message_id,
                 from_actor_id,
                 to_actor_id,
-                // TODO: populate endpoint
-                endpoint: None,
+                endpoint,
                 port_id,
             });
 
@@ -3922,7 +3949,7 @@ mod tests {
         assert_eq!(event.actor_id, actor_id);
         assert!(event.actor_status.is_failed());
         // Originated here, not propagated.
-        assert_eq!(event.actually_failing_actor().actor_id, actor_id);
+        assert_eq!(event.actually_failing_actor().unwrap().actor_id, actor_id);
     }
 
     // Exercises FI-2 (see introspect.rs module-scope comment).
@@ -4043,7 +4070,7 @@ mod tests {
         );
         let event = event.unwrap();
         // Root cause is the child, not the parent.
-        assert_eq!(event.actually_failing_actor().actor_id, child_id);
+        assert_eq!(event.actually_failing_actor().unwrap().actor_id, child_id);
     }
 
     // Exercises S11 (see introspect.rs module doc).
@@ -4112,7 +4139,7 @@ mod tests {
         let root_cause = attrs
             .get(crate::introspect::FAILURE_ROOT_CAUSE_ACTOR)
             .expect("must have root_cause_actor");
-        assert_eq!(root_cause, &actor_id.to_string());
+        assert_eq!(root_cause, &actor_id);
         assert_eq!(
             attrs.get(crate::introspect::FAILURE_IS_PROPAGATED),
             Some(&false)
@@ -4152,7 +4179,7 @@ mod tests {
         let root_cause = attrs
             .get(crate::introspect::FAILURE_ROOT_CAUSE_ACTOR)
             .expect("propagated failure must have root_cause_actor");
-        assert_eq!(root_cause, &child_id.to_string());
+        assert_eq!(root_cause, &child_id);
         assert_eq!(
             attrs.get(crate::introspect::FAILURE_IS_PROPAGATED),
             Some(&true)

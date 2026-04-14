@@ -25,7 +25,7 @@ use crate::trace_dispatcher::TraceEventSink;
 use crate::trace_dispatcher::TraceFields;
 use crate::trace_dispatcher::get_field;
 
-const MAX_LINE_SIZE: usize = 4096;
+const MAX_LINE_SIZE: usize = 65536;
 const TRUNCATION_SUFFIX_RESERVE: usize = 32;
 
 /// A string buffer that limits writes to a maximum size.

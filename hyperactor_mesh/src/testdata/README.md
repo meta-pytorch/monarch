@@ -8,13 +8,14 @@ schemas against these golden files to detect unintentional API drift.
 ## Files
 
 - `node_payload_schema.json` — JSON Schema for `NodePayload`
+- `admin_info_schema.json` — JSON Schema for `AdminInfo`
 - `error_schema.json` — JSON Schema for `ApiErrorEnvelope`
-- `openapi.json` — OpenAPI 3.1 spec (embeds both schemas)
+- `openapi.json` — OpenAPI 3.1 spec (embeds all schemas)
 
 ## Regenerating
 
 After intentional changes to `NodePayload`, `NodeProperties`,
-`FailureInfo`, `ApiError`, or `ApiErrorEnvelope`:
+`FailureInfo`, `ApiError`, `ApiErrorEnvelope`, or `AdminInfo`:
 
 ```sh
 # Buck

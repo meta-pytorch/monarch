@@ -830,15 +830,14 @@ mod tests {
 
     use bytes::Bytes;
     use rand::Rng;
-    use rand::thread_rng;
     use test_support::Throttled;
     use tokio::io::AsyncWriteExt;
 
     use super::*;
 
     fn random_buffer(max_len: usize) -> Bytes {
-        let mut rng = thread_rng();
-        let len = rng.gen_range(0..max_len);
+        let mut rng = rand::rng();
+        let len = rng.random_range(0..max_len);
         let mut buf = vec![0u8; len];
         rng.fill(buf.as_mut_slice());
         Bytes::from(buf)

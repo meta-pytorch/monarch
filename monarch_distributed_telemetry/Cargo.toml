@@ -10,13 +10,13 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1.86"
-datafusion = "52.1"
+datafusion = "52.4.0"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
+monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
 pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
-record_batch_derive = { version = "0.0.0", path = "../record_batch_derive" }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
