@@ -100,4 +100,5 @@ impl NicBackend for EfaBackend {
 
     /// TODO_ANDY: figure out what to do with this
     fn priority(&self) -> u32 { 300 }
-}
+
+} // EfaBackend
