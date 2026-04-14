@@ -12,6 +12,47 @@ from pathlib import Path
 
 import pytest
 
+_THIS_DIR = Path(__file__).parent
+
+collect_ignore: list[str] = []
+
+# FUSE and RDMA require Linux; skip these files on other platforms to avoid
+# ImportError during collection.
+if sys.platform != "linux":
+    collect_ignore.extend(
+        str(_THIS_DIR / name)
+        for name in [
+            "test_remotemount.py",
+            "test_rdma.py",
+            "test_rdma_cpu_no_torch.py",
+            "test_rdma_unit.py",
+            "rdma_load_test.py",
+        ]
+    )
+
+# Several test files import monarch.mesh_controller or monarch._testing which
+# transitively require the tensor_engine Rust extension.  When the extension is
+# not compiled in (USE_TENSOR_ENGINE=0), skip collection to avoid ImportError.
+try:
+    from monarch._rust_bindings import has_tensor_engine as _has_te_fn
+
+    _HAS_TENSOR_ENGINE = _has_te_fn()
+except Exception:
+    _HAS_TENSOR_ENGINE = False
+
+if not _HAS_TENSOR_ENGINE:
+    collect_ignore.extend(
+        str(_THIS_DIR / name)
+        for name in [
+            "test_tensor_engine.py",
+            "test_remote_functions.py",
+            "test_controller.py",
+            "test_builtins_log.py",
+            "test_builtins_random.py",
+            "test_coalescing.py",
+        ]
+    )
+
 # Propagate sys.path to PYTHONPATH so that worker subprocesses spawned by
 # monarch (e.g. distributed_proc_mesh) see the same import paths as the
 # pytest parent process. pytest's default "prepend" import mode modifies

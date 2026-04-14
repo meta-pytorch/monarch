@@ -2062,6 +2062,7 @@ impl ProcManager for BootstrapProcManager {
         };
 
         // Launch via the configured launcher backend.
+        tracing::info!(proc_id = %proc_id, "launching proc with opts={opts:?}");
         let launch_result = self
             .launcher()
             .launch(&proc_id, opts.clone())
@@ -2071,7 +2072,11 @@ impl ProcManager for BootstrapProcManager {
                     ProcLauncherError::Launch(io_err) => io_err,
                     other => std::io::Error::other(other.to_string()),
                 };
-                HostError::ProcessSpawnFailure(proc_id.clone(), io_err)
+                HostError::ProcessSpawnFailure(
+                    proc_id.clone(),
+                    format!("{:?}", opts.command),
+                    io_err,
+                )
             })?;
 
         // Wire up StreamFwders if stdio was captured.
