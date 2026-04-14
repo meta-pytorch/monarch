@@ -742,6 +742,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
             addr: host.clone(),
             command: None,
             config: None,
+            duplex_addr: None,
             exit_on_shutdown: false,
         };
         boot.to_env(&mut cmd);
