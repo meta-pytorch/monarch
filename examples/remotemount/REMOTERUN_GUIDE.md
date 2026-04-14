@@ -131,7 +131,8 @@ Unchanged workers skip transfer entirely (metadata + remount only).
 
 ### Benchmark setup
 
-- 2 GB200 hosts, 8 parallel TLS streams, TCP fallback (no ibverbs from client)
+- GB200 hosts, RDMABuffer transfer (TCP fallback from client, ibverbs
+  between workers for leader→peer fan-out)
 - Each payload contains 1000 small `.py` files (~330 KB total) plus a
   `data.bin` file sized to reach the target payload
 - Warm-up step pre-spawns actors so cold start measures transfer time only
@@ -146,20 +147,32 @@ Unchanged workers skip transfer entirely (metadata + remount only).
 | Rewrite .py | Rewrite all 1000 `.py` files — only the 64 MB block(s) containing them are re-transferred |
 | Delete file | Remove one `.py` file — partial transfer (only affected blocks) |
 
-### Results — 2 hosts (8 streams)
+### Results — 2 hosts
 
 | Payload | Cold start | No change | Rewrite data.bin | Rewrite .py | Delete file |
 |---------|-----------|-----------|-----------------|-------------|-------------|
-| 1 GB    | 9.6s      | 7.7s      | 10.6s           | 8.4s        | 8.1s        |
-| 2 GB    | 12.4s     | 8.3s      | 19.6s           | 9.9s        | 8.1s        |
-| 4 GB    | 13.7s     | 8.9s      | 13.7s           | 9.5s        | 8.6s        |
-| 8 GB    | 20.1s     | 9.3s      | 20.3s           | 10.9s       | 11.2s       |
+| 1 GB    | 8.5s      | 6.5s      | 9.1s            | 8.1s        | 7.2s        |
+| 2 GB    | 10.4s     | 6.8s      | 11.2s           | 7.5s        | 8.1s        |
+| 4 GB    | 13.7s     | 8.2s      | 16.2s           | 8.8s        | 8.6s        |
+| 8 GB    | 24.7s     | 9.7s      | 27.9s           | 10.5s       | 10.7s       |
 
-### Results — 64 hosts (8 streams, chunked tree fan-out, 4 leaders)
+### Results — 16 hosts (leader→peer RDMA fan-out, 4 leaders)
 
 | Payload | Cold start | No change | Rewrite data.bin | Rewrite .py | Delete file |
 |---------|-----------|-----------|-----------------|-------------|-------------|
-| 8 GB    | 46.2s     | 9.2s      | 45.6s           | 13.8s       | 13.2s       |
+| 1 GB    | 9.8s      | 6.5s      | 11.6s           | 8.9s        | 7.9s        |
+| 2 GB    | 14.0s     | 6.8s      | 14.3s           | 9.5s        | 8.5s        |
+| 4 GB    | 20.8s     | 7.2s      | 21.5s           | 10.8s       | 9.8s        |
+| 8 GB    | 34.0s     | 10.8s     | 34.4s           | 13.3s       | 12.3s       |
+
+### Results — 64 hosts (leader→peer RDMA fan-out, 4 leaders)
+
+| Payload | Cold start | No change | Rewrite data.bin | Rewrite .py | Delete file |
+|---------|-----------|-----------|-----------------|-------------|-------------|
+| 1 GB    | 11.4s     | 6.6s      | 11.4s           | 9.9s        | 9.3s        |
+| 2 GB    | 14.3s     | 7.5s      | 14.6s           | 9.8s        | 9.8s        |
+| 4 GB    | 18.7s     | 8.5s      | 19.7s           | 11.0s       | 10.6s       |
+| 8 GB    | 30.1s     | 9.7s      | 29.6s           | 13.0s       | 12.5s       |
 
 Key observations:
 
