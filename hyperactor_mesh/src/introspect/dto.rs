@@ -65,6 +65,50 @@ pub struct NodePayloadDto {
     pub as_of: String,
 }
 
+/// Memory stats of the hosting OS process (DTO mirror of
+/// `ProcessMemoryStats`).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema
+)]
+#[schemars(rename = "ProcessMemoryStats")]
+pub struct ProcessMemoryStatsDto {
+    /// RSS of the hosting OS process (bytes).
+    pub process_rss_bytes: Option<u64>,
+    /// Virtual memory size of the hosting OS process (bytes).
+    pub process_vm_size_bytes: Option<u64>,
+}
+
+/// Proc-level debug/operational stats (DTO mirror of
+/// `ProcDebugStats`).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema
+)]
+#[schemars(rename = "ProcDebugStats")]
+pub struct ProcDebugStatsDto {
+    /// Hosting-process memory.
+    pub memory: ProcessMemoryStatsDto,
+    /// Sum of per-actor queue depths (live actors only).
+    pub actor_work_queue_depth_total: u64,
+    /// Max per-actor queue depth (live actors only).
+    pub actor_work_queue_depth_max: u64,
+}
+
 /// Node-specific metadata. Externally-tagged enum — the JSON
 /// key is the variant name (Root, Host, Proc, Actor, Error).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -82,6 +126,8 @@ pub enum NodePropertiesDto {
         addr: String,
         num_procs: usize,
         system_children: Vec<String>,
+        /// Hosting-process memory stats.
+        memory: ProcessMemoryStatsDto,
     },
     /// Properties describing a proc running on a host.
     Proc {
@@ -92,6 +138,8 @@ pub enum NodePropertiesDto {
         stopped_retention_cap: usize,
         is_poisoned: bool,
         failed_actor_count: usize,
+        /// Runtime debug/operational stats.
+        debug: ProcDebugStatsDto,
     },
     /// Runtime metadata for a single actor instance.
     Actor {
@@ -178,10 +226,15 @@ impl From<NodeProperties> for NodePropertiesDto {
                 addr,
                 num_procs,
                 system_children,
+                memory,
             } => Self::Host {
                 addr,
                 num_procs,
                 system_children: refs_to_strings(&system_children),
+                memory: ProcessMemoryStatsDto {
+                    process_rss_bytes: memory.process_rss_bytes,
+                    process_vm_size_bytes: memory.process_vm_size_bytes,
+                },
             },
             NodeProperties::Proc {
                 proc_name,
@@ -191,6 +244,7 @@ impl From<NodeProperties> for NodePropertiesDto {
                 stopped_retention_cap,
                 is_poisoned,
                 failed_actor_count,
+                debug,
             } => Self::Proc {
                 proc_name,
                 num_actors,
@@ -199,6 +253,14 @@ impl From<NodeProperties> for NodePropertiesDto {
                 stopped_retention_cap,
                 is_poisoned,
                 failed_actor_count,
+                debug: ProcDebugStatsDto {
+                    memory: ProcessMemoryStatsDto {
+                        process_rss_bytes: debug.memory.process_rss_bytes,
+                        process_vm_size_bytes: debug.memory.process_vm_size_bytes,
+                    },
+                    actor_work_queue_depth_total: debug.actor_work_queue_depth_total,
+                    actor_work_queue_depth_max: debug.actor_work_queue_depth_max,
+                },
             },
             NodeProperties::Actor {
                 actor_status,
@@ -290,10 +352,15 @@ impl TryFrom<NodePropertiesDto> for NodeProperties {
                 addr,
                 num_procs,
                 system_children,
+                memory,
             } => Self::Host {
                 addr,
                 num_procs,
                 system_children: parse_refs("Host.system_children", &system_children)?,
+                memory: super::ProcessMemoryStats {
+                    process_rss_bytes: memory.process_rss_bytes,
+                    process_vm_size_bytes: memory.process_vm_size_bytes,
+                },
             },
             NodePropertiesDto::Proc {
                 proc_name,
@@ -303,6 +370,7 @@ impl TryFrom<NodePropertiesDto> for NodeProperties {
                 stopped_retention_cap,
                 is_poisoned,
                 failed_actor_count,
+                debug,
             } => Self::Proc {
                 proc_name,
                 num_actors,
@@ -311,6 +379,14 @@ impl TryFrom<NodePropertiesDto> for NodeProperties {
                 stopped_retention_cap,
                 is_poisoned,
                 failed_actor_count,
+                debug: super::ProcDebugStats {
+                    memory: super::ProcessMemoryStats {
+                        process_rss_bytes: debug.memory.process_rss_bytes,
+                        process_vm_size_bytes: debug.memory.process_vm_size_bytes,
+                    },
+                    actor_work_queue_depth_total: debug.actor_work_queue_depth_total,
+                    actor_work_queue_depth_max: debug.actor_work_queue_depth_max,
+                },
             },
             NodePropertiesDto::Actor {
                 actor_status,
@@ -421,6 +497,7 @@ mod tests {
                 addr: "127.0.0.1:8080".to_string(),
                 num_procs: 1,
                 system_children: vec![],
+                memory: Default::default(),
             },
             children: vec![NodeRef::Proc(test_proc_id())],
             parent: Some(NodeRef::Root),
@@ -439,6 +516,7 @@ mod tests {
                 stopped_retention_cap: 100,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
             children: vec![NodeRef::Actor(test_actor_id())],
             parent: Some(NodeRef::Host(test_host_actor_id())),

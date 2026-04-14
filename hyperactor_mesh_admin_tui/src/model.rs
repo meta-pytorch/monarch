@@ -665,6 +665,7 @@ mod tests {
                 stopped_retention_cap: 10,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
             children: vec![],
             parent: None,
