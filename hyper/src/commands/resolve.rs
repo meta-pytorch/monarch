@@ -6,40 +6,30 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use crate::MastResolver;
-
-/// CLI arguments for resolving a `mast_conda:///` job handle into a
-/// mesh admin base URL.
+/// CLI arguments for resolving an admin handle into a mesh admin URL.
 ///
-/// `handle` is the MAST job handle to resolve. `port` optionally
-/// overrides the port used in the resolved URL; when not provided,
-/// the port is derived from `MESH_ADMIN_ADDR`.
+/// **Currently disabled for `mast_conda:///` handles.** Mesh admin
+/// placement has moved to the caller's local proc, making
+/// topology-based resolution incorrect. `mast_conda:///` inputs return
+/// an explicit error until a publication-based discovery mechanism
+/// replaces them. Direct `https://host:port` and bare `host:port`
+/// inputs are resolved immediately.
 #[derive(clap::Args, Debug)]
 pub struct ResolveCommand {
-    /// MAST job handle (e.g. mast_conda:///monarch-abc123)
+    /// Admin handle: `https://host:port`, `host:port`, or `mast_conda:///job`
     handle: String,
 
-    /// Override the port (default: from MESH_ADMIN_ADDR config)
+    /// Override the port (intentionally unused — reserved for future use)
     #[arg(long)]
     port: Option<u16>,
 }
 
 impl ResolveCommand {
-    /// Execute the resolve command (INV-DISPATCH).
-    ///
-    /// See the module-level comment on `MastResolver` in `main.rs`
-    /// for why the dispatch is local to each binary.
-    pub async fn run(self, resolver: &MastResolver) -> anyhow::Result<()> {
-        let url = match resolver {
-            MastResolver::Cli => {
-                hyperactor_mesh::mesh_admin::resolve_mast_handle(&self.handle, self.port).await?
-            }
-            #[cfg(fbcode_build)]
-            MastResolver::Thrift(fb) => {
-                hyperactor_meta_lib::mesh_admin::resolve_mast_handle(*fb, &self.handle, self.port)
-                    .await?
-            }
-        };
+    /// Execute the resolve command via [`AdminHandle`].
+    pub async fn run(self) -> anyhow::Result<()> {
+        let url = hyperactor_mesh::mesh_admin::AdminHandle::parse(&self.handle)
+            .resolve(self.port)
+            .await?;
         println!("{}", url);
         Ok(())
     }

@@ -1653,7 +1653,8 @@ mod tests {
         actor_mesh.cast(instance, message).unwrap();
 
         // Verify that all destinations received the original port (not split).
-        for _ in proc_mesh.extent().points() {
+        let num_points = proc_mesh.extent().points().count();
+        for _ in 0..num_points {
             let msg = rx.recv().await.expect("missing");
             match msg {
                 TestMessage::CastWithUnsplitPort { reply_to } => {
@@ -1673,7 +1674,6 @@ mod tests {
             let val = reply_rx.recv().await.unwrap();
             assert_eq!(val, 42);
         }
-
         let _ = host_mesh.shutdown(instance).await;
     }
 }

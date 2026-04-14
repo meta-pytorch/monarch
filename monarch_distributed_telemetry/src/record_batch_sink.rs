@@ -24,7 +24,8 @@ use datafusion::arrow::record_batch::RecordBatch;
 use hyperactor_telemetry::FieldValue;
 use hyperactor_telemetry::TraceEvent;
 use hyperactor_telemetry::TraceEventSink;
-use record_batch_derive::RecordBatchRow;
+use monarch_record_batch::RecordBatchBuffer;
+use monarch_record_batch::RecordBatchRow;
 
 /// Global counter for the number of batches flushed by the counting sink.
 /// This can be checked from tests to verify that the sink is active.
@@ -108,13 +109,6 @@ use std::sync::Mutex;
 /// by creating the table with the schema but not appending the empty data.
 pub type FlushCallback = Box<dyn Fn(&str, RecordBatch) + Send>;
 
-/// Trait for buffer types that can produce RecordBatches.
-/// Auto-implemented by the RecordBatchRow derive macro.
-pub(crate) trait RecordBatchBuffer {
-    fn len(&self) -> usize;
-    fn to_record_batch(&mut self) -> anyhow::Result<RecordBatch>;
-}
-
 /// Inner state of RecordBatchSink.
 struct RecordBatchSinkInner {
     spans_buffer: SpanBuffer,
@@ -132,7 +126,7 @@ impl RecordBatchSinkInner {
     ) -> anyhow::Result<()> {
         // Always produce a batch (even if empty) - the callback handles empty batches
         // by creating the table with the schema but not appending empty data
-        let batch = buffer.to_record_batch()?;
+        let batch = buffer.drain_to_record_batch()?;
         callback(table_name, batch);
         Ok(())
     }

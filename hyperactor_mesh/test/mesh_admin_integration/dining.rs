@@ -146,6 +146,8 @@ impl Drop for ShutdownGuard<'_> {
 async fn check_dining_endpoints(bin: &Path) {
     DiningScenario::run(bin, |s| {
         Box::pin(async move {
+            crate::admin::assert_admin_info(s).await;
+            crate::admin::assert_admin_schema(s).await;
             crate::config::check(s).await;
             crate::tree::check(s).await;
         })
@@ -153,16 +155,95 @@ async fn check_dining_endpoints(bin: &Path) {
     .await;
 }
 
-/// MIT-9, MIT-13, MIT-14, MIT-6, MIT-10, MIT-11, MIT-12, MIT-15: All
+/// MIT-9, MIT-10, MIT-11, MIT-12, MIT-13, MIT-14, MIT-15:
 /// dining-based endpoint assertions — Rust binary.
 pub async fn run_dining_endpoints_rust() {
     let bin = harness::dining_philosophers_rust_binary();
     check_dining_endpoints(&bin).await;
 }
 
-/// MIT-9, MIT-13, MIT-14, MIT-6, MIT-10, MIT-11, MIT-12, MIT-15:
-/// All dining-based endpoint assertions — Python binary.
+/// MIT-9, MIT-10, MIT-11, MIT-12, MIT-13, MIT-14, MIT-15:
+/// dining-based endpoint assertions — Python binary.
 pub async fn run_dining_endpoints_python() {
     let bin = harness::dining_philosophers_python_binary();
     check_dining_endpoints(&bin).await;
+}
+
+// --- traversal family ---
+
+/// MIT-20, MIT-21, MIT-22, MIT-23, MIT-24: /v1/{ref} topology
+/// traversal — Rust binary.
+pub async fn run_ref_traversal_rust() {
+    let bin = harness::dining_philosophers_rust_binary();
+    DiningScenario::run(&bin, |s| {
+        Box::pin(async move {
+            crate::ref_check::check(s).await;
+        })
+    })
+    .await;
+}
+
+/// MIT-20, MIT-21, MIT-22, MIT-23, MIT-24: /v1/{ref} topology
+/// traversal — Python binary.
+pub async fn run_ref_traversal_python() {
+    let bin = harness::dining_philosophers_python_binary();
+    DiningScenario::run(&bin, |s| {
+        Box::pin(async move {
+            crate::ref_check::check(s).await;
+        })
+    })
+    .await;
+}
+
+// --- malformed-ref family ---
+
+/// MIT-25, MIT-26, MIT-27, MIT-28, MIT-29, MIT-30, MIT-31:
+/// malformed/encoded reference edge cases — Rust binary.
+pub async fn run_ref_edge_cases_rust() {
+    let bin = harness::dining_philosophers_rust_binary();
+    DiningScenario::run(&bin, |s| {
+        Box::pin(async move {
+            crate::ref_edge::check(s).await;
+        })
+    })
+    .await;
+}
+
+/// MIT-25, MIT-26, MIT-27, MIT-28, MIT-29, MIT-30, MIT-31:
+/// malformed/encoded reference edge cases — Python binary.
+pub async fn run_ref_edge_cases_python() {
+    let bin = harness::dining_philosophers_python_binary();
+    DiningScenario::run(&bin, |s| {
+        Box::pin(async move {
+            crate::ref_edge::check(s).await;
+        })
+    })
+    .await;
+}
+
+// --- openapi conformance family ---
+
+/// MIT-37 through MIT-52: OpenAPI conformance — Rust binary.
+pub async fn run_openapi_conformance_rust() {
+    let bin = harness::dining_philosophers_rust_binary();
+    DiningScenario::run(&bin, |s| {
+        Box::pin(async move {
+            crate::openapi::check(s).await;
+        })
+    })
+    .await;
+}
+
+// --- auth family ---
+
+/// MIT-32, MIT-33, MIT-34, MIT-35, MIT-36: auth failure coverage —
+/// Rust binary.
+pub async fn run_auth_failures_rust() {
+    let bin = harness::dining_philosophers_rust_binary();
+    DiningScenario::run(&bin, |s| {
+        Box::pin(async move {
+            crate::auth::check(s).await;
+        })
+    })
+    .await;
 }

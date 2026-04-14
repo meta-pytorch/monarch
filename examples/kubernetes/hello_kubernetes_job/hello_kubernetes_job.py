@@ -40,6 +40,12 @@ def main():
         help="Provision MonarchMesh CRDs from Python (no YAML manifests needed)",
     )
     parser.add_argument(
+        "--kueue",
+        type=str,
+        default=None,
+        help="Kueue local queue name",
+    )
+    parser.add_argument(
         "--image",
         type=str,
         default="ghcr.io/meta-pytorch/monarch:latest",
@@ -63,6 +69,9 @@ def main():
             "Cannot use --provision and --attach-to in combination. "
             "Use --attach-to only without provision."
         )
+
+    if args.volcano and args.kueue:
+        parser.error("Arguments --volcano and --kueue are mutually exclusive")
 
     job = KubernetesJob(
         namespace="monarch-tests",
@@ -91,8 +100,19 @@ def main():
         # StatefulSets and headless Services automatically.
         # If out-of-cluster mode is on, this image also defaults to adding the
         # duplex port.
-        job.add_mesh("mesh1", 2, image_spec=ImageSpec(args.image))
-        job.add_mesh("mesh2", 2, image_spec=ImageSpec(args.image))
+        labels = {"kueue.x-k8s.io/queue-name": args.kueue} if args.kueue else None
+        job.add_mesh(
+            "mesh1",
+            2,
+            image_spec=ImageSpec(args.image),
+            labels=labels,
+        )
+        job.add_mesh(
+            "mesh2",
+            2,
+            image_spec=ImageSpec(args.image),
+            labels=labels,
+        )
     else:
         job.add_mesh("mesh1", 2)
         job.add_mesh("mesh2", 2)

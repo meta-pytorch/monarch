@@ -20,6 +20,12 @@
 | monarch.job | `docs/source/api/monarch.job.rst` |
 | monarch.spmd | `docs/source/api/monarch.spmd.rst` |
 
+## Tools & Observability
+
+| Document | Location |
+|----------|----------|
+| **Mesh Admin TUI** | `docs/source/admin-tui.md` |
+
 ## Examples
 
 | Example | Location |

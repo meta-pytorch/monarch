@@ -90,7 +90,7 @@ pub enum Status {
 }
 
 impl Status {
-    /// Returns whether the status is a terminating status.
+    /// Returns whether the status is a terminating status (includes `Stopping`).
     pub fn is_terminating(&self) -> bool {
         matches!(
             self,
@@ -116,6 +116,20 @@ impl Status {
 
     pub fn is_healthy(&self) -> bool {
         matches!(self, Status::Initializing | Status::Running)
+    }
+
+    /// Ensure this status is at least as terminal as `floor`.
+    ///
+    /// If `floor` is a terminating status (Stopping, Stopped, Failed,
+    /// Timeout) and `self` is not, returns `floor`. Otherwise returns
+    /// `self` unchanged. This is used to prevent a child resource
+    /// from appearing healthier than its parent.
+    pub fn clamp_min(self, floor: Status) -> Status {
+        if floor.is_terminating() && !self.is_terminating() {
+            floor
+        } else {
+            self
+        }
     }
 }
 
@@ -794,6 +808,10 @@ pub(crate) struct ProcSpec {
     /// Optional bootstrap command override. When set, this command is used
     /// to spawn the proc instead of the host agent's default bootstrap command.
     pub(crate) bootstrap_command: Option<BootstrapCommand>,
+    /// The name of the HostMesh that owns this proc. Used by
+    /// `DrainHost` to selectively drain only procs belonging to a
+    /// specific mesh.
+    pub(crate) host_mesh_name: Option<crate::Name>,
 }
 wirevalue::register_type!(ProcSpec);
 

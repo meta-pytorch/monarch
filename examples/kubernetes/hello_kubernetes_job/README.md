@@ -16,6 +16,10 @@ directly from Python. No YAML manifests for worker pods are needed.
   ```bash
   kubectl create namespace monarch-tests
   ```
+- (Optional) [Kueue](https://kueue.sigs.k8s.io/) installed for gang scheduling, and the `"user-queue"` `LocalQueue` created by applying the quota and queue configuration:
+  ```bash
+  kubectl apply -f manifests/kueue_quota.yaml
+  ```
 
 ### Deploy the Controller
 
@@ -33,6 +37,9 @@ kubectl cp hello_kubernetes_job.py monarch-tests/hello-controller:/tmp/hello_kub
 
 # Run with --provision to create MonarchMesh CRDs from Python
 kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision
+ 
+# (Optional) Run with Kueue for gang scheduling (mesh level)
+kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision --kueue user-queue
 ```
 
 The `--provision` flag tells `KubernetesJob` to create the MonarchMesh CRDs via the K8s API.
@@ -46,9 +53,9 @@ From MonarchMesh mesh2: hello from mesh2-0
 ```
 
 ### Cleanup
-
 ```bash
 kubectl delete -f manifests/hello_provision.yaml
+kubectl delete -f manifests/kueue_quota.yaml  # If used
 ```
 
 ## Provision Monarch Hosts with MonarchMesh YAML Manifests
@@ -60,6 +67,10 @@ kubectl delete -f manifests/hello_provision.yaml
 - The `monarch-tests` namespace created:
   ```bash
   kubectl create namespace monarch-tests
+  ```
+- (Optional) [Kueue](https://kueue.sigs.k8s.io/) installed for gang scheduling, and the `"user-queue"` `LocalQueue` created by applying the quota and queue configuration:
+  ```bash
+  kubectl apply -f manifests/kueue_quota.yaml
   ```
 
 ### Deploy the MonarchMesh and Controller
@@ -96,10 +107,12 @@ kubectl exec -it hello-controller -n monarch-tests -- /bin/bash
 
 # Inside the controller, run the example
 python /tmp/hello_kubernetes_job.py
+ 
+# (Optional) Run with Kueue for gang scheduling
+python /tmp/hello_kubernetes_job.py --kueue user-queue
 ```
 
 Or run directly without shell:
-
 ```bash
 kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py
 ```
@@ -112,9 +125,9 @@ From MonarchMesh mesh2: hello from mesh2-worker-0
 ```
 
 ### Cleanup
-
 ```bash
 kubectl delete -f manifests/hello_mesh.yaml
+kubectl delete -f manifests/kueue_quota.yaml  # If used
 ```
 
 ## Provision Monarch Hosts with Third-Party Scheduler

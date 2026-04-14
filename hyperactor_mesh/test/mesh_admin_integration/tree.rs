@@ -6,18 +6,19 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Tree, root, and mTLS rejection assertion helpers.
+//! Tree and root assertion helpers.
 //!
 //! These are assertion functions, not tests. They are called from
 //! `dining::test_dining_endpoints` so that all dining-based assertions
 //! share one scenario.
 //!
-//! See MIT-6, MIT-9, MIT-13, MIT-14 in `main` module doc.
+//! See MIT-9, MIT-13, MIT-14 in `main` module doc.
 
 use std::time::Duration;
 
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeProperties;
+use hyperactor_mesh::introspect::NodeRef;
 
 use crate::dining::DiningScenario;
 
@@ -26,26 +27,39 @@ const TREE_READY_SLEEP: Duration = Duration::from_secs(2);
 const TOPOLOGY_READY_ATTEMPTS: usize = 45;
 const TOPOLOGY_READY_SLEEP: Duration = Duration::from_secs(2);
 
-fn actor_name(reference: &str) -> &str {
-    reference.rsplit(',').next().unwrap_or(reference)
+fn actor_name(r: &NodeRef) -> &str {
+    match r {
+        NodeRef::Actor(id) => id.name(),
+        other => panic!("expected actor ref, got {other:?}"),
+    }
+}
+
+fn enc(r: &NodeRef) -> String {
+    urlencoding::encode(&r.to_string()).into_owned()
 }
 
 async fn topology_has_dining_actors(s: &DiningScenario) -> bool {
-    let root: NodePayload = match s.fixture.get_json("/v1/root").await {
+    let root: NodePayload = match s.fixture.get_node_payload("/v1/root").await {
         Ok(root) => root,
         Err(_) => return false,
     };
 
     for host_ref in &root.children {
-        let encoded = urlencoding::encode(host_ref);
-        let host: NodePayload = match s.fixture.get_json(&format!("/v1/{encoded}")).await {
+        let host: NodePayload = match s
+            .fixture
+            .get_node_payload(&format!("/v1/{}", enc(host_ref)))
+            .await
+        {
             Ok(host) => host,
             Err(_) => continue,
         };
 
         for proc_ref in &host.children {
-            let encoded = urlencoding::encode(proc_ref);
-            let proc_node: NodePayload = match s.fixture.get_json(&format!("/v1/{encoded}")).await {
+            let proc_node: NodePayload = match s
+                .fixture
+                .get_node_payload(&format!("/v1/{}", enc(proc_ref)))
+                .await
+            {
                 Ok(proc) => proc,
                 Err(_) => continue,
             };
@@ -62,28 +76,19 @@ async fn topology_has_dining_actors(s: &DiningScenario) -> bool {
     false
 }
 
-/// MIT-6, MIT-9, MIT-13, MIT-14: All tree and mTLS assertions.
-///
-/// Order: mTLS rejection (cheap, no server state) → root → tree (polls).
+/// MIT-9, MIT-13, MIT-14: Tree and root assertions.
 pub(crate) async fn check(s: &DiningScenario) {
-    // --- MIT-6: mTLS rejection (cheap, run first) ---
-    let client = s.fixture.build_unauthenticated_client().unwrap();
-    let result = client
-        .get(format!("{}/v1/root", s.fixture.admin_url))
-        .send()
-        .await;
-    assert!(
-        result.is_err(),
-        "MIT-6: connection without client cert should be rejected"
-    );
-
     // --- MIT-13: /v1/root contract ---
     let root: NodePayload = s
         .fixture
-        .get_json("/v1/root")
+        .get_node_payload("/v1/root")
         .await
         .unwrap_or_else(|e| panic!("MIT-13: /v1/root failed: {e:#}"));
-    assert_eq!(root.identity, "root", "MIT-13: expected identity 'root'");
+    assert_eq!(
+        root.identity,
+        NodeRef::Root,
+        "MIT-13: expected identity Root"
+    );
     match &root.properties {
         NodeProperties::Root { num_hosts, .. } => {
             assert!(

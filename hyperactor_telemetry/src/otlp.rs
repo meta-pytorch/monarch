@@ -196,7 +196,7 @@ impl TraceEventSink for OtlpLogSink {
 
     fn flush(&mut self) -> Result<(), anyhow::Error> {
         if let Err(e) = self.provider.force_flush() {
-            eprintln!("[telemetry] otlp log flush failed: {e:?}");
+            tracing::debug!("otlp log flush failed: {e:?}");
         }
         Ok(())
     }
