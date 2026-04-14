@@ -303,8 +303,8 @@ impl Proc {
     /// routing are managed by the remote host.
     pub async fn attach_to_host(duplex_addr: ChannelAddr) -> Result<Self, anyhow::Error> {
         use crate::channel::Rx;
-        use crate::host::Host2Client;
         use crate::host::AttachRx;
+        use crate::host::Host2Client;
         let (duplex_tx, mut duplex_rx) =
             channel::duplex::dial::<MessageEnvelope, Host2Client>(duplex_addr)?;
         let assignment = match duplex_rx.recv().await? {
