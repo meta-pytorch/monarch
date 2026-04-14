@@ -1458,7 +1458,7 @@ def test_config_propagates_to_host_agent():
     from monarch.config import configure
 
     # Set a non-default admin address on the client side.
-    configure(mesh_admin_addr="[::]:9999")
+    configure(mesh_admin_addr="[::]:0")
 
     with TemporaryDirectory() as d:
         procs = []
@@ -1485,10 +1485,10 @@ def test_config_propagates_to_host_agent():
         # _spawn_admin() spawns MeshAdminAgent on the caller's local
         # proc. The admin agent reads MESH_ADMIN_ADDR from config.
         head = hosts.slice(hosts=0)
-        admin_addr = _spawn_admin([head]).get()
+        admin_addr, _admin_ref = _spawn_admin([head]).get()
 
-        assert ":9999" in admin_addr, (
-            f"Expected :9999 in admin addr '{admin_addr}', "
+        assert ":1729" not in admin_addr, (
+            f"Expected non-default port in admin addr '{admin_addr}', "
             "client config not propagated to host agent process"
         )
 

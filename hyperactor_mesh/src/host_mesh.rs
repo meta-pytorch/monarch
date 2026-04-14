@@ -18,6 +18,7 @@ use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::view::CollectMeshExt;
 
+use crate::mesh_admin::MeshAdminAgent;
 use crate::supervision::MeshFailure;
 
 pub mod host_agent;
@@ -61,7 +62,6 @@ use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::host_agent::SetClientConfigClient;
 use crate::host_mesh::host_agent::ShutdownHostClient;
-use crate::mesh_admin::MeshAdminMessageClient;
 use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
 use crate::proc_agent::ProcAgent;
@@ -1753,6 +1753,10 @@ fn aggregate_hosts(
 /// the actor context `cx`. Hosts are deduplicated by actor ID across
 /// all meshes.
 ///
+/// Spawn a `MeshAdminAgent` aggregating topology across one or more
+/// meshes. Returns a typed `ActorRef<MeshAdminAgent>`. Callers that
+/// need the admin URL query it via `get_admin_addr`.
+///
 /// See the `mesh_admin` module doc for the SA-* (spawn/aggregation),
 /// CH-* (client host), and AI-* (admin identity) invariants.
 pub async fn spawn_admin(
@@ -1760,7 +1764,7 @@ pub async fn spawn_admin(
     cx: &impl hyperactor::context::Actor,
     admin_addr: Option<std::net::SocketAddr>,
     telemetry_url: Option<String>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<hyperactor_reference::ActorRef<MeshAdminAgent>> {
     let meshes: Vec<_> = meshes.into_iter().collect();
     anyhow::ensure!(!meshes.is_empty(), "at least one mesh is required (SA-1)");
     for (i, mesh) in meshes.iter().enumerate() {
@@ -1789,12 +1793,8 @@ pub async fn spawn_admin(
             telemetry_url,
         ),
     )?;
-    let response = agent_handle.get_admin_addr(cx).await?;
-    let addr = response
-        .addr
-        .ok_or_else(|| anyhow::anyhow!("mesh admin agent did not report an address"))?;
-
-    Ok(addr)
+    let admin_ref = agent_handle.bind();
+    Ok(admin_ref)
 }
 
 impl view::Ranked for HostMeshRef {

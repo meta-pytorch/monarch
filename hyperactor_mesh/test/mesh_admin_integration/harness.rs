@@ -337,7 +337,8 @@ pub(crate) async fn start_workload(
         .env("HYPERACTOR_MESH_ADMIN_ADDR", "[::]:0")
         .env("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE", "120s")
         .env("HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE", "120s")
-        .stdout(std::process::Stdio::piped());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
 
     // Match the old shell tests: prefer an fbpkg-fetched py-spy and
     // fall back to whatever is already on PATH if the fetch fails.
@@ -357,7 +358,19 @@ pub(crate) async fn start_workload(
         .stdout
         .take()
         .ok_or_else(|| anyhow!("child stdout not captured"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("child stderr not captured"))?;
     let mut reader = BufReader::new(stdout).lines();
+
+    // Collect stderr in background so it's available on failure.
+    let stderr_handle = tokio::spawn(async move {
+        let mut buf = String::new();
+        let mut stderr_reader = BufReader::new(stderr);
+        let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr_reader, &mut buf).await;
+        buf
+    });
 
     let sentinel = "Mesh admin server listening on ";
     let sentinel_result = tokio::time::timeout(timeout, async {
@@ -374,12 +387,32 @@ pub(crate) async fn start_workload(
         Ok(Ok(url)) => url,
         Ok(Err(e)) => {
             let _ = child.start_kill();
-            return Err(e);
+            let captured = stderr_handle.await.unwrap_or_default();
+            let tail: String = captured
+                .lines()
+                .rev()
+                .take(50)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(e.context(format!("stderr (last 50 lines):\n{tail}")));
         }
         Err(_) => {
             let _ = child.start_kill();
+            let captured = stderr_handle.await.unwrap_or_default();
+            let tail: String = captured
+                .lines()
+                .rev()
+                .take(50)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
             bail!(
-                "MIT-1: admin URL sentinel not observed within {}s",
+                "MIT-1: admin URL sentinel not observed within {}s\nstderr (last 50 lines):\n{tail}",
                 timeout.as_secs(),
             );
         }
@@ -387,6 +420,8 @@ pub(crate) async fn start_workload(
 
     // Drain remaining stdout in background to prevent pipe deadlock.
     tokio::spawn(async move { while let Ok(Some(_)) = reader.next_line().await {} });
+    // Drop the stderr collector — we only need it on failure.
+    stderr_handle.abort();
 
     // MIT-5: Build reqwest client with test CA and client cert.
     let client = build_client(&pki.ca_pem, &pki.cert_pem, &pki.key_pem)?;
