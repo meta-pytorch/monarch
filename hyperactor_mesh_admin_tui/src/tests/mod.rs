@@ -23,6 +23,22 @@ use super::*;
 use crate::diagnostics::DiagOutcome;
 use crate::diagnostics::DiagPhase;
 use crate::diagnostics::DiagResult;
+use crate::timeouts::TuiTimeoutPolicy;
+
+/// Test-only convenience policy with current production defaults.
+/// Not a `Default` impl — forces production code through `from_config`.
+fn test_policy() -> TuiTimeoutPolicy {
+    TuiTimeoutPolicy::from_config(&TuiConfig {
+        addr: "localhost:1729".to_string(),
+        refresh_ms: 2000,
+        theme: ThemeName::Nord,
+        lang: LangName::En,
+        tls_ca: None,
+        tls_cert: None,
+        tls_key: None,
+        diagnose: false,
+    })
+}
 
 fn root() -> NodeRef {
     NodeRef::Root
@@ -51,6 +67,7 @@ fn empty_tree_all_operations_are_noops() {
         reqwest::Client::new(),
         ThemeName::Nord,
         LangName::En,
+        test_policy(),
     );
     let rows = app.visible_rows();
     assert_eq!(rows.len(), 0);
@@ -1467,6 +1484,7 @@ fn make_app_with_cursor(children: Vec<TreeNode>, cursor_pos: usize) -> App {
         reqwest::Client::new(),
         ThemeName::Nord,
         LangName::En,
+        test_policy(),
     );
     let len = children.len();
     app.set_tree(Some(TreeNode {
@@ -1864,6 +1882,7 @@ fn set_job_establishes_overlay() {
         reqwest::Client::new(),
         ThemeName::Nord,
         LangName::En,
+        test_policy(),
     );
     assert!(app.active_job.is_none());
     assert!(app.overlay.is_none());
@@ -1885,6 +1904,7 @@ fn dismiss_job_clears_both() {
         reqwest::Client::new(),
         ThemeName::Nord,
         LangName::En,
+        test_policy(),
     );
     app.set_job(ActiveJob::Diagnostics {
         results: Vec::new(),
@@ -2336,6 +2356,7 @@ fn on_key_config_on_root() {
         reqwest::Client::new(),
         ThemeName::Nord,
         LangName::En,
+        test_policy(),
     );
     let key = KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT);
     let result = app.on_key(key);
@@ -2366,5 +2387,124 @@ fn on_key_config_on_host() {
     assert!(
         matches!(result, KeyResult::None),
         "C on Host should be None, got: {result:?}"
+    );
+}
+
+// ── TP-10: refresh_policy_for_job mapping ─────────────────────────
+
+use crate::app::refresh_policy_for_job;
+use crate::timeouts::RefreshPolicy;
+
+// TP-10: no job → Baseline.
+#[test]
+fn refresh_policy_no_job() {
+    assert_eq!(refresh_policy_for_job(&None), RefreshPolicy::Baseline);
+}
+
+// TP-10: diagnostics → Suspend.
+#[test]
+fn refresh_policy_diagnostics() {
+    let job = Some(ActiveJob::Diagnostics {
+        results: vec![],
+        running: true,
+        rx: None,
+        completed_at: None,
+    });
+    assert_eq!(refresh_policy_for_job(&job), RefreshPolicy::Suspend);
+}
+
+// TP-10: py-spy in flight → Suspend.
+#[test]
+fn refresh_policy_pyspy_in_flight() {
+    let (_tx, rx) = tokio::sync::oneshot::channel::<Vec<ratatui::text::Line<'static>>>();
+    let job = Some(ActiveJob::PySpy {
+        rx: Some(rx),
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: None,
+    });
+    assert_eq!(refresh_policy_for_job(&job), RefreshPolicy::Suspend);
+}
+
+// TP-10: py-spy completed → Baseline (refresh resumes).
+#[test]
+fn refresh_policy_pyspy_completed() {
+    let job = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: Some("14:30:00".to_string()),
+    });
+    assert_eq!(refresh_policy_for_job(&job), RefreshPolicy::Baseline);
+}
+
+// TP-10: config in flight → Suspend.
+#[test]
+fn refresh_policy_config_in_flight() {
+    let (_tx, rx) = tokio::sync::oneshot::channel::<Vec<ratatui::text::Line<'static>>>();
+    let job = Some(ActiveJob::Config {
+        rx: Some(rx),
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: None,
+    });
+    assert_eq!(refresh_policy_for_job(&job), RefreshPolicy::Suspend);
+}
+
+// TP-10: config completed → Baseline (refresh resumes).
+#[test]
+fn refresh_policy_config_completed() {
+    let job = Some(ActiveJob::Config {
+        rx: None,
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: Some("14:30:00".to_string()),
+    });
+    assert_eq!(refresh_policy_for_job(&job), RefreshPolicy::Baseline);
+}
+
+// TP-10: diagnostics completed → Baseline (refresh resumes).
+#[test]
+fn refresh_policy_diagnostics_completed() {
+    let job = Some(ActiveJob::Diagnostics {
+        results: vec![],
+        running: false,
+        rx: None,
+        completed_at: Some("14:30:00".to_string()),
+    });
+    assert_eq!(refresh_policy_for_job(&job), RefreshPolicy::Baseline);
+}
+
+// TP-10: policy state transitions through set_job / dismiss_job.
+#[test]
+fn refresh_policy_transitions_with_job_lifecycle() {
+    let mut app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+        test_policy(),
+    );
+    // No job → Baseline (refresh allowed).
+    assert_eq!(
+        refresh_policy_for_job(&app.active_job),
+        RefreshPolicy::Baseline,
+    );
+    // Set a foreground job → Suspend (refresh suppressed).
+    app.set_job(ActiveJob::Diagnostics {
+        results: Vec::new(),
+        running: true,
+        rx: None,
+        completed_at: None,
+    });
+    assert_eq!(
+        refresh_policy_for_job(&app.active_job),
+        RefreshPolicy::Suspend,
+    );
+    // Dismiss the job → Baseline again.
+    app.dismiss_job();
+    assert_eq!(
+        refresh_policy_for_job(&app.active_job),
+        RefreshPolicy::Baseline,
     );
 }

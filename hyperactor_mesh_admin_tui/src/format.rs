@@ -208,6 +208,22 @@ pub(crate) fn format_system_time_iso(t: &SystemTime) -> String {
     system_time_to_chrono(t).to_rfc3339()
 }
 
+/// Format a byte count as a human-readable string.
+pub(crate) fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -274,6 +290,7 @@ mod tests {
                 addr: "10.0.0.1:8000".to_string(),
                 num_procs: 3,
                 system_children: vec![],
+                memory: Default::default(),
             },
             children: vec![],
             parent: None,
@@ -290,6 +307,7 @@ mod tests {
                 addr: "10.0.0.1:8000".to_string(),
                 num_procs: 5,
                 system_children: vec![mock_actor_ref("sys1"), mock_actor_ref("sys2")],
+                memory: Default::default(),
             },
             children: vec![],
             parent: None,
@@ -306,6 +324,7 @@ mod tests {
                 addr: "10.0.0.1:8000".to_string(),
                 num_procs: 2,
                 system_children: vec![mock_actor_ref("s1"), mock_actor_ref("s2")],
+                memory: Default::default(),
             },
             children: vec![],
             parent: None,
@@ -326,6 +345,7 @@ mod tests {
                 stopped_retention_cap: 0,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
         );
         assert_eq!(derive_label(&payload), "myproc  (4 actors: 4 user)");
@@ -343,6 +363,7 @@ mod tests {
                 stopped_retention_cap: 0,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
         );
         assert_eq!(
@@ -363,6 +384,7 @@ mod tests {
                 stopped_retention_cap: 100,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
         );
         assert_eq!(
@@ -387,6 +409,7 @@ mod tests {
                 stopped_retention_cap: 3,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
         );
         assert!(derive_label(&payload).contains("3 stopped (max retained)"));
@@ -404,6 +427,7 @@ mod tests {
                 stopped_retention_cap: 0,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
         );
         let label = derive_label(&payload);
@@ -423,6 +447,7 @@ mod tests {
                 stopped_retention_cap: 100,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
         );
         assert_eq!(
@@ -443,6 +468,7 @@ mod tests {
                 stopped_retention_cap: 100,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
         );
         assert_eq!(derive_label(&payload), "myproc  (2 actors: 2 stopped)");
@@ -464,6 +490,7 @@ mod tests {
                 stopped_retention_cap: 0,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
         );
         let label = derive_label(&payload);
@@ -483,6 +510,7 @@ mod tests {
                 stopped_retention_cap: 100,
                 is_poisoned: true,
                 failed_actor_count: 1,
+                debug: Default::default(),
             },
         );
         let label = derive_label(&payload);
@@ -501,6 +529,7 @@ mod tests {
                 stopped_retention_cap: 100,
                 is_poisoned: false,
                 failed_actor_count: 0,
+                debug: Default::default(),
             },
         );
         let label = derive_label(&payload);
