@@ -22,6 +22,7 @@ from typing import (
     Callable,
     cast,
     Dict,
+    Iterator,
     List,
     Literal,
     Optional,
@@ -163,7 +164,7 @@ def _changed_cuda_env_vars(
 
 
 @contextmanager
-def _warn_if_setup_changed_cuda_env_too_late():
+def _warn_if_setup_changed_cuda_env_too_late() -> Iterator[None]:
     cuda_initialized_before = _torch_cuda_already_initialized()
     cuda_env_before = _cuda_env_snapshot()
     yield
