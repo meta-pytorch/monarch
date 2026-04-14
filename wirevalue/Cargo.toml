@@ -17,7 +17,7 @@ crc32fast = "1.4"
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.10"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
-inventory = "0.3.22"
+inventory = "0.3.24"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }

@@ -36,8 +36,6 @@ ndslice = { version = "0.0.0", path = "../ndslice" }
 pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 pyo3-async-runtimes = { version = "0.26", features = ["attributes", "tokio-runtime"] }
 rdmaxcel-sys = { path = "../rdmaxcel-sys", optional = true }
-rustls = "0.23.37"
-rustls-pemfile = "2.2.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true }
