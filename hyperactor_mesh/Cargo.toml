@@ -69,7 +69,6 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 strum = { version = "0.27.1", features = ["derive"] }
-systemd = { version = "0.10.1", optional = true }
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
@@ -87,16 +86,12 @@ zbus = { version = "5.14.0", features = ["async-executor", "async-fs", "async-io
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
-inventory = "0.3.22"
+inventory = "0.3.24"
 itertools = "0.14.0"
 jsonschema = "0.17.0"
 maplit = "1.0"
 proptest = "1.11.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
-
-[features]
-default = []
-systemd = ["dep:systemd"]
 
 [lints]
 rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
