@@ -21,6 +21,7 @@ use anyhow::bail;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::mesh_admin::ApiErrorEnvelope;
 use hyperactor_mesh::pyspy::PySpyFrame;
+use hyperactor_mesh::pyspy::PySpyProfileOpts;
 use hyperactor_mesh::pyspy::PySpyResult;
 
 use crate::harness;
@@ -48,9 +49,9 @@ fn is_transient_pyspy_handler_not_ready(body: &str) -> bool {
                 && envelope
                     .error
                     .message
-                    .contains("does not have a reachable py-spy handler")
+                    .contains("does not have a reachable handler")
         })
-        .unwrap_or_else(|_| body.contains("does not have a reachable py-spy handler"))
+        .unwrap_or_else(|_| body.contains("does not have a reachable handler"))
 }
 
 async fn warm_worker_pyspy_endpoint(
@@ -491,6 +492,12 @@ pub async fn run_pyspy_integration_cpu() {
         Box::pin(async move {
             check_preflight(s).await;
             check_evidence(s).await;
+            // MIT-73, MIT-74: profile SVG tests share the CPU fixture.
+            check_profile_reject_zero_duration(s).await;
+            check_profile_reject_over_max_duration(s).await;
+            check_profile_reject_zero_rate(s).await;
+            check_profile_reject_excessive_rate(s).await;
+            check_profile_svg_success(s).await;
         })
     })
     .await;
@@ -524,4 +531,125 @@ pub async fn run_pyspy_integration_mixed() {
         })
     })
     .await;
+}
+
+// --- profile SVG tests ---
+
+fn profile_opts(duration_s: u32) -> PySpyProfileOpts {
+    PySpyProfileOpts {
+        duration_s,
+        rate_hz: 100,
+        native: false,
+        threads: false,
+        nonblocking: false,
+    }
+}
+
+/// PP-1: zero duration rejected.
+async fn check_profile_reject_zero_duration(s: &PyspyScenario) {
+    let encoded = urlencoding::encode(&s.workers[0]);
+    let resp = s
+        .fixture
+        .post(
+            &format!("/v1/pyspy_profile_svg/{encoded}"),
+            &profile_opts(0),
+        )
+        .await
+        .expect("POST must not fail at transport level");
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "PP-1: zero duration_s must be rejected"
+    );
+}
+
+/// PP-1: over-max duration rejected.
+async fn check_profile_reject_over_max_duration(s: &PyspyScenario) {
+    let encoded = urlencoding::encode(&s.workers[0]);
+    let mut opts = profile_opts(999);
+    opts.duration_s = 999;
+    let resp = s
+        .fixture
+        .post(&format!("/v1/pyspy_profile_svg/{encoded}"), &opts)
+        .await
+        .expect("POST must not fail at transport level");
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "PP-1: over-max duration_s must be rejected"
+    );
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("exceeds max"),
+        "PP-1: error should mention exceeds max, got: {body}"
+    );
+}
+
+/// PP-1: zero rate rejected.
+async fn check_profile_reject_zero_rate(s: &PyspyScenario) {
+    let encoded = urlencoding::encode(&s.workers[0]);
+    let mut opts = profile_opts(2);
+    opts.rate_hz = 0;
+    let resp = s
+        .fixture
+        .post(&format!("/v1/pyspy_profile_svg/{encoded}"), &opts)
+        .await
+        .expect("POST must not fail at transport level");
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "PP-1: zero rate_hz must be rejected"
+    );
+}
+
+/// PP-1: excessive rate rejected.
+async fn check_profile_reject_excessive_rate(s: &PyspyScenario) {
+    let encoded = urlencoding::encode(&s.workers[0]);
+    let mut opts = profile_opts(2);
+    opts.rate_hz = 9999;
+    let resp = s
+        .fixture
+        .post(&format!("/v1/pyspy_profile_svg/{encoded}"), &opts)
+        .await
+        .expect("POST must not fail at transport level");
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "PP-1: excessive rate_hz must be rejected"
+    );
+}
+
+/// Happy path: profile a CPU worker, get SVG back.
+async fn check_profile_svg_success(s: &PyspyScenario) {
+    let encoded = urlencoding::encode(&s.workers[0]);
+    let resp = s
+        .fixture
+        .post(
+            &format!("/v1/pyspy_profile_svg/{encoded}"),
+            &profile_opts(3),
+        )
+        .await
+        .expect("POST must not fail at transport level");
+    let status = resp.status().as_u16();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = resp.bytes().await.unwrap();
+    assert_eq!(
+        status, 200,
+        "profile must succeed on CPU worker, got {status}"
+    );
+    assert!(
+        content_type.starts_with("image/svg+xml"),
+        "content-type must be image/svg+xml, got: {content_type}"
+    );
+    assert!(!body.is_empty(), "SVG body must not be empty");
+    let prefix = String::from_utf8_lossy(&body[..body.len().min(100)]);
+    assert!(
+        prefix.contains("<svg") || prefix.contains("<?xml"),
+        "body must start with SVG content, got: {prefix}"
+    );
 }

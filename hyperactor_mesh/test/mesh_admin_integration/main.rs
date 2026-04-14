@@ -193,9 +193,9 @@
 //!   NodeProperties variant wrappers do); otherwise subsumed by
 //!   MIT-42.
 //! - **MIT-51 (success-content-type):** Successful responses use a
-//!   media type matching the declared type (`application/json` or
-//!   `text/plain`). Matching is by media type, not exact header
-//!   string.
+//!   media type matching the declared type (`application/json`,
+//!   `text/plain`, or `image/svg+xml`). Matching is by media type,
+//!   not exact header string.
 //!
 //! #### Error responses
 //!
@@ -281,6 +281,17 @@
 //!   malformed JSON body (missing required `sql` field) returns a
 //!   non-success status.
 //!
+//! ### Profile SVG endpoint
+//!
+//! - **MIT-73 (profile-input-validation):** `POST
+//!   /v1/pyspy_profile_svg/{proc}` rejects `duration_s == 0`,
+//!   `duration_s > max`, `rate_hz == 0`, and `rate_hz > 1000` with
+//!   HTTP 400 (PP-1).
+//! - **MIT-74 (profile-svg-success):** A 3-second CPU-mode profile
+//!   returns HTTP 200 with `Content-Type` starting with
+//!   `image/svg+xml` and a non-empty body starting with `<svg` or
+//!   `<?xml`.
+//!
 //! ### Supervision topology (sieve)
 //!
 //! - **MIT-71 (actor-child-parent-is-proc):** When actor A exposes
@@ -322,7 +333,8 @@ async fn test_dining_endpoints_python() {
 
 // --- pyspy family ---
 
-/// MIT-16, MIT-17, MIT-18, MIT-19: py-spy integration — cpu mode.
+/// MIT-16, MIT-17, MIT-18, MIT-19, MIT-73, MIT-74: py-spy
+/// integration — cpu mode + profile SVG.
 #[tokio::test]
 async fn test_pyspy_integration_cpu() {
     pyspy::run_pyspy_integration_cpu().await;
