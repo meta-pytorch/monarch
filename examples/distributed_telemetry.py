@@ -488,7 +488,7 @@ def run_workload(job, summary=False, interactive=False):
     # otherwise fall back to manual start_telemetry() for backward compat.
     engine = state.query_engine
     if engine is None:
-        engine, _ = start_telemetry()
+        engine, _, _scanner = start_telemetry()
 
     hosts = state.hosts
 

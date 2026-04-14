@@ -72,6 +72,7 @@ impl OpenApiValidator {
             "/v1/pyspy/{proc_reference}",
             "/v1/query",
             "/v1/pyspy_dump/{proc_reference}",
+            "/v1/pyspy_profile_svg/{proc_reference}",
             "/v1/tree",
             "/v1/schema",
             "/v1/schema/admin",
@@ -109,6 +110,7 @@ impl OpenApiValidator {
             ("/v1/config/{proc_reference}", "get"),
             ("/v1/pyspy/{proc_reference}", "get"),
             ("/v1/pyspy_dump/{proc_reference}", "post"),
+            ("/v1/pyspy_profile_svg/{proc_reference}", "post"),
         ];
         for &(path, method) in cases {
             let params = self

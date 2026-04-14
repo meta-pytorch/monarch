@@ -171,6 +171,10 @@ fn extract_stat_attr(dict: &Bound<'_, PyDict>) -> PyResult<FileAttr> {
         gid: get(dict, "st_gid")?,
         rdev: 0,
         blksize: 4096,
+        #[cfg(target_os = "macos")]
+        crtime: UNIX_EPOCH,
+        #[cfg(target_os = "macos")]
+        flags: 0,
     })
 }
 
@@ -385,6 +389,10 @@ impl PathFilesystem for ReadOnlyFs {
                 gid: 0,
                 rdev: 0,
                 blksize: 4096,
+                #[cfg(target_os = "macos")]
+                crtime: UNIX_EPOCH,
+                #[cfg(target_os = "macos")]
+                flags: 0,
             });
 
         let names = do_readdir(&self.actor, path_str.clone()).await?;
