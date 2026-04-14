@@ -112,7 +112,27 @@ def _run(
         cmd.extend(extra_args)
 
     t0 = time.time()
-    result = subprocess.run(cmd, input=script, capture_output=True, text=True)
+    # Stream output live while capturing for parsing.
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    proc.stdin.write(script)
+    proc.stdin.close()
+    lines = []
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        lines.append(line)
+        print(f"    | {line}", flush=True)
+    proc.wait()
+    stdout_data = "\n".join(lines)
+    result = subprocess.CompletedProcess(
+        cmd, proc.returncode, stdout=stdout_data, stderr=""
+    )
     elapsed = time.time() - t0
 
     # Extract classification from logs.
@@ -486,7 +506,7 @@ def main(
         host_type: MAST host type (default: gb200). Options: gb200, gb300, grandteton
         sizes: Comma-separated GB values (e.g., "1,2,4,8,16,32,64,128")
         hosts: Comma-separated host counts (e.g., "1,2,4,8,16")
-        streams: Number of parallel TLS streams per host (default: 8)
+        streams: Number of parallel TCP fallback streams per host (default: 8)
         reuse_job: If True, keep the MAST job alive after the benchmark
             so subsequent runs can reuse the same workers instantly.
         work_dir: Persistent directory for job state. If empty, a temp dir
