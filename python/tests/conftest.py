@@ -50,6 +50,12 @@ if not _HAS_TENSOR_ENGINE:
             "test_builtins_log.py",
             "test_builtins_random.py",
             "test_coalescing.py",
+            "test_device_mesh.py",
+            "test_future.py",
+            "test_grad_generator.py",
+            "simulator/test_profiling.py",
+            "simulator/test_simulator.py",
+            "simulator/test_worker.py",
         ]
     )
 

@@ -57,6 +57,8 @@ use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
 use crate::proc_agent::ProcAgent;
 use crate::pyspy::PySpyDump;
+use crate::pyspy::PySpyProfile;
+use crate::pyspy::PySpyProfileWorker;
 use crate::pyspy::PySpyWorker;
 use crate::resource;
 use crate::resource::ProcSpec;
@@ -278,6 +280,7 @@ impl fmt::Debug for DrainWorker {
         SetClientConfig,
         ProcStatusChanged,
         PySpyDump,
+        PySpyProfile,
         ConfigDump,
     ]
 )]
@@ -468,6 +471,12 @@ impl HostAgent {
         attrs.set(crate::introspect::NUM_PROCS, num_procs);
         attrs.set(hyperactor::introspect::CHILDREN, children);
         attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
+        // PD-*: hosting-process memory stats. This is the same
+        // hosting OS process signal surfaced on the proc path, but
+        // the host path does not attempt to publish proc-local queue
+        // pressure.
+        let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
+        memory.to_attrs(&mut attrs);
         cx.publish_attrs(attrs);
     }
 }
@@ -552,6 +561,13 @@ impl Actor for HostAgent {
                     attrs.set(crate::introspect::PROC_NAME, label.to_string());
                     attrs.set(crate::introspect::NUM_ACTORS, actors.len());
                     attrs.set(crate::introspect::SYSTEM_CHILDREN, system_actors.clone());
+                    // PD-*: include hosting-process memory so QueryChild
+                    // results match the publish path. HostAgent cannot
+                    // aggregate per-actor queue depth for these procs
+                    // (that requires ProcAgent), so queue stats default
+                    // to zero — acceptable for system procs.
+                    let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
+                    memory.to_attrs(&mut attrs);
                     let attrs_json =
                         serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
 
@@ -1301,6 +1317,17 @@ impl Handler<PySpyDump> for HostAgent {
         message: PySpyDump,
     ) -> Result<(), anyhow::Error> {
         PySpyWorker::spawn_and_forward(cx, message.opts, message.result)
+    }
+}
+
+#[async_trait]
+impl Handler<PySpyProfile> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: PySpyProfile,
+    ) -> Result<(), anyhow::Error> {
+        PySpyProfileWorker::spawn_and_forward(cx, message.request, message.result)
     }
 }
 

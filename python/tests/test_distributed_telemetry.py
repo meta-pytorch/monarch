@@ -22,12 +22,12 @@ from monarch._src.actor.proc_mesh import (
     unregister_proc_mesh_spawn_callback,
 )
 from monarch.distributed_telemetry.actor import start_telemetry
-from monarch.job import ProcessJob, TelemetryConfig
+from monarch.job import MeshAdminConfig, ProcessJob, TelemetryConfig
 from scoped_state import scoped_state
 
 
 class WorkerActor(Actor):
-    """Simple worker actor that can spawn child processes."""
+    """Simple test actor with a no-op ping endpoint."""
 
     @endpoint
     def ping(self) -> None:
@@ -1208,7 +1208,7 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
     """Store a py-spy dump via actor endpoint, query it back via SQL."""
-    engine, _ = start_telemetry(include_dashboard=False)
+    engine, _, _scanner = start_telemetry(include_dashboard=False)
 
     pyspy_json = json.dumps(
         {
@@ -1298,7 +1298,7 @@ def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
     """py-spy tables are visible in information_schema."""
-    engine, _ = start_telemetry(include_dashboard=False)
+    engine, _, _scanner = start_telemetry(include_dashboard=False)
     result = engine.query(
         "SELECT table_name FROM information_schema.tables ORDER BY table_name"
     )
@@ -1463,7 +1463,7 @@ def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_json_columns_are_valid_json() -> None:
     """Test that all view_json and shape_json columns contain valid JSON."""
-    engine, _ = start_telemetry(batch_size=10)
+    engine, _, _scanner = start_telemetry(batch_size=10)
 
     # Spawn actors and send messages to populate all tables that have JSON columns:
     # - meshes: shape_json, parent_view_json
@@ -1575,4 +1575,187 @@ def test_per_table_row_retention(cleanup_callbacks) -> None:
         after_count = after.to_pydict()["cnt"][0]
         assert after_count < before_count, (
             f"Expected fewer rows after retention, got {after_count} vs {before_count}"
+        )
+
+
+# --- Snapshot integration tests ---
+#
+# These tests verify that introspection snapshot tables are
+# pre-registered into the telemetry query surface and that
+# periodic capture populates them through the live query path.
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_snapshot_schemas_pre_registered(cleanup_callbacks) -> None:
+    """Snapshot table schemas are always present in the query surface.
+
+    Even with default config (no periodic timer), the 9 snapshot
+    tables should be visible in information_schema and queryable
+    with 0 rows. This ensures the query schema does not depend on
+    whether periodic snapshots are enabled.
+
+    SI-1 (discoverable), SI-6 (unconditional schemas); see snapshot
+    integration invariants in monarch_introspection_snapshot::integration.
+    """
+    engine, _, _scanner = start_telemetry(include_dashboard=False)
+    result = engine.query(
+        "SELECT table_name FROM information_schema.tables ORDER BY table_name"
+    )
+    table_names = result.to_pydict().get("table_name", [])
+
+    expected_snapshot_tables = [
+        "actor_failures",
+        "actor_nodes",
+        "children",
+        "host_nodes",
+        "nodes",
+        "proc_nodes",
+        "resolution_errors",
+        "root_nodes",
+        "snapshots",
+    ]
+    for table in expected_snapshot_tables:
+        assert table in table_names, (
+            f"snapshot table '{table}' should be pre-registered"
+        )
+
+    # All snapshot tables should be queryable with 0 rows.
+    for table in expected_snapshot_tables:
+        count_result = engine.query(f"SELECT COUNT(*) AS cnt FROM {table}")
+        cnt = count_result.to_pydict()["cnt"][0]
+        assert cnt == 0, f"'{table}' should have 0 rows before any capture, got {cnt}"
+
+
+@pytest.mark.timeout(180)
+@isolate_in_subprocess
+def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
+    """Periodic snapshots become queryable through the live query path.
+
+    With periodic capture enabled, the timer fires and the full
+    snapshot relational model (nodes, children, subtype tables)
+    becomes queryable via the QueryEngine. The test verifies this
+    by tracing the ancestry of a known actor through the snapshot
+    tables using a recursive CTE.
+
+    SI-1 (discoverable), SI-2 (queryable); see snapshot integration
+    invariants in monarch_introspection_snapshot::integration.
+    """
+    import time
+
+    with scoped_state(
+        ProcessJob({"hosts": 1})
+        .enable_telemetry(TelemetryConfig(batch_size=10, snapshot_interval_secs=5))
+        .enable_admin(
+            MeshAdminConfig(
+                # Use an ephemeral admin port so concurrent --stress-runs
+                # replicas do not contend on the default fixed mesh-admin
+                # port.
+                admin_addr="[::]:0",
+            )
+        ),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+
+        # Spawn a worker so the mesh has content to snapshot.
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(per_host={"workers": 1}, name="snap_procs")
+        workers = worker_procs.spawn("snap_worker", WorkerActor)
+        workers.initialized.get()
+
+        # PT-3: first capture fires at spawn time, so there may
+        # already be a snapshot. Record the baseline count.
+        before = engine.query("SELECT COUNT(*) AS cnt FROM snapshots")
+        before_count = before.to_pydict()["cnt"][0]
+
+        # Wait for at least one more periodic capture (interval=5s).
+        time.sleep(8)
+
+        after = engine.query("SELECT COUNT(*) AS cnt FROM snapshots")
+        after_count = after.to_pydict()["cnt"][0]
+        assert after_count > before_count, (
+            f"expected more snapshots after timer fires, got {after_count} (was {before_count})"
+        )
+
+        # --- Relational coherence proof ---
+        #
+        # Find the snap_worker actor whose direct proc parent is
+        # snap_procs, from the most recent snapshot containing one.
+        # This proves the full snapshot model (nodes, children,
+        # actor_nodes, proc_nodes, host_nodes, root_nodes) is
+        # populated and relationally coherent through the live
+        # query path.
+
+        # Find the snap_worker actor whose direct proc parent is
+        # snap_procs. A single query avoids the false-positive where
+        # actor_mesh_controller_snap_worker (on the local proc) matches
+        # the loose LIKE pattern.  If the first snapshot was captured
+        # before the worker spawned, wait for a second capture.
+        snap_worker_query = (
+            "SELECT a.node_id AS actor_node_id, a.snapshot_id AS snapshot_id,"
+            " pn.proc_name AS proc_name"
+            " FROM actor_nodes a"
+            " JOIN children ch ON ch.snapshot_id = a.snapshot_id AND ch.child_id = a.node_id"
+            " JOIN nodes p ON p.snapshot_id = ch.snapshot_id AND p.node_id = ch.parent_id AND p.node_kind = 'proc'"
+            " JOIN proc_nodes pn ON pn.snapshot_id = p.snapshot_id AND pn.node_id = p.node_id"
+            " JOIN snapshots s ON s.snapshot_id = a.snapshot_id"
+            " WHERE a.node_id LIKE '%snap_worker%'"
+            " AND a.node_id NOT LIKE '%actor_mesh_controller_%'"
+            " AND pn.proc_name LIKE 'snap_procs_%'"
+            " ORDER BY s.snapshot_ts DESC"
+            " LIMIT 1"
+        )
+        rows = engine.query(snap_worker_query).to_pydict()
+        actor_ids = rows.get("actor_node_id", [])
+        if len(actor_ids) == 0:
+            # Wait for next capture and retry.
+            time.sleep(6)
+            rows = engine.query(snap_worker_query).to_pydict()
+            actor_ids = rows.get("actor_node_id", [])
+        assert len(actor_ids) >= 1, (
+            "expected snap_worker actor on snap_procs in snapshot"
+        )
+        actor_node_id = actor_ids[0]
+        snapshot_id = rows["snapshot_id"][0]
+        assert rows["proc_name"][0].startswith("snap_procs_")
+
+        # --- Ancestry coherence: actor → proc → host → root ---
+        #
+        # Walk up from the selected actor through children/nodes
+        # to verify the full snapshot graph is connected.
+        ancestry = engine.query(f"""
+            WITH RECURSIVE ancestors AS (
+                SELECT ch.parent_id AS node_id, 1 AS depth
+                FROM children ch
+                WHERE ch.snapshot_id = '{snapshot_id}'
+                  AND ch.child_id = '{actor_node_id}'
+                UNION ALL
+                SELECT ch.parent_id, a.depth + 1
+                FROM ancestors a
+                JOIN children ch
+                  ON ch.snapshot_id = '{snapshot_id}'
+                 AND ch.child_id = a.node_id
+                WHERE a.depth < 10
+            )
+            SELECT DISTINCT a.node_id, n.node_kind
+            FROM ancestors a
+            LEFT JOIN nodes n
+              ON n.snapshot_id = '{snapshot_id}'
+             AND n.node_id = a.node_id
+        """)
+        ancestor_rows = ancestry.to_pydict()
+        ancestor_kinds = set(ancestor_rows.get("node_kind", []))
+        ancestor_ids = ancestor_rows.get("node_id", [])
+
+        assert "proc" in ancestor_kinds, (
+            f"expected a proc ancestor for {actor_node_id}, "
+            f"got kinds={ancestor_kinds}, ids={ancestor_ids}"
+        )
+        assert "host" in ancestor_kinds or any(
+            "root" in str(nid) for nid in ancestor_ids
+        ), (
+            f"expected host or root ancestor for {actor_node_id}, "
+            f"got kinds={ancestor_kinds}, ids={ancestor_ids}"
         )

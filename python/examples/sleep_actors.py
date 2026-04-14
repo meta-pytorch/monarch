@@ -31,7 +31,7 @@ import asyncio
 import random
 
 from monarch.actor import Actor, context, current_rank, endpoint
-from monarch.job import ProcessJob
+from monarch.job import ProcessJob, TelemetryConfig
 
 
 class Sleeper(Actor):
@@ -57,7 +57,11 @@ MAX_SLEEP = 5.0
 
 
 async def async_main(num_procs: int) -> None:
-    job = ProcessJob({"hosts": 1}).enable_admin()
+    job = (
+        ProcessJob({"hosts": 1})
+        .enable_telemetry(TelemetryConfig(snapshot_interval_secs=30.0))
+        .enable_admin()
+    )
     state = job.state(cached_path=None)
     host = state.hosts
 
