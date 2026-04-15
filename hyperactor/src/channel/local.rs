@@ -143,7 +143,9 @@ impl<M: RemoteMessage> Rx<M> for LocalRx<M> {
 
 impl<M: RemoteMessage> Drop for LocalRx<M> {
     fn drop(&mut self) {
-        let _ = self.status_tx.send(TxStatus::Closed);
+        let _ = self
+            .status_tx
+            .send(TxStatus::Closed("receiver dropped".into()));
         PORTS.lock().unwrap().free(self.port);
     }
 }

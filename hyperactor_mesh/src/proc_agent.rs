@@ -58,6 +58,12 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::Name;
+use crate::config_dump::ConfigDump;
+use crate::config_dump::ConfigDumpResult;
+use crate::pyspy::PySpyDump;
+use crate::pyspy::PySpyProfile;
+use crate::pyspy::PySpyProfileWorker;
+use crate::pyspy::PySpyWorker;
 use crate::resource;
 
 /// Actor name used when spawning the proc agent on user procs.
@@ -104,34 +110,26 @@ wirevalue::register_type!(GspawnResult);
 struct RepublishIntrospect;
 wirevalue::register_type!(RepublishIntrospect);
 
-/// py-spy attaches to `std::process::id()` to capture Python stacks.
-/// See PS-1 in `introspect` module doc.
-#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
-pub struct PySpyDump {
-    /// Include per-thread stacks.
-    pub threads: bool,
-    /// Reply port for the result.
-    #[reply]
-    pub result: hyperactor_reference::OncePortRef<crate::pyspy::PySpyResult>,
-}
-wirevalue::register_type!(PySpyDump);
-
 /// Collect live actor children and system actor children from the
 /// proc's instance DashMap using `all_instance_keys()` with point
 /// lookups. This avoids the convoy starvation from `all_actor_ids()`
 /// which holds shard read locks while doing heavy per-entry work.
 /// See S12 in `introspect` module doc.
-fn collect_live_children(proc: &hyperactor::Proc) -> (Vec<String>, Vec<String>) {
+fn collect_live_children(
+    proc: &hyperactor::Proc,
+) -> (
+    Vec<hyperactor::introspect::IntrospectRef>,
+    Vec<crate::introspect::NodeRef>,
+) {
     let all_keys = proc.all_instance_keys();
     let mut children = Vec::with_capacity(all_keys.len());
     let mut system_children = Vec::new();
     for id in all_keys {
         if let Some(cell) = proc.get_instance(&id) {
-            let ref_str = id.to_string();
             if cell.is_system() {
-                system_children.push(ref_str.clone());
+                system_children.push(crate::introspect::NodeRef::Actor(id.clone()));
             }
-            children.push(ref_str);
+            children.push(hyperactor::introspect::IntrospectRef::Actor(id));
         }
     }
     (children, system_children)
@@ -384,6 +382,8 @@ struct SelfCheck {}
         resource::WaitRankStatus { cast = true },
         RepublishIntrospect { cast = true },
         PySpyDump,
+        PySpyProfile,
+        ConfigDump,
     ]
 )]
 pub struct ProcAgent {
@@ -476,8 +476,16 @@ impl ProcAgent {
         let has_errors = self.actor_states.values().any(|state| state.has_errors());
         let exit_code = if has_errors { 1 } else { 0 };
 
-        if let Err(err) = self.proc.flush().await {
-            tracing::warn!("failed to flush forwarder during shutdown: {}", err);
+        let flush_timeout =
+            hyperactor_config::global::get(hyperactor::config::FORWARDER_FLUSH_TIMEOUT);
+        match tokio::time::timeout(flush_timeout, self.proc.flush()).await {
+            Ok(Err(err)) => {
+                tracing::warn!("forwarder flush failed during shutdown: {}", err);
+            }
+            Err(_elapsed) => {
+                tracing::warn!("forwarder flush timed out during shutdown");
+            }
+            Ok(Ok(())) => {}
         }
 
         tracing::info!(
@@ -512,12 +520,11 @@ impl ProcAgent {
         // Terminated actors appear as children but don't inflate
         // the actor count. Track them in stopped_children so the
         // TUI can filter/gray without per-child fetches.
-        let mut stopped_children: Vec<String> = Vec::new();
+        let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
         for id in self.proc.all_terminated_actor_ids() {
-            let ref_str = id.to_string();
-            stopped_children.push(ref_str.clone());
-            // Terminated system actors must also appear in
-            // system_children for correct filtering.
+            let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
+            let node_ref = crate::introspect::NodeRef::Actor(id.clone());
+            stopped_children.push(node_ref.clone());
             if let Some(snapshot) = self.proc.terminated_snapshot(&id) {
                 let snapshot_attrs: hyperactor_config::Attrs =
                     serde_json::from_str(&snapshot.attrs).unwrap_or_default();
@@ -526,11 +533,11 @@ impl ProcAgent {
                     .copied()
                     .unwrap_or(false)
                 {
-                    system_children.push(ref_str.clone());
+                    system_children.push(node_ref);
                 }
             }
-            if !children.contains(&ref_str) {
-                children.push(ref_str);
+            if !children.contains(&child_ref) {
+                children.push(child_ref);
             }
         }
 
@@ -550,7 +557,7 @@ impl ProcAgent {
         attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
         attrs.set(
             crate::introspect::PROC_NAME,
-            self.proc.proc_id().to_string(),
+            self.proc.proc_id().name().to_string(),
         );
         attrs.set(crate::introspect::NUM_ACTORS, num_live);
         attrs.set(hyperactor::introspect::CHILDREN, children);
@@ -562,6 +569,27 @@ impl ProcAgent {
         );
         attrs.set(crate::introspect::IS_POISONED, failed_actor_count > 0);
         attrs.set(crate::introspect::FAILED_ACTOR_COUNT, failed_actor_count);
+
+        // PD-* proc debug stats intentionally join two signal classes:
+        // hosting-process memory for the OS process that owns this
+        // proc, and proc-local queue pressure aggregated over live
+        // actors only.
+        let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
+        memory.to_attrs(&mut attrs);
+
+        // PD-4: aggregate queue depth over live actors only.
+        let mut queue_total: u64 = 0;
+        let mut queue_max: u64 = 0;
+        for actor_id in self.proc.all_instance_keys() {
+            if let Some(cell) = self.proc.get_instance(&actor_id) {
+                let depth = cell.queue_depth();
+                queue_total = queue_total.saturating_add(depth);
+                queue_max = queue_max.max(depth);
+            }
+        }
+        attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL, queue_total);
+        attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX, queue_max);
+
         cx.instance().publish_attrs(attrs);
     }
 }
@@ -597,10 +625,11 @@ impl Actor for ProcAgent {
                 if proc_id == proc.proc_id() {
                     let (mut children, mut system_children) = collect_live_children(&proc);
 
-                    let mut stopped_children: Vec<String> = Vec::new();
+                    let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
                     for id in proc.all_terminated_actor_ids() {
-                        let ref_str = id.to_string();
-                        stopped_children.push(ref_str.clone());
+                        let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
+                        let node_ref = crate::introspect::NodeRef::Actor(id.clone());
+                        stopped_children.push(node_ref.clone());
                         if let Some(snapshot) = proc.terminated_snapshot(&id) {
                             let snapshot_attrs: hyperactor_config::Attrs =
                                 serde_json::from_str(&snapshot.attrs).unwrap_or_default();
@@ -609,11 +638,11 @@ impl Actor for ProcAgent {
                                 .copied()
                                 .unwrap_or(false)
                             {
-                                system_children.push(ref_str.clone());
+                                system_children.push(node_ref);
                             }
                         }
-                        if !children.contains(&ref_str) {
-                            children.push(ref_str);
+                        if !children.contains(&child_ref) {
+                            children.push(child_ref);
                         }
                     }
 
@@ -641,7 +670,7 @@ impl Actor for ProcAgent {
                     let num_live = children.len();
                     let mut attrs = hyperactor_config::Attrs::new();
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
-                    attrs.set(crate::introspect::PROC_NAME, proc_id.to_string());
+                    attrs.set(crate::introspect::PROC_NAME, proc_id.name().to_string());
                     attrs.set(crate::introspect::NUM_ACTORS, num_live);
                     attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
                     attrs.set(crate::introspect::STOPPED_CHILDREN, stopped_children);
@@ -651,16 +680,32 @@ impl Actor for ProcAgent {
                     );
                     attrs.set(crate::introspect::IS_POISONED, is_poisoned);
                     attrs.set(crate::introspect::FAILED_ACTOR_COUNT, failed_actor_count);
+
+                    // PD-*: include proc debug stats in QueryChild
+                    // to prevent resolution drift from the publish path.
+                    let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
+                    memory.to_attrs(&mut attrs);
+                    let mut queue_total: u64 = 0;
+                    let mut queue_max: u64 = 0;
+                    for aid in proc.all_instance_keys() {
+                        if let Some(cell) = proc.get_instance(&aid) {
+                            let depth = cell.queue_depth();
+                            queue_total = queue_total.saturating_add(depth);
+                            queue_max = queue_max.max(depth);
+                        }
+                    }
+                    attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL, queue_total);
+                    attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX, queue_max);
+
                     let attrs_json =
                         serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
 
                     return IntrospectResult {
-                        identity: proc_id.to_string(),
+                        identity: hyperactor::introspect::IntrospectRef::Proc(proc_id.clone()),
                         attrs: attrs_json,
                         children,
                         parent: None,
-                        as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
-                            .to_string(),
+                        as_of: std::time::SystemTime::now(),
                     };
                 }
             }
@@ -672,13 +717,23 @@ impl Actor for ProcAgent {
                     hyperactor::introspect::ERROR_MESSAGE,
                     format!("child {} not found", child_ref),
                 );
+                let identity = match child_ref {
+                    hyperactor::reference::Reference::Proc(id) => {
+                        hyperactor::introspect::IntrospectRef::Proc(id.clone())
+                    }
+                    hyperactor::reference::Reference::Actor(id) => {
+                        hyperactor::introspect::IntrospectRef::Actor(id.clone())
+                    }
+                    hyperactor::reference::Reference::Port(id) => {
+                        hyperactor::introspect::IntrospectRef::Actor(id.actor_id().clone())
+                    }
+                };
                 IntrospectResult {
-                    identity: String::new(),
+                    identity,
                     attrs: serde_json::to_string(&error_attrs).unwrap_or_else(|_| "{}".to_string()),
                     children: Vec::new(),
                     parent: None,
-                    as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
-                        .to_string(),
+                    as_of: std::time::SystemTime::now(),
                 }
             }
         });
@@ -911,9 +966,32 @@ impl Handler<PySpyDump> for ProcAgent {
         cx: &Context<Self>,
         message: PySpyDump,
     ) -> Result<(), anyhow::Error> {
-        let runner = crate::pyspy::PySpyRunner;
-        let result = runner.dump_self(message.threads).await;
-        message.result.send(cx, result)?;
+        PySpyWorker::spawn_and_forward(cx, message.opts, message.result)
+    }
+}
+
+#[async_trait]
+impl Handler<PySpyProfile> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: PySpyProfile,
+    ) -> Result<(), anyhow::Error> {
+        PySpyProfileWorker::spawn_and_forward(cx, message.request, message.result)
+    }
+}
+
+#[async_trait]
+impl Handler<ConfigDump> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: ConfigDump,
+    ) -> Result<(), anyhow::Error> {
+        let entries = hyperactor_config::global::config_entries();
+        // Reply is best-effort: the caller may have timed out and dropped
+        // the once-port.  That must not crash this actor.
+        let _ = message.result.send(cx, ConfigDumpResult { entries });
         Ok(())
     }
 }
@@ -1689,7 +1767,7 @@ mod tests {
             payload
                 .children
                 .iter()
-                .any(|c| c.contains(PROC_AGENT_ACTOR_NAME)),
+                .any(|c| c.to_string().contains(PROC_AGENT_ACTOR_NAME)),
             "initial children {:?} should contain proc_agent",
             payload.children
         );
@@ -1711,7 +1789,10 @@ mod tests {
             payload2.attrs
         );
         assert!(
-            payload2.children.iter().any(|c| c.contains("extra_actor")),
+            payload2
+                .children
+                .iter()
+                .any(|c| c.to_string().contains("extra_actor")),
             "after direct spawn, children {:?} should contain extra_actor",
             payload2.children
         );
@@ -1982,5 +2063,148 @@ mod tests {
             "expected terminating status, got {:?}",
             state.status,
         );
+    }
+
+    // ── PD-4/PD-5: live proc-agent queue pressure test ────────
+
+    // A blocking actor for inducing queue pressure. Uses a shared
+    // Notify for the block/unblock protocol since actor messages
+    // must be Serialize + Clone.
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    #[hyperactor::export(handlers = [BlockMsg])]
+    struct BlockActor {
+        #[serde(skip)]
+        gate: Option<Arc<tokio::sync::Notify>>,
+    }
+    impl hyperactor::Actor for BlockActor {}
+
+    #[derive(
+        Debug,
+        Clone,
+        Serialize,
+        Deserialize,
+        Named,
+        hyperactor::Handler,
+        hyperactor::HandleClient
+    )]
+    enum BlockMsg {
+        /// Block until the shared Notify fires.
+        Block(),
+        /// No-op message to queue behind a blocked Block.
+        Noop(),
+    }
+    wirevalue::register_type!(BlockMsg);
+
+    #[async_trait::async_trait]
+    #[hyperactor::handle(BlockMsg)]
+    impl BlockMsgHandler for BlockActor {
+        async fn block(&mut self, _cx: &hyperactor::Context<Self>) -> Result<(), anyhow::Error> {
+            if let Some(gate) = &self.gate {
+                gate.notified().await;
+            }
+            Ok(())
+        }
+        async fn noop(&mut self, _cx: &hyperactor::Context<Self>) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+    }
+
+    // PD-4/PD-5: QueryChild(Proc) returns non-zero queue stats
+    // while actors are under induced pressure. This proves the
+    // live proc-agent introspection path carries the queue depth
+    // signal that the TUI depends on.
+    //
+    // Queue depth is an instantaneous snapshot at query time,
+    // not backlog history.
+    #[tokio::test]
+    async fn test_query_child_proc_queue_depth_under_pressure() {
+        use hyperactor::Proc;
+        use hyperactor::actor::ActorStatus;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::introspect::IntrospectMessage;
+        use hyperactor::introspect::IntrospectResult;
+        use hyperactor::reference as hyperactor_reference;
+
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "qd_proc".to_string()).unwrap();
+        let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
+
+        agent_handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        let client_proc =
+            Proc::direct(ChannelTransport::Unix.any(), "qd_client".to_string()).unwrap();
+        let (client, _client_handle) = client_proc.instance("client").unwrap();
+
+        // Spawn a blocking actor with a shared gate.
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let blocker = proc
+            .spawn(
+                "blocker",
+                BlockActor {
+                    gate: Some(Arc::clone(&gate)),
+                },
+            )
+            .unwrap();
+
+        // Block the actor and queue additional work behind it.
+        blocker.block(&client).await.unwrap();
+        // Give the actor time to enter the handler.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        blocker.noop(&client).await.unwrap();
+        blocker.noop(&client).await.unwrap();
+
+        // QueryChild(Proc) — same aggregation logic as mesh-admin
+        // resolution.
+        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let port =
+            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+
+        // Poll until queue stats are non-zero.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
+            port.send(
+                &client,
+                IntrospectMessage::QueryChild {
+                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+            let payload = tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx.recv())
+                .await
+                .expect("QueryChild timed out")
+                .expect("reply channel closed");
+
+            let attrs: hyperactor_config::Attrs =
+                serde_json::from_str(&payload.attrs).expect("valid attrs JSON");
+
+            let total = attrs
+                .get(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL)
+                .copied()
+                .unwrap_or(0);
+            let max = attrs
+                .get(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX)
+                .copied()
+                .unwrap_or(0);
+
+            if total > 0 {
+                assert!(max > 0, "max should be > 0 when total is {total}");
+                assert!(max <= total, "PD-1: max ({max}) <= total ({total})");
+                break;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for non-zero queue depth in QueryChild(Proc)",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // Unblock the actor.
+        gate.notify_one();
     }
 }

@@ -86,6 +86,7 @@ class SchemaTest(unittest.TestCase):
             "mesh_id",
             "rank",
             "full_name",
+            "display_name",
         ]
         self.assertEqual(self._columns("actors"), expected)
 
@@ -99,7 +100,6 @@ class SchemaTest(unittest.TestCase):
             "timestamp_us",
             "from_actor_id",
             "to_actor_id",
-            "status",
             "endpoint",
             "port_id",
         ]
@@ -114,7 +114,7 @@ class SchemaTest(unittest.TestCase):
             "id",
             "timestamp_us",
             "sender_actor_id",
-            "mesh_id",
+            "actor_mesh_id",
             "view_json",
             "shape_json",
         ]
@@ -238,13 +238,32 @@ class HierarchyTest(unittest.TestCase):
             self.assertEqual(count, 2, f"host mesh {hid} should have 2 proc children")
 
     def test_shape_json_is_valid(self):
-        """shape_json should be parseable and contain a 'dims' key."""
+        """shape_json should be parseable ndslice Extent format."""
         import json
 
         rows = self.conn.execute("SELECT shape_json FROM meshes").fetchall()
         for row in rows:
             data = json.loads(row["shape_json"])
-            self.assertIn("dims", data)
+            self.assertIn("inner", data)
+            self.assertIn("labels", data["inner"])
+            self.assertIn("sizes", data["inner"])
+
+    def test_parent_view_json_is_valid_region(self):
+        """Non-null parent_view_json should be parseable ndslice Region."""
+        import json
+
+        rows = self.conn.execute(
+            "SELECT parent_view_json FROM meshes WHERE parent_view_json IS NOT NULL"
+        ).fetchall()
+        self.assertGreater(len(rows), 0)
+        for row in rows:
+            data = json.loads(row["parent_view_json"])
+            self.assertIn("labels", data)
+            self.assertIn("slice", data)
+            sl = data["slice"]
+            self.assertIn("offset", sl)
+            self.assertIn("sizes", sl)
+            self.assertIn("strides", sl)
 
 
 class ActorTest(unittest.TestCase):
@@ -570,10 +589,11 @@ class MessageTest(unittest.TestCase):
         self.assertTrue(endpoints.issubset(set(ENDPOINTS)))
 
     def test_message_statuses_valid(self):
+        """Message status values in message_status_events are valid."""
         statuses = {
             r["status"]
             for r in self.conn.execute(
-                "SELECT DISTINCT status FROM messages"
+                "SELECT DISTINCT status FROM message_status_events"
             ).fetchall()
         }
         self.assertTrue(statuses.issubset(set(MESSAGE_STATUSES)))
@@ -642,13 +662,15 @@ class SentMessageTest(unittest.TestCase):
         self.assertTrue(sender_ids.issubset(actor_ids))
 
     def test_mesh_fk(self):
-        """sent_messages.mesh_id references meshes table."""
+        """sent_messages.actor_mesh_id references meshes table."""
         mesh_ids = {
             r["id"] for r in self.conn.execute("SELECT id FROM meshes").fetchall()
         }
         sm_mesh_ids = {
-            r["mesh_id"]
-            for r in self.conn.execute("SELECT mesh_id FROM sent_messages").fetchall()
+            r["actor_mesh_id"]
+            for r in self.conn.execute(
+                "SELECT actor_mesh_id FROM sent_messages"
+            ).fetchall()
         }
         self.assertTrue(sm_mesh_ids.issubset(mesh_ids))
 

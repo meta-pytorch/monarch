@@ -52,26 +52,13 @@ class HostMesh:
         """
         ...
 
-    def _spawn_admin(
-        self,
-        instance: Instance,
-        admin_addr: str | None = None,
-    ) -> PythonTask[str]:
+    def with_bootstrap(self, bootstrap_command: BootstrapCommand) -> "HostMesh":
         """
-        Spawn a MeshAdminAgent on the head host's system proc and
-        return its HTTP URL (including scheme).
-
-        The admin agent aggregates topology across all hosts and
-        serves an HTTP API. When ``admin_addr`` is provided, the
-        server binds to that socket address; otherwise it reads
-        ``MESH_ADMIN_ADDR`` from config.
+        Return a new HostMesh that will use the given bootstrap command when
+        spawning procs, overriding the host agent's default.
 
         Arguments:
-
-        - `instance`: The actor instance used to spawn the admin
-            agent.
-        - `admin_addr`: Optional socket address (e.g. ``"[::]:1729"``).
-
+        - `bootstrap_command`: The bootstrap command to use for launching procs.
         """
         ...
 
@@ -100,6 +87,17 @@ class HostMesh:
 
         Arguments:
         - `instance`: The instance to use to shutdown the mesh.
+        """
+        ...
+
+    def stop(self, instance: Instance) -> PythonTask[None]:
+        """
+        Stop the hosts in this mesh, releasing all resources but keeping
+        worker processes alive for reconnection. Throws if this object is
+        backed by a reference rather than an owned mesh.
+
+        Arguments:
+        - `instance`: The instance to use to stop the mesh.
         """
         ...
 
@@ -147,5 +145,34 @@ def shutdown_local_host_mesh() -> PythonTask[None]:
 
     Raises:
         RuntimeError: If no local host mesh exists (bootstrap_host not called)
+    """
+    ...
+@final
+class PyMeshAdminRef:
+    """Opaque capability token for ActorRef<MeshAdminAgent>.
+    No methods — used only to transport the typed ref across the
+    Python boundary from _spawn_admin to _start_periodic_snapshots."""
+
+    ...
+
+def _spawn_admin(
+    host_meshes: list[HostMesh],
+    instance: Instance,
+    admin_addr: str | None = None,
+    telemetry_url: str | None = None,
+) -> PythonTask[tuple[str, PyMeshAdminRef]]:
+    """
+    Spawn a MeshAdminAgent aggregating topology across one or more meshes.
+
+    Returns ``(admin_url, admin_ref)`` where ``admin_ref`` is an opaque
+    capability token for immediate use only.
+
+    Arguments:
+    - `host_meshes`: One or more HostMeshes whose hosts the admin will
+      aggregate for introspection. Must not be empty.
+    - `instance`: The actor instance used to spawn the admin agent.
+    - `admin_addr`: Optional socket address (e.g. ``"[::]:1729"``).
+      When ``None``, reads ``MESH_ADMIN_ADDR`` from config.
+    - `telemetry_url`: Optional base URL of the Monarch telemetry dashboard.
     """
     ...

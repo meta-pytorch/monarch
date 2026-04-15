@@ -180,14 +180,6 @@ pub struct IbvManagerActor {
     // Id for next mrv created
     mrv_id: usize,
 
-    // Map of PCI addresses to their optimal RDMA devices
-    // This is populated during actor initialization using the device selection algorithm
-    pci_to_device: HashMap<String, IbvDevice>,
-
-    /// Maps CUDA device ordinal to IbvDevice (the optimal RDMA NIC for that GPU).
-    /// `None` if the device has no mapped NIC.
-    cuda_device_to_ibv_device: Vec<Option<IbvDevice>>,
-
     // Map from buffer_id to registration details.
     buffer_registrations: HashMap<usize, IbvBuffer>,
 }
@@ -318,31 +310,7 @@ impl IbvManagerActor {
             }
         }
 
-        // Build the CUDA to RDMA device mapping using device selection algorithm
-        let pci_to_device = super::device_selection::create_cuda_to_ibv_mapping();
-        tracing::debug!(
-            "Built CUDA to RDMA device mapping with {} entries",
-            pci_to_device.len()
-        );
-
-        // Build per-CUDA-device NIC mapping
-        let cuda_device_count = unsafe {
-            let mut count: i32 = 0;
-            rdmaxcel_sys::rdmaxcel_cuDeviceGetCount(&mut count);
-            count.max(0) as usize
-        };
-        let mut cuda_device_to_ibv_device = Vec::with_capacity(cuda_device_count);
-        for ordinal in 0..cuda_device_count {
-            let device = crate::device_selection::get_cuda_pci_address(&ordinal.to_string())
-                .and_then(|pci_addr| pci_to_device.get(&pci_addr).cloned());
-            cuda_device_to_ibv_device.push(device);
-        }
-        tracing::debug!(
-            "Built per-device NIC mapping for {} CUDA devices",
-            cuda_device_count,
-        );
-
-        let mut actor = Self {
+        let actor = Self {
             owner: OnceLock::new(),
             device_qps: HashMap::new(),
             pending_qp_creation: Arc::new(Mutex::new(HashSet::new())),
@@ -351,26 +319,8 @@ impl IbvManagerActor {
             mlx5dv_enabled,
             mr_map: HashMap::new(),
             mrv_id: 0,
-            pci_to_device,
-            cuda_device_to_ibv_device,
             buffer_registrations: HashMap::new(),
         };
-
-        // Eagerly create domains for each unique NIC so PDs/QPs are ready
-        // at segment registration time.
-        if mlx5dv_enabled {
-            let mut seen = HashSet::new();
-            let devices_to_init: Vec<IbvDevice> = actor
-                .cuda_device_to_ibv_device
-                .iter()
-                .flatten()
-                .filter(|d| seen.insert(d.name().clone()))
-                .cloned()
-                .collect();
-            for device in &devices_to_init {
-                actor.get_or_create_device_domain(device.name(), device)?;
-            }
-        }
 
         Ok(actor)
     }
@@ -436,9 +386,10 @@ impl IbvManagerActor {
         Vec<*mut rdmaxcel_sys::ibv_pd>,
         Vec<*mut rdmaxcel_sys::rdmaxcel_qp_t>,
     ) {
-        let mut pds = Vec::with_capacity(self.cuda_device_to_ibv_device.len());
-        let mut qps = Vec::with_capacity(self.cuda_device_to_ibv_device.len());
-        for maybe_device in &self.cuda_device_to_ibv_device {
+        let cuda_map = super::device_selection::get_cuda_device_to_ibv_device();
+        let mut pds = Vec::with_capacity(cuda_map.len());
+        let mut qps = Vec::with_capacity(cuda_map.len());
+        for maybe_device in cuda_map {
             if let Some(device) = maybe_device {
                 if let Some((domain, qp)) = self.device_domains.get(device.name()) {
                     pds.push(domain.pd);
@@ -514,8 +465,7 @@ impl IbvManagerActor {
                     ptr,
                 );
                 if err == rdmaxcel_sys::CUDA_SUCCESS && device_ordinal >= 0 {
-                    selected_rdma_device = self
-                        .cuda_device_to_ibv_device
+                    selected_rdma_device = super::device_selection::get_cuda_device_to_ibv_device()
                         .get(device_ordinal as usize)
                         .and_then(|d| d.clone());
                 }
@@ -935,24 +885,16 @@ impl IbvManagerMessageHandler for IbvManagerActor {
             }
         }
 
-        // Resolve the RDMA device for the local device
-        let rdma_device = self
-            .pci_to_device
-            .iter()
-            .find(|(_, device)| device.name() == &self_device)
-            .map(|(_, device)| device.clone())
-            .unwrap_or_else(|| {
-                // Fallback to default device from config
-                super::device_selection::resolve_ibv_device(&self.config.device)
-                    .unwrap_or_else(|| self.config.device.clone())
-            });
-
-        // Get or create domain and extract pointers to avoid borrowing issues
-        let (domain_context, domain_pd) = {
-            // Check if we already have a domain for the device
-            let (domain, _) = self.get_or_create_device_domain(&self_device, &rdma_device)?;
-            (domain.context, domain.pd)
-        };
+        // The domain is guaranteed to exist here: register_mr is always called before
+        // initialize_qp, either in execute_op (for the local actor) or via resolve_ibv
+        // (for the remote actor), and register_mr always calls get_or_create_device_domain.
+        let (domain, _) = self.device_domains.get(&self_device).ok_or_else(|| {
+            anyhow::anyhow!(
+                "device domain for '{}' not found; register_mr must be called before initialize_qp",
+                self_device
+            )
+        })?;
+        let (domain_context, domain_pd) = (domain.context, domain.pd);
 
         let qp = IbvQueuePair::new(domain_context, domain_pd, self.config.clone())
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {}", e))?;

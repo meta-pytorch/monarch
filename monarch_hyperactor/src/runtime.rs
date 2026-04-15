@@ -152,6 +152,13 @@ pub fn is_main_thread() -> bool {
 }
 
 pub fn initialize(py: Python) -> Result<()> {
+    // Eagerly initialize the main thread ID while we're on the main thread
+    // with the GIL held. If this were lazily initialized on a background
+    // tokio thread during shutdown, the `py.import("threading")` call inside
+    // get_main_thread_native_id() would trigger module_from_spec on a
+    // partially-finalized interpreter, causing a segfault.
+    let _ = get_main_thread_native_id();
+
     let atexit = py.import("atexit")?;
     let shutdown_fn = wrap_pyfunction!(shutdown_tokio_runtime, py)?;
     atexit.call_method1("register", (shutdown_fn,))?;

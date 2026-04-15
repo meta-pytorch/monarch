@@ -9,7 +9,7 @@
 //! ibverbs-specific device selection logic that pairs compute devices
 //! with the best available RDMA NICs based on PCI topology distance.
 
-use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use super::primitives::IbvDevice;
 use super::primitives::get_all_devices;
@@ -80,25 +80,23 @@ pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDevice>
     }
 }
 
-/// Creates a mapping from CUDA PCI addresses to optimal RDMA devices.
+/// Returns a reference to the process-wide lazily-initialized Vec mapping
+/// CUDA device ordinal → optimal RDMA NIC (`None` if no NIC is mapped).
 ///
-/// Discovers all available CUDA devices and determines the best
-/// RDMA device for each one using the device selection algorithm.
-pub fn create_cuda_to_ibv_mapping() -> HashMap<String, IbvDevice> {
-    let mut mapping = HashMap::new();
-
-    // Try to discover CUDA devices (GPU 0-8 should be sufficient for most systems)
-    for gpu_idx in 0..8 {
-        let gpu_idx_str = gpu_idx.to_string();
-        if let Some(cuda_pci_addr) = get_cuda_pci_address(&gpu_idx_str) {
-            let cuda_hint = format!("cuda:{}", gpu_idx);
-            if let Some(rdma_device) = select_optimal_ibv_device(Some(&cuda_hint)) {
-                mapping.insert(cuda_pci_addr, rdma_device);
-            }
-        }
-    }
-
-    mapping
+/// Computed at most once per process on the first RDMA operation involving
+/// CUDA memory. CPU-only workloads pay no initialization cost.
+pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDevice>> {
+    static CUDA_DEVICE_TO_IBV: OnceLock<Vec<Option<IbvDevice>>> = OnceLock::new();
+    CUDA_DEVICE_TO_IBV.get_or_init(|| {
+        let count = unsafe {
+            let mut c: i32 = 0;
+            rdmaxcel_sys::rdmaxcel_cuDeviceGetCount(&mut c);
+            c.max(0) as usize
+        };
+        (0..count)
+            .map(|ordinal| select_optimal_ibv_device(Some(&format!("cuda:{}", ordinal))))
+            .collect()
+    })
 }
 
 /// Resolves RDMA device using auto-detection logic when needed.

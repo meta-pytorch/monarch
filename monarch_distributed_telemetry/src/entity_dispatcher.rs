@@ -21,10 +21,10 @@ use std::sync::Mutex;
 
 use hyperactor_telemetry::EntityEvent;
 use hyperactor_telemetry::EntityEventDispatcher;
-use record_batch_derive::RecordBatchRow;
+use monarch_record_batch::RecordBatchBuffer;
+use monarch_record_batch::RecordBatchRow;
 
 use crate::record_batch_sink::FlushCallback;
-use crate::record_batch_sink::RecordBatchBuffer;
 use crate::timestamp_to_micros;
 
 /// Row data for the actors table.
@@ -154,7 +154,7 @@ impl EntityDispatcherInner {
         table_name: &str,
         callback: &FlushCallback,
     ) -> anyhow::Result<()> {
-        let batch = buffer.to_record_batch()?;
+        let batch = buffer.drain_to_record_batch()?;
         callback(table_name, batch);
         Ok(())
     }
