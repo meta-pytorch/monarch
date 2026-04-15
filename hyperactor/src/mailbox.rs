@@ -22,7 +22,7 @@
 //! # tokio_test::block_on(async {
 //! # let proc = Proc::local();
 //! # let (client, _) = proc.instance("client").unwrap();
-//! # let actor_id = proc.proc_id().actor_id("actor", 0);
+//! # let actor_id = proc.proc_id().actor_id("actor");
 //! let mbox = Mailbox::new_detached(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
 //!
@@ -41,7 +41,7 @@
 //! # tokio_test::block_on(async {
 //! # let proc = Proc::local();
 //! # let (client, _) = proc.instance("client").unwrap();
-//! # let actor_id = proc.proc_id().actor_id("actor", 0);
+//! # let actor_id = proc.proc_id().actor_id("actor");
 //! let mbox = Mailbox::new_detached(actor_id);
 //!
 //! let (port, receiver) = mbox.open_once_port::<u64>();
@@ -242,7 +242,7 @@ impl MessageEnvelope {
         let unknown_addr = ChannelAddr::any(ChannelTransport::Local);
         let unknown_proc_id = crate::reference::ProcId::unique(unknown_addr, "unknown");
         let unknown_actor_id =
-            crate::reference::ActorId::root(unknown_proc_id, "unknown".to_string());
+            crate::reference::ActorId::root(unknown_proc_id, crate::id::Label::strip("unknown"));
         Self::new(unknown_actor_id, dest, data, Flattrs::new())
     }
 
@@ -601,10 +601,10 @@ impl PortLocation {
     }
 
     /// The actor id of the location.
-    pub fn actor_id(&self) -> &reference::ActorId {
+    pub fn actor_id(&self) -> reference::ActorId {
         match self {
             PortLocation::Bound(port_id) => port_id.actor_id(),
-            PortLocation::Unbound(actor_id, _) => actor_id,
+            PortLocation::Unbound(actor_id, _) => actor_id.clone(),
         }
     }
 }
@@ -827,7 +827,10 @@ impl MailboxSender for UndeliverableMailboxSender {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let sender_name = envelope.sender.name();
+        let sender_name = envelope
+            .sender
+            .label()
+            .map_or("?".to_string(), |l| l.to_string());
         let error_str = envelope.error_msg().unwrap_or("".to_string());
         // The undeliverable message was unable to be delivered back to the
         // sender for some reason
@@ -1567,7 +1570,7 @@ impl Mailbox {
     pub(crate) fn bind_untyped(&self, port_id: &reference::PortId, sender: UntypedUnboundedSender) {
         assert_eq!(
             port_id.actor_id(),
-            self.actor_id(),
+            *self.actor_id(),
             "port does not belong to mailbox"
         );
 
@@ -1628,13 +1631,13 @@ impl MailboxSender for Mailbox {
         );
         tracing::trace!(
             name = "post",
-            actor_name = envelope.sender.name(),
+            actor_name = envelope.sender.label().map_or("?", |l| l.as_str()),
             actor_id = envelope.sender.to_string(),
             "posting message to {}",
             envelope.dest
         );
 
-        if envelope.dest().actor_id() != &self.inner.actor_id {
+        if envelope.dest().actor_id() != self.inner.actor_id {
             return self.inner.forwarder.post(envelope, return_handle);
         }
 
@@ -2079,7 +2082,7 @@ impl<M> PortReceiver<M> {
         self.port_id.index()
     }
 
-    fn actor_id(&self) -> &reference::ActorId {
+    fn actor_id(&self) -> reference::ActorId {
         self.port_id.actor_id()
     }
 }
@@ -2131,7 +2134,7 @@ impl<M> OncePortReceiver<M> {
         self.port_id.index()
     }
 
-    fn actor_id(&self) -> &reference::ActorId {
+    fn actor_id(&self) -> reference::ActorId {
         self.port_id.actor_id()
     }
 }
@@ -2522,7 +2525,7 @@ impl MailboxSender for MailboxMuxer {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let dest_actor_id = envelope.dest().actor_id();
-        match self.mailboxes.get(dest_actor_id) {
+        match self.mailboxes.get(&dest_actor_id) {
             None => {
                 let err = format!("no mailbox for actor {} registered in muxer", dest_actor_id);
                 envelope.undeliverable(DeliveryError::Unroutable(err), return_handle)
@@ -2617,7 +2620,8 @@ impl MailboxSender for MailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        match self.sender(envelope.dest().actor_id()) {
+        let dest_actor_id = envelope.dest().actor_id();
+        match self.sender(&dest_actor_id) {
             None => envelope.undeliverable(
                 DeliveryError::Unroutable(
                     "no destination found for actor in routing table".to_string(),
@@ -2649,7 +2653,8 @@ impl MailboxSender for FallbackMailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        match self.router.sender(envelope.dest().actor_id()) {
+        let dest_actor_id = envelope.dest().actor_id();
+        match self.router.sender(&dest_actor_id) {
             Some(sender) => sender.post(envelope, return_handle),
             None => self.default.post(envelope, return_handle),
         }
@@ -2885,12 +2890,13 @@ impl MailboxSender for DialMailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let Some(addr) = self.lookup_addr(envelope.dest().actor_id()) else {
+        let dest_actor_id = envelope.dest().actor_id();
+        let Some(addr) = self.lookup_addr(&dest_actor_id) else {
             self.default.post(envelope, return_handle);
             return;
         };
 
-        match self.dial(&addr, envelope.dest().actor_id()) {
+        match self.dial(&addr, &dest_actor_id) {
             Err(err) => envelope.undeliverable(
                 DeliveryError::Unroutable(format!("cannot dial destination: {err}")),
                 return_handle,
@@ -2965,14 +2971,13 @@ mod tests {
 
     #[test]
     fn test_error() {
-        use crate::testing::ids::test_actor_id_with_pid;
+        use crate::testing::ids::test_actor_id;
         let err = MailboxError::new(
-            test_actor_id_with_pid("myworld_2", "myactor", 5),
+            test_actor_id("myworld_2", "myactor"),
             MailboxErrorKind::Closed,
         );
-        // The format is: "{proc_id},{actor_name}[{pid}]: {error}"
-        // proc_id = "{addr},{proc_name}" so overall: "{addr},{proc_name},{actor_name}[{pid}]"
-        assert!(format!("{}", err).ends_with(",_test_myworld_2,myactor[5]: mailbox closed"));
+        // The format is: "{proc_id},{actor_resource_name}: {error}"
+        assert!(format!("{}", err).ends_with(",_test_myworld_2,_myactor: mailbox closed"));
     }
 
     #[tokio::test]

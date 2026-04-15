@@ -66,7 +66,7 @@ impl MailboxSender for LocalProcDialer {
             // reachable through the backend address.
             && matches!(proc_id.uid(), Uid::Instance(_))
         {
-            let key = proc_id.id().to_string();
+            let key = proc_id.resource_name();
             let senders = self.local_senders.read().unwrap();
             let senders = if senders.contains_key(&key) {
                 senders
@@ -154,13 +154,13 @@ mod tests {
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
         let first_actor_id =
             hyperactor_reference::ProcId::with_name(local_addr.clone(), first.to_string())
-                .actor_id("actor", 0);
+                .actor_id("actor");
         let second_actor_id =
             hyperactor_reference::ProcId::with_name(local_addr.clone(), second.to_string())
-                .actor_id("actor", 0);
+                .actor_id("actor");
         let third_notexist_actor_id =
             hyperactor_reference::ProcId::with_name(local_addr.clone(), third.to_string())
-                .actor_id("actor", 0);
+                .actor_id("actor");
         let proc_dialer = LocalProcDialer::new(
             local_addr.clone(),
             dir.path().to_owned(),
@@ -208,8 +208,8 @@ mod tests {
         assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);
 
         // System proc on the host (name must be exactly "system"):
-        let system_actor_id = hyperactor_reference::ProcId::with_name(local_addr.clone(), "system")
-            .actor_id("actor", 0);
+        let system_actor_id =
+            hyperactor_reference::ProcId::with_name(local_addr.clone(), "system").actor_id("actor");
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             hyperactor_reference::PortId::new(system_actor_id, 0),

@@ -87,7 +87,7 @@ impl BrokerId {
         use std::time::Duration;
 
         let broker_name = format!("{:?}", self);
-        let actor_id = reference::ActorId::new(cx.proc().proc_id().clone(), self.0.clone(), self.1);
+        let actor_id = reference::ActorId::new(cx.proc().proc_id().clone(), self.0.clone());
         let actor_ref: reference::ActorRef<LocalStateBrokerActor> =
             reference::ActorRef::attest(actor_id);
 
