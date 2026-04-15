@@ -73,7 +73,7 @@ jobs:
           --exclude torch-sys
 
         echo "=== sccache stats ==="
-        sccache --show-stats
+        sccache --show-stats || true
         echo "=== end sccache stats ==="
 
         # Copy the test results to the expected location
