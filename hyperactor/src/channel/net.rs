@@ -781,7 +781,7 @@ pub(crate) mod unix {
     use std::os::unix::net::SocketAddr as StdSocketAddr;
     use std::os::unix::net::UnixStream as StdUnixStream;
 
-    use rand::Rng;
+    use rand::RngExt as _;
     use rand::distr::Alphanumeric;
     use tokio::net::UnixListener;
     use tokio::net::UnixStream;
@@ -1906,9 +1906,10 @@ mod tests {
     #[cfg(target_os = "linux")] // uses abstract names
     use anyhow::Result;
     use bytes::Bytes;
-    use rand::Rng;
-    use rand::SeedableRng;
+    use rand::RngExt as _;
+    use rand::SeedableRng as _;
     use rand::distr::Alphanumeric;
+    use rand::rngs::SysRng;
     use timed_test::async_timed_test;
     use tokio::io::AsyncWrite;
     use tokio::io::DuplexStream;
@@ -2361,7 +2362,7 @@ mod tests {
                     }
                 }
 
-                let mut rng = rand::rngs::SmallRng::from_os_rng();
+                let mut rng = rand::rngs::SmallRng::try_from_rng(&mut SysRng).unwrap();
                 let mut queue: VecDeque<(Bytes, Instant)> = VecDeque::new();
                 let mut send_count = 0u64;
 

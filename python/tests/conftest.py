@@ -118,9 +118,7 @@ def pytest_collection_modifyitems(
 
         if _IS_MACOS_ARM64 and node_id in _MACOS_ARM64_SKIP_NODEIDS:
             item.add_marker(
-                pytest.mark.skip(
-                    reason="unsupported or flaky on macOS arm64 CPU CI"
-                )
+                pytest.mark.skip(reason="unsupported or flaky on macOS arm64 CPU CI")
             )
 
         if not disabled:
