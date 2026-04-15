@@ -94,6 +94,12 @@ setup_rust_toolchain() {
 # Setup sccache for Rust compilation caching.
 # Uses the pytorch ossci-compiler-cache S3 bucket if available.
 setup_sccache() {
+    # Skip sccache on ROCm — runners lack AWS credentials for the S3 cache backend
+    if [ -d "${ROCM_HOME:-/opt/rocm}" ] && ! [ -d "/usr/local/cuda" ]; then
+        echo "ROCm environment detected, skipping sccache setup"
+        return
+    fi
+
     echo "Setting up sccache..."
     pip install sccache
 
@@ -242,9 +248,6 @@ setup_cuda_environment() {
 # Detect and configure ROCm environment for linking
 setup_rocm_environment() {
     echo "Setting up ROCm environment..."
-
-    # Disable sccache — ROCm runners lack the AWS credentials needed for the S3 cache backend
-    unset RUSTC_WRAPPER
 
     ROCM_HOME="${ROCM_HOME:-/opt/rocm}"
 
