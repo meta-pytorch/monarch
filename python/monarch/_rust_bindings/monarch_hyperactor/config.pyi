@@ -83,6 +83,7 @@ def configure(
     mesh_attach_config_timeout: str = ...,
     mesh_orphan_timeout: str = ...,
     rdma_allow_tcp_fallback: bool = ...,
+    rdma_disable_ibverbs: bool = ...,
     rdma_max_chunk_size_mb: int = ...,
     **kwargs: object,
 ) -> None:
@@ -180,6 +181,8 @@ def configure(
             fall back to chunked hyperactor messaging over the default
             channel transport. When False, operations fail if no ibverbs
             backend is available.
+        rdma_disable_ibverbs: Force-disable ibverbs even when available,
+            causing all RDMA operations to use the TCP fallback backend.
         rdma_max_chunk_size_mb: Maximum chunk size in MiB for
             TCP-based RDMA transfers (default: 64)
         **kwargs: Reserved for future configuration keys

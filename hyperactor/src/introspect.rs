@@ -17,16 +17,16 @@
 //! - Live status is reported accurately.
 //!
 //! Infrastructure actors publish domain-specific metadata via
-//! `publish_attrs()`, which the introspect task reads for
-//! Entity-view queries. Non-addressable children (e.g., system procs)
-//! are resolved via a callback registered on [`InstanceCell`].
+//! `publish_attrs()`, which the introspect task reads for Entity-view
+//! queries. Non-addressable children (e.g., system procs) are
+//! resolved via a callback registered on [`InstanceCell`].
 //!
-//! Callers navigate topology by fetching an [`IntrospectResult`]
-//! and following its `children` references.
+//! Callers navigate topology by fetching an [`IntrospectResult`] and
+//! following its `children` references.
 //!
 //! # Design Invariants
 //!
-//! The introspection subsystem maintains eleven invariants (S1--S11).
+//! The introspection subsystem maintains twelve invariants (S1--S12).
 //! Each is documented at the code site that enforces it.
 //!
 //! - **S1.** Introspection must not depend on actor responsiveness --
@@ -70,49 +70,57 @@
 //! - **IK-1 (metadata completeness):** Every actor-runtime
 //!   introspection key must carry `@meta(INTROSPECT = ...)` with
 //!   non-empty `name` and `desc`.
-//! - **IK-2 (short-name uniqueness):** No two introspection keys
-//!   may share the same `IntrospectAttr.name`. Duplicates would break
-//!   the FQ-to-short HTTP remap and schema output.
+//! - **IK-2 (short-name uniqueness):** No two introspection keys may
+//!   share the same `IntrospectAttr.name`. Duplicates would break the
+//!   FQ-to-short HTTP remap and schema output.
 //!
 //! ## Failure introspection invariants (FI-*)
 //!
 //! The FailureInfo presentation type lives in
 //! `hyperactor_mesh::introspect`; these invariants are documented
-//! here because the enforcement sites are in hyperactor
-//! (`proc.rs` `serve()`, `live_actor_payload`).
+//! here because the enforcement sites are in hyperactor (`proc.rs`
+//! `serve()`, `live_actor_payload`).
 //!
 //! - **FI-1 (event-before-status):** All `InstanceCell` state that
 //!   `live_actor_payload` reads must be written BEFORE
 //!   `change_status()` transitions to terminal.
-//! - **FI-2 (write-once):** `InstanceCellState::supervision_event`
-//!   is written at most once per actor lifetime.
+//! - **FI-2 (write-once):** `InstanceCellState::supervision_event` is
+//!   written at most once per actor lifetime.
 //! - **FI-3 (failure attrs <-> status):** Failure attrs are present
 //!   iff status is `"failed"`.
 //! - **FI-4 (is_propagated <-> root_cause_actor):**
-//!   `failure_is_propagated == true` iff
-//!   `failure_root_cause_actor != this_actor_id`.
-//! - **FI-5 (is_poisoned <-> failed_actor_count):**
-//!   `is_poisoned == true` iff `failed_actor_count > 0`.
+//!   `failure_is_propagated == true` iff `failure_root_cause_actor !=
+//!   this_actor_id`.
+//! - **FI-5 (is_poisoned <-> failed_actor_count):** `is_poisoned ==
+//!   true` iff `failed_actor_count > 0`.
 //! - **FI-6 (clean stop = no artifacts):** When an actor stops
 //!   cleanly, `supervision_event` is `None`, failure attrs are
 //!   absent, and the actor does not contribute to
 //!   `failed_actor_count`.
+//! - **FI-7 (propagated-stopped-root-cause):** When a failed actor's
+//!   supervision chain bottoms out in a `Stopped` child event,
+//!   structured failure metadata must still name the stopped child as
+//!   `failure_root_cause_actor`.
+//! - **FI-8 (propagation-classification):** `failure_is_propagated`
+//!   is derived from root-cause actor identity; a parent that failed
+//!   due to a child's event must report `failure_is_propagated ==
+//!   true`.
 //!
 //! ## Attrs view invariants (AV-*)
 //!
-//! These govern the typed view layer (`ActorAttrsView`). The
-//! full AV-* / DP-* family is documented in
-//! `hyperactor_mesh::introspect`; the subset relevant to this
-//! crate:
+//! These govern the typed view layer (`ActorAttrsView`). The full
+//! AV-* / DP-* family is documented in `hyperactor_mesh::introspect`;
+//! the subset relevant to this crate:
 //!
 //! - **AV-1 (view-roundtrip):** For each view V,
 //!   `V::from_attrs(&v.to_attrs()) == Ok(v)`.
 //! - **AV-2 (required-key-strictness):** `from_attrs` fails iff
 //!   required keys for that view are missing.
-//! - **AV-3 (unknown-key-tolerance):** Unknown attrs keys must
-//!   not affect successful decode outcome.
+//! - **AV-3 (unknown-key-tolerance):** Unknown attrs keys must not
+//!   affect successful decode outcome.
 
 use std::fmt;
+use std::str::FromStr;
 use std::time::SystemTime;
 
 use hyperactor_config::Attrs;
@@ -125,6 +133,58 @@ use typeuri::Named;
 
 use crate::InstanceCell;
 use crate::reference;
+
+/// Typed reference to an introspectable entity.
+///
+/// This is the generic hyperactor layer — it knows about procs and
+/// actors, not mesh-specific concepts like root or host.
+///
+/// Port references are intentionally excluded — introspection
+/// does not address individual ports.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+pub enum IntrospectRef {
+    /// A proc reference.
+    Proc(reference::ProcId),
+    /// An actor reference.
+    Actor(reference::ActorId),
+}
+hyperactor_config::impl_attrvalue!(IntrospectRef);
+
+impl fmt::Display for IntrospectRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Proc(id) => fmt::Display::fmt(id, f),
+            Self::Actor(id) => fmt::Display::fmt(id, f),
+        }
+    }
+}
+
+impl FromStr for IntrospectRef {
+    type Err = reference::ReferenceParsingError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let r: reference::Reference = s.parse()?;
+        match r {
+            reference::Reference::Proc(id) => Ok(Self::Proc(id)),
+            reference::Reference::Actor(id) => Ok(Self::Actor(id)),
+            reference::Reference::Port(_) => Err(reference::ReferenceParsingError::WrongType(
+                "port references are not valid introspection references".to_string(),
+            )),
+        }
+    }
+}
+
+impl From<reference::ProcId> for IntrospectRef {
+    fn from(id: reference::ProcId) -> Self {
+        Self::Proc(id)
+    }
+}
+
+impl From<reference::ActorId> for IntrospectRef {
+    fn from(id: reference::ActorId) -> Self {
+        Self::Actor(id)
+    }
+}
 
 // Introspection attr keys — actor-runtime concepts.
 //
@@ -223,14 +283,14 @@ declare_attrs! {
     })
     pub attr IS_SYSTEM: bool = false;
 
-    /// Child reference strings for tree navigation. Published by
+    /// Child references for tree navigation. Published by
     /// infrastructure actors (HostMeshAgent, ProcAgent) so the
     /// Entity view can return children without parsing mesh-layer keys.
     @meta(INTROSPECT = IntrospectAttr {
         name: "children".into(),
-        desc: "Child reference strings for tree navigation".into(),
+        desc: "Child references for tree navigation".into(),
     })
-    pub attr CHILDREN: Vec<String>;
+    pub attr CHILDREN: Vec<IntrospectRef>;
 
     /// Machine-readable error code for error nodes.
     @meta(INTROSPECT = IntrospectAttr {
@@ -270,7 +330,7 @@ declare_attrs! {
         name: "failure_root_cause_actor".into(),
         desc: "Actor that caused the failure (root cause)".into(),
     })
-    pub attr FAILURE_ROOT_CAUSE_ACTOR: String;
+    pub attr FAILURE_ROOT_CAUSE_ACTOR: reference::ActorId;
 
     /// Name of root cause actor.
     @meta(INTROSPECT = IntrospectAttr {
@@ -294,7 +354,7 @@ declare_attrs! {
     pub attr FAILURE_IS_PROPAGATED: bool = false;
 }
 
-// See FI-1 through FI-6 in module doc.
+// See FI-1 through FI-8 in module doc.
 
 /// Error from decoding an `Attrs` bag into a typed view.
 #[derive(Debug, Clone, PartialEq)]
@@ -343,8 +403,8 @@ impl AttrsViewError {
 pub struct FailureAttrs {
     /// Error message describing the failure.
     pub error_message: String,
-    /// Actor ID of the root-cause actor.
-    pub root_cause_actor: String,
+    /// Actor that caused the failure (root cause).
+    pub root_cause_actor: reference::ActorId,
     /// Display name of the root-cause actor, if available.
     pub root_cause_name: Option<String>,
     /// When the failure occurred.
@@ -520,16 +580,16 @@ impl ActorAttrsView {
 /// (with `NodeProperties`) lives in `hyperactor_mesh::introspect`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct IntrospectResult {
-    /// Canonical reference string for this node.
-    pub identity: String,
+    /// Reference identifying this node.
+    pub identity: IntrospectRef,
     /// JSON-serialized `Attrs` bag containing introspection attributes.
     pub attrs: String,
-    /// Reference strings the client can GET next to descend the tree.
-    pub children: Vec<String>,
-    /// Parent node reference for upward navigation.
-    pub parent: Option<String>,
-    /// ISO 8601 timestamp indicating when this data was captured.
-    pub as_of: String,
+    /// Child references the client can follow to descend the tree.
+    pub children: Vec<IntrospectRef>,
+    /// Parent reference for upward navigation.
+    pub parent: Option<IntrospectRef>,
+    /// When this data was captured.
+    pub as_of: SystemTime,
 }
 wirevalue::register_type!(IntrospectResult);
 
@@ -623,9 +683,9 @@ pub fn format_timestamp(time: SystemTime) -> String {
 /// Failure fields extracted from a supervision event.
 struct FailureSnapshot {
     error_message: String,
-    root_cause_actor: String,
+    root_cause_actor: reference::ActorId,
     root_cause_name: Option<String>,
-    occurred_at: String,
+    occurred_at: SystemTime,
     is_propagated: bool,
 }
 
@@ -681,9 +741,7 @@ fn build_actor_attrs(cell: &crate::InstanceCell, snap: &ActorSnapshot) -> String
         if let Some(name) = &fi.root_cause_name {
             attrs.set(FAILURE_ROOT_CAUSE_NAME, name.clone());
         }
-        if let Ok(t) = humantime::parse_rfc3339(&fi.occurred_at) {
-            attrs.set(FAILURE_OCCURRED_AT, t);
-        }
+        attrs.set(FAILURE_OCCURRED_AT, fi.occurred_at);
         attrs.set(FAILURE_IS_PROPAGATED, fi.is_propagated);
     }
     // IA-4: failure attrs absent when not failed — guaranteed by
@@ -702,10 +760,10 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     let status = cell.status().borrow().clone();
     let last_handler = cell.last_message_handler();
 
-    let children: Vec<String> = cell
+    let children: Vec<IntrospectRef> = cell
         .child_actor_ids()
         .into_iter()
-        .map(|id| id.to_string())
+        .map(IntrospectRef::Actor)
         .collect();
 
     let events = cell.recording().tail();
@@ -727,20 +785,22 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
         serde_json::to_string(&flight_recorder_events).ok()
     };
 
-    let supervisor = cell.parent().map(|p| p.actor_id().to_string());
+    let supervisor = cell
+        .parent()
+        .map(|p| IntrospectRef::Actor(p.actor_id().clone()));
 
     // FI-3: failure_info is computed from the same status value as
     // actor_status, ensuring they agree on whether the actor failed.
     let failure = if status.is_failed() {
-        cell.supervision_event().map(|event| {
-            let root = event.actually_failing_actor();
-            FailureSnapshot {
+        cell.supervision_event().and_then(|event| {
+            let root = event.actually_failing_actor()?;
+            Some(FailureSnapshot {
                 error_message: event.actor_status.to_string(),
-                root_cause_actor: root.actor_id.to_string(),
+                root_cause_actor: root.actor_id.clone(),
                 root_cause_name: root.display_name.clone(),
-                occurred_at: format_timestamp(event.occurred_at),
+                occurred_at: event.occurred_at,
                 is_propagated: root.actor_id != *actor_id,
-            }
+            })
         })
     } else {
         None
@@ -757,11 +817,11 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     let attrs = build_actor_attrs(cell, &snap);
 
     IntrospectResult {
-        identity: actor_id.to_string(),
+        identity: IntrospectRef::Actor(actor_id.clone()),
         attrs,
         children,
         parent: supervisor,
-        as_of: format_timestamp(std::time::SystemTime::now()),
+        as_of: SystemTime::now(),
     }
 }
 
@@ -774,7 +834,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 /// # Invariants exercised
 ///
 /// Exercises S1, S2, S4, S5, S6, S11 (see module doc).
-pub async fn serve_introspect(
+pub(crate) async fn serve_introspect(
     cell: InstanceCell,
     mailbox: crate::mailbox::Mailbox,
     mut receiver: crate::mailbox::PortReceiver<IntrospectMessage>,
@@ -822,14 +882,16 @@ pub async fn serve_introspect(
                         Some(published) => {
                             let attrs_json =
                                 serde_json::to_string(&published).unwrap_or_else(|_| "{}".into());
-                            let children: Vec<String> =
+                            let children: Vec<IntrospectRef> =
                                 published.get(CHILDREN).cloned().unwrap_or_default();
                             IntrospectResult {
-                                identity: cell.actor_id().to_string(),
+                                identity: IntrospectRef::Actor(cell.actor_id().clone()),
                                 attrs: attrs_json,
                                 children,
-                                parent: cell.parent().map(|p| p.actor_id().to_string()),
-                                as_of: format_timestamp(std::time::SystemTime::now()),
+                                parent: cell
+                                    .parent()
+                                    .map(|p| IntrospectRef::Actor(p.actor_id().clone())),
+                                as_of: SystemTime::now(),
                             }
                         }
                         None => live_actor_payload(&cell),
@@ -850,14 +912,21 @@ pub async fn serve_introspect(
                         ERROR_MESSAGE,
                         format!("child {} not found (no callback registered)", child_ref),
                     );
+                    // Use the queried child_ref as identity for the error node.
+                    let identity = match &child_ref {
+                        reference::Reference::Proc(id) => IntrospectRef::Proc(id.clone()),
+                        reference::Reference::Actor(id) => IntrospectRef::Actor(id.clone()),
+                        reference::Reference::Port(id) => {
+                            IntrospectRef::Actor(id.actor_id().clone())
+                        }
+                    };
                     IntrospectResult {
-                        identity: String::new(),
+                        identity,
                         attrs: serde_json::to_string(&error_attrs)
                             .unwrap_or_else(|_| "{}".to_string()),
                         children: Vec::new(),
                         parent: None,
-                        as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
-                            .to_string(),
+                        as_of: SystemTime::now(),
                     }
                 });
                 mailbox.serialize_and_send_once(
@@ -880,6 +949,11 @@ pub async fn serve_introspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actor::ActorErrorKind;
+    use crate::actor::ActorStatus;
+    use crate::channel::ChannelAddr;
+    use crate::reference::ProcId;
+    use crate::supervision::ActorSupervisionEvent;
 
     /// Exercises IK-1 (see module doc).
     #[test]
@@ -980,12 +1054,16 @@ mod tests {
         attrs
     }
 
+    fn test_actor_id(proc_name: &str, actor_name: &str, pid: usize) -> crate::reference::ActorId {
+        ProcId::with_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name, pid)
+    }
+
     fn failed_actor_attrs() -> Attrs {
         let mut attrs = running_actor_attrs();
         attrs.set(STATUS, "failed".to_string());
         attrs.set(STATUS_REASON, "something broke".to_string());
         attrs.set(FAILURE_ERROR_MESSAGE, "boom".to_string());
-        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, "other[0]".to_string());
+        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, test_actor_id("proc", "other", 0));
         attrs.set(FAILURE_ROOT_CAUSE_NAME, "OtherActor".to_string());
         attrs.set(FAILURE_OCCURRED_AT, SystemTime::UNIX_EPOCH);
         attrs.set(FAILURE_IS_PROPAGATED, true);
@@ -1073,7 +1151,7 @@ mod tests {
     fn test_actor_view_ia4_rejects_failure_attrs_on_running() {
         let mut attrs = running_actor_attrs();
         attrs.set(FAILURE_ERROR_MESSAGE, "boom".to_string());
-        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, "x[0]".to_string());
+        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, test_actor_id("proc", "x", 0));
         attrs.set(FAILURE_OCCURRED_AT, SystemTime::UNIX_EPOCH);
         let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
         assert!(matches!(
@@ -1096,5 +1174,80 @@ mod tests {
                 key: "failure_root_cause_actor"
             }
         );
+    }
+
+    /// Exercises FI-7 and FI-8 (see module doc): when a parent fails
+    /// due to an unhandled Stopped child event, structured failure
+    /// attrs must name the stopped child as
+    /// `failure_root_cause_actor` (FI-7) and report
+    /// `failure_is_propagated == true` (FI-8).
+    ///
+    /// Partially white-box: re-creates `FailureSnapshot` construction
+    /// from `live_actor_payload` because that function requires an
+    /// `InstanceCell`. This test will fail if
+    /// `actually_failing_actor()` regresses, because that helper is
+    /// the shared decision point for root-cause attribution. See
+    /// `test_propagated_failure_info` in `proc.rs` for end-to-end
+    /// integration coverage.
+    #[test]
+    fn test_fi7_fi8_propagated_stopped_child() {
+        let proc_id = ProcId::with_name(ChannelAddr::Local(0), "test_proc");
+        let child_id = proc_id.actor_id("proc_agent", 0);
+        let parent_id = proc_id.actor_id("mesh_actor", 0);
+
+        let child_event = ActorSupervisionEvent::new(
+            child_id.clone(),
+            Some("proc_agent".into()),
+            ActorStatus::Stopped("host died".into()),
+            None,
+        );
+        let parent_event = ActorSupervisionEvent::new(
+            parent_id.clone(),
+            Some("mesh_actor".into()),
+            ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(
+                child_event,
+            ))),
+            None,
+        );
+
+        // -- reproduce FailureSnapshot construction (same logic as
+        // live_actor_payload) --
+        let root = parent_event
+            .actually_failing_actor()
+            .expect("parent_event is a failure");
+        let snap = FailureSnapshot {
+            error_message: parent_event.actor_status.to_string(),
+            root_cause_actor: root.actor_id.clone(),
+            root_cause_name: root.display_name.clone(),
+            occurred_at: parent_event.occurred_at,
+            is_propagated: root.actor_id != parent_id,
+        };
+
+        // FI-7: failure_root_cause_actor is the stopped child.
+        assert_eq!(snap.root_cause_actor, child_id);
+        // FI-8: failure_is_propagated is true.
+        assert!(snap.is_propagated);
+        // root_cause_name pinned before round-trip.
+        assert_eq!(snap.root_cause_name.as_deref(), Some("proc_agent"));
+
+        // -- attrs round-trip through ActorAttrsView --
+        let mut attrs = failed_actor_attrs();
+        attrs.set(FAILURE_ERROR_MESSAGE, snap.error_message);
+        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, snap.root_cause_actor.clone());
+        if let Some(name) = &snap.root_cause_name {
+            attrs.set(FAILURE_ROOT_CAUSE_NAME, name.clone());
+        }
+        attrs.set(FAILURE_OCCURRED_AT, snap.occurred_at);
+        attrs.set(FAILURE_IS_PROPAGATED, snap.is_propagated);
+
+        let view = ActorAttrsView::from_attrs(&attrs).unwrap();
+        assert_eq!(view.status, "failed");
+        let fi = view.failure.as_ref().expect("failure_info must be present");
+        // FI-7: failure_root_cause_actor survives attrs round-trip.
+        assert_eq!(fi.root_cause_actor, child_id);
+        // FI-8: failure_is_propagated survives attrs round-trip.
+        assert!(fi.is_propagated);
+        // root_cause_name also survives.
+        assert_eq!(fi.root_cause_name.as_deref(), Some("proc_agent"));
     }
 }

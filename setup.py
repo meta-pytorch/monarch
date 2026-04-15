@@ -16,7 +16,7 @@ from setuptools import Command, setup
 from setuptools.command.build_ext import build_ext as _build_ext
 from setuptools.command.build_py import build_py
 from setuptools.extension import Extension
-from setuptools_rust import Binding, RustExtension
+from setuptools_rust import Binding, RustBin, RustExtension
 
 
 # Helper functions for finding paths on installed packages
@@ -350,10 +350,28 @@ rust_extensions.append(
     )
 )
 
+# Mesh Admin TUI — standalone Rust binary bundled into the wheel so that
+# `pip install torchmonarch` places `monarch-tui` on PATH.
+rust_extensions.append(
+    RustBin(
+        {"hyperactor_mesh_admin_tui": "monarch-tui"},
+        path="hyperactor_mesh_admin_tui/Cargo.toml",
+        debug=False,
+    )
+)
+
 
 # BuildFrontend command
 class BuildFrontend(Command):
-    """Build the React frontend for monarch_dashboard"""
+    """Build the React frontend for monarch_dashboard.
+
+    Uses esbuild. esbuild produces a single JS bundle and a CSS file;
+    this command also creates the output directory structure and generates
+    index.html, since esbuild does not emit HTML.
+
+    The OSS build (``pip install .``) triggers this via BuildPyWithFrontend.
+    The Buck build uses a separate genrule in frontend/BUCK instead.
+    """
 
     user_options = []
 
@@ -389,7 +407,20 @@ class BuildFrontend(Command):
         print("Building dashboard frontend...")
         try:
             subprocess.check_call([npm_cmd, "install"], cwd=frontend_dir)
+            os.makedirs(os.path.join(build_dir, "static", "css"), exist_ok=True)
             subprocess.check_call([npm_cmd, "run", "build"], cwd=frontend_dir)
+            # esbuild puts CSS next to JS; move it to static/css/
+            js_css = os.path.join(build_dir, "static", "js", "main.css")
+            if os.path.isfile(js_css):
+                shutil.move(
+                    js_css,
+                    os.path.join(build_dir, "static", "css", "main.css"),
+                )
+            # Copy the shared index.html template into the build output.
+            shutil.copy(
+                os.path.join(frontend_dir, "public", "index.html"),
+                build_index,
+            )
             print("Frontend build completed successfully")
         except FileNotFoundError:
             print("WARNING: npm not found. Skipping frontend build.")
@@ -444,7 +475,7 @@ class BuildPyWithFrontend(build_py):
 
 # Actual Setup
 package_name = os.environ.get("MONARCH_PACKAGE_NAME", "torchmonarch")
-package_version = os.environ.get("MONARCH_VERSION", "0.4.0.dev0")
+package_version = os.environ.get("MONARCH_VERSION", "0.5.0.dev0")
 
 setup(
     name=package_name,

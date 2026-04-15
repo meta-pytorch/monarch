@@ -110,6 +110,10 @@ host_mesh.shutdown(&instance).await.expect("host shutdown");
 
 This is important: the host is holding a `BootstrapProcManager`, and that thing is the one that really owns the PIDs of the procs it spawned. `shutdown(...)` walks the hosts, tells each agent to terminate its children, and drops the host. If you don't do this, you can leak the OS children.
 
+You can use host_mesh.stop instead, which also cleans up all of the procs, but leaves the
+host running and a new host mesh can connect to it. This is useful for interactive
+sessions where you don't want to restart the server process.
+
 ---
 
 ### 4.5 Recap of layers

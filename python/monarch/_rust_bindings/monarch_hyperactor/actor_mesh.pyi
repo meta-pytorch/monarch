@@ -6,7 +6,7 @@
 
 # pyre-strict
 
-from typing import final, Optional, Protocol
+from typing import final, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
@@ -20,15 +20,6 @@ class ActorMeshProtocol(Protocol):
     """
     Protocol defining the common interface for actor mesh and mesh ref.
     """
-
-    @property
-    def region(self) -> Region:
-        """Get the region of the mesh."""
-        ...
-
-    def get(self, rank: int) -> Optional[ActorId]:
-        """Get the actor id at the given rank."""
-        ...
 
     def name(self) -> PythonTask[str]:
         """Get the name of the mesh."""
