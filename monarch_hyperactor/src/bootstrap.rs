@@ -8,11 +8,12 @@
 
 use futures::future::try_join_all;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::id::Label;
 use hyperactor_mesh::Bootstrap;
-use hyperactor_mesh::Name;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::bootstrap;
 use hyperactor_mesh::host_mesh::HostMesh;
+use hyperactor_mesh::mesh_id::HostMeshId;
 use monarch_types::MapPyErr;
 use pyo3::Bound;
 use pyo3::PyAny;
@@ -129,8 +130,9 @@ pub fn attach_to_workers<'py>(
         .map(|x| x.borrow_mut().take_task())
         .collect::<PyResult<Vec<_>>>()?;
 
-    let name =
-        Name::new(name.unwrap_or("hosts")).map_err(|err| PyException::new_err(err.to_string()))?;
+    let name = HostMeshId::unique(
+        Label::new(name.unwrap_or("hosts")).map_err(|e| PyException::new_err(e.to_string()))?,
+    );
     let instance = instance.clone();
     PyPythonTask::new(async move {
         let results = try_join_all(tasks).await?;
