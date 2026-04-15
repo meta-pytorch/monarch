@@ -6,23 +6,43 @@ on:
       version:
         description: "Version string (e.g. 0.1.0rc1 or 0.1.0)"
         required: true
+      is_prerelease:
+        description: "Is this a pre-release? (If false, tags as latest)"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 jobs:
-  build:
+  build-x86_64:
     uses: ./.github/workflows/build-dist.yml
     with:
       # TODO add 3.14 once we figure out py03 issue
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
-      torch-spec: 'torch==2.10.0 --extra-index-url https://download.pytorch.org/whl/cu128'
+      runner: linux.g5.4xlarge.nvidia.gpu
+      torch-spec: 'torch==2.11.0 --extra-index-url https://download.pytorch.org/whl/cu128'
       gpu-arch-type: cuda
       gpu-arch-version: '12.8'
       version: ${{ github.event.inputs.version }}
+      platform: x86_64
+
+  build-aarch64:
+    uses: ./.github/workflows/build-dist.yml
+    with:
+      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      runner: linux.arm64.2xlarge
+      docker-image: 'pytorch/manylinuxaarch64-builder:cuda12.8'
+      torch-spec: 'torch==2.11.0 --extra-index-url https://download.pytorch.org/whl/cu128'
+      gpu-arch-type: cuda
+      gpu-arch-version: '12.8'
+      version: ${{ github.event.inputs.version }}
+      platform: aarch64
+
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [build-x86_64, build-aarch64]
     runs-on: ubuntu-latest
     environment: stable
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -71,13 +91,40 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Determine Docker Tags
+        id: determine-tags
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          PRERELEASE="${{ github.event.inputs.is_prerelease }}"
+          TAGS="ghcr.io/${{ github.repository }}:${VERSION}-cuda12.8"
+          if [[ "$PRERELEASE" == "false" ]]; then
+            TAGS="$TAGS,ghcr.io/${{ github.repository }}:latest"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: . # Build context is the root directory
           file: ./Dockerfile
           push: true # Push the image to the registry
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ github.event.inputs.version }}-cuda12.8
-            ghcr.io/${{ github.repository }}:latest
-          build-args: PYTORCH_TAG=2.10.0-cuda12.8-cudnn9-runtime
+          tags: ${{ steps.determine-tags.outputs.tags }}
+          build-args: |
+            PYTORCH_TAG=2.11.0-cuda12.8-cudnn9-runtime
+            MONARCH_VERSION=${{ github.event.inputs.version }}
+
+  create-docs-branch:
+    name: Create docs release branch
+    needs: publish
+    if: ${{ github.event.inputs.is_prerelease != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create docs/v${{ github.event.inputs.version }} branch
+        run: |
+          git checkout -b "docs/v${{ github.event.inputs.version }}"
+          git push origin "docs/v${{ github.event.inputs.version }}"

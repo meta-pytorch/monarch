@@ -54,6 +54,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use arc_swap::ArcSwap;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::CONFIG;
 use crate::attrs::AttrKeyInfo;
@@ -69,7 +71,7 @@ use crate::from_yaml;
 /// -> File -> ClientOverride -> Default**.
 ///
 /// Smaller `priority()` number = higher precedence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Source {
     /// Values set by the config snapshot sent from the client
     /// during proc bootstrap.
@@ -87,6 +89,10 @@ pub enum Source {
     /// `ConfigLock::override_key`. Always wins over all other
     /// sources; removed when the guard drops.
     TestOverride,
+    /// The key's declared default value. Not stored as a layer —
+    /// used only in [`ConfigEntry`] to report that no explicit layer
+    /// provided a value.
+    Default,
 }
 
 /// Return the numeric priority for a source.
@@ -101,6 +107,7 @@ fn priority(s: Source) -> u8 {
         Source::Runtime => 2,
         Source::File => 3,
         Source::ClientOverride => 4,
+        Source::Default => 5,
     }
 }
 
@@ -664,6 +671,11 @@ fn make_layer(source: Source, attrs: Attrs) -> Layer {
             stacks: HashMap::new(),
         },
         Source::ClientOverride => Layer::ClientOverride(attrs),
+        Source::Default => {
+            // Default is a reporting-only source used in ConfigEntry;
+            // it does not correspond to a real layer.
+            unreachable!("Source::Default is not a real layer — it cannot be used in make_layer")
+        }
     }
 }
 
@@ -756,6 +768,88 @@ pub fn attrs() -> Attrs {
 /// should have `propagate: false` and will not be included.
 pub fn propagatable_attrs() -> Attrs {
     GLOBAL.layers.read().unwrap().materialize_propagatable()
+}
+
+/// A single config entry with its resolved value and provenance.
+///
+/// Used by the admin config-inspection endpoint to report per-proc
+/// configuration state including which layer the effective value
+/// came from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigEntry {
+    /// Fully qualified key name (e.g. `hyperactor::config::codec_max_frame_length`).
+    pub name: String,
+    /// Display representation of the resolved value.
+    pub value: String,
+    /// Display representation of the declared default, if any.
+    pub default_value: Option<String>,
+    /// Which layer the resolved value came from.
+    pub source: Source,
+    /// True when the resolved display value differs from the declared default.
+    pub changed_from_default: bool,
+    /// Environment variable name, if the key declares one.
+    pub env_var: Option<String>,
+}
+
+/// Snapshot all CONFIG-marked keys with their resolved values and
+/// source layers.
+///
+/// Iterates the global key registry, filters to `@meta(CONFIG = ...)`
+/// keys, and for each key walks layers top-to-bottom to find which
+/// layer provides the effective value. Results are sorted by name.
+pub fn config_entries() -> Vec<ConfigEntry> {
+    let g = GLOBAL.layers.read().unwrap();
+    let mut entries = Vec::new();
+
+    for info in inventory::iter::<AttrKeyInfo>() {
+        let Some(cfg_meta) = info.meta.get(CONFIG) else {
+            continue;
+        };
+
+        let name = info.name;
+
+        // Walk layers to find the effective value and its source.
+        let mut chosen_value: Option<Box<dyn crate::attrs::SerializableValue>> = None;
+        let mut chosen_source: Option<Source> = None;
+        for layer in &g.ordered {
+            if let Some(v) = layer_attrs(layer).get_value_by_name(name) {
+                chosen_value = Some(v.cloned());
+                chosen_source = Some(layer_source(layer));
+                break;
+            }
+        }
+
+        // Fall back to declared default if no layer provides a value.
+        let (value_str, source) = match chosen_value {
+            Some(v) => ((info.display)(&*v), chosen_source.unwrap()),
+            None => {
+                if let Some(default) = info.default {
+                    ((info.display)(default), Source::Default)
+                } else {
+                    continue;
+                }
+            }
+        };
+
+        // Compute default display string for changed_from_default comparison.
+        let default_str = info.default.map(|d| (info.display)(d));
+        let changed_from_default = match &default_str {
+            Some(ds) => value_str != *ds,
+            None => true, // no declared default → always "changed"
+        };
+
+        entries.push(ConfigEntry {
+            name: name.to_string(),
+            value: value_str,
+            default_value: default_str,
+            source,
+            changed_from_default,
+            env_var: cfg_meta.env_name.clone(),
+        });
+    }
+
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
 }
 
 /// Return a snapshot of the attributes for a specific configuration
@@ -1784,5 +1878,123 @@ mod tests {
 
         let _guard = lock.override_key(CODEC_MAX_FRAME_LENGTH, 9999);
         assert_eq!(get(CODEC_MAX_FRAME_LENGTH), 9999);
+    }
+
+    // ── config_entries() tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_config_entries_excludes_non_config_keys() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        let entries = config_entries();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.name.contains("config_key") && !e.name.contains("non_config")),
+            "CONFIG_KEY should appear in config_entries()"
+        );
+        assert!(
+            !entries.iter().any(|e| e.name.contains("non_config_key")),
+            "NON_CONFIG_KEY should not appear in config_entries()"
+        );
+    }
+
+    #[test]
+    fn test_config_entries_layer_precedence() {
+        let lock = lock();
+        reset_to_defaults();
+
+        // Defaults-only: source should be Default.
+        let entries = config_entries();
+        let codec = entries
+            .iter()
+            .find(|e| e.name.contains("codec_max_frame_length"))
+            .expect("CODEC_MAX_FRAME_LENGTH should appear");
+        assert_eq!(codec.source, Source::Default);
+
+        // Override at TestOverride → source should be TestOverride.
+        let _guard = lock.override_key(CODEC_MAX_FRAME_LENGTH, 1024);
+        let entries = config_entries();
+        let codec = entries
+            .iter()
+            .find(|e| e.name.contains("codec_max_frame_length"))
+            .expect("CODEC_MAX_FRAME_LENGTH should appear");
+        assert_eq!(codec.source, Source::TestOverride);
+        assert_eq!(codec.value, "1024");
+    }
+
+    #[test]
+    fn test_config_entries_changed_from_default_different_value() {
+        let lock = lock();
+        reset_to_defaults();
+
+        let _guard = lock.override_key(CODEC_MAX_FRAME_LENGTH, 1024);
+        let entries = config_entries();
+        let codec = entries
+            .iter()
+            .find(|e| e.name.contains("codec_max_frame_length"))
+            .expect("CODEC_MAX_FRAME_LENGTH should appear");
+        assert!(
+            codec.changed_from_default,
+            "value differs from default → changed_from_default should be true"
+        );
+    }
+
+    #[test]
+    fn test_config_entries_changed_from_default_same_value() {
+        let lock = lock();
+        reset_to_defaults();
+
+        // Override to the same value as the declared default.
+        let _guard = lock.override_key(CODEC_MAX_FRAME_LENGTH, CODEC_MAX_FRAME_LENGTH_DEFAULT);
+        let entries = config_entries();
+        let codec = entries
+            .iter()
+            .find(|e| e.name.contains("codec_max_frame_length"))
+            .expect("CODEC_MAX_FRAME_LENGTH should appear");
+        assert!(
+            !codec.changed_from_default,
+            "value matches default → changed_from_default should be false"
+        );
+    }
+
+    #[test]
+    fn test_config_entries_sorted_by_name() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        let entries = config_entries();
+        for w in entries.windows(2) {
+            assert!(
+                w[0].name <= w[1].name,
+                "entries not sorted: {:?} > {:?}",
+                w[0].name,
+                w[1].name,
+            );
+        }
+    }
+
+    #[test]
+    fn test_config_entries_env_var_extraction() {
+        let _lock = lock();
+        reset_to_defaults();
+
+        let entries = config_entries();
+        let codec = entries
+            .iter()
+            .find(|e| e.name.contains("codec_max_frame_length"))
+            .expect("CODEC_MAX_FRAME_LENGTH should appear");
+        assert_eq!(
+            codec.env_var.as_deref(),
+            Some("HYPERACTOR_CODEC_MAX_FRAME_LENGTH")
+        );
+
+        // CONFIG_KEY_NO_ENV has no env_name.
+        let no_env = entries
+            .iter()
+            .find(|e| e.name.contains("config_key_no_env"))
+            .expect("CONFIG_KEY_NO_ENV should appear");
+        assert_eq!(no_env.env_var, None);
     }
 }

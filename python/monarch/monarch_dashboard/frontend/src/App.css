@@ -24,14 +24,26 @@
   --accent-glow: rgba(232, 122, 47, 0.15);
   --accent-glow-strong: rgba(232, 122, 47, 0.3);
 
-  /* Status colors */
-  --status-healthy: #2ecc71;
+  /* Status colors — one per ActorStatus enum variant */
+  --status-idle: #2ecc71;
+  --status-client: #27ae60;
   --status-processing: #3498db;
-  --status-transitional: #f39c12;
+  --status-saving: #2980b9;
+  --status-loading: #1abc9c;
+  --status-created: #f1c40f;
+  --status-initializing: #f39c12;
+  --status-stopping: #e67e22;
   --status-failed: #e74c3c;
   --status-stopped: #8e44ad;
   --status-unknown: #7f8c8d;
-  --status-neutral: #5b7a99;
+
+  /* Message status colors — matches hyperactor telemetry emission */
+  --msg-status-queued: #f39c12;
+  --msg-status-active: #3498db;
+  --msg-status-complete: #2ecc71;
+
+  /* Legacy aliases used elsewhere in CSS */
+  --status-healthy: #2ecc71;
 
   /* Text */
   --text-primary: #e8eaed;
@@ -153,13 +165,28 @@ body::after {
 .header-subtitle {
   font-family: var(--font-body);
   font-size: 12px;
-  font-weight: 300;
-  color: var(--text-muted);
+  font-weight: 400;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   margin-left: var(--space-xs);
   position: relative;
   top: 1px;
+}
+
+.header-release-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent-primary);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-left: var(--space-sm);
+  position: relative;
+  top: -1px;
 }
 
 .header-tabs {
@@ -174,7 +201,7 @@ body::after {
   padding: var(--space-sm) var(--space-md);
   border: none;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   cursor: pointer;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   transition: all 0.2s ease;
@@ -277,7 +304,6 @@ body::after {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   margin-bottom: var(--space-md);
-  padding-left: var(--space-xs);
   border-left: 3px solid var(--accent-primary);
   padding-left: var(--space-sm);
 }
@@ -367,6 +393,55 @@ body::after {
   box-shadow: inset 3px 0 0 var(--accent-primary);
 }
 
+/* Message status expanded row */
+.msg-status-expanded-row td {
+  background: var(--bg-secondary);
+  padding: 8px 12px !important;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.msg-status-timeline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.msg-status-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.msg-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.msg-status-label {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.msg-status-time {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.msg-status-arrow {
+  color: var(--text-muted);
+  margin: 0 2px;
+}
+
+.msg-status-timeline-loading,
+.msg-status-timeline-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 0;
+}
+
 .clickable-row:active {
   background: var(--bg-active);
 }
@@ -429,9 +504,12 @@ body::after {
   flex-shrink: 0;
 }
 
-/* Status dot colors by data-status attribute */
-.status-badge[data-status="idle"] { color: var(--status-healthy); }
-.status-badge[data-status="idle"] .status-dot { background: var(--status-healthy); box-shadow: 0 0 6px var(--status-healthy); }
+/* Status dot colors by data-status attribute — one per ActorStatus variant */
+.status-badge[data-status="idle"] { color: var(--status-idle); }
+.status-badge[data-status="idle"] .status-dot { background: var(--status-idle); box-shadow: 0 0 6px var(--status-idle); }
+
+.status-badge[data-status="client"] { color: var(--status-client); }
+.status-badge[data-status="client"] .status-dot { background: var(--status-client); box-shadow: 0 0 6px var(--status-client); }
 
 .status-badge[data-status="processing"] { color: var(--status-processing); }
 .status-badge[data-status="processing"] .status-dot {
@@ -440,20 +518,38 @@ body::after {
   animation: pulse 2s ease-in-out infinite;
 }
 
-.status-badge[data-status="created"],
-.status-badge[data-status="initializing"],
-.status-badge[data-status="saving"],
-.status-badge[data-status="loading"],
-.status-badge[data-status="stopping"] {
-  color: var(--status-transitional);
+.status-badge[data-status="saving"] { color: var(--status-saving); }
+.status-badge[data-status="saving"] .status-dot {
+  background: var(--status-saving);
+  box-shadow: 0 0 6px var(--status-saving);
+  animation: pulse 2s ease-in-out infinite;
 }
-.status-badge[data-status="created"] .status-dot,
-.status-badge[data-status="initializing"] .status-dot,
-.status-badge[data-status="saving"] .status-dot,
-.status-badge[data-status="loading"] .status-dot,
+
+.status-badge[data-status="loading"] { color: var(--status-loading); }
+.status-badge[data-status="loading"] .status-dot {
+  background: var(--status-loading);
+  box-shadow: 0 0 6px var(--status-loading);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.status-badge[data-status="created"] { color: var(--status-created); }
+.status-badge[data-status="created"] .status-dot {
+  background: var(--status-created);
+  box-shadow: 0 0 6px var(--status-created);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-badge[data-status="initializing"] { color: var(--status-initializing); }
+.status-badge[data-status="initializing"] .status-dot {
+  background: var(--status-initializing);
+  box-shadow: 0 0 6px var(--status-initializing);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-badge[data-status="stopping"] { color: var(--status-stopping); }
 .status-badge[data-status="stopping"] .status-dot {
-  background: var(--status-transitional);
-  box-shadow: 0 0 6px var(--status-transitional);
+  background: var(--status-stopping);
+  box-shadow: 0 0 6px var(--status-stopping);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
@@ -466,12 +562,8 @@ body::after {
 .status-badge[data-status="stopped"] { color: var(--status-stopped); }
 .status-badge[data-status="stopped"] .status-dot { background: var(--status-stopped); }
 
-.status-badge[data-status="unknown"],
-.status-badge[data-status="client"] {
-  color: var(--status-unknown);
-}
-.status-badge[data-status="unknown"] .status-dot,
-.status-badge[data-status="client"] .status-dot {
+.status-badge[data-status="unknown"] { color: var(--status-unknown); }
+.status-badge[data-status="unknown"] .status-dot {
   background: var(--status-unknown);
 }
 
@@ -698,6 +790,39 @@ button:focus:not(:focus-visible) {
   overflow: hidden;
 }
 
+.dag-toolbar {
+  position: absolute;
+  top: var(--space-sm);
+  left: var(--space-sm);
+  z-index: 10;
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.dag-direction-toggle {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border: 1px solid var(--text-muted);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dag-direction-toggle:hover {
+  border-color: var(--accent-primary);
+  background: var(--bg-hover);
+}
+
+.dag-direction-toggle.active {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: #fff;
+}
+
 .dag-svg {
   width: 100%;
   height: 100%;
@@ -772,25 +897,23 @@ button:focus:not(:focus-visible) {
 .dag-tooltip-info {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--text-muted);
+  color: #fff;
   margin-top: 2px;
 }
 
 /* ---- DAG Legend ---- */
 
 .dag-legend {
-  position: absolute;
-  top: var(--space-md);
-  right: var(--space-md);
+  width: 140px;
+  flex-shrink: 0;
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-left: none;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
   padding: var(--space-sm) var(--space-md);
   font-family: var(--font-display);
   font-size: 11px;
-  z-index: 10;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-  max-width: 180px;
+  overflow-y: auto;
 }
 
 .dag-legend-title {
@@ -1135,6 +1258,7 @@ button:focus:not(:focus-visible) {
 }
 
 .summary-error-item {
+  position: relative;
   padding: var(--space-sm);
   border-left: 3px solid var(--status-failed);
   margin-bottom: var(--space-xs);
@@ -1155,11 +1279,46 @@ button:focus:not(:focus-visible) {
   margin-top: 2px;
 }
 
+.summary-error-reason-wrap {
+  max-width: 300px;
+  cursor: default;
+}
+
 .summary-error-reason {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--status-failed);
   font-style: italic;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary-error-popover {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 10;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--status-failed);
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  user-select: text;
+  cursor: text;
+}
+
+.summary-error-reason-wrap:hover .summary-error-popover {
+  display: block;
 }
 
 .summary-error-time {
@@ -1183,13 +1342,24 @@ button:focus:not(:focus-visible) {
   background: var(--bg-tertiary);
   border-radius: 4px;
   overflow: hidden;
+  display: flex;
 }
 
-.summary-delivery-bar-fill {
+.summary-delivery-bar-segment {
   height: 100%;
-  background: var(--status-healthy);
-  border-radius: 4px;
   transition: width 0.6s ease;
+}
+
+.summary-delivery-bar-segment:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.summary-delivery-bar-segment:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.summary-delivery-bar-segment:only-child {
+  border-radius: 4px;
 }
 
 .summary-delivery-label {

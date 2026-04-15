@@ -15,24 +15,18 @@ A `PortId` identifies a specific port on a particular actor. Ports are the entry
     Ord,
     Named
 )]
-pub struct PortId(pub ActorId, pub u64);
+pub struct PortId(ActorId, u64);
 ```
 - The first field is the owning `ActorId`.
 - The second field is the port number (`u64`), typically derived from the message type’s registered port.
 
 ## Construction
 
+Fields are private; use a named constructor or derive from an `ActorId`:
 ```rust
 use hyperactor::reference::{PortId, ActorId};
 
-let port = PortId(actor, 42);
-```
-Or via the `id!` macro:
-```rust
-use hyperactor::id;
-
-let port = id!(training[0].logger[1][42]);
-// Equivalent to PortId(ActorId(...), 42)
+let port = PortId::new(actor.clone(), 42);
 ```
 You can also construct a PortId from an `ActorId` using `.port_id(...)`:
 ```rust
@@ -55,7 +49,7 @@ impl PortId {
 ## Traits
 
 `PortId` implements:
-- `Display` — formatted as `world[rank].actor[pid][port]`
-- `FromStr` — parses from strings like `"training[0].logger[1][42]"`
+- `Display` — formatted as `addr,proc_name,actor_name[pid][port]`
+- `FromStr` — parses from strings like `"tcp:[::1]:1234,myproc,logger[1][42]"`
 - `Ord`, `Eq`, `Hash` — usable as map keys or for dispatch
 - `Named` — supports reflection and typed messaging

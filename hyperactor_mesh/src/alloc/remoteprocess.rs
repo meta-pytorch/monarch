@@ -417,8 +417,8 @@ impl RemoteProcessAllocator {
                 }
                 status = tx_watcher.next(), if running => {
                     match status  {
-                        Some(TxStatus::Closed) => {
-                            tracing::error!("upstream channel state closed");
+                        Some(TxStatus::Closed(reason)) => {
+                            tracing::error!("upstream channel state closed: {}", reason);
                             break;
                         },
                         _ => {
@@ -723,7 +723,7 @@ impl RemoteProcessAlloc {
                 };
                 if let Some(tx_status) = tx_status {
                     tracing::debug!("host {} channel event: {:?}", host_id, tx_status);
-                    if tx_status == TxStatus::Closed {
+                    if tx_status.is_closed() {
                         if tx.send(host_id.clone()).is_err() {
                             // other side closed
                             break;

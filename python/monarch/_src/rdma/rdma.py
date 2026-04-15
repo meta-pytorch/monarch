@@ -65,6 +65,25 @@ def is_ibverbs_available() -> bool:
     return _is_ibverbs_available()
 
 
+def is_rdma_available() -> bool:
+    """Whether RDMA over ibverbs is available on this system.
+
+    .. deprecated::
+        Monarch now supports multiple RDMA backends, so `is_rdma_available`
+        is ambiguous and will be removed in a future release. Use
+        :func:`is_ibverbs_available` or :func:`get_rdma_backend` instead.
+    """
+    warnings.warn(
+        "is_rdma_available is deprecated because Monarch now supports multiple "
+        "RDMA backends, making this function ambiguous. For now it indicates "
+        "whether RDMA over ibverbs is available. Use is_ibverbs_available() or "
+        "get_rdma_backend() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return is_ibverbs_available()
+
+
 def get_rdma_backend() -> str:
     """Return available RDMA backend.
 
