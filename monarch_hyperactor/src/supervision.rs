@@ -80,10 +80,10 @@ impl SupervisionError {
     #[allow(dead_code)]
     pub(crate) fn new_err_from(failure: MeshFailure) -> PyErr {
         let event = failure.event;
-        Self::new_err(format!(
-            "Actor {} exited because of the following reason: {}",
-            event.actor_id, event,
-        ))
+        let message = event
+            .failure_report()
+            .unwrap_or_else(|| format!("{}", event));
+        Self::new_err(message)
     }
     /// Set the endpoint on a PyErr containing a SupervisionError.
     ///
@@ -124,12 +124,12 @@ impl std::fmt::Display for PyMeshFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "MeshFailure(mesh_name={}, rank={}, event={})",
+            "MeshFailure(mesh_name={}, crashed_ranks={:?}, event={})",
             self.inner
                 .actor_mesh_name
                 .clone()
                 .unwrap_or("<none>".into()),
-            self.inner.rank.map_or("<none>".into(), |r| r.to_string()),
+            self.inner.crashed_ranks,
             self.inner.event
         )
     }
@@ -154,7 +154,10 @@ impl PyMeshFailure {
     }
 
     fn report(&self) -> String {
-        format!("{}", self.inner.event)
+        self.inner
+            .event
+            .failure_report()
+            .unwrap_or_else(|| format!("{}", self.inner.event))
     }
 }
 

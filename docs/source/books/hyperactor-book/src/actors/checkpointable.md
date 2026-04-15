@@ -15,11 +15,11 @@ pub trait Checkpointable: Send + Sync + Sized {
 
 ## Associated Type
 
-- `type State`: A serializable type representing the object's saved state. This must implement `RemoteMessage` so it can serialized and transmitted.
+- `type State`: A serializable type representing the object's saved state. This must implement `RemoteMessage` so it can be serialized and transmitted.
 
 ## `save`
 
-Persists the current state of the component. Returns the Returns a `Self::State` value. If the operation fails, returns `CheckpointError::Save`.
+Persists the current state of the component. Returns a `Self::State` value. If the operation fails, returns `CheckpointError::Save`.
 
 ## `load`
 

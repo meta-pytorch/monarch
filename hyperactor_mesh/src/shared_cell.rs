@@ -167,6 +167,18 @@ impl<T> SharedCell<T> {
         Ok(f(value))
     }
 
+    /// Non-async variant of [`with_mut`](Self::with_mut). Returns
+    /// `Err` if the write lock cannot be acquired immediately or if
+    /// the cell has already been taken.
+    pub fn try_with_mut<F, R>(&self, f: F) -> Result<R, EmptyCellError>
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        let mut inner = self.inner.try_write(false).map_err(|_| EmptyCellError {})?;
+        let value = inner.value.as_mut().ok_or(EmptyCellError {})?;
+        Ok(f(value))
+    }
+
     /// Take the item out of the cell, leaving it in an unusable state.
     pub async fn take(&self) -> Result<T, EmptyCellError> {
         let mut inner = self.inner.write(true).await;

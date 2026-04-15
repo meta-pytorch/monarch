@@ -24,6 +24,7 @@ use std::ops::DerefMut;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
+use std::time::Duration;
 
 use bytes::Buf;
 use bytes::Bytes;
@@ -51,20 +52,18 @@ use crate::channel::SendError;
 use crate::config;
 use crate::metrics;
 
-/// Per-tag buffer array. Each tag value (0..255) gets its own slot.
-const NUM_TAGS: usize = 256;
-
 struct DemuxState<R> {
     reader: FrameReader<R>,
-    /// One buffer slot per tag value. A reader for tag `t` checks
-    /// `buffered[t]`; if populated, it takes the frame without
-    /// touching the underlying reader.
-    buffered: Box<[Option<Bytes>; NUM_TAGS]>,
+    /// Spaced to store one buffered frame. A reader for tag `t` checks if
+    /// if the buffered message matches that tag. If not, it waits for some other
+    /// reader to clear the slot. If the tag matches, takes the frame and clears
+    /// the buffer.
+    buffered: Option<(u8, Bytes)>,
     eof: bool,
 }
 
 /// Demultiplexes a single `FrameReader` into per-tag views.
-/// Buffers at most one frame per tag value.
+/// Buffers at most one frame.
 pub(super) struct DemuxFrameReader<R> {
     inner: tokio::sync::Mutex<DemuxState<R>>,
     notify: tokio::sync::Notify,
@@ -73,11 +72,10 @@ pub(super) struct DemuxFrameReader<R> {
 impl<R: AsyncRead + Unpin + Send> DemuxFrameReader<R> {
     pub fn new(reader: FrameReader<R>) -> Self {
         // Use Box to keep the large array off the stack.
-        const NONE: Option<Bytes> = None;
         Self {
             inner: tokio::sync::Mutex::new(DemuxState {
                 reader,
-                buffered: Box::new([NONE; NUM_TAGS]),
+                buffered: None,
                 eof: false,
             }),
             notify: tokio::sync::Notify::new(),
@@ -91,25 +89,36 @@ impl<R: AsyncRead + Unpin + Send> DemuxFrameReader<R> {
                 if state.eof {
                     return Ok(None);
                 }
-                // Check if our tag already has a buffered frame.
-                if let Some(bytes) = state.buffered[tag as usize].take() {
-                    drop(state);
-                    self.notify.notify_waiters();
-                    return Ok(Some(bytes));
-                }
-                // No buffered frame for our tag — read from the underlying reader.
-                match state.reader.next().await? {
-                    Some((t, bytes)) if t == tag => return Ok(Some(bytes)),
-                    Some((t, bytes)) => {
-                        state.buffered[t as usize] = Some(bytes);
+                if let Some((t, _)) = &state.buffered {
+                    if *t == tag {
+                        let (_, bytes) = state.buffered.take().unwrap();
                         drop(state);
                         self.notify.notify_waiters();
+                        return Ok(Some(bytes));
                     }
-                    None => {
-                        state.eof = true;
-                        drop(state);
-                        self.notify.notify_waiters();
-                        return Ok(None);
+                    // Else the buffered tag doesn't match, wait until the right
+                    // reader consumes the buffered message.
+                    // We don't buffer more than one message because it is
+                    // the expectation that all available tags are dequeued
+                    // eagerly, and we don't want buffer bloat. There are
+                    // other backpressure mechanisms from higher up.
+                    // wait is handled in notified() below.
+                } else {
+                    match state.reader.next().await? {
+                        Some((t, bytes)) if t == tag => return Ok(Some(bytes)),
+                        Some((t, bytes)) => {
+                            state.buffered = Some((t, bytes));
+                            drop(state);
+                            // notify waiters that there's a new buffered frame to
+                            // be read.
+                            self.notify.notify_waiters();
+                        }
+                        None => {
+                            state.eof = true;
+                            drop(state);
+                            self.notify.notify_waiters();
+                            return Ok(None);
+                        }
                     }
                 }
             }
@@ -1057,6 +1066,7 @@ impl<L: Link> Session<L, Disconnected> {
             let Session { link, state: _ } = self;
             let sleep = tokio::time::sleep_until(deadline);
             tokio::pin!(sleep);
+            let mut consecutive_failures: u32 = 0;
             loop {
                 let result = tokio::select! {
                     biased;
@@ -1073,10 +1083,20 @@ impl<L: Link> Session<L, Disconnected> {
                             state: Connected { mux },
                         });
                     }
-                    Some(Err(_)) => {
-                        // Brief pause so the timer driver can process
-                        // the deadline on current-thread runtimes.
-                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    Some(Err(err)) => {
+                        consecutive_failures += 1;
+                        let delay = Duration::from_millis(
+                            10u64.saturating_mul(1u64 << consecutive_failures.min(9)),
+                        )
+                        .min(Duration::from_secs(5));
+                        tracing::info!(
+                            dest = %link.dest(),
+                            error = %err,
+                            consecutive_failures,
+                            delay_ms = delay.as_millis() as u64,
+                            "connect_by: link.next() failed, retrying after backoff"
+                        );
+                        tokio::time::sleep(delay).await;
                         continue;
                     }
                     None => {
@@ -1136,5 +1156,88 @@ pub(super) async fn join_nonempty<T: 'static>(
     match set.join_next().await {
         None => std::future::pending().await,
         Some(result) => result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use tokio::io::AsyncWriteExt;
+
+    use super::super::framed::FrameReader;
+    use super::super::framed::FrameWrite;
+    use super::DemuxFrameReader;
+
+    async fn write_frame(
+        writer: tokio::io::DuplexStream,
+        payload: &[u8],
+        tag: u8,
+    ) -> tokio::io::DuplexStream {
+        let mut fw = FrameWrite::new(writer, Bytes::from(payload.to_vec()), 4096, tag).unwrap();
+        fw.send().await.unwrap();
+        fw.complete()
+    }
+
+    /// Regression test for a data-loss bug in DemuxFrameReader.
+    ///
+    /// The bug: when `next_tagged(A)` reads a frame for tag B, it buffers
+    /// it and then blocks on `self.notify.notified().await` waiting for
+    /// another consumer to make progress. In production, this read is
+    /// used inside `select!`, so the future may be **cancelled** while
+    /// parked at `notified()`. On the next call, `next_tagged(A)` finds
+    /// `buffered[B]` already occupied and must wait for B to read it.
+    ///
+    /// This test exercises the pushback path:
+    ///
+    ///   Wire:  B0, A0
+    ///
+    ///   1. `next_tagged(A)` reads B0 → stored in `buffered`, parks → cancel
+    ///   2. `next_tagged(A)` re-enters: `buffered` occupied, parks → cancel
+    ///   3. Repeated cancellation: `buffered` occupied → blocks immediately
+    ///   4. `next_tagged(B)` takes B0 from `buffered`
+    ///   5. `next_tagged(A)` reads A0 from wire
+    #[tokio::test]
+    async fn test_demux_does_not_drop_buffered_frames() {
+        const MAX_LEN: usize = 4096;
+        let (reader, writer) = tokio::io::duplex(MAX_LEN * 16);
+        let demux = Arc::new(DemuxFrameReader::new(FrameReader::new(reader, MAX_LEN)));
+
+        let tag_a: u8 = 0;
+        let tag_b: u8 = 1;
+
+        // Wire: B0, A0. Tag-A will read B0 (stored in buffered),
+        // then block because buffered is occupied.
+        let w = write_frame(writer, b"B0", tag_b).await;
+        let w = write_frame(w, b"A0", tag_a).await;
+        let mut w = w;
+        w.shutdown().await.unwrap();
+
+        // First call: tag-A reads B0 then blocks.
+        let result =
+            tokio::time::timeout(Duration::from_millis(100), demux.next_tagged(tag_a)).await;
+        assert!(result.is_err(), "expected timeout, got {:?}", result);
+
+        // Repeated cancellation: tag-A re-enters, finds pushback occupied,
+        // immediately blocks. No additional frames are read.
+        for _ in 0..3 {
+            let result =
+                tokio::time::timeout(Duration::from_millis(50), demux.next_tagged(tag_a)).await;
+            assert!(result.is_err(), "expected timeout, got {:?}", result);
+        }
+
+        // Tag-B takes B0 from buffered[B].
+        let b0 = demux.next_tagged(tag_b).await.unwrap().unwrap();
+        assert_eq!(b0, Bytes::from_static(b"B0"), "first B frame was dropped");
+
+        // Tag-A: pushback B1 drains to buffered[B], then reads A0 from wire.
+        let a0 = demux.next_tagged(tag_a).await.unwrap().unwrap();
+        assert_eq!(a0, Bytes::from_static(b"A0"));
+
+        // Both at EOF.
+        assert!(demux.next_tagged(tag_a).await.unwrap().is_none());
+        assert!(demux.next_tagged(tag_b).await.unwrap().is_none());
     }
 }

@@ -35,8 +35,6 @@ use crate as hyperactor; // for macros
 use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
-use crate::checkpoint::CheckpointError;
-use crate::checkpoint::Checkpointable;
 use crate::context;
 use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
@@ -44,7 +42,6 @@ use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableMessageError;
-use crate::mailbox::log::MessageLogError;
 use crate::message::Castable;
 use crate::message::IndexedErasedUnbound;
 use crate::proc::Context;
@@ -136,10 +133,11 @@ pub trait Actor: Sized + Send + 'static {
     async fn handle_supervision_event(
         &mut self,
         _this: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
+        event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        // By default, the supervision event is not handled, caller is expected to bubble it up.
-        Ok(false)
+        // Error events are not handled by default and bubble up to the parent.
+        // Normal lifecycle events (e.g. clean stop) are absorbed.
+        Ok(!event.is_error())
     }
 
     /// Default undeliverable message handling behavior.
@@ -329,21 +327,6 @@ impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
     }
 }
 
-#[async_trait]
-impl<T> Checkpointable for T
-where
-    T: RemoteMessage + Clone,
-{
-    type State = T;
-    async fn save(&self) -> Result<Self::State, CheckpointError> {
-        Ok(self.clone())
-    }
-
-    async fn load(state: Self::State) -> Result<Self, CheckpointError> {
-        Ok(state)
-    }
-}
-
 /// Errors that occur while serving actors. Each error is associated
 /// with the ID of the actor being served.
 #[derive(Debug)]
@@ -409,16 +392,6 @@ impl ActorErrorKind {
     /// An underlying mailbox sender error.
     pub fn mailbox_sender(err: MailboxSenderError) -> Self {
         Self::Generic(err.to_string())
-    }
-
-    /// An underlying checkpoint error.
-    pub fn checkpoint(err: CheckpointError) -> Self {
-        Self::Generic(format!("checkpoint error: {}", err))
-    }
-
-    /// An underlying message log error.
-    pub fn message_log(err: MessageLogError) -> Self {
-        Self::Generic(format!("message log error: {}", err))
     }
 
     /// The actor's state could not be determined.
@@ -839,8 +812,6 @@ mod tests {
     use crate as hyperactor;
     use crate::Actor;
     use crate::OncePortHandle;
-    use crate::checkpoint::CheckpointError;
-    use crate::checkpoint::Checkpointable;
     use crate::config;
     use crate::context::Mailbox as _;
     use crate::introspect::IntrospectMessage;
@@ -983,39 +954,6 @@ mod tests {
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
-    }
-
-    #[derive(Debug)]
-    struct CheckpointActor {
-        // The actor does nothing but sum the values of messages.
-        sum: u64,
-        port: reference::PortRef<u64>,
-    }
-
-    #[async_trait]
-    impl Actor for CheckpointActor {}
-
-    #[async_trait]
-    impl Handler<u64> for CheckpointActor {
-        async fn handle(&mut self, cx: &Context<Self>, value: u64) -> Result<(), anyhow::Error> {
-            self.sum += value;
-            self.port.send(cx, self.sum)?;
-            Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl Checkpointable for CheckpointActor {
-        type State = (u64, reference::PortRef<u64>);
-
-        async fn save(&self) -> Result<Self::State, CheckpointError> {
-            Ok((self.sum, self.port.clone()))
-        }
-
-        async fn load(state: Self::State) -> Result<Self, CheckpointError> {
-            let (sum, port) = state;
-            Ok(CheckpointActor { sum, port })
-        }
     }
 
     type MultiValues = Arc<Mutex<(u64, String)>>;
@@ -1527,6 +1465,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl MailboxSender for DelayedMailboxSender {
         fn post_unchecked(
             &self,
@@ -1626,7 +1565,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         let mut relay_orders: Vec<usize> = (0..10000).collect();
-        relay_orders.shuffle(&mut rand::thread_rng());
+        relay_orders.shuffle(&mut rand::rng());
         assert_out_of_order_delivery(expected, relay_orders).await;
     }
 
@@ -1667,7 +1606,10 @@ mod tests {
             .unwrap();
         let payload = reply_rx.recv().await.unwrap();
 
-        assert_eq!(payload.identity, handle.actor_id().to_string());
+        assert_eq!(
+            payload.identity,
+            crate::introspect::IntrospectRef::Actor(handle.actor_id().clone())
+        );
         assert_valid_attrs(&payload);
         assert_has_attr(&payload, "status");
         assert_has_attr(&payload, "actor_type");
@@ -1840,7 +1782,12 @@ mod tests {
             .unwrap();
         let payload = reply_rx.recv().await.unwrap();
 
-        assert!(payload.identity.is_empty());
+        assert_eq!(
+            payload.identity,
+            crate::introspect::IntrospectRef::Actor(
+                test_proc_id("nonexistent").actor_id("child", 0)
+            )
+        );
         assert_error_code(&payload, "not_found");
 
         handle.drain_and_stop("test").unwrap();
@@ -1926,7 +1873,10 @@ mod tests {
             .unwrap();
         let child_payload = reply_rx.recv().await.unwrap();
 
-        assert_eq!(child_payload.identity, child_handle.actor_id().to_string(),);
+        assert_eq!(
+            child_payload.identity,
+            crate::introspect::IntrospectRef::Actor(child_handle.actor_id().clone()),
+        );
         // Verify it has actor attrs (status present).
         assert!(
             attrs_get(&child_payload.attrs, "status").is_some(),
@@ -1934,7 +1884,9 @@ mod tests {
         );
         assert_eq!(
             child_payload.parent,
-            Some(parent_handle.actor_id().to_string()),
+            Some(crate::introspect::IntrospectRef::Actor(
+                parent_handle.actor_id().clone()
+            )),
         );
 
         // Query the parent — children should include the child.
@@ -1954,7 +1906,9 @@ mod tests {
         assert!(
             parent_payload
                 .children
-                .contains(&child_handle.actor_id().to_string()),
+                .contains(&crate::introspect::IntrospectRef::Actor(
+                    child_handle.actor_id().clone()
+                )),
         );
 
         child_handle.drain_and_stop("test").unwrap();
@@ -2154,10 +2108,15 @@ mod tests {
         assert!(handle.cell().query_child(&test_ref).is_none());
 
         // Register a callback.
-        handle
-            .cell()
-            .set_query_child_handler(|child_ref| IntrospectResult {
-                identity: child_ref.to_string(),
+        handle.cell().set_query_child_handler(|child_ref| {
+            use crate::introspect::IntrospectRef;
+            let identity = match &child_ref {
+                reference::Reference::Proc(id) => IntrospectRef::Proc(id.clone()),
+                reference::Reference::Actor(id) => IntrospectRef::Actor(id.clone()),
+                reference::Reference::Port(id) => IntrospectRef::Actor(id.actor_id().clone()),
+            };
+            IntrospectResult {
+                identity,
                 attrs: serde_json::json!({
                     "proc_name": "test_proc",
                     "num_actors": 42,
@@ -2165,15 +2124,19 @@ mod tests {
                 .to_string(),
                 children: Vec::new(),
                 parent: None,
-                as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string(),
-            });
+                as_of: std::time::SystemTime::now(),
+            }
+        });
 
         // Now query_child returns the callback's response.
         let payload = handle
             .cell()
             .query_child(&test_ref)
             .expect("callback should produce a payload");
-        assert_eq!(payload.identity, test_ref.to_string());
+        assert_eq!(
+            payload.identity,
+            crate::introspect::IntrospectRef::Actor(test_proc_id("test").actor_id("child", 0))
+        );
         let attrs: serde_json::Value =
             serde_json::from_str(&payload.attrs).expect("attrs must be valid JSON");
         assert_eq!(
@@ -2340,7 +2303,10 @@ mod tests {
 
         // CI-1: introspectable_instance reports status "client"
         // and actor_type "()" (the unit type).
-        assert_eq!(payload.identity, actor_id.to_string());
+        assert_eq!(
+            payload.identity,
+            crate::introspect::IntrospectRef::Actor(actor_id.clone())
+        );
         assert_status(&payload, "client");
         let actor_type = attrs_get(&payload.attrs, "actor_type")
             .and_then(|v| v.as_str().map(String::from))

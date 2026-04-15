@@ -11,29 +11,24 @@ import {
   formatTimestamp,
   formatShape,
   messageStatusColor,
+  leafName,
+  agentDisplayName,
+  splitMessages,
 } from "../utils/status";
 
 describe("statusColor", () => {
-  test("returns green for idle", () => {
-    expect(statusColor("idle")).toBe("var(--status-healthy)");
-  });
-
-  test("returns blue for processing", () => {
+  test("returns distinct color for each ActorStatus variant", () => {
+    expect(statusColor("idle")).toBe("var(--status-idle)");
+    expect(statusColor("client")).toBe("var(--status-client)");
     expect(statusColor("processing")).toBe("var(--status-processing)");
-  });
-
-  test("returns amber for transitional statuses", () => {
-    for (const s of ["created", "initializing", "saving", "loading", "stopping"]) {
-      expect(statusColor(s)).toBe("var(--status-transitional)");
-    }
-  });
-
-  test("returns red for failed", () => {
+    expect(statusColor("saving")).toBe("var(--status-saving)");
+    expect(statusColor("loading")).toBe("var(--status-loading)");
+    expect(statusColor("created")).toBe("var(--status-created)");
+    expect(statusColor("initializing")).toBe("var(--status-initializing)");
+    expect(statusColor("stopping")).toBe("var(--status-stopping)");
     expect(statusColor("failed")).toBe("var(--status-failed)");
-  });
-
-  test("returns gray for stopped", () => {
     expect(statusColor("stopped")).toBe("var(--status-stopped)");
+    expect(statusColor("unknown")).toBe("var(--status-unknown)");
   });
 
   test("returns muted for null/undefined", () => {
@@ -57,37 +52,121 @@ describe("formatTimestamp", () => {
 });
 
 describe("formatShape", () => {
-  test("formats dims array", () => {
-    expect(formatShape('{"dims": [2, 4]}')).toBe("[2, 4]");
+  test("formats ndslice Extent format", () => {
+    expect(formatShape('{"inner": {"labels": ["workers", "gpu"], "sizes": [2, 4]}}')).toBe("[2, 4]");
   });
 
-  test("formats single dim", () => {
-    expect(formatShape('{"dims": [1]}')).toBe("[1]");
+  test("formats single dim ndslice Extent", () => {
+    expect(formatShape('{"inner": {"labels": ["replica"], "sizes": [1]}}')).toBe("[1]");
+  });
+
+  test("formats legacy dims array", () => {
+    expect(formatShape('{"dims": [2, 4]}')).toBe("[2, 4]");
   });
 
   test("returns raw on invalid JSON", () => {
     expect(formatShape("not json")).toBe("not json");
   });
 
-  test("returns raw when no dims key", () => {
+  test("returns raw when no recognized key", () => {
     expect(formatShape('{"foo": 1}')).toBe('{"foo": 1}');
   });
 });
 
 describe("messageStatusColor", () => {
-  test("delivered is green", () => {
-    expect(messageStatusColor("delivered")).toBe("var(--status-healthy)");
-  });
-
-  test("failed is red", () => {
-    expect(messageStatusColor("failed")).toBe("var(--status-failed)");
-  });
-
   test("queued is amber", () => {
-    expect(messageStatusColor("queued")).toBe("var(--status-transitional)");
+    expect(messageStatusColor("queued")).toBe("var(--msg-status-queued)");
   });
 
-  test("sent is blue", () => {
-    expect(messageStatusColor("sent")).toBe("var(--status-processing)");
+  test("active is blue", () => {
+    expect(messageStatusColor("active")).toBe("var(--msg-status-active)");
+  });
+
+  test("complete is green", () => {
+    expect(messageStatusColor("complete")).toBe("var(--msg-status-complete)");
+  });
+
+  test("unknown status falls back to muted", () => {
+    expect(messageStatusColor("failed")).toBe("var(--text-muted)");
+    expect(messageStatusColor("delivered")).toBe("var(--text-muted)");
+    expect(messageStatusColor("unknown_status")).toBe("var(--text-muted)");
+  });
+});
+
+describe("leafName", () => {
+  test("extracts last segment from slash-separated name", () => {
+    expect(leafName("host_mesh_0/proc_mesh_0/Trainer")).toBe("Trainer");
+  });
+
+  test("extracts last segment from comma-separated name", () => {
+    expect(leafName("host,proc,Trainer")).toBe("Trainer");
+  });
+
+  test("handles mixed separators", () => {
+    expect(leafName("host/proc,unit")).toBe("unit");
+  });
+
+  test("returns dash for null/undefined", () => {
+    expect(leafName(null)).toBe("—");
+    expect(leafName(undefined)).toBe("—");
+  });
+
+  test("returns name as-is when no separators", () => {
+    expect(leafName("Trainer")).toBe("Trainer");
+  });
+});
+
+describe("agentDisplayName", () => {
+  test("formats HostAgent as 'Host Unit {rank}'", () => {
+    expect(agentDisplayName("mesh/HostAgent[0]", 0)).toBe("Host Unit 0");
+    expect(agentDisplayName("mesh/HostAgent[3]", 3)).toBe("Host Unit 3");
+  });
+
+  test("formats host_agent as 'Host Unit {rank}'", () => {
+    expect(agentDisplayName("mesh/host_agent[1]", 1)).toBe("Host Unit 1");
+  });
+
+  test("formats proc_agent as 'Proc Unit {rank}'", () => {
+    expect(agentDisplayName("mesh/proc_agent[0]", 0)).toBe("Proc Unit 0");
+    expect(agentDisplayName("mesh/ProcAgent[5]", 5)).toBe("Proc Unit 5");
+  });
+
+  test("extracts rank from name when rank param not given", () => {
+    expect(agentDisplayName("HostAgent[2]")).toBe("Host Unit 2");
+    expect(agentDisplayName("proc_agent[7]")).toBe("Proc Unit 7");
+  });
+
+  test("returns null for non-agent names", () => {
+    expect(agentDisplayName("PythonActor<Trainer>[0]", 0)).toBeNull();
+    expect(agentDisplayName("Python<_SMPD>", 0)).toBeNull();
+  });
+
+  test("returns null for null/undefined fullName", () => {
+    expect(agentDisplayName(null)).toBeNull();
+    expect(agentDisplayName(undefined)).toBeNull();
+    expect(agentDisplayName(null, 0)).toBeNull();
+  });
+});
+
+describe("splitMessages", () => {
+  const msgs = [
+    { id: 1, from_actor_id: 10, to_actor_id: 20 },
+    { id: 2, from_actor_id: 20, to_actor_id: 10 },
+    { id: 3, from_actor_id: 10, to_actor_id: 30 },
+  ];
+
+  test("splits by actor id", () => {
+    const { incoming, outgoing } = splitMessages(msgs, 10);
+    expect(incoming).toHaveLength(1);
+    expect(incoming[0].id).toBe(2);
+    expect(outgoing).toHaveLength(2);
+  });
+
+  test("handles string actor ids", () => {
+    const { incoming, outgoing } = splitMessages(msgs, "20");
+    expect(incoming).toHaveLength(1);
+    expect(incoming[0].id).toBe(1);
+    expect(outgoing).toHaveLength(1);
+    expect(outgoing[0].id).toBe(2);
   });
 });

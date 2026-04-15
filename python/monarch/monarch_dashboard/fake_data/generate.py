@@ -97,8 +97,8 @@ ENDPOINTS = [
 ]
 """Endpoint names used in message traffic."""
 
-MESSAGE_STATUSES = ["queued", "sent", "delivered", "failed"]
-"""Possible message lifecycle statuses."""
+MESSAGE_STATUSES = ["queued", "active", "complete"]
+"""Message lifecycle statuses emitted by hyperactor telemetry (mailbox.rs, proc.rs)."""
 
 # ---------------------------------------------------------------------------
 # Hierarchy naming pools
@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS actors (
     mesh_id         INTEGER NOT NULL,
     rank            INTEGER NOT NULL,
     full_name       TEXT    NOT NULL,
+    display_name    TEXT,
     FOREIGN KEY (mesh_id) REFERENCES meshes(id)
 );
 
@@ -150,7 +151,6 @@ CREATE TABLE IF NOT EXISTS messages (
     timestamp_us    INTEGER NOT NULL,
     from_actor_id   INTEGER NOT NULL,
     to_actor_id     INTEGER NOT NULL,
-    status          TEXT    NOT NULL,
     endpoint        TEXT,
     port_id         INTEGER,
     FOREIGN KEY (from_actor_id) REFERENCES actors(id),
@@ -169,11 +169,11 @@ CREATE TABLE IF NOT EXISTS sent_messages (
     id              INTEGER PRIMARY KEY,
     timestamp_us    INTEGER NOT NULL,
     sender_actor_id INTEGER NOT NULL,
-    mesh_id         INTEGER NOT NULL,
+    actor_mesh_id   INTEGER NOT NULL,
     view_json       TEXT    NOT NULL,
     shape_json      TEXT    NOT NULL,
     FOREIGN KEY (sender_actor_id) REFERENCES actors(id),
-    FOREIGN KEY (mesh_id)         REFERENCES meshes(id)
+    FOREIGN KEY (actor_mesh_id)   REFERENCES meshes(id)
 );
 """
 
@@ -243,7 +243,9 @@ def _generate_hierarchy() -> tuple[
                 "class": "Host",
                 "given_name": host_given,
                 "full_name": host_full,
-                "shape_json": json.dumps({"dims": [1]}),
+                "shape_json": json.dumps(
+                    {"inner": {"labels": ["hosts"], "sizes": [1]}}
+                ),
                 "parent_mesh_id": None,
                 "parent_view_json": None,
             }
@@ -285,9 +287,16 @@ def _generate_hierarchy() -> tuple[
                     "class": "Proc",
                     "given_name": pm_given,
                     "full_name": pm_full,
-                    "shape_json": json.dumps({"dims": [1]}),
+                    "shape_json": json.dumps(
+                        {"inner": {"labels": ["replica"], "sizes": [1]}}
+                    ),
                     "parent_mesh_id": host_mesh_id,
-                    "parent_view_json": json.dumps({"offset": [0], "sizes": [1]}),
+                    "parent_view_json": json.dumps(
+                        {
+                            "labels": ["replica"],
+                            "slice": {"offset": 0, "sizes": [1], "strides": [1]},
+                        }
+                    ),
                 }
             )
 
@@ -322,9 +331,16 @@ def _generate_hierarchy() -> tuple[
                         "class": am_class,
                         "given_name": am_given,
                         "full_name": am_full,
-                        "shape_json": json.dumps({"dims": [2]}),
+                        "shape_json": json.dumps(
+                            {"inner": {"labels": ["replica"], "sizes": [2]}}
+                        ),
                         "parent_mesh_id": proc_mesh_id,
-                        "parent_view_json": json.dumps({"offset": [0], "sizes": [1]}),
+                        "parent_view_json": json.dumps(
+                            {
+                                "labels": ["replica"],
+                                "slice": {"offset": 0, "sizes": [1], "strides": [1]},
+                            }
+                        ),
                     }
                 )
 
@@ -636,10 +652,7 @@ def _generate_messages(
             mid = msg_id()
             ts_msg = _ts(t, offset_us=rng.randint(0, 500_000))
 
-            final_status = rng.choices(
-                ["delivered", "delivered", "delivered", "failed"],
-                weights=[5, 5, 5, 1],
-            )[0]
+            final_status = "complete"
 
             messages.append(
                 {
@@ -647,14 +660,13 @@ def _generate_messages(
                     "timestamp_us": ts_msg,
                     "from_actor_id": sender_id,
                     "to_actor_id": receiver_id,
-                    "status": final_status,
                     "endpoint": endpoint,
                     "port_id": rng.randint(1, 100),
                 }
             )
 
-            # Message status events: queued -> sent -> delivered (or failed).
-            for step_idx, step_status in enumerate(["queued", "sent", final_status]):
+            # Message status events: queued -> active -> complete.
+            for step_idx, step_status in enumerate(["queued", "active", final_status]):
                 msg_status_events.append(
                     {
                         "id": mse_id(),
@@ -671,9 +683,9 @@ def _generate_messages(
                     "id": sm_id(),
                     "timestamp_us": ts_msg,
                     "sender_actor_id": sender_id,
-                    "mesh_id": sender_actor["mesh_id"],
-                    "view_json": '{"offset": [0], "sizes": [1]}',
-                    "shape_json": '{"dims": [1]}',
+                    "actor_mesh_id": sender_actor["mesh_id"],
+                    "view_json": '{"labels": ["replica"], "slice": {"offset": 0, "sizes": [1], "strides": [1]}}',
+                    "shape_json": '{"inner": {"labels": ["replica"], "sizes": [1]}}',
                 }
             )
 

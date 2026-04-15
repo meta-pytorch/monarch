@@ -9,8 +9,9 @@ Examples
 - :doc:`grpo_actor.py </generated/examples/grpo_actor>`: Implements a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework
 - :doc:`distributed_tensors.py </generated/examples/distributed_tensors>`: Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs
 - :doc:`debugging.py </generated/examples/debugging>`: Shows how to use the Monarch debugger to debug a distributed program
+- :doc:`otel_collector.py </generated/examples/otel_collector>`: Exports Monarch metrics and logs to an OpenTelemetry Collector deployed on Kubernetes, with Grafana for visualization
 - `Multinode Slurm Tutorial <https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html>`_: Multinode distributed training tutorial using Monarch and Slurm to run an SPMD training job.
-- `Running on Kubernetes using Skypilot <https://github.com/pytorch-labs/monarch/tree/main/examples/skypilot>`_: Run Monarch on Kubernetes and cloud VMs via SkyPilot.
+- `Running on Kubernetes using Skypilot <https://github.com/meta-pytorch/monarch/tree/main/examples/skypilot>`_: Run Monarch on Kubernetes and cloud VMs via SkyPilot.
 
 .. toctree::
    :hidden:
@@ -23,4 +24,5 @@ Examples
    /generated/examples/grpo_actor
    /generated/examples/distributed_tensors
    /generated/examples/debugging
+   /generated/examples/otel_collector
    Multinode Slurm Tutorial <https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html>
