@@ -1124,8 +1124,8 @@ mod tests {
         let check_failure = move |failure: MeshFailure| {
             assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
             assert_eq!(
-                failure.event.actor_id.name(),
-                child_name.clone().to_string()
+                failure.event.actor_id.label().unwrap().as_str(),
+                child_name.label().unwrap().as_str()
             );
             if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
                 assert!(msg.contains("panic"), "{}", msg);
@@ -1219,7 +1219,10 @@ mod tests {
 
         let check_failure = move |failure: MeshFailure| {
             assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
-            assert_eq!(failure.event.actor_id.name(), child_name.to_string());
+            assert_eq!(
+                failure.event.actor_id.label().unwrap().as_str(),
+                child_name.label().unwrap().as_str()
+            );
             if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
                 assert!(msg.contains("exited with non-zero code 1"), "{}", msg);
             } else {
@@ -1292,7 +1295,10 @@ mod tests {
                     .expect("timeout")
                     .unwrap();
             let event = supervision_message.event;
-            assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
+            assert_eq!(
+                event.actor_id.label().unwrap().as_str(),
+                child_name.label().unwrap().as_str()
+            );
             if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &event.actor_status {
                 assert!(msg.contains("panic"));
                 assert!(msg.contains("for testing"));

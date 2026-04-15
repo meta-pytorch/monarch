@@ -345,7 +345,7 @@ mod tests {
     fn mock_actor_ref(name: &str) -> NodeRef {
         use std::str::FromStr;
         // Create a simple ActorId for testing.
-        let id_str = format!("unix:@test,world,{}[0]", name);
+        let id_str = format!("unix:@test,world,{}", name);
         NodeRef::Actor(hyperactor::reference::ActorId::from_str(&id_str).unwrap())
     }
 
@@ -680,7 +680,7 @@ mod tests {
         let r = mock_actor_ref("actor1");
         let worker_id = {
             use std::str::FromStr;
-            hyperactor::reference::ActorId::from_str("unix:@test,world,worker[0]").unwrap()
+            hyperactor::reference::ActorId::from_str("unix:@test,world,worker").unwrap()
         };
         let payload = NodePayload {
             identity: r.clone(),

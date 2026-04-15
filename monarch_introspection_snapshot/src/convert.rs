@@ -341,11 +341,11 @@ mod tests {
     }
 
     fn test_actor_id() -> hyperactor::reference::ActorId {
-        test_proc_id().actor_id("actor", 0)
+        test_proc_id().actor_id("actor")
     }
 
     fn test_host_actor_id() -> hyperactor::reference::ActorId {
-        test_proc_id().actor_id("host_agent", 0)
+        test_proc_id().actor_id("host_agent")
     }
 
     fn test_time() -> SystemTime {
@@ -576,10 +576,10 @@ mod tests {
     // CV-5: Proc with mixed system/stopped/regular children.
     #[test]
     fn test_child_classification_mixed() {
-        let regular = test_proc_id().actor_id("regular", 0);
-        let sys_only = test_proc_id().actor_id("sys_actor", 0);
-        let stopped_only = test_proc_id().actor_id("stopped_actor", 0);
-        let sys_and_stopped = test_proc_id().actor_id("both", 0);
+        let regular = test_proc_id().actor_id("regular");
+        let sys_only = test_proc_id().actor_id("sys_actor");
+        let stopped_only = test_proc_id().actor_id("stopped_actor");
+        let sys_and_stopped = test_proc_id().actor_id("both");
 
         let children = vec![
             NodeRef::Actor(regular.clone()),
@@ -634,9 +634,9 @@ mod tests {
     // CV-4: child_sort_key is enumeration order.
     #[test]
     fn test_child_sort_key_is_enumeration_order() {
-        let a0 = test_proc_id().actor_id("a", 0);
-        let a1 = test_proc_id().actor_id("b", 0);
-        let a2 = test_proc_id().actor_id("c", 0);
+        let a0 = test_proc_id().actor_id("a");
+        let a1 = test_proc_id().actor_id("b");
+        let a2 = test_proc_id().actor_id("c");
 
         let payload = NodePayload {
             identity: NodeRef::Proc(test_proc_id()),

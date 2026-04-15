@@ -120,7 +120,7 @@ impl HostRef {
     fn mesh_agent(&self) -> hyperactor_reference::ActorRef<HostAgent> {
         hyperactor_reference::ActorRef::attest(
             self.service_proc()
-                .actor_id(host_agent::HOST_MESH_AGENT_ACTOR_NAME, 0),
+                .actor_id(host_agent::HOST_MESH_AGENT_ACTOR_NAME),
         )
     }
 
@@ -1373,7 +1373,7 @@ impl HostMeshRef {
                     // TODO: specify or retrieve from state instead, to avoid attestation.
                     hyperactor_reference::ActorRef::attest(
                         host.named_proc(&proc_name)
-                            .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
+                            .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
                     ),
                 ));
             }
