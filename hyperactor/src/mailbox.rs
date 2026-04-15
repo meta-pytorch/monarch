@@ -2972,7 +2972,7 @@ mod tests {
         );
         // The format is: "{proc_id},{actor_name}[{pid}]: {error}"
         // proc_id = "{addr},{proc_name}" so overall: "{addr},{proc_name},{actor_name}[{pid}]"
-        assert!(format!("{}", err).ends_with(",test_myworld_2,myactor[5]: mailbox closed"));
+        assert!(format!("{}", err).ends_with(",_test_myworld_2,myactor[5]: mailbox closed"));
     }
 
     #[tokio::test]
@@ -3307,7 +3307,12 @@ mod tests {
             handles.push(handle);
 
             eprintln!("{}: {}", mbox.actor_id(), addr);
-            if mbox.actor_id().proc_id().name().starts_with("world0") {
+            if mbox
+                .actor_id()
+                .proc_id()
+                .label()
+                .is_some_and(|l| l.as_str().starts_with("world0"))
+            {
                 world0_router.bind(mbox.actor_id().clone().into(), addr);
             } else {
                 world1_router.bind(mbox.actor_id().clone().into(), addr);
