@@ -8,8 +8,16 @@
 
 #include <Python.h>
 #include <torch/version.h> // @manual=//caffe2:version_cpp
+
+#ifdef MONARCH_BUILD_CUDA
 // @lint-ignore CLANGTIDY facebook-hte-RelativeInclude
 #include "mock_cuda.h"
+#else
+// No-op stubs when building without CUDA (e.g. ROCm)
+static PyObject* patch_cuda(PyObject*, PyObject*) { Py_RETURN_NONE; }
+static PyObject* mock_cuda(PyObject*, PyObject*) { Py_RETURN_NONE; }
+static PyObject* unmock_cuda(PyObject*, PyObject*) { Py_RETURN_NONE; }
+#endif
 
 // @lint-ignore-every CLANGTIDY facebook-hte-NullableReturn
 static PyObject* getBuiltPytorchVersion(PyObject*, PyObject*) {

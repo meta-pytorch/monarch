@@ -286,7 +286,7 @@ class build_ext(_build_ext):
 
 
 # Extension Creation
-def create_cpp_extension(name: str, sources: List[str]) -> Extension:
+def create_cpp_extension(name: str, sources: List[str], define_macros: Optional[List] = None) -> Extension:
     """
     Create a C++ extension with torch dependencies.
 
@@ -301,6 +301,7 @@ def create_cpp_extension(name: str, sources: List[str]) -> Extension:
         name,
         sources,
         extra_compile_args=["-std=c++17", "-g", "-O3"],
+        define_macros=define_macros or [],
         libraries=["dl", "c10", "torch", "torch_cpu", "torch_python"],
         library_dirs=[torch_config["lib_path"]],
         include_dirs=[
@@ -318,12 +319,14 @@ def create_cpp_extension(name: str, sources: List[str]) -> Extension:
 ext_modules = []
 if build_tensor_engine:
     cpp_sources = ["python/monarch/common/init.cpp"]
+    cpp_defines = []
     if build_cuda:
         # mock_cuda.cpp is not compatible with ROCm (relies on CUDA-specific assembly)
         cpp_sources.append("python/monarch/common/mock_cuda.cpp")
+        cpp_defines.append(("MONARCH_BUILD_CUDA", "1"))
 
     ext_modules = [
-        create_cpp_extension("monarch.common._C", cpp_sources),
+        create_cpp_extension("monarch.common._C", cpp_sources, define_macros=cpp_defines),
         create_cpp_extension(
             "monarch.gradient._gradient_generator",
             ["python/monarch/gradient/_gradient_generator.cpp"],
