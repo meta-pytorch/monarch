@@ -26,14 +26,10 @@
 //!
 //! ## Actor identity invariants (AI-*)
 //!
-//! - **AI-1 (named-child pid):** The pid of a named child must
-//!   remain in the parent's sibling pid domain. The name is
-//!   presentation only; the numeric pid is allocated from the
-//!   parent's counter, preserving supervision linkage.
-//! - **AI-3 (controller ActorId uniqueness):** Callers must ensure
-//!   the name is unique proc-wide. Two children with the same name
-//!   under different parents get distinct pids but the same name
-//!   prefix.
+//! - **AI-1 (named-child uid):** Each child gets a globally unique
+//!   random uid. Named children carry a label for display purposes.
+//! - **AI-3 (controller ActorId uniqueness):** Each named child gets
+//!   a unique uid; the label is informational only.
 
 use std::any::Any;
 use std::any::TypeId;
@@ -59,6 +55,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use dashmap::DashSet;
 use dashmap::mapref::entry::Entry;
 use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
@@ -165,11 +162,10 @@ struct ProcState {
     /// Sender used to forward messages outside of the proc.
     forwarder: BoxedMailboxSender,
 
-    /// Per-name atomic index allocator. Used by `allocate_root_id`
-    /// (index 0, counter starts at 1) and `allocate_child_id`
-    /// (increments the parent's counter). Each root name gets its
-    /// own independent counter.
-    roots: DashMap<String, AtomicUsize>,
+    /// Reserved root actor uids. Prevents races between concurrent
+    /// `allocate_root_id` callers — insert returns false if the uid
+    /// was already reserved.
+    reserved_roots: DashSet<crate::id::Uid>,
 
     /// All actor instances in this proc.
     instances: DashMap<reference::ActorId, WeakInstanceCell>,
@@ -239,7 +235,7 @@ impl Proc {
                 proc_id,
                 proc_muxer: MailboxMuxer::new(),
                 forwarder,
-                roots: DashMap::new(),
+                reserved_roots: DashSet::new(),
                 instances: DashMap::new(),
                 terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
@@ -406,7 +402,7 @@ impl Proc {
 
     /// Common spawn logic for both root and child actors.
     /// Creates a tracing span with the correct actor_id before starting the actor.
-    #[hyperactor::instrument(fields(actor_id = actor_id.to_string(), actor_name = actor_id.name(), actor_type = std::any::type_name::<A>()))]
+    #[hyperactor::instrument(fields(actor_id = actor_id.to_string(), actor_name = actor_id.log_name(), actor_type = std::any::type_name::<A>()))]
     fn spawn_inner<A: Actor>(
         &self,
         actor_id: reference::ActorId,
@@ -491,7 +487,7 @@ impl Proc {
         })
     }
 
-    /// Traverse all actor trees in this proc, starting from root actors (pid=0).
+    /// Traverse all actor trees in this proc, starting from root actors.
     ///
     /// **Caution:** This holds DashMap shard read locks while doing
     /// `Weak::upgrade()` and recursively walking the actor tree per
@@ -504,7 +500,7 @@ impl Proc {
         F: FnMut(&InstanceCell, usize),
     {
         for entry in self.state().instances.iter() {
-            if entry.key().pid() == 0 {
+            if entry.key().is_root() {
                 if let Some(cell) = entry.value().upgrade() {
                     cell.traverse(f);
                 }
@@ -520,7 +516,7 @@ impl Proc {
             .and_then(|weak| weak.upgrade())
     }
 
-    /// Returns the ActorIds of all root actors (pid=0) in this proc.
+    /// Returns the ActorIds of all root actors in this proc.
     ///
     /// **Caution:** This iterates the full DashMap under shard read
     /// locks. The per-entry work is lightweight (key filter + clone),
@@ -532,7 +528,7 @@ impl Proc {
         self.state()
             .instances
             .iter()
-            .filter(|entry| entry.key().pid() == 0)
+            .filter(|entry| entry.key().is_root())
             .map(|entry| entry.key().clone())
             .collect()
     }
@@ -702,9 +698,9 @@ impl Proc {
                     tracing::info!("sending stop signal to {}", cell.actor_id());
                     if let Err(err) = cell.signal(Signal::DrainAndStop(reason)) {
                         tracing::error!(
-                            "{}: failed to send stop signal to pid {}: {:?}",
+                            "{}: failed to send stop signal to uid {}: {:?}",
                             self.proc_id(),
-                            cell.pid(),
+                            cell.uid(),
                             err
                         );
                         None
@@ -771,7 +767,7 @@ impl Proc {
             .state()
             .instances
             .iter()
-            .filter(|entry| entry.key().pid() == 0)
+            .filter(|entry| entry.key().is_root())
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>()
         {
@@ -924,55 +920,38 @@ impl Proc {
     }
 
     /// Create a root allocation in the proc.
+    ///
+    /// Uses `reserved_roots` to prevent races between concurrent callers.
     fn allocate_root_id(&self, name: &str) -> Result<reference::ActorId, anyhow::Error> {
-        let name = name.to_string();
-        match self.state().roots.entry(name.to_string()) {
-            Entry::Vacant(entry) => {
-                entry.insert(AtomicUsize::new(1));
-            }
-            Entry::Occupied(_) => {
-                anyhow::bail!("an actor with name '{}' has already been spawned", name)
-            }
+        let actor_id = reference::ActorId::new(self.state().proc_id.clone(), name);
+        let uid = actor_id.uid().clone();
+        if !self.state().reserved_roots.insert(uid) {
+            anyhow::bail!("an actor with name '{}' has already been spawned", name)
         }
-        Ok(reference::ActorId::new(
-            self.state().proc_id.clone(),
-            name.to_string(),
-            0,
-        ))
+        Ok(actor_id)
     }
 
     /// Create a child allocation in the proc.
-    #[hyperactor::instrument(fields(actor_name=parent_id.name()))]
     pub(crate) fn allocate_child_id(
         &self,
         parent_id: &reference::ActorId,
     ) -> Result<reference::ActorId, anyhow::Error> {
-        assert_eq!(*parent_id.proc_id(), self.state().proc_id);
-        let pid = match self.state().roots.get(parent_id.name()) {
-            None => anyhow::bail!(
-                "no actor named {} in proc {}",
-                parent_id.name(),
-                self.state().proc_id
-            ),
-            Some(next_pid) => next_pid.fetch_add(1, Ordering::Relaxed),
-        };
-        Ok(parent_id.child_id(pid))
+        assert_eq!(parent_id.proc_id(), self.state().proc_id);
+        Ok(parent_id.unique_child_id())
     }
 
     /// Allocate an actor ID with a custom name on this proc.
-    ///
-    /// See AI-1 (named-child pid) and AI-3 (controller ActorId
-    /// uniqueness) in module doc.
     pub(crate) fn allocate_named_child_id(
         &self,
         parent_id: &reference::ActorId,
         name: &str,
     ) -> Result<reference::ActorId, anyhow::Error> {
-        let inherited = self.allocate_child_id(parent_id)?;
-        Ok(reference::ActorId::new(
-            inherited.proc_id().clone(),
-            name,
-            inherited.pid(),
+        assert_eq!(parent_id.proc_id(), self.state().proc_id);
+        let label = crate::id::Label::strip(name);
+        let actor_id =
+            crate::id::ActorId::instance_labeled(label, parent_id.proc_id().id().clone());
+        Ok(reference::ActorId::from_actor_ref(
+            crate::ref_::ActorRef::new(actor_id, parent_id.actor_ref().location().clone()),
         ))
     }
 
@@ -1012,7 +991,7 @@ impl MailboxSender for Proc {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        if envelope.dest().actor_id().proc_id() == &self.state().proc_id {
+        if envelope.dest().actor_id().proc_id() == self.state().proc_id {
             self.state().proc_muxer.post(envelope, return_handle)
         } else {
             self.state().forwarder.post(envelope, return_handle)
@@ -1188,7 +1167,7 @@ impl<A: Actor> Drop for InstanceState<A> {
                 tracing::info!(
                     name = "ActorStatus",
                     actor_id = %self.self_id(),
-                    actor_name = self.self_id().name(),
+                    actor_name = self.self_id().log_name(),
                     status = "Stopped",
                     prev_status = status.arm().unwrap_or("unknown"),
                     "instance is dropped",
@@ -1329,7 +1308,7 @@ impl<A: Actor> Instance<A> {
             tracing::info!(
                 name = "ActorStatus",
                 actor_id = %self.self_id(),
-                actor_name = self.self_id().name(),
+                actor_name = self.self_id().log_name(),
                 status = new_status,
                 prev_status = old.arm().unwrap_or("unknown"),
                 caller = %Location::caller(),
@@ -1668,11 +1647,11 @@ impl<A: Actor> Instance<A> {
             }
             // TODO: we should get rid of this signal, and use *only* supervision events for
             // the purpose of conveying lifecycle changes
-            if let Err(err) = parent.signal(Signal::ChildStopped(self.inner.cell.pid())) {
+            if let Err(err) = parent.signal(Signal::ChildStopped(self.inner.cell.uid().clone())) {
                 tracing::error!(
-                    "{}: failed to send stop message to parent pid {}: {:?}",
+                    "{}: failed to send stop message to parent uid {}: {:?}",
                     self.self_id(),
-                    parent.pid(),
+                    parent.uid(),
                     err
                 );
             }
@@ -1754,8 +1733,8 @@ impl<A: Actor> Instance<A> {
         while self.inner.cell.child_count() > 0 {
             match tokio::time::timeout(Duration::from_millis(500), signal_receiver.recv()).await {
                 Ok(signal) => {
-                    if let Signal::ChildStopped(pid) = signal? {
-                        assert!(self.inner.cell.get_child(pid).is_none());
+                    if let Signal::ChildStopped(uid) = signal? {
+                        assert!(self.inner.cell.get_child(&uid).is_none());
                     }
                 }
                 Err(_) => {
@@ -1859,8 +1838,8 @@ impl<A: Actor> Instance<A> {
                             stop_reason = reason;
                             break 'messages;
                         },
-                        Signal::ChildStopped(pid) => {
-                            assert!(self.inner.cell.get_child(pid).is_none());
+                        Signal::ChildStopped(uid) => {
+                            assert!(self.inner.cell.get_child(&uid).is_none());
                         },
                         Signal::Abort(reason) => {
                             return Err(ActorError { actor_id: Box::new(self.self_id().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) });
@@ -2247,8 +2226,8 @@ struct InstanceCellState {
     /// A weak reference to this instance's parent.
     parent: WeakInstanceCell,
 
-    /// This instance's children by their PIDs.
-    children: DashMap<reference::Index, InstanceCell>,
+    /// This instance's children by their uids.
+    children: DashMap<crate::id::Uid, InstanceCell>,
 
     /// Access to the spawned actor's join handle.
     actor_task_handle: OnceLock<JoinHandle<()>>,
@@ -2319,7 +2298,7 @@ impl InstanceCellState {
     /// Unlink this instance from a child.
     fn unlink(&self, child: &InstanceCellState) -> bool {
         assert_eq!(self.actor_id.proc_id(), child.actor_id.proc_id());
-        self.children.remove(&child.actor_id.pid()).is_some()
+        self.children.remove(child.actor_id.uid()).is_some()
     }
 }
 
@@ -2423,9 +2402,9 @@ impl InstanceCell {
         &self.inner.actor_id
     }
 
-    /// The actor's PID.
-    pub(crate) fn pid(&self) -> reference::Index {
-        self.inner.actor_id.pid()
+    /// The actor's uid.
+    pub(crate) fn uid(&self) -> &crate::id::Uid {
+        self.inner.actor_id.uid()
     }
 
     /// The actor's join handle.
@@ -2531,13 +2510,13 @@ impl InstanceCell {
     /// Link this instance to a new child.
     fn link(&self, child: InstanceCell) {
         assert_eq!(self.actor_id().proc_id(), child.actor_id().proc_id());
-        self.inner.children.insert(child.pid(), child);
+        self.inner.children.insert(child.uid().clone(), child);
     }
 
     /// Unlink this instance from a child.
     fn unlink(&self, child: &InstanceCell) {
         assert_eq!(self.actor_id().proc_id(), child.actor_id().proc_id());
-        self.inner.children.remove(&child.pid());
+        self.inner.children.remove(child.uid());
     }
 
     /// Unlink this instance from all children.
@@ -2560,7 +2539,7 @@ impl InstanceCell {
 
     /// Return an iterator over this instance's children. This may deadlock if the
     /// caller already holds a reference to any item in map.
-    fn child_iter(&self) -> impl Iterator<Item = RefMulti<'_, reference::Index, InstanceCell>> {
+    fn child_iter(&self) -> impl Iterator<Item = RefMulti<'_, crate::id::Uid, InstanceCell>> {
         self.inner.children.iter()
     }
 
@@ -2578,9 +2557,9 @@ impl InstanceCell {
             .collect()
     }
 
-    /// Get a child by its PID.
-    fn get_child(&self, pid: reference::Index) -> Option<InstanceCell> {
-        self.inner.children.get(&pid).map(|child| child.clone())
+    /// Get a child by its uid.
+    fn get_child(&self, uid: &crate::id::Uid) -> Option<InstanceCell> {
+        self.inner.children.get(uid).map(|child| child.clone())
     }
 
     /// Access the flight recorder for this actor.
@@ -2757,9 +2736,9 @@ impl InstanceCell {
         F: FnMut(&InstanceCell, usize),
     {
         f(self, depth);
-        // Collect and sort children by pid for deterministic traversal order
+        // Collect and sort children by uid for deterministic traversal order
         let mut children: Vec<_> = self.child_iter().map(|r| r.value().clone()).collect();
-        children.sort_by_key(|c| c.pid());
+        children.sort_by_key(|c| c.uid().clone());
         for child in children {
             child.traverse_inner(depth + 1, f);
         }
@@ -3183,7 +3162,7 @@ mod tests {
             !lookup_actor
                 .actor_exists(
                     &client,
-                    reference::ActorRef::attest(target_actor.actor_id().child_id(123).clone())
+                    reference::ActorRef::attest(target_actor.actor_id().unique_child_id().clone())
                 )
                 .await
                 .unwrap()
@@ -3220,7 +3199,7 @@ mod tests {
             parent.actor_id()
         );
         assert_matches!(
-            parent.inner.children.get(&child.pid()),
+            parent.inner.children.get(child.uid()),
             Some(node) if node.actor_id() == child.actor_id()
         );
     }
@@ -3264,10 +3243,10 @@ mod tests {
             .as_str()
         ));
 
-        // These are allocated in sequence:
-        assert_eq!(first.actor_id().proc_id(), proc.proc_id());
-        assert_eq!(second.actor_id(), &first.actor_id().child_id(1));
-        assert_eq!(third.actor_id(), &first.actor_id().child_id(2));
+        // All actors are in the same proc:
+        assert_eq!(first.actor_id().proc_id(), proc.proc_id().clone());
+        assert_eq!(second.actor_id().proc_id(), proc.proc_id().clone());
+        assert_eq!(third.actor_id().proc_id(), proc.proc_id().clone());
 
         // Supervision tree is constructed correctly.
         validate_link(third.cell(), second.cell());
@@ -4174,8 +4153,8 @@ mod tests {
         let handle = proc
             .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
             .unwrap();
-        assert_eq!(handle.actor_id().name(), "my_controller");
-        assert_eq!(handle.actor_id().pid(), 1);
+        assert_eq!(handle.actor_id().label().unwrap().as_str(), "my_controller");
+        assert!(!handle.actor_id().is_root());
     }
 
     /// Exercises AI-1 (see module doc).
@@ -4189,8 +4168,7 @@ mod tests {
         let second = proc
             .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
             .unwrap();
-        assert_eq!(first.actor_id().pid(), 1);
-        assert_eq!(second.actor_id().pid(), 2);
+        assert_ne!(first.actor_id().uid(), second.actor_id().uid());
     }
 
     /// Exercises AI-1 (see module doc).
@@ -4213,7 +4191,7 @@ mod tests {
         let proc = Proc::local();
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let child = proc.spawn_child(root.cell().clone(), TestActor).unwrap();
-        assert_eq!(child.actor_id().name(), root.actor_id().name());
+        assert!(!child.actor_id().is_root());
     }
 
     /// Exercises AI-1 (see module doc).
@@ -4227,9 +4205,9 @@ mod tests {
         let b = proc
             .spawn_named_child(root.cell().clone(), "controller_b", TestActor)
             .unwrap();
-        assert_ne!(a.actor_id().pid(), b.actor_id().pid());
-        assert_eq!(a.actor_id().name(), "controller_a");
-        assert_eq!(b.actor_id().name(), "controller_b");
+        assert_ne!(a.actor_id().uid(), b.actor_id().uid());
+        assert_eq!(a.actor_id().label().unwrap().as_str(), "controller_a");
+        assert_eq!(b.actor_id().label().unwrap().as_str(), "controller_b");
     }
 
     /// Exercises AI-1 (see module doc).

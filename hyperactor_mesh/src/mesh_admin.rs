@@ -1141,13 +1141,13 @@ impl MeshAdminAgent {
         proc_id: &hyperactor_reference::ProcId,
     ) -> Option<&hyperactor_reference::ActorId> {
         self.standalone_proc_actors()
-            .find(|actor_id| *actor_id.proc_id() == *proc_id)
+            .find(|actor_id| actor_id.proc_id() == *proc_id)
     }
 
     /// Returns true if `actor_id` lives on a standalone proc.
     fn is_standalone_proc_actor(&self, actor_id: &hyperactor_reference::ActorId) -> bool {
         self.standalone_proc_actors()
-            .any(|a| *a.proc_id() == *actor_id.proc_id())
+            .any(|a| a.proc_id() == actor_id.proc_id())
     }
 
     /// Construct the synthetic root node for the reference tree.
@@ -1255,7 +1255,7 @@ impl MeshAdminAgent {
         }
 
         // Fall back to querying the ProcAgent directly (user procs).
-        let mesh_agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let mesh_agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME);
         let result = query_child_introspect(
             cx,
             &mesh_agent_id,
@@ -1419,7 +1419,7 @@ impl MeshAdminAgent {
         } else {
             // Check terminated snapshots first — fast, no ambiguity.
             let proc_id = actor_id.proc_id();
-            let mesh_agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0);
+            let mesh_agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME);
             let terminated = query_child_introspect(
                 cx,
                 &mesh_agent_id,
@@ -2051,9 +2051,9 @@ async fn do_pyspy_dump(
         .label()
         .is_some_and(|l| l.as_str() == SERVICE_PROC_NAME);
     let agent_id = if is_service {
-        proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0)
+        proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME)
     } else {
-        proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0)
+        proc_id.actor_id(PROC_AGENT_ACTOR_NAME)
     };
 
     // PS-13: defensive probe — verify the target actor is reachable
@@ -2304,9 +2304,9 @@ async fn config_bridge(
         .label()
         .is_some_and(|l| l.as_str() == SERVICE_PROC_NAME)
     {
-        proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0)
+        proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME)
     } else {
-        proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0)
+        proc_id.actor_id(PROC_AGENT_ACTOR_NAME)
     };
 
     // No preflight probe. The previous probe_actor() call used
@@ -2641,7 +2641,7 @@ fn derive_tree_label(node_ref: &crate::introspect::NodeRef) -> String {
         crate::introspect::NodeRef::Host(id) => id.proc_id().id().to_string(),
         crate::introspect::NodeRef::Proc(id) => id.id().to_string(),
         crate::introspect::NodeRef::Actor(id) => {
-            format!("{}{}", id.name(), format_args!("[{}]", id.pid()))
+            format!("{}[{}]", id.log_name(), id.uid())
         }
     }
 }
@@ -2649,10 +2649,10 @@ fn derive_tree_label(node_ref: &crate::introspect::NodeRef) -> String {
 fn derive_actor_label(node_ref: &crate::introspect::NodeRef) -> String {
     match node_ref {
         crate::introspect::NodeRef::Root => "root".to_string(),
-        crate::introspect::NodeRef::Host(id) => id.name().to_string(),
+        crate::introspect::NodeRef::Host(id) => id.log_name().to_string(),
         crate::introspect::NodeRef::Proc(id) => id.id().to_string(),
         crate::introspect::NodeRef::Actor(id) => {
-            format!("{}[{}]", id.name(), id.pid())
+            format!("{}[{}]", id.log_name(), id.uid())
         }
     }
 }
@@ -2767,6 +2767,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use hyperactor::channel::ChannelAddr;
+    use hyperactor::id::Label;
     use hyperactor::testing::ids::test_proc_id_with_addr;
 
     use super::*;
@@ -2798,8 +2799,8 @@ mod tests {
         let proc1 = test_proc_id_with_addr(ChannelAddr::Tcp(addr1), "host1");
         let proc2 = test_proc_id_with_addr(ChannelAddr::Tcp(addr2), "host2");
 
-        let actor_id1 = proc1.actor_id("mesh_agent", 0);
-        let actor_id2 = proc2.actor_id("mesh_agent", 0);
+        let actor_id1 = proc1.actor_id("mesh_agent");
+        let actor_id2 = proc2.actor_id("mesh_agent");
 
         let ref1: hyperactor_reference::ActorRef<HostAgent> =
             hyperactor_reference::ActorRef::attest(actor_id1.clone());
@@ -3145,13 +3146,14 @@ mod tests {
     fn test_build_root_payload_with_root_client() {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
         let proc1 = hyperactor_reference::ProcId::with_name(ChannelAddr::Tcp(addr1), "host1");
-        let actor_id1 = hyperactor_reference::ActorId::root(proc1, "mesh_agent".to_string());
+        let actor_id1 =
+            hyperactor_reference::ActorId::root(proc1, Label::new("mesh_agent").unwrap());
         let ref1: hyperactor_reference::ActorRef<HostAgent> =
             hyperactor_reference::ActorRef::attest(actor_id1.clone());
 
         let client_proc_id =
             hyperactor_reference::ProcId::with_name(ChannelAddr::Tcp(addr1), "local");
-        let client_actor_id = client_proc_id.actor_id("client", 0);
+        let client_actor_id = client_proc_id.actor_id("client");
 
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1)],
@@ -3735,7 +3737,7 @@ mod tests {
         //    proc, this message would be undeliverable.
         let admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent> =
             hyperactor_reference::ActorRef::attest(
-                caller_proc.proc_id().actor_id(MESH_ADMIN_ACTOR_NAME, 0),
+                caller_proc.proc_id().actor_id(MESH_ADMIN_ACTOR_NAME),
             );
         let probe_proc = Proc::direct(ChannelTransport::Unix.any(), "probe".to_string()).unwrap();
         let (probe_cx, _probe_handle) = probe_proc.instance("probe").unwrap();

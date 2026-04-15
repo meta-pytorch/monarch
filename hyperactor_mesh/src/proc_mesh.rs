@@ -151,7 +151,7 @@ impl ProcRef {
         &self,
         id: &crate::mesh_id::ActorMeshId,
     ) -> hyperactor_reference::ActorId {
-        self.proc_id.actor_id(&id.to_string(), 0)
+        self.proc_id.actor_id(&id.to_string())
     }
 
     /// Generic bound: `A: Referable` - required because we return
@@ -794,8 +794,16 @@ impl ProcMeshRef {
     }
 
     pub(crate) fn agent_mesh(&self) -> ActorMeshRef<ProcAgent> {
-        let agent_name = self.ranks.first().unwrap().agent.actor_id().name();
-        let id = crate::mesh_id::ActorMeshId::singleton(Label::strip(agent_name));
+        let agent_label = self
+            .ranks
+            .first()
+            .unwrap()
+            .agent
+            .actor_id()
+            .label()
+            .unwrap()
+            .clone();
+        let id = crate::mesh_id::ActorMeshId::singleton(agent_label);
         ActorMeshRef::new(id, self.clone(), None)
     }
 
