@@ -311,6 +311,51 @@ pip install -e '.[test]'
 pytest python/tests/ -v -m "not oss_skip"
 ```
 
+## Disabling flaky CI tests
+
+If a test is consistently failing in OSS CI and needs to be temporarily
+disabled without a code change, open a GitHub issue on this repo with a title
+of the form:
+
+```
+DISABLED <test-name>
+```
+
+At the start of each CI run, `scripts/fetch_disabled_tests.py` fetches all
+open issues whose titles start with `DISABLED ` and skips the named tests.
+Closing the issue re-enables the test on the next run.
+
+**Naming format:**
+
+- **Rust (cargo nextest):** use the test name exactly as it appears in nextest
+  output: `<binary> <module::path::test_fn>`, e.g.
+  `DISABLED hyperactor proc::tests::test_child_lifecycle`
+- **Python (pytest):** use the test function name, e.g.
+  `DISABLED test_my_function`
+
+### Overriding skips locally
+
+To run a test that is currently disabled via a GitHub issue, you can override
+the fetched skip lists by creating the files before running
+`scripts/fetch_disabled_tests.py`. The script will not overwrite files that
+already exist:
+
+- **`disabled_tests.txt`** — controls which Python tests are skipped. Create
+  this file with only the tests you want to skip (or leave it empty to skip
+  none).
+- **`.config/nextest-filter.txt`** — controls which Rust tests are skipped.
+  Write a nextest filter expression here (e.g. `all()` to run all tests, or
+  `not (test(some_test))` to skip only specific ones).
+
+For example, to run all tests locally regardless of open issues:
+
+```sh
+echo -n "" > disabled_tests.txt
+echo "all()" > .config/nextest-filter.txt
+uv run python scripts/fetch_disabled_tests.py   # will skip both writes
+uv run pytest python/tests/ -v -m "not oss_skip"
+```
+
 ## License
 
 Monarch is BSD-3 licensed, as found in the [LICENSE](LICENSE) file.

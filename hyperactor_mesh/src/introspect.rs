@@ -6,12 +6,27 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Introspection attr keys — mesh-topology concepts.
+//! Mesh-topology introspection types and attrs.
+//!
+//! This module owns the typed internal model used by mesh-admin and the
+//! TUI: mesh-topology attr keys, typed attrs views, `NodeRef`, and the
+//! domain `NodePayload` / `NodeProperties` / `FailureInfo` values derived
+//! from `hyperactor::introspect::IntrospectResult`.
 //!
 //! These keys are published by `HostMeshAgent`, `ProcAgent`, and
 //! `MeshAdminAgent` to describe mesh topology (hosts, procs, root).
-//! Actor-runtime keys (status, actor_type, messages_processed, etc.)
-//! are declared in `hyperactor::introspect`.
+//! Actor-runtime keys (status, actor_type, messages_processed, etc.) are
+//! declared in `hyperactor::introspect`.
+//!
+//! The HTTP wire representations live in [`dto`]. That submodule owns the
+//! curl-friendly JSON contract, schema/OpenAPI generation, and boundary
+//! invariants for string-encoded references and timestamps. This module
+//! keeps the internal typed invariants.
+//!
+//! These invariants govern the introspection model and derived
+//! payloads exposed by mesh-admin; lower-level runtime accounting
+//! invariants remain owned by the runtime modules that produce those
+//! values.
 //!
 //! See `hyperactor::introspect` for naming convention, invariant
 //! labels, and the `IntrospectAttr` meta-attribute pattern.
@@ -24,6 +39,47 @@
 //! - **MK-2 (short-name uniqueness):** Covered by
 //!   `test_introspect_short_names_are_globally_unique` in
 //!   `hyperactor::introspect` (cross-crate).
+//!
+//! ## Proc debug stats invariants (PD-*)
+//!
+//! These invariants govern the proc-debug introspection surface
+//! exposed by mesh-admin: proc attrs, typed proc views, and the
+//! proc-debug portion of `NodeProperties::Proc`.
+//!
+//! They do not define proc runtime mechanics. The underlying
+//! per-actor queue-depth accounting invariants live in
+//! `hyperactor::proc`; this module owns the proc-level debug values
+//! derived from that runtime state.
+//!
+//! - **PD-1:** `actor_work_queue_depth_max <=
+//!   actor_work_queue_depth_total`.
+//! - **PD-2:** `process_rss_bytes` and `process_vm_size_bytes` are
+//!   `None` on non-Linux or read failure. Never fabricated.
+//! - **PD-3:** All debug fields default to zero/None for backward
+//!   compatibility. Old procs that haven't published yet produce a
+//!   valid `ProcDebugStats::default()`.
+//! - **PD-4:** Queue depth aggregation covers live actors only.
+//!   Stopped/retained actor snapshots are excluded.
+//! - **PD-5:** See `hyperactor::proc` module doc for the per-actor
+//!   queue depth accounting invariants (PD-5a through PD-5e).
+//!
+//! ## HTTP boundary invariants (HB-*)
+//!
+//! These govern the HTTP DTO layer in [`dto`].
+//!
+//! - **HB-1 (typed-internal, string-external):** `NodeRef`, `ActorId`,
+//!   `ProcId`, and `SystemTime` are typed Rust values internally. At the
+//!   HTTP JSON boundary, [`dto::NodePayloadDto`],
+//!   [`dto::NodePropertiesDto`], and [`dto::FailureInfoDto`] encode them
+//!   as canonical strings.
+//! - **HB-2 (round-trip):** The HTTP string forms round-trip through the
+//!   internal typed parsers (`NodeRef::from_str`, `ActorId::from_str`,
+//!   `humantime::parse_rfc3339`). Timestamps are formatted at
+//!   millisecond precision; sub-millisecond values are truncated at
+//!   the boundary.
+//! - **HB-3 (schema-honesty):** Schema/OpenAPI are generated from the DTO
+//!   types, so the published schema reflects the actual wire format rather
+//!   than the internal domain representation.
 //!
 //! ## Attrs invariants (IA-*)
 //!
@@ -84,24 +140,130 @@
 //!   classified into `BinaryNotFound { searched }` vs
 //!   `Failed { pid, binary, exit_code, stderr }`, never collapsed.
 //! - **PS-3 (binary resolution order):** Resolution order is exactly:
-//!   `PYSPY_BIN` (if set and non-empty) then `"py-spy"` on PATH.
+//!   `PYSPY_BIN` config attr (if non-empty) then `"py-spy"` on PATH.
+//!   The attr is read via `hyperactor_config::global::get_cloned`;
+//!   env var `PYSPY_BIN` feeds in through the config layer.
 //!   If the first attempt is not found, the fallback attempt is
 //!   required.
-//! - **PS-4 (raw output passthrough):** On success, `stack` is raw
-//!   py-spy stdout text; no parsing, no transformation.
-//! - **PS-5 (subprocess timeout):** `try_exec` kills and reaps the
-//!   py-spy child after `MESH_ADMIN_PYSPY_TIMEOUT`, returning `Failed`
-//!   rather than blocking the ProcAgent indefinitely.
+//! - **PS-4 (structured JSON output):** py-spy runs with `--json`;
+//!   output is parsed into `Vec<PySpyStackTrace>`. Parse failure
+//!   maps to `PySpyResult::Failed`.
+//! - **PS-5 (subprocess timeout):** `try_exec` bounds the py-spy
+//!   subprocess inside the worker to `MESH_ADMIN_PYSPY_TIMEOUT`
+//!   (default 10s). The budget is sized for `--native --native-all`
+//!   which unwinds native stacks via libunwind — significantly
+//!   slower than Python-only capture on loaded hosts. On expiry the
+//!   child is killed and reaped, and the worker returns
+//!   `Failed { stderr: "…timed out…" }`.
 //! - **PS-6 (bridge timeout):** The HTTP bridge uses a separate
-//!   `MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT` (default 7s), which must
+//!   `MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT` (default 13s), which must
 //!   exceed `MESH_ADMIN_PYSPY_TIMEOUT` so the subprocess kill/reap
 //!   and reply can arrive before the bridge declares
 //!   `gateway_timeout`. Independent of
 //!   `MESH_ADMIN_SINGLE_HOST_TIMEOUT`.
+//! - **PS-7 (non-blocking delegation):** ProcAgent never awaits
+//!   py-spy execution inline. On `PySpyDump` it spawns a child
+//!   `PySpyWorker`, forwards the request, and returns immediately.
+//! - **PS-8 (worker lifecycle):** Each `PySpyWorker` handles
+//!   exactly one forwarded `RunPySpyDump`, replies directly to the
+//!   forwarded `OncePortRef`, then self-terminates via
+//!   `cx.stop()`. Clean exit, no supervision event.
+//! - **PS-9 (concurrent dumps):** py-spy is spawn-per-request, so
+//!   overlapping dumps on the same proc are allowed. Each worker
+//!   runs independently.
+//! - **PS-10 (nonblocking retry):** In nonblocking mode, `try_exec`
+//!   retries up to 3 times with 100ms backoff on failure, because
+//!   py-spy can segfault reading mutating process memory. All
+//!   attempts share a single deadline bounded by
+//!   `MESH_ADMIN_PYSPY_TIMEOUT` (PS-5).
+//! - **PS-11a (native-all-immediate-downgrade):** If py-spy rejects
+//!   `--native-all` with the recognized unsupported-flag signature
+//!   (exit code 2, stderr mentions `--native-all`), `try_exec`
+//!   retries immediately with `native_all = false` in the same outer
+//!   attempt.
+//! - **PS-11b (native-all-no-retry-consumption):** That downgrade
+//!   retry does not consume an outer nonblocking retry slot (PS-10)
+//!   and does not incur the 100ms inter-attempt backoff.
+//! - **PS-11c (native-all-downgrade-warning):** A successful
+//!   downgraded result includes the warning `"--native-all
+//!   unsupported by this py-spy; fell back to --native"`.
+//! - **PS-11d (native-all-failure-passthrough):** If the downgraded
+//!   retry also fails, the failure flows through the normal
+//!   nonblocking retry logic (PS-10) unchanged.
+//! - **PS-11e (native-all-sticky-downgrade):** Once the
+//!   unsupported-flag signature is detected,
+//!   `effective_opts.native_all` remains `false` for all subsequent
+//!   outer retries. The flag is not re-tested on later attempts.
+//! - **PS-12 (universal py-spy):** Worker procs and the service
+//!   proc can handle `PySpyDump`. Worker procs handle it via
+//!   ProcAgent; the service proc handles it via HostAgent (same
+//!   spawn-worker pattern). `pyspy_bridge` routes by proc name:
+//!   if `proc_id.base_name() == SERVICE_PROC_NAME`, the target
+//!   is `host_agent`; otherwise `proc_agent[0]`. Procs lacking
+//!   either agent (e.g. mesh-admin) fast-fail via PS-13.
+//! - **PS-13 (defensive probe):** Before sending `PySpyDump`,
+//!   `pyspy_bridge` probes the selected actor with an introspect
+//!   query bounded by `MESH_ADMIN_QUERY_CHILD_TIMEOUT` (default
+//!   100ms). Three outcomes: (a) probe reply arrives — proceed
+//!   with `PySpyDump`; (b) probe times out or recv closes —
+//!   return `not_found` (actor absent/unreachable); (c) probe
+//!   send itself fails — return `internal_error` (bridge-side
+//!   infrastructure failure). Cases (b) and (c) fast-fail
+//!   instead of waiting the full 13s
+//!   `MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT`.
+//! - **PS-14 (reachability-based capability):** A proc supports
+//!   py-spy iff its stable handler actor is reachable: the
+//!   service proc requires a reachable `host_agent`; non-service
+//!   procs require a reachable `proc_agent[0]`. `PySpyWorker` is
+//!   transient per-request machinery (spawned on `PySpyDump`,
+//!   stopped after replying) and is not part of the reachability
+//!   contract.
 //!
-//! v1 contract note: the current py-spy bridge expects a ProcId-form
-//! reference and rejects other forms as `bad_request`. This may be
-//! broadened in future versions.
+//! v1 contract notes:
+//! - The current py-spy bridge expects a ProcId-form reference and
+//!   rejects other forms as `bad_request`. This may be broadened in
+//!   future versions.
+//! - If `worker.send()` fails after the reply port has moved into
+//!   `RunPySpyDump`, the caller receives no explicit
+//!   `PySpyResult::Failed` — they observe a timeout.
+//!   `MailboxSenderError` does not carry the unsent message, so the
+//!   port is irrecoverable on this path.
+//! - **Contract change (D96756537 follow-up):** `PySpyResult::Ok`
+//!   replaced `stack: String` (raw py-spy text) with
+//!   `stack_traces: Vec<PySpyStackTrace>` (structured JSON) and
+//!   added `warnings: Vec<String>`. Clients reading the old `stack`
+//!   field will see it absent; they must migrate to `stack_traces`.
+//!
+//! ## py-spy profiling (PP-*)
+//!
+//! Profile capture (`py-spy record`) is a separate contract from
+//! dump (`py-spy dump`). Types, messages, workers, and routes are
+//! independent — no shared state, no shared timeout budget.
+//!
+//! - **PP-1 (input validation):** `duration_s` (u32) must be
+//!   non-zero and at most `MESH_ADMIN_PYSPY_MAX_PROFILE_DURATION`.
+//!   `rate_hz` must be 1..1000. Violations → 400 before any
+//!   actor messaging.
+//! - **PP-2 (dynamic timeout cascade):** Subprocess timeout =
+//!   `duration_s + 15s`. Bridge timeout = subprocess + 5s.
+//!   Computed per-request from validated opts, not static config.
+//! - **PP-3 (temp file lifecycle):** `py-spy record` writes to a
+//!   temp file; the worker reads it after successful exit and
+//!   deletes via tempfile drop. On failure or timeout, stderr is
+//!   captured. On timeout, the child is explicitly killed and
+//!   reaped via `start_kill()` + `wait().await`. If the file is
+//!   missing, empty, or unreadable after successful exit, the
+//!   result is `OutputMissing`, `OutputEmpty`, or
+//!   `OutputReadFailure`, not `Ok`.
+//! - **PP-4 (target locality):** Inherits PS-1 — always targets
+//!   `std::process::id()`, never a caller-supplied PID.
+//! - **PP-5 (separate worker):** `PySpyProfileWorker` is a
+//!   distinct actor from `PySpyWorker`. Profile durations block
+//!   for seconds to minutes; isolation prevents starving dumps.
+//! - **PP-6 (wire projection):** `ProfileExecOutcome` maps to
+//!   `PySpyProfileResult` 1:1 via `From`. Every internal variant
+//!   has an identically-named wire variant. The only shape change
+//!   is `TimedOut.timeout: Duration` → `TimedOut.timeout_s: u64`.
 //!
 //! ## Mesh-admin config (MA-*)
 //!
@@ -109,6 +271,8 @@
 //!   budgets are read from config attrs at call-time, with defaults
 //!   in `config.rs`. No hardcoded timeout constants in
 //!   `mesh_admin.rs`.
+
+pub mod dto;
 
 use hyperactor_config::Attrs;
 use hyperactor_config::INTROSPECT;
@@ -157,14 +321,14 @@ declare_attrs! {
         name: "system_children".into(),
         desc: "References of system/infrastructure children".into(),
     })
-    pub attr SYSTEM_CHILDREN: Vec<String>;
+    pub attr SYSTEM_CHILDREN: Vec<NodeRef>;
 
     /// References of stopped children (proc only).
     @meta(INTROSPECT = IntrospectAttr {
         name: "stopped_children".into(),
         desc: "References of stopped children".into(),
     })
-    pub attr STOPPED_CHILDREN: Vec<String>;
+    pub attr STOPPED_CHILDREN: Vec<NodeRef>;
 
     /// Cap on stopped children retention.
     @meta(INTROSPECT = IntrospectAttr {
@@ -209,6 +373,43 @@ declare_attrs! {
     })
     pub attr NUM_HOSTS: usize = 0;
 
+    // ── Proc debug stats (PD-*) ──────────────────────────────
+
+    /// RSS of the hosting OS process (bytes). `None` means the
+    /// measurement was unavailable (for example non-Linux or procfs
+    /// read/parse failure); values are never fabricated (PD-2).
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "process_rss_bytes".into(),
+        desc: "RSS of the hosting OS process (bytes)".into(),
+    })
+    pub attr PROCESS_RSS_BYTES: Option<u64>;
+
+    /// Virtual memory size of the hosting OS process (bytes). `None`
+    /// means the measurement was unavailable (for example non-Linux
+    /// or procfs read/parse failure); values are never fabricated
+    /// (PD-2).
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "process_vm_size_bytes".into(),
+        desc: "Virtual memory size of the hosting OS process (bytes)".into(),
+    })
+    pub attr PROCESS_VM_SIZE_BYTES: Option<u64>;
+
+    /// Sum of per-actor message queue depths across live actors.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "actor_work_queue_depth_total".into(),
+        desc: "Sum of per-actor message queue depths (live actors only)".into(),
+    })
+    pub attr ACTOR_WORK_QUEUE_DEPTH_TOTAL: u64 = 0;
+
+    /// Maximum current per-actor message queue depth across live
+    /// actors at publish time. This is not a historical high-water
+    /// mark.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "actor_work_queue_depth_max".into(),
+        desc: "Maximum per-actor message queue depth (live actors only)".into(),
+    })
+    pub attr ACTOR_WORK_QUEUE_DEPTH_MAX: u64 = 0;
+
 }
 
 use hyperactor::introspect::AttrsViewError;
@@ -217,9 +418,9 @@ use hyperactor::introspect::AttrsViewError;
 #[derive(Debug, Clone, PartialEq)]
 pub struct RootAttrsView {
     pub num_hosts: usize,
-    pub started_at: std::time::SystemTime,
+    pub started_at: SystemTime,
     pub started_by: String,
-    pub system_children: Vec<String>,
+    pub system_children: Vec<NodeRef>,
 }
 
 impl RootAttrsView {
@@ -256,12 +457,169 @@ impl RootAttrsView {
     }
 }
 
+/// Memory stats of the hosting OS process. Shared by host and
+/// proc introspection surfaces — both agents are authoritative
+/// for the OS process they run in.
+///
+/// In the common one-proc-per-process deployment these read like
+/// "proc memory". In multi-proc-per-process setups, co-hosted procs
+/// report the same hosting-process values.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    Named
+)]
+pub struct ProcessMemoryStats {
+    /// RSS of the hosting OS process (bytes). `None` on non-Linux
+    /// or read failure (PD-2).
+    pub process_rss_bytes: Option<u64>,
+    /// Virtual memory size of the hosting OS process (bytes).
+    /// `None` on non-Linux or read failure (PD-2).
+    pub process_vm_size_bytes: Option<u64>,
+}
+
+impl ProcessMemoryStats {
+    /// Read the hosting OS process memory stats from procfs.
+    /// Returns `ProcessMemoryStats` with `None` fields on non-Linux
+    /// or any read/parse failure (PD-2: never fabricated).
+    pub fn read_from_procfs() -> Self {
+        let (rss, vm) = read_procfs_memory();
+        Self {
+            process_rss_bytes: rss,
+            process_vm_size_bytes: vm,
+        }
+    }
+
+    pub fn from_attrs(attrs: &Attrs) -> Self {
+        Self {
+            process_rss_bytes: attrs.get(PROCESS_RSS_BYTES).copied().flatten(),
+            process_vm_size_bytes: attrs.get(PROCESS_VM_SIZE_BYTES).copied().flatten(),
+        }
+    }
+
+    pub fn to_attrs(&self, attrs: &mut Attrs) {
+        attrs.set(PROCESS_RSS_BYTES, self.process_rss_bytes);
+        attrs.set(PROCESS_VM_SIZE_BYTES, self.process_vm_size_bytes);
+    }
+}
+
+/// Read RSS and VM size from `/proc/self/statm`.
+///
+/// `statm` field 0 is total program size (virtual memory) in pages;
+/// field 1 is resident set size in pages. This is sufficient for the
+/// Stage 1 operator signal and avoids parsing a larger procfs file.
+/// Returns `(Some(rss_bytes), Some(vm_bytes))` on success and `(None,
+/// None)` on any failure.
+#[cfg(target_os = "linux")]
+fn read_procfs_memory() -> (Option<u64>, Option<u64>) {
+    // SAFETY: sysconf(_SC_PAGESIZE) is a read-only query with no
+    // preconditions. It returns the system page size or -1 on error.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page_size <= 0 {
+        return (None, None);
+    }
+    let page_size = page_size as u64;
+    match std::fs::read_to_string("/proc/self/statm") {
+        Ok(contents) => {
+            let mut fields = contents.split_whitespace();
+            let vm_pages: Option<u64> = fields.next().and_then(|s| s.parse().ok());
+            let rss_pages: Option<u64> = fields.next().and_then(|s| s.parse().ok());
+            (
+                rss_pages.map(|p| p * page_size),
+                vm_pages.map(|p| p * page_size),
+            )
+        }
+        Err(_) => (None, None),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_procfs_memory() -> (Option<u64>, Option<u64>) {
+    (None, None)
+}
+
+/// Proc-level debug/operational stats. Groups hosting-process memory
+/// (process-scoped) and actor queue pressure (proc-scoped) into one
+/// operational summary.
+///
+/// This asymmetry is intentional: memory belongs to the hosting OS
+/// process, while queue pressure is aggregated over live actors in
+/// this Monarch proc only.
+///
+/// Queue depth is an **instantaneous snapshot** at publish time, not
+/// a historical watermark or backlog accumulator. It reflects
+/// currently queued work that has not yet been received by the
+/// actor's run loop. Transient bursts that drain between publishes
+/// will not be observed.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    Named
+)]
+pub struct ProcDebugStats {
+    /// Hosting-process memory (shared type with host surface).
+    pub memory: ProcessMemoryStats,
+    /// Sum of per-actor message queue depths across live actors in
+    /// this proc (PD-4: live actors only).
+    pub actor_work_queue_depth_total: u64,
+    /// Maximum current per-actor message queue depth across live
+    /// actors in this proc at publish time. Not a historical
+    /// high-water mark.
+    pub actor_work_queue_depth_max: u64,
+}
+
+impl ProcDebugStats {
+    pub fn from_attrs(attrs: &Attrs) -> Self {
+        let total = attrs
+            .get(ACTOR_WORK_QUEUE_DEPTH_TOTAL)
+            .copied()
+            .unwrap_or(0);
+        let max = attrs.get(ACTOR_WORK_QUEUE_DEPTH_MAX).copied().unwrap_or(0);
+        // PD-1: max <= total.
+        if max > total {
+            tracing::warn!(
+                "PD-1 violation: actor_work_queue_depth_max ({}) > total ({})",
+                max,
+                total,
+            );
+        }
+        Self {
+            memory: ProcessMemoryStats::from_attrs(attrs),
+            actor_work_queue_depth_total: total,
+            actor_work_queue_depth_max: max,
+        }
+    }
+
+    pub fn to_attrs(&self, attrs: &mut Attrs) {
+        self.memory.to_attrs(attrs);
+        attrs.set(
+            ACTOR_WORK_QUEUE_DEPTH_TOTAL,
+            self.actor_work_queue_depth_total,
+        );
+        attrs.set(ACTOR_WORK_QUEUE_DEPTH_MAX, self.actor_work_queue_depth_max);
+    }
+}
+
 /// Typed view over attrs for a host node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostAttrsView {
     pub addr: String,
     pub num_procs: usize,
-    pub system_children: Vec<String>,
+    pub system_children: Vec<NodeRef>,
+    /// Hosting-process memory stats.
+    pub memory: ProcessMemoryStats,
 }
 
 impl HostAttrsView {
@@ -275,10 +633,12 @@ impl HostAttrsView {
             .clone();
         let num_procs = *attrs.get(NUM_PROCS).unwrap_or(&0);
         let system_children = attrs.get(SYSTEM_CHILDREN).cloned().unwrap_or_default();
+        let memory = ProcessMemoryStats::from_attrs(attrs);
         Ok(Self {
             addr,
             num_procs,
             system_children,
+            memory,
         })
     }
 
@@ -289,6 +649,7 @@ impl HostAttrsView {
         attrs.set(ADDR, self.addr.clone());
         attrs.set(NUM_PROCS, self.num_procs);
         attrs.set(SYSTEM_CHILDREN, self.system_children.clone());
+        self.memory.to_attrs(&mut attrs);
         attrs
     }
 }
@@ -298,11 +659,13 @@ impl HostAttrsView {
 pub struct ProcAttrsView {
     pub proc_name: String,
     pub num_actors: usize,
-    pub system_children: Vec<String>,
-    pub stopped_children: Vec<String>,
+    pub system_children: Vec<NodeRef>,
+    pub stopped_children: Vec<NodeRef>,
     pub stopped_retention_cap: usize,
     pub is_poisoned: bool,
     pub failed_actor_count: usize,
+    /// Runtime debug/operational stats (PD-*).
+    pub debug: ProcDebugStats,
 }
 
 impl ProcAttrsView {
@@ -329,6 +692,8 @@ impl ProcAttrsView {
             ));
         }
 
+        let debug = ProcDebugStats::from_attrs(attrs);
+
         Ok(Self {
             proc_name,
             num_actors,
@@ -337,6 +702,7 @@ impl ProcAttrsView {
             stopped_retention_cap,
             is_poisoned,
             failed_actor_count,
+            debug,
         })
     }
 
@@ -351,6 +717,7 @@ impl ProcAttrsView {
         attrs.set(STOPPED_RETENTION_CAP, self.stopped_retention_cap);
         attrs.set(IS_POISONED, self.is_poisoned);
         attrs.set(FAILED_ACTOR_COUNT, self.failed_actor_count);
+        self.debug.to_attrs(&mut attrs);
         attrs
     }
 }
@@ -390,15 +757,91 @@ impl ErrorAttrsView {
 }
 
 // --- API / presentation types ---
-//
-// These types define the HTTP response shape for
-// GET /v1/{reference}. Derived from internal attrs at the
-// mesh boundary. Shared with the TUI.
 
-use schemars::JsonSchema;
+use std::fmt;
+use std::str::FromStr;
+use std::time::SystemTime;
+
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
+
+/// Typed reference to a node in the mesh-admin navigation tree.
+///
+/// Extends `IntrospectRef` with mesh-only concepts (`Root`, `Host`).
+/// hyperactor does not know about these variants.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+pub enum NodeRef {
+    /// Synthetic mesh root node.
+    /// Serializes as lowercase `"root"` to match the HTTP path convention.
+    #[serde(rename = "root")]
+    Root,
+    /// A host in the mesh, identified by its `HostAgent` actor ID.
+    Host(hyperactor::reference::ActorId),
+    /// A proc running on a host.
+    Proc(hyperactor::reference::ProcId),
+    /// An actor instance within a proc.
+    Actor(hyperactor::reference::ActorId),
+}
+
+hyperactor_config::impl_attrvalue!(NodeRef);
+
+impl fmt::Display for NodeRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Root => write!(f, "root"),
+            Self::Host(id) => write!(f, "host:{}", id),
+            Self::Proc(id) => fmt::Display::fmt(id, f),
+            Self::Actor(id) => fmt::Display::fmt(id, f),
+        }
+    }
+}
+
+/// Error parsing a `NodeRef` from a string.
+#[derive(Debug, thiserror::Error)]
+pub enum NodeRefParseError {
+    #[error("empty reference string")]
+    Empty,
+    #[error("invalid host reference: {0}")]
+    InvalidHost(hyperactor::reference::ReferenceParsingError),
+    #[error("port references are not valid node references")]
+    PortNotAllowed,
+    #[error(transparent)]
+    Reference(#[from] hyperactor::reference::ReferenceParsingError),
+}
+
+impl FromStr for NodeRef {
+    type Err = NodeRefParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err(NodeRefParseError::Empty);
+        }
+        if s == "root" {
+            return Ok(Self::Root);
+        }
+        if let Some(rest) = s.strip_prefix("host:") {
+            let actor_id: hyperactor::reference::ActorId =
+                rest.parse().map_err(NodeRefParseError::InvalidHost)?;
+            return Ok(Self::Host(actor_id));
+        }
+        let r: hyperactor::reference::Reference = s.parse()?;
+        match r {
+            hyperactor::reference::Reference::Proc(id) => Ok(Self::Proc(id)),
+            hyperactor::reference::Reference::Actor(id) => Ok(Self::Actor(id)),
+            hyperactor::reference::Reference::Port(_) => Err(NodeRefParseError::PortNotAllowed),
+        }
+    }
+}
+
+impl From<hyperactor::introspect::IntrospectRef> for NodeRef {
+    fn from(r: hyperactor::introspect::IntrospectRef) -> Self {
+        match r {
+            hyperactor::introspect::IntrospectRef::Proc(id) => Self::Proc(id),
+            hyperactor::introspect::IntrospectRef::Actor(id) => Self::Actor(id),
+        }
+    }
+}
 
 /// Uniform response for any node in the mesh topology.
 ///
@@ -407,54 +850,62 @@ use typeuri::Named;
 /// node and following its `children` references.
 ///
 /// See IA-1..IA-5 in module doc.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, JsonSchema)]
+// Serialize/Deserialize required by wirevalue::register_type! and
+// ResolveReferenceResponse actor messaging. HTTP serialization uses
+// dto::NodePayloadDto, not these derives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct NodePayload {
-    /// Canonical reference string for this node.
-    pub identity: String,
+    /// Canonical node reference identifying this node.
+    pub identity: NodeRef,
     /// Node-specific metadata (type, status, metrics, etc.).
     pub properties: NodeProperties,
-    /// Reference strings the client can GET next to descend the tree.
-    pub children: Vec<String>,
+    /// Child node references for downward navigation.
+    pub children: Vec<NodeRef>,
     /// Parent node reference for upward navigation.
-    pub parent: Option<String>,
-    /// ISO 8601 timestamp indicating when this data was captured.
-    pub as_of: String,
+    pub parent: Option<NodeRef>,
+    /// When this payload was captured.
+    pub as_of: SystemTime,
 }
 wirevalue::register_type!(NodePayload);
 
-/// Node-specific metadata. Externally-tagged enum — the JSON
-/// key is the variant name (Root, Host, Proc, Actor, Error).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, JsonSchema)]
+/// Node-specific metadata. Externally-tagged enum — the variant
+/// name is the discriminator (Root, Host, Proc, Actor, Error).
+// Serialize/Deserialize required by wirevalue::register_type! and
+// ResolveReferenceResponse actor messaging. HTTP serialization uses
+// dto::NodePropertiesDto, not these derives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub enum NodeProperties {
     /// Synthetic mesh root node (not a real actor/proc).
     Root {
         num_hosts: usize,
-        started_at: String,
+        started_at: SystemTime,
         started_by: String,
-        system_children: Vec<String>,
+        system_children: Vec<NodeRef>,
     },
     /// A host in the mesh, represented by its `HostAgent`.
     Host {
         addr: String,
         num_procs: usize,
-        system_children: Vec<String>,
+        system_children: Vec<NodeRef>,
+        memory: ProcessMemoryStats,
     },
     /// Properties describing a proc running on a host.
     Proc {
         proc_name: String,
         num_actors: usize,
-        system_children: Vec<String>,
-        stopped_children: Vec<String>,
+        system_children: Vec<NodeRef>,
+        stopped_children: Vec<NodeRef>,
         stopped_retention_cap: usize,
         is_poisoned: bool,
         failed_actor_count: usize,
+        debug: ProcDebugStats,
     },
     /// Runtime metadata for a single actor instance.
     Actor {
         actor_status: String,
         actor_type: String,
         messages_processed: u64,
-        created_at: String,
+        created_at: Option<SystemTime>,
         last_message_handler: Option<String>,
         total_processing_time_us: u64,
         flight_recorder: Option<String>,
@@ -467,12 +918,20 @@ pub enum NodeProperties {
 wirevalue::register_type!(NodeProperties);
 
 /// Structured failure information for failed actors.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, JsonSchema)]
+// Serialize/Deserialize required by wirevalue::register_type! and
+// ResolveReferenceResponse actor messaging. HTTP serialization uses
+// dto::FailureInfoDto, not these derives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct FailureInfo {
+    /// Error message describing the failure.
     pub error_message: String,
-    pub root_cause_actor: String,
+    /// Actor that caused the failure (root cause).
+    pub root_cause_actor: hyperactor::reference::ActorId,
+    /// Display name of the root-cause actor, if available.
     pub root_cause_name: Option<String>,
-    pub occurred_at: String,
+    /// When the failure occurred.
+    pub occurred_at: SystemTime,
+    /// Whether this failure was propagated from a child.
     pub is_propagated: bool,
 }
 wirevalue::register_type!(FailureInfo);
@@ -489,7 +948,7 @@ impl IntoNodeProperties for RootAttrsView {
     fn into_node_properties(self) -> NodeProperties {
         NodeProperties::Root {
             num_hosts: self.num_hosts,
-            started_at: humantime::format_rfc3339_millis(self.started_at).to_string(),
+            started_at: self.started_at,
             started_by: self.started_by,
             system_children: self.system_children,
         }
@@ -502,6 +961,7 @@ impl IntoNodeProperties for HostAttrsView {
             addr: self.addr,
             num_procs: self.num_procs,
             system_children: self.system_children,
+            memory: self.memory,
         }
     }
 }
@@ -516,6 +976,7 @@ impl IntoNodeProperties for ProcAttrsView {
             stopped_retention_cap: self.stopped_retention_cap,
             is_poisoned: self.is_poisoned,
             failed_actor_count: self.failed_actor_count,
+            debug: self.debug,
         }
     }
 }
@@ -531,7 +992,6 @@ impl IntoNodeProperties for ErrorAttrsView {
 
 impl IntoNodeProperties for hyperactor::introspect::ActorAttrsView {
     fn into_node_properties(self) -> NodeProperties {
-        // Reconstruct the display status from status + status_reason.
         let actor_status = match &self.status_reason {
             Some(reason) => format!("{}: {}", self.status, reason),
             None => self.status.clone(),
@@ -541,7 +1001,7 @@ impl IntoNodeProperties for hyperactor::introspect::ActorAttrsView {
             error_message: fi.error_message,
             root_cause_actor: fi.root_cause_actor,
             root_cause_name: fi.root_cause_name,
-            occurred_at: humantime::format_rfc3339_millis(fi.occurred_at).to_string(),
+            occurred_at: fi.occurred_at,
             is_propagated: fi.is_propagated,
         });
 
@@ -549,10 +1009,7 @@ impl IntoNodeProperties for hyperactor::introspect::ActorAttrsView {
             actor_status,
             actor_type: self.actor_type,
             messages_processed: self.messages_processed,
-            created_at: self
-                .created_at
-                .map(|t| humantime::format_rfc3339_millis(t).to_string())
-                .unwrap_or_default(),
+            created_at: self.created_at,
             last_message_handler: self.last_handler,
             total_processing_time_us: self.total_processing_time_us,
             flight_recorder: self.flight_recorder,
@@ -643,16 +1100,14 @@ pub fn derive_properties(attrs_json: &str) -> NodeProperties {
     }
 }
 
-/// Convert an internal `IntrospectResult` into an API-facing
-/// `NodePayload` by deriving `properties` from attrs.
-/// Convert an `IntrospectResult` to a presentation `NodePayload`
-/// with `properties` derived from attrs.
+/// Convert an `IntrospectResult` to a presentation `NodePayload`.
+/// Lifts `IntrospectRef` → `NodeRef` and passes through typed timestamps.
 pub fn to_node_payload(result: hyperactor::introspect::IntrospectResult) -> NodePayload {
     NodePayload {
-        identity: result.identity,
+        identity: result.identity.into(),
         properties: derive_properties(&result.attrs),
-        children: result.children,
-        parent: result.parent,
+        children: result.children.into_iter().map(NodeRef::from).collect(),
+        parent: result.parent.map(NodeRef::from),
         as_of: result.as_of,
     }
 }
@@ -661,13 +1116,13 @@ pub fn to_node_payload(result: hyperactor::introspect::IntrospectResult) -> Node
 /// identity and parent for correct tree navigation.
 pub fn to_node_payload_with(
     result: hyperactor::introspect::IntrospectResult,
-    identity: String,
-    parent: Option<String>,
+    identity: NodeRef,
+    parent: Option<NodeRef>,
 ) -> NodePayload {
     NodePayload {
         identity,
         properties: derive_properties(&result.attrs),
-        children: result.children,
+        children: result.children.into_iter().map(NodeRef::from).collect(),
         parent,
         as_of: result.as_of,
     }
@@ -695,6 +1150,17 @@ mod tests {
             ("started_at", STARTED_AT.attrs()),
             ("started_by", STARTED_BY.attrs()),
             ("num_hosts", NUM_HOSTS.attrs()),
+            // PD-* proc debug stats keys.
+            ("process_rss_bytes", PROCESS_RSS_BYTES.attrs()),
+            ("process_vm_size_bytes", PROCESS_VM_SIZE_BYTES.attrs()),
+            (
+                "actor_work_queue_depth_total",
+                ACTOR_WORK_QUEUE_DEPTH_TOTAL.attrs(),
+            ),
+            (
+                "actor_work_queue_depth_max",
+                ACTOR_WORK_QUEUE_DEPTH_MAX.attrs(),
+            ),
         ];
 
         for (expected_name, meta) in &cases {
@@ -729,12 +1195,20 @@ mod tests {
         );
     }
 
+    fn test_actor_ref(proc_name: &str, actor_name: &str, pid: usize) -> NodeRef {
+        use hyperactor::channel::ChannelAddr;
+        use hyperactor::reference::ProcId;
+        NodeRef::Actor(
+            ProcId::with_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name, pid),
+        )
+    }
+
     fn root_view() -> RootAttrsView {
         RootAttrsView {
             num_hosts: 3,
             started_at: std::time::UNIX_EPOCH,
             started_by: "testuser".into(),
-            system_children: vec!["child1".into()],
+            system_children: vec![test_actor_ref("proc", "child1", 0)],
         }
     }
 
@@ -742,7 +1216,8 @@ mod tests {
         HostAttrsView {
             addr: "10.0.0.1:8080".into(),
             num_procs: 2,
-            system_children: vec!["sys".into()],
+            system_children: vec![test_actor_ref("proc", "sys", 0)],
+            memory: Default::default(),
         }
     }
 
@@ -751,10 +1226,11 @@ mod tests {
             proc_name: "worker".into(),
             num_actors: 5,
             system_children: vec![],
-            stopped_children: vec!["old".into()],
+            stopped_children: vec![test_actor_ref("proc", "old", 0)],
             stopped_retention_cap: 10,
             is_poisoned: false,
             failed_actor_count: 0,
+            debug: Default::default(),
         }
     }
 
@@ -787,6 +1263,68 @@ mod tests {
         let view = proc_view();
         let rt = ProcAttrsView::from_attrs(&view.to_attrs()).unwrap();
         assert_eq!(rt, view);
+    }
+
+    /// AV-1: host view with non-default memory round-trips.
+    #[test]
+    fn test_host_view_round_trip_with_memory() {
+        let view = HostAttrsView {
+            addr: "10.0.0.1:8080".into(),
+            num_procs: 2,
+            system_children: vec![],
+            memory: ProcessMemoryStats {
+                process_rss_bytes: Some(512 * 1024 * 1024),
+                process_vm_size_bytes: Some(2 * 1024 * 1024 * 1024),
+            },
+        };
+        let rt = HostAttrsView::from_attrs(&view.to_attrs()).unwrap();
+        assert_eq!(rt, view);
+    }
+
+    /// AV-1: proc view with non-default debug stats round-trips.
+    #[test]
+    fn test_proc_view_round_trip_with_debug() {
+        let view = ProcAttrsView {
+            proc_name: "worker".into(),
+            num_actors: 5,
+            system_children: vec![],
+            stopped_children: vec![],
+            stopped_retention_cap: 10,
+            is_poisoned: false,
+            failed_actor_count: 0,
+            debug: ProcDebugStats {
+                memory: ProcessMemoryStats {
+                    process_rss_bytes: Some(256 * 1024 * 1024),
+                    process_vm_size_bytes: Some(1024 * 1024 * 1024),
+                },
+                actor_work_queue_depth_total: 42,
+                actor_work_queue_depth_max: 7,
+            },
+        };
+        let rt = ProcAttrsView::from_attrs(&view.to_attrs()).unwrap();
+        assert_eq!(rt, view);
+    }
+
+    /// PD-1: max <= total enforced (warning logged, no error).
+    #[test]
+    fn test_proc_debug_stats_pd1_warning_on_violation() {
+        let mut attrs = Attrs::new();
+        attrs.set(PROC_NAME, "test".to_string());
+        attrs.set(ACTOR_WORK_QUEUE_DEPTH_TOTAL, 5u64);
+        attrs.set(ACTOR_WORK_QUEUE_DEPTH_MAX, 10u64); // violation
+        // Should not error, but should log warning.
+        let view = ProcAttrsView::from_attrs(&attrs).unwrap();
+        assert_eq!(view.debug.actor_work_queue_depth_total, 5);
+        assert_eq!(view.debug.actor_work_queue_depth_max, 10);
+    }
+
+    /// PD-3: missing debug attrs default to zero/None.
+    #[test]
+    fn test_proc_debug_stats_defaults_on_missing_attrs() {
+        let mut attrs = Attrs::new();
+        attrs.set(PROC_NAME, "old_proc".to_string());
+        let view = ProcAttrsView::from_attrs(&attrs).unwrap();
+        assert_eq!(view.debug, ProcDebugStats::default());
     }
 
     /// AV-1.
@@ -1036,7 +1574,7 @@ mod tests {
 
     #[test]
     fn test_node_payload_schema_snapshot() {
-        let schema = schemars::schema_for!(NodePayload);
+        let schema = schemars::schema_for!(dto::NodePayloadDto);
         let actual: serde_json::Value = serde_json::to_value(&schema).unwrap();
         let expected: serde_json::Value = strip_comment(
             serde_json::from_str(include_str!("testdata/node_payload_schema.json"))
@@ -1051,36 +1589,44 @@ mod tests {
     /// SC-3: real payloads validate against the generated schema.
     #[test]
     fn test_payloads_validate_against_schema() {
-        let schema = schemars::schema_for!(NodePayload);
+        use hyperactor::channel::ChannelAddr;
+        use hyperactor::reference::ProcId;
+
+        let schema = schemars::schema_for!(dto::NodePayloadDto);
         let schema_value = serde_json::to_value(&schema).unwrap();
         let compiled = jsonschema::JSONSchema::compile(&schema_value).expect("schema must compile");
 
+        let epoch = std::time::UNIX_EPOCH;
+        let proc_id = ProcId::with_name(ChannelAddr::Local(0), "worker");
+        let actor_id = proc_id.actor_id("actor", 0);
+
         let samples = [
             NodePayload {
-                identity: "root".into(),
+                identity: NodeRef::Root,
                 properties: NodeProperties::Root {
                     num_hosts: 2,
-                    started_at: "2024-01-01T00:00:00.000Z".into(),
+                    started_at: epoch,
                     started_by: "testuser".into(),
                     system_children: vec![],
                 },
-                children: vec!["host1".into()],
+                children: vec![NodeRef::Host(actor_id.clone())],
                 parent: None,
-                as_of: "2024-01-01T00:00:00.000Z".into(),
+                as_of: epoch,
             },
             NodePayload {
-                identity: "host1".into(),
+                identity: NodeRef::Host(actor_id.clone()),
                 properties: NodeProperties::Host {
                     addr: "10.0.0.1:8080".into(),
                     num_procs: 2,
-                    system_children: vec!["sys".into()],
+                    system_children: vec![test_actor_ref("proc", "sys", 0)],
+                    memory: Default::default(),
                 },
-                children: vec!["proc1".into()],
-                parent: Some("root".into()),
-                as_of: "2024-01-01T00:00:00.000Z".into(),
+                children: vec![NodeRef::Proc(proc_id.clone())],
+                parent: Some(NodeRef::Root),
+                as_of: epoch,
             },
             NodePayload {
-                identity: "proc1".into(),
+                identity: NodeRef::Proc(proc_id.clone()),
                 properties: NodeProperties::Proc {
                     proc_name: "worker".into(),
                     num_actors: 5,
@@ -1089,18 +1635,19 @@ mod tests {
                     stopped_retention_cap: 10,
                     is_poisoned: false,
                     failed_actor_count: 0,
+                    debug: Default::default(),
                 },
-                children: vec!["actor[0]".into()],
-                parent: Some("host1".into()),
-                as_of: "2024-01-01T00:00:00.000Z".into(),
+                children: vec![NodeRef::Actor(actor_id.clone())],
+                parent: Some(NodeRef::Host(actor_id.clone())),
+                as_of: epoch,
             },
             NodePayload {
-                identity: "actor[0]".into(),
+                identity: NodeRef::Actor(actor_id.clone()),
                 properties: NodeProperties::Actor {
                     actor_status: "running".into(),
                     actor_type: "MyActor".into(),
                     messages_processed: 42,
-                    created_at: "2024-01-01T00:00:00.000Z".into(),
+                    created_at: Some(epoch),
                     last_message_handler: Some("handle_ping".into()),
                     total_processing_time_us: 1000,
                     flight_recorder: None,
@@ -1108,23 +1655,24 @@ mod tests {
                     failure_info: None,
                 },
                 children: vec![],
-                parent: Some("proc1".into()),
-                as_of: "2024-01-01T00:00:00.000Z".into(),
+                parent: Some(NodeRef::Proc(proc_id.clone())),
+                as_of: epoch,
             },
             NodePayload {
-                identity: "err".into(),
+                identity: NodeRef::Actor(actor_id.clone()),
                 properties: NodeProperties::Error {
                     code: "not_found".into(),
                     message: "child not found".into(),
                 },
                 children: vec![],
                 parent: None,
-                as_of: "2024-01-01T00:00:00.000Z".into(),
+                as_of: epoch,
             },
         ];
 
         for (i, payload) in samples.iter().enumerate() {
-            let value = serde_json::to_value(payload).unwrap();
+            let dto = dto::NodePayloadDto::from(payload.clone());
+            let value = serde_json::to_value(&dto).unwrap();
             assert!(
                 compiled.is_valid(&value),
                 "sample {i} failed schema validation"
@@ -1138,7 +1686,7 @@ mod tests {
     #[test]
     fn test_served_schema_is_raw_plus_id() {
         let raw: serde_json::Value =
-            serde_json::to_value(schemars::schema_for!(NodePayload)).unwrap();
+            serde_json::to_value(schemars::schema_for!(dto::NodePayloadDto)).unwrap();
 
         // Simulate what the endpoint does.
         let mut served = raw.clone();
@@ -1167,6 +1715,23 @@ mod tests {
         assert_eq!(
             actual, expected,
             "error schema changed — review and update snapshot if intentional"
+        );
+    }
+
+    /// SC-2: AdminInfo schema matches checked-in snapshot.
+    #[test]
+    fn test_admin_info_schema_snapshot() {
+        use crate::mesh_admin::AdminInfo;
+
+        let schema = schemars::schema_for!(AdminInfo);
+        let actual: serde_json::Value = serde_json::to_value(&schema).unwrap();
+        let expected: serde_json::Value = strip_comment(
+            serde_json::from_str(include_str!("testdata/admin_info_schema.json"))
+                .expect("admin info snapshot must be valid JSON"),
+        );
+        assert_eq!(
+            actual, expected,
+            "AdminInfo schema changed — review and update snapshot if intentional"
         );
     }
 

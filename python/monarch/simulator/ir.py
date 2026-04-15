@@ -7,6 +7,7 @@
 # pyre-unsafe
 import csv
 import json
+import logging
 import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -22,10 +23,16 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    TYPE_CHECKING,
     Union,
 )
 
+if TYPE_CHECKING:
+    from monarch.simulator.communication_model import NetworkConfig
+
 import torch
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 
 class Command(NamedTuple):
@@ -327,56 +334,31 @@ class IRGraph:
                     return True
             return False
 
-        if new_storage_event and not find_or_create_event("StorageCreationEvent"):
-            self.data_dag.append(
-                StorageCreationEvent(
-                    command_id=command_id,
-                    storage_id=storage_id,
-                    size=tensor_size,
-                    devices=[worker_rank],
-                    mesh_ref=None,
-                    stream_name=stream_name,
-                )
-            )
-        if new_tensor_event and not find_or_create_event("TensorCreationEvent"):
-            self.data_dag.append(
-                TensorCreationEvent(
-                    command_id=command_id,
-                    DTensorRef=ref,
-                    storage_id=storage_id,
-                    dtype=dtype,
-                    dims=dims,
-                    devices=[worker_rank],
-                    mesh_ref=None,
-                    stream_name=stream_name,
-                )
-            )
-        if not find_or_create_event("TensorAccessEvent"):
-            self.data_dag.append(
-                TensorAccessEvent(
-                    command_id=command_id,
-                    DTensorRef=ref,
-                    storage_id=storage_id,
-                    dtype=dtype,
-                    dims=dims,
-                    devices=[worker_rank],
-                    mesh_ref=None,
-                    stream_name=stream_name,
-                )
-            )
-        if mutate and not find_or_create_event("TensorMutationEvent"):
-            self.data_dag.append(
-                TensorMutationEvent(
-                    command_id=command_id,
-                    DTensorRef=ref,
-                    storage_id=storage_id,
-                    dtype=dtype,
-                    dims=dims,
-                    devices=[worker_rank],
-                    mesh_ref=None,
-                    stream_name=stream_name,
-                )
-            )
+        def _append_event_if_new(event_type, condition, **extra_fields):
+            if condition and not find_or_create_event(event_type.__name__):
+                base = {
+                    "command_id": command_id,
+                    "storage_id": storage_id,
+                    "devices": [worker_rank],
+                    "mesh_ref": None,
+                    "stream_name": stream_name,
+                }
+                self.data_dag.append(event_type(**base, **extra_fields))
+
+        _append_event_if_new(StorageCreationEvent, new_storage_event, size=tensor_size)
+        _append_event_if_new(
+            TensorCreationEvent,
+            new_tensor_event,
+            DTensorRef=ref,
+            dtype=dtype,
+            dims=dims,
+        )
+        _append_event_if_new(
+            TensorAccessEvent, True, DTensorRef=ref, dtype=dtype, dims=dims
+        )
+        _append_event_if_new(
+            TensorMutationEvent, mutate, DTensorRef=ref, dtype=dtype, dims=dims
+        )
 
         if update_storage_devices:
             find_or_create_event("StorageCreationEvent")
@@ -435,21 +417,13 @@ class IRGraph:
         dst_stream_name: str,
         result_tensor_dims: Tuple[int, ...],
     ) -> None:
-        self._control.sendtensor_info[
-            result_tensor_id
-        ].result_tensor_id = result_tensor_id
-        self._control.sendtensor_info[result_tensor_id].src_devices = src_devices
-        self._control.sendtensor_info[
-            result_tensor_id
-        ].src_stream_name = src_stream_name
-        self._control.sendtensor_info[result_tensor_id].dst_devices = dst_devices
-        self._control.sendtensor_info[
-            result_tensor_id
-        ].dst_stream_name = dst_stream_name
-        self._control.sendtensor_info[
-            result_tensor_id
-        ].result_tensor_dims = result_tensor_dims
-        return
+        info = self._control.sendtensor_info[result_tensor_id]
+        info.result_tensor_id = result_tensor_id
+        info.src_devices = src_devices
+        info.src_stream_name = src_stream_name
+        info.dst_devices = dst_devices
+        info.dst_stream_name = dst_stream_name
+        info.result_tensor_dims = result_tensor_dims
 
     def convert_devices_to_meshes(self) -> None:
         """
@@ -516,6 +490,335 @@ class IRGraph:
         """
         return self._data.storage_to_mesh_ref.get(storage_id)
 
+    def _build_tensor_shape_maps(
+        self,
+    ) -> Tuple[
+        Dict[int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]],
+        Dict[int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]],
+    ]:
+        """Build maps from command_id to tensor shapes for timing key generation.
+
+        Returns:
+            A tuple of (cmd_input_tensors, cmd_output_tensors):
+            - cmd_input_tensors: Maps command_id to list of (shape, dtype) for inputs
+            - cmd_output_tensors: Maps command_id to list of (shape, dtype) for outputs
+        """
+        # Step 1: Identify output tensors from TensorCreationEvent entries.
+        # We need this to filter them out when collecting inputs below.
+        # Also save output shapes for fallback (needed for in-place ops like reduce_).
+        output_tensors: Set[Tuple[int, int]] = set()
+        cmd_output_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ] = defaultdict(list)
+        for event in self.data_dag:
+            if isinstance(event, TensorCreationEvent):
+                output_tensors.add((event.command_id, event.DTensorRef))
+                if event.dims is not None:
+                    cmd_output_tensors[event.command_id].append(
+                        (event.dims, event.dtype)
+                    )
+
+        # Step 2: Collect input tensor shapes by filtering out outputs.
+        # TensorAccessEvent includes both inputs and outputs; exclude outputs here.
+        cmd_input_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ] = defaultdict(list)
+        for event in self.data_dag:
+            if isinstance(event, TensorAccessEvent) and event.dims is not None:
+                if (event.command_id, event.DTensorRef) not in output_tensors:
+                    cmd_input_tensors[event.command_id].append(
+                        (event.dims, event.dtype)
+                    )
+
+        return cmd_input_tensors, cmd_output_tensors
+
+    @staticmethod
+    def _get_dtype(
+        shapes: List[Tuple[Tuple[int, ...], Optional[torch.dtype]]],
+    ) -> str:
+        """Get dtype string from shapes list, e.g., "float32"."""
+        if shapes and shapes[0][1]:
+            return str(shapes[0][1]).replace("torch.", "")
+        return "unknown"
+
+    @staticmethod
+    def _parse_command_name(command_name: str) -> Tuple[str, str]:
+        """Parse command name into (cmd_type, sub_type)."""
+        parts = [p.strip() for p in command_name.split(":")]
+        return parts[0], parts[1] if len(parts) > 1 else "unknown"
+
+    @staticmethod
+    def _get_cmd_shapes(
+        cmd_id: int,
+        cmd_input_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ],
+        cmd_output_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ],
+    ) -> List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]:
+        """Get shapes for a command, preferring inputs over outputs."""
+        return cmd_input_tensors.get(cmd_id, []) or cmd_output_tensors.get(cmd_id, [])
+
+    @staticmethod
+    def _format_shapes_string(
+        shapes: List[Tuple[Tuple[int, ...], Optional[torch.dtype]]],
+    ) -> str:
+        """Format shapes as '(3x4)x(4x5)' string."""
+        if not shapes:
+            return ""
+        return "x".join(f"({'x'.join(str(d) for d in dims)})" for dims, _ in shapes)
+
+    def _get_timing_key(
+        self,
+        cmd: Command,
+        cmd_input_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ],
+        cmd_output_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ],
+    ) -> str:
+        """Generate a timing key for a command.
+
+        Timing key formats (fields separated by colons):
+        - CallFunction: "CallFunction:{func}:{input_shapes}:{dtype}"
+        - Reduce: "Reduce:{reduce_type}:{tensor_shape}:{dtype}:{num_devices}"
+        - SendTensor: "SendTensor:{tensor_shape}:{dtype}"
+        - Borrow*: "{borrow_type}" (no shape info)
+
+        Args:
+            cmd: The Command to generate a timing key for
+            cmd_input_tensors: Map from command_id to input tensor shapes
+            cmd_output_tensors: Map from command_id to output tensor shapes
+
+        Returns:
+            The timing key string for this command
+        """
+        cmd_type, sub_type = self._parse_command_name(cmd.command_name)
+        shapes = self._get_cmd_shapes(
+            cmd.command_id, cmd_input_tensors, cmd_output_tensors
+        )
+        num_devices = len(cmd.devices)
+        s = self._format_shapes_string(shapes)
+        d = self._get_dtype(shapes)
+
+        # Generate timing key based on command type
+        if cmd_type == "CallFunction":
+            return (
+                f"{cmd_type}:{sub_type}:{s}:{d}" if s else f"{cmd_type}:{sub_type}:{d}"
+            )
+        elif cmd_type == "Reduce":
+            return (
+                f"{cmd_type}:{sub_type}:{s}:{d}:{num_devices}"
+                if s
+                else f"{cmd_type}:{sub_type}:{d}:{num_devices}"
+            )
+        elif cmd_type == "SendTensor":
+            return f"{cmd_type}:{s}:{d}" if s else f"{cmd_type}:{d}"
+        else:
+            return cmd_type
+
+    def export_command_types(
+        self,
+        output_file: str,
+        include_timing: bool = False,
+        network_config: Optional["NetworkConfig"] = None,
+    ) -> None:
+        """Export unique command types with metadata for external timing lookup.
+
+        Generates a JSON catalog of unique command types grouped by timing_key.
+        Users can provide external timing data keyed by timing_key.
+
+        Args:
+            output_file: Path to write the JSON output.
+            include_timing: If True, profile compute kernels on GPU, include
+                           timing values in the output, and auto-apply timing
+                           to the DAG. Default is False.
+
+        Timing key formats (fields separated by colons):
+        - CallFunction: "CallFunction:{func}:{input_shapes}:{dtype}"
+          Example: "CallFunction:aten.mm:(3x4)x(4x5):float32"
+        - Reduce: "Reduce:{reduce_type}:{tensor_shape}:{dtype}:{num_devices}"
+          Example: "Reduce:reduce_scatter:(1024x1024):float32:8"
+          Note: num_devices is included because collective timing depends on
+          the number of participating devices.
+        - SendTensor: "SendTensor:{tensor_shape}:{dtype}"
+          Example: "SendTensor:(512x512):float32"
+        - Borrow*: "{borrow_type}" (no shape info, e.g., "BorrowCreate")
+
+        Shape format: Each tensor shape is "(dim1xdim2x...)", multiple shapes
+        joined with "x", e.g., "(3x4)x(4x5)" for two input tensors.
+
+        Output JSON format (when include_timing=False):
+            {"command_types": [{"timing_key": "...", "count": N, ...}]}
+
+        Output JSON format (when include_timing=True):
+            {
+                "command_types": [{"timing_key": "...", "count": N, "timing_us": 1234, ...}],
+                "timing": {"timing_key1": 1234, "timing_key2": 5678, ...}
+            }
+            The "timing" section uses the same format as import_timing() expects.
+            When include_timing=True, timing is also auto-applied to the DAG.
+        """
+        from monarch.simulator.profiling import expand_func_path, profile_function
+
+        cmd_input_tensors, cmd_output_tensors = self._build_tensor_shape_maps()
+
+        # Aggregate commands by timing_key
+        timing_key_data: Dict[str, Dict[str, Any]] = {}
+        for cmd in self.control_dag:
+            timing_key = self._get_timing_key(
+                cmd, cmd_input_tensors, cmd_output_tensors
+            )
+
+            cmd_type, sub_type = self._parse_command_name(cmd.command_name)
+            shapes = self._get_cmd_shapes(
+                cmd.command_id, cmd_input_tensors, cmd_output_tensors
+            )
+
+            # Initialize entry for new timing_key
+            if timing_key not in timing_key_data:
+                entry: Dict[str, Any] = {"timing_key": timing_key, "count": 0}
+                if shapes and not cmd_type.startswith("Borrow"):
+                    if cmd_type == "CallFunction":
+                        entry["input_shapes"] = [list(dims) for dims, _ in shapes]
+                        # Add func_path to help users profile externally
+                        if sub_type != "unknown":
+                            entry["func_path"] = expand_func_path(sub_type)
+                    else:
+                        entry["tensor_shape"] = list(shapes[0][0])
+                    entry["dtype"] = self._get_dtype(shapes)
+                if cmd_type == "Reduce":
+                    entry["num_devices"] = len(cmd.devices)
+                timing_key_data[timing_key] = entry
+
+            timing_key_data[timing_key]["count"] += 1
+
+        # Generate timing values if requested
+        timing_dict: Dict[str, int] = {}
+        if include_timing:
+            from monarch.simulator.communication_model import (
+                estimate_collective_time_us,
+                estimate_send_time_us,
+                NetworkConfig,
+            )
+
+            config = network_config if network_config is not None else NetworkConfig()
+
+            for timing_key, entry in timing_key_data.items():
+                cmd_type = timing_key.split(":")[0]
+                if cmd_type == "CallFunction":
+                    # GPU profiling for compute kernels
+                    try:
+                        # Extract function path and shapes from entry
+                        func_path = (
+                            timing_key.split(":")[1] if ":" in timing_key else ""
+                        )
+                        # Reconstruct shapes from entry
+                        shapes: List[Tuple[Tuple[int, ...], Optional[torch.dtype]]] = []
+                        if "input_shapes" in entry:
+                            dtype_str = entry.get("dtype", "float32")
+                            dtype = getattr(torch, dtype_str, torch.float32)
+                            for shape in entry["input_shapes"]:
+                                shapes.append((tuple(shape), dtype))
+                        if shapes and func_path:
+                            timing_us = profile_function(func_path, shapes)
+                        else:
+                            timing_us = 10000  # 10ms fallback
+                    except (RuntimeError, AttributeError, TypeError, ValueError) as e:
+                        logger.warning(f"GPU profiling failed for {timing_key}: {e}")
+                        timing_us = 10000
+                elif cmd_type == "Reduce":
+                    # Extract reduce_type from timing key
+                    key_parts = timing_key.split(":")
+                    reduce_type = key_parts[1] if len(key_parts) > 1 else "all_reduce"
+                    timing_us = estimate_collective_time_us(
+                        reduce_type=reduce_type,
+                        tensor_shape=entry.get("tensor_shape", []),
+                        dtype_str=entry.get("dtype", "float32"),
+                        num_devices=entry.get("num_devices", 1),
+                        config=config,
+                    )
+                elif cmd_type == "SendTensor":
+                    timing_us = estimate_send_time_us(
+                        tensor_shape=entry.get("tensor_shape", []),
+                        dtype_str=entry.get("dtype", "float32"),
+                        config=config,
+                    )
+                else:
+                    timing_us = 100  # Borrow ops, etc.
+                timing_dict[timing_key] = timing_us
+                entry["timing_us"] = timing_us
+
+        output: Dict[str, Any] = {"command_types": list(timing_key_data.values())}
+        if include_timing:
+            output["timing"] = timing_dict
+        with open(output_file, "w") as f:
+            json.dump(output, f, indent=2)
+
+        # Auto-apply timing to the DAG when include_timing is True
+        if include_timing:
+            self.import_timing(timing_dict)
+
+    def _apply_timing(self, timing_data: Dict[str, int]) -> None:
+        """Apply timing data directly to commands (internal use).
+
+        Args:
+            timing_data: Dictionary mapping timing keys to durations in microseconds.
+        """
+        cmd_input_tensors, cmd_output_tensors = self._build_tensor_shape_maps()
+
+        updated_commands: List[Command] = []
+        for cmd in self.control_dag:
+            timing_key = self._get_timing_key(
+                cmd, cmd_input_tensors, cmd_output_tensors
+            )
+            if timing_key in timing_data:
+                cmd = cmd._replace(duration=timing_data[timing_key])
+            updated_commands.append(cmd)
+
+        self.control_dag = updated_commands
+
+    def import_timing(self, timing: str | Dict[str, int]) -> None:
+        """Import timing data and apply durations to commands.
+
+        Args:
+            timing: Either a file path (str) to a JSON file, or a dict mapping
+                    timing keys to durations in microseconds.
+
+        Example:
+            # From file
+            ir.import_timing("timing.json")
+
+            # From dict
+            ir.import_timing({"CallFunction:aten.mm:(3x4)x(4x3):float32": 100})
+
+        JSON file format:
+            {
+                "CallFunction:aten.mm:(3x4)x(4x3):float32": 1500,
+                "Reduce:reduce_scatter:(3x3):float32:4": 5000,
+                "BorrowCreate": 10
+            }
+            Keys are timing_key strings (same format as export_command_types).
+            Values are durations in microseconds (µs).
+        """
+        if isinstance(timing, str):
+            with open(timing, "r") as f:
+                timing = json.load(f)
+        self._apply_timing(timing)
+
+    def export_dag_json_timed(self, output_file: str) -> None:
+        """Export DAG to Chrome Trace JSON using actual command durations.
+
+        Unlike export_dag_json() which uses fixed-width events for control flow
+        visualization, this method uses the duration field from each command
+        (set via import_timing) to produce timing-accurate traces.
+
+        Logs a warning if any commands have zero duration (timing not imported).
+        """
+        self._export_dag_json_impl(output_file, use_timed_durations=True)
+
     def remove_dag_item_type(
         self, command_types: Union[str, List[str]], print_removed_nodes: bool = False
     ) -> int:
@@ -563,6 +866,23 @@ class IRGraph:
         return num_removed
 
     def export_dag_json(self, output_file: str) -> None:
+        """Export DAG to Chrome Trace JSON using fixed-width events.
+
+        Uses a constant event width for all commands, suitable for control flow
+        visualization where relative timing doesn't matter.
+        """
+        self._export_dag_json_impl(output_file, use_timed_durations=False)
+
+    def _export_dag_json_impl(
+        self, output_file: str, use_timed_durations: bool
+    ) -> None:
+        """Shared implementation for DAG JSON export.
+
+        Args:
+            output_file: Path to write the Chrome Trace JSON.
+            use_timed_durations: If True, use actual command durations (from import_timing).
+                               If False, use fixed-width events for control flow visualization.
+        """
         # Note: The default width unit is in us, so we need to use "larger" standard durations to ensure the flow events are visible.
         default_event_width = 4000
         default_event_spacing = 1000
@@ -574,10 +894,34 @@ class IRGraph:
         reduce_sendtensor_max_ts = defaultdict(int)
         reduce_sendtensor_events = defaultdict(list)
 
+        # Track commands with zero duration for warning (only used when use_timed_durations=True)
+        zero_duration_keys: Set[str] = set()
+        cmd_input_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ] = {}
+        cmd_output_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ] = {}
+        if use_timed_durations:
+            cmd_input_tensors, cmd_output_tensors = self._build_tensor_shape_maps()
+
         for dag_item in self.control_dag:
             worker_rank = dag_item.worker_rank
             name = dag_item.command_name
             cat = dag_item.command_name.split(":")[0]
+
+            # Determine event duration based on mode
+            if use_timed_durations:
+                event_duration = dag_item.duration
+                if event_duration == 0:
+                    timing_key = self._get_timing_key(
+                        dag_item, cmd_input_tensors, cmd_output_tensors
+                    )
+                    zero_duration_keys.add(timing_key)
+                    event_duration = 1  # Minimum visible duration
+            else:
+                event_duration = default_event_width
+
             event: Dict[str, Any] = {
                 "name": name,
                 "cat": cat,
@@ -594,7 +938,7 @@ class IRGraph:
                 stream_name = dag_item.stream_name
                 event["ph"] = "X"
                 event["tid"] = stream_name
-                event["dur"] = default_event_width
+                event["dur"] = event_duration
 
                 if event["cat"] in ["BorrowCreate", "BorrowLastUse"]:
                     event["ts"] = stream_locs[f"{worker_rank}_{stream_name}"]
@@ -606,7 +950,7 @@ class IRGraph:
                     event_start = event.copy()
 
                     event_start["ph"] = "s"
-                    event_start["ts"] = event["ts"] + default_event_width
+                    event_start["ts"] = event["ts"] + event_duration
 
                     if event["cat"] == "BorrowCreate":
                         event_start["name"] = (
@@ -684,7 +1028,7 @@ class IRGraph:
                             e["ts"] = ts
                             stream_locs[f"{e['pid']}_{e['tid']}"] = (
                                 reduce_sendtensor_max_ts[name]
-                                + default_event_width
+                                + event_duration
                                 + default_event_spacing
                             )
                     # Extra SendTensor metadata
@@ -701,12 +1045,20 @@ class IRGraph:
                     event["ts"] = stream_locs[f"{worker_rank}_{stream_name}"]
 
                 stream_locs[f"{worker_rank}_{stream_name}"] += (
-                    default_event_width + default_event_spacing
+                    event_duration + default_event_spacing
                 )
                 event["args"]["traceback"] = traceback.format_list(dag_item.traceback)
                 trace_events.append(event)
             else:
                 raise ValueError(f"Unknown DAG item type: {type(dag_item)}")
+
+        # Log warning for commands with zero duration (only when using timed durations)
+        if use_timed_durations and zero_duration_keys:
+            print(
+                f"Warning: {len(zero_duration_keys)} command type(s) have no timing data:"
+            )
+            for key in sorted(zero_duration_keys):
+                print(f"  {key}")
 
         with open(output_file, "w") as f:
             json.dump({"traceEvents": trace_events}, f)

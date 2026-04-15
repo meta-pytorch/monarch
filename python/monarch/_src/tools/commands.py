@@ -12,6 +12,7 @@ import inspect
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime, timedelta
@@ -437,3 +438,302 @@ def debug(host: str, port: int) -> None:
     logging.error(
         "Could not find a suitable netcat binary. Please install one and try again."
     )
+
+
+# ---------------------------------------------------------------------------
+# Job registry / context
+# ---------------------------------------------------------------------------
+
+MONARCH_DIR: str = ".monarch"
+DEFAULT_JOB_PATH: str = f"{MONARCH_DIR}/job_state.pkl"
+_CONTEXT_STATE_FILE: str = "state.pkl"
+
+
+def _context_dir(name: str) -> Path:
+    return Path(MONARCH_DIR) / name
+
+
+def _context_state(name: str) -> Path:
+    return _context_dir(name) / _CONTEXT_STATE_FILE
+
+
+def load_current_job() -> Any:
+    from monarch._src.job.job import load_current_job as _load  # pyre-ignore[21]
+
+    return _load()  # pyre-ignore[16]
+
+
+def _current_context() -> Optional[str]:
+    """Return the name of the currently active context, or None."""
+    link = Path(DEFAULT_JOB_PATH)
+    if not link.is_symlink():
+        return None
+    target = Path(os.readlink(str(link)))
+    # Symlink is relative like "default/state.pkl"
+    parts = target.parts
+    if len(parts) >= 2 and parts[-1] == _CONTEXT_STATE_FILE:
+        return parts[0]
+    return None
+
+
+def _ensure_symlink_setup() -> None:
+    """If job_state.pkl is a plain file, migrate it to the 'default' context."""
+    link = Path(DEFAULT_JOB_PATH)
+    if link.exists() and not link.is_symlink():
+        default_dir = _context_dir("default")
+        default_dir.mkdir(parents=True, exist_ok=True)
+        target = default_dir / _CONTEXT_STATE_FILE
+        link.rename(target)
+        # Symlink is relative so it stays valid if .monarch/ is moved
+        link.symlink_to(Path("default") / _CONTEXT_STATE_FILE)
+
+
+def context_create(name: str) -> None:
+    """Create a new context directory under .monarch/."""
+    _context_dir(name).mkdir(parents=True, exist_ok=True)
+    print(f"Created context '{name}'")
+
+
+def context_use(name: str) -> None:
+    """Switch .monarch/job_state.pkl to point at <name>/state.pkl."""
+    _ensure_symlink_setup()
+    _context_dir(name).mkdir(parents=True, exist_ok=True)
+    link = Path(DEFAULT_JOB_PATH)
+    if link.is_symlink():
+        link.unlink()
+    link.symlink_to(Path(name) / _CONTEXT_STATE_FILE)
+    print(f"Switched to context '{name}'")
+
+
+def context_rm(name: str) -> None:
+    """Remove a context, killing its job if still running."""
+    import shutil
+
+    state_file = _context_state(name)
+    if state_file.exists():
+        try:
+            from monarch._src.job.job import job_load  # pyre-ignore[21]
+
+            job_load(str(state_file)).kill()  # pyre-ignore[16]
+        except Exception:
+            pass
+    shutil.rmtree(str(_context_dir(name)), ignore_errors=True)
+    # If the symlink pointed at this context, restore it to default/state.pkl
+    link = Path(DEFAULT_JOB_PATH)
+    if link.is_symlink():
+        target = Path(os.readlink(str(link)))
+        if target.parts and target.parts[0] == name:
+            link.unlink()
+            link.symlink_to(Path("default") / _CONTEXT_STATE_FILE)
+    print(f"Removed context '{name}'")
+
+
+def context_ls() -> None:
+    """List all contexts, marking the active one."""
+    monarch_dir = Path(MONARCH_DIR)
+    if not monarch_dir.exists():
+        print("No contexts.")
+        return
+    current = _current_context()
+    contexts = sorted(d.name for d in monarch_dir.iterdir() if d.is_dir())
+    if not contexts:
+        print("No contexts.")
+        return
+    for name in contexts:
+        marker = "* " if name == current else "  "
+        print(f"{marker}{name}")
+
+
+# ---------------------------------------------------------------------------
+# apply_job / exec_on_job
+# ---------------------------------------------------------------------------
+
+
+def apply_job(module_path: Optional[str] = None) -> None:
+    """Apply a job and wait for workers to be ready.
+
+    If *module_path* is given (dotted Python path, e.g. ``myjob.job``), it is
+    saved as the current context's spec and that job is applied.  If omitted,
+    the spec is read from the current context's spec file.
+
+    Readiness is confirmed by spawning BashActors on all ranks and waiting
+    for them to return.
+    """
+    from monarch._src.job.job import BashActor, set_current_job  # pyre-ignore[21]
+
+    if module_path is not None:
+        set_current_job(module_path)  # pyre-ignore[16]
+
+    job = load_current_job()
+    state = job.state()
+    t0 = time.time()
+    mesh = next(iter(state._hosts.values()))
+    procs = mesh.spawn_procs()
+    try:
+        procs.spawn("_ready_check", BashActor).run.call("true").get()  # pyre-ignore[16]
+        print(f"Job is ready ({time.time() - t0:.0f}s)")
+    finally:
+        procs.stop().get(timeout=30.0)
+
+
+def _parse_env(env: Optional[list[str]]) -> dict[str, str]:
+    """Parse KEY=VALUE env var strings into a dict."""
+    result: dict[str, str] = {}
+    if env:
+        for item in env:
+            if "=" not in item:
+                raise ValueError(f"Invalid env var (expected KEY=VALUE): {item!r}")
+            k, v = item.split("=", 1)
+            result[k] = v
+    return result
+
+
+def _read_script(script: Optional[str]) -> Optional[str]:
+    """Read a script from file or stdin. Returns None if no script."""
+    if script is None:
+        return None
+    if script == "-":
+        return sys.stdin.read()
+    with open(script) as f:
+        return f.read()
+
+
+def _parse_point(s: str) -> dict[str, int]:
+    """Parse ``"dim=N,dim=N"`` into a coordinate dict."""
+    result: dict[str, int] = {}
+    for pair in s.split(","):
+        k, v = pair.split("=", 1)
+        result[k.strip()] = int(v.strip())
+    return result
+
+
+def _output_dir_for_job(job: "Any") -> tuple[str, str]:
+    """Return ``(output_dir_on_workers, human_report)`` for a multi-rank exec.
+
+    If the job has a gather mount with a string remote_mount_point, the output
+    directory is placed inside the gathered path so files are accessible on
+    the client via the FUSE mount.  Otherwise falls back to a temp dir in
+    ``/tmp`` on the workers.
+    """
+    import uuid as _uuid
+
+    run_id = _uuid.uuid4().hex[:8]
+    entries = job._mounts._gather_entries
+    if entries:
+        entry = entries[0]
+        remote = entry.remote_mount_point
+        if isinstance(remote, str):
+            output_dir = os.path.join(remote, "exec_outputs", run_id)
+            local = entry.local_mount_point
+            report = (
+                f"Output → {local}/<rank>/exec_outputs/{run_id}/\n"
+                f"  e.g. {local}/hosts_0/exec_outputs/{run_id}/stdout.txt"
+            )
+            return output_dir, report
+    output_dir = f"/tmp/monarch_exec_{run_id}"
+    return output_dir, f"Output → {output_dir}/ on each worker"
+
+
+def exec_on_job(
+    cmd: list[str],
+    run_all: bool = False,
+    mesh_name: Optional[str] = None,
+    point_str: Optional[str] = None,
+    env: Optional[list[str]] = None,
+    workdir: Optional[str] = None,
+    kill: bool = False,
+    script: Optional[str] = None,
+    per_host: Optional[dict[str, int]] = None,
+) -> int:
+    """Load the current job and execute a command on its workers.
+
+    Targeting (mutually exclusive; default is ``--one``):
+    - ``run_all``: all meshes, all ranks → output redirected to files
+    - ``mesh_name``: named mesh, all ranks → output redirected to files
+    - ``point_str``: ``"dim=N,dim=N"`` coordinate on first mesh → streamed
+    - none of the above (``--one``): rank 0 of first mesh → streamed
+
+    Returns the process exit code (max across targeted ranks).
+    """
+    from monarch._src.job.job import exec_command  # pyre-ignore[21]
+
+    job = load_current_job()
+
+    script_text = _read_script(script)
+    if script_text is not None:
+        cmd = ["bash", "-c", script_text]
+
+    env_dict = _parse_env(env)
+
+    state = job.state()
+    if not state._hosts:
+        raise RuntimeError("Job has no host meshes")
+
+    # ── Targeting ──────────────────────────────────────────────────────────
+    is_streaming = not run_all and mesh_name is None
+    # (--point and --one are always single-rank → stream)
+
+    if run_all:
+        target_meshes = list(state._hosts.items())
+        rank = None
+        point = None
+    elif mesh_name is not None:
+        if mesh_name not in state._hosts:
+            raise ValueError(
+                f"Mesh {mesh_name!r} not found. Available: {list(state._hosts)}"
+            )
+        target_meshes = [(mesh_name, state._hosts[mesh_name])]
+        rank = None
+        point = None
+    elif point_str is not None:
+        point = _parse_point(point_str)
+        first = next(iter(state._hosts))
+        target_meshes = [(first, state._hosts[first])]
+        rank = None
+    else:  # --one (default)
+        first = next(iter(state._hosts))
+        target_meshes = [(first, state._hosts[first])]
+        rank = 0
+        point = None
+
+    # ── Output dir (redirect) or stream ────────────────────────────────────
+    output_dir: Optional[str]
+    if is_streaming:
+        output_dir = None
+    else:
+        output_dir, report = _output_dir_for_job(job)
+        print(report)
+
+    # ── Execute ────────────────────────────────────────────────────────────
+    max_rc = 0
+    last_mesh = None
+    for name, host_mesh in target_meshes:
+        last_mesh = host_mesh
+        # If a python_exe was set for this mesh's remote mount, prepend its
+        # directory to PATH so commands like "python" resolve to the right one.
+        mesh_env = dict(env_dict)
+        exe = job._python_executables.get(name, job._default_python_exe)
+        if exe is not None:
+            bin_dir = os.path.dirname(exe)
+            existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))
+            mesh_env["PATH"] = f"{bin_dir}:{existing_path}"
+        rc = exec_command(  # pyre-ignore[16]
+            host_mesh,
+            cmd,
+            env=mesh_env,
+            workdir=workdir,
+            output_dir=output_dir,
+            rank=rank,
+            point=point,
+            per_host=per_host,
+        ).get()
+        max_rc = max(max_rc, rc)
+
+    if kill and last_mesh is not None:
+        from monarch.actor import shutdown_context  # pyre-ignore[21]
+
+        last_mesh.shutdown().get()
+        job.kill()
+        shutdown_context().get()  # pyre-ignore[16]
+
+    return max_rc

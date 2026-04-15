@@ -673,15 +673,14 @@ fn run_single_test(test_name: &str, impl_type: &str) -> Result<()> {
     let results = match impl_type {
         "--old" => {
             println!("Running with OLD implementation...");
+            // SAFETY: Setting before any telemetry initialization
+            unsafe {
+                std::env::set_var("USE_UNIFIED_LAYER", "0");
+            }
             harness.run(workload, false)?
         }
         "--unified" => {
             println!("Running with UNIFIED implementation...");
-            // Set USE_UNIFIED_LAYER to use unified implementation
-            // SAFETY: Setting before any telemetry initialization
-            unsafe {
-                std::env::set_var("USE_UNIFIED_LAYER", "1");
-            }
             harness.run(workload, true)?
         }
         _ => {

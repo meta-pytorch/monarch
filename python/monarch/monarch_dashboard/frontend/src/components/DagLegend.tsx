@@ -7,24 +7,14 @@
  */
 
 import React from "react";
+import { STATUS_COLORS } from "../utils/status";
 
-const LEGEND_ITEMS = [
-  { color: "var(--status-healthy)", label: "Idle / Active" },
-  { color: "var(--status-processing)", label: "Processing / Running" },
-  { color: "var(--status-transitional)", label: "Transitional" },
-  { color: "var(--status-failed)", label: "Failed" },
-  { color: "var(--status-stopped)", label: "Stopped" },
-  { color: "var(--status-unknown)", label: "Neutral (n/a)" },
-];
+const LEGEND_ITEMS = Object.entries(STATUS_COLORS).map(([status, color]) => ({
+  color,
+  label: status.charAt(0).toUpperCase() + status.slice(1),
+}));
 
-const TIER_ITEMS = [
-  { radius: 14, label: "Host Mesh" },
-  { radius: 11, label: "Proc Mesh" },
-  { radius: 9, label: "Actor Mesh" },
-  { radius: 6, label: "Actor" },
-];
-
-/** Top-right legend overlay for the DAG view. */
+/** Side-panel legend for the DAG view. */
 export function DagLegend() {
   return (
     <div className="dag-legend" data-testid="dag-legend">
@@ -44,25 +34,6 @@ export function DagLegend() {
       </div>
 
       <div className="dag-legend-section">
-        <div className="dag-legend-heading">Node Type</div>
-        {TIER_ITEMS.map((item) => (
-          <div key={item.label} className="dag-legend-item">
-            <svg width="28" height="28" viewBox="0 0 28 28">
-              <circle
-                cx="14"
-                cy="14"
-                r={item.radius}
-                fill="none"
-                stroke="var(--text-muted)"
-                strokeWidth="1.5"
-              />
-            </svg>
-            <span className="dag-legend-label">{item.label}</span>
-          </div>
-        ))}
-      </div>
-
-      <div className="dag-legend-section">
         <div className="dag-legend-heading">Edges</div>
         <div className="dag-legend-item">
           <svg width="28" height="12">
@@ -71,7 +42,7 @@ export function DagLegend() {
               y1="6"
               x2="26"
               y2="6"
-              stroke="var(--border-subtle)"
+              stroke="var(--text-muted)"
               strokeWidth="1.5"
             />
           </svg>
@@ -85,7 +56,7 @@ export function DagLegend() {
               x2="26"
               y2="6"
               stroke="var(--accent-secondary)"
-              strokeWidth="1"
+              strokeWidth="1.5"
               strokeDasharray="4 3"
               opacity="0.6"
             />
