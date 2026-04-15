@@ -117,8 +117,8 @@ pub enum HostError {
     ProcExists(String),
 
     /// Failures occuring while spawning a subprocess.
-    #[error("proc '{0}' failed to spawn process: {1}")]
-    ProcessSpawnFailure(reference::ProcId, #[source] std::io::Error),
+    #[error("proc '{0}' (command: {1}) failed to spawn process: {2}")]
+    ProcessSpawnFailure(reference::ProcId, String, #[source] std::io::Error),
 
     /// Failures occuring while configuring a subprocess.
     #[error("proc '{0}' failed to configure process: {1}")]
@@ -304,6 +304,7 @@ struct ProcOrDial {
     dialer: DialMailboxRouter,
 }
 
+#[async_trait]
 impl MailboxSender for ProcOrDial {
     fn post_unchecked(
         &self,
@@ -317,6 +318,19 @@ impl MailboxSender for ProcOrDial {
         } else {
             self.dialer.post_unchecked(envelope, return_handle)
         }
+    }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        let (r1, r2, r3) = futures::future::join3(
+            self.service_proc.flush(),
+            self.local_proc.flush(),
+            self.dialer.flush(),
+        )
+        .await;
+        r1?;
+        r2?;
+        r3?;
+        Ok(())
     }
 }
 
@@ -535,15 +549,23 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
     /// A [`TerminateSummary`] with counts of attempted/ok/failed
     /// terminations.
     pub async fn terminate_children(
-        &self,
+        &mut self,
         cx: &impl context::Actor,
         timeout: Duration,
         max_in_flight: usize,
         reason: &str,
     ) -> TerminateSummary {
-        self.manager
+        let summary = self
+            .manager
             .terminate_all(cx, timeout, max_in_flight, reason)
-            .await
+            .await;
+        // Unbind procs from the router so if new procs are made with the same
+        // names, they can use the same slot.
+        for name in self.procs.drain() {
+            let proc_id = reference::ProcId::with_name(self.frontend_addr.clone(), &name);
+            self.router.unbind(&proc_id.into());
+        }
+        summary
     }
 }
 
@@ -789,7 +811,7 @@ pub enum LocalProcStatus {
 ///   No OS signals are sent or required.
 pub struct LocalProcManager<S> {
     procs: Arc<Mutex<HashMap<reference::ProcId, Proc>>>,
-    stopping: Arc<Mutex<HashMap<reference::ProcId, LocalProcStatus>>>,
+    stopping: Arc<Mutex<HashMap<reference::ProcId, tokio::sync::watch::Sender<LocalProcStatus>>>>,
     spawn: S,
 }
 
@@ -808,8 +830,8 @@ impl<S> LocalProcManager<S> {
     /// that tears it down.
     ///
     /// Status transitions through `Stopping` -> `Stopped` and is
-    /// observable via [`local_proc_status`]. Idempotent: no-ops if
-    /// the proc is already stopping or stopped.
+    /// observable via [`local_proc_status`] and [`watch`]. Idempotent:
+    /// no-ops if the proc is already stopping or stopped.
     pub async fn request_stop(&self, proc: &reference::ProcId, timeout: Duration, reason: &str) {
         {
             let guard = self.stopping.lock().await;
@@ -827,10 +849,8 @@ impl<S> LocalProcManager<S> {
         };
 
         let proc_id = proc_handle.proc_id().clone();
-        self.stopping
-            .lock()
-            .await
-            .insert(proc_id.clone(), LocalProcStatus::Stopping);
+        let (tx, _) = tokio::sync::watch::channel(LocalProcStatus::Stopping);
+        self.stopping.lock().await.insert(proc_id.clone(), tx);
 
         let stopping = Arc::clone(&self.stopping);
         let reason = reason.to_string();
@@ -841,10 +861,9 @@ impl<S> LocalProcManager<S> {
             {
                 tracing::warn!(error = %e, "request_stop(local): destroy_and_wait failed");
             }
-            stopping
-                .lock()
-                .await
-                .insert(proc_id, LocalProcStatus::Stopped);
+            if let Some(tx) = stopping.lock().await.get(&proc_id) {
+                let _ = tx.send(LocalProcStatus::Stopped);
+            }
         });
     }
 
@@ -853,7 +872,22 @@ impl<S> LocalProcManager<S> {
     ///
     /// Returns `None` if the proc was never stopped through this path.
     pub async fn local_proc_status(&self, proc: &reference::ProcId) -> Option<LocalProcStatus> {
-        self.stopping.lock().await.get(proc).copied()
+        self.stopping.lock().await.get(proc).map(|tx| *tx.borrow())
+    }
+
+    /// Subscribe to lifecycle status changes for a proc that was
+    /// stopped via [`request_stop`].
+    ///
+    /// Returns `None` if the proc was never stopped through this path.
+    pub async fn watch(
+        &self,
+        proc: &reference::ProcId,
+    ) -> Option<tokio::sync::watch::Receiver<LocalProcStatus>> {
+        self.stopping
+            .lock()
+            .await
+            .get(proc)
+            .map(|tx| tx.subscribe())
     }
 }
 
@@ -869,10 +903,11 @@ where
         max_in_flight: usize,
         reason: &str,
     ) -> TerminateSummary {
-        // Snapshot procs so we don't hold the lock across awaits.
+        // Drain procs so we don't hold the lock across awaits and subsequent
+        // calls to terminate_all don't try to re-terminate.
         let procs: Vec<Proc> = {
-            let guard = self.procs.lock().await;
-            guard.values().cloned().collect()
+            let mut guard = self.procs.lock().await;
+            guard.drain().map(|(_, v)| v).collect()
         };
 
         let attempted = procs.len();
@@ -1276,9 +1311,9 @@ where
         // Kill the child when its handle is dropped.
         cmd.kill_on_drop(true);
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| HostError::ProcessSpawnFailure(proc_id.clone(), e))?;
+        let child = cmd.spawn().map_err(|e| {
+            HostError::ProcessSpawnFailure(proc_id.clone(), self.program.display().to_string(), e)
+        })?;
 
         // Retain the handle so it lives for the life of the
         // manager/host.

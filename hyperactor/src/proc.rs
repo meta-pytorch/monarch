@@ -34,6 +34,22 @@
 //!   the name is unique proc-wide. Two children with the same name
 //!   under different parents get distinct pids but the same name
 //!   prefix.
+//!
+//! ## Queue depth accounting invariants (PD-5*)
+//!
+//! - **PD-5a:** Per-actor queue depth counts work items enqueued for
+//!   handler execution but not yet received from `work_rx`.
+//! - **PD-5b:** Queue depth is incremented exactly once on every
+//!   enqueue into the actor work queue (in `Ports::get`).
+//! - **PD-5c:** Queue depth is decremented exactly once on every
+//!   dequeue from `work_rx` (in the actor `run` loop).
+//! - **PD-5d:** Queue depth is intended to be non-negative; tests
+//!   must cover ordered/buffered delivery paths to validate the
+//!   accounting.
+//! - **PD-5e:** `queue_depth` and the OTel `ACTOR_MESSAGE_QUEUE_SIZE`
+//!   counter are two consumers of one accounting path. The
+//!   `account_enqueue` / `account_dequeue` helpers update both
+//!   together so they cannot drift.
 
 use std::any::Any;
 use std::any::TypeId;
@@ -121,6 +137,26 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+
+/// Single accounting path for actor work-queue depth. Two consumers:
+/// introspection-readable `queue_depth` state and OTel telemetry
+/// export. Unifying the update in one helper ensures they cannot
+/// drift (PD-5b/PD-5c).
+fn account_enqueue(queue_depth: &AtomicU64, actor_id: &str) {
+    queue_depth.fetch_add(1, Ordering::Relaxed);
+    ACTOR_MESSAGE_QUEUE_SIZE.add(
+        1,
+        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
+    );
+}
+
+fn account_dequeue(queue_depth: &AtomicU64, actor_id: &str) {
+    queue_depth.fetch_sub(1, Ordering::Relaxed);
+    ACTOR_MESSAGE_QUEUE_SIZE.add(
+        -1,
+        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
+    );
+}
 use crate::ordering::OrderedSender;
 use crate::ordering::OrderedSenderError;
 use crate::ordering::SEQ_INFO;
@@ -183,6 +219,16 @@ struct ProcState {
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
     supervision_coordinator_port: OnceLock<PortHandle<ActorSupervisionEvent>>,
+
+    /// The actor ID of the supervision coordinator, if it lives on this proc.
+    /// Used to ensure the coordinator is shut down last during proc teardown.
+    supervision_coordinator_actor_id: OnceLock<reference::ActorId>,
+
+    /// Handle to the mailbox server task, if this proc was created with
+    /// `Proc::direct()` or had `serve()` called on it. Used to
+    /// gracefully stop the server and join it (flushing receive-side
+    /// acks) during shutdown.
+    mailbox_server_handle: std::sync::Mutex<Option<crate::mailbox::MailboxServerHandle>>,
 }
 
 impl Drop for ProcState {
@@ -233,6 +279,8 @@ impl Proc {
                 instances: DashMap::new(),
                 terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
+                supervision_coordinator_actor_id: OnceLock::new(),
+                mailbox_server_handle: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -242,7 +290,8 @@ impl Proc {
         let (addr, rx) = channel::serve(addr)?;
         let proc_id = reference::ProcId::with_name(addr, name);
         let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
-        proc.clone().serve(rx);
+        let handle = proc.clone().serve(rx);
+        *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
         Ok(proc)
     }
 
@@ -252,10 +301,19 @@ impl Proc {
         &self,
         port: PortHandle<ActorSupervisionEvent>,
     ) -> Result<(), anyhow::Error> {
+        let actor_id = port.location().actor_id().clone();
         self.state()
             .supervision_coordinator_port
             .set(port)
-            .map_err(|existing| anyhow::anyhow!("coordinator port is already set to {existing}"))
+            .map_err(|existing| anyhow::anyhow!("coordinator port is already set to {existing}"))?;
+        let _ = self.state().supervision_coordinator_actor_id.set(actor_id);
+        Ok(())
+    }
+
+    /// The actor ID of the supervision coordinator, if one is set and
+    /// lives on this proc.
+    pub fn supervision_coordinator_actor_id(&self) -> Option<&reference::ActorId> {
+        self.state().supervision_coordinator_actor_id.get()
     }
 
     /// Handle a supervision event received by the proc. Attempt to forward it to the
@@ -267,12 +325,30 @@ impl Proc {
     ) {
         let result = match self.state().supervision_coordinator_port.get() {
             Some(port) => port.send(cx, event.clone()).map_err(anyhow::Error::from),
-            None => Err(anyhow::anyhow!(
-                "coordinator port is not set for proc {}",
-                self.proc_id(),
-            )),
+            None => {
+                if !event.is_error() {
+                    // Normal lifecycle events (e.g. clean stop) without a coordinator
+                    // are silently dropped.
+                    return;
+                }
+                Err(anyhow::anyhow!(
+                    "coordinator port is not set for proc {}",
+                    self.proc_id(),
+                ))
+            }
         };
         if let Err(err) = result {
+            if !event.is_error() {
+                // Normal lifecycle events that fail to send (e.g. coordinator
+                // mailbox already closed during shutdown) are silently dropped.
+                tracing::debug!(
+                    "proc {}: dropping non-error supervision event {}: {:?}",
+                    self.proc_id(),
+                    event,
+                    err
+                );
+                return;
+            }
             tracing::error!(
                 "proc {}: could not propagate supervision event {} due to error: {:?}: crashing",
                 self.proc_id(),
@@ -435,11 +511,9 @@ impl Proc {
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
 
-        let introspect_cell = instance.inner.cell.clone();
-        let introspect_mailbox = instance.inner.mailbox.clone();
         tokio::spawn(crate::introspect::serve_introspect(
-            introspect_cell,
-            introspect_mailbox,
+            instance.inner.cell.clone(),
+            instance.inner.mailbox.clone(),
             receivers.introspect,
         ));
 
@@ -724,6 +798,10 @@ impl Proc {
             )
         });
 
+        let coordinator_id = self.supervision_coordinator_actor_id().cloned();
+
+        // Phase 1: stop all root actors except the supervision coordinator
+        // (which must stay alive to receive stop events from the others).
         let mut statuses = HashMap::new();
         for actor_id in self
             .state()
@@ -733,11 +811,14 @@ impl Proc {
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>()
         {
+            if coordinator_id.as_ref() == Some(&actor_id) {
+                continue;
+            }
             if let Some(status) = self.stop_actor(&actor_id, reason.to_string()) {
                 statuses.insert(actor_id, status);
             }
         }
-        tracing::debug!("{}: proc stopped", self.proc_id());
+        tracing::debug!("{}: non-coordinator actors stopped", self.proc_id());
 
         let waits: Vec<_> = statuses
             .iter_mut()
@@ -757,7 +838,7 @@ impl Proc {
             .collect();
 
         let results = futures::future::join_all(waits).await;
-        let stopped_actors: Vec<_> = results
+        let mut stopped_actors: Vec<_> = results
             .iter()
             .filter_map(|actor_id| actor_id.as_ref())
             .cloned()
@@ -777,7 +858,55 @@ impl Proc {
                 }
             })
             .collect();
-        let aborted_actors = futures::future::join_all(aborted_actors).await;
+        let mut aborted_actors = futures::future::join_all(aborted_actors).await;
+
+        // Phase 2: now that all other actors have stopped, stop the
+        // supervision coordinator so it had a chance to receive all
+        // supervision events.
+        if let Some(ref coord_id) = coordinator_id
+            && this_actor_id != Some(coord_id)
+        {
+            if let Some(mut status) = self.stop_actor(coord_id, reason.to_string()) {
+                let stopped = tokio::time::timeout(
+                    timeout,
+                    status.wait_for(|s: &ActorStatus| s.is_terminal()),
+                )
+                .await
+                .is_ok();
+                if stopped {
+                    stopped_actors.push(coord_id.clone());
+                } else {
+                    if let Some(f) = self.abort_root_actor(coord_id, this_handle) {
+                        f.await;
+                    }
+                    aborted_actors.push(coord_id.clone());
+                }
+            }
+        }
+
+        // Flush the forwarder so that any messages posted during
+        // teardown (e.g. supervision events) are wire-delivered
+        // before we tear down the proc's networking. The flush is
+        // best-effort: if the remote side has already torn down its
+        // networking, acks may never arrive and flush would hang
+        // indefinitely, so we bound it with a configurable timeout.
+        let flush_timeout = hyperactor_config::global::get(crate::config::FORWARDER_FLUSH_TIMEOUT);
+        match tokio::time::timeout(flush_timeout, self.state().forwarder.flush()).await {
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    "{}: forwarder flush failed during proc exit: {:?}",
+                    self.proc_id(),
+                    err
+                );
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    "{}: forwarder flush timed out during proc exit",
+                    self.proc_id(),
+                );
+            }
+            Ok(Ok(())) => {}
+        }
 
         if let Some(this_handle) = this_handle
             && let Some(this_actor_id) = this_actor_id
@@ -887,6 +1016,29 @@ impl Proc {
     pub fn downgrade(&self) -> WeakProc {
         WeakProc::new(self)
     }
+
+    /// Flush the forwarder so that any buffered outbound messages
+    /// (e.g. supervision events posted during teardown) are
+    /// wire-delivered before the proc's networking is torn down.
+    pub async fn flush(&self) -> Result<(), anyhow::Error> {
+        self.state().forwarder.flush().await
+    }
+
+    /// Stop and join the mailbox server, flushing receive-side acks.
+    ///
+    /// This stops the `MailboxServer::serve` loop and awaits its
+    /// completion, which runs `Rx::join()` to flush any pending
+    /// transport-level acks before the channel is torn down.
+    ///
+    /// No-op if no mailbox server handle is stored (e.g. for
+    /// `Proc::configured` or `Proc::local` procs that don't serve).
+    pub async fn join_mailbox_server(&self) {
+        let handle = self.inner.mailbox_server_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            handle.stop("proc shutting down");
+            let _ = handle.await;
+        }
+    }
 }
 
 #[async_trait]
@@ -901,6 +1053,17 @@ impl MailboxSender for Proc {
         } else {
             self.state().forwarder.post(envelope, return_handle)
         }
+    }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        let (r1, r2) = futures::future::join(
+            self.state().proc_muxer.flush(),
+            self.state().forwarder.flush(),
+        )
+        .await;
+        r1?;
+        r2?;
+        Ok(())
     }
 }
 
@@ -932,6 +1095,13 @@ impl MailboxSender for WeakProc {
                 DeliveryError::BrokenLink("fail to upgrade WeakProc".to_string()),
                 return_handle,
             ),
+        }
+    }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        match self.upgrade() {
+            Some(proc) => proc.flush().await,
+            None => Ok(()),
         }
     }
 }
@@ -1096,7 +1266,12 @@ impl<A: Actor> Instance<A> {
             actor_id.to_string(),
             hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
         );
-        let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
+        let queue_depth = Arc::new(AtomicU64::new(0));
+        let ports: Arc<Ports<A>> = Arc::new(Ports::new(
+            mailbox.clone(),
+            work_tx,
+            Arc::clone(&queue_depth),
+        ));
         proc.state().proc_muxer.bind_mailbox(mailbox.clone());
         let (status_tx, status_rx) = watch::channel(ActorStatus::Created);
 
@@ -1136,6 +1311,7 @@ impl<A: Actor> Instance<A> {
             status_rx,
             parent,
             ports.clone(),
+            queue_depth,
         );
         let instance_id = Uuid::now_v7();
         let inner = Arc::new(InstanceState {
@@ -1161,7 +1337,7 @@ impl<A: Actor> Instance<A> {
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
     #[track_caller]
-    fn change_status(&self, new: ActorStatus) {
+    pub fn change_status(&self, new: ActorStatus) {
         let old = self.inner.status_tx.send_replace(new.clone());
         // 2 cases are allowed:
         // * non-terminal -> non-terminal
@@ -1187,8 +1363,9 @@ impl<A: Actor> Instance<A> {
             || old == new)
         {
             let new_status = new.arm().unwrap_or("unknown");
-            let change_reason = match new {
+            let change_reason = match &new {
                 ActorStatus::Failed(reason) => reason.to_string(),
+                ActorStatus::Stopped(reason) => reason.clone(),
                 _ => "".to_string(),
             };
             tracing::info!(
@@ -1399,17 +1576,25 @@ impl<A: Actor> Instance<A> {
         )
     }
 
+    /// Return a static client instance that can be used to send
+    /// messages to port handles from outside an actor context
+    /// (e.g. from background tokio tasks).
+    // TODO: replace with a proper mechanism for sending to port
+    // handles without an actor context.
+    pub fn self_client() -> &'static Instance<()> {
+        static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
+        &CLIENT
+            .get_or_init(|| Proc::runtime().instance("self_message_client").unwrap())
+            .0
+    }
+
     /// Send a message to the actor itself with a delay usually to trigger some event.
     pub fn self_message_with_delay<M>(&self, message: M, delay: Duration) -> Result<(), ActorError>
     where
         M: Message,
         A: Handler<M>,
     {
-        // A global client to send self message.
-        static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-        let client = &CLIENT
-            .get_or_init(|| Proc::runtime().instance("self_message_client").unwrap())
-            .0;
+        let client = Self::self_client();
         let port = self.port();
         let self_id = self.self_id().clone();
         tokio::spawn(async move {
@@ -1433,11 +1618,9 @@ impl<A: Actor> Instance<A> {
         // Spawn the introspect task — a separate tokio task that
         // reads InstanceCell directly and replies via the actor's
         // Mailbox. The actor loop never sees IntrospectMessage.
-        let introspect_cell = self.inner.cell.clone();
-        let introspect_mailbox = self.inner.mailbox.clone();
         tokio::spawn(crate::introspect::serve_introspect(
-            introspect_cell,
-            introspect_mailbox,
+            self.inner.cell.clone(),
+            self.inner.mailbox.clone(),
             receivers.introspect,
         ));
 
@@ -1477,17 +1660,21 @@ impl<A: Actor> Instance<A> {
             Ok(stop_reason) => {
                 let status = ActorStatus::Stopped(stop_reason);
                 self.mailbox().close(status.clone());
-                // success exit case
+                let event = ActorSupervisionEvent::new(
+                    self.inner.cell.actor_id().clone(),
+                    actor.display_name(),
+                    status.clone(),
+                    None,
+                );
+                // FI-1: store supervision_event BEFORE change_status.
+                *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event.clone());
                 self.change_status(status);
-                None
+                Some(event)
             }
             Err(err) => {
                 match *err.kind {
                     ActorErrorKind::UnhandledSupervisionEvent(box event) => {
-                        // Currently only terminated actors are allowed to raise supervision events.
-                        // If we want to change that in the future, we need to modify the exit
-                        // status here too, because we use event's actor_status as this actor's
-                        // terminal status.
+                        // We use the event's actor_status as this actor's terminal status.
                         assert!(event.actor_status.is_terminal());
                         self.mailbox().close(event.actor_status.clone());
                         // FI-1: store supervision_event BEFORE change_status.
@@ -1679,14 +1866,14 @@ impl<A: Actor> Instance<A> {
             .map_err(|err| ActorError::new(self.self_id(), ActorErrorKind::init(err)))?;
         let need_drain;
         let stop_reason;
+        let actor_id_str = self.self_id().to_string();
         'messages: loop {
             self.change_status(ActorStatus::Idle);
-            let metric_pairs =
-                hyperactor_telemetry::kv_pairs!("actor_id" => self.self_id().to_string());
+            let metric_pairs = hyperactor_telemetry::kv_pairs!("actor_id" => actor_id_str.clone());
             tokio::select! {
                 work = work_rx.recv() => {
                     ACTOR_MESSAGES_RECEIVED.add(1, metric_pairs);
-                    ACTOR_MESSAGE_QUEUE_SIZE.add(-1, metric_pairs);
+                    account_dequeue(&self.inner.cell.inner.queue_depth, &actor_id_str);
                     let _ = ACTOR_MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
@@ -1736,6 +1923,8 @@ impl<A: Actor> Instance<A> {
         if need_drain {
             let mut n = 0;
             while let Ok(work) = work_rx.try_recv() {
+                // PD-5c: drained work items must also be accounted.
+                account_dequeue(&self.inner.cell.inner.queue_depth, &actor_id_str);
                 if let Err(err) = work.handle(actor, self).await {
                     return Err(ActorError::new(
                         self.self_id(),
@@ -1807,8 +1996,14 @@ impl<A: Actor> Instance<A> {
                 HandlerInfo::from_static(std::any::type_name::<M>(), None)
             }
         };
+
+        let endpoint = type_info.and_then(|info| {
+            // SAFETY: The caller promises to pass the correct type info.
+            unsafe { info.endpoint_name(&message as *const M as *const ()) }
+        });
+
         // Use a helper function for a better instrument log.
-        self.handle_message_with_handler_info(actor, handler_info, headers, message)
+        self.handle_message_with_handler_info(actor, handler_info, headers, message, endpoint)
             .await
     }
 
@@ -1820,6 +2015,7 @@ impl<A: Actor> Instance<A> {
         handler_info: HandlerInfo,
         headers: Flattrs,
         message: M,
+        endpoint: Option<String>,
     ) -> Result<(), anyhow::Error>
     where
         A: Handler<M>,
@@ -1846,8 +2042,7 @@ impl<A: Actor> Instance<A> {
                 id: message_id,
                 from_actor_id,
                 to_actor_id,
-                // TODO: populate endpoint
-                endpoint: None,
+                endpoint,
                 port_id,
             });
 
@@ -2117,6 +2312,18 @@ struct InstanceCellState {
     /// Total time spent processing messages, in microseconds.
     total_processing_time_us: AtomicU64,
 
+    /// Current actor work-queue depth.
+    ///
+    /// Two consumers of one accounting path (PD-5e): this field is
+    /// the introspection-readable state; the OTel
+    /// `ACTOR_MESSAGE_QUEUE_SIZE` counter is the telemetry export.
+    /// Both are updated together by `account_enqueue` /
+    /// `account_dequeue`.
+    ///
+    /// Shared with `Ports<A>`: incremented at enqueue in the send
+    /// path, decremented when the actor loop receives from `work_rx`.
+    queue_depth: Arc<AtomicU64>,
+
     /// The log recording associated with this actor. It is used to
     /// store a 'flight record' of events while the actor is running.
     recording: Recording,
@@ -2231,6 +2438,7 @@ impl InstanceCell {
         status: watch::Receiver<ActorStatus>,
         parent: Option<InstanceCell>,
         ports: Arc<dyn Any + Send + Sync>,
+        queue_depth: Arc<AtomicU64>,
     ) -> Self {
         let _ais = actor_id.to_string();
         let cell = Self {
@@ -2248,6 +2456,7 @@ impl InstanceCell {
                 created_at: std::time::SystemTime::now(),
                 last_message_handler: RwLock::new(None),
                 total_processing_time_us: AtomicU64::new(0),
+                queue_depth,
                 recording: hyperactor_telemetry::recorder().record(64),
                 published_attrs: RwLock::new(None),
                 query_child_handler: RwLock::new(None),
@@ -2328,7 +2537,21 @@ impl InstanceCell {
     ) {
         match &self.inner.actor_loop {
             Some((_, supervision_port)) => {
-                if let Err(err) = supervision_port.send(child_cx, event) {
+                if let Err(err) = supervision_port.send(child_cx, event.clone()) {
+                    if !event.is_error() {
+                        // Normal lifecycle events (e.g. clean stop) that fail to
+                        // send are silently dropped. This happens when a child
+                        // stops after the parent's mailbox has been closed or its
+                        // supervision port receiver has been dropped (e.g. client
+                        // instances created via Proc::instance()).
+                        tracing::debug!(
+                            "{}: dropping non-error supervision event {}: {:?}",
+                            self.actor_id(),
+                            event,
+                            err
+                        );
+                        return;
+                    }
                     tracing::error!(
                         "{}: failed to send supervision event to actor: {:?}. Crash the process.",
                         self.actor_id(),
@@ -2338,6 +2561,14 @@ impl InstanceCell {
                 }
             }
             None => {
+                if !event.is_error() {
+                    tracing::debug!(
+                        "{}: dropping non-error supervision event {} to detached actor",
+                        self.actor_id(),
+                        event,
+                    );
+                    return;
+                }
                 tracing::error!(
                     "{}: failed: {}: cannot send supervision event to detached actor: crashing",
                     self.actor_id(),
@@ -2433,6 +2664,11 @@ impl InstanceCell {
     /// Total time spent processing messages, in microseconds.
     pub fn total_processing_time_us(&self) -> u64 {
         self.inner.total_processing_time_us.load(Ordering::SeqCst)
+    }
+
+    /// Current actor work-queue depth (PD-5).
+    pub fn queue_depth(&self) -> u64 {
+        self.inner.queue_depth.load(Ordering::Relaxed)
     }
 
     /// Get parent instance cell, if it exists.
@@ -2642,15 +2878,26 @@ pub struct Ports<A: Actor> {
     bound: DashMap<u64, &'static str>,
     mailbox: Mailbox,
     workq: OrderedSender<WorkCell<A>>,
+    /// Introspection-readable queue depth (PD-5). Shared leaf
+    /// state owned by both the send-side (`Ports`) and the
+    /// runtime-side (`InstanceCellState`) paths — no
+    /// cycle-breaking role. Updated via `account_enqueue` /
+    /// `account_dequeue` helpers alongside the OTel counter.
+    queue_depth: Arc<AtomicU64>,
 }
 
 impl<A: Actor> Ports<A> {
-    fn new(mailbox: Mailbox, workq: OrderedSender<WorkCell<A>>) -> Self {
+    fn new(
+        mailbox: Mailbox,
+        workq: OrderedSender<WorkCell<A>>,
+        queue_depth: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             ports: DashMap::new(),
             bound: DashMap::new(),
             mailbox,
             workq,
+            queue_depth,
         }
     }
 
@@ -2677,6 +2924,7 @@ impl<A: Actor> Ports<A> {
                 let type_info = TypeInfo::get_by_typeid(key);
                 let workq = self.workq.clone();
                 let actor_id = self.mailbox.actor_id().to_string();
+                let enqueue_depth = Arc::clone(&self.queue_depth);
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
                     let seq_info = headers.get(SEQ_INFO);
 
@@ -2690,11 +2938,11 @@ impl<A: Actor> Ports<A> {
                             }
                         })
                     });
-                    ACTOR_MESSAGE_QUEUE_SIZE.add(
-                        1,
-                        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.clone()),
-                    );
-                    if workq.enable_buffering {
+                    // PD-5b: account enqueue only after the work item
+                    // is successfully accepted by the work queue. This
+                    // prevents queue_depth from drifting on send failure
+                    // (channel closed, invalid seq, etc.).
+                    let result = if workq.enable_buffering {
                         match seq_info {
                             Some(SeqInfo::Session { session_id, seq }) => {
                                 // TODO: return the message contained in the error instead of dropping them when converting
@@ -2728,7 +2976,11 @@ impl<A: Actor> Ports<A> {
                         }
                     } else {
                         workq.direct_send(work).map_err(anyhow::Error::from)
+                    };
+                    if result.is_ok() {
+                        account_enqueue(&enqueue_depth, &actor_id);
                     }
+                    result
                 });
                 entry.insert(Box::new(port.clone()));
                 port
@@ -3266,7 +3518,11 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         #[derive(Debug)]
-        struct TestActor(Arc<AtomicBool>, bool);
+        struct TestActor {
+            handled: Arc<AtomicBool>,
+            notify: Arc<tokio::sync::Notify>,
+            should_handle: bool,
+        }
 
         #[async_trait]
         impl Actor for TestActor {
@@ -3275,7 +3531,7 @@ mod tests {
                 _this: &Instance<Self>,
                 _event: &ActorSupervisionEvent,
             ) -> Result<bool, anyhow::Error> {
-                if !self.1 {
+                if !self.should_handle {
                     return Ok(false);
                 }
 
@@ -3284,7 +3540,8 @@ mod tests {
                     _this.self_id(),
                     _event
                 );
-                self.0.store(true, Ordering::SeqCst);
+                self.handled.store(true, Ordering::SeqCst);
+                self.notify.notify_one();
                 Ok(true)
             }
         }
@@ -3301,49 +3558,52 @@ mod tests {
             }
         }
 
+        let make_actor = |handled: &Arc<AtomicBool>, should_handle: bool| TestActor {
+            handled: handled.clone(),
+            notify: Arc::new(tokio::sync::Notify::new()),
+            should_handle,
+        };
+
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
-        let (reported_event, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (mut reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let root_state = Arc::new(AtomicBool::new(false));
         let root_1_state = Arc::new(AtomicBool::new(false));
+        let root_1_notify = Arc::new(tokio::sync::Notify::new());
         let root_1_1_state = Arc::new(AtomicBool::new(false));
         let root_1_1_1_state = Arc::new(AtomicBool::new(false));
         let root_2_state = Arc::new(AtomicBool::new(false));
         let root_2_1_state = Arc::new(AtomicBool::new(false));
 
         let root = proc
-            .spawn::<TestActor>("root", TestActor(root_state.clone(), false))
+            .spawn::<TestActor>("root", make_actor(&root_state, false))
             .unwrap();
         let root_1 = proc
             .spawn_child::<TestActor>(
                 root.cell().clone(),
-                TestActor(
-                    root_1_state.clone(),
-                    true, /* set true so children's event stops here */
-                ),
+                TestActor {
+                    handled: root_1_state.clone(),
+                    notify: root_1_notify.clone(),
+                    should_handle: true, // children's event stops here
+                },
             )
             .unwrap();
         let root_1_1 = proc
-            .spawn_child::<TestActor>(
-                root_1.cell().clone(),
-                TestActor(root_1_1_state.clone(), false),
-            )
+            .spawn_child::<TestActor>(root_1.cell().clone(), make_actor(&root_1_1_state, false))
             .unwrap();
         let root_1_1_1 = proc
             .spawn_child::<TestActor>(
                 root_1_1.cell().clone(),
-                TestActor(root_1_1_1_state.clone(), false),
+                make_actor(&root_1_1_1_state, false),
             )
             .unwrap();
         let root_2 = proc
-            .spawn_child::<TestActor>(root.cell().clone(), TestActor(root_2_state.clone(), false))
+            .spawn_child::<TestActor>(root.cell().clone(), make_actor(&root_2_state, false))
             .unwrap();
         let root_2_1 = proc
-            .spawn_child::<TestActor>(
-                root_2.cell().clone(),
-                TestActor(root_2_1_state.clone(), false),
-            )
+            .spawn_child::<TestActor>(root_2.cell().clone(), make_actor(&root_2_1_state, false))
             .unwrap();
 
         // fail `root_1_1_1`, the supervision msg should be propagated to
@@ -3354,11 +3614,20 @@ mod tests {
 
         // fail `root_2_1`, the supervision msg should be propagated to
         // ProcSupervisionCoordinator.
+        let root_2_1_id = root_2_1.actor_id().clone();
         root_2_1
             .send::<String>(&client, "some random failure".into())
             .unwrap();
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // Wait for root_1 to handle the supervision event from the
+        // root_1_1_1 -> root_1_1 -> root_1 chain. The Notify provides
+        // a deterministic signal — no polling or timing needed.
+        root_1_notify.notified().await;
+
+        // Wait for the supervision event from root_2_1's failure to
+        // reach the ProcSupervisionCoordinator.
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, root_2_1_id);
 
         assert!(!root_state.load(Ordering::SeqCst));
         assert!(root_1_state.load(Ordering::SeqCst));
@@ -3366,10 +3635,6 @@ mod tests {
         assert!(!root_1_1_1_state.load(Ordering::SeqCst));
         assert!(!root_2_state.load(Ordering::SeqCst));
         assert!(!root_2_1_state.load(Ordering::SeqCst));
-        assert_eq!(
-            reported_event.event().map(|e| e.actor_id.clone()),
-            Some(root_2_1.actor_id().clone())
-        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -3756,12 +4021,12 @@ mod tests {
         assert_eq!(event.actor_id, actor_id);
         assert!(event.actor_status.is_failed());
         // Originated here, not propagated.
-        assert_eq!(event.actually_failing_actor().actor_id, actor_id);
+        assert_eq!(event.actually_failing_actor().unwrap().actor_id, actor_id);
     }
 
     // Exercises FI-2 (see introspect.rs module-scope comment).
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_supervision_event_none_on_clean_stop() {
+    async fn test_supervision_event_on_clean_stop() {
         let proc = Proc::local();
         let (_client, _client_handle) = proc.instance("client").unwrap();
 
@@ -3771,10 +4036,78 @@ mod tests {
         handle.drain_and_stop("test").unwrap();
         handle.await;
 
+        let event = cell
+            .supervision_event()
+            .expect("cleanly stopped actor must have a supervision_event");
         assert!(
-            cell.supervision_event().is_none(),
-            "cleanly stopped actor must have no supervision_event"
+            matches!(event.actor_status, ActorStatus::Stopped(_)),
+            "expected Stopped status, got {:?}",
+            event.actor_status
         );
+        assert!(!event.is_error());
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_coordinator_receives_clean_stop() {
+        let proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+        let (mut reported_event, _coordinator_handle) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, actor_id);
+        assert!(
+            matches!(event.actor_status, ActorStatus::Stopped(_)),
+            "expected Stopped status, got {:?}",
+            event.actor_status
+        );
+        assert!(!event.is_error());
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_coordinator_shuts_down_last_during_destroy() {
+        let mut proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+        let (mut reported_event, _coordinator_handle) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        // Spawn several actors that will all stop during destroy_and_wait.
+        let mut actor_ids = Vec::new();
+        for i in 0..3 {
+            let handle = proc
+                .spawn::<TestActor>(&format!("actor_{i}"), TestActor)
+                .unwrap();
+            actor_ids.push(handle.actor_id().clone());
+        }
+
+        // destroy_and_wait stops all actors. If the coordinator were stopped
+        // simultaneously, supervision event delivery would fail and crash
+        // the process. The fact that this completes without crashing proves
+        // the coordinator outlived the other actors.
+        proc.destroy_and_wait::<()>(Duration::from_secs(5), None, "test")
+            .await
+            .unwrap();
+
+        // Verify the coordinator received stop events from all three actors.
+        let mut received_ids = Vec::new();
+        for _ in 0..actor_ids.len() {
+            let event = reported_event.recv().await;
+            assert!(
+                matches!(event.actor_status, ActorStatus::Stopped(_)),
+                "expected Stopped, got {:?}",
+                event.actor_status
+            );
+            received_ids.push(event.actor_id);
+        }
+        received_ids.sort();
+        actor_ids.sort();
+        assert_eq!(received_ids, actor_ids);
     }
 
     // Exercises FI-4 (see introspect.rs module-scope comment).
@@ -3809,7 +4142,7 @@ mod tests {
         );
         let event = event.unwrap();
         // Root cause is the child, not the parent.
-        assert_eq!(event.actually_failing_actor().actor_id, child_id);
+        assert_eq!(event.actually_failing_actor().unwrap().actor_id, child_id);
     }
 
     // Exercises S11 (see introspect.rs module doc).
@@ -3878,7 +4211,7 @@ mod tests {
         let root_cause = attrs
             .get(crate::introspect::FAILURE_ROOT_CAUSE_ACTOR)
             .expect("must have root_cause_actor");
-        assert_eq!(root_cause, &actor_id.to_string());
+        assert_eq!(root_cause, &actor_id);
         assert_eq!(
             attrs.get(crate::introspect::FAILURE_IS_PROPAGATED),
             Some(&false)
@@ -3918,7 +4251,7 @@ mod tests {
         let root_cause = attrs
             .get(crate::introspect::FAILURE_ROOT_CAUSE_ACTOR)
             .expect("propagated failure must have root_cause_actor");
-        assert_eq!(root_cause, &child_id.to_string());
+        assert_eq!(root_cause, &child_id);
         assert_eq!(
             attrs.get(crate::introspect::FAILURE_IS_PROPAGATED),
             Some(&true)
@@ -4099,5 +4432,142 @@ mod tests {
                 .is_none(),
             "stopped actor must not have failure attrs"
         );
+    }
+
+    // ── PD-5: queue depth accounting ────────────────────────────
+
+    // PD-5b/PD-5c: queue depth increments on enqueue, decrements on
+    // dequeue, and returns to zero after the message is handled. This
+    // tests that the introspection-readable queue_depth is aligned
+    // with the existing OTel ACTOR_MESSAGE_QUEUE_SIZE accounting.
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_queue_depth_increment_decrement() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let handle = proc.spawn("qd_test", TestActor).unwrap();
+        let actor_ref: crate::reference::ActorRef<TestActor> = handle.bind();
+        let actor_id = actor_ref.actor_id().clone();
+
+        // Before any message: queue depth should be 0.
+        let cell = proc.get_instance(&actor_id).expect("actor exists");
+        assert_eq!(cell.queue_depth(), 0, "initial queue depth should be 0");
+
+        // Send a message that blocks until we signal it. This lets
+        // us observe queue depth > 0 while the actor is busy.
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let (gate_tx, gate_rx) = oneshot::channel::<()>();
+        handle.wait(&client, reply_tx, gate_rx).await.unwrap();
+
+        // Wait for the actor to start processing (it sends reply_tx).
+        reply_rx.await.unwrap();
+
+        // Now send a second message — it should be queued.
+        let (reply2_tx, reply2_rx) = oneshot::channel();
+        handle.reply(&client, reply2_tx).await.unwrap();
+
+        // Give the enqueue a moment to propagate.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Queue depth should be >= 1 (the Reply message is queued).
+        let depth = cell.queue_depth();
+        assert!(
+            depth >= 1,
+            "expected queue depth >= 1 while actor is busy, got {depth}"
+        );
+
+        // Unblock the first message.
+        let _ = gate_tx.send(());
+
+        // Wait for the second message to be handled.
+        reply2_rx.await.unwrap();
+
+        // Give the dequeue a moment to propagate.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Queue depth should return to 0.
+        let depth = cell.queue_depth();
+        assert_eq!(
+            depth, 0,
+            "queue depth should return to 0 after all messages handled"
+        );
+    }
+
+    // PD-4/PD-5: proc-level queue pressure aggregation reports
+    // non-zero under induced load. Queue depth is an instantaneous
+    // snapshot of currently queued work, not backlog history.
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_proc_queue_depth_aggregation_under_pressure() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Spawn two actors.
+        let h1 = proc.spawn("a1", TestActor).unwrap();
+        let h2 = proc.spawn("a2", TestActor).unwrap();
+
+        // Block both actors with a Wait message.
+        let (reply1, rx1) = oneshot::channel();
+        let (gate1, grx1) = oneshot::channel::<()>();
+        h1.wait(&client, reply1, grx1).await.unwrap();
+        rx1.await.unwrap();
+
+        let (reply2, rx2) = oneshot::channel();
+        let (gate2, grx2) = oneshot::channel::<()>();
+        h2.wait(&client, reply2, grx2).await.unwrap();
+        rx2.await.unwrap();
+
+        // Queue additional messages while actors are blocked.
+        h1.noop(&client).await.unwrap();
+        h1.noop(&client).await.unwrap();
+        h2.noop(&client).await.unwrap();
+
+        // Poll until aggregated queue depth reaches the expected
+        // level, with a bounded timeout to avoid flakes.
+        let aggregate = || -> (u64, u64) {
+            let mut total: u64 = 0;
+            let mut max: u64 = 0;
+            for actor_id in proc.all_instance_keys() {
+                if let Some(cell) = proc.get_instance(&actor_id) {
+                    let depth = cell.queue_depth();
+                    total = total.saturating_add(depth);
+                    max = max.max(depth);
+                }
+            }
+            (total, max)
+        };
+
+        // Same aggregation logic used by
+        // ProcAgent::publish_introspect_properties.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (total, max) = aggregate();
+            if total >= 3 {
+                assert!(max >= 1, "expected max >= 1, got {max}");
+                assert!(max <= total, "PD-1: max ({max}) <= total ({total})");
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for queue depth >= 3, got {total}",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // Unblock both actors.
+        let _ = gate1.send(());
+        let _ = gate2.send(());
+
+        // Poll until aggregated depth returns to 0.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (total, _) = aggregate();
+            if total == 0 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for queue depth to return to 0, got {total}",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 }

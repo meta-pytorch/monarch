@@ -203,13 +203,13 @@ impl Handler<CudaActorMessage> for CudaActor {
                 // Register via RdmaManagerActor request_buffer; the ibverbs MR
                 // will be registered lazily by resolve_ibv().
                 let local_memory: Arc<dyn RdmaLocalMemory> =
-                    Arc::new(UnsafeLocalMemory::new(dptr as usize, padded_size));
+                    Arc::new(UnsafeLocalMemory::new(dptr, padded_size));
                 let handle = rdma_actor
                     .downcast_handle(cx)
                     .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
                 let rdma_handle = handle.request_buffer(cx, local_memory).await?;
 
-                reply.send(cx, (rdma_handle, dptr as usize))?;
+                reply.send(cx, (rdma_handle, dptr))?;
                 Ok(())
             }
             CudaActorMessage::FillBuffer {
@@ -780,4 +780,28 @@ impl IbvTestEnv {
         }
         Ok(())
     }
+}
+
+/// Finds two CUDA devices that map to different RDMA NICs via PCI topology.
+/// Returns `Some((device_a, device_b))` or `None` if all devices share one NIC.
+#[cfg(test_8_gpus)]
+pub(crate) fn find_devices_on_different_nics() -> Option<(i32, i32)> {
+    use super::device_selection::select_optimal_ibv_device;
+
+    let mut gpu_to_nic: Vec<(i32, String)> = Vec::new();
+    for gpu_idx in 0..8 {
+        let hint = format!("cuda:{gpu_idx}");
+        if let Some(device) = select_optimal_ibv_device(Some(&hint)) {
+            gpu_to_nic.push((gpu_idx, device.name().to_string()));
+        }
+    }
+
+    for i in 0..gpu_to_nic.len() {
+        for j in (i + 1)..gpu_to_nic.len() {
+            if gpu_to_nic[i].1 != gpu_to_nic[j].1 {
+                return Some((gpu_to_nic[i].0, gpu_to_nic[j].0));
+            }
+        }
+    }
+    None
 }

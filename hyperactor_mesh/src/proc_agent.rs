@@ -35,7 +35,7 @@ use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
-use hyperactor::actor::ActorStatus;
+use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -51,12 +51,19 @@ use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
 use crate::Name;
+use crate::config_dump::ConfigDump;
+use crate::config_dump::ConfigDumpResult;
+use crate::pyspy::PySpyDump;
+use crate::pyspy::PySpyProfile;
+use crate::pyspy::PySpyProfileWorker;
+use crate::pyspy::PySpyWorker;
 use crate::resource;
 
 /// Actor name used when spawning the proc agent on user procs.
@@ -69,6 +76,11 @@ declare_attrs! {
         Some("mesh_orphan_timeout".to_string()),
     ))
     pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// Header tag for StreamState subscriber messages. When present on an
+    /// undeliverable envelope, ProcAgent removes the dead subscriber instead
+    /// of treating it as an error.
+    attr STREAM_STATE_SUBSCRIBER: bool;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
@@ -80,14 +92,6 @@ pub enum GspawnResult {
     Error(String),
 }
 wirevalue::register_type!(GspawnResult);
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
-pub enum StopActorResult {
-    Success,
-    Timeout,
-    NotFound,
-}
-wirevalue::register_type!(StopActorResult);
 
 /// Deferred republish of introspect properties.
 ///
@@ -111,17 +115,21 @@ wirevalue::register_type!(RepublishIntrospect);
 /// lookups. This avoids the convoy starvation from `all_actor_ids()`
 /// which holds shard read locks while doing heavy per-entry work.
 /// See S12 in `introspect` module doc.
-fn collect_live_children(proc: &hyperactor::Proc) -> (Vec<String>, Vec<String>) {
+fn collect_live_children(
+    proc: &hyperactor::Proc,
+) -> (
+    Vec<hyperactor::introspect::IntrospectRef>,
+    Vec<crate::introspect::NodeRef>,
+) {
     let all_keys = proc.all_instance_keys();
     let mut children = Vec::with_capacity(all_keys.len());
     let mut system_children = Vec::new();
     for id in all_keys {
         if let Some(cell) = proc.get_instance(&id) {
-            let ref_str = id.to_string();
             if cell.is_system() {
-                system_children.push(ref_str.clone());
+                system_children.push(crate::introspect::NodeRef::Actor(id.clone()));
             }
-            children.push(ref_str);
+            children.push(hyperactor::introspect::IntrospectRef::Actor(id));
         }
     }
     (children, system_children)
@@ -174,19 +182,6 @@ pub(crate) enum MeshAgentMessage {
         /// reply port; the proc should send its rank to indicated a spawned actor
         status_port: hyperactor_reference::PortRef<GspawnResult>,
     },
-
-    /// Stop actors of a specific mesh name
-    StopActor {
-        /// The actor to stop
-        actor_id: hyperactor_reference::ActorId,
-        /// The timeout for waiting for the actor to stop
-        timeout_ms: u64,
-        /// The reason for stopping the actor
-        reason: String,
-        /// The result when trying to stop the actor
-        #[reply]
-        stopped: hyperactor_reference::OncePortRef<StopActorResult>,
-    },
 }
 
 /// Internal configuration state of the mesh agent.
@@ -229,12 +224,115 @@ impl State {
 struct ActorInstanceState {
     create_rank: usize,
     spawn: Result<hyperactor_reference::ActorId, anyhow::Error>,
-    /// If true, the actor has been stopped. There is no way to restart it, a new
-    /// actor must be spawned.
-    stopped: bool,
+    /// True once a stop signal has been sent. This does *not* mean the actor
+    /// has reached a terminal state — that is determined by observing
+    /// supervision events.
+    stop_initiated: bool,
+    /// The supervision event observed for this actor, if it has reached
+    /// terminal state.
+    supervision_event: Option<ActorSupervisionEvent>,
+    /// Streaming subscribers that receive `State<ActorState>` on every
+    /// state change. Dead subscribers are removed via undeliverable handling.
+    subscribers: Vec<hyperactor_reference::PortRef<resource::State<ActorState>>>,
     /// The time at which the actor should be considered expired if no further
     /// keepalive is received. `None` meaning it will never expire.
     expiry_time: Option<std::time::SystemTime>,
+    /// Monotonic generation counter, incremented on every state-mutating
+    /// operation (spawn, stop, supervision event). Used for last-writer-wins
+    /// ordering in the mesh controller.
+    generation: u64,
+    /// Pending `WaitRankStatus` callers: each entry is the minimum
+    /// status threshold and the reply port to send once the threshold
+    /// is met.
+    pending_wait_status: Vec<(
+        resource::Status,
+        hyperactor_reference::PortRef<crate::StatusOverlay>,
+    )>,
+}
+
+impl ActorInstanceState {
+    /// Derive the resource status from spawn result, stop initiation,
+    /// and the observed supervision event.
+    fn status(&self) -> resource::Status {
+        match &self.spawn {
+            Err(e) => resource::Status::Failed(e.to_string()),
+            Ok(_) => match &self.supervision_event {
+                Some(event) if event.is_error() => resource::Status::Failed(format!("{}", event)),
+                Some(_) => resource::Status::Stopped,
+                None if self.stop_initiated => resource::Status::Stopping,
+                None => resource::Status::Running,
+            },
+        }
+    }
+
+    /// True if the actor has reached a terminal state (stopped or failed),
+    /// or if it never successfully spawned.
+    fn is_terminal(&self) -> bool {
+        match &self.spawn {
+            Err(_) => true,
+            Ok(_) => self.supervision_event.is_some(),
+        }
+    }
+
+    /// True if the supervision event is an error.
+    fn has_errors(&self) -> bool {
+        self.supervision_event
+            .as_ref()
+            .is_some_and(|e| e.is_error())
+    }
+
+    /// Build the `State<ActorState>` for this instance, suitable for
+    /// replies and subscriber notifications.
+    fn to_state(&self, name: &Name) -> resource::State<ActorState> {
+        let status = self.status();
+        let actor_state = self.spawn.as_ref().ok().map(|actor_id| ActorState {
+            actor_id: actor_id.clone(),
+            create_rank: self.create_rank,
+            supervision_events: self.supervision_event.clone().into_iter().collect(),
+        });
+        resource::State {
+            name: name.clone(),
+            status,
+            state: actor_state,
+            generation: self.generation,
+            timestamp: std::time::SystemTime::now(),
+        }
+    }
+
+    /// Notify all observers that this actor's status has changed:
+    /// streaming subscribers get the full state, and one-shot
+    /// `WaitRankStatus` waiters whose threshold is now met get replied
+    /// to and removed.
+    fn notify_status_changed(&mut self, cx: &impl hyperactor::context::Actor, name: &Name) {
+        // Streaming subscribers (persistent).
+        let state = self.to_state(name);
+        for subscriber in &self.subscribers {
+            let mut headers = Flattrs::new();
+            headers.set(STREAM_STATE_SUBSCRIBER, true);
+            if let Err(e) = subscriber.send_with_headers(cx, headers, state.clone()) {
+                tracing::warn!(
+                    "failed to send state update to subscriber {}: {}",
+                    subscriber.port_id(),
+                    e,
+                );
+            }
+        }
+
+        // One-shot waiters (predicated).
+        let status = self.status();
+        self.pending_wait_status.retain(|(min_status, reply)| {
+            if status >= *min_status {
+                let rank = self.create_rank;
+                let overlay =
+                    crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status.clone())])
+                        .expect("valid single-run overlay");
+                let _ = reply.send(cx, overlay);
+                false
+            } else {
+                true
+            }
+        });
+    }
 }
 
 #[derive(
@@ -278,9 +376,14 @@ struct SelfCheck {}
         resource::Stop { cast = true },
         resource::StopAll { cast = true },
         resource::GetState<ActorState> { cast = true },
+        resource::StreamState<ActorState> { cast = true },
         resource::KeepaliveGetState<ActorState> { cast = true },
         resource::GetRankStatus { cast = true },
+        resource::WaitRankStatus { cast = true },
         RepublishIntrospect { cast = true },
+        PySpyDump,
+        PySpyProfile,
+        ConfigDump,
     ]
 )]
 pub struct ProcAgent {
@@ -292,16 +395,17 @@ pub struct ProcAgent {
     /// If true, and supervisor is None, record supervision events to be reported
     /// to owning actors later.
     record_supervision_events: bool,
-    /// If record_supervision_events is true, then this will contain the list
-    /// of all events that were received.
-    supervision_events: HashMap<hyperactor_reference::ActorId, Vec<ActorSupervisionEvent>>,
     /// True when supervision events have arrived but introspect
     /// properties haven't been republished yet.
     introspect_dirty: bool,
-    /// If set, the StopAll handler will send the exit code through this
+    /// If set, the shutdown handler will send the exit code through this
     /// channel instead of calling process::exit directly, allowing the
     /// caller to perform graceful shutdown (e.g. draining the mailbox server).
     shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
+    /// True once a StopAll message has been received. When set, the
+    /// supervision event handler checks whether all actors have reached
+    /// terminal state and, if so, triggers process shutdown.
+    stopping_all: bool,
     /// If set, check for expired actors whose keepalive has lapsed.
     mesh_orphan_timeout: Option<Duration>,
 }
@@ -320,9 +424,9 @@ impl ProcAgent {
             state: State::UnconfiguredV0 { sender },
             actor_states: HashMap::new(),
             record_supervision_events: false,
-            supervision_events: HashMap::new(),
             introspect_dirty: false,
             shutdown_tx: None,
+            stopping_all: false,
             // v0 procs don't have an owner they can check for, so they should
             // never try to kill the children.
             mesh_orphan_timeout: None,
@@ -350,29 +454,62 @@ impl ProcAgent {
             state: State::V1,
             actor_states: HashMap::new(),
             record_supervision_events: true,
-            supervision_events: HashMap::new(),
             introspect_dirty: false,
             shutdown_tx,
+            stopping_all: false,
             mesh_orphan_timeout: orphan_timeout,
         };
         proc.spawn::<Self>(PROC_AGENT_ACTOR_NAME, agent)
     }
 
-    async fn destroy_and_wait_except_current<'a>(
-        &mut self,
-        cx: &Context<'a, Self>,
-        timeout: tokio::time::Duration,
-        reason: &str,
-    ) -> Result<
-        (
-            Vec<hyperactor_reference::ActorId>,
-            Vec<hyperactor_reference::ActorId>,
-        ),
-        anyhow::Error,
-    > {
-        self.proc
-            .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true, reason)
-            .await
+    /// Returns true when every tracked actor has a terminal supervision event
+    /// (or failed to spawn). Used to determine when shutdown can proceed
+    /// after a StopAll.
+    fn all_actors_terminal(&self) -> bool {
+        self.actor_states.values().all(|state| state.is_terminal())
+    }
+
+    /// Trigger process shutdown. Flushes the forwarder first so that
+    /// supervision events reach their destinations, then sends through
+    /// `shutdown_tx` if available, otherwise calls `process::exit`.
+    async fn shutdown(&mut self) {
+        let has_errors = self.actor_states.values().any(|state| state.has_errors());
+        let exit_code = if has_errors { 1 } else { 0 };
+
+        let flush_timeout =
+            hyperactor_config::global::get(hyperactor::config::FORWARDER_FLUSH_TIMEOUT);
+        match tokio::time::timeout(flush_timeout, self.proc.flush()).await {
+            Ok(Err(err)) => {
+                tracing::warn!("forwarder flush failed during shutdown: {}", err);
+            }
+            Err(_elapsed) => {
+                tracing::warn!("forwarder flush timed out during shutdown");
+            }
+            Ok(Ok(())) => {}
+        }
+
+        tracing::info!(
+            "shutting down process after all actors reached terminal state (exit_code={})",
+            exit_code,
+        );
+
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(exit_code);
+            return;
+        }
+        std::process::exit(exit_code);
+    }
+
+    /// Send a stop signal to an actor on this proc. This is fire-and-forget;
+    /// it does not wait for the actor to reach terminal status.
+    fn stop_actor_by_id(&self, actor_id: &hyperactor_reference::ActorId, reason: &str) {
+        tracing::info!(
+            name = "StopActor",
+            %actor_id,
+            actor_name = actor_id.name(),
+            %reason,
+        );
+        self.proc.stop_actor(actor_id, reason.to_string());
     }
 
     /// Publish the current proc properties and children list for
@@ -383,12 +520,11 @@ impl ProcAgent {
         // Terminated actors appear as children but don't inflate
         // the actor count. Track them in stopped_children so the
         // TUI can filter/gray without per-child fetches.
-        let mut stopped_children: Vec<String> = Vec::new();
+        let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
         for id in self.proc.all_terminated_actor_ids() {
-            let ref_str = id.to_string();
-            stopped_children.push(ref_str.clone());
-            // Terminated system actors must also appear in
-            // system_children for correct filtering.
+            let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
+            let node_ref = crate::introspect::NodeRef::Actor(id.clone());
+            stopped_children.push(node_ref.clone());
             if let Some(snapshot) = self.proc.terminated_snapshot(&id) {
                 let snapshot_attrs: hyperactor_config::Attrs =
                     serde_json::from_str(&snapshot.attrs).unwrap_or_default();
@@ -397,11 +533,11 @@ impl ProcAgent {
                     .copied()
                     .unwrap_or(false)
                 {
-                    system_children.push(ref_str.clone());
+                    system_children.push(node_ref);
                 }
             }
-            if !children.contains(&ref_str) {
-                children.push(ref_str);
+            if !children.contains(&child_ref) {
+                children.push(child_ref);
             }
         }
 
@@ -409,7 +545,11 @@ impl ProcAgent {
             hyperactor_config::global::get(hyperactor::config::TERMINATED_SNAPSHOT_RETENTION);
 
         // FI-5: is_poisoned iff failed_actor_count > 0.
-        let failed_actor_count = self.supervision_events.len();
+        let failed_actor_count = self
+            .actor_states
+            .values()
+            .filter(|s| s.has_errors())
+            .count();
 
         // Attrs-based introspection.
         let num_live = children.len();
@@ -417,7 +557,7 @@ impl ProcAgent {
         attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
         attrs.set(
             crate::introspect::PROC_NAME,
-            self.proc.proc_id().to_string(),
+            self.proc.proc_id().name().to_string(),
         );
         attrs.set(crate::introspect::NUM_ACTORS, num_live);
         attrs.set(hyperactor::introspect::CHILDREN, children);
@@ -429,6 +569,27 @@ impl ProcAgent {
         );
         attrs.set(crate::introspect::IS_POISONED, failed_actor_count > 0);
         attrs.set(crate::introspect::FAILED_ACTOR_COUNT, failed_actor_count);
+
+        // PD-* proc debug stats intentionally join two signal classes:
+        // hosting-process memory for the OS process that owns this
+        // proc, and proc-local queue pressure aggregated over live
+        // actors only.
+        let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
+        memory.to_attrs(&mut attrs);
+
+        // PD-4: aggregate queue depth over live actors only.
+        let mut queue_total: u64 = 0;
+        let mut queue_max: u64 = 0;
+        for actor_id in self.proc.all_instance_keys() {
+            if let Some(cell) = self.proc.get_instance(&actor_id) {
+                let depth = cell.queue_depth();
+                queue_total = queue_total.saturating_add(depth);
+                queue_max = queue_max.max(depth);
+            }
+        }
+        attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL, queue_total);
+        attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX, queue_max);
+
         cx.instance().publish_attrs(attrs);
     }
 }
@@ -464,10 +625,11 @@ impl Actor for ProcAgent {
                 if proc_id == proc.proc_id() {
                     let (mut children, mut system_children) = collect_live_children(&proc);
 
-                    let mut stopped_children: Vec<String> = Vec::new();
+                    let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
                     for id in proc.all_terminated_actor_ids() {
-                        let ref_str = id.to_string();
-                        stopped_children.push(ref_str.clone());
+                        let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
+                        let node_ref = crate::introspect::NodeRef::Actor(id.clone());
+                        stopped_children.push(node_ref.clone());
                         if let Some(snapshot) = proc.terminated_snapshot(&id) {
                             let snapshot_attrs: hyperactor_config::Attrs =
                                 serde_json::from_str(&snapshot.attrs).unwrap_or_default();
@@ -476,11 +638,11 @@ impl Actor for ProcAgent {
                                 .copied()
                                 .unwrap_or(false)
                             {
-                                system_children.push(ref_str.clone());
+                                system_children.push(node_ref);
                             }
                         }
-                        if !children.contains(&ref_str) {
-                            children.push(ref_str);
+                        if !children.contains(&child_ref) {
+                            children.push(child_ref);
                         }
                     }
 
@@ -508,7 +670,7 @@ impl Actor for ProcAgent {
                     let num_live = children.len();
                     let mut attrs = hyperactor_config::Attrs::new();
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
-                    attrs.set(crate::introspect::PROC_NAME, proc_id.to_string());
+                    attrs.set(crate::introspect::PROC_NAME, proc_id.name().to_string());
                     attrs.set(crate::introspect::NUM_ACTORS, num_live);
                     attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
                     attrs.set(crate::introspect::STOPPED_CHILDREN, stopped_children);
@@ -518,16 +680,32 @@ impl Actor for ProcAgent {
                     );
                     attrs.set(crate::introspect::IS_POISONED, is_poisoned);
                     attrs.set(crate::introspect::FAILED_ACTOR_COUNT, failed_actor_count);
+
+                    // PD-*: include proc debug stats in QueryChild
+                    // to prevent resolution drift from the publish path.
+                    let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
+                    memory.to_attrs(&mut attrs);
+                    let mut queue_total: u64 = 0;
+                    let mut queue_max: u64 = 0;
+                    for aid in proc.all_instance_keys() {
+                        if let Some(cell) = proc.get_instance(&aid) {
+                            let depth = cell.queue_depth();
+                            queue_total = queue_total.saturating_add(depth);
+                            queue_max = queue_max.max(depth);
+                        }
+                    }
+                    attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL, queue_total);
+                    attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX, queue_max);
+
                     let attrs_json =
                         serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
 
                     return IntrospectResult {
-                        identity: proc_id.to_string(),
+                        identity: hyperactor::introspect::IntrospectRef::Proc(proc_id.clone()),
                         attrs: attrs_json,
                         children,
                         parent: None,
-                        as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
-                            .to_string(),
+                        as_of: std::time::SystemTime::now(),
                     };
                 }
             }
@@ -539,13 +717,23 @@ impl Actor for ProcAgent {
                     hyperactor::introspect::ERROR_MESSAGE,
                     format!("child {} not found", child_ref),
                 );
+                let identity = match child_ref {
+                    hyperactor::reference::Reference::Proc(id) => {
+                        hyperactor::introspect::IntrospectRef::Proc(id.clone())
+                    }
+                    hyperactor::reference::Reference::Actor(id) => {
+                        hyperactor::introspect::IntrospectRef::Actor(id.clone())
+                    }
+                    hyperactor::reference::Reference::Port(id) => {
+                        hyperactor::introspect::IntrospectRef::Actor(id.actor_id().clone())
+                    }
+                };
                 IntrospectResult {
-                    identity: String::new(),
+                    identity,
                     attrs: serde_json::to_string(&error_attrs).unwrap_or_else(|_| "{}".to_string()),
                     children: Vec::new(),
                     parent: None,
-                    as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
-                        .to_string(),
+                    as_of: std::time::SystemTime::now(),
                 }
             }
         });
@@ -554,6 +742,25 @@ impl Actor for ProcAgent {
             this.self_message_with_delay(SelfCheck::default(), *delay)?;
         }
         Ok(())
+    }
+
+    async fn handle_undeliverable_message(
+        &mut self,
+        cx: &Instance<Self>,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(true) = envelope.0.headers().get(STREAM_STATE_SUBSCRIBER) {
+            let dest_port_id = envelope.0.dest().clone();
+            let port =
+                hyperactor_reference::PortRef::<resource::State<ActorState>>::attest(dest_port_id);
+            // Remove this subscriber from whichever actor instance holds it.
+            for instance in self.actor_states.values_mut() {
+                instance.subscribers.retain(|s| s != &port);
+            }
+            Ok(())
+        } else {
+            handle_undeliverable_message(cx, envelope)
+        }
     }
 }
 
@@ -640,37 +847,6 @@ impl MeshAgentMessageHandler for ProcAgent {
         Ok(())
     }
 
-    async fn stop_actor(
-        &mut self,
-        cx: &Context<Self>,
-        actor_id: hyperactor_reference::ActorId,
-        timeout_ms: u64,
-        reason: String,
-    ) -> Result<StopActorResult, anyhow::Error> {
-        tracing::info!(
-            name = "StopActor",
-            %actor_id,
-            actor_name = actor_id.name(),
-            %reason,
-        );
-
-        let result = if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
-            match tokio::time::timeout(
-                tokio::time::Duration::from_millis(timeout_ms),
-                status.wait_for(|state: &ActorStatus| state.is_terminal()),
-            )
-            .await
-            {
-                Ok(_) => Ok(StopActorResult::Success),
-                Err(_) => Ok(StopActorResult::Timeout),
-            }
-        } else {
-            Ok(StopActorResult::NotFound)
-        };
-        self.publish_introspect_properties(cx);
-        result
-    }
-
     async fn status(
         &mut self,
         cx: &Context<Self>,
@@ -724,10 +900,17 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
                     "recording non-error supervision event",
                 );
             }
-            self.supervision_events
-                .entry(event.actor_id.clone())
-                .or_default()
-                .push(event.clone());
+            // Record the event in the actor's instance state and notify subscribers.
+            if let Some((name, instance)) = self
+                .actor_states
+                .iter_mut()
+                .find(|(_, s)| s.spawn.as_ref().ok() == Some(&event.actor_id))
+            {
+                instance.supervision_event = Some(event.clone());
+                instance.generation += 1;
+                let name = name.clone();
+                instance.notify_status_changed(cx, &name);
+            }
             // Defer republish so introspection picks up is_poisoned /
             // failed_actor_count without blocking the message loop.
             // Multiple rapid events coalesce into one republish.
@@ -738,12 +921,18 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
                     std::time::Duration::from_millis(100),
                 );
             }
+
+            // If StopAll was requested, check whether all actors have now
+            // reached terminal state. If so, shut down the process.
+            if self.stopping_all && self.all_actors_terminal() {
+                self.shutdown().await;
+            }
         }
         if let Some(supervisor) = self.state.supervisor() {
             supervisor.send(cx, event)?;
-        } else if !self.record_supervision_events {
+        } else if !self.record_supervision_events && event.is_error() {
             // If there is no supervisor, and nothing is recording these, crash
-            // the whole process.
+            // the whole process on error events.
             tracing::error!(
                 name = "supervision_event_transmit_failed",
                 proc_id = %cx.self_id().proc_id(),
@@ -766,6 +955,43 @@ impl Handler<RepublishIntrospect> for ProcAgent {
             self.introspect_dirty = false;
             self.publish_introspect_properties(cx);
         }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<PySpyDump> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: PySpyDump,
+    ) -> Result<(), anyhow::Error> {
+        PySpyWorker::spawn_and_forward(cx, message.opts, message.result)
+    }
+}
+
+#[async_trait]
+impl Handler<PySpyProfile> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: PySpyProfile,
+    ) -> Result<(), anyhow::Error> {
+        PySpyProfileWorker::spawn_and_forward(cx, message.request, message.result)
+    }
+}
+
+#[async_trait]
+impl Handler<ConfigDump> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: ConfigDump,
+    ) -> Result<(), anyhow::Error> {
+        let entries = hyperactor_config::global::config_entries();
+        // Reply is best-effort: the caller may have timed out and dropped
+        // the once-port.  That must not crash this actor.
+        let _ = message.result.send(cx, ConfigDumpResult { entries });
         Ok(())
     }
 }
@@ -806,10 +1032,10 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
             return Ok(());
         }
         let create_rank = create_or_update.rank.unwrap();
-        // If there have been supervision events for any actors on this proc,
+        // If any actor on this proc has error supervision events,
         // we disallow spawning new actors on it, as this proc may be in an
         // invalid state.
-        if !self.supervision_events.is_empty() {
+        if self.actor_states.values().any(|s| s.has_errors()) {
             self.actor_states.insert(
                 create_or_update.name.clone(),
                 ActorInstanceState {
@@ -817,8 +1043,12 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                         "Cannot spawn new actors on mesh with supervision events"
                     )),
                     create_rank,
-                    stopped: false,
+                    stop_initiated: false,
+                    supervision_event: None,
+                    subscribers: Vec::new(),
                     expiry_time: None,
+                    generation: 1,
+                    pending_wait_status: Vec::new(),
                 },
             );
             return Ok(());
@@ -842,8 +1072,12 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                         cx.headers().clone(),
                     )
                     .await,
-                stopped: false,
+                stop_initiated: false,
+                supervision_event: None,
+                subscribers: Vec::new(),
                 expiry_time: None,
+                generation: 1,
+                pending_wait_status: Vec::new(),
             },
         );
 
@@ -855,91 +1089,63 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
 #[async_trait]
 impl Handler<resource::Stop> for ProcAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
-        // We don't remove the actor from the state map, instead we just store
-        // its state as Stopped.
-        let actor = self.actor_states.get_mut(&message.name);
-        // Have to separate stop_actor from setting "stopped" because it borrows
-        // as mutable and cannot have self borrowed mutably twice.
-        let actor_id = match actor {
+        let actor_id = match self.actor_states.get_mut(&message.name) {
             Some(actor_state) => {
-                match &actor_state.spawn {
-                    Ok(actor_id) => {
-                        if actor_state.stopped {
-                            None
-                        } else {
-                            actor_state.stopped = true;
-                            Some(actor_id.clone())
-                        }
-                    }
-                    // If the original spawn had failed, the actor is still considered
-                    // successfully stopped.
-                    Err(_) => None,
+                let id = actor_state.spawn.as_ref().ok().cloned();
+                if id.is_some() && !actor_state.stop_initiated {
+                    actor_state.stop_initiated = true;
+                    actor_state.generation += 1;
+                    actor_state.notify_status_changed(cx, &message.name);
+                    id
+                } else {
+                    None
                 }
             }
-            // TODO: represent unknown rank
             None => None,
         };
-        let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         if let Some(actor_id) = actor_id {
-            // The orphaned actor SelfCheck will consult the stopped field before
-            // trying to stop any actor again.
-            // While this function returns a Result, it never returns an Err
-            // value so we can simply expect without any failure handling.
-            self.stop_actor(cx, actor_id, timeout.as_millis() as u64, message.reason)
-                .await
-                .expect("stop_actor cannot fail");
+            self.stop_actor_by_id(&actor_id, &message.reason);
         }
 
         Ok(())
     }
 }
 
-/// Handles `StopAll` by coordinating an orderly stop of child actors and then
-/// exiting the process. This handler never returns to the caller: it calls
-/// `std::process::exit(0/1)` after shutdown. Any sender must *not* expect a
-/// reply or send any further message, and should watch `ProcStatus` instead.
+/// Handles `StopAll` by sending stop signals to all child actors.
+/// Process shutdown is deferred until all actors have reached terminal
+/// state, as observed through supervision events.
 #[async_trait]
 impl Handler<resource::StopAll> for ProcAgent {
     async fn handle(
         &mut self,
-        cx: &Context<Self>,
+        _cx: &Context<Self>,
         message: resource::StopAll,
     ) -> anyhow::Result<()> {
-        let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
-        // By passing in the self context, destroy_and_wait will stop this agent
-        // last, after all others are stopped.
-        let stop_result = self
-            .destroy_and_wait_except_current(cx, timeout, &message.reason)
-            .await;
-        // Exit here to cleanup all remaining resources held by the process.
-        // This means ProcAgent will never run cleanup or any other code
-        // from exiting its root actor. Senders of this message should never
-        // send any further messages or expect a reply.
-        match stop_result {
-            Ok((stopped_actors, aborted_actors)) => {
-                // No need to clean up any state, the process is exiting.
-                tracing::info!(
-                    actor = %cx.self_id(),
-                    "exiting process after receiving StopAll message on ProcAgent. \
-                    stopped actors = {:?}, aborted actors = {:?}",
-                    stopped_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-                    aborted_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-                );
-                if let Some(tx) = self.shutdown_tx.take() {
-                    let _ = tx.send(0);
-                    return Ok(());
+        self.stopping_all = true;
+
+        // Send stop signals to all actors that haven't been stopped yet.
+        let to_stop: Vec<hyperactor_reference::ActorId> = self
+            .actor_states
+            .values_mut()
+            .filter_map(|state| {
+                if state.stop_initiated {
+                    return None;
                 }
-                std::process::exit(0);
-            }
-            Err(e) => {
-                tracing::error!(actor = %cx.self_id(), "failed to stop all actors on ProcAgent: {:?}", e);
-                if let Some(tx) = self.shutdown_tx.take() {
-                    let _ = tx.send(1);
-                    return Ok(());
-                }
-                std::process::exit(1);
-            }
+                state.stop_initiated = true;
+                state.spawn.as_ref().ok().cloned()
+            })
+            .collect();
+
+        for actor_id in &to_stop {
+            self.stop_actor_by_id(actor_id, &message.reason);
         }
+
+        // If there are no actors to stop, shut down immediately.
+        if self.all_actors_terminal() {
+            self.shutdown().await;
+        }
+
+        Ok(())
     }
 }
 
@@ -954,38 +1160,7 @@ impl Handler<resource::GetRankStatus> for ProcAgent {
         use crate::resource::Status;
 
         let (rank, status) = match self.actor_states.get(&get_rank_status.name) {
-            Some(ActorInstanceState {
-                spawn: Ok(actor_id),
-                create_rank,
-                stopped,
-                ..
-            }) => {
-                if *stopped {
-                    (*create_rank, resource::Status::Stopped)
-                } else {
-                    let supervision_events = self
-                        .supervision_events
-                        .get(actor_id)
-                        .map_or_else(Vec::new, |a| a.clone());
-                    (
-                        *create_rank,
-                        if supervision_events.is_empty() {
-                            resource::Status::Running
-                        } else {
-                            resource::Status::Failed(format!(
-                                "because of supervision events: {:?}",
-                                supervision_events
-                            ))
-                        },
-                    )
-                }
-            }
-            Some(ActorInstanceState {
-                spawn: Err(e),
-                create_rank,
-                ..
-            }) => (*create_rank, Status::Failed(e.to_string())),
-            // TODO: represent unknown rank
+            Some(state) => (state.create_rank, state.status()),
             None => (usize::MAX, Status::NotExist),
         };
 
@@ -1014,6 +1189,42 @@ impl Handler<resource::GetRankStatus> for ProcAgent {
 }
 
 #[async_trait]
+impl Handler<resource::WaitRankStatus> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: resource::WaitRankStatus,
+    ) -> anyhow::Result<()> {
+        use crate::StatusOverlay;
+        use crate::resource::Status;
+
+        let (rank, status) = match self.actor_states.get(&msg.name) {
+            Some(state) => (state.create_rank, state.status()),
+            None => (usize::MAX, Status::NotExist),
+        };
+
+        // If already at or past the requested threshold, reply immediately.
+        if status >= msg.min_status || rank == usize::MAX {
+            let overlay = if rank == usize::MAX {
+                StatusOverlay::new()
+            } else {
+                StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
+                    .expect("valid single-run overlay")
+            };
+            let _ = msg.reply.send(cx, overlay);
+            return Ok(());
+        }
+
+        // Otherwise, stash the waiter. It will be flushed when the
+        // status changes (supervision event or stop).
+        if let Some(state) = self.actor_states.get_mut(&msg.name) {
+            state.pending_wait_status.push((msg.min_status, msg.reply));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl Handler<resource::GetState<ActorState>> for ProcAgent {
     async fn handle(
         &mut self,
@@ -1021,58 +1232,63 @@ impl Handler<resource::GetState<ActorState>> for ProcAgent {
         get_state: resource::GetState<ActorState>,
     ) -> anyhow::Result<()> {
         let state = match self.actor_states.get(&get_state.name) {
-            Some(ActorInstanceState {
-                create_rank,
-                spawn: Ok(actor_id),
-                stopped,
-                ..
-            }) => {
-                let supervision_events = self
-                    .supervision_events
-                    .get(actor_id)
-                    .map_or_else(Vec::new, |a| a.clone());
-                let status = if *stopped {
-                    resource::Status::Stopped
-                } else if supervision_events.is_empty() {
-                    resource::Status::Running
-                } else {
-                    resource::Status::Failed(format!(
-                        "because of supervision events: {:?}",
-                        supervision_events
-                    ))
-                };
-                resource::State {
-                    name: get_state.name.clone(),
-                    status,
-                    state: Some(ActorState {
-                        actor_id: actor_id.clone(),
-                        create_rank: *create_rank,
-                        supervision_events,
-                    }),
-                }
-            }
-            Some(ActorInstanceState { spawn: Err(e), .. }) => resource::State {
-                name: get_state.name.clone(),
-                status: resource::Status::Failed(e.to_string()),
-                state: None,
-            },
+            Some(instance) => instance.to_state(&get_state.name),
             None => resource::State {
                 name: get_state.name.clone(),
                 status: resource::Status::NotExist,
                 state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
             },
         };
 
         let result = get_state.reply.send(cx, state);
-        // Ignore errors, because returning Err from here would cause the ProcAgent
-        // to be stopped, which would prevent querying and spawning other actors.
-        // This only means some actor that requested the state of an actor failed to receive it.
         if let Err(e) = result {
             tracing::warn!(
                 actor = %cx.self_id(),
                 "failed to send GetState reply to {} due to error: {}",
                 get_state.reply.port_id().actor_id(),
                 e
+            );
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::StreamState<ActorState>> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        stream_state: resource::StreamState<ActorState>,
+    ) -> anyhow::Result<()> {
+        let state = match self.actor_states.get_mut(&stream_state.name) {
+            Some(instance) => {
+                let state = instance.to_state(&stream_state.name);
+                instance.subscribers.push(stream_state.subscriber.clone());
+                state
+            }
+            None => resource::State {
+                name: stream_state.name.clone(),
+                status: resource::Status::NotExist,
+                state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
+            },
+        };
+
+        // Send the current state immediately.
+        let mut headers = Flattrs::new();
+        headers.set(STREAM_STATE_SUBSCRIBER, true);
+        if let Err(e) = stream_state
+            .subscriber
+            .send_with_headers(cx, headers, state)
+        {
+            tracing::warn!(
+                actor = %cx.self_id(),
+                "failed to send initial StreamState to {}: {}",
+                stream_state.subscriber.port_id().actor_id(),
+                e,
             );
         }
         Ok(())
@@ -1166,8 +1382,8 @@ impl Handler<SelfCheck> for ProcAgent {
             .iter()
             .filter_map(|(name, state)| {
                 let expiry = state.expiry_time?;
-                // If the actor was already stopped we don't need to stop it again.
-                if now > expiry && !state.stopped {
+                // If a stop was already initiated we don't need to do it again.
+                if now > expiry && !state.stop_initiated {
                     if let Ok(actor_id) = &state.spawn {
                         return Some((name.clone(), actor_id.clone()));
                     }
@@ -1183,19 +1399,11 @@ impl Handler<SelfCheck> for ProcAgent {
             );
         }
 
-        let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         for (name, actor_id) in expired {
             if let Some(state) = self.actor_states.get_mut(&name) {
-                state.stopped = true;
+                state.stop_initiated = true;
             }
-            self.stop_actor(
-                cx,
-                actor_id,
-                timeout.as_millis() as u64,
-                "orphaned".to_string(),
-            )
-            .await
-            .expect("stop_actor cannot fail");
+            self.stop_actor_by_id(&actor_id, "orphaned");
         }
 
         // Reschedule.
@@ -1298,6 +1506,7 @@ impl ReconfigurableMailboxSender {
     }
 }
 
+#[async_trait]
 impl MailboxSender for ReconfigurableMailboxSender {
     fn post(
         &self,
@@ -1327,6 +1536,14 @@ impl MailboxSender for ReconfigurableMailboxSender {
                 sender.post_unchecked(envelope, return_handle);
             }
         }
+    }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        let sender = match &*self.state.read().unwrap() {
+            ReconfigurableMailboxSenderState::Queueing(_) => return Ok(()),
+            ReconfigurableMailboxSenderState::Configured(sender) => sender.clone(),
+        };
+        sender.flush().await
     }
 }
 
@@ -1364,6 +1581,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl MailboxSender for QueueingMailboxSender {
         fn post_unchecked(
             &self,
@@ -1468,11 +1686,11 @@ mod tests {
     }
 
     // A no-op actor used to test direct proc-level spawning.
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Serialize, Deserialize)]
     #[hyperactor::export(handlers = [])]
     struct ExtraActor;
     impl hyperactor::Actor for ExtraActor {}
-
+    hyperactor::remote!(ExtraActor);
     // Verifies that QueryChild(Reference::Proc) on a ProcAgent returns
     // a live IntrospectResult whose children reflect actors spawned
     // directly on the proc — i.e. via proc.spawn(), which bypasses the
@@ -1549,7 +1767,7 @@ mod tests {
             payload
                 .children
                 .iter()
-                .any(|c| c.contains(PROC_AGENT_ACTOR_NAME)),
+                .any(|c| c.to_string().contains(PROC_AGENT_ACTOR_NAME)),
             "initial children {:?} should contain proc_agent",
             payload.children
         );
@@ -1571,7 +1789,10 @@ mod tests {
             payload2.attrs
         );
         assert!(
-            payload2.children.iter().any(|c| c.contains("extra_actor")),
+            payload2
+                .children
+                .iter()
+                .any(|c| c.to_string().contains("extra_actor")),
             "after direct spawn, children {:?} should contain extra_actor",
             payload2.children
         );
@@ -1710,5 +1931,280 @@ mod tests {
             attrs.get(crate::introspect::NODE_TYPE).map(String::as_str),
             Some("proc"),
         );
+    }
+
+    #[tokio::test]
+    async fn test_stream_state_and_unsubscribe() {
+        use hyperactor::Proc;
+        use hyperactor::actor::ActorStatus;
+        use hyperactor::channel::ChannelTransport;
+
+        use crate::resource::CreateOrUpdateClient;
+        use crate::resource::GetStateClient;
+        use crate::resource::StopClient;
+        use crate::resource::StreamStateClient;
+
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
+        let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
+        agent_handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        let agent_ref: hyperactor_reference::ActorRef<ProcAgent> = agent_handle.bind();
+
+        let actor_type = hyperactor::actor::remote::Remote::collect()
+            .name_of::<ExtraActor>()
+            .unwrap()
+            .to_string();
+        let actor_params = bincode::serialize(&ExtraActor).unwrap();
+        let actor_name = Name::Reserved("test_actor".to_string());
+
+        // 1. Spawn an actor via CreateOrUpdate.
+        agent_ref
+            .create_or_update(
+                &client,
+                actor_name.clone(),
+                resource::Rank::new(0),
+                ActorSpec {
+                    actor_type: actor_type.clone(),
+                    params_data: actor_params.clone(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // 2. Subscribe to state updates.
+        let (sub_port, mut sub_rx) = client.open_port::<resource::State<ActorState>>();
+        agent_ref
+            .stream_state(&client, actor_name.clone(), sub_port.bind())
+            .await
+            .unwrap();
+
+        // 3. Should receive the initial state (Running).
+        let initial = sub_rx.recv().await.expect("subscriber channel error");
+        assert_eq!(initial.status, resource::Status::Running);
+        assert!(initial.state.is_some());
+
+        // 4. Send Stop — should receive Stopping.
+        agent_ref
+            .stop(&client, actor_name.clone(), "test".to_string())
+            .await
+            .unwrap();
+
+        let stopping = sub_rx.recv().await.expect("subscriber channel error");
+        assert_eq!(stopping.status, resource::Status::Stopping);
+
+        // 5. Wait for the Stopped supervision event update.
+        let stopped = sub_rx.recv().await.expect("subscriber channel error");
+        assert_eq!(stopped.status, resource::Status::Stopped);
+
+        // 6. Test implicit unsubscription via undeliverable.
+        let actor_name_2 = Name::Reserved("test_actor_2".to_string());
+        agent_ref
+            .create_or_update(
+                &client,
+                actor_name_2.clone(),
+                resource::Rank::new(1),
+                ActorSpec {
+                    actor_type: actor_type.clone(),
+                    params_data: actor_params.clone(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let (sub_port_2, mut sub_rx_2) = client.open_port::<resource::State<ActorState>>();
+        agent_ref
+            .stream_state(&client, actor_name_2.clone(), sub_port_2.bind())
+            .await
+            .unwrap();
+
+        let initial_2 = sub_rx_2.recv().await.expect("subscriber 2 channel error");
+        assert_eq!(initial_2.status, resource::Status::Running);
+
+        // Drop the receiver so the next send bounces as undeliverable.
+        drop(sub_rx_2);
+
+        // Stop the second actor — triggers notify_status_changed to the
+        // dead subscriber. ProcAgent should handle the undeliverable
+        // gracefully.
+        agent_ref
+            .stop(
+                &client,
+                actor_name_2.clone(),
+                "test unsubscribe".to_string(),
+            )
+            .await
+            .unwrap();
+
+        // Wait for actor_2 to reach terminal state via a new stream subscription.
+        let (sub_port_3, mut sub_rx_3) = client.open_port::<resource::State<ActorState>>();
+        agent_ref
+            .stream_state(&client, actor_name_2.clone(), sub_port_3.bind())
+            .await
+            .unwrap();
+        loop {
+            let state = sub_rx_3.recv().await.expect("subscriber 3 channel error");
+            if state.status.is_terminating() {
+                break;
+            }
+        }
+
+        // Verify ProcAgent is still alive after the undeliverable was handled.
+        let state = agent_ref
+            .get_state(&client, actor_name_2.clone())
+            .await
+            .unwrap();
+        assert!(
+            state.status.is_terminating(),
+            "expected terminating status, got {:?}",
+            state.status,
+        );
+    }
+
+    // ── PD-4/PD-5: live proc-agent queue pressure test ────────
+
+    // A blocking actor for inducing queue pressure. Uses a shared
+    // Notify for the block/unblock protocol since actor messages
+    // must be Serialize + Clone.
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    #[hyperactor::export(handlers = [BlockMsg])]
+    struct BlockActor {
+        #[serde(skip)]
+        gate: Option<Arc<tokio::sync::Notify>>,
+    }
+    impl hyperactor::Actor for BlockActor {}
+
+    #[derive(
+        Debug,
+        Clone,
+        Serialize,
+        Deserialize,
+        Named,
+        hyperactor::Handler,
+        hyperactor::HandleClient
+    )]
+    enum BlockMsg {
+        /// Block until the shared Notify fires.
+        Block(),
+        /// No-op message to queue behind a blocked Block.
+        Noop(),
+    }
+    wirevalue::register_type!(BlockMsg);
+
+    #[async_trait::async_trait]
+    #[hyperactor::handle(BlockMsg)]
+    impl BlockMsgHandler for BlockActor {
+        async fn block(&mut self, _cx: &hyperactor::Context<Self>) -> Result<(), anyhow::Error> {
+            if let Some(gate) = &self.gate {
+                gate.notified().await;
+            }
+            Ok(())
+        }
+        async fn noop(&mut self, _cx: &hyperactor::Context<Self>) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+    }
+
+    // PD-4/PD-5: QueryChild(Proc) returns non-zero queue stats
+    // while actors are under induced pressure. This proves the
+    // live proc-agent introspection path carries the queue depth
+    // signal that the TUI depends on.
+    //
+    // Queue depth is an instantaneous snapshot at query time,
+    // not backlog history.
+    #[tokio::test]
+    async fn test_query_child_proc_queue_depth_under_pressure() {
+        use hyperactor::Proc;
+        use hyperactor::actor::ActorStatus;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::introspect::IntrospectMessage;
+        use hyperactor::introspect::IntrospectResult;
+        use hyperactor::reference as hyperactor_reference;
+
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "qd_proc".to_string()).unwrap();
+        let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
+
+        agent_handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        let client_proc =
+            Proc::direct(ChannelTransport::Unix.any(), "qd_client".to_string()).unwrap();
+        let (client, _client_handle) = client_proc.instance("client").unwrap();
+
+        // Spawn a blocking actor with a shared gate.
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let blocker = proc
+            .spawn(
+                "blocker",
+                BlockActor {
+                    gate: Some(Arc::clone(&gate)),
+                },
+            )
+            .unwrap();
+
+        // Block the actor and queue additional work behind it.
+        blocker.block(&client).await.unwrap();
+        // Give the actor time to enter the handler.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        blocker.noop(&client).await.unwrap();
+        blocker.noop(&client).await.unwrap();
+
+        // QueryChild(Proc) — same aggregation logic as mesh-admin
+        // resolution.
+        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let port =
+            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+
+        // Poll until queue stats are non-zero.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
+            port.send(
+                &client,
+                IntrospectMessage::QueryChild {
+                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+            let payload = tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx.recv())
+                .await
+                .expect("QueryChild timed out")
+                .expect("reply channel closed");
+
+            let attrs: hyperactor_config::Attrs =
+                serde_json::from_str(&payload.attrs).expect("valid attrs JSON");
+
+            let total = attrs
+                .get(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL)
+                .copied()
+                .unwrap_or(0);
+            let max = attrs
+                .get(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX)
+                .copied()
+                .unwrap_or(0);
+
+            if total > 0 {
+                assert!(max > 0, "max should be > 0 when total is {total}");
+                assert!(max <= total, "PD-1: max ({max}) <= total ({total})");
+                break;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for non-zero queue depth in QueryChild(Proc)",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // Unblock the actor.
+        gate.notify_one();
     }
 }

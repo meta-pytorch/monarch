@@ -12,8 +12,15 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use hyperactor::Instance;
+use hyperactor::accum::Accumulator;
+use hyperactor::accum::CommReducer;
+use hyperactor::accum::ReducerFactory;
+use hyperactor::accum::ReducerSpec;
+use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor_mesh::sel;
+use hyperactor_mesh::value_mesh::ValueOverlay;
+use hyperactor_mesh::value_mesh::rle;
 use monarch_types::py_global;
 use ndslice::Extent;
 use ndslice::Selection;
@@ -22,16 +29,20 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3::types::PyTuple;
 use serde_multipart::Part;
+use typeuri::Named;
 
 use crate::actor::MethodSpecifier;
 use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
+use crate::actor::PythonResponseMessage;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::SupervisableActorMesh;
 use crate::actor_mesh::to_hy_sel;
 use crate::buffers::FrozenBuffer;
 use crate::context::PyInstance;
+use crate::mailbox::EitherPortRef;
+use crate::mailbox::PythonOncePortRef;
 use crate::mailbox::PythonPortRef;
 use crate::metrics::ENDPOINT_BROADCAST_ERROR;
 use crate::metrics::ENDPOINT_BROADCAST_THROUGHPUT;
@@ -263,7 +274,7 @@ async fn collect_value(
 
 async fn collect_valuemesh(
     extent: Extent,
-    mut rx: PortReceiver<PythonMessage>,
+    rx: OncePortReceiver<PythonMessage>,
     method_name: String,
     supervision_monitor: Option<Arc<dyn Supervisable>>,
     instance: &Instance<PythonActor>,
@@ -280,43 +291,81 @@ async fn collect_valuemesh(
         EndpointAdverb::Call,
     );
 
-    let mut results: Vec<Option<Part>> = vec![None; expected_count];
-
-    for _ in 0..expected_count {
-        match collect_value(
-            &mut rx,
-            &supervision_monitor,
-            instance,
-            &qualified_endpoint_name,
-        )
-        .await
-        {
-            Ok((message, rank)) => {
-                results[rank.expect("RankedPort receiver got a message without a rank")] =
-                    Some(message);
-            }
-            Err(e) => {
-                record_guard.mark_error();
-                return Err(e);
-            }
-        }
+    enum RaceResult {
+        Collected(PythonMessage),
+        SupervisionError(PyErr),
+        RecvError(String),
     }
 
-    Python::attach(|py| {
-        Ok(PyValueMesh::build_dense_from_extent(
-            &extent,
-            results
-                .into_iter()
-                .map(|msg| {
-                    let m = msg.expect("all responses should be filled");
-                    unpickle_from_part(py, m).map(|obj| obj.unbind())
-                })
-                .collect::<PyResult<_>>()?,
-        )?
-        .into_pyobject(py)?
-        .into_any()
-        .unbind())
-    })
+    let race_result = match &supervision_monitor {
+        Some(sup) => {
+            tokio::select! {
+                biased;
+                result = sup.supervision_event(instance) => {
+                    match result {
+                        Some(err) => RaceResult::SupervisionError(err),
+                        None => RaceResult::RecvError(
+                            "supervision monitor closed unexpectedly".to_string()
+                        ),
+                    }
+                }
+                batch = rx.recv() => {
+                    match batch {
+                        Ok(b) => RaceResult::Collected(b),
+                        Err(e) => RaceResult::RecvError(e.to_string()),
+                    }
+                }
+            }
+        }
+        None => match rx.recv().await {
+            Ok(batch) => RaceResult::Collected(batch),
+            Err(e) => RaceResult::RecvError(e.to_string()),
+        },
+    };
+
+    match race_result {
+        RaceResult::Collected(msg) => {
+            let overlay = msg.into_overlay().map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to extract overlay from collected responses: {e}"
+                ))
+            })?;
+            Python::attach(|py| {
+                Ok(PyValueMesh::build_from_parts(
+                    &extent,
+                    overlay.runs().try_fold(
+                        Vec::with_capacity(expected_count),
+                        |mut parts, (range, payload)| match payload {
+                            PythonResponseMessage::Result(part) => {
+                                parts.extend(range.clone().map(|_| part.clone()));
+                                Ok(parts)
+                            }
+                            PythonResponseMessage::Exception(part) => {
+                                record_guard.mark_error();
+                                Python::attach(|py| {
+                                    Err(PyErr::from_value(unpickle_from_part(py, part.clone())?))
+                                })
+                            }
+                        },
+                    )?,
+                )?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+            })
+        }
+        RaceResult::RecvError(e) => {
+            record_guard.mark_error();
+            Err(pyo3::exceptions::PyEOFError::new_err(format!(
+                "Port closed: {}",
+                e
+            )))
+        }
+        RaceResult::SupervisionError(err) => {
+            record_guard.mark_error();
+            Err(supervision_error_to_pyerr(err, &qualified_endpoint_name))
+        }
+    }
 }
 
 fn value_collector(
@@ -448,7 +497,7 @@ pub(crate) trait Endpoint {
         py: Python<'py>,
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
-        port_ref: Option<&PythonPortRef>,
+        port_ref: Option<EitherPortRef>,
         selection: Selection,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()>;
@@ -473,6 +522,16 @@ pub(crate) trait Endpoint {
         (PythonPortRef { inner: p.bind() }, receiver)
     }
 
+    fn open_reduce_response_port(
+        &self,
+        instance: &Instance<PythonActor>,
+    ) -> (PythonOncePortRef, OncePortReceiver<PythonMessage>) {
+        let (p, receiver) = instance
+            .mailbox_for_py()
+            .open_reduce_port(PythonResponseMessageAccumulator);
+        (PythonOncePortRef::from(p.bind()), receiver)
+    }
+
     /// Call the endpoint on all actors and collect all responses into a ValueMesh.
     fn call<'py>(
         &self,
@@ -484,12 +543,19 @@ pub(crate) trait Endpoint {
         let method_name = self.get_method_name().to_string();
 
         let instance = self.get_current_instance(py)?;
-        let (port_ref, receiver) = self.open_response_port(&instance);
+        let (port_ref, receiver) = self.open_reduce_response_port(&instance);
 
         let supervision_monitor = self.get_supervision_monitor();
         let qualified_endpoint_name = self.get_qualified_name();
 
-        self.send_message(py, args, kwargs, Some(&port_ref), sel!(*), &instance)?;
+        self.send_message(
+            py,
+            args,
+            kwargs,
+            Some(EitherPortRef::Once(port_ref)),
+            sel!(*),
+            &instance,
+        )?;
 
         let instance_for_task = instance.clone_for_py();
         let task: PyPythonTask = PythonTask::new(async move {
@@ -520,7 +586,14 @@ pub(crate) trait Endpoint {
         let instance = self.get_current_instance(py)?;
         let (port_ref, receiver) = self.open_response_port(&instance);
 
-        self.send_message(py, args, kwargs, Some(&port_ref), sel!(?), &instance)?;
+        self.send_message(
+            py,
+            args,
+            kwargs,
+            Some(EitherPortRef::Unbounded(port_ref)),
+            sel!(?),
+            &instance,
+        )?;
 
         let task = value_collector(
             receiver,
@@ -554,7 +627,14 @@ pub(crate) trait Endpoint {
         let instance = self.get_current_instance(py)?;
         let (port_ref, receiver) = self.open_response_port(&instance);
 
-        self.send_message(py, args, kwargs, Some(&port_ref), sel!(*), &instance)?;
+        self.send_message(
+            py,
+            args,
+            kwargs,
+            Some(EitherPortRef::Unbounded(port_ref)),
+            sel!(*),
+            &instance,
+        )?;
 
         let task = value_collector(
             receiver,
@@ -581,7 +661,14 @@ pub(crate) trait Endpoint {
         let instance = self.get_current_instance(py)?;
         let (port_ref, receiver) = self.open_response_port(&instance);
 
-        self.send_message(py, args, kwargs, Some(&port_ref), sel!(*), &instance)?;
+        self.send_message(
+            py,
+            args,
+            kwargs,
+            Some(EitherPortRef::Unbounded(port_ref)),
+            sel!(*),
+            &instance,
+        )?;
 
         let actor_count = extent.num_ranks();
         let start = tokio::time::Instant::now();
@@ -655,10 +742,10 @@ impl ActorEndpoint {
         py: Python<'py>,
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
-        port_ref: Option<&PythonPortRef>,
+        port_ref: Option<EitherPortRef>,
     ) -> PyResult<PendingMessage> {
         let port_ref_py: Py<PyAny> = match port_ref {
-            Some(pr) => pr.clone().into_pyobject(py)?.unbind().into(),
+            Some(pr) => pr.clone().into_pyobject(py)?.unbind(),
             None => py.None(),
         };
 
@@ -695,7 +782,7 @@ impl Endpoint for ActorEndpoint {
         py: Python<'py>,
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
-        port_ref: Option<&PythonPortRef>,
+        port_ref: Option<EitherPortRef>,
         selection: Selection,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
@@ -898,7 +985,7 @@ impl ActorEndpoint {
         py: Python<'py>,
         args: &Bound<'py, PyTuple>,
         kwargs: &Bound<'py, PyDict>,
-        port: Option<&PythonPortRef>,
+        port: Option<EitherPortRef>,
         selection: &str,
     ) -> PyResult<()> {
         let instance = self.get_current_instance(py)?;
@@ -935,7 +1022,7 @@ impl Endpoint for Remote {
         py: Python<'py>,
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
-        port_ref: Option<&PythonPortRef>,
+        port_ref: Option<EitherPortRef>,
         selection: Selection,
         _instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
@@ -1160,4 +1247,50 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Remote>()?;
 
     Ok(())
+}
+
+#[derive(Named)]
+struct PythonResponseMessageReducer;
+
+impl CommReducer for PythonResponseMessageReducer {
+    type Update = PythonMessage;
+
+    fn reduce(&self, left: Self::Update, right: Self::Update) -> anyhow::Result<Self::Update> {
+        Ok(ValueOverlay::try_from_runs(rle::merge_value_runs(
+            left.into_overlay()?.into_runs(),
+            right.into_overlay()?.into_runs(),
+        ))?
+        .into())
+    }
+}
+
+inventory::submit! {
+    ReducerFactory {
+        typehash_f: <PythonResponseMessageReducer as Named>::typehash,
+        builder_f: |_| Ok(Box::new(PythonResponseMessageReducer)),
+    }
+}
+
+struct PythonResponseMessageAccumulator;
+
+impl Accumulator for PythonResponseMessageAccumulator {
+    type State = PythonMessage;
+    type Update = PythonMessage;
+
+    fn accumulate(&self, state: &mut Self::State, update: Self::Update) -> anyhow::Result<()> {
+        *state = ValueOverlay::try_from_runs(rle::merge_value_runs(
+            std::mem::take(state).into_overlay()?.into_runs(),
+            update.into_overlay()?.into_runs(),
+        ))?
+        .into();
+
+        Ok(())
+    }
+
+    fn reducer_spec(&self) -> Option<ReducerSpec> {
+        Some(ReducerSpec {
+            typehash: <PythonResponseMessageReducer as Named>::typehash(),
+            builder_params: None,
+        })
+    }
 }

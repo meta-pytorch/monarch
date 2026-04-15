@@ -13,10 +13,10 @@ import sysconfig
 from typing import Dict, List, Optional
 
 from setuptools import Command, setup
-from setuptools.command.build_ext import build_ext
+from setuptools.command.build_ext import build_ext as _build_ext
 from setuptools.command.build_py import build_py
 from setuptools.extension import Extension
-from setuptools_rust import Binding, RustExtension
+from setuptools_rust import Binding, RustBin, RustExtension
 
 
 # Helper functions for finding paths on installed packages
@@ -210,6 +210,13 @@ elif build_rocm:
 os.environ.update(env_vars)
 
 # RPATH configuration for Linux
+# These flags are passed via RustExtension.rustc_flags (applied only to the final
+# cdylib link) rather than RUSTFLAGS (which would apply to every crate in the
+# workspace). Putting environment-specific paths in RUSTFLAGS invalidates cargo's
+# fingerprint cache for all 800+ dependency crates, causing a full rebuild every
+# time the build environment path changes (e.g. uv's PEP 517 build isolation
+# creates a new temp venv per invocation).
+rust_link_flags: List[str] = []
 if sys.platform.startswith("linux"):
     conda_lib = os.path.join(sys.prefix, "lib")
     ldlib = sysconfig.get_config_var("LDLIBRARY") or ""
@@ -223,7 +230,7 @@ if sys.platform.startswith("linux"):
         ):
             py_lib = libdir
 
-    rpath_flags = [
+    rust_link_flags = [
         "-C",
         "link-arg=-Wl,--enable-new-dtags",
         "-C",
@@ -240,10 +247,42 @@ if sys.platform.startswith("linux"):
         conda_lib,
     ]
     if py_lib:
-        rpath_flags += ["-C", f"link-arg=-Wl,-rpath,{py_lib}"]
+        rust_link_flags += ["-C", f"link-arg=-Wl,-rpath,{py_lib}"]
 
-    cur_rustflags = os.environ.get("RUSTFLAGS", "")
-    os.environ["RUSTFLAGS"] = (cur_rustflags + " " + " ".join(rpath_flags)).strip()
+
+# Custom build_ext that skips C++ extensions when .so files are already fresh.
+# uv's PEP 517 build isolation rebuilds the entire package whenever any cache-key
+# file changes (e.g. a .rs file). Cargo handles its own caching, but setuptools
+# always recompiles C++ into fresh temp dirs. This skips that when unnecessary.
+class build_ext(_build_ext):
+    def build_extension(self, ext):
+        # Only apply caching to C/C++ extensions (those with .sources)
+        if not hasattr(ext, "sources") or not ext.sources:
+            return super().build_extension(ext)
+
+        # In PEP 517 builds, get_ext_fullpath points to a temp build dir.
+        # Look for the .so in the source tree instead (editable install puts
+        # the .so alongside the Python package).
+        ext_filename = self.get_ext_filename(ext.name)
+        # ext_filename is e.g. "monarch/common/_C.cpython-312-x86_64-linux-gnu.so"
+        # source tree location is python/<ext_filename>
+        src_root = os.path.dirname(os.path.abspath(__file__))
+        so_path = os.path.join(src_root, "python", ext_filename)
+        if not os.path.exists(so_path):
+            return super().build_extension(ext)
+
+        so_mtime = os.path.getmtime(so_path)
+
+        # Rebuild if any source file is newer than the .so
+        for src in ext.sources:
+            if os.path.exists(src) and os.path.getmtime(src) > so_mtime:
+                return super().build_extension(ext)
+
+        # .so is up to date — copy it to the build dir instead of recompiling
+        dest = self.get_ext_fullpath(ext.name)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(so_path, dest)
+        print(f"skipping {ext.name} (up to date, copied existing .so)")
 
 
 # Extension Creation
@@ -307,13 +346,32 @@ rust_extensions.append(
         debug=False,
         features=rust_features,
         args=[] if build_tensor_engine else ["--no-default-features"],
+        rustc_flags=rust_link_flags,
+    )
+)
+
+# Mesh Admin TUI — standalone Rust binary bundled into the wheel so that
+# `pip install torchmonarch` places `monarch-tui` on PATH.
+rust_extensions.append(
+    RustBin(
+        {"hyperactor_mesh_admin_tui": "monarch-tui"},
+        path="hyperactor_mesh_admin_tui/Cargo.toml",
+        debug=False,
     )
 )
 
 
 # BuildFrontend command
 class BuildFrontend(Command):
-    """Build the React frontend for monarch_dashboard"""
+    """Build the React frontend for monarch_dashboard.
+
+    Uses esbuild. esbuild produces a single JS bundle and a CSS file;
+    this command also creates the output directory structure and generates
+    index.html, since esbuild does not emit HTML.
+
+    The OSS build (``pip install .``) triggers this via BuildPyWithFrontend.
+    The Buck build uses a separate genrule in frontend/BUCK instead.
+    """
 
     user_options = []
 
@@ -349,7 +407,20 @@ class BuildFrontend(Command):
         print("Building dashboard frontend...")
         try:
             subprocess.check_call([npm_cmd, "install"], cwd=frontend_dir)
+            os.makedirs(os.path.join(build_dir, "static", "css"), exist_ok=True)
             subprocess.check_call([npm_cmd, "run", "build"], cwd=frontend_dir)
+            # esbuild puts CSS next to JS; move it to static/css/
+            js_css = os.path.join(build_dir, "static", "js", "main.css")
+            if os.path.isfile(js_css):
+                shutil.move(
+                    js_css,
+                    os.path.join(build_dir, "static", "css", "main.css"),
+                )
+            # Copy the shared index.html template into the build output.
+            shutil.copy(
+                os.path.join(frontend_dir, "public", "index.html"),
+                build_index,
+            )
             print("Frontend build completed successfully")
         except FileNotFoundError:
             print("WARNING: npm not found. Skipping frontend build.")
@@ -404,7 +475,7 @@ class BuildPyWithFrontend(build_py):
 
 # Actual Setup
 package_name = os.environ.get("MONARCH_PACKAGE_NAME", "torchmonarch")
-package_version = os.environ.get("MONARCH_VERSION", "0.4.0.dev0")
+package_version = os.environ.get("MONARCH_VERSION", "0.5.0.dev0")
 
 setup(
     name=package_name,

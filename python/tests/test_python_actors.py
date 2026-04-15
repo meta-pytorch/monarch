@@ -44,7 +44,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.future import Future
-from monarch._src.actor.host_mesh import HostMesh, this_host, this_proc
+from monarch._src.actor.host_mesh import _spawn_admin, HostMesh, this_host, this_proc
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, HyProcMesh
 from monarch._src.job.job import LoginJob, ProcessState
 from monarch._src.job.process import ProcessJob
@@ -60,6 +60,7 @@ from monarch.actor import (
 )
 from monarch.config import configure, configured, parametrize_config
 from monarch.tools.config import defaults
+from scoped_state import scoped_state
 from typing_extensions import assert_type
 
 
@@ -1114,12 +1115,12 @@ async def test_sync_workspace() -> None:
     with (
         tempfile.TemporaryDirectory() as workspace_src,
         tempfile.TemporaryDirectory() as workspace_dst,
+        scoped_state(
+            ProcessJob({"hosts": 1}, env={"WORKSPACE_DIR": workspace_dst}),
+            cached_path=None,
+        ) as state,
     ):
-        host = (
-            ProcessJob({"hosts": 1}, env={"WORKSPACE_DIR": workspace_dst})
-            .state(cached_path=None)
-            .hosts
-        )
+        host = state.hosts
         pm = host.spawn_procs(per_host={"gpus": 1})
         code_sync_mesh = host
 
@@ -1446,10 +1447,10 @@ def test_config_propagates_to_host_agent():
 
     Sets mesh_admin_addr on the client, attaches to workers (which
     pushes config to host agents via SetClientConfig), then spawns
-    MeshAdminAgent on the host's system proc. MeshAdminAgent reads
-    MESH_ADMIN_ADDR from the host agent process's global config to
-    decide its bind address. If the client's config was propagated,
-    it binds to :9999 instead of the default :1729.
+    MeshAdminAgent on the caller's local proc. MeshAdminAgent reads
+    MESH_ADMIN_ADDR from global config to decide its bind address.
+    If the client's config was propagated, it binds to :9999 instead
+    of the default :1729.
 
     This specifically tests the host agent's own process config, NOT
     child procs (which already receive config via ProcSpec/Bootstrap).
@@ -1457,7 +1458,7 @@ def test_config_propagates_to_host_agent():
     from monarch.config import configure
 
     # Set a non-default admin address on the client side.
-    configure(mesh_admin_addr="[::]:9999")
+    configure(mesh_admin_addr="[::]:0")
 
     with TemporaryDirectory() as d:
         procs = []
@@ -1481,14 +1482,13 @@ def test_config_propagates_to_host_agent():
 
         hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
 
-        # _spawn_admin() sends SpawnMeshAdmin to the host agent, which
-        # spawns MeshAdminAgent on the host's system proc. The admin
-        # agent reads MESH_ADMIN_ADDR from the host process's config.
+        # _spawn_admin() spawns MeshAdminAgent on the caller's local
+        # proc. The admin agent reads MESH_ADMIN_ADDR from config.
         head = hosts.slice(hosts=0)
-        admin_addr = head._spawn_admin().get()
+        admin_addr, _admin_ref = _spawn_admin([head]).get()
 
-        assert ":9999" in admin_addr, (
-            f"Expected :9999 in admin addr '{admin_addr}', "
+        assert ":1729" not in admin_addr, (
+            f"Expected non-default port in admin addr '{admin_addr}', "
             "client config not propagated to host agent process"
         )
 
@@ -1506,44 +1506,49 @@ class HostMeshActor(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_this_host() -> None:
-    host = ProcessJob({"hosts": 6}).state(cached_path=None).hosts
-    hosts_by_rank = [host.slice(hosts=i) for i in range(6)]
-    for r, h in enumerate(hosts_by_rank):
-        hy_host = h._hy_host_mesh.block_on()  # type: ignore
-        assert hy_host.region.slice().offset == r
-        assert len(hy_host.region.slice()) == 1
+    with scoped_state(ProcessJob({"hosts": 6}), cached_path=None) as state:
+        host = state.hosts
+        hosts_by_rank = [host.slice(hosts=i) for i in range(6)]
+        for r, h in enumerate(hosts_by_rank):
+            hy_host = h._hy_host_mesh.block_on()  # type: ignore
+            assert hy_host.region.slice().offset == r
+            assert len(hy_host.region.slice()) == 1
 
-    proc_mesh_all = host.spawn_procs(per_host={"gpus": 2})
-    # Make sure it works with a proc mesh spawned on a sliced host mesh
-    proc_mesh_012 = host.slice(hosts=slice(0, 3)).spawn_procs(per_host={"gpus": 2})
-    proc_mesh_345 = host.slice(hosts=slice(3, 6)).spawn_procs(per_host={"gpus": 2})
+        proc_mesh_all = host.spawn_procs(per_host={"gpus": 2})
+        # Make sure it works with a proc mesh spawned on a sliced host mesh
+        proc_mesh_012 = host.slice(hosts=slice(0, 3)).spawn_procs(per_host={"gpus": 2})
+        proc_mesh_345 = host.slice(hosts=slice(3, 6)).spawn_procs(per_host={"gpus": 2})
 
-    am_all = proc_mesh_all.spawn("all", HostMeshActor)
-    am_012 = proc_mesh_012.spawn("a012", HostMeshActor)
-    am_345 = proc_mesh_345.spawn("a345", HostMeshActor)
+        am_all = proc_mesh_all.spawn("all", HostMeshActor)
+        am_012 = proc_mesh_012.spawn("a012", HostMeshActor)
+        am_345 = proc_mesh_345.spawn("a345", HostMeshActor)
 
-    expected_hosts_by_rank = [h for h in hosts_by_rank for _ in range(2)]
-    assert list(am_all.this_host.call().get().values()) == expected_hosts_by_rank
-    assert list(am_012.this_host.call().get().values()) == expected_hosts_by_rank[:6]
-    assert list(am_345.this_host.call().get().values()) == expected_hosts_by_rank[6:]
+        expected_hosts_by_rank = [h for h in hosts_by_rank for _ in range(2)]
+        assert list(am_all.this_host.call().get().values()) == expected_hosts_by_rank
+        assert (
+            list(am_012.this_host.call().get().values()) == expected_hosts_by_rank[:6]
+        )
+        assert (
+            list(am_345.this_host.call().get().values()) == expected_hosts_by_rank[6:]
+        )
 
-    # Procs 3 and 5 on hosts 1 and 2
-    proc_mesh_012 = proc_mesh_012.slice(hosts=slice(1, 3), gpus=1)
-    # Procs 6 and 10 on hosts 3 and 5
-    proc_mesh_345 = proc_mesh_345.slice(hosts=slice(0, 3, 2), gpus=0)
+        # Procs 3 and 5 on hosts 1 and 2
+        proc_mesh_012 = proc_mesh_012.slice(hosts=slice(1, 3), gpus=1)
+        # Procs 6 and 10 on hosts 3 and 5
+        proc_mesh_345 = proc_mesh_345.slice(hosts=slice(0, 3, 2), gpus=0)
 
-    am_012 = proc_mesh_012.spawn("a012", HostMeshActor)
-    am_345 = proc_mesh_345.spawn("a345", HostMeshActor)
+        am_012 = proc_mesh_012.spawn("a012", HostMeshActor)
+        am_345 = proc_mesh_345.spawn("a345", HostMeshActor)
 
-    assert list(am_012.this_host.call().get().values()) == [
-        expected_hosts_by_rank[3],
-        expected_hosts_by_rank[5],
-    ]
-    assert list(am_345.this_host.call().get().values()) == [
-        expected_hosts_by_rank[6],
-        expected_hosts_by_rank[10],
-    ]
-    proc_mesh_all.stop().get()
+        assert list(am_012.this_host.call().get().values()) == [
+            expected_hosts_by_rank[3],
+            expected_hosts_by_rank[5],
+        ]
+        assert list(am_345.this_host.call().get().values()) == [
+            expected_hosts_by_rank[6],
+            expected_hosts_by_rank[10],
+        ]
+        proc_mesh_all.stop().get()
 
 
 class FakeLocalLoginJob(LoginJob):

@@ -11,25 +11,30 @@ license = "BSD-3-Clause"
 anyhow = "1.0.102"
 async-trait = "0.1.86"
 bytes = { version = "1.11.1", features = ["serde"] }
-erased-serde = "0.4.9"
+dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
+erased-serde = "0.4.10"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
-rand = { version = "0.9", features = ["small_rng"] }
+hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
+rand = "0.10"
 rdmaxcel-sys = { path = "../rdmaxcel-sys" }
 regex = "1.12.3"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
-tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
+tokio-util = { version = "0.7.18", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
-hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [features]
 cuda = []
 default = ["cuda"]
+
+[lints]
+rust = { unexpected_cfgs = { check-cfg = ["cfg(test_8_gpus)"], level = "warn" } }

@@ -503,3 +503,19 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
                     mock.call("slurm:///456"),
                 ],
             )
+
+
+class TestExecOnJobSignature(unittest.TestCase):
+    """Tests for exec_on_job parameters."""
+
+    def test_exec_on_job_has_per_host(self) -> None:
+        import inspect
+
+        sig = inspect.signature(commands.exec_on_job)
+        self.assertIn("per_host", sig.parameters)
+        self.assertFalse(sig.parameters["per_host"].default)
+
+    def test_bash_actor_has_run_streaming(self) -> None:
+        from monarch._src.job.job import BashActor
+
+        self.assertTrue(hasattr(BashActor, "run_streaming"))

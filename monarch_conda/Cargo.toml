@@ -16,9 +16,9 @@ aho-corasick = "1.1.4"
 anyhow = "1.0.102"
 async-tempfile = "0.7.0"
 bincode = "1.3.3"
-clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
-digest = "0.10"
+digest = { version = "0.10", features = ["rand_core"] }
 filetime = "0.2.27"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 globset = { version = "0.4.13", features = ["serde1"] }
@@ -29,9 +29,9 @@ rattler_conda_types = "0.28.3"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 sha2 = "0.10.6"
-tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
 tokio-util = { version = "0.7.18", features = ["full"] }
 walkdir = "2.3"
 
 [dev-dependencies]
-tempfile = "3.26.0"
+tempfile = "3.27.0"

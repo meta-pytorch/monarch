@@ -9,7 +9,6 @@
 //! Tests for mlx5dv-specific functionality (indirect mkeys, segment scanning).
 
 use std::sync::Arc;
-use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -24,50 +23,33 @@ use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::ViewExt;
 
+#[cfg(test_8_gpus)]
+use super::test_utils::find_devices_on_different_nics;
 use crate::IbvConfig;
 use crate::RdmaManagerActor;
 use crate::RdmaManagerMessageClient;
 use crate::RdmaRemoteBuffer;
+use crate::backend::cuda_test_utils::CudaAllocation;
+use crate::backend::cuda_test_utils::CudaAllocator;
+use crate::backend::cuda_test_utils::cuda_allocator_scanner;
 use crate::local_memory::RdmaLocalMemory;
 use crate::local_memory::UnsafeLocalMemory;
 use crate::register_segment_scanner;
 
 // ---------------------------------------------------------------------------
-// Helpers: segment scanner, sender actor, receiver actor
+// Helpers: sender actor, receiver actor
 // ---------------------------------------------------------------------------
 
-static SCANNER_CFG: OnceLock<(usize, usize, i32)> = OnceLock::new();
-
-unsafe extern "C" fn test_scanner(
-    out: *mut rdmaxcel_sys::rdmaxcel_scanned_segment_t,
-    max: usize,
-) -> usize {
-    let Some(&(base, size, device)) = SCANNER_CFG.get() else {
-        return 0;
-    };
-    if max == 0 || out.is_null() {
-        return 1;
-    }
-    // SAFETY: caller guarantees `out` points to a buffer of at least `max` entries.
-    unsafe {
-        *out = rdmaxcel_sys::rdmaxcel_scanned_segment_t {
-            address: base,
-            size,
-            device,
-            is_expandable: 0,
-        };
-    }
-    1
-}
-
-/// Runs in the sender's child process. Initializes CUDA, allocates GPU memory,
-/// registers the segment scanner, and registers sub-buffers with the RDMA manager.
+/// Runs in the sender's child process. Allocates GPU memory via CudaAllocator,
+/// registers sub-buffers with the RDMA manager, and can free the allocation on
+/// request. Allocate and register are separate messages so that multiple senders
+/// can allocate first (making all segments visible to the scanner) before any
+/// of them trigger registration.
 #[hyperactor::export(spawn = true, handlers = [SenderMessage])]
 #[derive(Debug)]
 struct SenderActor {
     device: i32,
-    // CUcontext stored as usize so we don't need a Send+Sync newtype wrapper.
-    cuda_ctx: usize,
+    allocation: Option<CudaAllocation>,
 }
 
 impl Actor for SenderActor {}
@@ -77,19 +59,11 @@ impl RemoteSpawn for SenderActor {
     type Params = i32;
 
     async fn new(device_id: i32, _env: Flattrs) -> Result<Self, anyhow::Error> {
-        unsafe {
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
-            let mut dev: rdmaxcel_sys::CUdevice = std::mem::zeroed();
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuDeviceGet(&mut dev, device_id));
-            let mut ctx: rdmaxcel_sys::CUcontext = std::mem::zeroed();
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxCreate_v2(
-                &mut ctx, 0, device_id
-            ));
-            Ok(Self {
-                device: device_id,
-                cuda_ctx: ctx as usize,
-            })
-        }
+        register_segment_scanner(Some(cuda_allocator_scanner));
+        Ok(Self {
+            device: device_id,
+            allocation: None,
+        })
     }
 }
 
@@ -102,102 +76,87 @@ impl RemoteSpawn for SenderActor {
     Debug
 )]
 enum SenderMessage {
-    AllocateAndRegister {
+    /// Allocate GPU memory for later registration.
+    Allocate {
         total_size: usize,
-        buf0_offset: usize,
-        buf0_size: usize,
-        buf1_offset: usize,
-        buf1_size: usize,
+        #[reply]
+        reply: reference::OncePortRef<()>,
+    },
+    /// Register sub-buffers from the previous allocation with the RDMA manager.
+    Register {
+        buffers: Vec<(usize, usize)>,
         rdma_manager: reference::ActorRef<RdmaManagerActor>,
         #[reply]
-        reply: reference::OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>,
+        reply: reference::OncePortRef<Vec<RdmaRemoteBuffer>>,
+    },
+    FreeAllocation {
+        #[reply]
+        reply: reference::OncePortRef<()>,
     },
 }
 
 #[async_trait]
 #[hyperactor::handle(SenderMessage)]
 impl SenderMessageHandler for SenderActor {
-    async fn allocate_and_register(
+    async fn allocate(
+        &mut self,
+        _cx: &Context<Self>,
+        total_size: usize,
+    ) -> Result<(), anyhow::Error> {
+        self.allocation = Some(CudaAllocator::get().allocate(self.device, total_size));
+        Ok(())
+    }
+
+    async fn register(
         &mut self,
         cx: &Context<Self>,
-        total_size: usize,
-        buf0_offset: usize,
-        buf0_size: usize,
-        buf1_offset: usize,
-        buf1_size: usize,
+        buffers: Vec<(usize, usize)>,
         rdma_manager: reference::ActorRef<RdmaManagerActor>,
-    ) -> Result<(RdmaRemoteBuffer, RdmaRemoteBuffer), anyhow::Error> {
-        let (dptr, padded_size) = unsafe {
-            let ctx = self.cuda_ctx as rdmaxcel_sys::CUcontext;
+    ) -> Result<Vec<RdmaRemoteBuffer>, anyhow::Error> {
+        let alloc = self
+            .allocation
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("register called before allocate"))?;
+
+        for (i, &(offset, size)) in buffers.iter().enumerate() {
+            anyhow::ensure!(
+                offset + size <= alloc.size(),
+                "buffer {i} exceeds allocation: offset=0x{offset:x} size={size} padded={}",
+                alloc.size()
+            );
+        }
+
+        // CudaAllocator::allocate already retained the primary context; set it
+        // as current so subsequent CUDA calls on this thread use the right device.
+        unsafe {
+            let mut dev: rdmaxcel_sys::CUdevice = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuDeviceGet(&mut dev, self.device));
+            let mut ctx: rdmaxcel_sys::CUcontext = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuDevicePrimaryCtxRetain(
+                &mut ctx, dev
+            ));
             cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(ctx));
-
-            let mut granularity: usize = 0;
-            let mut prop: rdmaxcel_sys::CUmemAllocationProp = std::mem::zeroed();
-            prop.type_ = rdmaxcel_sys::CU_MEM_ALLOCATION_TYPE_PINNED;
-            prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-            prop.location.id = self.device;
-            prop.allocFlags.gpuDirectRDMACapable = 1;
-            prop.requestedHandleTypes = rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemGetAllocationGranularity(
-                &mut granularity,
-                &prop,
-                rdmaxcel_sys::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
-            ));
-
-            let padded = ((total_size - 1) / granularity + 1) * granularity;
-
-            let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemCreate(
-                &mut handle,
-                padded,
-                &prop,
-                0
-            ));
-
-            let mut dptr: rdmaxcel_sys::CUdeviceptr = std::mem::zeroed();
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemAddressReserve(
-                &mut dptr, padded, 0, 0, 0,
-            ));
-
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemMap(dptr, padded, 0, handle, 0));
-
-            let mut access: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
-            access.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
-            access.location.id = self.device;
-            access.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemSetAccess(
-                dptr, padded, &access, 1
-            ));
-
-            (dptr, padded)
-        };
-
-        let base = dptr as usize;
-        SCANNER_CFG
-            .set((base, padded_size, self.device))
-            .expect("scanner config already set");
-        register_segment_scanner(Some(test_scanner));
-
-        anyhow::ensure!(
-            buf0_offset + buf0_size <= padded_size && buf1_offset + buf1_size <= padded_size,
-            "buffer offsets exceed allocation: padded={padded_size} \
-             buf0=[0x{buf0_offset:x},{buf0_size}] buf1=[0x{buf1_offset:x},{buf1_size}]"
-        );
+        }
 
         let handle = rdma_manager
             .downcast_handle(cx)
             .ok_or_else(|| anyhow::anyhow!("failed to get rdma handle"))?;
 
-        let buf0_local: Arc<dyn RdmaLocalMemory> =
-            Arc::new(UnsafeLocalMemory::new(base + buf0_offset, buf0_size));
-        let remote0 = handle.request_buffer(cx, buf0_local).await?;
+        let mut remotes = Vec::with_capacity(buffers.len());
+        for &(offset, size) in &buffers {
+            let local: Arc<dyn RdmaLocalMemory> =
+                Arc::new(UnsafeLocalMemory::new(alloc.ptr() + offset, size));
+            remotes.push(handle.request_buffer(cx, local).await?);
+        }
 
-        let buf1_local: Arc<dyn RdmaLocalMemory> =
-            Arc::new(UnsafeLocalMemory::new(base + buf1_offset, buf1_size));
-        let remote1 = handle.request_buffer(cx, buf1_local).await?;
+        Ok(remotes)
+    }
 
-        Ok((remote0, remote1))
+    async fn free_allocation(&mut self, _cx: &Context<Self>) -> Result<(), anyhow::Error> {
+        if let Some(alloc) = self.allocation.take() {
+            alloc.try_free();
+        }
+        Ok(())
     }
 }
 
@@ -288,6 +247,7 @@ impl ReceiverMessageHandler for ReceiverActor {
 ///
 /// See also: D84387295 (internal discovery of the same bug by dstaay),
 /// upstream fix in rdma-core v61.0.
+#[cfg(not(test_8_gpus))]
 #[timed_test::async_timed_test(timeout_secs = 60)]
 async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> {
     use crate::backend::ibverbs::primitives::mlx5dv_supported;
@@ -337,21 +297,18 @@ async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> 
     let sender = sender_mesh.values().next().unwrap().clone();
     let receiver = receiver_mesh.values().next().unwrap().clone();
 
-    let (remote_buf0, remote_buf1) = sender
-        .allocate_and_register(
+    sender.allocate(instance, SEGMENT_SIZE).await?;
+    let remotes = sender
+        .register(
             instance,
-            SEGMENT_SIZE,
-            0,
-            BUF0_SIZE,
-            BUF1_OFFSET,
-            BUF1_SIZE,
+            vec![(0, BUF0_SIZE), (BUF1_OFFSET, BUF1_SIZE)],
             sender_rdma_ref,
         )
         .await?;
 
     // Read at offset 0 — should always work.
     let buf0_result = receiver
-        .read_remote(instance, remote_buf0, BUF0_SIZE, 10)
+        .read_remote(instance, remotes[0].clone(), BUF0_SIZE, 10)
         .await?;
     assert!(
         buf0_result.is_ok(),
@@ -361,7 +318,7 @@ async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> 
 
     // Read at offset 0x66000000 (1.71 GB) — fails without the rdma-core fix.
     let buf1_result = receiver
-        .read_remote(instance, remote_buf1, BUF1_SIZE, 10)
+        .read_remote(instance, remotes[1].clone(), BUF1_SIZE, 10)
         .await?;
     assert!(
         buf1_result.is_ok(),
@@ -370,6 +327,140 @@ async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> 
         BUF1_OFFSET,
         buf1_result.unwrap_err()
     );
+
+    sender.free_allocation(instance).await?;
+    let _ = host_mesh.shutdown(instance).await;
+    Ok(())
+}
+
+/// Validates that per-PD segment registration works correctly when two GPU
+/// buffers on different RDMA NICs are registered through the same
+/// RdmaManagerActor. The manager internally creates a separate PD for each NIC,
+/// so segments on different devices get different PDs.
+///
+/// Dynamically discovers two CUDA devices that map to different NICs, allocates
+/// memory on each (so the scanner sees both before registration), then registers
+/// both and performs RDMA reads from separate receiver processes — one per NIC,
+/// since RoCEv2 NICs on different subnets can't reach each other.
+///
+/// Without the per-PD fix (keying `activeSegments` by `(address, pd)` instead
+/// of just `address`), the second buffer would never register with the correct
+/// PD, causing the second read to fail.
+#[cfg(test_8_gpus)]
+#[timed_test::async_timed_test(timeout_secs = 60)]
+async fn test_multi_pd_segment_registration() -> Result<(), anyhow::Error> {
+    use crate::backend::ibverbs::primitives::mlx5dv_supported;
+
+    if !crate::is_cuda_available() {
+        panic!("SKIPPED: CUDA not available (required for GPU memory allocation)");
+    }
+    if !mlx5dv_supported() {
+        panic!("SKIPPED: mlx5dv not supported (required for indirect mkey creation)");
+    }
+
+    let (device_a, device_b) = match find_devices_on_different_nics() {
+        Some(pair) => pair,
+        None => panic!("SKIPPED: need at least 2 CUDA devices on different RDMA NICs"),
+    };
+
+    const BUF_SIZE: usize = 4 * 1024 * 1024; // 4 MB per buffer
+
+    let cx = context().await;
+    let instance = cx.actor_instance;
+    let mut host_mesh = HostMesh::local().await?;
+
+    let proc_mesh = host_mesh
+        .spawn(
+            instance,
+            "multi_pd_procs",
+            hyperactor_mesh::extent!(procs = 3),
+            None,
+        )
+        .await?;
+
+    let sender_proc = proc_mesh.range("procs", 0..1).unwrap();
+    let receiver_a_proc = proc_mesh.range("procs", 1..2).unwrap();
+    let receiver_b_proc = proc_mesh.range("procs", 2..3).unwrap();
+
+    // Single RDMA manager for both senders. It uses different PDs internally
+    // for each NIC, which is exactly what we're testing.
+    let rdma: ActorMesh<RdmaManagerActor> = sender_proc
+        .spawn_service(instance, "rdma_manager", &Some(IbvConfig::default()))
+        .await?;
+
+    // Each receiver gets an RDMA manager targeting the NIC that matches its
+    // sender's device. This ensures the receiver's QP is on the same subnet
+    // as the sender's NIC (required for RoCEv2).
+    let _rdma_recv_a: ActorMesh<RdmaManagerActor> = receiver_a_proc
+        .spawn_service(
+            instance,
+            "rdma_manager",
+            &Some(IbvConfig::targeting(&format!("cuda:{device_a}"))),
+        )
+        .await?;
+    let _rdma_recv_b: ActorMesh<RdmaManagerActor> = receiver_b_proc
+        .spawn_service(
+            instance,
+            "rdma_manager",
+            &Some(IbvConfig::targeting(&format!("cuda:{device_b}"))),
+        )
+        .await?;
+
+    let rdma_ref = rdma.values().next().unwrap().clone();
+
+    // Both senders on the same proc, sharing the RDMA manager.
+    let sender_a_mesh: ActorMesh<SenderActor> =
+        sender_proc.spawn(instance, "sender_a", &device_a).await?;
+    let sender_b_mesh: ActorMesh<SenderActor> =
+        sender_proc.spawn(instance, "sender_b", &device_b).await?;
+    let receiver_a_mesh: ActorMesh<ReceiverActor> =
+        receiver_a_proc.spawn(instance, "receiver_a", &()).await?;
+    let receiver_b_mesh: ActorMesh<ReceiverActor> =
+        receiver_b_proc.spawn(instance, "receiver_b", &()).await?;
+
+    let sender_a = sender_a_mesh.values().next().unwrap().clone();
+    let sender_b = sender_b_mesh.values().next().unwrap().clone();
+    let receiver_a = receiver_a_mesh.values().next().unwrap().clone();
+    let receiver_b = receiver_b_mesh.values().next().unwrap().clone();
+
+    // Both senders allocate first, so the scanner sees both segments before
+    // either triggers registration.
+    sender_a.allocate(instance, BUF_SIZE).await?;
+    sender_b.allocate(instance, BUF_SIZE).await?;
+
+    // Now register — each triggers segment scanning and gets its own PD
+    // based on the NIC closest to its device.
+    let remotes_a = sender_a
+        .register(instance, vec![(0, BUF_SIZE)], rdma_ref.clone())
+        .await?;
+    let remotes_b = sender_b
+        .register(instance, vec![(0, BUF_SIZE)], rdma_ref)
+        .await?;
+
+    // Each receiver reads using a QP on the matching NIC/subnet.
+    let result_a = receiver_a
+        .read_remote(instance, remotes_a[0].clone(), BUF_SIZE, 10)
+        .await?;
+    assert!(
+        result_a.is_ok(),
+        "RDMA read from device {device_a} failed: {:?}",
+        result_a.unwrap_err()
+    );
+
+    // On the base revision (address-only key), B's segment would never be
+    // registered with the correct PD, causing this read to fail.
+    let result_b = receiver_b
+        .read_remote(instance, remotes_b[0].clone(), BUF_SIZE, 10)
+        .await?;
+    assert!(
+        result_b.is_ok(),
+        "RDMA read from device {device_b} failed (per-PD segment registration bug): {:?}",
+        result_b.unwrap_err()
+    );
+
+    // Clean up allocations.
+    sender_a.free_allocation(instance).await?;
+    sender_b.free_allocation(instance).await?;
 
     let _ = host_mesh.shutdown(instance).await;
     Ok(())

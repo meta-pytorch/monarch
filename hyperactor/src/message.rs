@@ -187,6 +187,11 @@ impl ErasedUnbound {
         }
     }
 
+    /// Access the inner serialized message.
+    pub fn message(&self) -> &wirevalue::Any {
+        &self.message
+    }
+
     /// Create an object from a typed message.
     // Note: cannot implement TryFrom<T> due to conflict with core crate's blanket impl.
     // More can be found in this issue: https://github.com/rust-lang/rust/issues/50133
@@ -226,6 +231,11 @@ pub struct IndexedErasedUnbound<M>(ErasedUnbound, PhantomData<M>);
 impl<M: DeserializeOwned + Named> IndexedErasedUnbound<M> {
     pub(crate) fn downcast(self) -> anyhow::Result<Unbound<M>> {
         self.0.downcast()
+    }
+
+    /// Access the inner serialized message.
+    pub fn inner_any(&self) -> &wirevalue::Any {
+        self.0.message()
     }
 }
 
@@ -297,6 +307,8 @@ impl_bind_unbind_basic!(u128);
 impl_bind_unbind_basic!(isize);
 impl_bind_unbind_basic!(usize);
 impl_bind_unbind_basic!(String);
+impl_bind_unbind_basic!(std::time::Duration);
+impl_bind_unbind_basic!(std::time::SystemTime);
 
 impl<T: Unbind> Unbind for Option<T> {
     fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {

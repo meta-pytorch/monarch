@@ -15,6 +15,7 @@ Module-level functions (init, _query, etc.) provide backward compatibility
 by delegating to a module-level SQLiteAdapter instance.
 """
 
+import json
 import sqlite3
 from abc import ABC, abstractmethod
 from typing import Any
@@ -46,6 +47,12 @@ class DBAdapter(ABC):
         """Execute *sql* and return the first row, or None."""
         rows = self.query(sql)
         return rows[0] if rows else None
+
+    def store_pyspy_dump(  # noqa: B027
+        self, dump_id: str, proc_ref: str, pyspy_result_json: str
+    ) -> None:
+        """Store a py-spy dump result. No-op by default."""
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -110,17 +117,14 @@ def _get_adapter() -> DBAdapter:
     return _adapter
 
 
-def _connect() -> sqlite3.Connection:
-    """Open a SQLite connection (backward-compatible helper).
+def raw_query(sql: str) -> list[dict[str, Any]]:
+    """Execute a raw SQL query (no placeholder substitution)."""
+    return _get_adapter().query(sql)
 
-    Only works when the adapter is SQLiteAdapter. Raises RuntimeError
-    when using QueryEngineAdapter. This function is kept for backward
-    compatibility with code that needs direct SQLite access.
-    """
-    adapter = _get_adapter()
-    if not isinstance(adapter, SQLiteAdapter):
-        raise RuntimeError("_connect() requires a SQLiteAdapter")
-    return adapter._connect()
+
+def store_pyspy_dump(dump_id: str, proc_ref: str, pyspy_result_json: str) -> None:
+    """Store a py-spy dump result via the current adapter."""
+    _get_adapter().store_pyspy_dump(dump_id, proc_ref, pyspy_result_json)
 
 
 def _sql_literal(value: Any) -> str:
@@ -165,6 +169,110 @@ def _query_one(sql: str, params: tuple = ()) -> dict[str, Any] | None:
     return _get_adapter().query_one(_format_sql(sql, params))
 
 
+def _dedup_rows(rows: list[dict[str, Any]], key: str = "id") -> list[dict[str, Any]]:
+    """Deduplicate rows by *key*, keeping the first occurrence."""
+    seen: set = set()
+    result: list[dict[str, Any]] = []
+    for r in rows:
+        val = r.get(key)
+        if val not in seen:
+            seen.add(val)
+            result.append(r)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# ndslice Region → proc rank mapping
+# ---------------------------------------------------------------------------
+
+
+def _parse_region(
+    parent_view_json: str | None,
+) -> tuple[int, list[int], list[int]] | None:
+    """Parse a serialized ndslice Region into (offset, sizes, strides).
+
+    Accepts the real DataFusion format::
+
+        {"labels": ["workers"], "slice": {"offset": 0, "sizes": [2], "strides": [1]}}
+
+    Returns None if *parent_view_json* is null or unparseable.
+    """
+    if not parent_view_json:
+        return None
+    try:
+        parsed = json.loads(parent_view_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    sl = parsed.get("slice")
+    if not sl or "offset" not in sl or "sizes" not in sl or "strides" not in sl:
+        return None
+    return (sl["offset"], sl["sizes"], sl["strides"])
+
+
+def _child_rank_to_parent_rank(
+    child_rank: int,
+    offset: int,
+    sizes: list[int],
+    strides: list[int],
+) -> int:
+    """Map a child mesh rank to a parent mesh rank via the parent Region.
+
+    A child mesh is spawned on a view (Region) of the parent mesh.  Children
+    are enumerated in row-major order over the Region.  Given the Region
+    R = (offset, sizes, strides), child rank *r* maps to::
+
+        parent_rank = offset + Σ_{k} i_k · strides_k
+
+    where (i_0, ..., i_{d-1}) is the row-major decomposition of *r* over
+    *sizes*.  O(d) per call where d = len(sizes).
+    """
+    parent_rank = offset
+    remainder = child_rank
+    for k in range(len(sizes)):
+        suffix = 1
+        for j in range(k + 1, len(sizes)):
+            suffix *= sizes[j]
+        i_k = (remainder // suffix) % sizes[k]
+        parent_rank += i_k * strides[k]
+        remainder %= suffix
+    return parent_rank
+
+
+def _parent_ranks_for_region(
+    offset: int,
+    sizes: list[int],
+    strides: list[int],
+) -> set[int]:
+    """Return the set of all parent mesh ranks covered by a Region.  O(|R|)."""
+    total = 1
+    for s in sizes:
+        total *= s
+    return {_child_rank_to_parent_rank(r, offset, sizes, strides) for r in range(total)}
+
+
+# Reusable SQL fragments for latest-status subqueries.
+
+_LATEST_ACTOR_STATUS_SQL = (
+    "SELECT ase.actor_id, ase.new_status, sub.max_ts"
+    " FROM actor_status_events ase"
+    " INNER JOIN ("
+    "   SELECT actor_id, MAX(timestamp_us) AS max_ts"
+    "   FROM actor_status_events GROUP BY actor_id"
+    " ) sub ON ase.actor_id = sub.actor_id"
+    "   AND ase.timestamp_us = sub.max_ts"
+)
+
+_LATEST_MSG_STATUS_SQL = (
+    "SELECT mse.message_id, mse.status"
+    " FROM message_status_events mse"
+    " INNER JOIN ("
+    "   SELECT message_id, MAX(timestamp_us) AS max_ts"
+    "   FROM message_status_events GROUP BY message_id"
+    " ) sub ON mse.message_id = sub.message_id"
+    "   AND mse.timestamp_us = sub.max_ts"
+)
+
+
 # ---------------------------------------------------------------------------
 # Mesh queries
 # ---------------------------------------------------------------------------
@@ -173,8 +281,14 @@ def _query_one(sql: str, params: tuple = ()) -> dict[str, Any] | None:
 def list_meshes(
     class_filter: str | None = None,
     parent_mesh_id: int | None = None,
+    exclude_classes: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return meshes, optionally filtered by class and/or parent_mesh_id."""
+    """Return meshes, optionally filtered by class and/or parent_mesh_id.
+
+    ``exclude_classes`` removes meshes whose class is in the given list
+    (applied in Python to work with both SQLite and DataFusion).
+    Results are deduplicated by mesh id.
+    """
     clauses: list[str] = []
     params: list[Any] = []
     if class_filter is not None:
@@ -184,7 +298,10 @@ def list_meshes(
         clauses.append("parent_mesh_id = ?")
         params.append(parent_mesh_id)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    return _query(f"SELECT * FROM meshes{where} ORDER BY id", tuple(params))
+    rows = _query(f"SELECT * FROM meshes{where} ORDER BY id", tuple(params))
+    if exclude_classes:
+        rows = [r for r in rows if r.get("class") not in exclude_classes]
+    return _dedup_rows(rows)
 
 
 def get_mesh(mesh_id: int) -> dict[str, Any] | None:
@@ -192,11 +309,27 @@ def get_mesh(mesh_id: int) -> dict[str, Any] | None:
     return _query_one("SELECT * FROM meshes WHERE id = ?", (mesh_id,))
 
 
-def get_mesh_children(mesh_id: int) -> list[dict[str, Any]]:
-    """Return child meshes of *mesh_id* (where parent_mesh_id = mesh_id)."""
-    return _query(
+def get_mesh_children(
+    mesh_id: int,
+    mesh_class: str | None = None,
+    exclude_classes: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return child meshes of *mesh_id* (where parent_mesh_id = mesh_id).
+
+    Optionally filter by ``mesh_class`` or exclude specific classes.
+    Results are deduplicated by mesh id.
+    """
+    rows = _query(
         "SELECT * FROM meshes WHERE parent_mesh_id = ? ORDER BY id", (mesh_id,)
     )
+    # Exclude self-referencing meshes (e.g. Proc "local" with same id as
+    # its parent Host "local" in DataFusion).
+    rows = [r for r in rows if r["id"] != mesh_id]
+    if mesh_class is not None:
+        rows = [r for r in rows if r.get("class") == mesh_class]
+    if exclude_classes:
+        rows = [r for r in rows if r.get("class") not in exclude_classes]
+    return _dedup_rows(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -207,25 +340,25 @@ def get_mesh_children(mesh_id: int) -> list[dict[str, Any]]:
 def list_actors(mesh_id: int | None = None) -> list[dict[str, Any]]:
     """Return all actors with latest_status and mesh_class, optionally filtered."""
     base = (
-        "SELECT a.*, m.class AS mesh_class, "
-        "m.given_name AS mesh_name, "
-        "latest.new_status AS latest_status, "
-        "latest.max_ts AS status_timestamp_us "
-        "FROM actors a "
-        "LEFT JOIN meshes m ON a.mesh_id = m.id "
-        "LEFT JOIN ("
-        "  SELECT ase.actor_id, ase.new_status, sub.max_ts "
-        "  FROM actor_status_events ase "
-        "  INNER JOIN ("
-        "    SELECT actor_id, MAX(timestamp_us) AS max_ts "
-        "    FROM actor_status_events GROUP BY actor_id"
-        "  ) sub ON ase.actor_id = sub.actor_id "
-        "    AND ase.timestamp_us = sub.max_ts"
-        ") latest ON a.id = latest.actor_id"
+        "SELECT a.*, m.class AS mesh_class,"
+        " m.given_name AS mesh_name,"
+        " latest.new_status AS latest_status,"
+        " latest.max_ts AS status_timestamp_us"
+        " FROM actors a"
+        " LEFT JOIN meshes m ON a.mesh_id = m.id"
+        f" LEFT JOIN ({_LATEST_ACTOR_STATUS_SQL}) latest"
+        " ON a.id = latest.actor_id"
     )
     if mesh_id is not None:
-        return _query(f"{base} WHERE a.mesh_id = ? ORDER BY a.id", (mesh_id,))
-    return _query(f"{base} ORDER BY a.id")
+        rows = _query(f"{base} WHERE a.mesh_id = ? ORDER BY a.id", (mesh_id,))
+    else:
+        rows = _query(f"{base} ORDER BY a.id")
+    rows = _dedup_rows(rows)
+    # Normalise status to lowercase (DataFusion emits PascalCase, fake data lowercase).
+    for r in rows:
+        if r.get("latest_status"):
+            r["latest_status"] = r["latest_status"].lower()
+    return rows
 
 
 def get_actor(actor_id: int) -> dict[str, Any] | None:
@@ -246,6 +379,8 @@ def get_actor_latest_status(actor_id: int) -> dict[str, Any] | None:
         "ORDER BY timestamp_us DESC LIMIT 1",
         (actor_id,),
     )
+    if row and row.get("latest_status"):
+        row["latest_status"] = row["latest_status"].lower()
     return row
 
 
@@ -290,13 +425,20 @@ def list_messages(
 
 
 def get_actor_messages(actor_id: int) -> list[dict[str, Any]]:
-    """Return all messages where the actor is sender or receiver."""
-    return _query(
-        "SELECT * FROM messages "
-        "WHERE from_actor_id = ? OR to_actor_id = ? "
-        "ORDER BY timestamp_us",
+    """Return all messages where the actor is sender or receiver, with latest status."""
+    rows = _query(
+        "SELECT m.*, latest.status AS latest_status"
+        " FROM messages m"
+        f" LEFT JOIN ({_LATEST_MSG_STATUS_SQL}) latest"
+        " ON m.id = latest.message_id"
+        " WHERE m.from_actor_id = ? OR m.to_actor_id = ?"
+        " ORDER BY m.timestamp_us",
         (actor_id, actor_id),
     )
+    for r in rows:
+        if r.get("latest_status"):
+            r["latest_status"] = r["latest_status"].lower()
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +482,7 @@ def list_sent_messages(
 # ---------------------------------------------------------------------------
 
 
-def get_dag_data() -> dict[str, Any]:
+def get_dag_data(system_names: set[str] | None = None) -> dict[str, Any]:
     """Return classified nodes and edges for the DAG visualization.
 
     Fetches all meshes, actors (with latest status), and messages in a single
@@ -348,8 +490,10 @@ def get_dag_data() -> dict[str, Any]:
 
       host_mesh -> host_unit -> proc_mesh -> proc_unit -> actor_mesh -> actor
 
-    Status propagation: if a host_unit has a terminal status (failed/stopped/
-    stopping), all proc_units and actors under that host inherit it.
+    Args:
+        system_names: If provided, actors whose ``full_name`` is in this set
+            are excluded from the DAG.  Meshes that become empty after
+            filtering are also pruned.
 
     Returns ``{"nodes": [...], "edges": [...]}``.
     """
@@ -357,20 +501,17 @@ def get_dag_data() -> dict[str, Any]:
 
     # Actors with latest status via JOIN.
     actors = _query(
-        "SELECT a.*, latest.new_status AS latest_status "
-        "FROM actors a LEFT JOIN ("
-        "  SELECT ase.actor_id, ase.new_status, sub.max_ts "
-        "  FROM actor_status_events ase "
-        "  INNER JOIN ("
-        "    SELECT actor_id, MAX(timestamp_us) AS max_ts "
-        "    FROM actor_status_events GROUP BY actor_id"
-        "  ) sub ON ase.actor_id = sub.actor_id "
-        "    AND ase.timestamp_us = sub.max_ts"
-        ") latest ON a.id = latest.actor_id "
-        "ORDER BY a.id"
+        "SELECT a.*, latest.new_status AS latest_status"
+        " FROM actors a"
+        f" LEFT JOIN ({_LATEST_ACTOR_STATUS_SQL}) latest"
+        " ON a.id = latest.actor_id"
+        " ORDER BY a.id"
     )
 
     messages = _query("SELECT from_actor_id, to_actor_id FROM messages ORDER BY id")
+
+    # -- Index meshes by id --
+    mesh_by_id: dict[int, dict] = {m["id"]: m for m in meshes}
 
     # -- Classify meshes --
     host_meshes = [m for m in meshes if m["class"] == "Host"]
@@ -383,47 +524,54 @@ def get_dag_data() -> dict[str, Any]:
     regular_actors: list[dict] = []
 
     for a in actors:
-        if "HostAgent" in a["full_name"]:
+        name_lower = a["full_name"].lower()
+        if "hostagent" in name_lower or "host_agent" in name_lower:
             host_agents_by_mesh.setdefault(a["mesh_id"], []).append(a)
-        elif "ProcAgent" in a["full_name"]:
+        elif "procagent" in name_lower or "proc_agent" in name_lower:
             proc_agents_by_mesh.setdefault(a["mesh_id"], []).append(a)
         else:
             regular_actors.append(a)
 
-    # -- Build parent -> children mesh map --
-    mesh_children: dict[int, list[dict]] = {}
-    for m in meshes:
-        pid = m["parent_mesh_id"]
-        if pid is not None:
-            mesh_children.setdefault(pid, []).append(m)
+    # -- Filter system actors if requested --
+    # Strategy: remove actors whose full_name matches a system name,
+    # then prune actor meshes with no remaining actors, then prune
+    # proc meshes with no remaining actor meshes, keeping the host
+    # layer intact as structural context.
+    if system_names:
+        _system_names = system_names  # local binding for Pyre narrowing
 
-    # -- Build mesh -> regular actors map --
-    mesh_actors: dict[int, list[dict]] = {}
-    for a in regular_actors:
-        mesh_actors.setdefault(a["mesh_id"], []).append(a)
+        def _is_system(name: str) -> bool:
+            return any(sn in name for sn in _system_names)
+
+        regular_actors = [a for a in regular_actors if not _is_system(a["full_name"])]
+
+        # Find actor mesh IDs that still have at least one non-system actor.
+        live_actor_mesh_ids = {a["mesh_id"] for a in regular_actors}
+        actor_meshes = [m for m in actor_meshes if m["id"] in live_actor_mesh_ids]
+
+        # Find proc mesh IDs that still have at least one non-system actor mesh child.
+        live_proc_mesh_ids = {
+            m["parent_mesh_id"] for m in actor_meshes if m["parent_mesh_id"] is not None
+        }
+        proc_meshes = [m for m in proc_meshes if m["id"] in live_proc_mesh_ids]
+
+        # Rebuild proc agents to only include procs that survived.
+        surviving_proc_mesh_ids = {m["id"] for m in proc_meshes}
+        proc_agents_by_mesh = {
+            k: v for k, v in proc_agents_by_mesh.items() if k in surviving_proc_mesh_ids
+        }
 
     # -- Actor statuses --
     actor_statuses: dict[int, str] = {}
     for a in actors:
         actor_statuses[a["id"]] = (a.get("latest_status") or "unknown").lower()
 
-    # -- Terminal status propagation --
-    terminal = {"stopped", "failed", "stopping"}
+    def _leaf_name(name: str) -> str:
+        """Extract the last segment from a hierarchical name.
 
-    def host_terminal_status(host_mesh_id: int) -> str | None:
-        for agent in host_agents_by_mesh.get(host_mesh_id, []):
-            s = actor_statuses.get(agent["id"], "unknown")
-            if s in terminal:
-                return s
-        return None
-
-    proc_to_host: dict[int, int] = {}
-    for pm in proc_meshes:
-        if pm["parent_mesh_id"] is not None:
-            proc_to_host[pm["id"]] = pm["parent_mesh_id"]
-
-    def _short(name: str) -> str:
-        return name.rsplit("/", 1)[-1]
+        Handles both fake data (``/`` separators) and real data (``,`` separators).
+        """
+        return name.rsplit("/", 1)[-1].rsplit(",", 1)[-1]
 
     # -- Build nodes --
     nodes: list[dict[str, Any]] = []
@@ -434,7 +582,7 @@ def get_dag_data() -> dict[str, Any]:
                 "id": f"host_mesh-{m['id']}",
                 "entity_id": m["id"],
                 "tier": "host_mesh",
-                "label": _short(m["given_name"]),
+                "label": _leaf_name(m["given_name"]),
                 "subtitle": "Host Mesh",
                 "status": "n/a",
             }
@@ -447,9 +595,10 @@ def get_dag_data() -> dict[str, Any]:
                     "id": f"host_unit-{agent['id']}",
                     "entity_id": agent["id"],
                     "tier": "host_unit",
-                    "label": _short(agent["full_name"]),
+                    "label": f"Host Unit {agent['rank']}",
                     "subtitle": "Host",
                     "status": actor_statuses.get(agent["id"], "unknown"),
+                    "rank": agent["rank"],
                 }
             )
 
@@ -459,25 +608,23 @@ def get_dag_data() -> dict[str, Any]:
                 "id": f"proc_mesh-{m['id']}",
                 "entity_id": m["id"],
                 "tier": "proc_mesh",
-                "label": _short(m["given_name"]),
+                "label": _leaf_name(m["given_name"]),
                 "subtitle": "Proc Mesh",
                 "status": "n/a",
             }
         )
 
     for pm in proc_meshes:
-        host_id = proc_to_host.get(pm["id"])
-        t_host = host_terminal_status(host_id) if host_id is not None else None
         for agent in proc_agents_by_mesh.get(pm["id"], []):
-            own = actor_statuses.get(agent["id"], "unknown")
             nodes.append(
                 {
                     "id": f"proc_unit-{agent['id']}",
                     "entity_id": agent["id"],
                     "tier": "proc_unit",
-                    "label": _short(agent["full_name"]),
+                    "label": f"Proc Unit {agent['rank']}",
                     "subtitle": "Proc",
-                    "status": t_host if t_host else own,
+                    "status": actor_statuses.get(agent["id"], "unknown"),
+                    "rank": agent["rank"],
                 }
             )
 
@@ -487,27 +634,22 @@ def get_dag_data() -> dict[str, Any]:
                 "id": f"actor_mesh-{m['id']}",
                 "entity_id": m["id"],
                 "tier": "actor_mesh",
-                "label": _short(m["given_name"]),
+                "label": _leaf_name(m["given_name"]),
                 "subtitle": "Actor Mesh",
                 "status": "n/a",
             }
         )
 
     for a in regular_actors:
-        parent_mesh = next((m for m in meshes if m["id"] == a["mesh_id"]), None)
-        parent_proc_id = parent_mesh["parent_mesh_id"] if parent_mesh else None
-        host_id = (
-            proc_to_host.get(parent_proc_id) if parent_proc_id is not None else None
-        )
-        t_host = host_terminal_status(host_id) if host_id is not None else None
         nodes.append(
             {
                 "id": f"actor-{a['id']}",
                 "entity_id": a["id"],
                 "tier": "actor",
-                "label": _short(a["full_name"]),
+                "label": _leaf_name(a["full_name"]),
                 "subtitle": f"rank {a['rank']}",
-                "status": t_host if t_host else actor_statuses.get(a["id"], "unknown"),
+                "status": actor_statuses.get(a["id"], "unknown"),
+                "rank": a["rank"],
             }
         )
 
@@ -527,10 +669,21 @@ def get_dag_data() -> dict[str, Any]:
             )
 
     # Host unit -> proc mesh
+    # Use parent_view_json (ndslice Region) on the proc mesh to determine
+    # which host ranks it covers, then connect only matching host agents.
+    # Same pattern as proc_unit -> actor_mesh linking below.
     for pm in proc_meshes:
         if pm["parent_mesh_id"] is None:
             continue
-        for agent in host_agents_by_mesh.get(pm["parent_mesh_id"], []):
+        host_agents = host_agents_by_mesh.get(pm["parent_mesh_id"], [])
+        region = _parse_region(pm.get("parent_view_json"))
+        if region is not None and host_agents:
+            covered_ranks = _parent_ranks_for_region(*region)
+            matching = [a for a in host_agents if a.get("rank") in covered_ranks]
+            targets = matching if matching else host_agents
+        else:
+            targets = host_agents
+        for agent in targets:
             edges.append(
                 {
                     "id": f"hier-host_unit-{agent['id']}-proc_mesh-{pm['id']}",
@@ -553,10 +706,22 @@ def get_dag_data() -> dict[str, Any]:
             )
 
     # Proc unit -> actor mesh
+    # Use parent_view_json (ndslice Region) to determine which proc ranks
+    # the actor mesh spans, then connect only the matching proc agents.
+    # Falls back to connecting all proc agents if parent_view_json is absent.
     for am in actor_meshes:
         if am["parent_mesh_id"] is None:
             continue
-        for agent in proc_agents_by_mesh.get(am["parent_mesh_id"], []):
+        proc_agents = proc_agents_by_mesh.get(am["parent_mesh_id"], [])
+        region = _parse_region(am.get("parent_view_json"))
+        if region is not None and proc_agents:
+            covered_ranks = _parent_ranks_for_region(*region)
+            matching = [a for a in proc_agents if a.get("rank") in covered_ranks]
+            # Fall back to all agents if no rank matches (e.g. rank data missing).
+            targets = matching if matching else proc_agents
+        else:
+            targets = proc_agents
+        for agent in targets:
             edges.append(
                 {
                     "id": f"hier-proc_unit-{agent['id']}-actor_mesh-{am['id']}",
@@ -614,76 +779,74 @@ def get_summary() -> dict[str, Any]:
         row = _query_one(sql)
         return list(row.values())[0] if row else 0
 
-    # -- Mesh counts by class --
-    total_meshes = _count("SELECT COUNT(*) AS n FROM meshes")
-    host_meshes = _count("SELECT COUNT(*) AS n FROM meshes WHERE class = 'Host'")
-    proc_meshes = _count("SELECT COUNT(*) AS n FROM meshes WHERE class = 'Proc'")
-    actor_meshes = _count(
-        "SELECT COUNT(*) AS n FROM meshes WHERE class != 'Host' AND class != 'Proc'"
-    )
+    # -- Mesh counts by class (deduplicate by id since DataFusion can have
+    # multiple rows for the same mesh id with different classes) --
+    all_meshes = _query("SELECT id, class FROM meshes")
+    _unique_meshes = _dedup_rows(all_meshes)
+    total_meshes = len(_unique_meshes)
+    host_meshes = sum(1 for m in _unique_meshes if m["class"] == "Host")
+    proc_meshes = sum(1 for m in _unique_meshes if m["class"] == "Proc")
+    actor_meshes = sum(1 for m in _unique_meshes if m["class"] not in ("Host", "Proc"))
 
     # -- Actor counts --
     total_actors = _count("SELECT COUNT(*) AS n FROM actors")
 
-    # Latest status per actor (subquery picks the most recent event).
-    actor_status_rows = _query(
-        "SELECT sub.new_status, COUNT(*) AS cnt FROM ("
-        "  SELECT ase.actor_id, ase.new_status"
-        "  FROM actor_status_events ase"
-        "  INNER JOIN ("
-        "    SELECT actor_id, MAX(timestamp_us) AS max_ts"
-        "    FROM actor_status_events GROUP BY actor_id"
-        "  ) latest ON ase.actor_id = latest.actor_id"
-        "    AND ase.timestamp_us = latest.max_ts"
-        ") sub GROUP BY sub.new_status ORDER BY sub.new_status"
+    # Latest status per actor — deduplicate in Python to handle cases where
+    # multiple events share the same max timestamp.
+    actor_latest_rows = _query(
+        f"SELECT actor_id, new_status FROM ({_LATEST_ACTOR_STATUS_SQL})"
     )
-    actor_by_status = {row["new_status"]: row["cnt"] for row in actor_status_rows}
+    # Keep first occurrence per actor_id.  Normalise to lowercase so both
+    # fake data ("idle") and real DataFusion telemetry ("Idle") match.
+    actor_by_status: dict[str, int] = {}
+    for row in _dedup_rows(actor_latest_rows, key="actor_id"):
+        s = (row["new_status"] or "unknown").lower()
+        actor_by_status[s] = actor_by_status.get(s, 0) + 1
 
     # -- Message counts --
     total_messages = _count("SELECT COUNT(*) AS n FROM messages")
 
-    msg_status_rows = _query(
-        "SELECT status, COUNT(*) AS cnt FROM messages GROUP BY status ORDER BY status"
+    # Latest status per message — deduplicate in Python.
+    msg_latest_rows = _query(
+        f"SELECT message_id, status FROM ({_LATEST_MSG_STATUS_SQL})"
     )
-    msg_by_status = {row["status"]: row["cnt"] for row in msg_status_rows}
+    msg_by_status: dict[str, int] = {}
+    for row in _dedup_rows(msg_latest_rows, key="message_id"):
+        s = (row["status"] or "unknown").lower()
+        msg_by_status[s] = msg_by_status.get(s, 0) + 1
 
     msg_endpoint_rows = _query(
         "SELECT endpoint, COUNT(*) AS cnt FROM messages "
         "GROUP BY endpoint ORDER BY endpoint"
     )
-    msg_by_endpoint = {row["endpoint"]: row["cnt"] for row in msg_endpoint_rows}
+    msg_by_endpoint = {
+        (row["endpoint"] or "(none)"): row["cnt"] for row in msg_endpoint_rows
+    }
 
-    delivered = msg_by_status.get("delivered", 0)
-    delivery_rate = round(delivered / total_messages, 3) if total_messages > 0 else 0.0
+    completed = msg_by_status.get("complete", 0)
+    delivery_rate = (
+        min(1.0, round(completed / total_messages, 3)) if total_messages > 0 else 0.0
+    )
 
     # -- Error details --
-    failed_actors = _query(
-        "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id "
-        "FROM actor_status_events ase "
-        "JOIN actors a ON ase.actor_id = a.id "
-        "INNER JOIN ("
-        "  SELECT actor_id, MAX(timestamp_us) AS max_ts "
-        "  FROM actor_status_events GROUP BY actor_id"
-        ") latest ON ase.actor_id = latest.actor_id "
-        "  AND ase.timestamp_us = latest.max_ts "
-        "WHERE ase.new_status = 'failed' "
-        "ORDER BY ase.timestamp_us"
+    # Use LOWER() so both fake data ("failed") and real telemetry ("Failed") match.
+    _error_actor_sql = (
+        "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id"
+        " FROM actor_status_events ase"
+        " JOIN actors a ON ase.actor_id = a.id"
+        f" INNER JOIN ({_LATEST_ACTOR_STATUS_SQL}) latest"
+        " ON ase.actor_id = latest.actor_id"
+        "   AND ase.timestamp_us = latest.max_ts"
+        " WHERE LOWER(ase.new_status) = ?"
+        " ORDER BY ase.timestamp_us"
     )
+    failed_actors = _query(_error_actor_sql, ("failed",))
+    stopped_actors = _query(_error_actor_sql, ("stopped",))
 
-    stopped_actors = _query(
-        "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id "
-        "FROM actor_status_events ase "
-        "JOIN actors a ON ase.actor_id = a.id "
-        "INNER JOIN ("
-        "  SELECT actor_id, MAX(timestamp_us) AS max_ts "
-        "  FROM actor_status_events GROUP BY actor_id"
-        ") latest ON ase.actor_id = latest.actor_id "
-        "  AND ase.timestamp_us = latest.max_ts "
-        "WHERE ase.new_status = 'stopped' "
-        "ORDER BY ase.timestamp_us"
-    )
-
-    failed_messages = msg_by_status.get("failed", 0)
+    # Hyperactor telemetry doesn't track message delivery failures.
+    # Actor failures from undeliverable messages are already surfaced in
+    # failed_actors above (the failure reason contains the delivery error).
+    failed_messages = 0
 
     # -- Timeline --
     time_range = _query_one(
@@ -695,7 +858,7 @@ def get_summary() -> dict[str, Any]:
 
     failure_onset_row = _query_one(
         "SELECT MIN(timestamp_us) AS ts FROM actor_status_events "
-        "WHERE new_status = 'failed'"
+        "WHERE LOWER(new_status) = 'failed'"
     )
     failure_onset_us = (
         failure_onset_row["ts"]

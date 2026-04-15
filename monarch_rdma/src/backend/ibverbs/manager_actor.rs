@@ -50,6 +50,7 @@ use super::primitives::ibverbs_supported;
 use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
+use super::queue_pair::PollCompletionError;
 use super::queue_pair::PollTarget;
 use crate::RdmaOp;
 use crate::RdmaOpType;
@@ -78,17 +79,17 @@ pub enum IbvManagerMessage {
         reply: reference::OncePortRef<Option<IbvBuffer>>,
     },
     /// Release a buffer registration by `remote_buf_id`.
-    ReleaseBuffer {
-        remote_buf_id: usize,
-        #[reply]
-        reply: reference::OncePortRef<()>,
-    },
+    /// IMPORTANT: This needs to be fire-and-forget (no reply port)
+    /// to avoid a circular deadlock where RdmaManagerActor waits for
+    /// IbvManagerMessage::ReleaseBuffer while IbvManagerActor waits for
+    /// RdmaManagerMessage::RequestLocalMemory.
+    ReleaseBuffer { remote_buf_id: usize },
     RequestQueuePair {
         other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: reference::OncePortRef<IbvQueuePair>,
+        reply: reference::OncePortRef<Result<IbvQueuePair, String>>,
     },
     Connect {
         other: reference::ActorRef<IbvManagerActor>,
@@ -126,16 +127,22 @@ pub enum IbvManagerMessage {
 }
 wirevalue::register_type!(IbvManagerMessage);
 
-/// Local-only submit message for the [`IbvManagerActor`].
-///
-/// Not serializable because [`IbvOp`] contains `Arc<dyn RdmaLocalMemory>`.
-/// Can only be sent within the same process.
+/// Local-only messages for MR registration/deregistration.
 #[derive(Handler, HandleClient, Debug)]
-pub struct IbvSubmit {
-    pub ops: Vec<IbvOp>,
-    pub timeout: Duration,
-    #[reply]
-    pub reply: OncePortHandle<Result<(), String>>,
+pub enum IbvManagerLocalMessage {
+    /// Register a memory region, returning the MR view and device name.
+    RegisterMr {
+        addr: usize,
+        size: usize,
+        #[reply]
+        reply: OncePortHandle<Result<(IbvMemoryRegionView, String), String>>,
+    },
+    /// Deregister a memory region by its MR view id.
+    DeregisterMr {
+        id: usize,
+        #[reply]
+        reply: OncePortHandle<Result<(), String>>,
+    },
 }
 
 /// Manages all ibverbs-specific RDMA resources and operations.
@@ -172,10 +179,6 @@ pub struct IbvManagerActor {
 
     // Id for next mrv created
     mrv_id: usize,
-
-    // Map of PCI addresses to their optimal RDMA devices
-    // This is populated during actor initialization using the device selection algorithm
-    pci_to_device: HashMap<String, IbvDevice>,
 
     // Map from buffer_id to registration details.
     buffer_registrations: HashMap<usize, IbvBuffer>,
@@ -307,14 +310,7 @@ impl IbvManagerActor {
             }
         }
 
-        // Build the CUDA to RDMA device mapping using device selection algorithm
-        let pci_to_device = super::device_selection::create_cuda_to_ibv_mapping();
-        tracing::debug!(
-            "Built CUDA to RDMA device mapping with {} entries",
-            pci_to_device.len()
-        );
-
-        Ok(Self {
+        let actor = Self {
             owner: OnceLock::new(),
             device_qps: HashMap::new(),
             pending_qp_creation: Arc::new(Mutex::new(HashSet::new())),
@@ -323,9 +319,10 @@ impl IbvManagerActor {
             mlx5dv_enabled,
             mr_map: HashMap::new(),
             mrv_id: 0,
-            pci_to_device,
             buffer_registrations: HashMap::new(),
-        })
+        };
+
+        Ok(actor)
     }
 
     /// Get or create a domain and loopback QP for the specified RDMA device
@@ -381,12 +378,45 @@ impl IbvManagerActor {
         Ok((domain, qp))
     }
 
+    /// Build parallel PD/QP arrays indexed by CUDA device ordinal
+    /// for the C++ register_segments call.
+    fn build_per_device_pd_qp_arrays(
+        &self,
+    ) -> (
+        Vec<*mut rdmaxcel_sys::ibv_pd>,
+        Vec<*mut rdmaxcel_sys::rdmaxcel_qp_t>,
+    ) {
+        let cuda_map = super::device_selection::get_cuda_device_to_ibv_device();
+        let mut pds = Vec::with_capacity(cuda_map.len());
+        let mut qps = Vec::with_capacity(cuda_map.len());
+        for maybe_device in cuda_map {
+            if let Some(device) = maybe_device {
+                if let Some((domain, qp)) = self.device_domains.get(device.name()) {
+                    pds.push(domain.pd);
+                    qps.push(
+                        qp.as_ref()
+                            .map(|q| q.qp as *mut rdmaxcel_sys::rdmaxcel_qp_t)
+                            .unwrap_or(std::ptr::null_mut()),
+                    );
+                } else {
+                    pds.push(std::ptr::null_mut());
+                    qps.push(std::ptr::null_mut());
+                }
+            } else {
+                pds.push(std::ptr::null_mut());
+                qps.push(std::ptr::null_mut());
+            }
+        }
+        (pds, qps)
+    }
+
     fn find_cuda_segment_for_address(
         &mut self,
         addr: usize,
         size: usize,
+        pd: *mut rdmaxcel_sys::ibv_pd,
     ) -> Option<IbvMemoryRegionView> {
-        let registered_segments = get_registered_cuda_segments();
+        let registered_segments = get_registered_cuda_segments(pd);
         for segment in registered_segments {
             let start_addr = segment.phys_address;
             let end_addr = start_addr + segment.phys_size;
@@ -409,7 +439,7 @@ impl IbvManagerActor {
         None
     }
 
-    fn register_mr(
+    fn register_mr_impl(
         &mut self,
         addr: usize,
         size: usize,
@@ -427,28 +457,18 @@ impl IbvManagerActor {
             let mut selected_rdma_device = None;
 
             if is_cuda {
-                // Use rdmaxcel utility to get PCI address from CUDA pointer
-                let mut pci_addr_buf: [std::os::raw::c_char; 16] = [0; 16]; // Enough space for "ffff:ff:ff.0\0"
-                let err = rdmaxcel_sys::get_cuda_pci_address_from_ptr(
-                    addr as rdmaxcel_sys::CUdeviceptr,
-                    pci_addr_buf.as_mut_ptr(),
-                    pci_addr_buf.len(),
+                // Get device ordinal from the CUDA pointer
+                let mut device_ordinal: i32 = -1;
+                let err = rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
+                    &mut device_ordinal as *mut _ as *mut std::ffi::c_void,
+                    rdmaxcel_sys::CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
+                    ptr,
                 );
-                if err != 0 {
-                    let error_msg = get_rdmaxcel_error_message(err);
-                    return Err(anyhow::anyhow!(
-                        "RdmaXcel get_cuda_pci_address_from_ptr failed (addr: 0x{:x}, size: {}): {}",
-                        addr,
-                        size,
-                        error_msg
-                    ));
+                if err == rdmaxcel_sys::CUDA_SUCCESS && device_ordinal >= 0 {
+                    selected_rdma_device = super::device_selection::get_cuda_device_to_ibv_device()
+                        .get(device_ordinal as usize)
+                        .and_then(|d| d.clone());
                 }
-
-                // Convert C string to Rust string
-                let pci_addr = std::ffi::CStr::from_ptr(pci_addr_buf.as_ptr())
-                    .to_str()
-                    .unwrap();
-                selected_rdma_device = self.pci_to_device.get(pci_addr).cloned();
             }
 
             // Determine the RDMA device to use
@@ -467,7 +487,7 @@ impl IbvManagerActor {
             );
 
             // Get or create domain and loopback QP for this device
-            let (domain, qp) = self.get_or_create_device_domain(&device_name, &rdma_device)?;
+            let (domain, _qp) = self.get_or_create_device_domain(&device_name, &rdma_device)?;
 
             let access = if crate::efa::is_efa_device() {
                 crate::efa::mr_access_flags()
@@ -486,18 +506,20 @@ impl IbvManagerActor {
                 let mut segment_mrv = None;
                 if self.mlx5dv_enabled {
                     // Try to find in already registered segments
-                    segment_mrv = self.find_cuda_segment_for_address(addr, size);
+                    segment_mrv = self.find_cuda_segment_for_address(addr, size, domain.pd);
 
                     // If not found, trigger a re-sync with the allocator and retry
                     if segment_mrv.is_none() {
+                        let (mut pds, mut qps) = self.build_per_device_pd_qp_arrays();
                         let err = rdmaxcel_sys::register_segments(
-                            domain.pd,
-                            qp.unwrap().qp as *mut rdmaxcel_sys::rdmaxcel_qp_t,
+                            pds.as_mut_ptr(),
+                            qps.as_mut_ptr(),
+                            pds.len() as i32,
                         );
                         // Only retry if register_segments succeeded
                         // If it fails (e.g., scanner returns 0 segments), we'll fall back to dmabuf
                         if err == 0 {
-                            segment_mrv = self.find_cuda_segment_for_address(addr, size);
+                            segment_mrv = self.find_cuda_segment_for_address(addr, size, domain.pd);
                         }
                     }
                 }
@@ -508,13 +530,22 @@ impl IbvManagerActor {
                 } else {
                     // Dmabuf path: used when mlx5dv is disabled OR scanner returns no segments
                     let mut fd: i32 = -1;
-                    rdmaxcel_sys::rdmaxcel_cuMemGetHandleForAddressRange(
+                    let cu_err = rdmaxcel_sys::rdmaxcel_cuMemGetHandleForAddressRange(
                         &mut fd,
                         addr as rdmaxcel_sys::CUdeviceptr,
                         size,
                         rdmaxcel_sys::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
                         0,
                     );
+                    if cu_err != rdmaxcel_sys::CUDA_SUCCESS || fd < 0 {
+                        return Err(anyhow::anyhow!(
+                            "failed to get dmabuf handle for CUDA memory (addr: 0x{:x}, size: {}, cu_err: {}, fd: {})",
+                            addr,
+                            size,
+                            cu_err,
+                            fd
+                        ));
+                    }
                     mr =
                         rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
                     if mr.is_null() {
@@ -558,7 +589,7 @@ impl IbvManagerActor {
         }
     }
 
-    fn deregister_mr(&mut self, id: usize) -> Result<(), anyhow::Error> {
+    fn deregister_mr_impl(&mut self, id: usize) -> Result<(), anyhow::Error> {
         if let Some(mr_ptr) = self.mr_map.remove(&id) {
             if mr_ptr != 0 {
                 unsafe {
@@ -569,178 +600,9 @@ impl IbvManagerActor {
         Ok(())
     }
 
-    /// Waits for the completion of RDMA operations.
-    ///
-    /// Polls the completion queue until all specified work requests complete
-    /// or until the timeout is reached.
-    ///
-    /// # Arguments
-    /// * `local_buf` - The ibv buffer describing the local side of the RDMA ops
-    /// * `qp` - The RDMA Queue Pair to poll for completion
-    /// * `poll_target` - Which CQ to poll (Send or Recv)
-    /// * `expected_wr_ids` - The work request IDs to wait for
-    /// * `timeout` - Timeout for the RDMA operation to complete.
-    async fn wait_for_completion(
-        &self,
-        local_buf: &IbvBuffer,
-        qp: &mut IbvQueuePair,
-        poll_target: PollTarget,
-        expected_wr_ids: &[u64],
-        timeout: Duration,
-    ) -> Result<(), anyhow::Error> {
-        let start_time = std::time::Instant::now();
-
-        let mut remaining: std::collections::HashSet<u64> =
-            expected_wr_ids.iter().copied().collect();
-
-        while start_time.elapsed() < timeout {
-            if remaining.is_empty() {
-                return Ok(());
-            }
-
-            let wr_ids_to_poll: Vec<u64> = remaining.iter().copied().collect();
-            match qp.poll_completion(poll_target, &wr_ids_to_poll) {
-                Ok(completions) => {
-                    for (wr_id, _wc) in completions {
-                        remaining.remove(&wr_id);
-                    }
-                    if remaining.is_empty() {
-                        return Ok(());
-                    }
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "RDMA polling completion failed: {} [lkey={}, rkey={}, addr=0x{:x}, size={}]",
-                        e,
-                        local_buf.lkey,
-                        local_buf.rkey,
-                        local_buf.addr,
-                        local_buf.size
-                    ));
-                }
-            }
-        }
-        tracing::error!(
-            "timed out while waiting on request completion for wr_ids={:?}",
-            remaining
-        );
-        Err(anyhow::anyhow!(
-            "[ibv_buffer({:?})] rdma operation did not complete in time (expected wr_ids={:?})",
-            local_buf,
-            expected_wr_ids
-        ))
-    }
-
-    /// Core submit logic: registers local MR, resolves remote
-    /// IbvBuffer lazily, executes the op, and deregisters local MR.
-    async fn execute_op(
+    async fn request_queue_pair_impl(
         &mut self,
         cx: &Context<'_, Self>,
-        op: IbvOp,
-        timeout: Duration,
-    ) -> Result<(), anyhow::Error> {
-        // Register the local memory to get an IbvBuffer
-        let (local_mrv, local_device_name) =
-            self.register_mr(op.local_memory.addr(), op.local_memory.size())?;
-        let local_buffer = IbvBuffer {
-            mr_id: local_mrv.id,
-            lkey: local_mrv.lkey,
-            rkey: local_mrv.rkey,
-            addr: local_mrv.rdma_addr,
-            size: local_mrv.size,
-            device_name: local_device_name,
-        };
-
-        let op_result = async {
-            let mut qp = self
-                .request_queue_pair(
-                    cx,
-                    op.remote_manager.clone(),
-                    local_buffer.device_name.clone(),
-                    op.remote_buffer.device_name.clone(),
-                )
-                .await?;
-
-            let wr_id = match op.op_type {
-                RdmaOpType::WriteFromLocal => qp.put(local_buffer.clone(), op.remote_buffer)?,
-                RdmaOpType::ReadIntoLocal => qp.get(local_buffer.clone(), op.remote_buffer)?,
-            };
-
-            self.wait_for_completion(&local_buffer, &mut qp, PollTarget::Send, &wr_id, timeout)
-                .await
-        }
-        .await;
-
-        // Always deregister the locally registered MR
-        let dereg_result = self.deregister_mr(local_buffer.mr_id);
-
-        match (op_result, dereg_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(e), Ok(())) => Err(e),
-            (Ok(()), Err(e)) => Err(e),
-            (Err(op_err), Err(dereg_err)) => Err(anyhow::anyhow!(
-                "deregister MR error: {}; op error: {}",
-                dereg_err,
-                op_err
-            )),
-        }
-    }
-}
-
-#[async_trait]
-#[hyperactor::handle(IbvManagerMessage)]
-impl IbvManagerMessageHandler for IbvManagerActor {
-    async fn request_buffer(
-        &mut self,
-        cx: &Context<Self>,
-        remote_buf_id: usize,
-    ) -> Result<Option<IbvBuffer>, anyhow::Error> {
-        // If already registered, return it
-        if let Some(buf) = self.buffer_registrations.get(&remote_buf_id) {
-            return Ok(Some(buf.clone()));
-        }
-
-        // Resolve local memory from the parent RdmaManagerActor.
-        // Returns None if the buffer has already been released or does
-        // not exist.
-        let owner = self.owner.get().unwrap();
-        let mem = match owner.request_local_memory(cx, remote_buf_id).await? {
-            Some(mem) => mem,
-            None => return Ok(None),
-        };
-
-        let (mrv, device_name) = self.register_mr(mem.addr(), mem.size())?;
-
-        let buf = IbvBuffer {
-            mr_id: mrv.id,
-            lkey: mrv.lkey,
-            rkey: mrv.rkey,
-            addr: mrv.rdma_addr,
-            size: mrv.size,
-            device_name,
-        };
-
-        self.buffer_registrations.insert(remote_buf_id, buf.clone());
-
-        Ok(Some(buf))
-    }
-
-    async fn release_buffer(
-        &mut self,
-        _cx: &Context<Self>,
-        remote_buf_id: usize,
-    ) -> Result<(), anyhow::Error> {
-        if let Some(buf) = self.buffer_registrations.remove(&remote_buf_id) {
-            self.deregister_mr(buf.mr_id)
-                .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
-        }
-        Ok(())
-    }
-
-    async fn request_queue_pair(
-        &mut self,
-        cx: &Context<Self>,
         other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
@@ -907,6 +769,70 @@ impl IbvManagerMessageHandler for IbvManagerActor {
 
         result
     }
+}
+
+#[async_trait]
+#[hyperactor::handle(IbvManagerMessage)]
+impl IbvManagerMessageHandler for IbvManagerActor {
+    async fn request_buffer(
+        &mut self,
+        cx: &Context<Self>,
+        remote_buf_id: usize,
+    ) -> Result<Option<IbvBuffer>, anyhow::Error> {
+        // If already registered, return it
+        if let Some(buf) = self.buffer_registrations.get(&remote_buf_id) {
+            return Ok(Some(buf.clone()));
+        }
+
+        // Resolve local memory from the parent RdmaManagerActor.
+        // Returns None if the buffer has already been released or does
+        // not exist.
+        let owner = self.owner.get().unwrap();
+        let mem = match owner.request_local_memory(cx, remote_buf_id).await? {
+            Some(mem) => mem,
+            None => return Ok(None),
+        };
+
+        let (mrv, device_name) = self.register_mr_impl(mem.addr(), mem.size())?;
+
+        let buf = IbvBuffer {
+            mr_id: mrv.id,
+            lkey: mrv.lkey,
+            rkey: mrv.rkey,
+            addr: mrv.rdma_addr,
+            size: mrv.size,
+            device_name,
+        };
+
+        self.buffer_registrations.insert(remote_buf_id, buf.clone());
+
+        Ok(Some(buf))
+    }
+
+    async fn release_buffer(
+        &mut self,
+        _cx: &Context<Self>,
+        remote_buf_id: usize,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(buf) = self.buffer_registrations.remove(&remote_buf_id) {
+            self.deregister_mr_impl(buf.mr_id)
+                .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
+        }
+        Ok(())
+    }
+
+    async fn request_queue_pair(
+        &mut self,
+        cx: &Context<Self>,
+        other: reference::ActorRef<IbvManagerActor>,
+        self_device: String,
+        other_device: String,
+    ) -> Result<Result<IbvQueuePair, String>, anyhow::Error> {
+        Ok(self
+            .request_queue_pair_impl(cx, other, self_device, other_device)
+            .await
+            .map_err(|e| e.to_string()))
+    }
 
     async fn connect(
         &mut self,
@@ -959,24 +885,16 @@ impl IbvManagerMessageHandler for IbvManagerActor {
             }
         }
 
-        // Resolve the RDMA device for the local device
-        let rdma_device = self
-            .pci_to_device
-            .iter()
-            .find(|(_, device)| device.name() == &self_device)
-            .map(|(_, device)| device.clone())
-            .unwrap_or_else(|| {
-                // Fallback to default device from config
-                super::device_selection::resolve_ibv_device(&self.config.device)
-                    .unwrap_or_else(|| self.config.device.clone())
-            });
-
-        // Get or create domain and extract pointers to avoid borrowing issues
-        let (domain_context, domain_pd) = {
-            // Check if we already have a domain for the device
-            let (domain, _) = self.get_or_create_device_domain(&self_device, &rdma_device)?;
-            (domain.context, domain.pd)
-        };
+        // The domain is guaranteed to exist here: register_mr is always called before
+        // initialize_qp, either in execute_op (for the local actor) or via resolve_ibv
+        // (for the remote actor), and register_mr always calls get_or_create_device_domain.
+        let (domain, _) = self.device_domains.get(&self_device).ok_or_else(|| {
+            anyhow::anyhow!(
+                "device domain for '{}' not found; register_mr must be called before initialize_qp",
+                self_device
+            )
+        })?;
+        let (domain_context, domain_pd) = (domain.context, domain.pd);
 
         let qp = IbvQueuePair::new(domain_context, domain_pd, self.config.clone())
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {}", e))?;
@@ -1068,41 +986,191 @@ impl IbvManagerMessageHandler for IbvManagerActor {
 }
 
 #[async_trait]
-#[hyperactor::handle(IbvSubmit)]
-impl IbvSubmitHandler for IbvManagerActor {
-    async fn ibv_submit(
+#[hyperactor::handle(IbvManagerLocalMessage)]
+impl IbvManagerLocalMessageHandler for IbvManagerActor {
+    async fn register_mr(
         &mut self,
-        cx: &Context<Self>,
-        ops: Vec<IbvOp>,
-        timeout: Duration,
+        _cx: &Context<Self>,
+        addr: usize,
+        size: usize,
+    ) -> Result<Result<(IbvMemoryRegionView, String), String>, anyhow::Error> {
+        Ok(self.register_mr_impl(addr, size).map_err(|e| e.to_string()))
+    }
+
+    async fn deregister_mr(
+        &mut self,
+        _cx: &Context<Self>,
+        id: usize,
     ) -> Result<Result<(), String>, anyhow::Error> {
-        let deadline = Instant::now() + timeout;
-        let mut result = Ok(());
-        for op in ops {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                result = Err("submit timed out".to_string());
-                break;
+        Ok(self.deregister_mr_impl(id).map_err(|e| e.to_string()))
+    }
+}
+
+/// Wrapper around [`ActorHandle<IbvManagerActor>`] that moves the RDMA
+/// data-plane (post send/recv, poll CQ) off the actor loop while keeping
+/// state-mutating operations (MR registration/deregistration, QP management)
+/// serialized through actor messages.
+#[derive(Debug, Clone)]
+pub struct IbvBackend(pub ActorHandle<IbvManagerActor>);
+
+impl std::ops::Deref for IbvBackend {
+    type Target = ActorHandle<IbvManagerActor>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl IbvBackend {
+    /// Waits for the completion of RDMA operations.
+    ///
+    /// Polls the completion queue until all specified work requests complete
+    /// or until the timeout is reached. Pure CQ polling — no actor state needed.
+    async fn wait_for_completion(
+        local_buf: &IbvBuffer,
+        qp: &mut IbvQueuePair,
+        poll_target: PollTarget,
+        expected_wr_ids: &[u64],
+        timeout: Duration,
+    ) -> Result<(), anyhow::Error> {
+        let start_time = std::time::Instant::now();
+
+        let mut remaining: std::collections::HashSet<u64> =
+            expected_wr_ids.iter().copied().collect();
+
+        while start_time.elapsed() < timeout {
+            if remaining.is_empty() {
+                return Ok(());
             }
-            if let Err(e) = self.execute_op(cx, op, remaining).await {
-                result = Err(e.to_string());
-                break;
+
+            let wr_ids_to_poll: Vec<u64> = remaining.iter().copied().collect();
+            match qp.poll_completion(poll_target, &wr_ids_to_poll) {
+                Ok(completions) => {
+                    for (wr_id, _wc) in completions {
+                        remaining.remove(&wr_id);
+                    }
+                    if remaining.is_empty() {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                Err(e) => {
+                    // When the returned error is WR_FLUSH_ERR, which is generally a
+                    // secondary error, drain the remaining completions to find the
+                    // original root cause error. WR_FLUSH_ERR means the QP entered
+                    // error state due to a DIFFERENT WR's failure, so the actual root
+                    // cause may be cached or still in the CQ.
+                    let mut root_cause: Option<PollCompletionError> = None;
+                    if e.is_wr_flush_err() {
+                        for &wr_id in &wr_ids_to_poll {
+                            if let Err(inner_err) = qp.poll_completion(poll_target, &[wr_id]) {
+                                if !inner_err.is_wr_flush_err() {
+                                    root_cause = Some(inner_err);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let error_detail = if let Some(cause) = root_cause {
+                        format!(
+                            "RDMA polling completion failed: {} (root cause: {})",
+                            e, cause
+                        )
+                    } else {
+                        format!("RDMA polling completion failed: {}", e)
+                    };
+                    return Err(anyhow::anyhow!(
+                        "{} [lkey={}, rkey={}, addr=0x{:x}, size={}]",
+                        error_detail,
+                        local_buf.lkey,
+                        local_buf.rkey,
+                        local_buf.addr,
+                        local_buf.size
+                    ));
+                }
             }
         }
-        Ok(result)
+        tracing::error!(
+            "timed out while waiting on request completion for wr_ids={:?}",
+            remaining
+        );
+        Err(anyhow::anyhow!(
+            "[ibv_buffer({:?})] rdma operation did not complete in time (expected wr_ids={:?})",
+            local_buf,
+            expected_wr_ids
+        ))
+    }
+
+    /// Core submit logic: registers local MR via actor message, resolves remote
+    /// IbvBuffer lazily, executes the op locally, and deregisters local MR.
+    async fn execute_op(
+        &self,
+        cx: &(impl hyperactor::context::Actor + Send + Sync),
+        op: IbvOp,
+        timeout: Duration,
+    ) -> Result<(), anyhow::Error> {
+        // Register the local memory via actor message
+        let (local_mrv, local_device_name) = self
+            .register_mr(cx, op.local_memory.addr(), op.local_memory.size())
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        let local_buffer = IbvBuffer {
+            mr_id: local_mrv.id,
+            lkey: local_mrv.lkey,
+            rkey: local_mrv.rkey,
+            addr: local_mrv.rdma_addr,
+            size: local_mrv.size,
+            device_name: local_device_name,
+        };
+
+        let op_result = async {
+            let mut qp = self
+                .request_queue_pair(
+                    cx,
+                    op.remote_manager.clone(),
+                    local_buffer.device_name.clone(),
+                    op.remote_buffer.device_name.clone(),
+                )
+                .await?
+                .map_err(|e| anyhow::anyhow!(e))?;
+
+            let wr_id = match op.op_type {
+                RdmaOpType::WriteFromLocal => qp.put(local_buffer.clone(), op.remote_buffer)?,
+                RdmaOpType::ReadIntoLocal => qp.get(local_buffer.clone(), op.remote_buffer)?,
+            };
+
+            Self::wait_for_completion(&local_buffer, &mut qp, PollTarget::Send, &wr_id, timeout)
+                .await
+        }
+        .await;
+
+        // Always deregister the locally registered MR via actor message
+        let dereg_result = self
+            .deregister_mr(cx, local_buffer.mr_id)
+            .await?
+            .map_err(|e| anyhow::anyhow!(e));
+
+        match (op_result, dereg_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(e), Ok(())) => Err(e),
+            (Ok(()), Err(e)) => Err(e),
+            (Err(op_err), Err(dereg_err)) => Err(anyhow::anyhow!(
+                "deregister MR error: {}; op error: {}",
+                dereg_err,
+                op_err
+            )),
+        }
     }
 }
 
 #[async_trait]
-impl RdmaBackend for ActorHandle<IbvManagerActor> {
+impl RdmaBackend for IbvBackend {
     type TransportInfo = ();
 
     /// Submit a batch of RDMA operations.
     ///
-    /// Delegates to the [`IbvManagerActor`], which manages QPs and connections
-    /// internally. Each op is routed based on its type (read/write).
-    /// Registers local memory on the fly; remote buffers are lazily
-    /// resolved via [`IbvManagerMessageClient::request_buffer`].
+    /// Resolves ibv ops, then executes each directly — registering/deregistering
+    /// MRs via actor messages, while performing QP put/get and CQ polling locally.
     async fn submit(
         &mut self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
@@ -1124,9 +1192,15 @@ impl RdmaBackend for ActorHandle<IbvManagerActor> {
             });
         }
 
-        <Self as IbvSubmitClient>::ibv_submit(self, cx, ibv_ops, timeout)
-            .await?
-            .map_err(|e: String| anyhow::anyhow!(e))
+        let deadline = Instant::now() + timeout;
+        for op in ibv_ops {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(anyhow::anyhow!("submit timed out"));
+            }
+            self.execute_op(cx, op, remaining).await?;
+        }
+        Ok(())
     }
 
     fn transport_level(&self) -> RdmaTransportLevel {

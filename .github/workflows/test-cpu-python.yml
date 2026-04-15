@@ -25,6 +25,10 @@ jobs:
         # Source common setup functions
         source scripts/common-setup.sh
 
+        # Fetch tests disabled via GitHub issues titled "DISABLED <test-name>".
+        # Writes disabled_tests.txt (read by conftest.py).
+        python3 scripts/fetch_disabled_tests.py
+
         # Setup test environment
         setup_conda_environment
 

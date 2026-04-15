@@ -8,11 +8,14 @@
 import ctypes
 import functools
 import logging
+import sys
 import warnings
 from collections import defaultdict
-from typing import Any, cast, List, Optional, Tuple
+from typing import Any, cast, List, Optional, Tuple, TYPE_CHECKING
 
-import torch
+if TYPE_CHECKING:
+    import torch
+
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.proc_mesh import ProcMesh
 from typing_extensions import Self
@@ -62,6 +65,25 @@ def is_ibverbs_available() -> bool:
     return _is_ibverbs_available()
 
 
+def is_rdma_available() -> bool:
+    """Whether RDMA over ibverbs is available on this system.
+
+    .. deprecated::
+        Monarch now supports multiple RDMA backends, so `is_rdma_available`
+        is ambiguous and will be removed in a future release. Use
+        :func:`is_ibverbs_available` or :func:`get_rdma_backend` instead.
+    """
+    warnings.warn(
+        "is_rdma_available is deprecated because Monarch now supports multiple "
+        "RDMA backends, making this function ambiguous. For now it indicates "
+        "whether RDMA over ibverbs is available. Use is_ibverbs_available() or "
+        "get_rdma_backend() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return is_ibverbs_available()
+
+
 def get_rdma_backend() -> str:
     """Return available RDMA backend.
 
@@ -97,7 +119,7 @@ def _ensure_init_rdma_manager() -> Shared[None]:
     return PythonTask.from_coroutine(task()).spawn()
 
 
-def _get_error(buf) -> ValueError:
+def _get_error(buf: object) -> ValueError:
     return ValueError(
         "RDMABuffer only supports 1d contiguous torch.Tensor or 1d c-contiguous memoryview. Got: {}".format(
             buf
@@ -105,9 +127,17 @@ def _get_error(buf) -> ValueError:
     )
 
 
-def _assert_1d_contiguous(buf: torch.Tensor | memoryview) -> None:
-    if isinstance(buf, torch.Tensor):
-        if buf.dim() != 1 or not buf.is_contiguous():
+def _is_torch_tensor(obj: object) -> bool:
+    """Check whether obj is a torch.Tensor without importing torch."""
+    torch_mod = sys.modules.get("torch")
+    if torch_mod is None:
+        return False
+    return isinstance(obj, torch_mod.Tensor)
+
+
+def _assert_1d_contiguous(buf: "torch.Tensor | memoryview") -> None:
+    if _is_torch_tensor(buf):
+        if buf.dim() != 1 or not buf.is_contiguous():  # type: ignore[union-attr]
             raise _get_error(buf)
     elif isinstance(buf, memoryview):
         if buf.ndim != 1 or not buf.c_contiguous:
@@ -122,7 +152,7 @@ def _get_memoryview_addr_and_size(buf: memoryview) -> tuple[int, int]:
     return addr, size
 
 
-def _get_tensor_addr_and_size(tensor: torch.Tensor) -> tuple[int, int]:
+def _get_tensor_addr_and_size(tensor: "torch.Tensor") -> tuple[int, int]:
     data_ptr: int = tensor.untyped_storage().data_ptr()
     # Calculate the actual starting address of the tensor data
     # storage_offset() can return either int or torch.SymInt in newer PyTorch versions
@@ -136,12 +166,12 @@ def _get_tensor_addr_and_size(tensor: torch.Tensor) -> tuple[int, int]:
     return addr, size
 
 
-def _get_addr_and_size(buf: torch.Tensor | memoryview) -> tuple[int, int]:
+def _get_addr_and_size(buf: "torch.Tensor | memoryview") -> tuple[int, int]:
     _assert_1d_contiguous(buf)
     if isinstance(buf, memoryview):
         return _get_memoryview_addr_and_size(buf)
-    elif isinstance(buf, torch.Tensor):
-        return _get_tensor_addr_and_size(buf)
+    elif _is_torch_tensor(buf):
+        return _get_tensor_addr_and_size(buf)  # type: ignore[arg-type]
     # This shouldn't happen unless there is a bug, handle the type in caller.
     raise RuntimeError(
         "Trying to get address and size of unsupported type. Expected memoryview or torch.Tensor. Got: {}".format(
@@ -151,7 +181,7 @@ def _get_addr_and_size(buf: torch.Tensor | memoryview) -> tuple[int, int]:
 
 
 def _make_local_memory_handle(
-    data: torch.Tensor | memoryview,
+    data: "torch.Tensor | memoryview",
 ) -> _LocalMemoryHandle:
     addr, size = _get_addr_and_size(data)
     return _LocalMemoryHandle(obj=data, addr=addr, size=size)
@@ -193,6 +223,8 @@ def pt_cuda_allocator_compatibility() -> bool:
     Returns:
         bool: True if both conditions are met, False otherwise
     """
+    import torch
+
     if not torch.cuda.is_available():
         return False
 
@@ -248,7 +280,7 @@ def _check_cuda_expandable_segments_enabled() -> bool:
 class RDMABuffer:
     def __init__(
         self,
-        data: torch.Tensor | memoryview,
+        data: "torch.Tensor | memoryview",
     ) -> None:
         """
         RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews.
@@ -266,7 +298,7 @@ class RDMABuffer:
 
         TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors
         """
-        if isinstance(data, torch.Tensor) and data.device.type == "cuda":
+        if _is_torch_tensor(data) and data.device.type == "cuda":  # type: ignore[union-attr]
             # Check if CUDA caching allocator is using expandable segments
             _check_cuda_expandable_segments_enabled()
 
@@ -314,7 +346,7 @@ class RDMABuffer:
 
     def read_into(
         self,
-        dst: torch.Tensor | memoryview,
+        dst: "torch.Tensor | memoryview",
         *,
         timeout: int = 3,
     ) -> Future[Optional[int]]:
@@ -359,7 +391,7 @@ class RDMABuffer:
 
     def write_from(
         self,
-        src: torch.Tensor | memoryview,
+        src: "torch.Tensor | memoryview",
         *,
         timeout: int = 3,
     ) -> Future[None]:
@@ -428,7 +460,8 @@ class RDMABuffer:
         return self._buffer.owner_actor_id()
 
 
-LocalMemory = torch.Tensor | memoryview
+if TYPE_CHECKING:
+    LocalMemory = torch.Tensor | memoryview
 
 
 class RDMAAction:
@@ -447,7 +480,7 @@ class RDMAAction:
         COMPARE_AND_SWAP = "compare_and_swap"
 
     def __init__(self) -> None:
-        self._instructs: List[Tuple[RDMAAction.RDMAOp, RDMABuffer, LocalMemory]] = []
+        self._instructs: "List[Tuple[RDMAAction.RDMAOp, RDMABuffer, LocalMemory]]" = []
         self._memory_dependencies: Dict[Tuple[int, int], RDMAAction.RDMAOp] = {}
 
     def _check_and_merge_overlapping_range(
@@ -502,7 +535,9 @@ class RDMAAction:
             expanded_range[0], expanded_range[1] - expanded_range[0], op
         )
 
-    def read_into(self, src: RDMABuffer, dst: LocalMemory | List[LocalMemory]) -> Self:
+    def read_into(
+        self, src: RDMABuffer, dst: "LocalMemory | List[LocalMemory]"
+    ) -> Self:
         """
         Read from src RDMA buffer into dst memory.
 
@@ -528,7 +563,9 @@ class RDMAAction:
 
         return self
 
-    def write_from(self, src: RDMABuffer, dst: LocalMemory | List[LocalMemory]) -> Self:
+    def write_from(
+        self, src: RDMABuffer, dst: "LocalMemory | List[LocalMemory]"
+    ) -> Self:
         """
         Write from dst memory to src RDMA buffer.
 
@@ -554,7 +591,7 @@ class RDMAAction:
 
         return self
 
-    def fetch_add(self, src: RDMABuffer, dst: LocalMemory, add: int) -> Self:
+    def fetch_add(self, src: RDMABuffer, dst: "LocalMemory", add: int) -> Self:
         """
         Perform atomic fetch-and-add operation on src RDMA buffer.
 
@@ -572,7 +609,7 @@ class RDMAAction:
         raise NotImplementedError("Not yet supported")
 
     def compare_and_swap(
-        self, src: RDMABuffer, dst: LocalMemory, compare: int, swap: int
+        self, src: RDMABuffer, dst: "LocalMemory", compare: int, swap: int
     ) -> Self:
         """
         Perform atomic compare-and-swap operation on src RDMA buffer.

@@ -874,6 +874,10 @@ impl ProcMeshRef {
                             status: resource::Status::Timeout(timeout),
                             // We don't know the ActorId that used to live on this rank.
                             // But we do know the mesh agent id, so we'll use that.
+                            // Use u64::MAX so this synthetic state always wins
+                            // last-writer-wins ordering against real streamed updates.
+                            generation: u64::MAX,
+                            timestamp: std::time::SystemTime::now(),
                             state: Some(ActorState {
                                 actor_id: agent_id.clone(),
                                 create_rank: rank,
@@ -1157,8 +1161,8 @@ impl ProcMeshRef {
                 Some(cx.instance().port().bind()),
                 statuses,
             );
-            // AI-3: controller name must include mesh identity for
-            // proc-wide ActorId uniqueness. A fixed base name alone
+            // hyperactor::proc AI-3: controller name must include mesh
+            // identity for proc-wide ActorId uniqueness. A fixed base name alone
             // collides across parents because pid allocation is
             // parent-scoped.
             let controller_name = format!(
@@ -1284,10 +1288,14 @@ impl ProcMeshRef {
                 initial_update_interval: None,
             },
         );
+        // Use WaitRankStatus instead of GetRankStatus so agents defer
+        // their reply until the actor reaches terminal state, rather
+        // than replying immediately with Stopping.
         agent_mesh.cast(
             cx,
-            resource::GetRankStatus {
+            resource::WaitRankStatus {
                 name: mesh_name,
+                min_status: Status::Stopped,
                 reply: port.bind(),
             },
         )?;
@@ -1304,9 +1312,9 @@ impl ProcMeshRef {
         .await
         {
             Ok(statuses) => {
-                // Check that all actors are in some terminal state.
-                // Failed is ok, because one of these actors may have failed earlier
-                // and we're trying to stop the others.
+                // Check that all actors are in a terminating state (Stopping
+                // or beyond). Failed is ok, because one of these actors may
+                // have failed earlier and we're trying to stop the others.
                 let all_stopped = statuses.values().all(|s| s.is_terminating());
                 if all_stopped {
                     Ok(statuses)
@@ -1496,7 +1504,7 @@ mod tests {
 
         let mut hm = testing::host_mesh(4).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2))
+            .spawn(&instance, "test", extent!(gpus = 2), None)
             .await
             .unwrap();
         let proc_mesh_ref = proc_mesh.deref();
@@ -1540,7 +1548,7 @@ mod tests {
 
         let mut hm = testing::host_mesh(4).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2))
+            .spawn(&instance, "test", extent!(gpus = 2), None)
             .await
             .unwrap();
 
@@ -1591,15 +1599,34 @@ mod tests {
 
         hyperactor_telemetry::initialize_logging_for_test();
 
-        let instance = testing::instance();
-        let (first_instance, _) = instance.proc().instance("first_client_ds").unwrap();
-        let (second_instance, _) = instance.proc().instance("second_client_ds").unwrap();
-        let (third_instance, _) = instance.proc().instance("third_client_ds").unwrap();
+        use hyperactor::Proc;
+        use hyperactor::channel::ChannelTransport;
+
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "test_0".to_string()).unwrap();
+        let instance = proc
+            .actor_instance::<testing::TestRootClient>("test_client")
+            .unwrap()
+            .instance;
+        let first_instance = proc
+            .actor_instance::<testing::TestRootClient>("first_client")
+            .unwrap()
+            .instance;
+        let second_instance = proc
+            .actor_instance::<testing::TestRootClient>("second_client")
+            .unwrap()
+            .instance;
+        let third_instance = proc
+            .actor_instance::<testing::TestRootClient>("third_client")
+            .unwrap()
+            .instance;
 
         let mut hm = testing::host_mesh(4).await;
-        let proc_mesh = hm.spawn(instance, "test", extent!(gpus = 2)).await.unwrap();
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 2), None)
+            .await
+            .unwrap();
 
-        let actor_mesh = spawn_for_seq_test(instance, &proc_mesh).await;
+        let actor_mesh = spawn_for_seq_test(&instance, &proc_mesh).await;
 
         // Sequence numbers are calculated based on the sequencer, i.e. the
         // client name. So three casts would result in seq 1 for all actors.
@@ -1614,7 +1641,7 @@ mod tests {
             .await;
         }
 
-        let _ = hm.shutdown(instance).await;
+        let _ = hm.shutdown(&instance).await;
     }
 
     #[tokio::test]

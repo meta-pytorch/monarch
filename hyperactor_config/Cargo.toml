@@ -11,14 +11,14 @@ license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1.0.102"
-arc-swap = { version = "1.8.2", features = ["weak"] }
+arc-swap = { version = "1.9.0", features = ["weak"] }
 bincode = "1.3.3"
 bytes = { version = "1.11.1", features = ["serde"] }
 chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
-erased-serde = "0.4.9"
+erased-serde = "0.4.10"
 humantime = "2.1"
 hyperactor_config_macros = { version = "0.0.0", path = "../hyperactor_config_macros" }
-inventory = "0.3.22"
+inventory = "0.3.24"
 paste = "1.0.14"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
