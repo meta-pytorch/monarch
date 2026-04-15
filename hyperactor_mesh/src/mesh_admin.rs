@@ -1366,7 +1366,10 @@ impl MeshAdminAgent {
             (children, system_children)
         };
 
-        let proc_name = proc_id.name().to_string();
+        let proc_name = proc_id
+            .label()
+            .map(|l| l.as_str().to_string())
+            .unwrap_or_else(|| proc_id.id().to_string());
 
         let mut attrs = hyperactor_config::Attrs::new();
         attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
@@ -2208,7 +2211,9 @@ impl ResolvedProcHandler {
 /// the probe (CFG-4).
 fn route_proc_handler(raw_proc_reference: &str) -> Result<ResolvedProcHandler, ApiError> {
     let (_proc_reference, proc_id) = parse_proc_reference(raw_proc_reference)?;
-    let is_service = proc_id.base_name() == SERVICE_PROC_NAME;
+    let is_service = proc_id
+        .label()
+        .is_some_and(|l| l.as_str() == SERVICE_PROC_NAME);
     if is_service {
         let agent_id = proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0);
         Ok(ResolvedProcHandler::Host(
@@ -2810,8 +2815,8 @@ async fn tree_dump(
 fn derive_tree_label(node_ref: &crate::introspect::NodeRef) -> String {
     match node_ref {
         crate::introspect::NodeRef::Root => "root".to_string(),
-        crate::introspect::NodeRef::Host(id) => id.proc_id().name().to_string(),
-        crate::introspect::NodeRef::Proc(id) => id.name().to_string(),
+        crate::introspect::NodeRef::Host(id) => id.proc_id().id().to_string(),
+        crate::introspect::NodeRef::Proc(id) => id.id().to_string(),
         crate::introspect::NodeRef::Actor(id) => {
             format!("{}{}", id.name(), format_args!("[{}]", id.pid()))
         }
@@ -2822,7 +2827,7 @@ fn derive_actor_label(node_ref: &crate::introspect::NodeRef) -> String {
     match node_ref {
         crate::introspect::NodeRef::Root => "root".to_string(),
         crate::introspect::NodeRef::Host(id) => id.name().to_string(),
-        crate::introspect::NodeRef::Proc(id) => id.name().to_string(),
+        crate::introspect::NodeRef::Proc(id) => id.id().to_string(),
         crate::introspect::NodeRef::Actor(id) => {
             format!("{}[{}]", id.name(), id.pid())
         }
@@ -3293,7 +3298,7 @@ mod tests {
                 .unwrap();
             let node = resp.0.unwrap();
             if let NodeProperties::Proc { proc_name, .. } = &node.properties {
-                if proc_name.contains(&user_proc_name_str) {
+                if user_proc_name_str.contains(proc_name.as_str()) {
                     found_user = true;
                 } else {
                     found_system = true;

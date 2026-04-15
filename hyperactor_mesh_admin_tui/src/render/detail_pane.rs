@@ -282,7 +282,7 @@ fn render_host_detail(
     for child in &payload.children {
         let child_str = child.to_string();
         let short = match child {
-            NodeRef::Proc(proc_id) => proc_id.name().to_string(),
+            NodeRef::Proc(proc_id) => proc_id.id().to_string(),
             _ => child_str.clone(),
         };
         lines.push(Line::from(vec![
@@ -428,7 +428,7 @@ fn render_actor_detail(
 
     let created_str = created_at
         .as_ref()
-        .map(|t| format_system_time_iso(t))
+        .map(format_system_time_iso)
         .unwrap_or_else(|| "-".to_string());
 
     let mut lines = vec![
