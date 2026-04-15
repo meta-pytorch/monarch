@@ -200,6 +200,7 @@ class Controller(_Controller):
         uses: Sequence[object],
         port: Tuple[PortId, NDSlice] | None,
         tracebacks: List[List[FrameSummary]],
+        accumulate: bool = False,
     ) -> None:
         actor_instance = context().actor_instance
         self._node(
@@ -209,6 +210,7 @@ class Controller(_Controller):
             uses,
             port,
             tracebacks,
+            accumulate,
         )
 
     def drop_refs(self, refs: Sequence[object]) -> None:
@@ -377,11 +379,15 @@ class MeshClient(Client):
         for d in defs:
             d._seq = seq
         response_port = None
+        accumulate = False
         if future is not None:
             # method annotation is a lie to make Client happy
             port_ref, slice = cast("Tuple[PortRef | OncePortRef, NDSlice]", future)
             response_port = (port_ref.port_id, slice)
-        self._mesh_controller.node(seq, defs, uses, response_port, tracebacks)
+            accumulate = isinstance(port_ref, OncePortRef)
+        self._mesh_controller.node(
+            seq, defs, uses, response_port, tracebacks, accumulate
+        )
         return seq
 
     def handle_next_message(self, timeout: Optional[float]) -> bool:

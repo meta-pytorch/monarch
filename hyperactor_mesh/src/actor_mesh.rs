@@ -178,9 +178,9 @@ impl<A: Referable> ActorMesh<A> {
 
             let statuses = rx.recv().await?;
             if let Some(state) = &statuses.state {
-                // Check that all actors are in some terminal state.
-                // Failed is ok, because one of these actors may have failed earlier
-                // and we're trying to stop the others.
+                // Check that all actors are in a terminating state (Stopping
+                // or beyond). The actual wait for full cleanup (terminal)
+                // happens in _drain_and_stop via the controller's status watch.
                 let all_stopped = state.statuses.values().all(|s| s.is_terminating());
                 if all_stopped {
                     Ok(())
@@ -204,7 +204,6 @@ impl<A: Referable> ActorMesh<A> {
             let health_state = entry.get_mut();
             health_state.unhealthy_event = Some(Unhealthy::StreamClosed(MeshFailure {
                 actor_mesh_name: Some(self.name().to_string()),
-                rank: None,
                 event: ActorSupervisionEvent::new(
                     // Use an actor id from the mesh.
                     ndslice::view::Ranked::get(&self.current_ref, 0)
@@ -215,6 +214,7 @@ impl<A: Referable> ActorMesh<A> {
                     ActorStatus::Stopped("mesh stopped".to_string()),
                     None,
                 ),
+                crashed_ranks: vec![],
             }));
         }
         // Also take the controller from the ref, since that is used for
@@ -810,11 +810,14 @@ impl<A: Referable> ActorMeshRef<A> {
                     // whole mesh.
                     if let MessageOrFailure::Message(message) = message {
                         if let Some(message) = &message {
-                            if let Some(rank) = &message.rank {
-                                ndslice::view::Ranked::region(self).slice().contains(*rank)
-                            } else {
-                                // If rank is None, it applies to the whole mesh.
+                            let region = ndslice::view::Ranked::region(self).slice();
+                            if message.crashed_ranks.is_empty() {
+                                // Whole-mesh event (e.g. mesh stop).
                                 true
+                            } else {
+                                // Accept if any crashed rank overlaps with
+                                // this slice's region.
+                                message.crashed_ranks.iter().any(|r| region.contains(*r))
                             }
                         } else {
                             // Filter out messages that are not failures. These are used
@@ -856,7 +859,6 @@ impl<A: Referable> ActorMeshRef<A> {
                     // the controller is unreachable.
                     Ok(MeshFailure {
                         actor_mesh_name: Some(self.name().to_string()),
-                        rank: None,
                         event: ActorSupervisionEvent::new(
                             controller.actor_id().clone(),
                             None,
@@ -867,18 +869,20 @@ impl<A: Referable> ActorMeshRef<A> {
                             )),
                             None,
                         ),
+                        crashed_ranks: vec![],
                     })
                 }
             }?
         };
         // Update the health state now that we have received a message.
-        let rank = message.rank.unwrap_or_default();
         let event = &message.event;
         // Make sure not to hold this lock across an await point.
         let mut entry = self.health_state.entry(cx).or_default();
         let health_state = entry.get_mut();
         if let ActorStatus::Failed(_) = event.actor_status {
-            health_state.crashed_ranks.insert(rank, event.clone());
+            for &rank in &message.crashed_ranks {
+                health_state.crashed_ranks.insert(rank, event.clone());
+            }
         }
         health_state.unhealthy_event = match &event.actor_status {
             ActorStatus::Failed(_) => Some(Unhealthy::Crashed(message.clone())),
@@ -1303,11 +1307,7 @@ mod tests {
             assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
             assert_eq!(failure.event.actor_id.name(), child_name.to_string());
             if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
-                assert!(
-                    msg.contains("process exited with non-zero code 1"),
-                    "{}",
-                    msg
-                );
+                assert!(msg.contains("exited with non-zero code 1"), "{}", msg);
             } else {
                 panic!("actor status is not failed: {}", failure.event.actor_status);
             }

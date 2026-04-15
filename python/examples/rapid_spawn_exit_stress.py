@@ -20,12 +20,17 @@ import asyncio
 import time
 
 import monarch.actor
-from monarch._src.job.process import ProcessJob
-from monarch.actor import Actor, endpoint, this_host
+from monarch.actor import Actor, endpoint
+from monarch.job import ProcessJob, TelemetryConfig
 from monarch.mesh_controller import spawn_tensor_engine
 
-job = ProcessJob({"hosts": 1})
-proc_mesh = job.state(cached_path=None).hosts.spawn_procs(per_host={"gpus": 1})
+job = (
+    ProcessJob({"hosts": 1})
+    .enable_telemetry(TelemetryConfig(snapshot_interval_secs=30.0))
+    .enable_admin()
+)
+job_state = job.state(cached_path=None)
+proc_mesh = job_state.hosts.spawn_procs(per_host={"gpus": 1})
 
 
 def unhandled_fault(fault):
@@ -65,10 +70,8 @@ async def main():
     )
     args = parser.parse_args()
 
-    host = this_host()
-
-    # Spawn the admin agent so the TUI can attach.
-    admin_url = await host._spawn_admin()
+    admin_url = job_state.admin_url
+    assert admin_url is not None
     mtls_flags = (
         "--cacert /var/facebook/rootcanal/ca.pem "
         "--cert /var/facebook/x509_identities/server.pem "
@@ -81,7 +84,7 @@ async def main():
     print(f"  - Mesh tree:     curl {mtls_flags}{admin_url}/v1/tree")
     print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
     print(
-        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {admin_url}"
+        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr {admin_url}"
     )
     print("\nPress Ctrl+C to stop.\n", flush=True)
 

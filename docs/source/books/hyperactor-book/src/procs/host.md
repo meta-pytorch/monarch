@@ -71,15 +71,15 @@ impl<M: ProcManager> Host<M> {
 
         let router = DialMailboxRouter::new();
 
-        let service_proc_id = ProcId(
+        let service_proc_id = ProcId::unique(
             frontend_addr.clone(),
-            "service".to_string()
+            "service",
         );
         let service_proc = Proc::configured(service_proc_id.clone(), router.boxed());
 
-        let local_proc_id = ProcId(
+        let local_proc_id = ProcId::unique(
             frontend_addr.clone(),
-            "local".to_string()
+            "local",
         );
         let local_proc = Proc::configured(local_proc_id.clone(), router.boxed());
 

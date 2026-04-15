@@ -89,66 +89,45 @@ def test_get_set_multiple() -> None:
     assert config["default_transport"] == BindSpec(ChannelTransport.Unix)
 
 
-# This test tries to allocate too much memory for the GitHub actions
-# environment.
-@pytest.mark.oss_skip
 @isolate_in_subprocess
 def test_codec_max_frame_length_exceeds_default() -> None:
-    """Test that sending 10 chunks of 1GiB fails with default 10 GiB
-    limit."""
+    """Test that sending 4 chunks of 256KiB fails with a 1 MiB limit."""
 
-    oneGiB = 1024 * 1024 * 1024
-    tenGiB = 10 * oneGiB
+    oneMiB = 1024 * 1024
+    chunk_size = oneMiB // 4
 
-    # Verify default is 10 GiB
-    config = get_global_config()
-    assert config["codec_max_frame_length"] == tenGiB
+    with configured(codec_max_frame_length=oneMiB):
+        config = get_global_config()
+        assert config["codec_max_frame_length"] == oneMiB
 
-    monarch.actor.unhandled_fault_hook = lambda failure: None
-    # Try to send 10 chunks of 1GiB each with default 10 GiB limit
-    # This should fail due to serialization overhead.
-    # Spawn in separate proc so messages are serialized via Unix
-    # sockets
-    proc = this_host().spawn_procs()
-
-    # Create 10 chunks, 1GiB each (total 10GiB)
-    chunks = [bytes(oneGiB) for _ in range(10)]
-
-    # Spawn actor and send chunks - should fail with SupervisionError
-    chunker = proc.spawn("chunker", Chunker)
-    with pytest.raises(SupervisionError):
-        chunker.process_chunks.call_one(chunks).get()
-
-
-# This test tries to allocate too much memory for the GitHub actions
-# environment.
-@pytest.mark.oss_skip
-def test_codec_max_frame_length_with_increased_limit() -> None:
-    """Test that we can successfully send 10 chunks of 1GiB each with
-    100 GiB limit."""
-
-    oneGiB = 1024 * 1024 * 1024
-    tenGiB = 10 * oneGiB
-    oneHundredGiB = 10 * tenGiB
-
-    # Verify default is 10 GiB
-    config = get_global_config()
-    assert config["codec_max_frame_length"] == tenGiB
-
-    # Set the frame limit to confidently handle 10GiB
-    with configured(codec_max_frame_length=oneHundredGiB):
-        # Spawn in separate proc so messages are serialized via Unix
-        # sockets
+        monarch.actor.unhandled_fault_hook = lambda failure: None
+        # The raw chunk data totals 1 MiB, so serialization overhead should
+        # push the frame over the configured limit.
         proc = this_host().spawn_procs()
+        chunks = [bytes(chunk_size) for _ in range(4)]
 
-        # Create 10 chunks, 1GiB each (total 10GiB)
-        chunks = [bytes(oneGiB) for _ in range(10)]
+        chunker = proc.spawn("chunker", Chunker)
+        with pytest.raises(SupervisionError):
+            chunker.process_chunks.call_one(chunks).get()
 
-        # Spawn actor and send chunks - should succeed
+
+def test_codec_max_frame_length_with_increased_limit() -> None:
+    """Test that increasing the limit allows the same payload through."""
+
+    oneMiB = 1024 * 1024
+    chunk_size = oneMiB // 4
+    increased_limit = 2 * oneMiB
+
+    with configured(codec_max_frame_length=increased_limit):
+        config = get_global_config()
+        assert config["codec_max_frame_length"] == increased_limit
+
+        proc = this_host().spawn_procs()
+        chunks = [bytes(chunk_size) for _ in range(4)]
         chunker = proc.spawn("chunker", Chunker)
         result = chunker.process_chunks.call_one(chunks).get()
 
-        assert result == 10
+        assert result == 4
 
 
 def test_duration_config_basic() -> None:
@@ -292,6 +271,7 @@ def test_duration_params(param_name, test_value, expected_value, default_value):
         # Runtime and buffering
         ("small_write_threshold", 512, 256),
         # Mesh config (usize::MAX doesn't have a fixed value, skip default check)
+        ("max_cast_dimension_size", 32, 16),
         # Logging config
         ("read_log_buffer", 16384, 100),
     ],
@@ -491,7 +471,7 @@ def test_all_params_together():
     assert config["mesh_terminate_timeout"] == "10s"
     assert config["shared_asyncio_runtime"] is False
     assert config["small_write_threshold"] == 256
-    # max_cast_dimension_size is usize::MAX, skip checking it
+    assert config["max_cast_dimension_size"] == 16
     assert config["read_log_buffer"] == 100
     assert config["force_file_log"] is False
     assert config["prefix_with_rank"] is True

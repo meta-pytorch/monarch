@@ -108,7 +108,7 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE".to_string()),
         Some("max_cast_dimension_size".to_string()),
     ))
-    pub attr MAX_CAST_DIMENSION_SIZE: usize = usize::MAX;
+    pub attr MAX_CAST_DIMENSION_SIZE: usize = 16;
 
     /// Which builtin process launcher backend to use.
     /// Accepted values: "native" (default), "systemd".
@@ -125,8 +125,7 @@ declare_attrs! {
     ///
     /// Parsed as a `SocketAddr` (e.g. `[::]:1729`, `0.0.0.0:8080`).
     /// Used as the bind address when no explicit address is provided
-    /// to `MeshAdminAgent`, and as the default address assumed by
-    /// admin clients connecting via `mast_conda:///`.
+    /// to `MeshAdminAgent`.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_ADMIN_ADDR".to_string()),
         Some("mesh_admin_addr".to_string()),
@@ -190,16 +189,32 @@ declare_attrs! {
     ))
     pub attr MESH_ADMIN_QUERY_CHILD_TIMEOUT: Duration = Duration::from_millis(100);
 
+    /// Timeout for the end-to-end `/v1/config/{proc}` bridge reply.
+    /// The config-dump path forwards a `ConfigDump` message through
+    /// the HostAgent bridge and waits for `ConfigDumpResult`. This is
+    /// inter-process actor messaging — fundamentally slower than local
+    /// `QueryChild` snapshot lookups (which use
+    /// `MESH_ADMIN_QUERY_CHILD_TIMEOUT`). During startup, the
+    /// HostAgent message loop may be busy processing actor
+    /// registrations, so bridge latency can exceed several seconds.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT".to_string()),
+        Some("mesh_admin_config_dump_bridge_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT: Duration = Duration::from_secs(5);
+
     /// Timeout for py-spy dump requests. See PS-5 in `introspect`
-    /// module doc. py-spy dump is typically ~100ms, but ptrace attach
-    /// can stall on heavily loaded hosts. Independent of
+    /// module doc. With `--native --native-all`, py-spy unwinds native
+    /// stacks via libunwind which is significantly slower than
+    /// Python-only capture (~100ms). 10s accommodates native unwinding
+    /// on heavily loaded hosts. Independent of
     /// `MESH_ADMIN_SINGLE_HOST_TIMEOUT` because py-spy does real I/O
     /// (subprocess + ptrace) rather than actor messaging.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_ADMIN_PYSPY_TIMEOUT".to_string()),
         Some("mesh_admin_pyspy_timeout".to_string()),
     ))
-    pub attr MESH_ADMIN_PYSPY_TIMEOUT: Duration = Duration::from_secs(5);
+    pub attr MESH_ADMIN_PYSPY_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Timeout for the `/v1/tree` fan-out. Kept generous because the
     /// tree dump walks every host and proc in the mesh.
@@ -217,5 +232,37 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT".to_string()),
         Some("mesh_admin_pyspy_bridge_timeout".to_string()),
     ))
-    pub attr MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT: Duration = Duration::from_secs(7);
+    pub attr MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT: Duration = Duration::from_secs(13);
+
+    /// Client-side timeout for py-spy requests. Must exceed
+    /// `MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT` so the server can return a
+    /// structured `PySpyResult` even when the subprocess uses the
+    /// full budget. See PS-6 in `introspect` module doc.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_PYSPY_CLIENT_TIMEOUT".to_string()),
+        Some("mesh_admin_pyspy_client_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_PYSPY_CLIENT_TIMEOUT: Duration = Duration::from_secs(20);
+
+    /// Maximum allowed profile duration. Requests exceeding this
+    /// are rejected with a 400. Protects against runaway profile
+    /// captures. See PP-1 in `introspect` module doc.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_PYSPY_MAX_PROFILE_DURATION".to_string()),
+        Some("mesh_admin_pyspy_max_profile_duration".to_string()),
+    ))
+    pub attr MESH_ADMIN_PYSPY_MAX_PROFILE_DURATION: Duration = Duration::from_secs(300);
+
+    /// Path to the py-spy binary. When non-empty, tried before
+    /// the fallback `"py-spy"` PATH lookup. See PS-3 in
+    /// `introspect` module doc.
+    ///
+    /// Note: env var is `PYSPY_BIN` (not `HYPERACTOR_MESH_PYSPY_BIN`)
+    /// to preserve backward compatibility with existing deployments
+    /// that already set `PYSPY_BIN`.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("PYSPY_BIN".to_string()),
+        Some("pyspy_bin".to_string()),
+    ))
+    pub attr PYSPY_BIN: String = String::new();
 }

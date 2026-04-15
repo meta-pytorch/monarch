@@ -258,7 +258,7 @@ impl RsyncDaemon {
     read only = true
     write only = false
     uid = {uid}
-    hosts allow = localhost
+    hosts allow = localhost ip6-localhost
 "#,
             workspace = workspace.display(),
             uid = nix::unistd::getuid().as_raw(),
