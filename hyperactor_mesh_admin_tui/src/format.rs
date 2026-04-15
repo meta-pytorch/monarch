@@ -47,7 +47,11 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
             ..
         } => {
             let short = hyperactor_reference::ProcId::from_str(proc_name)
-                .map(|pid| pid.name().to_string())
+                .map(|pid| {
+                    pid.label()
+                        .map(|l| l.as_str().to_string())
+                        .unwrap_or_else(|| pid.id().to_string())
+                })
                 .unwrap_or_else(|_| proc_name.clone());
             let num_system = system_children.len();
             let num_stopped = stopped_children.len();

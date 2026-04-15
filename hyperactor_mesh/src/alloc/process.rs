@@ -434,9 +434,12 @@ impl ProcessAlloc {
     }
 
     fn index(&self, proc_id: &hyperactor_reference::ProcId) -> Result<usize, anyhow::Error> {
-        // ProcId names have format "{alloc_name}_{index}" (e.g., "abc123_0")
-        let name = proc_id.name();
-        let expected_prefix = format!("{}_", self.name);
+        // Alloc proc labels have format "{stripped_alloc_name}_{index}" (e.g., "abc123_0").
+        // The alloc name (a ShortUuid) is normalized through Label::strip to match the
+        // label stored in the ProcId.
+        let name = proc_id.label().map(|l| l.as_str()).unwrap_or("");
+        let stripped_alloc = hyperactor::id::Label::strip(&self.name.to_string());
+        let expected_prefix = format!("{}_", stripped_alloc);
         anyhow::ensure!(
             name.starts_with(&expected_prefix),
             "proc {} does not belong to alloc {}",
@@ -543,7 +546,11 @@ impl ProcessAlloc {
                         let temp_addr = ChannelAddr::any(ChannelTransport::Local);
                         let proc_id = hyperactor_reference::ProcId::with_name(
                             temp_addr,
-                            format!("{}_{}", self.alloc_name.name(), rank),
+                            format!(
+                                "{}_{}",
+                                hyperactor::id::Label::strip(&self.alloc_name.name().to_string()),
+                                rank
+                            ),
                         );
                         let (handle, monitor) =
                             Child::monitored(rank, process, log_channel, tail_size, proc_id);
@@ -612,7 +619,7 @@ impl Alloc for ProcessAlloc {
 
                             let proc_name = match &self.spec.proc_name {
                                 Some(name) => name.clone(),
-                                None => format!("{}_{}", self.name, index),
+                                None => format!("{}_{}", hyperactor::id::Label::strip(&self.name.to_string()), index),
                             };
                             child.post(Allocator2Process::StartProc(
                                 hyperactor_reference::ProcId::with_name(addr.clone(), proc_name),
