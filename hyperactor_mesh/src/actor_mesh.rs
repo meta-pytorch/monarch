@@ -629,7 +629,10 @@ impl<A: Referable> ActorMeshRef<A> {
             // Split ports for N destinations, matching the comm tree's
             // split_ports behavior.
             data.visit_mut::<UnboundPort>(
-                |UnboundPort(port_id, reducer_spec, return_undeliverable, kind)| {
+                |UnboundPort(port_id, reducer_spec, return_undeliverable, kind, unsplit)| {
+                    if *unsplit {
+                        return Ok(());
+                    }
                     let reducer_mode = match kind {
                         UnboundPortKind::Streaming(opts) => {
                             ReducerMode::Streaming(opts.clone().unwrap_or_default())
