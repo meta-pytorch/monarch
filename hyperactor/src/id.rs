@@ -385,7 +385,11 @@ impl Ord for ProcId {
 
 impl fmt::Display for ProcId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.uid)
+        match (&self.uid, &self.label) {
+            (Uid::Singleton(label), _) => write!(f, "_{}", label),
+            (Uid::Instance(uid), Some(label)) => write!(f, "{}-{:016x}", label, uid),
+            (Uid::Instance(uid), None) => write!(f, "{:016x}", uid),
+        }
     }
 }
 
@@ -402,6 +406,36 @@ impl FromStr for ProcId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Singleton: _label
+        if let Some(rest) = s.strip_prefix('_') {
+            if let Ok(label) = Label::new(rest) {
+                return Ok(Self {
+                    uid: Uid::Singleton(label),
+                    label: None,
+                });
+            }
+        }
+
+        // Labeled instance: label-hex16 (exactly 16 hex digits after last dash at len-17)
+        if s.len() >= 18 {
+            let dash_pos = s.len() - 17;
+            if s.as_bytes()[dash_pos] == b'-' {
+                let hex_part = &s[dash_pos + 1..];
+                let label_part = &s[..dash_pos];
+                if hex_part.len() == 16 && hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
+                    if let (Ok(uid), Ok(label)) =
+                        (u64::from_str_radix(hex_part, 16), Label::new(label_part))
+                    {
+                        return Ok(Self {
+                            uid: Uid::Instance(uid),
+                            label: Some(label),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Unlabeled instance: bare uid
         let uid: Uid = s.parse()?;
         Ok(Self { uid, label: None })
     }
