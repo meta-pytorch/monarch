@@ -95,7 +95,7 @@ setup_rust_toolchain() {
 # Uses the pytorch ossci-compiler-cache S3 bucket if available.
 setup_sccache() {
     # Skip sccache on ROCm — runners lack AWS credentials for the S3 cache backend
-    if [ -d "${ROCM_HOME:-/opt/rocm}" ] && ! [ -d "/usr/local/cuda" ]; then
+    if command -v rocminfo &>/dev/null; then
         echo "ROCm environment detected, skipping sccache setup"
         return
     fi
