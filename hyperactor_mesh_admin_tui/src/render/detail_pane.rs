@@ -787,7 +787,7 @@ mod tests {
 
     fn mock_host_ref() -> NodeRef {
         use hyperactor::reference as hyperactor_reference;
-        let id_str = "unix:@test,world,host_agent[0]";
+        let id_str = "unix:@test,world,host_agent";
         NodeRef::Host(hyperactor_reference::ActorId::from_str(id_str).unwrap())
     }
 

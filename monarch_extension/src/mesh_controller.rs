@@ -892,7 +892,7 @@ impl MeshControllerActor {
     fn rank_of_worker(&self, actor_id: &reference::ActorId) -> usize {
         *self
             .rank_map
-            .get(actor_id.proc_id())
+            .get(&actor_id.proc_id())
             .expect("rank map should contain worker")
     }
 }
