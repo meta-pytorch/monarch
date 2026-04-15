@@ -10,6 +10,7 @@ on:
     paths:
       - .github/workflows/wheels.yml
       - .github/workflows/build-dist.yml
+      - .github/workflows/build-macos.yml
       - Dockerfile.nightly
   push:
     branches:
@@ -45,9 +46,16 @@ jobs:
       gpu-arch-version: '12.8'
       platform: aarch64
 
+  build-macos:
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      runner: macos-latest
+      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu'
+
   publish-to-pypi:
     name: Publish to PyPI
-    needs: [build-x86_64, build-arm64]
+    needs: [build-x86_64, build-arm64, build-macos]
     runs-on: ubuntu-latest
     environment: nightly
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
