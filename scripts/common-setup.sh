@@ -244,7 +244,7 @@ setup_rocm_environment() {
     echo "Setting up ROCm environment..."
 
     # Disable sccache — ROCm runners lack the AWS credentials needed for the S3 cache backend
-    export USE_SCCACHE=0
+    unset RUSTC_WRAPPER
 
     ROCM_HOME="${ROCM_HOME:-/opt/rocm}"
 
