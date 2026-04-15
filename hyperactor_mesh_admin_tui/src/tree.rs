@@ -286,7 +286,6 @@ pub(crate) fn collapse_all(node: &mut TreeNode) {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
-    use std::str::FromStr;
 
     use super::*;
     use crate::model::NodeType;
@@ -296,18 +295,33 @@ mod tests {
     }
 
     fn host(name: &str) -> NodeRef {
-        let id_str = format!("unix:@test,world,{}", name);
-        NodeRef::Host(hyperactor::reference::ActorId::from_str(&id_str).unwrap())
+        let proc_id = hyperactor::reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "world",
+        );
+        NodeRef::Host(proc_id.actor_id(name))
     }
 
     fn proc_ref(name: &str) -> NodeRef {
-        let id_str = format!("unix:@test,{}", name);
-        NodeRef::Proc(hyperactor::reference::ProcId::from_str(&id_str).unwrap())
+        let proc_id = hyperactor::reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            name,
+        );
+        NodeRef::Proc(proc_id)
     }
 
     fn actor(name: &str) -> NodeRef {
-        let id_str = format!("unix:@test,world,{}", name);
-        NodeRef::Actor(hyperactor::reference::ActorId::from_str(&id_str).unwrap())
+        let proc_id = hyperactor::reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "world",
+        );
+        NodeRef::Actor(proc_id.actor_id(name))
     }
 
     // Helper to find a node by reference using algebraic fold.

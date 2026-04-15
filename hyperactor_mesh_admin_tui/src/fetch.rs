@@ -542,9 +542,13 @@ mod tests {
     use super::*;
 
     fn mock_actor_ref(name: &str) -> NodeRef {
-        use std::str::FromStr;
-        let id_str = format!("unix:@test,world,{}", name);
-        NodeRef::Actor(hyperactor::reference::ActorId::from_str(&id_str).unwrap())
+        let proc_id = hyperactor::reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "world",
+        );
+        NodeRef::Actor(proc_id.actor_id(name))
     }
 
     fn mock_payload(identity: NodeRef) -> NodePayload {
