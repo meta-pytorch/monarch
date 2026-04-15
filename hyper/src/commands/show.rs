@@ -25,7 +25,7 @@ impl ShowCommand {
         match self.reference {
             reference::Reference::Proc(proc_id) => {
                 let host = proc_id.addr().clone();
-                let proc = proc_id.name().to_string();
+                let proc = proc_id.id().to_string();
                 let cx = context().await;
                 let client = cx.actor_instance;
 
