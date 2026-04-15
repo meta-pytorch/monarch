@@ -1687,13 +1687,14 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 mod tests {
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
+    use hyperactor::id::Label;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
     use hyperactor::reference;
     use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
-    use hyperactor_mesh::Name;
     use hyperactor_mesh::host_mesh::host_agent::ProcState;
+    use hyperactor_mesh::mesh_id::ResourceId;
     use hyperactor_mesh::resource::Status;
     use hyperactor_mesh::resource::{self};
     use pyo3::PyTypeInfo;
@@ -1763,7 +1764,7 @@ mod tests {
     fn to_py_error_preserves_proc_creation_message() {
         // State<ProcState> w/ `state.is_none()`
         let state: resource::State<ProcState> = resource::State {
-            name: Name::new("my_proc").unwrap(),
+            id: ResourceId::unique(Label::new("my-proc").unwrap()),
             status: Status::Failed("boom".into()),
             state: None,
             generation: 0,
