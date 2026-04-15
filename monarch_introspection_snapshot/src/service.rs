@@ -500,8 +500,8 @@ mod tests {
     /// Build a minimal mesh topology: root → host → proc → actor.
     fn minimal_mesh_payloads() -> HashMap<NodeRef, NodePayload> {
         let proc_id = test_proc_id();
-        let host_actor_id = proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0);
-        let actor_id = proc_id.actor_id(ACTOR_TYPE, 0);
+        let host_actor_id = proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME);
+        let actor_id = proc_id.actor_id(ACTOR_TYPE);
 
         let host_ref = NodeRef::Host(host_actor_id.clone());
         let proc_ref = NodeRef::Proc(proc_id.clone());

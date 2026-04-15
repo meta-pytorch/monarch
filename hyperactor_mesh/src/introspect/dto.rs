@@ -384,11 +384,11 @@ mod tests {
     }
 
     fn test_actor_id() -> hyperactor::reference::ActorId {
-        test_proc_id().actor_id("actor", 0)
+        test_proc_id().actor_id("actor")
     }
 
     fn test_host_actor_id() -> hyperactor::reference::ActorId {
-        test_proc_id().actor_id("host_agent", 0)
+        test_proc_id().actor_id("host_agent")
     }
 
     fn test_time() -> SystemTime {

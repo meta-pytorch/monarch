@@ -311,9 +311,10 @@ impl MailboxSender for ProcOrDial {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        if envelope.dest().actor_id().proc_id() == self.service_proc.proc_id() {
+        let dest_proc_id = envelope.dest().actor_id().proc_id();
+        if dest_proc_id == *self.service_proc.proc_id() {
             self.service_proc.post_unchecked(envelope, return_handle);
-        } else if envelope.dest().actor_id().proc_id() == self.local_proc.proc_id() {
+        } else if dest_proc_id == *self.local_proc.proc_id() {
             self.local_proc.post_unchecked(envelope, return_handle);
         } else {
             self.dialer.post_unchecked(envelope, return_handle)
@@ -1541,8 +1542,8 @@ mod tests {
         assert!(matches!(host.addr().transport(), ChannelTransport::Unix));
         let (proc1, echo1) = host.spawn("proc1".to_string(), ()).await.unwrap();
         let (proc2, echo2) = host.spawn("proc2".to_string(), ()).await.unwrap();
-        assert_eq!(echo1.actor_id().proc_id(), &proc1);
-        assert_eq!(echo2.actor_id().proc_id(), &proc2);
+        assert_eq!(echo1.actor_id().proc_id(), proc1);
+        assert_eq!(echo2.actor_id().proc_id(), proc2);
 
         // (2) Duplicate name rejection.
         let dup = host.spawn("proc1".to_string(), ()).await;
@@ -1608,7 +1609,7 @@ mod tests {
         // Build a LocalHandle directly.
         let addr = ChannelAddr::any(ChannelTransport::Local);
         let proc_id = reference::ProcId::with_name(addr.clone(), "p");
-        let agent_ref = reference::ActorRef::<()>::attest(proc_id.actor_id("host_agent", 0));
+        let agent_ref = reference::ActorRef::<()>::attest(proc_id.actor_id("host_agent"));
         let h = LocalHandle::<()> {
             proc_id,
             addr,
@@ -1738,7 +1739,7 @@ mod tests {
             forwarder_addr: ChannelAddr,
             _config: (),
         ) -> Result<Self::Handle, HostError> {
-            let agent = reference::ActorRef::<()>::attest(proc_id.actor_id("host_agent", 0));
+            let agent = reference::ActorRef::<()>::attest(proc_id.actor_id("host_agent"));
             Ok(TestHandle {
                 id: proc_id,
                 addr: forwarder_addr,
@@ -1785,7 +1786,7 @@ mod tests {
         .unwrap();
 
         let (pid, agent) = host.spawn("ok".into(), ()).await.expect("must succeed");
-        assert_eq!(agent.actor_id().proc_id(), &pid);
+        assert_eq!(agent.actor_id().proc_id(), pid);
         assert!(host.procs.contains("ok"));
     }
 

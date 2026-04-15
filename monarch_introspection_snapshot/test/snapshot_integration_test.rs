@@ -144,7 +144,7 @@ async fn test_snapshot_sql_queries() -> Result<()> {
     // Step 3: Spawn admin on the caller-local proc.
     let _admin_url = spawn_admin([&host_mesh], &instance, None, None).await?;
     let admin_ref: ActorRef<MeshAdminAgent> =
-        ActorRef::attest(instance.proc().proc_id().actor_id(MESH_ADMIN_ACTOR_NAME, 0));
+        ActorRef::attest(instance.proc().proc_id().actor_id(MESH_ADMIN_ACTOR_NAME));
 
     // Capture deterministic fixture-owned IDs via typed refs.
     let proc_0_ref = proc_mesh.get(0).expect("proc at rank 0");
