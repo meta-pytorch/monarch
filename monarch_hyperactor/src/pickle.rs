@@ -140,7 +140,7 @@ impl ActivePicklingState {
     }
 
     /// Convert this active state into a frozen PicklingState.
-    fn into_pickling_state(self, buffer: crate::buffers::FrozenBuffer) -> PicklingStateInner {
+    fn into_pickling_state(self, buffer: Part) -> PicklingStateInner {
         PicklingStateInner {
             buffer,
             tensor_engine_references: self.tensor_engine_references,
@@ -151,11 +151,11 @@ impl ActivePicklingState {
 
 /// Inner data for a completed pickling operation.
 ///
-/// This contains the frozen pickled bytes and any collected references.
-/// Does not require GIL for access to the FrozenBuffer.
+/// This contains the pickled bytes as a fragmented [`Part`] (zero-copy)
+/// and any collected references.
 pub struct PicklingStateInner {
-    /// The pickled bytes as a FrozenBuffer (zero-copy).
-    buffer: crate::buffers::FrozenBuffer,
+    /// The pickled bytes as a fragmented Part (zero-copy).
+    buffer: Part,
     /// References to tensor engine objects that need special handling.
     tensor_engine_references: VecDeque<Py<PyAny>>,
     /// Pending pickles (PyShared values) that must be resolved.
@@ -168,8 +168,8 @@ impl PicklingStateInner {
         &self.pending_pickles
     }
 
-    /// Take the FrozenBuffer (pickled bytes) from this inner state.
-    pub fn take_buffer(self) -> crate::buffers::FrozenBuffer {
+    /// Take the Part (pickled bytes) from this inner state.
+    pub fn take_buffer(self) -> Part {
         self.buffer
     }
 }
@@ -215,7 +215,7 @@ impl PicklingState {
 
         Ok(Self {
             inner: Some(PicklingStateInner {
-                buffer: buffer.clone(),
+                buffer: Part::from(buffer.inner.clone()),
                 tensor_engine_references: refs,
                 pending_pickles: VecDeque::new(),
             }),
@@ -241,7 +241,9 @@ impl PicklingState {
     /// This does not consume the PicklingState.
     fn buffer(&self) -> PyResult<crate::buffers::FrozenBuffer> {
         let inner = self.inner_ref()?;
-        Ok(inner.buffer.clone())
+        Ok(crate::buffers::FrozenBuffer {
+            inner: inner.buffer.clone().into_bytes(),
+        })
     }
 
     /// Unpickle the buffer contents.
@@ -268,12 +270,16 @@ impl PicklingState {
 
         let _guard = ActivePicklingGuard::enter(active);
 
+        let frozen = crate::buffers::FrozenBuffer {
+            inner: inner.buffer.into_bytes(),
+        };
+
         // Unpickle the object. If torch is loaded, use torch_loads which
         // disables dispatch modes during unpickling.
         let result = if maybe_torch_fn(py).call0()?.is_truthy()? {
-            torch_loads_fn(py).call1((inner.buffer,))
+            torch_loads_fn(py).call1((frozen,))
         } else {
-            cloudpickle(py).getattr("loads")?.call1((inner.buffer,))
+            cloudpickle(py).getattr("loads")?.call1((frozen,))
         };
 
         result.map(|obj| obj.unbind())
@@ -357,7 +363,7 @@ impl PendingMessage {
         // Resolve the pickling state (awaits all pending pickles and re-pickles)
         let mut resolved_state = self.state.resolve().await?;
 
-        // Take the FrozenBuffer directly - no GIL needed since FrozenBuffer doesn't contain Py<>
+        // Take the Part directly - no GIL needed since Part doesn't contain Py<>
         let inner = resolved_state.take_inner()?;
         Ok(PythonMessage::new_from_buf(self.kind, inner.take_buffer()))
     }
@@ -587,9 +593,9 @@ pub fn pickle(
         .with(|cell| cell.borrow_mut().take())
         .expect("active pickling state should still be set");
 
-    // Convert to frozen PicklingState
-    let frozen_buffer = buffer.borrow_mut(py).freeze();
-    let inner = active.into_pickling_state(frozen_buffer);
+    // Take the Part (zero-copy fragmented buffer) directly.
+    let part = buffer.borrow_mut(py).take_part();
+    let inner = active.into_pickling_state(part);
     Ok(PicklingState { inner: Some(inner) })
 }
 

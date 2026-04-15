@@ -170,6 +170,56 @@ use session::Session;
 use crate::config;
 use crate::metrics;
 
+pub(crate) enum LinkStatus {
+    NeverConnected,
+    Connected(tokio::time::Instant),
+    Disconnected {
+        last_connected: tokio::time::Instant,
+        since: tokio::time::Instant,
+    },
+}
+
+impl LinkStatus {
+    fn connected(&mut self) {
+        *self = LinkStatus::Connected(tokio::time::Instant::now());
+    }
+
+    fn disconnected(&mut self) {
+        match *self {
+            LinkStatus::Connected(at) => {
+                *self = LinkStatus::Disconnected {
+                    last_connected: at,
+                    since: tokio::time::Instant::now(),
+                };
+            }
+            // Already disconnected or never connected — leave as is.
+            _ => {}
+        }
+    }
+}
+
+impl std::fmt::Display for LinkStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LinkStatus::NeverConnected => write!(f, "never connected"),
+            LinkStatus::Connected(at) => {
+                write!(f, "connected for {:.1}s", at.elapsed().as_secs_f64())
+            }
+            LinkStatus::Disconnected {
+                last_connected,
+                since,
+            } => {
+                write!(
+                    f,
+                    "last connected {:.1}s ago, disconnected for {:.1}s",
+                    last_connected.elapsed().as_secs_f64(),
+                    since.elapsed().as_secs_f64(),
+                )
+            }
+        }
+    }
+}
+
 /// Log a send-loop error and return `true` if the error is terminal
 /// (caller should exit), `false` if recoverable (caller should reconnect).
 fn log_send_error(
@@ -177,10 +227,11 @@ fn log_send_error(
     dest: &ChannelAddr,
     session_id: u64,
     mode: &str,
+    link_status: &LinkStatus,
 ) -> bool {
     match error {
         session::SendLoopError::Io(err) => {
-            tracing::info!(dest = %dest, session_id, error = %err, mode, "send error");
+            tracing::info!(dest = %dest, session_id, error = %err, mode, "send error; {link_status}");
             metrics::CHANNEL_ERRORS.add(
                 1,
                 hyperactor_telemetry::kv_pairs!(
@@ -194,23 +245,23 @@ fn log_send_error(
         }
         session::SendLoopError::AppClosed => true,
         session::SendLoopError::Rejected(reason) => {
-            tracing::error!(dest = %dest, session_id, mode, "server rejected connection: {reason}");
+            tracing::error!(dest = %dest, session_id, mode, "server rejected connection: {reason}; {link_status}");
             true
         }
         session::SendLoopError::ServerClosed => {
-            tracing::info!(dest = %dest, session_id, mode, "server closed the channel");
+            tracing::info!(dest = %dest, session_id, mode, "server closed the channel; {link_status}");
             true
         }
         session::SendLoopError::DeliveryTimeout => {
             let timeout = hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT);
             tracing::error!(
                 dest = %dest, session_id, mode,
-                "failed to receive ack within timeout {timeout:?}; link is currently connected"
+                "failed to receive ack within timeout {timeout:?}; link is currently connected; {link_status}"
             );
             true
         }
         session::SendLoopError::OversizedFrame(reason) => {
-            tracing::error!(dest = %dest, session_id, mode, "oversized frame: {reason}");
+            tracing::error!(dest = %dest, session_id, mode, "oversized frame: {reason}; {link_status}");
             true
         }
     }
@@ -246,15 +297,25 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                         error = %err,
                         "failed to push message to outbox"
                     );
-                    let _ = notify.send(TxStatus::Closed);
+                    let _ = notify.send(TxStatus::Closed("failed to push to outbox".into()));
                     return;
                 }
             }
             None => {
-                let _ = notify.send(TxStatus::Closed);
+                let _ = notify.send(TxStatus::Closed("sender dropped".into()));
                 return;
             }
         }
+
+        let mut reconnect_backoff = ExponentialBackoffBuilder::new()
+            .with_initial_interval(Duration::from_millis(10))
+            .with_multiplier(2.0)
+            .with_randomization_factor(0.1)
+            .with_max_interval(Duration::from_secs(5))
+            .with_max_elapsed_time(None)
+            .build();
+
+        let mut link_status = LinkStatus::NeverConnected;
 
         let reason: String = 'outer: loop {
             let connected = match deliveries.expiry_time() {
@@ -264,11 +325,11 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                         let timeout =
                             hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT);
                         let error_msg = if deliveries.outbox.is_expired(timeout) {
-                            format!("failed to deliver message within timeout {timeout:?}",)
+                            format!("failed to deliver message within timeout {timeout:?}; {link_status}")
                         } else {
                             format!(
                                 "failed to receive ack within timeout {timeout:?}; \
-                                 link is currently broken",
+                                 link is currently broken; {link_status}",
                             )
                         };
                         tracing::error!(
@@ -305,19 +366,50 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             }
             deliveries.requeue_unacked();
 
+            link_status.connected();
+            let connected_at = tokio::time::Instant::now();
+
             let result = {
                 let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
                 session::send_connected(&stream, &mut deliveries, &mut receiver).await
             };
             session = connected.release();
 
+            link_status.disconnected();
+
+            // Reset backoff if the connection was alive long enough to have
+            // been useful (i.e. not an immediate EOF/error).
+            if connected_at.elapsed() > Duration::from_secs(1) {
+                reconnect_backoff.reset();
+            }
+
             match result {
                 Ok(()) => {
-                    // EOF — connection closed normally, reconnect.
+                    // EOF — connection closed normally, reconnect after backoff.
+                    if let Some(delay) = reconnect_backoff.next_backoff() {
+                        tracing::info!(
+                            dest = %dest,
+                            session_id = session_id.0,
+                            delay_ms = delay.as_millis() as u64,
+                            "send_connected returned EOF, reconnecting after backoff; {link_status}"
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
                 }
                 Err(ref e) => {
-                    if log_send_error(e, &dest, session_id.0, "simplex") {
+                    if log_send_error(e, &dest, session_id.0, "simplex", &link_status) {
                         break 'outer format!("{log_id}: {e}");
+                    }
+                    // Recoverable error — reconnect after backoff.
+                    if let Some(delay) = reconnect_backoff.next_backoff() {
+                        tracing::info!(
+                            dest = %dest,
+                            session_id = session_id.0,
+                            delay_ms = delay.as_millis() as u64,
+                            error = %e,
+                            "send_connected returned recoverable error, reconnecting after backoff; {link_status}"
+                        );
+                        tokio::time::sleep(delay).await;
                     }
                 }
             }
@@ -342,7 +434,7 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             });
         }
 
-        let _ = notify.send(TxStatus::Closed);
+        let _ = notify.send(TxStatus::Closed(reason.into()));
     });
     tx
 }
@@ -599,10 +691,11 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
             self.sender
                 .send((message, return_channel, tokio::time::Instant::now()))
         {
+            let reason = self.status.borrow().as_closed().map(|r| r.to_string());
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message,
-                reason: None,
+                reason,
             });
         }
     }
@@ -688,8 +781,8 @@ pub(crate) mod unix {
     use std::os::unix::net::SocketAddr as StdSocketAddr;
     use std::os::unix::net::UnixStream as StdUnixStream;
 
-    use rand::Rng;
-    use rand::distributions::Alphanumeric;
+    use rand::RngExt as _;
+    use rand::distr::Alphanumeric;
     use tokio::net::UnixListener;
     use tokio::net::UnixStream;
 
@@ -848,7 +941,7 @@ pub(crate) mod unix {
                 "" => {
                     // TODO: ensure this socket doesn't already exist. 24 bytes of randomness should be good for now but is not perfect.
                     // We can't use annon sockets because those are not valid across processes that aren't in the same process hierarchy aka forked.
-                    let random_string = rand::thread_rng()
+                    let random_string = rand::rng()
                         .sample_iter(&Alphanumeric)
                         .take(24)
                         .map(char::from)
@@ -1416,6 +1509,11 @@ pub(crate) mod tls {
                             .connect(server_name.clone(), stream)
                             .await
                             .map_err(|err| {
+                                tracing::info!(
+                                    dest = %self.dest(),
+                                    error = %err,
+                                    "TLS handshake failed"
+                                );
                                 ClientError::Connect(
                                     self.dest(),
                                     err,
@@ -1808,9 +1906,10 @@ mod tests {
     #[cfg(target_os = "linux")] // uses abstract names
     use anyhow::Result;
     use bytes::Bytes;
-    use rand::Rng;
-    use rand::SeedableRng;
-    use rand::distributions::Alphanumeric;
+    use rand::RngExt as _;
+    use rand::SeedableRng as _;
+    use rand::distr::Alphanumeric;
+    use rand::rngs::SysRng;
     use timed_test::async_timed_test;
     use tokio::io::AsyncWrite;
     use tokio::io::DuplexStream;
@@ -2102,7 +2201,7 @@ mod tests {
 
             let disconnected_at = prev_disconnected_at.read().unwrap();
             if disconnected_at.elapsed() > *duration && disconnected_count < *max_disconnects {
-                rng.gen_bool(*prob)
+                rng.random_bool(*prob)
             } else {
                 false
             }
@@ -2257,13 +2356,13 @@ mod tests {
                 ) {
                     if let Some((min, max)) = network_flakiness.latency_range {
                         let diff = max.abs_diff(min);
-                        let factor = rng.gen_range(0.0..=1.0);
+                        let factor = rng.random_range(0.0..=1.0);
                         let latency = min + diff.mul_f64(factor);
                         tokio::time::sleep_until(queue.front().unwrap().1 + latency).await;
                     }
                 }
 
-                let mut rng = rand::rngs::SmallRng::from_entropy();
+                let mut rng = rand::rngs::SmallRng::try_from_rng(&mut SysRng).unwrap();
                 let mut queue: VecDeque<(Bytes, Instant)> = VecDeque::new();
                 let mut send_count = 0u64;
 
@@ -2650,8 +2749,8 @@ mod tests {
     async fn verify_tx_closed(tx_status: &mut watch::Receiver<TxStatus>, expected_log: &str) {
         match tokio::time::timeout(Duration::from_secs(5), tx_status.changed()).await {
             Ok(Ok(())) => {
-                let current_status = *tx_status.borrow();
-                assert_eq!(current_status, TxStatus::Closed);
+                let current_status = tx_status.borrow().clone();
+                assert!(current_status.is_closed());
                 logs_assert_unscoped(|logs| {
                     if logs.iter().any(|log| log.contains(expected_log)) {
                         Ok(())
@@ -2789,8 +2888,10 @@ mod tests {
         // Send some messages, but not acking any of them.
         net_tx_send(&tx, &[100, 101, 102, 103, 104]).await;
 
-        // How many times to reconnect.
-        let n = 10;
+        // How many times to reconnect. Keep this small because the send loop
+        // applies exponential backoff between reconnections, and mock connections
+        // are too short-lived to trigger the backoff reset.
+        let n = 3;
 
         // Reconnect multiple times. The messages should be resent every time
         // because none of them is acked.
@@ -3281,7 +3382,7 @@ mod tests {
             let tx2 = Arc::clone(&tx);
             txs.push(tx);
             tx_handles.push(tokio::spawn(async move {
-                let random_string = rand::thread_rng()
+                let random_string = rand::rng()
                     .sample_iter(&Alphanumeric)
                     .take(2048)
                     .map(char::from)
@@ -3385,10 +3486,10 @@ mod tests {
         tx.post(101);
         let mut watcher = tx.status().clone();
         // When NetRx exits, it should notify NetTx to exit as well.
-        let _ = watcher.wait_for(|val| *val == TxStatus::Closed).await;
+        let _ = watcher.wait_for(|val| val.is_closed()).await;
         // wait_for could return Err due to race between when watch's sender was
         // dropped and when wait_for was called. So we still need to do an
         // equality check.
-        assert_eq!(*watcher.borrow(), TxStatus::Closed);
+        assert!(watcher.borrow().is_closed());
     }
 }

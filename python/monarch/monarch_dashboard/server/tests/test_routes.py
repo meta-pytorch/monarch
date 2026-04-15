@@ -84,7 +84,7 @@ class MeshRoutesTest(_RouteTestBase):
         resp = self.client.get("/api/meshes/1")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
-        self.assertEqual(data["id"], 1)
+        self.assertEqual(data["id"], "1")
         self.assertIn("class", data)
         self.assertIn("full_name", data)
 
@@ -150,7 +150,7 @@ class ActorRoutesTest(_RouteTestBase):
         resp = self.client.get("/api/actors/1")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
-        self.assertEqual(data["id"], 1)
+        self.assertEqual(data["id"], "1")
         self.assertIn("latest_status", data)
         self.assertIn("status_timestamp_us", data)
 
@@ -167,6 +167,7 @@ class ActorRoutesTest(_RouteTestBase):
             "mesh_id",
             "rank",
             "full_name",
+            "display_name",
             "latest_status",
             "status_timestamp_us",
         }
@@ -185,7 +186,7 @@ class ActorStatusEventsRoutesTest(_RouteTestBase):
         events = resp.get_json()
         self.assertGreater(len(events), 0)
         for e in events:
-            self.assertEqual(e["actor_id"], 1)
+            self.assertEqual(e["actor_id"], "1")
 
     def test_status_events_not_found_actor(self):
         resp = self.client.get("/api/actors/9999/status_events")
@@ -216,6 +217,14 @@ class ActorMessagesRoutesTest(_RouteTestBase):
             self.assertTrue(
                 m["from_actor_id"] == actor_id or m["to_actor_id"] == actor_id
             )
+
+    def test_actor_messages_include_latest_status(self):
+        all_msgs = self.client.get("/api/messages").get_json()
+        actor_id = all_msgs[0]["from_actor_id"]
+        resp = self.client.get(f"/api/actors/{actor_id}/messages")
+        msgs = resp.get_json()
+        for m in msgs:
+            self.assertIn("latest_status", m)
 
     def test_actor_messages_not_found(self):
         resp = self.client.get("/api/actors/9999/messages")
@@ -257,7 +266,6 @@ class MessageRoutesTest(_RouteTestBase):
             "timestamp_us",
             "from_actor_id",
             "to_actor_id",
-            "status",
             "endpoint",
             "port_id",
         }
@@ -312,38 +320,11 @@ class SentMessagesRoutesTest(_RouteTestBase):
             "id",
             "timestamp_us",
             "sender_actor_id",
-            "mesh_id",
+            "actor_mesh_id",
             "view_json",
             "shape_json",
         }
         self.assertEqual(set(sm.keys()), expected_keys)
-
-
-# ---------------------------------------------------------------------------
-# Old endpoints removed
-# ---------------------------------------------------------------------------
-
-
-class RemovedEndpointsTest(_RouteTestBase):
-    def test_host_units_removed(self):
-        resp = self.client.get("/api/host_units")
-        self.assertEqual(resp.status_code, 404)
-
-    def test_proc_meshes_removed(self):
-        resp = self.client.get("/api/proc_meshes")
-        self.assertEqual(resp.status_code, 404)
-
-    def test_procs_removed(self):
-        resp = self.client.get("/api/procs")
-        self.assertEqual(resp.status_code, 404)
-
-    def test_actor_meshes_removed(self):
-        resp = self.client.get("/api/actor_meshes")
-        self.assertEqual(resp.status_code, 404)
-
-    def test_mesh_host_units_removed(self):
-        resp = self.client.get("/api/meshes/1/host_units")
-        self.assertEqual(resp.status_code, 404)
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +357,54 @@ class SummaryRoutesTest(_RouteTestBase):
         self.assertIn("host_meshes", hc)
         self.assertIn("proc_meshes", hc)
         self.assertIn("actor_meshes", hc)
+
+
+# ---------------------------------------------------------------------------
+# SQL query
+# ---------------------------------------------------------------------------
+
+
+class QueryRouteTest(_RouteTestBase):
+    def test_query_returns_rows(self):
+        resp = self.client.post(
+            "/api/query", json={"sql": "SELECT * FROM meshes LIMIT 1"}
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("rows", data)
+        self.assertGreater(len(data["rows"]), 0)
+
+    def test_query_missing_sql(self):
+        resp = self.client.post("/api/query", json={})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_query_invalid_sql(self):
+        resp = self.client.post("/api/query", json={"sql": "NOT VALID SQL"})
+        self.assertEqual(resp.status_code, 400)
+
+
+# ---------------------------------------------------------------------------
+# Py-spy dump storage
+# ---------------------------------------------------------------------------
+
+
+class PyspyDumpRouteTest(_RouteTestBase):
+    def test_pyspy_dump_missing_body(self):
+        resp = self.client.post("/api/pyspy_dump", content_type="application/json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_pyspy_dump_missing_fields(self):
+        resp = self.client.post("/api/pyspy_dump", json={"dump_id": "x"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_pyspy_dump_ok_sqlite(self):
+        # SQLite adapter has no-op store_pyspy_dump — should succeed
+        resp = self.client.post(
+            "/api/pyspy_dump",
+            json={"dump_id": "d1", "proc_ref": "p1", "pyspy_result_json": "{}"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["status"], "ok")
 
 
 if __name__ == "__main__":

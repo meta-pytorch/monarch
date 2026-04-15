@@ -21,7 +21,12 @@ mod mesh_controller;
 mod tensor_worker;
 
 mod blocking;
+mod chunked_fuse;
+mod fast_pack;
 mod panic;
+mod readonly_fuse;
+#[cfg(feature = "distributed_sql_telemetry")]
+pub mod snapshot_integration;
 mod trace;
 
 use pyo3::prelude::*;
@@ -225,14 +230,24 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_extension.blocking",
     )?)?;
 
+    crate::fast_pack::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.fast_pack",
+    )?)?;
+
+    crate::chunked_fuse::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.chunked_fuse",
+    )?)?;
+
+    crate::readonly_fuse::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.readonly_fuse",
+    )?)?;
+
     monarch_hyperactor::logging::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.logging",
-    )?)?;
-
-    monarch_hyperactor::namespace::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.namespace",
     )?)?;
 
     monarch_hyperactor::proc_launcher_probe::register_python_bindings(&get_or_add_new_module(
@@ -257,6 +272,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         monarch_distributed_telemetry::query_engine::register_python_bindings(
             &get_or_add_new_module(module, "monarch_distributed_telemetry.query_engine")?,
         )?;
+        crate::snapshot_integration::register_python_bindings(&get_or_add_new_module(
+            module,
+            "monarch_extension.snapshot_integration",
+        )?)?;
     }
 
     #[cfg(fbcode_build)]
@@ -264,10 +283,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         monarch_hyperactor::meta::alloc::register_python_bindings(&get_or_add_new_module(
             module,
             "monarch_hyperactor.meta.alloc",
-        )?)?;
-        monarch_hyperactor::meta::alloc_mock::register_python_bindings(&get_or_add_new_module(
-            module,
-            "monarch_hyperactor.meta.alloc_mock",
         )?)?;
     }
     // Add feature detection function

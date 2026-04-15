@@ -63,6 +63,12 @@ pub struct TypeInfo {
     pub dump: Option<fn(Any) -> Result<serde_json::Value>>,
     /// Return the arm for this type, if available.
     pub arm_unchecked: unsafe fn(*const ()) -> Option<&'static str>,
+    /// Return the endpoint name for this message, if available.
+    /// Separate from `arm_unchecked` because struct-typed messages (e.g.,
+    /// PythonMessage) have no enum arm but do carry an endpoint name inside
+    /// their payload. Types that use `register_type!` get a default that
+    /// delegates to `arm_unchecked`, which works for Rust enum handlers.
+    pub endpoint_name: unsafe fn(*const ()) -> Option<String>,
 }
 
 #[allow(dead_code)]
@@ -119,6 +125,15 @@ impl TypeInfo {
         // SAFETY: This isn't safe, we're passing it on.
         unsafe { (self.arm_unchecked)(value) }
     }
+
+    /// Get the endpoint name for a message value.
+    ///
+    /// # Safety
+    /// The caller must ensure the value pointer is valid for this type.
+    pub unsafe fn endpoint_name(&self, value: *const ()) -> Option<String> {
+        // SAFETY: This isn't safe, we're passing it on.
+        unsafe { (self.endpoint_name)(value) }
+    }
 }
 
 inventory::collect!(TypeInfo);
@@ -155,6 +170,10 @@ macro_rules! register_type {
                 port: <$type as $crate::Named>::port,
                 dump: Some(<$type as $crate::NamedDumpable>::dump),
                 arm_unchecked: <$type as $crate::Named>::arm_unchecked,
+                endpoint_name: |ptr| {
+                    // SAFETY: ptr points to a value of type $type, as guaranteed by the caller.
+                    unsafe { <$type as $crate::Named>::arm_unchecked(ptr).map(|s| s.to_string()) }
+                },
             }
         }
     };

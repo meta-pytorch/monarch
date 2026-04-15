@@ -21,11 +21,13 @@ variable and used by the DistributedTelemetryActor when it initializes.
 
 import functools
 import logging
-import os
 from typing import Any, Callable, Dict, List, Optional
 
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
     DatabaseScanner,
+)
+from monarch._rust_bindings.monarch_extension.snapshot_integration import (
+    _pre_register_snapshot_schemas,
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
@@ -37,12 +39,13 @@ from monarch._src.actor.proc_mesh import (
     register_proc_mesh_spawn_callback,
     SetupActor,
 )
-from monarch.actor import Actor, current_rank, endpoint, this_proc
+from monarch.actor import Actor, context, current_rank, endpoint, this_proc
 from monarch.distributed_telemetry.engine import QueryEngine
 from monarch.monarch_dashboard.server.app import start_dashboard
 from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAdapter
 
 logger: logging.Logger = logging.getLogger(__name__)
+
 
 # Module-level scanner created at process startup to avoid race conditions.
 _scanner: Optional[DatabaseScanner] = None
@@ -68,13 +71,15 @@ SetupActor.register_startup_function(_scanner_startup)
 def _register_scanner(
     batch_size: int,
     retention_secs: int = 600,
-) -> None:
+) -> DatabaseScanner:
     global _scanner, _scanner_startup_impl, _spawn_callback_registered, _spawned_procs
-    _scanner = DatabaseScanner(
+    scanner = DatabaseScanner(
         current_rank().rank,
         batch_size=batch_size,
         retention_secs=retention_secs,
     )
+    _scanner = scanner
+    # pyre-ignore[9]: startup function is called for side effects; return value discarded.
     _scanner_startup_impl = functools.partial(
         _register_scanner,
         batch_size=batch_size,
@@ -86,6 +91,8 @@ def _register_scanner(
     if not _spawn_callback_registered:
         register_proc_mesh_spawn_callback(_on_proc_mesh_spawned)
         _spawn_callback_registered = True
+
+    return scanner
 
 
 class DistributedTelemetryActor(Actor):
@@ -104,6 +111,7 @@ class DistributedTelemetryActor(Actor):
 
         self._children: Dict[str, Any] = {}
         self._num_procs_processed: int = 0
+        self._proc_id: str = context().actor_instance.proc_id
 
     def __supervise__(self, failure: MeshFailure) -> bool:
         """Handle child mesh failures gracefully.
@@ -131,16 +139,24 @@ class DistributedTelemetryActor(Actor):
     def _spawn_missing_children(self) -> None:
         """Spawn telemetry actors for any new ProcMeshes we haven't processed yet."""
         for pm in _spawned_procs[self._num_procs_processed :]:
-            actor_mesh = pm.spawn("telemetry", DistributedTelemetryActor)
-            # pyre-ignore[16]: actor_mesh is an ActorMesh with _name
-            mesh_name: str = actor_mesh._name.get()
-            self._children[mesh_name] = actor_mesh
             self._num_procs_processed += 1
+            try:
+                actor_mesh = pm.spawn("telemetry", DistributedTelemetryActor)
+                # pyre-ignore[16]: actor_mesh is an ActorMesh with _name
+                mesh_name: str = actor_mesh._name.get()
+                self._children[mesh_name] = actor_mesh
+            except Exception:
+                logger.warning("failed to spawn telemetry on proc mesh, skipping")
 
     @endpoint
     def ready(self) -> None:
         """No-op endpoint to confirm actor is initialized."""
         pass
+
+    @endpoint
+    def get_proc_id(self) -> str:
+        """Return the proc_id of this actor's proc."""
+        return self._proc_id
 
     @endpoint
     def table_names(self) -> List[str]:
@@ -153,13 +169,6 @@ class DistributedTelemetryActor(Actor):
         return bytes(self._scanner.schema_for(table))
 
     @endpoint
-    def add_children(self, children: "DistributedTelemetryActor") -> None:
-        """Add a child actor mesh to scan when queries are executed."""
-        # pyre-ignore[16]: children is an ActorMesh with _name
-        mesh_name: str = children._name.get()
-        self._children[mesh_name] = children
-
-    @endpoint
     def apply_retention(self, table_name: str, where_clause: str) -> None:
         """Apply a retention filter to a table, then fan out to children."""
         self._scanner.apply_retention(table_name, where_clause)
@@ -169,6 +178,14 @@ class DistributedTelemetryActor(Actor):
                 child_mesh.apply_retention.call(table_name, where_clause).get()
             except Exception:
                 logger.info("child apply_retention failed, skipping")
+
+    @endpoint
+    def store_pyspy_dump(
+        self, dump_id: str, proc_ref: str, pyspy_result_json: str
+    ) -> bool:
+        """Store py-spy dump data in this actor's local tables."""
+        self._scanner.store_pyspy_dump_py(dump_id, proc_ref, pyspy_result_json)
+        return True
 
     @endpoint
     def scan(
@@ -221,9 +238,9 @@ def start_telemetry(
     retention_secs: int = 600,
     include_dashboard: bool = True,
     dashboard_port: int = 8265,
-) -> QueryEngine:
+) -> "tuple[QueryEngine, str | None, DatabaseScanner]":
     """
-    Start the distributed telemetry system and return a QueryEngine.
+    Start the distributed telemetry system.
 
     Message tables (sent_messages, messages, message_status_events) retain
     only the last ``retention_secs`` seconds of data (default 10 minutes).
@@ -237,20 +254,31 @@ def start_telemetry(
         dashboard_port: Preferred port for the dashboard (default 8265).
 
     Returns:
-        The QueryEngine for executing SQL queries.
+        A tuple of (QueryEngine, telemetry_url, scanner).
+        ``telemetry_url`` is the base URL of the dashboard server
+        (e.g. ``"http://localhost:8265"``) when ``include_dashboard``
+        is True, otherwise None. ``scanner`` is the ``DatabaseScanner``
+        for use by snapshot integration.
     """
-    _register_scanner(batch_size, retention_secs=retention_secs)
+    scanner = _register_scanner(batch_size, retention_secs=retention_secs)
+
+    # Pre-register snapshot table schemas unconditionally (SI-6).
+    # Must happen before QueryEngine construction because table
+    # discovery is static.
+    _pre_register_snapshot_schemas(scanner)
+
     coordinator = this_proc().spawn("telemetry_coordinator", DistributedTelemetryActor)
     query_engine = QueryEngine(coordinator)
 
+    telemetry_url: str | None = None
     if include_dashboard:
         adapter = QueryEngineAdapter(query_engine)
         info = start_dashboard(
             adapter=adapter,
             port=dashboard_port,
         )
-        dashboard_url = info["url"]
-        os.environ["MONARCH_DASHBOARD_URL"] = dashboard_url
-        logger.info("Monarch Dashboard: %s", dashboard_url)
+        telemetry_url = info["url"]
+        logger.info("Monarch Dashboard: %s", telemetry_url)
+        print(f"Monarch Dashboard: {telemetry_url}", flush=True)
 
-    return query_engine
+    return query_engine, telemetry_url, scanner
