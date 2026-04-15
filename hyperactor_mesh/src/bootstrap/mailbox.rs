@@ -16,13 +16,12 @@ use async_trait::async_trait;
 use hyperactor::PortHandle;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
-
-use crate::Name;
 
 /// LocalProcDialer dials local procs directly through a configured socket
 /// directory.
@@ -66,7 +65,7 @@ impl MailboxSender for LocalProcDialer {
         if addr == &self.local_addr
             // ...and only non-system procs on that address; the rest are directly
             // reachable through the backend address.
-            && name.parse::<Name>().as_ref().is_ok_and(Name::is_suffixed)
+            && name.parse::<crate::mesh_id::ResourceId>().is_ok_and(|id| matches!(id.uid(), Uid::Instance(_)))
         {
             let senders = self.local_senders.read().unwrap();
             let senders = if senders.contains_key(name) {
@@ -127,14 +126,14 @@ mod tests {
     use hyperactor_config::Flattrs;
 
     use super::*;
-    use crate::Name;
+    use crate::mesh_id::ResourceId;
 
     #[tokio::test]
     async fn test_proc_dialer() {
         let dir = tempfile::tempdir().unwrap();
-        let first = Name::new("first").unwrap();
-        let second = Name::new("second").unwrap();
-        let third = Name::new("third").unwrap();
+        let first = ResourceId::unique(hyperactor::id::Label::new("first").unwrap());
+        let second = ResourceId::unique(hyperactor::id::Label::new("second").unwrap());
+        let third = ResourceId::unique(hyperactor::id::Label::new("third").unwrap());
         let (_first_addr, mut first_rx) = channel::serve::<MessageEnvelope>(
             format!("unix:{}/{}", dir.path().display(), first)
                 .parse()

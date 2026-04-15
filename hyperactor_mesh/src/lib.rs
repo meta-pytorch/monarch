@@ -59,7 +59,6 @@ pub mod transport;
 pub mod value_mesh;
 
 use std::io;
-use std::str::FromStr;
 
 pub use actor_mesh::ActorMesh;
 pub use actor_mesh::ActorMeshRef;
@@ -86,9 +85,6 @@ pub use ndslice::extent;
 use ndslice::view;
 pub use proc_mesh::ProcMesh;
 pub use proc_mesh::ProcMeshRef;
-use serde::Deserialize;
-use serde::Serialize;
-use typeuri::Named;
 pub use value_mesh::ValueMesh;
 
 use crate::host_mesh::HostAgent;
@@ -96,7 +92,6 @@ use crate::host_mesh::HostMeshRefParseError;
 use crate::host_mesh::host_agent::ProcState;
 use crate::resource::RankedValues;
 use crate::resource::Status;
-use crate::shortuuid::ShortUuid;
 use crate::supervision::MeshFailure;
 
 /// A mesh of per-rank lifecycle statuses.
@@ -125,7 +120,7 @@ pub enum Error {
     InvalidRankCardinality { expected: usize, actual: usize },
 
     #[error(transparent)]
-    NameParseError(#[from] NameParseError),
+    ResourceIdParseError(#[from] mesh_id::ResourceIdParseError),
 
     #[error(transparent)]
     HostMeshRefParseError(#[from] HostMeshRefParseError),
@@ -158,13 +153,13 @@ pub enum Error {
 
     // TODO: this should be a valuemesh of statuses
     #[error("error while spawning actor {0}: {1}")]
-    GspawnError(Name, String),
+    GspawnError(mesh_id::ActorMeshId, String),
 
     #[error("error while sending message to actor {0}: {1}")]
     SendingError(hyperactor_reference::ActorId, Box<MailboxSenderError>),
 
     #[error("error while casting message to {0}: {1}")]
-    CastingError(Name, anyhow::Error),
+    CastingError(mesh_id::ActorMeshId, anyhow::Error),
 
     #[error("error configuring host mesh agent {0}: {1}")]
     HostMeshAgentConfigurationError(hyperactor_reference::ActorId, String),
@@ -200,7 +195,7 @@ pub enum Error {
     SingletonActorSpawnError(anyhow::Error),
 
     #[error("error spawning controller actor for mesh {0}: {1}")]
-    ControllerActorSpawnError(Name, anyhow::Error),
+    ControllerActorSpawnError(mesh_id::ResourceId, anyhow::Error),
 
     #[error("proc {0} must be direct-addressable")]
     RankedProc(hyperactor_reference::ProcId),
@@ -209,7 +204,7 @@ pub enum Error {
     Supervision(Box<MeshFailure>),
 
     #[error("error: {0} does not exist")]
-    NotExist(Name),
+    NotExist(mesh_id::ResourceId),
 
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -304,152 +299,6 @@ pub(crate) fn actor_display_name(base: &str, point: &view::Point) -> String {
     }
 }
 
-/// Names are used to identify objects in the system. They have a user-provided name,
-/// and a unique UUID.
-///
-/// Names have a concrete syntax--`{name}-{uuid}`--printed by `Display` and parsed by `FromStr`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Named, EnumAsInner)]
-pub enum Name {
-    /// Normal names for most actors.
-    Suffixed(String, ShortUuid),
-    /// Reserved names for system actors without UUIDs.
-    Reserved(String),
-}
-wirevalue::register_type!(Name);
-
-// The delimiter between the name and the uuid when a Name::Suffixed is stringified.
-// Actor names must be parseable as an actor identifier. We do not allow this delimiter
-// in reserved names so that these names parse unambiguously.
-static NAME_SUFFIX_DELIMITER: &str = "-";
-
-impl Name {
-    /// Create a new `Name` from a user-provided base name.
-    pub fn new(name: impl Into<String>) -> Result<Self> {
-        Ok(Self::new_with_uuid(name, Some(ShortUuid::generate()))?)
-    }
-
-    /// Create a Reserved `Name` with no uuid. Only for use by system actors.
-    pub fn new_reserved(name: impl Into<String>) -> Result<Self> {
-        Ok(Self::new_with_uuid(name, None)?)
-    }
-
-    fn new_with_uuid(
-        name: impl Into<String>,
-        uuid: Option<ShortUuid>,
-    ) -> std::result::Result<Self, NameParseError> {
-        let mut name = name.into();
-        if name.is_empty() {
-            name = "unnamed".to_string();
-        }
-        if !hyperactor_reference::is_valid_ident(&name) {
-            return Err(NameParseError::InvalidName(name));
-        }
-        if let Some(uuid) = uuid {
-            Ok(Self::Suffixed(name, uuid))
-        } else {
-            Ok(Self::Reserved(name))
-        }
-    }
-
-    /// The name portion of this `Name`.
-    pub fn name(&self) -> &str {
-        match self {
-            Self::Suffixed(n, _) => n,
-            Self::Reserved(n) => n,
-        }
-    }
-
-    /// The UUID portion of this `Name`.
-    /// Only Some for Name::Suffixed, if called on Name::Reserved it'll be None.
-    pub fn uuid(&self) -> Option<&ShortUuid> {
-        match self {
-            Self::Suffixed(_, uuid) => Some(uuid),
-            Self::Reserved(_) => None,
-        }
-    }
-}
-
-impl Serialize for Name {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        // Consider doing this only when `serializer.is_human_readable()`:
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for Name {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Name::from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Errors that occur when parsing names.
-#[derive(thiserror::Error, Debug)]
-pub enum NameParseError {
-    #[error("invalid name: missing name")]
-    MissingName,
-
-    #[error("invalid name: missing uuid")]
-    MissingUuid,
-
-    /// Strictly speaking Monarch identifier also supports other characters. But
-    /// to avoid confusion for the user, we only state intuitive characters here
-    /// so the error message is more actionable.
-    #[error(
-        "invalid name '{0}': names must contain only alphanumeric characters \
-        and underscores, and must start with a letter or underscore"
-    )]
-    InvalidName(String),
-
-    #[error(transparent)]
-    InvalidUuid(#[from] <ShortUuid as FromStr>::Err),
-
-    #[error("invalid name: missing separator")]
-    MissingSeparator,
-}
-
-impl FromStr for Name {
-    type Err = NameParseError;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        // The delimiter ('-') is allowable in elements, but not identifiers;
-        // thus splitting on this unambiguously parses suffixed and reserved names.
-        if let Some((name, uuid)) = s.split_once(NAME_SUFFIX_DELIMITER) {
-            if name.is_empty() {
-                return Err(NameParseError::MissingName);
-            }
-            if uuid.is_empty() {
-                return Err(NameParseError::MissingName);
-            }
-
-            Name::new_with_uuid(name.to_string(), Some(uuid.parse()?))
-        } else {
-            if s.is_empty() {
-                return Err(NameParseError::MissingName);
-            }
-            Name::new_with_uuid(s, None)
-        }
-    }
-}
-
-impl std::fmt::Display for Name {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Suffixed(n, uuid) => {
-                write!(f, "{}{}", n, NAME_SUFFIX_DELIMITER)?;
-                uuid.format(f, true /*raw*/)
-            }
-            Self::Reserved(n) => write!(f, "{}", n),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -479,8 +328,6 @@ mod tests {
     //   --> fbcode/monarch/hyperactor_mesh_macros/src/lib.rs:12:1
     //    |
     //    = note: in this expansion of `sel!`
-
-    use std::str::FromStr;
 
     use hyperactor_mesh_macros::sel;
     use ndslice::assert_round_trip;
@@ -711,73 +558,5 @@ mod tests {
             sel!((*, *, *) & (*, *, 2:8)),
             intersection(all(all(all(true_()))), all(all(range(2..8, true_()))))
         );
-    }
-
-    #[test]
-    fn test_name_unique() {
-        use super::Name;
-        assert_ne!(Name::new("foo").unwrap(), Name::new("foo").unwrap());
-        let name = Name::new("foo").unwrap();
-        assert_eq!(name, name);
-    }
-
-    #[test]
-    fn test_name_roundtrip() {
-        use super::Name;
-        use super::ShortUuid;
-        let uuid = "111111111111".parse::<ShortUuid>().unwrap();
-        let name = Name::new_with_uuid("foo", Some(uuid)).unwrap();
-        let str = name.to_string();
-        assert_eq!(str, "foo-111111111111");
-        assert_eq!(name, Name::from_str(&str).unwrap());
-    }
-
-    #[test]
-    fn test_name_roundtrip_with_underscore() {
-        use super::Name;
-        use super::ShortUuid;
-        // A ShortUuid may have an underscore prefix if the first character is a digit.
-        // Make sure this doesn't impact parsing.
-        let uuid = "_1a2b3c4d5e6f".parse::<ShortUuid>().unwrap();
-        let name = Name::new_with_uuid("foo", Some(uuid)).unwrap();
-        let str = name.to_string();
-        // Leading underscore is stripped as not needed.
-        assert_eq!(str, "foo-1a2b3c4d5e6f");
-        assert_eq!(name, Name::from_str(&str).unwrap());
-    }
-
-    #[test]
-    fn test_name_roundtrip_random() {
-        use super::Name;
-        let name = Name::new("foo").unwrap();
-        assert_eq!(name, Name::from_str(&name.to_string()).unwrap());
-    }
-
-    #[test]
-    fn test_name_roundtrip_reserved() {
-        use super::Name;
-        let name = Name::new_reserved("foo").unwrap();
-        let str = name.to_string();
-        assert_eq!(str, "foo");
-        assert_eq!(name, Name::from_str(&str).unwrap());
-    }
-
-    #[test]
-    fn test_name_parse() {
-        use super::Name;
-        // Multiple underscores are allowed in the name, as ShortUuid will choose
-        // the part after the last underscore.
-        let name = Name::from_str("foo_bar_1a2b3c4d5e6f").unwrap();
-        assert_eq!(format!("{}", name), "foo_bar_1a2b3c4d5e6f");
-    }
-
-    #[test]
-    fn test_invalid() {
-        use super::Name;
-        // We assign "unnamed" to empty names.
-        assert!(Name::new("").is_ok());
-        // These are not valid identifiers:
-        assert!(Name::new("foo-").is_err());
-        assert!(Name::new("foo-bar").is_err());
     }
 }
