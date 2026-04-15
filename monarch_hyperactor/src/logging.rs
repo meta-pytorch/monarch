@@ -635,7 +635,7 @@ mod tests {
         );
         assert_eq!(
             instance.self_id().proc_id(),
-            proc.proc_id(),
+            proc.proc_id().clone(),
             "returned Instance<()> should be bound to the root Proc"
         );
 

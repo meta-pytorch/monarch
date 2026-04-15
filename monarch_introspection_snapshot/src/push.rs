@@ -172,7 +172,7 @@ mod tests {
     }
 
     fn test_host_ref() -> NodeRef {
-        NodeRef::Host(test_proc_id().actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0))
+        NodeRef::Host(test_proc_id().actor_id(HOST_MESH_AGENT_ACTOR_NAME))
     }
 
     fn test_proc_ref() -> NodeRef {
@@ -180,7 +180,7 @@ mod tests {
     }
 
     fn test_actor_ref() -> NodeRef {
-        NodeRef::Actor(test_proc_id().actor_id(ACTOR_NAME, 0))
+        NodeRef::Actor(test_proc_id().actor_id(ACTOR_NAME))
     }
 
     /// Expected table names in sorted order (PS-1). Alias for the
@@ -242,9 +242,8 @@ mod tests {
         let host_id = test_host_ref().to_string();
         let proc_id = test_proc_ref().to_string();
         let actor_id = test_actor_ref().to_string();
-        let failed_actor_id =
-            NodeRef::Actor(test_proc_id().actor_id("failed_actor", 0)).to_string();
-        let error_id = NodeRef::Actor(test_proc_id().actor_id("missing", 0)).to_string();
+        let failed_actor_id = NodeRef::Actor(test_proc_id().actor_id("failed_actor")).to_string();
+        let error_id = NodeRef::Actor(test_proc_id().actor_id("missing")).to_string();
 
         SnapshotData {
             snapshot: SnapshotRow {
