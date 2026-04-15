@@ -1054,8 +1054,8 @@ mod tests {
         attrs
     }
 
-    fn test_actor_id(proc_name: &str, actor_name: &str, pid: usize) -> crate::reference::ActorId {
-        ProcId::with_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name, pid)
+    fn test_actor_id(proc_name: &str, actor_name: &str) -> crate::reference::ActorId {
+        ProcId::with_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name)
     }
 
     fn failed_actor_attrs() -> Attrs {
@@ -1063,7 +1063,7 @@ mod tests {
         attrs.set(STATUS, "failed".to_string());
         attrs.set(STATUS_REASON, "something broke".to_string());
         attrs.set(FAILURE_ERROR_MESSAGE, "boom".to_string());
-        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, test_actor_id("proc", "other", 0));
+        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, test_actor_id("proc", "other"));
         attrs.set(FAILURE_ROOT_CAUSE_NAME, "OtherActor".to_string());
         attrs.set(FAILURE_OCCURRED_AT, SystemTime::UNIX_EPOCH);
         attrs.set(FAILURE_IS_PROPAGATED, true);
@@ -1151,7 +1151,7 @@ mod tests {
     fn test_actor_view_ia4_rejects_failure_attrs_on_running() {
         let mut attrs = running_actor_attrs();
         attrs.set(FAILURE_ERROR_MESSAGE, "boom".to_string());
-        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, test_actor_id("proc", "x", 0));
+        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, test_actor_id("proc", "x"));
         attrs.set(FAILURE_OCCURRED_AT, SystemTime::UNIX_EPOCH);
         let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
         assert!(matches!(
@@ -1192,8 +1192,8 @@ mod tests {
     #[test]
     fn test_fi7_fi8_propagated_stopped_child() {
         let proc_id = ProcId::with_name(ChannelAddr::Local(0), "test_proc");
-        let child_id = proc_id.actor_id("proc_agent", 0);
-        let parent_id = proc_id.actor_id("mesh_actor", 0);
+        let child_id = proc_id.actor_id("proc_agent");
+        let parent_id = proc_id.actor_id("mesh_actor");
 
         let child_event = ActorSupervisionEvent::new(
             child_id.clone(),

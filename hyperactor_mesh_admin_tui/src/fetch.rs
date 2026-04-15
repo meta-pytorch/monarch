@@ -543,7 +543,7 @@ mod tests {
 
     fn mock_actor_ref(name: &str) -> NodeRef {
         use std::str::FromStr;
-        let id_str = format!("unix:@test,world,{}[0]", name);
+        let id_str = format!("unix:@test,world,{}", name);
         NodeRef::Actor(hyperactor::reference::ActorId::from_str(&id_str).unwrap())
     }
 
