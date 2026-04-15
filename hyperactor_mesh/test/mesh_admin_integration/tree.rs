@@ -29,7 +29,7 @@ const TOPOLOGY_READY_SLEEP: Duration = Duration::from_secs(2);
 
 fn actor_name(r: &NodeRef) -> &str {
     match r {
-        NodeRef::Actor(id) => id.name(),
+        NodeRef::Actor(id) => id.label().map(|l| l.as_str()).unwrap_or("?"),
         other => panic!("expected actor ref, got {other:?}"),
     }
 }

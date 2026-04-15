@@ -506,7 +506,7 @@ impl ProcAgent {
         tracing::info!(
             name = "StopActor",
             %actor_id,
-            actor_name = actor_id.name(),
+            actor_name = actor_id.log_name(),
             %reason,
         );
         self.proc.stop_actor(actor_id, reason.to_string());
@@ -1737,7 +1737,7 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME);
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
@@ -1845,7 +1845,7 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME);
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
@@ -2169,7 +2169,7 @@ mod tests {
 
         // QueryChild(Proc) — same aggregation logic as mesh-admin
         // resolution.
-        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME);
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 

@@ -567,7 +567,7 @@ impl Bootstrap {
                 // TODO provide a direct way to construct these
                 let serve_addr = format!(
                     "unix:{}",
-                    socket_dir_path.join(proc_id.id().to_string()).display()
+                    socket_dir_path.join(proc_id.resource_name()).display()
                 );
                 let serve_addr = serve_addr.parse().unwrap();
 
@@ -2941,7 +2941,7 @@ mod tests {
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
+            let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
             let agent_ref: hyperactor_reference::ActorRef<ProcAgent> =
                 hyperactor_reference::ActorRef::attest(actor_id);
             // Ready -> Stopping -> Stopped should be legal.
@@ -2960,7 +2960,7 @@ mod tests {
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
+            let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
             let agent: hyperactor_reference::ActorRef<ProcAgent> =
                 hyperactor_reference::ActorRef::attest(actor_id);
             // Running -> Ready
@@ -3093,7 +3093,7 @@ mod tests {
         let started_at = std::time::SystemTime::now();
         assert!(handle.mark_running(started_at));
 
-        let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
+        let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
         let agent_ref: hyperactor_reference::ActorRef<ProcAgent> =
             hyperactor_reference::ActorRef::attest(actor_id);
 
@@ -3139,7 +3139,7 @@ mod tests {
         let addr = ChannelAddr::any(ChannelTransport::Unix);
         let agent = hyperactor_reference::ActorRef::attest(
             test_proc_id_with_addr(addr.clone(), "proc")
-                .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
+                .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
         );
 
         let st = ProcStatus::Ready {
@@ -3176,7 +3176,7 @@ mod tests {
                 addr: ChannelAddr::any(ChannelTransport::Unix),
                 agent: hyperactor_reference::ActorRef::attest(
                     test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "x")
-                        .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
+                        .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
                 ),
             },
             ProcStatus::Killed {
@@ -3207,7 +3207,7 @@ mod tests {
         let addr = ChannelAddr::any(ChannelTransport::Unix);
         let agent: hyperactor_reference::ActorRef<ProcAgent> =
             hyperactor_reference::ActorRef::attest(
-                proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
+                proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
             );
         assert!(handle.mark_ready(addr, agent));
 

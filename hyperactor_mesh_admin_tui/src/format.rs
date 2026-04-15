@@ -83,7 +83,9 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
             }
         }
         NodeProperties::Actor { .. } => match &payload.identity {
-            NodeRef::Actor(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
+            NodeRef::Actor(actor_id) => {
+                format!("{}[{}]", actor_id.log_name(), actor_id.uid())
+            }
             other => other.to_string(),
         },
         NodeProperties::Error { code, message } => {
@@ -95,11 +97,13 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
 /// Derive a display label from a typed node reference without
 /// fetching.
 ///
-/// For actor references, format as `name[pid]`; for all others, fall
+/// For actor references, format as `name[uid]`; for all others, fall
 /// back to the `Display` representation.
 pub(crate) fn derive_label_from_ref(reference: &NodeRef) -> String {
     match reference {
-        NodeRef::Actor(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
+        NodeRef::Actor(actor_id) => {
+            format!("{}[{}]", actor_id.log_name(), actor_id.uid())
+        }
         other => other.to_string(),
     }
 }
@@ -241,7 +245,7 @@ mod tests {
     use super::*;
 
     fn mock_actor_ref(name: &str) -> NodeRef {
-        let id_str = format!("unix:@test,world,{}[0]", name);
+        let id_str = format!("unix:@test,world,{}", name);
         NodeRef::Actor(hyperactor_reference::ActorId::from_str(&id_str).unwrap())
     }
 
@@ -251,7 +255,7 @@ mod tests {
     }
 
     fn mock_host_ref(name: &str) -> NodeRef {
-        let id_str = format!("unix:@test,world,{}[0]", name);
+        let id_str = format!("unix:@test,world,{}", name);
         NodeRef::Host(hyperactor_reference::ActorId::from_str(&id_str).unwrap())
     }
 
@@ -543,7 +547,7 @@ mod tests {
     #[test]
     fn derive_label_actor_standard_actor_id() {
         let actor_id =
-            hyperactor_reference::ActorId::from_str("unix:@abc123,myworld,worker[3]").unwrap();
+            hyperactor_reference::ActorId::from_str("unix:@abc123,myworld,worker").unwrap();
         let proc_id = hyperactor_reference::ProcId::from_str("unix:@abc123,myworld").unwrap();
         let payload = NodePayload {
             identity: NodeRef::Actor(actor_id),
@@ -562,7 +566,7 @@ mod tests {
             parent: Some(NodeRef::Proc(proc_id)),
             as_of: SystemTime::now(),
         };
-        assert_eq!(derive_label(&payload), "worker[3]");
+        assert_eq!(derive_label(&payload), "worker[_worker]");
     }
 
     #[test]

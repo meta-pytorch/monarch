@@ -1195,12 +1195,10 @@ mod tests {
         );
     }
 
-    fn test_actor_ref(proc_name: &str, actor_name: &str, pid: usize) -> NodeRef {
+    fn test_actor_ref(proc_name: &str, actor_name: &str) -> NodeRef {
         use hyperactor::channel::ChannelAddr;
         use hyperactor::reference::ProcId;
-        NodeRef::Actor(
-            ProcId::with_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name, pid),
-        )
+        NodeRef::Actor(ProcId::with_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name))
     }
 
     fn root_view() -> RootAttrsView {
@@ -1208,7 +1206,7 @@ mod tests {
             num_hosts: 3,
             started_at: std::time::UNIX_EPOCH,
             started_by: "testuser".into(),
-            system_children: vec![test_actor_ref("proc", "child1", 0)],
+            system_children: vec![test_actor_ref("proc", "child1")],
         }
     }
 
@@ -1216,7 +1214,7 @@ mod tests {
         HostAttrsView {
             addr: "10.0.0.1:8080".into(),
             num_procs: 2,
-            system_children: vec![test_actor_ref("proc", "sys", 0)],
+            system_children: vec![test_actor_ref("proc", "sys")],
             memory: Default::default(),
         }
     }
@@ -1226,7 +1224,7 @@ mod tests {
             proc_name: "worker".into(),
             num_actors: 5,
             system_children: vec![],
-            stopped_children: vec![test_actor_ref("proc", "old", 0)],
+            stopped_children: vec![test_actor_ref("proc", "old")],
             stopped_retention_cap: 10,
             is_poisoned: false,
             failed_actor_count: 0,
@@ -1598,7 +1596,7 @@ mod tests {
 
         let epoch = std::time::UNIX_EPOCH;
         let proc_id = ProcId::with_name(ChannelAddr::Local(0), "worker");
-        let actor_id = proc_id.actor_id("actor", 0);
+        let actor_id = proc_id.actor_id("actor");
 
         let samples = [
             NodePayload {
@@ -1618,7 +1616,7 @@ mod tests {
                 properties: NodeProperties::Host {
                     addr: "10.0.0.1:8080".into(),
                     num_procs: 2,
-                    system_children: vec![test_actor_ref("proc", "sys", 0)],
+                    system_children: vec![test_actor_ref("proc", "sys")],
                     memory: Default::default(),
                 },
                 children: vec![NodeRef::Proc(proc_id.clone())],
