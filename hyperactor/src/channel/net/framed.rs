@@ -829,7 +829,7 @@ mod test_support {
 mod tests {
 
     use bytes::Bytes;
-    use rand::Rng;
+    use rand::RngExt as _;
     use test_support::Throttled;
     use tokio::io::AsyncWriteExt;
 
