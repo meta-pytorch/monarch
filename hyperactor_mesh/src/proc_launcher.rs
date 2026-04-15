@@ -283,7 +283,10 @@ pub struct LaunchOptions {
 /// `HYPERACTOR_PROCESS_NAME`, falling back to the machine hostname.
 /// This groups procs under their host process in traces and logs.
 pub fn format_process_name(proc_id: &hyperactor_reference::ProcId) -> String {
-    let who = proc_id.name();
+    let who = proc_id
+        .label()
+        .map(|l| l.as_str().to_string())
+        .unwrap_or_else(|| proc_id.id().to_string());
 
     let host = std::env::var(bootstrap::PROCESS_NAME_ENV).unwrap_or_else(|_| {
         hostname::get()
