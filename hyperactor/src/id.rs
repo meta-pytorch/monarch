@@ -72,7 +72,7 @@ impl Label {
             return Err(LabelError::InvalidEnd);
         }
         for ch in s.chars() {
-            if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' {
+            if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' && ch != '_' {
                 return Err(LabelError::InvalidChar(ch));
             }
         }
@@ -89,7 +89,7 @@ impl Label {
             .chars()
             .filter_map(|ch| {
                 let ch = ch.to_ascii_lowercase();
-                if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' {
+                if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_' {
                     Some(ch)
                 } else {
                     None
@@ -658,9 +658,15 @@ mod tests {
 
     #[test]
     fn test_label_invalid_char() {
-        assert_eq!(Label::new("ab_c"), Err(LabelError::InvalidChar('_')));
         assert_eq!(Label::new("ab.c"), Err(LabelError::InvalidChar('.')));
         assert_eq!(Label::new("aBc"), Err(LabelError::InvalidChar('B')));
+    }
+
+    #[test]
+    fn test_label_allows_underscores() {
+        assert!(Label::new("ab_c").is_ok());
+        assert!(Label::new("proc_agent").is_ok());
+        assert!(Label::new("host_agent").is_ok());
     }
 
     #[test]
@@ -670,7 +676,7 @@ mod tests {
         assert_eq!(Label::strip("---abc---").as_str(), "abc");
         assert_eq!(Label::strip("").as_str(), "nil");
         assert_eq!(Label::strip("123").as_str(), "nil");
-        assert_eq!(Label::strip("My_Service!").as_str(), "myservice");
+        assert_eq!(Label::strip("My_Service!").as_str(), "my_service");
     }
 
     #[test]
