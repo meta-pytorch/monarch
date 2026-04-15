@@ -639,7 +639,10 @@ impl App {
     /// cancelling any in-flight fetch (PY-1/PY-2).
     pub(crate) fn start_pyspy(&mut self, proc_id: hyperactor::reference::ProcId) {
         let proc_ref = proc_id.to_string();
-        let short = proc_id.name().to_string();
+        let short = proc_id
+            .label()
+            .map(|l| l.as_str().to_string())
+            .unwrap_or_else(|| proc_id.id().to_string());
         let scheme = self.theme.scheme; // ColorScheme: Copy
         let client = self.client.clone();
         let base_url = self.base_url.clone();
@@ -676,7 +679,10 @@ impl App {
     /// cancelling any in-flight fetch (CFG-1/CFG-2).
     pub(crate) fn start_config(&mut self, proc_id: hyperactor::reference::ProcId) {
         let proc_ref = proc_id.to_string();
-        let short = proc_id.name().to_string();
+        let short = proc_id
+            .label()
+            .map(|l| l.as_str().to_string())
+            .unwrap_or_else(|| proc_id.id().to_string());
         let scheme = self.theme.scheme; // ColorScheme: Copy
         let client = self.client.clone();
         let base_url = self.base_url.clone();

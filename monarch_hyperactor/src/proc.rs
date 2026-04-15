@@ -57,7 +57,11 @@ impl PyProc {
 
     #[getter]
     fn name(&self) -> String {
-        self.inner.proc_id().name().to_string()
+        self.inner
+            .proc_id()
+            .label()
+            .map(|l| l.as_str().to_string())
+            .unwrap_or_else(|| self.inner.proc_id().id().to_string())
     }
 
     #[getter]
@@ -190,7 +194,11 @@ impl PyActorId {
 
     #[getter]
     fn proc_name(&self) -> String {
-        self.inner.proc_id().name().to_string()
+        self.inner
+            .proc_id()
+            .label()
+            .map(|l| l.as_str().to_string())
+            .unwrap_or_else(|| self.inner.proc_id().id().to_string())
     }
 
     #[getter]

@@ -61,22 +61,22 @@ impl MailboxSender for LocalProcDialer {
     ) {
         let proc_id = envelope.dest().actor_id().proc_id();
         let addr = proc_id.addr();
-        let name = proc_id.name();
         if addr == &self.local_addr
             // ...and only non-system procs on that address; the rest are directly
             // reachable through the backend address.
-            && name.parse::<crate::mesh_id::ResourceId>().is_ok_and(|id| matches!(id.uid(), Uid::Instance(_)))
+            && matches!(proc_id.uid(), Uid::Instance(_))
         {
+            let key = proc_id.id().to_string();
             let senders = self.local_senders.read().unwrap();
-            let senders = if senders.contains_key(name) {
+            let senders = if senders.contains_key(&key) {
                 senders
             } else {
                 drop(senders);
                 let mut senders = self.local_senders.write().unwrap();
-                senders.entry(name.to_string()).or_insert_with(|| {
-                    let socket_path = self.socket_dir.join(name);
+                senders.entry(key.clone()).or_insert_with(|| {
+                    let socket_path = self.socket_dir.join(&key);
                     if socket_path.exists() {
-                        let addr = format!("unix:{}", self.socket_dir.join(name).display());
+                        let addr = format!("unix:{}", socket_path.display());
                         let addr = addr.parse().unwrap();
                         MailboxClient::dial(addr)
                     } else {
@@ -90,7 +90,7 @@ impl MailboxSender for LocalProcDialer {
                 self.local_senders.read().unwrap()
             };
 
-            match senders.get(name).unwrap() {
+            match senders.get(&key).unwrap() {
                 Ok(sender) => sender.post_unchecked(envelope, return_handle),
                 Err(e) => {
                     let err = DeliveryError::BrokenLink(format!("failed to dial proc: {}", e));
