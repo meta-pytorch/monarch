@@ -1361,7 +1361,10 @@ impl MeshAdminAgent {
             (children, system_children)
         };
 
-        let proc_name = proc_id.name().to_string();
+        let proc_name = proc_id
+            .label()
+            .map(|l| l.as_str().to_string())
+            .unwrap_or_else(|| proc_id.id().to_string());
 
         let mut attrs = hyperactor_config::Attrs::new();
         attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
@@ -2043,8 +2046,11 @@ async fn do_pyspy_dump(
 ) -> Result<PySpyResult, ApiError> {
     let (proc_reference, proc_id) = parse_pyspy_proc_reference(raw_proc_reference)?;
 
-    // PS-12: route by proc name — service proc → HostAgent, all others → ProcAgent.
-    let agent_id = if proc_id.base_name() == SERVICE_PROC_NAME {
+    // PS-12: route by proc label — service proc → HostAgent, all others → ProcAgent.
+    let is_service = proc_id
+        .label()
+        .is_some_and(|l| l.as_str() == SERVICE_PROC_NAME);
+    let agent_id = if is_service {
         proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0)
     } else {
         proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0)
@@ -2058,7 +2064,7 @@ async fn do_pyspy_dump(
             format!(
                 "proc {} does not have a reachable py-spy handler (expected {} actor)",
                 proc_reference,
-                if proc_id.base_name() == SERVICE_PROC_NAME {
+                if is_service {
                     HOST_MESH_AGENT_ACTOR_NAME
                 } else {
                     PROC_AGENT_ACTOR_NAME
@@ -2293,8 +2299,11 @@ async fn config_bridge(
 ) -> Result<Json<ConfigDumpResult>, ApiError> {
     let (proc_reference, proc_id) = parse_pyspy_proc_reference(&proc_reference)?;
 
-    // Route by proc name — service proc → HostAgent, all others → ProcAgent.
-    let agent_id = if proc_id.base_name() == SERVICE_PROC_NAME {
+    // Route by proc label — service proc → HostAgent, all others → ProcAgent.
+    let agent_id = if proc_id
+        .label()
+        .is_some_and(|l| l.as_str() == SERVICE_PROC_NAME)
+    {
         proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0)
     } else {
         proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0)
@@ -2629,8 +2638,8 @@ async fn tree_dump(
 fn derive_tree_label(node_ref: &crate::introspect::NodeRef) -> String {
     match node_ref {
         crate::introspect::NodeRef::Root => "root".to_string(),
-        crate::introspect::NodeRef::Host(id) => id.proc_id().name().to_string(),
-        crate::introspect::NodeRef::Proc(id) => id.name().to_string(),
+        crate::introspect::NodeRef::Host(id) => id.proc_id().id().to_string(),
+        crate::introspect::NodeRef::Proc(id) => id.id().to_string(),
         crate::introspect::NodeRef::Actor(id) => {
             format!("{}{}", id.name(), format_args!("[{}]", id.pid()))
         }
@@ -2641,7 +2650,7 @@ fn derive_actor_label(node_ref: &crate::introspect::NodeRef) -> String {
     match node_ref {
         crate::introspect::NodeRef::Root => "root".to_string(),
         crate::introspect::NodeRef::Host(id) => id.name().to_string(),
-        crate::introspect::NodeRef::Proc(id) => id.name().to_string(),
+        crate::introspect::NodeRef::Proc(id) => id.id().to_string(),
         crate::introspect::NodeRef::Actor(id) => {
             format!("{}[{}]", id.name(), id.pid())
         }

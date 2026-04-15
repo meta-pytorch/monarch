@@ -259,7 +259,7 @@ fn render_host_detail(
     for child in &payload.children {
         let child_str = child.to_string();
         let short = match child {
-            NodeRef::Proc(proc_id) => proc_id.name().to_string(),
+            NodeRef::Proc(proc_id) => proc_id.id().to_string(),
             _ => child_str.clone(),
         };
         lines.push(Line::from(vec![
