@@ -745,7 +745,7 @@ impl ActorEndpoint {
         port_ref: Option<EitherPortRef>,
     ) -> PyResult<PendingMessage> {
         let port_ref_py: Py<PyAny> = match port_ref {
-            Some(pr) => pr.clone().into_pyobject(py)?.unbind().into(),
+            Some(pr) => pr.clone().into_pyobject(py)?.unbind(),
             None => py.None(),
         };
 

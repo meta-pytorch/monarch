@@ -13,12 +13,12 @@ const dagData: ApiDagData = {
   nodes: [
     { id: "host_mesh-1", entity_id: 1, tier: "host_mesh", label: "host_0", subtitle: "Host Mesh", status: "n/a" },
     { id: "host_mesh-2", entity_id: 2, tier: "host_mesh", label: "host_1", subtitle: "Host Mesh", status: "n/a" },
-    { id: "host_unit-1", entity_id: 1, tier: "host_unit", label: "host_0", subtitle: "Host", status: "idle" },
-    { id: "host_unit-2", entity_id: 2, tier: "host_unit", label: "host_1", subtitle: "Host", status: "failed" },
+    { id: "host_unit-1", entity_id: 1, tier: "host_unit", label: "Host Unit 0", subtitle: "Host", status: "idle", rank: 0 },
+    { id: "host_unit-2", entity_id: 2, tier: "host_unit", label: "Host Unit 1", subtitle: "Host", status: "failed", rank: 1 },
     { id: "proc_mesh-3", entity_id: 3, tier: "proc_mesh", label: "proc_0", subtitle: "Proc Mesh", status: "n/a" },
     { id: "proc_mesh-4", entity_id: 4, tier: "proc_mesh", label: "proc_0", subtitle: "Proc Mesh", status: "n/a" },
-    { id: "proc_unit-3", entity_id: 3, tier: "proc_unit", label: "proc_0", subtitle: "Proc", status: "idle" },
-    { id: "proc_unit-4", entity_id: 4, tier: "proc_unit", label: "proc_0", subtitle: "Proc", status: "failed" },
+    { id: "proc_unit-3", entity_id: 3, tier: "proc_unit", label: "Proc Unit 0", subtitle: "Proc", status: "idle", rank: 0 },
+    { id: "proc_unit-4", entity_id: 4, tier: "proc_unit", label: "Proc Unit 1", subtitle: "Proc", status: "failed", rank: 1 },
     { id: "actor_mesh-5", entity_id: 5, tier: "actor_mesh", label: "Python<Trainer>", subtitle: "Actor Mesh", status: "n/a" },
     { id: "actor_mesh-6", entity_id: 6, tier: "actor_mesh", label: "Python<Trainer>", subtitle: "Actor Mesh", status: "n/a" },
     { id: "actor-5", entity_id: 5, tier: "actor", label: "PythonActor<Trainer>[0]", subtitle: "rank 0", status: "idle" },
@@ -73,6 +73,18 @@ describe("computeLayout", () => {
     const hm = graph.nodes.find((n) => n.id === "host_mesh-1")!;
     expect(hm.label).toBe("host_0");
     expect(hm.subtitle).toBe("Host Mesh");
+  });
+
+  it("formats host/proc unit labels as 'Host Unit N' / 'Proc Unit N'", () => {
+    expect(graph.nodes.find((n) => n.id === "host_unit-1")!.label).toBe("Host Unit 0");
+    expect(graph.nodes.find((n) => n.id === "host_unit-2")!.label).toBe("Host Unit 1");
+    expect(graph.nodes.find((n) => n.id === "proc_unit-3")!.label).toBe("Proc Unit 0");
+    expect(graph.nodes.find((n) => n.id === "proc_unit-4")!.label).toBe("Proc Unit 1");
+  });
+
+  it("does not transform actor or mesh labels", () => {
+    expect(graph.nodes.find((n) => n.id === "actor-5")!.label).toBe("PythonActor<Trainer>[0]");
+    expect(graph.nodes.find((n) => n.id === "actor_mesh-5")!.label).toBe("Python<Trainer>");
   });
 
   it("host mesh nodes have largest radius", () => {

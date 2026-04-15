@@ -37,8 +37,10 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::supervision::MeshFailure;
+use hyperactor_mesh::value_mesh::ValueOverlay;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
+use monarch_hyperactor::actor::PythonResponseMessage;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerActor;
 use monarch_hyperactor::mailbox::PyPortId;
@@ -142,7 +144,7 @@ impl _Controller {
         self.broker_id.clone()
     }
 
-    #[pyo3(signature = (instance, seq, defs, uses, response_port, tracebacks))]
+    #[pyo3(signature = (instance, seq, defs, uses, response_port, tracebacks, accumulate=false))]
     fn _node<'py>(
         &mut self,
         instance: &PyInstance,
@@ -151,10 +153,12 @@ impl _Controller {
         uses: Bound<'py, PyAny>,
         response_port: Option<(PyPortId, PySlice)>,
         tracebacks: Py<PyAny>,
+        accumulate: bool,
     ) -> PyResult<()> {
         let response_port: Option<PortInfo> = response_port.map(|(port, ranks)| PortInfo {
             port: reference::PortRef::attest(port.into()),
             ranks: ranks.into(),
+            accumulate,
         });
         let msg = ClientToControllerMessage::Node {
             seq: seq.into(),
@@ -234,10 +238,25 @@ impl _Controller {
         signal_safe_block_on(py, async move { stop_worker_receiver.recv().await })?
             .map_err(to_py_error)?
             .map_err(PyRuntimeError::new_err)?;
+
+        // Get status watch before sending drain_and_stop so we can
+        // wait for the actor to fully terminate.
+        let mut status_rx = self.controller_handle.blocking_lock().status();
+
         self.controller_handle
             .blocking_lock()
             .drain_and_stop("mesh controller shutdown")
-            .map_err(to_py_error)
+            .map_err(to_py_error)?;
+
+        // Wait for the MeshControllerActor to reach terminal status.
+        // This ensures all resources (mailbox, IPC sessions, etc.) are
+        // fully cleaned up before we return, preventing accumulation of
+        // stale state across rapid spawn/exit cycles.
+        signal_safe_block_on(py, async move {
+            let _ = status_rx.wait_for(ActorStatus::is_terminal).await;
+        })?;
+
+        Ok(())
     }
 }
 
@@ -334,10 +353,30 @@ impl Invocation {
         let old_status = std::mem::replace(&mut self.status, Status::Complete {});
         match old_status {
             Status::Incomplete { results, .. } => match &self.response_port {
-                Some(PortInfo { port, ranks }) => {
+                Some(PortInfo {
+                    port,
+                    ranks,
+                    accumulate,
+                }) => {
                     assert!(ranks.len() == results.iter().len());
-                    for result in results.into_iter() {
-                        port.send(sender, result)?;
+                    if *accumulate {
+                        let mut overlay = ValueOverlay::new();
+                        for result in results {
+                            for (range, value) in result
+                                .into_overlay()
+                                .expect("complete result should convert to overlay")
+                                .into_runs()
+                            {
+                                overlay
+                                    .push_run(range, value)
+                                    .expect("complete runs should not overlap");
+                            }
+                        }
+                        port.send(sender, overlay.into())?;
+                    } else {
+                        for result in results {
+                            port.send(sender, result)?;
+                        }
                     }
                 }
                 None => {}
@@ -368,11 +407,32 @@ impl Invocation {
                 match old_status {
                     Status::Incomplete { users, .. } => {
                         match &invocation.response_port {
-                            Some(PortInfo { port, ranks }) => {
+                            Some(PortInfo {
+                                port,
+                                ranks,
+                                accumulate,
+                            }) => {
                                 *unreported_exception = None;
-                                for rank in ranks.iter() {
-                                    let msg = exception.as_ref().clone().into_rank(rank);
-                                    port.send(sender, msg)?;
+                                if *accumulate {
+                                    let mut overlay = ValueOverlay::new();
+                                    for rank in ranks.iter() {
+                                        overlay
+                                            .push_run(
+                                                rank..rank + 1,
+                                                PythonResponseMessage::Exception(
+                                                    exception.as_ref().message.clone(),
+                                                ),
+                                            )
+                                            .expect("exception runs should not overlap");
+                                    }
+                                    port.send(sender, overlay.into())?;
+                                } else {
+                                    for rank in ranks.iter() {
+                                        port.send(
+                                            sender,
+                                            exception.as_ref().clone().into_rank(rank),
+                                        )?;
+                                    }
                                 }
                             }
                             None => {}
@@ -634,6 +694,9 @@ struct PortInfo {
     // the slice of ranks expected to respond
     // to the port. used for error reporting.
     ranks: Slice,
+    // when true, results are accumulated into a single
+    // ValueOverlay<PythonResponseMessage> message (for OncePort callers).
+    accumulate: bool,
 }
 
 #[derive(Debug, Handler, HandleClient)]
