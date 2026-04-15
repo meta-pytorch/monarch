@@ -170,7 +170,6 @@ impl PyActorId {
             inner: reference::ActorId::new(
                 reference::ProcId::with_name(addr, proc_name),
                 actor_name,
-                pid,
             ),
         })
     }
@@ -203,12 +202,15 @@ impl PyActorId {
 
     #[getter]
     fn actor_name(&self) -> String {
-        self.inner.name().to_string()
+        self.inner
+            .label()
+            .map(|l| l.as_str().to_string())
+            .unwrap_or_else(|| "?".to_string())
     }
 
     #[getter]
-    fn pid(&self) -> reference::Index {
-        self.inner.pid()
+    fn pid(&self) -> String {
+        self.inner.uid().to_string()
     }
 
     #[getter]

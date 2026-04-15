@@ -496,8 +496,8 @@ impl Actor for StreamActor {
         ROOT_ACTOR_ID.with(|root_actor_id| {
             root_actor_id
                 .set(reference::ActorId::root(
-                    cx.self_id().proc_id().clone(),
-                    cx.self_id().name().to_string(),
+                    cx.self_id().proc_id(),
+                    cx.self_id().label().unwrap().clone(),
                 ))
                 .ok()
         });

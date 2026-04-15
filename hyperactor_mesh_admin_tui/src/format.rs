@@ -83,7 +83,9 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
             }
         }
         NodeProperties::Actor { .. } => match &payload.identity {
-            NodeRef::Actor(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
+            NodeRef::Actor(actor_id) => {
+                format!("{}[{}]", actor_id.log_name(), actor_id.uid())
+            }
             other => other.to_string(),
         },
         NodeProperties::Error { code, message } => {
@@ -95,11 +97,13 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
 /// Derive a display label from a typed node reference without
 /// fetching.
 ///
-/// For actor references, format as `name[pid]`; for all others, fall
+/// For actor references, format as `name[uid]`; for all others, fall
 /// back to the `Display` representation.
 pub(crate) fn derive_label_from_ref(reference: &NodeRef) -> String {
     match reference {
-        NodeRef::Actor(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
+        NodeRef::Actor(actor_id) => {
+            format!("{}[{}]", actor_id.log_name(), actor_id.uid())
+        }
         other => other.to_string(),
     }
 }

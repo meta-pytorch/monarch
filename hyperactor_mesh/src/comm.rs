@@ -336,7 +336,7 @@ impl CommActor {
         cx.post_with_external_seq_info(
             cx.self_id()
                 .proc_id()
-                .actor_id(message.dest_port().actor_name(), 0)
+                .actor_id(message.dest_port().actor_name())
                 .port_id(message.dest_port().port()),
             headers,
             wirevalue::Any::serialize(message.data())?,
@@ -954,7 +954,7 @@ mod tests {
     ) -> usize {
         let proc_id = actor_id.proc_id();
         *rank_lookup
-            .get(proc_id)
+            .get(&proc_id)
             .unwrap_or_else(|| panic!("proc rank not found for {}", proc_id))
     }
 
@@ -1124,15 +1124,15 @@ mod tests {
                 assert_eq!(&first, client_reply);
                 // Other ports's actor ID must be dest[?].comm[0], where ? is
                 // the rank we want to extract here.
-                assert!(dst.actor_id().name().contains("comm"));
+                assert!(dst.actor_id().label().unwrap().as_str().contains("comm"));
                 let actor_path = path
                     .into_iter()
                     .map(|p| {
-                        assert!(p.actor_id().name().contains("comm"));
-                        lookup_rank(p.actor_id(), rank_lookup)
+                        assert!(p.actor_id().label().unwrap().as_str().contains("comm"));
+                        lookup_rank(&p.actor_id(), rank_lookup)
                     })
                     .collect();
-                (lookup_rank(dst.actor_id(), rank_lookup), actor_path)
+                (lookup_rank(&dst.actor_id(), rank_lookup), actor_path)
             })
             .collect();
         PathToLeaves(ranks)
@@ -1391,9 +1391,25 @@ mod tests {
                     assert_eq!(reply_to0, reply_port_ref0);
                     // ports have been replaced by comm actor's split ports.
                     assert_ne!(reply_to1, reply_port_ref1);
-                    assert!(reply_to1.port_id().actor_id().name().contains("comm"));
+                    assert!(
+                        reply_to1
+                            .port_id()
+                            .actor_id()
+                            .label()
+                            .unwrap()
+                            .as_str()
+                            .contains("comm")
+                    );
                     assert_ne!(reply_to2, reply_port_ref2);
-                    assert!(reply_to2.port_id().actor_id().name().contains("comm"));
+                    assert!(
+                        reply_to2
+                            .port_id()
+                            .actor_id()
+                            .label()
+                            .unwrap()
+                            .as_str()
+                            .contains("comm")
+                    );
                     reply_tos.push((reply_to1, reply_to2));
                 }
                 _ => {
@@ -1561,7 +1577,15 @@ mod tests {
                     if has_reducer {
                         // With reducer: port is split by comm actor.
                         assert_ne!(reply_to, reply_port_ref);
-                        assert!(reply_to.port_id().actor_id().name().contains("comm"));
+                        assert!(
+                            reply_to
+                                .port_id()
+                                .actor_id()
+                                .label()
+                                .unwrap()
+                                .as_str()
+                                .contains("comm")
+                        );
                     } else {
                         // Without reducer: port is passed through unchanged.
                         assert_eq!(reply_to, reply_port_ref);

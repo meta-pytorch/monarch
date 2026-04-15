@@ -217,9 +217,10 @@ async fn discover_pyspy_workers(fixture: &WorkloadFixture, expected: usize) -> R
                     };
 
                 let has_pyspy_worker = proc_node.children.iter().any(|actor_ref| match actor_ref {
-                    hyperactor_mesh::introspect::NodeRef::Actor(id) => {
-                        id.name().starts_with("pyspy_worker")
-                    }
+                    hyperactor_mesh::introspect::NodeRef::Actor(id) => id
+                        .label()
+                        .map(|l| l.as_str().starts_with("pyspy_worker"))
+                        .unwrap_or(false),
                     _ => false,
                 });
                 if has_pyspy_worker {

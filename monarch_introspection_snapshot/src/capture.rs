@@ -193,12 +193,12 @@ mod tests {
         ProcId::with_name(ChannelAddr::Local(0), "worker")
     }
 
-    fn test_actor_id(name: &str, idx: usize) -> hyperactor::reference::ActorId {
-        test_proc_id().actor_id(name, idx)
+    fn test_actor_id(name: &str) -> hyperactor::reference::ActorId {
+        test_proc_id().actor_id(name)
     }
 
     fn test_host_actor_id() -> hyperactor::reference::ActorId {
-        test_proc_id().actor_id("host_agent", 0)
+        test_proc_id().actor_id("host_agent")
     }
 
     fn test_time() -> SystemTime {
@@ -292,8 +292,8 @@ mod tests {
     // CS-2, CS-7: each NodeRef resolved at most once.
     #[tokio::test]
     async fn test_capture_resolves_each_node_once() {
-        let actor_b = NodeRef::Actor(test_actor_id("b", 0));
-        let actor_a = NodeRef::Actor(test_actor_id("a", 0));
+        let actor_b = NodeRef::Actor(test_actor_id("b"));
+        let actor_a = NodeRef::Actor(test_actor_id("a"));
         let proc_ref = NodeRef::Proc(test_proc_id());
         let host_ref = NodeRef::Host(test_host_actor_id());
 
@@ -399,9 +399,9 @@ mod tests {
     // CS-3: child edges emitted in parent enumeration order.
     #[tokio::test]
     async fn test_capture_emits_edges_from_each_parent() {
-        let a0 = NodeRef::Actor(test_actor_id("a", 0));
-        let a1 = NodeRef::Actor(test_actor_id("b", 0));
-        let a2 = NodeRef::Actor(test_actor_id("c", 0));
+        let a0 = NodeRef::Actor(test_actor_id("a"));
+        let a1 = NodeRef::Actor(test_actor_id("b"));
+        let a2 = NodeRef::Actor(test_actor_id("c"));
         let proc_ref = NodeRef::Proc(test_proc_id());
         let host_ref = NodeRef::Host(test_host_actor_id());
 
@@ -526,8 +526,8 @@ mod tests {
     // one ChildRow per parent→child edge.
     #[tokio::test]
     async fn test_capture_dedupes_nodes_not_edges() {
-        let actor_b = NodeRef::Actor(test_actor_id("b", 0));
-        let actor_a = NodeRef::Actor(test_actor_id("a", 0));
+        let actor_b = NodeRef::Actor(test_actor_id("b"));
+        let actor_a = NodeRef::Actor(test_actor_id("a"));
         let proc_ref = NodeRef::Proc(test_proc_id());
         let host_ref = NodeRef::Host(test_host_actor_id());
 
@@ -819,7 +819,7 @@ mod tests {
     // row.
     #[tokio::test]
     async fn test_capture_keeps_domain_error_payloads() {
-        let error_ref = NodeRef::Actor(test_actor_id("err", 0));
+        let error_ref = NodeRef::Actor(test_actor_id("err"));
         let host_ref = NodeRef::Host(test_host_actor_id());
         let proc_ref = NodeRef::Proc(test_proc_id());
 
