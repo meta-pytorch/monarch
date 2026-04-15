@@ -330,6 +330,22 @@ impl ProcId {
         Self { uid, label }
     }
 
+    /// Create a singleton [`ProcId`] identified by the given label.
+    pub fn singleton(label: Label) -> Self {
+        Self {
+            uid: Uid::Singleton(label.clone()),
+            label: Some(label),
+        }
+    }
+
+    /// Create an instance [`ProcId`] with a random uid and the given label.
+    pub fn instance(label: Label) -> Self {
+        Self {
+            uid: Uid::instance(),
+            label: Some(label),
+        }
+    }
+
     /// Returns the uid.
     pub fn uid(&self) -> &Uid {
         &self.uid
@@ -409,6 +425,33 @@ impl ActorId {
             uid,
             proc_id,
             label,
+        }
+    }
+
+    /// Create a singleton [`ActorId`] identified by the given label.
+    pub fn singleton(label: Label, proc_id: ProcId) -> Self {
+        Self {
+            uid: Uid::Singleton(label.clone()),
+            proc_id,
+            label: Some(label),
+        }
+    }
+
+    /// Create an instance [`ActorId`] with a random uid and no label.
+    pub fn instance(proc_id: ProcId) -> Self {
+        Self {
+            uid: Uid::instance(),
+            proc_id,
+            label: None,
+        }
+    }
+
+    /// Create an instance [`ActorId`] with a random uid and the given label.
+    pub fn instance_labeled(label: Label, proc_id: ProcId) -> Self {
+        Self {
+            uid: Uid::instance(),
+            proc_id,
+            label: Some(label),
         }
     }
 
