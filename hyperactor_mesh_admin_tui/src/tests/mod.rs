@@ -362,6 +362,7 @@ fn partial_failure_resilience() {
 }
 
 // High fanout proc placeholder performance.
+#[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
 #[test]
 fn high_fanout_proc_placeholder_performance() {
     let mut children = Vec::new();

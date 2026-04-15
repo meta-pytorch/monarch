@@ -491,7 +491,22 @@ pub fn set_python_rpath() {
         let python_config = pyo3_build_config::get();
 
         if let Some(lib_dir) = &python_config.lib_dir {
-            println!("cargo::rustc-link-arg=-Wl,-rpath,{}", lib_dir);
+            let lib_dir = Path::new(lib_dir);
+            if cfg!(target_os = "macos") {
+                // Python.framework uses the framework root as the install-name base.
+                if let Some(framework_root) = lib_dir.ancestors().find(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".framework"))
+                }) {
+                    println!(
+                        "cargo::rustc-link-arg=-Wl,-rpath,{}",
+                        framework_root.display()
+                    );
+                    return;
+                }
+            }
+            println!("cargo::rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
         }
     }
 }
