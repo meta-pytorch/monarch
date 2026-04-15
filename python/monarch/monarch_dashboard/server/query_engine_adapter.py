@@ -26,7 +26,7 @@ class QueryEngineAdapter(DBAdapter):
     Usage::
 
         from monarch.distributed_telemetry.actor import start_telemetry
-        engine = start_telemetry()
+        engine, _, _scanner = start_telemetry()
         adapter = QueryEngineAdapter(engine)
         rows = adapter.query("SELECT * FROM actors LIMIT 10")
     """
@@ -42,3 +42,11 @@ class QueryEngineAdapter(DBAdapter):
     def table_names(self) -> list[str]:
         """Return available table names from the telemetry engine."""
         return self._engine._actor.table_names.call_one().get()
+
+    def store_pyspy_dump(
+        self, dump_id: str, proc_ref: str, pyspy_result_json: str
+    ) -> None:
+        """Store a py-spy dump result in the DataFusion pyspy tables."""
+        self._engine._actor.store_pyspy_dump.call_one(
+            dump_id, proc_ref, pyspy_result_json
+        ).get()

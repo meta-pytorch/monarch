@@ -8,59 +8,67 @@
 
 /** Data contract types matching the Monarch Dashboard API. */
 
+/**
+ * Entity IDs are 64-bit integers which can exceed JavaScript's
+ * Number.MAX_SAFE_INTEGER.  The server always serializes them as
+ * strings for type consistency.
+ */
+export type EntityId = string;
+
 /** A mesh in the hierarchy (Host, Proc, or actor mesh). */
 export interface Mesh {
-  id: number;
+  id: EntityId;
   timestamp_us: number;
   class: string;
   given_name: string;
   full_name: string;
   shape_json: string;
-  parent_mesh_id: number | null;
+  parent_mesh_id: EntityId | null;
   parent_view_json: string | null;
 }
 
 /** An actor (regular actors + system agents like HostAgent, ProcAgent). */
 export interface Actor {
-  id: number;
+  id: EntityId;
   timestamp_us: number;
-  mesh_id: number;
+  mesh_id: EntityId;
   rank: number;
   full_name: string;
+  display_name?: string | null;
   latest_status?: string | null;
   status_timestamp_us?: number | null;
 }
 
 export interface ActorStatusEvent {
-  id: number;
+  id: EntityId;
   timestamp_us: number;
-  actor_id: number;
+  actor_id: EntityId;
   new_status: string;
   reason: string | null;
 }
 
 export interface Message {
-  id: number;
+  id: EntityId;
   timestamp_us: number;
-  from_actor_id: number;
-  to_actor_id: number;
-  status: string;
+  from_actor_id: EntityId;
+  to_actor_id: EntityId;
   endpoint: string | null;
-  port_id: number | null;
+  port_id: EntityId | null;
+  latest_status?: string | null;
 }
 
 export interface MessageStatusEvent {
-  id: number;
+  id: EntityId;
   timestamp_us: number;
-  message_id: number;
+  message_id: EntityId;
   status: string;
 }
 
 export interface SentMessage {
-  id: number;
+  id: EntityId;
   timestamp_us: number;
-  sender_actor_id: number;
-  mesh_id: number;
+  sender_actor_id: EntityId;
+  actor_mesh_id: EntityId;
   view_json: string;
   shape_json: string;
 }
@@ -76,8 +84,8 @@ export interface NavItem {
     | "actor_meshes"
     | "actors"
     | "actor_detail";
-  meshId?: number;
-  actorId?: number;
+  meshId?: EntityId;
+  actorId?: EntityId;
 }
 
 /** Aggregate summary returned by GET /api/summary. */
@@ -102,18 +110,18 @@ export interface Summary {
   };
   errors: {
     failed_actors: Array<{
-      actor_id: number;
+      actor_id: EntityId;
       full_name: string;
       reason: string | null;
       timestamp_us: number;
-      mesh_id: number;
+      mesh_id: EntityId;
     }>;
     stopped_actors: Array<{
-      actor_id: number;
+      actor_id: EntityId;
       full_name: string;
       reason: string | null;
       timestamp_us: number;
-      mesh_id: number;
+      mesh_id: EntityId;
     }>;
     failed_messages: number;
   };

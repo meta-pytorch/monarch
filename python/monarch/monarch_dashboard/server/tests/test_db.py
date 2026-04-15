@@ -243,6 +243,17 @@ class GetActorMessagesTest(_DbTestBase):
                 m["from_actor_id"] == actor_id or m["to_actor_id"] == actor_id
             )
 
+    def test_includes_latest_status(self):
+        """get_actor_messages should JOIN latest message status."""
+        all_msgs = db.list_messages()
+        actor_id = all_msgs[0]["from_actor_id"]
+        msgs = db.get_actor_messages(actor_id)
+        self.assertGreater(len(msgs), 0)
+        for m in msgs:
+            self.assertIn("latest_status", m)
+            # Every message in fake data has status events, so status should be set.
+            self.assertIsNotNone(m["latest_status"])
+
 
 # ---------------------------------------------------------------------------
 # Message status event queries
@@ -410,6 +421,74 @@ class GetSummaryTest(_DbTestBase):
         # With failed/stopped actors, health should be below 100.
         summary = db.get_summary()
         self.assertLess(summary["health_score"], 100)
+
+
+class RegionMappingTest(unittest.TestCase):
+    """Tests for ndslice Region → proc rank mapping helpers."""
+
+    def test_parse_region_valid(self):
+        region_json = '{"labels": ["workers"], "slice": {"offset": 2, "sizes": [3], "strides": [1]}}'
+        result = db._parse_region(region_json)
+        self.assertEqual(result, (2, [3], [1]))
+
+    def test_parse_region_none(self):
+        self.assertIsNone(db._parse_region(None))
+        self.assertIsNone(db._parse_region(""))
+
+    def test_parse_region_invalid_json(self):
+        self.assertIsNone(db._parse_region("not json"))
+
+    def test_parse_region_missing_slice(self):
+        self.assertIsNone(db._parse_region('{"labels": ["x"]}'))
+
+    def test_1d_contiguous(self):
+        # offset=2, sizes=[3], strides=[1] → ranks 2, 3, 4
+        self.assertEqual(db._child_rank_to_parent_rank(0, 2, [3], [1]), 2)
+        self.assertEqual(db._child_rank_to_parent_rank(1, 2, [3], [1]), 3)
+        self.assertEqual(db._child_rank_to_parent_rank(2, 2, [3], [1]), 4)
+
+    def test_1d_strided(self):
+        # offset=1, sizes=[2], strides=[2] → ranks 1, 3
+        self.assertEqual(db._child_rank_to_parent_rank(0, 1, [2], [2]), 1)
+        self.assertEqual(db._child_rank_to_parent_rank(1, 1, [2], [2]), 3)
+
+    def test_2d(self):
+        # 2D: offset=0, sizes=[2, 3], strides=[3, 1]
+        # Row-major: (0,0)=0, (0,1)=1, (0,2)=2, (1,0)=3, (1,1)=4, (1,2)=5
+        self.assertEqual(db._child_rank_to_parent_rank(0, 0, [2, 3], [3, 1]), 0)
+        self.assertEqual(db._child_rank_to_parent_rank(1, 0, [2, 3], [3, 1]), 1)
+        self.assertEqual(db._child_rank_to_parent_rank(2, 0, [2, 3], [3, 1]), 2)
+        self.assertEqual(db._child_rank_to_parent_rank(3, 0, [2, 3], [3, 1]), 3)
+        self.assertEqual(db._child_rank_to_parent_rank(5, 0, [2, 3], [3, 1]), 5)
+
+    def test_2d_with_offset(self):
+        # offset=6, sizes=[2, 3], strides=[3, 1] → 6,7,8,9,10,11
+        self.assertEqual(db._child_rank_to_parent_rank(0, 6, [2, 3], [3, 1]), 6)
+        self.assertEqual(db._child_rank_to_parent_rank(5, 6, [2, 3], [3, 1]), 11)
+
+    def test_parent_ranks_for_region(self):
+        ranks = db._parent_ranks_for_region(2, [3], [1])
+        self.assertEqual(ranks, {2, 3, 4})
+
+    def test_parent_ranks_for_region_2d(self):
+        ranks = db._parent_ranks_for_region(0, [2, 3], [3, 1])
+        self.assertEqual(ranks, {0, 1, 2, 3, 4, 5})
+
+
+class DagRegionEdgesTest(_DbTestBase):
+    """Test that get_dag_data uses parent_view_json for proc→actor_mesh edges."""
+
+    def test_dag_has_proc_unit_to_actor_mesh_edges(self):
+        dag = db.get_dag_data()
+        hier_edges = [
+            e
+            for e in dag["edges"]
+            if e["type"] == "hierarchy"
+            and e["source_id"].startswith("proc_unit-")
+            and e["target_id"].startswith("actor_mesh-")
+        ]
+        # Fake data has 4 proc meshes × 1 actor mesh each = 4 edges
+        self.assertGreaterEqual(len(hier_edges), 4)
 
 
 if __name__ == "__main__":

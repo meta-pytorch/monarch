@@ -8,7 +8,7 @@
 
 import React, { useState } from "react";
 import { StatusBadge } from "./StatusBadge";
-import { formatTimestamp } from "../utils/status";
+import { formatTimestamp, formatShape, leafName, agentDisplayName } from "../utils/status";
 import { useApi } from "../hooks/useApi";
 
 interface EntityTableProps {
@@ -20,6 +20,8 @@ interface EntityTableProps {
   onRowClick: (entity: any) => void;
   /** Label for the table section. */
   title: string;
+  /** Optional client-side filter applied to rows after fetch. */
+  clientFilter?: (rows: any[]) => any[];
 }
 
 interface ColumnDef {
@@ -30,8 +32,9 @@ interface ColumnDef {
 type SortDir = "asc" | "desc";
 
 /** Reusable sortable table for any entity at any hierarchy level. */
-export function MeshTable({ apiPath, columns, onRowClick, title }: EntityTableProps) {
-  const { data: entities, loading, error } = useApi<any[]>(apiPath);
+export function MeshTable({ apiPath, columns, onRowClick, title, clientFilter }: EntityTableProps) {
+  const { data: rawEntities, loading, error } = useApi<any[]>(apiPath);
+  const entities = clientFilter && rawEntities ? clientFilter(rawEntities) : rawEntities;
   const [sortCol, setSortCol] = useState<string>("id");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
@@ -110,9 +113,9 @@ function renderCell(key: string, entity: any): React.ReactNode {
     case "mesh_class":
       return val ?? "\u2014";
     case "full_name":
-      return val ? <span className="mono-cell">{val.split("/").pop()}</span> : "\u2014";
+      return <span className="mono-cell">{agentDisplayName(val, entity.rank) ?? leafName(val)}</span>;
     case "shape_json":
-      return <span className="mono-cell">{val}</span>;
+      return <span className="mono-cell">{formatShape(val)}</span>;
     case "status":
     case "latest_status":
       return <StatusBadge status={val} />;

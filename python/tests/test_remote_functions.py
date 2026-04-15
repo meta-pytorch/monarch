@@ -499,6 +499,6 @@ class TestMeshSpecific(RemoteFunctionsTestBase):
             y = device_mesh.rank("gpu")
             r = return_them.call(x, y).get()
 
-            for p, (h, g) in r:
-                assert p["host"] == h.item()
-                assert p["gpu"] == g.item()
+        for p, (h, g) in r:
+            assert p["host"] == h.item()
+            assert p["gpu"] == g.item()

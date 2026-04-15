@@ -65,7 +65,7 @@ So the host-mesh agent can receive a "create proc" request over the mesh protoco
 At the control plane we have the mesh-facing actor:
 
 ```rust
-// hyperactor_mesh/src/v1/host_mesh/mesh_agent.rs
+// hyperactor_mesh/src/host_mesh/host_agent.rs
 pub struct HostAgent {
   host: Option<HostAgentMode>,
   created: HashMap<Name, ProcCreationState>,
@@ -208,7 +208,7 @@ What the `HostAgent` actually does matches this shape:
 
 Here is the bit of real code that does exactly that (abridged to just the decision):
 ```rust
-// from hyperactor_mesh/src/v1/host_mesh/mesh_agent.rs (`impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent`)
+// from hyperactor_mesh/src/host_mesh/host_agent.rs (`impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent`)
 
 let created = match host {
     HostAgentMode::Process(host) => {
