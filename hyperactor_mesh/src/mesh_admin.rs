@@ -826,6 +826,40 @@ struct BridgeState {
     admin_info: AdminInfo,
 }
 
+/// Build an HTTP client for outbound proxy requests to the dashboard.
+///
+/// Loads the root CA via the same bundle-probing logic used by every
+/// other mesh-admin client so the reqwest client can verify the
+/// dashboard's TLS cert. Falls back to the default trust store (and
+/// a default client) when no bundle is available.
+fn build_http_client() -> reqwest::Client {
+    use std::io::Read;
+
+    if let Some(bundle) = hyperactor::channel::try_tls_pem_bundle() {
+        let mut ca_bytes = Vec::new();
+        if let Ok(mut reader) = bundle.ca.reader() {
+            if reader.read_to_end(&mut ca_bytes).is_ok() {
+                let (builder, ca_installed) = crate::mesh_admin_client::add_tls(
+                    reqwest::Client::builder(),
+                    &ca_bytes,
+                    None,
+                    None,
+                );
+                if ca_installed {
+                    if let Ok(client) = builder.build() {
+                        return client;
+                    }
+                    tracing::warn!(
+                        "mesh admin: failed to build reqwest client with root CA; \
+                         falling back to default trust store"
+                    );
+                }
+            }
+        }
+    }
+    reqwest::Client::new()
+}
+
 /// A TCP listener that performs a TLS handshake on each accepted
 /// connection before handing it to axum.
 ///
@@ -968,7 +1002,7 @@ impl Actor for MeshAdminAgent {
             )),
             _bridge_handle: bridge_handle,
             telemetry_url: self.telemetry_url.clone(),
-            http_client: reqwest::Client::new(),
+            http_client: build_http_client(),
             admin_info: AdminInfo::new(
                 this.self_id().to_string(),
                 this.self_id().proc_id().to_string(),

@@ -277,8 +277,9 @@ def start_telemetry(
             adapter=adapter,
             port=dashboard_port,
         )
-        telemetry_url = info["url"]
-        logger.info("Monarch Dashboard: %s", telemetry_url)
-        print(f"Monarch Dashboard: {telemetry_url}", flush=True)
+        telemetry_url = info["local_url"]
+        dashboard_url = info["url"]
+        logger.info("Monarch Dashboard: %s", dashboard_url)
+        print(f"Monarch Dashboard: {dashboard_url}", flush=True)
 
     return query_engine, telemetry_url, scanner
