@@ -345,7 +345,7 @@ impl IbvManagerActor {
         // Create loopback QP for this domain if mlx5dv is enabled (needed for segment registration).
         // Respects RDMA_DISABLE_MLX5DV via self.mlx5dv_enabled (derived from resolve_qp_type).
         // For EFA, we don't need a loopback QP for segment scanning.
-        let qp = if self.mlx5dv_enabled && !crate::efa::is_efa_device() {
+        let qp = if self.mlx5dv_enabled && crate::vendors::supports_mlx5dv() {
             let mut qp = IbvQueuePair::new(domain.context, domain.pd, self.config.clone())
                 .map_err(|e| {
                     anyhow::anyhow!(
@@ -488,19 +488,8 @@ impl IbvManagerActor {
 
             // Get or create domain and loopback QP for this device
             let (domain, _qp) = self.get_or_create_device_domain(&device_name, &rdma_device)?;
-            //TODO_ANDY: Replace this conditional with unified api, will currently break
-            //compilation
-            let access = if crate::efa::is_efa_device() {
-                crate::efa::mr_access_flags()
-            } else if crate::vendors::broadcom::is_broadcom_device() {
-                crate::vendors::broadcom::mr_access_flags()
-            } else {
-                rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                    | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                    | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
-                    | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC
-            };
-
+            // Set the access flags for this NIC backend
+            let access = crate::vendors::vendor_mr_access_flags()
             let mut mr: *mut rdmaxcel_sys::ibv_mr = std::ptr::null_mut();
             let mrv;
 

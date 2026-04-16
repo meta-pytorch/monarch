@@ -16,7 +16,7 @@ use crate::backend::ibverbs::primitives::IbvConfig;
 
 /// Returns all known NIC backends, ordered by priority (highest first)
 // Future: add new backend
-fn all_nic_backends() -> Vec<&'static dyn NicBackend> {
+fn all_backends() -> Vec<&'static dyn NicBackend> {
     let mut backends: Vec<&'static dyn NicBackend> = vec![
         &efa::EfaBackend,
         &broadcom::BroadcomBackend,

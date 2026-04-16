@@ -99,24 +99,12 @@ pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDevice>> {
     })
 }
 
-/// Known RDMA device name prefixes used by various NIC vendors.
-const KNOWN_RDMA_PREFIXES: &[&str] = &[
-    "mlx",      // Mellanox / NVIDIA ConnectX
-    "efa",      // AWS Elastic Fabric Adapter
-    "rxe",      // Soft-RoCE (software emulation)
-    "siw",      // Soft-iWARP (software emulation)
-    "bnxt_re",  // Broadcom NetXtreme
-    "hfi1",     // Intel Omni-Path
-    "qedr",     // Marvell/QLogic FastLinQ
-    "erdma",    // Alibaba Cloud RDMA
-    "hns",      // HiSilicon (Huawei) RoCE
-    "vmw_pvrdma", // VMware Paravirtual RDMA
-];
-
 fn is_known_rdma_device(name: &str) -> bool {
-    KNOWN_RDMA_PREFIXES
+
+    crate::vendors::all_known_prefixes()
         .iter()
         .any(|prefix| name.starts_with(prefix))
+
 }
 
 /// Resolves RDMA device using auto-detection logic when needed.

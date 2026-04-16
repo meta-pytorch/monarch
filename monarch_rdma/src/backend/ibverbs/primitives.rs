@@ -111,17 +111,7 @@ pub enum IbvQpType {
 /// supports them, and `RDMA_QP_TYPE_STANDARD` is used instead.
 pub fn resolve_qp_type(qp_type: IbvQpType) -> u32 {
     match qp_type {
-        IbvQpType::Auto => {
-            if crate::efa::is_efa_device() {
-                rdmaxcel_sys::RDMA_QP_TYPE_EFA
-            } else if !hyperactor_config::global::get(crate::config::RDMA_DISABLE_MLX5DV)
-                && mlx5dv_supported()
-            {
-                rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV
-            } else { /// broadcom falls into here as it uses standard ibverbs
-                rdmaxcel_sys::RDMA_QP_TYPE_STANDARD
-            }
-        }
+        IbvQpType::Auto => crate::vendors::resolve_auto_qp_type(),
         IbvQpType::Standard => rdmaxcel_sys::RDMA_QP_TYPE_STANDARD,
         IbvQpType::Mlx5dv => rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV,
         IbvQpType::Efa => rdmaxcel_sys::RDMA_QP_TYPE_EFA,
@@ -206,11 +196,7 @@ impl Default for IbvConfig {
             hw_init_delay_ms: 2,
             qp_type: IbvQpType::Auto,
         };
-        if crate::efa::is_efa_device() {
-            crate::efa::apply_efa_defaults(&mut config);
-        } else if crate::broadcom::is_broadcom_device() {
-            crate::broadcom::apply_broadcom_defaults(&mut config);
-        }
+        crate::vendors::apply_vendor_defaults(&mut config);
         config
     }
 }
