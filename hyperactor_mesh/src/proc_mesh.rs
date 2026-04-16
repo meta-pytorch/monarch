@@ -1395,16 +1395,23 @@ fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(fbcode_build)]
     use std::ops::Deref;
 
+    #[cfg(fbcode_build)]
     use hyperactor::Instance;
+    #[cfg(fbcode_build)]
     use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
     use ndslice::ViewExt;
     use ndslice::extent;
+    #[cfg(fbcode_build)]
     use timed_test::async_timed_test;
+    #[cfg(fbcode_build)]
     use uuid::Uuid;
 
+    #[cfg(fbcode_build)]
     use crate::ActorMesh;
+    #[cfg(fbcode_build)]
     use crate::comm::ENABLE_NATIVE_V1_CASTING;
     use crate::resource::RankedValues;
     use crate::resource::Status;
@@ -1432,6 +1439,7 @@ mod tests {
         );
     }
 
+    #[cfg(fbcode_build)]
     async fn execute_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
@@ -1468,6 +1476,7 @@ mod tests {
     /// Spawn an actor mesh, then do a random number of casts to bump the seq
     /// numbers for all actors participating in the cast. This avoids the test
     /// mistakenly passing.
+    #[cfg(fbcode_build)]
     async fn spawn_for_seq_test(
         cx: &Instance<testing::TestRootClient>,
         proc_mesh: &super::ProcMeshRef,
