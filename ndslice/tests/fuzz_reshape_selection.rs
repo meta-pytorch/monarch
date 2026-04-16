@@ -28,6 +28,7 @@ use ndslice::selection::dsl::union;
 use ndslice::shape::Range;
 use ndslice::shape::Shape;
 use rand::Rng;
+use rand::RngExt as _;
 
 #[derive(Default)]
 struct BenchmarkStats {
