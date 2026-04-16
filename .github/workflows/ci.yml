@@ -26,6 +26,8 @@ jobs:
   build-cpu:
     name: Build CPU
     uses: ./.github/workflows/build-cpu.yml
+    with:
+      artifact-name: monarch-cpu-${{ github.sha }}-py3.10
 
   test-cpu-python:
     name: Test CPU Python

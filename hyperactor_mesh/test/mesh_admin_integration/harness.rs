@@ -61,7 +61,6 @@ pub(crate) struct WorkloadFixture {
     pub(crate) client: Client,
     ca_pem: Vec<u8>,
     _cert_dir: TempDir,
-    _pyspy_dir: Option<TempDir>,
 }
 
 impl WorkloadFixture {
@@ -327,7 +326,7 @@ pub(crate) async fn start_workload(
 
     let combined_path = cert_dir.path().join("combined.pem");
     let ca_path = cert_dir.path().join("ca.crt");
-    let (pyspy_bin, pyspy_dir) = install_pyspy()?;
+    let pyspy_bin = install_pyspy()?;
 
     let mut cmd = Command::new(binary);
     cmd.args(args)
@@ -432,32 +431,44 @@ pub(crate) async fn start_workload(
         client,
         ca_pem: pki.ca_pem,
         _cert_dir: cert_dir,
-        _pyspy_dir: pyspy_dir,
     })
 }
 
-fn install_pyspy() -> Result<(Option<PathBuf>, Option<TempDir>)> {
-    let dir = TempDir::new()?;
-    let status = std::process::Command::new("fbpkg")
-        .arg("fetch")
-        .arg("fb-py-spy:prod")
-        .arg("-d")
-        .arg(dir.path())
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .status();
+/// Py-spy install. Attempted exactly once per process via `Once`.
+/// If the fetch fails (transient or permanent), all subsequent
+/// callers get `None` and fall back to PATH. The TempDir is
+/// leaked so the path stays valid for the process lifetime.
+fn install_pyspy() -> Result<Option<PathBuf>> {
+    use std::sync::Mutex;
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    static RESULT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-    match status {
-        Ok(status) if status.success() => {
-            let pyspy = dir.path().join("py-spy");
-            if pyspy.exists() {
-                Ok((Some(pyspy), Some(dir)))
-            } else {
-                Ok((None, None))
-            }
+    INIT.call_once(|| {
+        let Ok(dir) = TempDir::new() else { return };
+        let Ok(status) = std::process::Command::new("fbpkg")
+            .arg("fetch")
+            .arg("fb-py-spy:prod")
+            .arg("-d")
+            .arg(dir.path())
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+        else {
+            return;
+        };
+        if !status.success() {
+            return;
         }
-        Ok(_) | Err(_) => Ok((None, None)),
-    }
+        let pyspy = dir.path().join("py-spy");
+        if pyspy.exists() {
+            *RESULT.lock().unwrap() = Some(pyspy);
+            // Leak the TempDir so the path stays valid.
+            std::mem::forget(dir);
+        }
+    });
+
+    Ok(RESULT.lock().unwrap().clone())
 }
 
 // PKI generation

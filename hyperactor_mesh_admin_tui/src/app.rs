@@ -312,6 +312,7 @@ impl App {
         let mut root_children = Vec::new();
         let sorted = sorted_children(&root_payload);
 
+        let mut child_errors = Vec::new();
         for child_ref in &sorted {
             if let Some(child_node) = build_tree_node(
                 &self.client,
@@ -332,7 +333,15 @@ impl App {
             .await
             {
                 root_children.push(child_node);
+            } else if let Some(FetchState::Error { msg, .. }) = self.fetch_cache.get(child_ref) {
+                child_errors.push(format!("{}: {}", child_ref, msg));
             }
+        }
+        if root_children.is_empty() && !child_errors.is_empty() {
+            self.error = Some(format!(
+                "All host fetches failed: {}",
+                child_errors.first().unwrap()
+            ));
         }
 
         // Create synthetic root node.
@@ -1309,20 +1318,17 @@ async fn recv_active_job(job: &mut Option<ActiveJob>) -> ActiveJobEvent {
 
 /// TP-10: derive refresh policy from active job state.
 ///
-/// Suspend refresh only while a foreground operation is in flight.
-/// Completed overlays (results displayed, waiting for Esc) do not
-/// suppress refresh — the user is reading results, not waiting for
-/// a network operation. The mapping is local to the app module so
-/// `timeouts::RefreshPolicy` stays independent of UI job types.
+/// Suspend refresh while any foreground job is active — both
+/// in-flight (waiting for network) and completed (user reading
+/// results). Refresh resumes only when the overlay is dismissed
+/// (Esc clears the job to None). This prevents topology rebuilds
+/// from disrupting the user's view while they read py-spy stacks,
+/// config dumps, or diagnostics.
 pub(crate) fn refresh_policy_for_job(job: &Option<ActiveJob>) -> crate::timeouts::RefreshPolicy {
     use crate::timeouts::RefreshPolicy;
     match job {
         None => RefreshPolicy::Baseline,
-        Some(ActiveJob::Diagnostics { running: true, .. }) => RefreshPolicy::Suspend,
-        Some(ActiveJob::PySpy { rx: Some(_), .. }) => RefreshPolicy::Suspend,
-        Some(ActiveJob::Config { rx: Some(_), .. }) => RefreshPolicy::Suspend,
-        // Completed overlays: operation finished, user is reading results.
-        Some(_) => RefreshPolicy::Baseline,
+        Some(_) => RefreshPolicy::Suspend,
     }
 }
 

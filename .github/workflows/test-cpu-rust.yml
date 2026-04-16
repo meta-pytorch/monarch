@@ -3,8 +3,12 @@ name: Test CPU Rust
 on:
   workflow_call:
     inputs:
+      python-version:
+        description: 'Python version to test with'
+        type: string
+        default: '3.10'
       runner:
-        description: 'Runner to use for the test'
+        description: 'Linux runner to use for the test'
         type: string
         default: 'linux.4xlarge'
       docker-image:

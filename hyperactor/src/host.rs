@@ -258,8 +258,7 @@ impl<M: ProcManager> Host<M> {
     ) -> Result<Self, HostError> {
         // The frontend is a duplex server that accepts both attach
         // connections and regular inbound message connections.
-        let duplex_server =
-            channel::duplex::serve::<MessageEnvelope, Host2Client>(addr)?;
+        let duplex_server = channel::duplex::serve::<MessageEnvelope, Host2Client>(addr)?;
         let frontend_addr = duplex_server.addr().clone();
 
         let dial_router = match default_sender {
@@ -552,15 +551,15 @@ async fn duplex_accept_loop(
                     inner: duplex_rx,
                 };
                 let mut handle = fwd.serve(rx);
-                    tokio::select! {
-                        _ = &mut handle => {}
-                        () = conn_cancel.cancelled() => {
-                            handle.stop("host frontend cancel");
-                            let _ = handle.await;
-                        }
+                tokio::select! {
+                    _ = &mut handle => {}
+                    () = conn_cancel.cancelled() => {
+                        handle.stop("host frontend cancel");
+                        let _ = handle.await;
                     }
-                    drop(duplex_tx);
-                });
+                }
+                drop(duplex_tx);
+            });
         }
     }
 
@@ -2126,18 +2125,13 @@ mod tests {
         // Create a host with a duplex server.
         let proc_manager =
             LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
-        let mut host = Host::new_with_default(
-            proc_manager,
-            ChannelAddr::any(ChannelTransport::Unix),
-            None,
-        )
-        .await
-        .unwrap();
+        let mut host =
+            Host::new_with_default(proc_manager, ChannelAddr::any(ChannelTransport::Unix), None)
+                .await
+                .unwrap();
         host.serve();
 
-        let remote_proc = Proc::attach_to_host(host.addr().clone())
-            .await
-            .unwrap();
+        let remote_proc = Proc::attach_to_host(host.addr().clone()).await.unwrap();
         assert_eq!(remote_proc.proc_id().addr(), host.addr());
 
         // (1) Host -> remote: open a port on the remote proc, send from
@@ -2182,18 +2176,13 @@ mod tests {
         // duplex → client's collector actor.
         let proc_manager =
             LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
-        let mut host = Host::new_with_default(
-            proc_manager,
-            ChannelAddr::any(ChannelTransport::Unix),
-            None,
-        )
-        .await
-        .unwrap();
+        let mut host =
+            Host::new_with_default(proc_manager, ChannelAddr::any(ChannelTransport::Unix), None)
+                .await
+                .unwrap();
         host.serve();
 
-        let remote_proc = Proc::attach_to_host(host.addr().clone())
-            .await
-            .unwrap();
+        let remote_proc = Proc::attach_to_host(host.addr().clone()).await.unwrap();
 
         // Spawn a collector on the remote proc.
         let (undlv_tx, mut undlv_rx) = mpsc::unbounded_channel();
@@ -2230,18 +2219,13 @@ mod tests {
         // back through duplex → host's collector actor.
         let proc_manager =
             LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
-        let mut host = Host::new_with_default(
-            proc_manager,
-            ChannelAddr::any(ChannelTransport::Unix),
-            None,
-        )
-        .await
-        .unwrap();
+        let mut host =
+            Host::new_with_default(proc_manager, ChannelAddr::any(ChannelTransport::Unix), None)
+                .await
+                .unwrap();
         host.serve();
 
-        let remote_proc = Proc::attach_to_host(host.addr().clone())
-            .await
-            .unwrap();
+        let remote_proc = Proc::attach_to_host(host.addr().clone()).await.unwrap();
 
         // Spawn a collector on the host's service proc.
         let (undlv_tx, mut undlv_rx) = mpsc::unbounded_channel();

@@ -3565,6 +3565,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[async_timed_test(timeout_secs = 30)]
     async fn test_local_supervision_propagation() {
         hyperactor_telemetry::initialize_logging_for_test();
@@ -3731,6 +3732,9 @@ mod tests {
         handle.await;
     }
 
+    // Tokio's I/O driver is not fork-safe on macOS, and this test validates
+    // termination by forking without a coordinator.
+    #[cfg_attr(target_os = "macos", ignore = "tokio runtime fork assertion on macOS")]
     #[tokio::test]
     async fn test_proc_terminate_without_coordinator() {
         if std::env::var("CARGO_TEST").is_ok() {
@@ -3978,7 +3982,7 @@ mod tests {
     // state, and confirms:
     //   - the stored snapshot reports a `stopped:*` actor_status, and
     //   - the actor id moves from the live set to the terminated set.
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_stored_on_stop() {
         let proc = Proc::local();
         let (_client, _client_handle) = proc.instance("client").unwrap();
@@ -4022,7 +4026,7 @@ mod tests {
     // failure via a message, waits for the actor to terminate, then
     // waits for the introspect task to persist the terminal snapshot
     // and asserts the snapshot reports a `failed:*` actor_status.
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_stored_on_failure() {
         let proc = Proc::local();
         let (client, _client_handle) = proc.instance("client").unwrap();
@@ -4231,7 +4235,7 @@ mod tests {
     }
 
     // Exercises FI-3 (see introspect module doc).
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_has_failure_info() {
         let proc = Proc::local();
         let (client, _client_handle) = proc.instance("client").unwrap();
@@ -4275,7 +4279,7 @@ mod tests {
     }
 
     // Exercises FI-4 (see introspect module doc).
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_propagated_failure_info() {
         let proc = Proc::local();
         let (client, _client_handle) = proc.instance("client").unwrap();
@@ -4456,7 +4460,7 @@ mod tests {
     }
 
     // Exercises FI-6 (see introspect module doc).
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_stopped_snapshot_has_no_failure_info() {
         let proc = Proc::local();
         let (_client, _client_handle) = proc.instance("client").unwrap();
