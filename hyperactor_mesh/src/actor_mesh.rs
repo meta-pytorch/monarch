@@ -1471,6 +1471,7 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
+    #[cfg(fbcode_build)]
     async fn execute_cast(config: &hyperactor_config::global::ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
