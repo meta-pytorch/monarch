@@ -328,6 +328,8 @@ _context: contextvars.ContextVar[Optional[Context]] = contextvars.ContextVar(
     "monarch.actor_mesh._context", default=None
 )
 
+_attach_to_addr: Optional[str] = None
+
 
 class _ActorFilter(logging.Filter):
     """
@@ -413,28 +415,49 @@ class _Lazy(Generic[T]):
 def _init_client_context() -> Context:
     """
     Create a client context that bootstraps an actor instance running on a real
-    local proc mesh on a real local host mesh.
+    local proc mesh on a real local host mesh, or by attaching to a remote
+    host when ``_attach_to_addr`` is set.
     """
     import atexit
 
-    from monarch._rust_bindings.monarch_hyperactor.host_mesh import bootstrap_host
+    from monarch._rust_bindings.monarch_hyperactor.host_mesh import bootstrap_attached, bootstrap_host
     from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
     from monarch._src.actor.proc_mesh import ProcMesh
 
-    hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
-        _bootstrap_cmd()
-    ).block_on()
+    if _attach_to_addr is not None:
+        from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
+            bootstrap_attached,
+        )
 
-    ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
-    # Set the context here to avoid recursive context creation:
-    token = _set_context(ctx)
-    try:
-        py_host_mesh = HostMesh._from_rust(hy_host_mesh)
-        py_proc_mesh = ProcMesh._from_rust(hy_proc_mesh, py_host_mesh)
-    finally:
-        _reset_context(token)
+        hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_attached(
+            _bootstrap_cmd(), _attach_to_addr
+        ).block_on()
 
-    ctx.actor_instance.proc_mesh = py_proc_mesh
+        ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
+        token = _set_context(ctx)
+        try:
+            py_host_mesh = HostMesh._from_rust(hy_host_mesh)
+            py_proc_mesh = ProcMesh._from_rust(hy_proc_mesh, host_mesh=py_host_mesh)
+        finally:
+            _reset_context(token)
+
+        ctx.actor_instance.proc_mesh = py_proc_mesh
+        return ctx
+    else:
+        hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
+            _bootstrap_cmd()
+        ).block_on()
+
+        ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
+        # Set the context here to avoid recursive context creation:
+        token = _set_context(ctx)
+        try:
+            py_host_mesh = HostMesh._from_rust(hy_host_mesh)
+            py_proc_mesh = ProcMesh._from_rust(hy_proc_mesh, py_host_mesh)
+        finally:
+            _reset_context(token)
+
+        ctx.actor_instance.proc_mesh = py_proc_mesh
 
     # Register shutdown_context as an atexit handler. Python atexit handlers
     # run in LIFO order. shutdown_tokio_runtime was registered earlier (during
@@ -503,11 +526,14 @@ def shutdown_context() -> "Future[None]":
     return Future(coro=_shutdown_sequence())
 
 
-def context() -> Context:
+def context(*, attach_to: Optional[str] = None) -> Context:
     c = _context.get()
     if c is None:
         from monarch._src.actor.proc_mesh import _get_controller_controller
 
+        global _attach_to_addr
+        if attach_to is not None:
+            _attach_to_addr = attach_to
         c = _client_context.get()
         _set_context(c)
         _, c.actor_instance._controller_controller = _get_controller_controller()
