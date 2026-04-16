@@ -71,6 +71,16 @@ setup_rust_toolchain() {
     source "${HOME}"/.cargo/env
     rustup toolchain install nightly
     rustup default nightly
+    # Explicitly install the pinned toolchain from rust-toolchain file.
+    # Some Docker images have it registered with a corrupt/missing manifest,
+    # which prevents rustup's auto-install from working.
+    if [ -f rust-toolchain ]; then
+        PINNED_CHANNEL=$(grep 'channel' rust-toolchain | sed 's/.*= *"\(.*\)"/\1/')
+        if [ -n "$PINNED_CHANNEL" ]; then
+            echo "Installing pinned toolchain: $PINNED_CHANNEL"
+            rustup toolchain install "$PINNED_CHANNEL"
+        fi
+    fi
     # We use cargo nextest to run tests in individual processes for similarity
     # to buck test.
     # Replace "cargo test" commands with "cargo nextest run".
