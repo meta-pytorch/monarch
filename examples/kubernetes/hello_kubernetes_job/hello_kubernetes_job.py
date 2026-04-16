@@ -57,10 +57,16 @@ def main():
         help="Set to true if this script is running outside of the kubernetes cluster.",
     )
     parser.add_argument(
+        "--kubeconfig",
+        type=str,
+        default="~/.kube/config",
+        help="Path to kubeconfig file (default: ~/.kube/config)",
+    )
+    parser.add_argument(
         "--attach-to",
         type=str,
         default=None,
-        help="Duplex address for out-of-cluster access (e.g. tcp://127.0.0.1:34000). "
+        help="Monarch address for out-of-cluster access (e.g. tcp://127.0.0.1:26600). "
         "Requires kubectl port-forward to be running. Cannot be used in combination with --provision. ",
     )
     args = parser.parse_args()
@@ -75,7 +81,7 @@ def main():
 
     job = KubernetesJob(
         namespace="monarch-tests",
-        kubeconfig=KubeConfig.from_path("~/.kube/config")
+        kubeconfig=KubeConfig.from_path(args.kubeconfig)
         if args.out_of_cluster
         else None,
         attach_to=args.attach_to,
@@ -98,8 +104,8 @@ def main():
         # Provision MonarchMesh CRDs directly from Python.
         # The Monarch operator (must be pre-installed) creates the
         # StatefulSets and headless Services automatically.
-        # If out-of-cluster mode is on, this image also defaults to adding the
-        # duplex port.
+        # The monarch port doubles as the attach endpoint, so no
+        # extra duplex configuration is needed.
         labels = {"kueue.x-k8s.io/queue-name": args.kueue} if args.kueue else None
         job.add_mesh(
             "mesh1",

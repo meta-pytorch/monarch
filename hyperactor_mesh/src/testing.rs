@@ -257,7 +257,6 @@ pub async fn host_mesh(n: usize) -> HostMeshShutdownGuard {
             addr: host.clone(),
             command: None, // use current binary
             config: None,
-            duplex_addr: None,
             exit_on_shutdown: false,
         };
         boot.to_env(&mut cmd);

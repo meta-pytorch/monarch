@@ -31,6 +31,7 @@ use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
 use hyperactor::mailbox::DialMailboxRouter;
+use hyperactor::mailbox::FallbackMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -405,6 +406,16 @@ impl ProcMesh {
         // ReconfigurableMailboxSender forwarder with an inner DialMailboxRouter).
         if let Some(router) = proc.forwarder().downcast_ref() {
             bind_allocated_procs(router);
+        } else if let Some(fallback) = proc
+            .forwarder()
+            .downcast_ref::<FallbackMailboxRouter>()
+        {
+            bind_allocated_procs(
+                fallback
+                    .default_sender()
+                    .downcast_ref()
+                    .ok_or(Error::UnroutableMesh())?,
+            );
         } else if let Some(router) = proc
             .forwarder()
             .downcast_ref::<ReconfigurableMailboxSender>()

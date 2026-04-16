@@ -182,19 +182,18 @@ kubectl delete -f manifests/volcano_workers.yaml
 ## Out-of-Cluster Execution
 
 You can also run the same examples shown here from outside the cluster! The client runs locally
-and sends messages to the mesh inside the cluster. This relies on opening a port
-on a single host in your cluster to use as a proxy for the client's mailbox.
-Make sure at least one of your hosts does `run_worker_loop_forever(..., duplex_address=f"tcp://{hostname}:{port}")`.
-Let's say this port is 34000. You can choose any port you like.
-Make sure that port is exposed. The easiest way is with `kubectl port-forward`:
+and sends messages to the mesh inside the cluster. This relies on port-forwarding
+the monarch port on a single host in your cluster. The monarch port doubles as the
+attach endpoint, so no extra configuration is needed on the worker side.
+The easiest way is with `kubectl port-forward`:
 ```
-kubectl port-forward -n monarch-tests pod/mesh1-0 34000:34000
+kubectl port-forward -n monarch-tests pod/mesh1-0 26600:26600
 ```
-This will forward localhost port 34000 to the port 34000 on the pod.
-You can use any port id locally, it doesn't need to match the port on the pod.
+This will forward localhost port 26600 to the monarch port on the pod.
+You can use any local port; it doesn't need to match the port on the pod.
 
 ```bash
-uv run --no-build-isolation hello_kubernetes_job.py --out-of-cluster --attach-to tcp://localhost:34000
+uv run --no-build-isolation hello_kubernetes_job.py --out-of-cluster --attach-to tcp://localhost:26600
 ```
 
 Or, for provisioning mode, use:
