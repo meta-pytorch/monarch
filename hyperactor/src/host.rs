@@ -77,6 +77,7 @@ use crate::actor::Referable;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+use crate::channel::ChannelRx;
 use crate::channel::ChannelTransport;
 use crate::channel::Rx;
 use crate::channel::Tx;
@@ -233,11 +234,26 @@ pub struct Host<M> {
     manager: M,
     service_proc: Proc,
     local_proc: Proc,
-    /// Duplex server for the frontend address. Accepts both attach
+    frontend: Frontend,
+}
+
+/// The frontend server that accepts inbound messages on the host's
+/// frontend address. The duplex variant additionally supports remote
+/// procs attaching via [`Proc::attach_to_host`]; the simple variant is
+/// used for the in-process [`ChannelTransport::Local`] transport,
+/// where attach has no meaning.
+enum Frontend {
+    /// Duplex server for networked transports. Accepts both attach
     /// connections and regular inbound message connections.
-    duplex_server: Option<channel::duplex::DuplexServer<MessageEnvelope, Host2Client>>,
-    /// Cancels the accept loop and per-connection tasks on drop.
-    duplex_cancel: CancellationToken,
+    Duplex {
+        /// Consumed by [`Host::serve`] to start the accept loop.
+        server: Option<channel::duplex::DuplexServer<MessageEnvelope, Host2Client>>,
+        /// Cancels the accept loop and per-connection tasks on drop.
+        cancel: CancellationToken,
+    },
+    /// Simple receiver for the [`ChannelTransport::Local`] transport,
+    /// which cannot carry a duplex protocol.
+    Simple(Option<ChannelRx<MessageEnvelope>>),
 }
 
 impl<M: ProcManager> Host<M> {
@@ -256,10 +272,23 @@ impl<M: ProcManager> Host<M> {
         addr: ChannelAddr,
         default_sender: Option<BoxedMailboxSender>,
     ) -> Result<Self, HostError> {
-        // The frontend is a duplex server that accepts both attach
-        // connections and regular inbound message connections.
-        let duplex_server = channel::duplex::serve::<MessageEnvelope, Host2Client>(addr)?;
-        let frontend_addr = duplex_server.addr().clone();
+        // Local transport cannot carry the duplex byte-stream protocol,
+        // so attach is unavailable there; fall back to a plain channel.
+        let (frontend_addr, frontend) = match addr.transport() {
+            ChannelTransport::Local => {
+                let (frontend_addr, frontend_rx) = channel::serve(addr)?;
+                (frontend_addr, Frontend::Simple(Some(frontend_rx)))
+            }
+            _ => {
+                let server = channel::duplex::serve::<MessageEnvelope, Host2Client>(addr)?;
+                let frontend_addr = server.addr().clone();
+                let frontend = Frontend::Duplex {
+                    server: Some(server),
+                    cancel: CancellationToken::new(),
+                };
+                (frontend_addr, frontend)
+            }
+        };
 
         let dial_router = match default_sender {
             Some(d) => DialMailboxRouter::new_with_default(d),
@@ -288,8 +317,6 @@ impl<M: ProcManager> Host<M> {
         router.bind(service_proc_id.clone().into(), service_proc.muxer().clone());
         router.bind(local_proc_id.clone().into(), local_proc.muxer().clone());
 
-        let duplex_cancel = CancellationToken::new();
-
         tracing::info!(
             frontend_addr = frontend_addr.to_string(),
             backend_addr = backend_addr.to_string(),
@@ -307,8 +334,7 @@ impl<M: ProcManager> Host<M> {
             manager,
             service_proc,
             local_proc,
-            duplex_server: Some(duplex_server),
-            duplex_cancel,
+            frontend,
         };
 
         // Serve the same router on the backend address.
@@ -317,24 +343,39 @@ impl<M: ProcManager> Host<M> {
         Ok(host)
     }
 
-    /// Start serving the frontend accept loop. Handles both attach
-    /// connections and regular inbound message connections.
+    /// Start serving the frontend accept loop.
     ///
-    /// The accept loop is cancelled when the host is dropped (via
-    /// [`CancellationToken`]). Returns `None` because there is no
-    /// single `MailboxServerHandle` to drain — each accepted
-    /// connection is managed independently.
+    /// For networked transports, the returned handle is `None`: the
+    /// duplex accept loop manages each accepted connection independently
+    /// and is cancelled when the host is dropped. For the in-process
+    /// [`ChannelTransport::Local`] transport, returns a handle to the
+    /// mailbox server on the frontend receiver.
     pub fn serve(&mut self) -> Option<MailboxServerHandle> {
-        let ds = self.duplex_server.take()?;
+        enum Taken {
+            Duplex(
+                channel::duplex::DuplexServer<MessageEnvelope, Host2Client>,
+                CancellationToken,
+            ),
+            Simple(ChannelRx<MessageEnvelope>),
+        }
+        let taken = match &mut self.frontend {
+            Frontend::Duplex { server, cancel } => Taken::Duplex(server.take()?, cancel.clone()),
+            Frontend::Simple(rx) => Taken::Simple(rx.take()?),
+        };
         let forwarder = self.forwarder();
-        tokio::spawn(duplex_accept_loop(
-            ds,
-            self.frontend_addr.clone(),
-            self.router.clone(),
-            forwarder,
-            self.duplex_cancel.clone(),
-        ));
-        None
+        match taken {
+            Taken::Duplex(ds, cancel) => {
+                tokio::spawn(duplex_accept_loop(
+                    ds,
+                    self.frontend_addr.clone(),
+                    self.router.clone(),
+                    forwarder,
+                    cancel,
+                ));
+                None
+            }
+            Taken::Simple(rx) => Some(forwarder.serve(rx)),
+        }
     }
 
     /// The underlying proc manager.
@@ -409,7 +450,9 @@ impl<M: ProcManager> Host<M> {
 
 impl<M> Drop for Host<M> {
     fn drop(&mut self) {
-        self.duplex_cancel.cancel();
+        if let Frontend::Duplex { cancel, .. } = &self.frontend {
+            cancel.cancel();
+        }
     }
 }
 
