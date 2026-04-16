@@ -21,6 +21,7 @@ from unittest.mock import patch
 import cloudpickle
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
+from monarch.config import configured
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import _client_context, Actor, context
 from monarch._src.actor.endpoint import endpoint
@@ -187,36 +188,37 @@ def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_stop_and_reconnect() -> None:
-    job = ProcessJob({"hosts": 2})
+    # Use a short message delivery timeout so we don't have to sleep 35 s
+    # waiting for undeliverable-message errors to surface.
+    with configured(message_delivery_timeout="5s"):
+        job = ProcessJob({"hosts": 2})
 
-    # First connection: spawn actors, verify they work.
-    hm = job.state(cached_path=None).hosts
-    pm = hm.spawn_procs(per_host={"gpus": 1})
-    am = pm.spawn("actor", RankActor)
-    pids = am.get_pid.call().get()
-    assert len(pids) == 2
-    pids = [pid for _, pid in pids.items()]
+        # First connection: spawn actors, verify they work.
+        hm = job.state(cached_path=None).hosts
+        pm = hm.spawn_procs(per_host={"gpus": 1})
+        am = pm.spawn("actor", RankActor)
+        pids = am.get_pid.call().get()
+        assert len(pids) == 2
+        pids = [pid for _, pid in pids.items()]
 
-    # Stop: terminate user procs but keep workers alive.
-    hm.stop().get()
-    # Ensure that the procs are actually dead.
-    assert all(not is_process_running(pid) for pid in pids)
+        # Stop: terminate user procs but keep workers alive.
+        hm.stop().get()
+        # Ensure that the procs are actually dead.
+        assert all(not is_process_running(pid) for pid in pids)
 
-    # Sleep for a bit to ensure that there's no error after the stop. 30 seconds
-    # is the default channel timeout for an undeliverable message. The actor
-    # mesh and proc mesh controllers should be able to stop fine and not send
-    # any messages to the dead procs and actors.
-    time.sleep(35)
+        # Sleep past the message delivery timeout to ensure that no errors
+        # surface from undeliverable messages to dead procs/actors.
+        time.sleep(7)
 
-    # Second connection: reconnect to the same workers via state().
-    hm2 = job.state(cached_path=None).hosts
-    pm2 = hm2.spawn_procs(per_host={"gpus": 1})
-    am2 = pm2.spawn("actor", RankActor)
-    ranks2 = am2.get_rank.call().get()
-    assert len(ranks2) == 2
+        # Second connection: reconnect to the same workers via state().
+        hm2 = job.state(cached_path=None).hosts
+        pm2 = hm2.spawn_procs(per_host={"gpus": 1})
+        am2 = pm2.spawn("actor", RankActor)
+        ranks2 = am2.get_rank.call().get()
+        assert len(ranks2) == 2
 
-    # Shutdown: fully tear down and exit workers.
-    hm2.shutdown().get()
+        # Shutdown: fully tear down and exit workers.
+        hm2.shutdown().get()
 
 
 @pytest.mark.timeout(120)

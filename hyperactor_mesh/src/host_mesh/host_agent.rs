@@ -421,9 +421,12 @@ impl HostAgent {
             }
         }
 
-        // Remove drained entries.
+        // Remove drained entries and associated state so that
+        // future spawns with the same proc names get fresh watch bridges.
         for name in &matching_names {
             self.created.remove(name);
+            self.watching.remove(name);
+            self.pending_proc_waiters.remove(name);
         }
 
         tracing::info!(
