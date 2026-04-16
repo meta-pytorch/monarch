@@ -21,7 +21,6 @@ from unittest.mock import patch
 import cloudpickle
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch.config import configured
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import _client_context, Actor, context
 from monarch._src.actor.endpoint import endpoint
@@ -29,6 +28,7 @@ from monarch._src.actor.host_mesh import HostMesh, this_host
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.proc_mesh import get_or_spawn_controller
 from monarch._src.job.process import ProcessJob
+from monarch.config import configured
 from scoped_state import scoped_state
 
 
