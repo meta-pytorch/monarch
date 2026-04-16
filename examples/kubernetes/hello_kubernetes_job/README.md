@@ -94,7 +94,7 @@ kubectl get pods -n monarch-tests hello-controller
 
 Wait for all pods to show `Running` status.
 
-### Running the Example
+### Running the Example In-Cluster
 
 Copy and execute the script from the controller pod:
 
@@ -178,3 +178,93 @@ The `--volcano` flag configures `KubernetesJob` to use Volcano's labels:
 ```bash
 kubectl delete -f manifests/volcano_workers.yaml
 ```
+
+## Out-of-Cluster Execution
+
+You can also run the same examples shown here from outside the cluster! The client runs locally
+and sends messages to the mesh inside the cluster. This relies on port-forwarding
+the monarch port on a single host in your cluster. The monarch port doubles as the
+attach endpoint, so no extra configuration is needed on the worker side.
+The easiest way is with `kubectl port-forward`:
+```
+kubectl port-forward -n monarch-tests pod/mesh1-0 26600:26600
+```
+This will forward localhost port 26600 to the monarch port on the pod.
+You can use any local port; it doesn't need to match the port on the pod.
+
+```bash
+uv run --no-build-isolation hello_kubernetes_job.py --out-of-cluster --attach-to tcp://localhost:26600
+```
+
+Or, for provisioning mode, use:
+```bash
+uv run --no-build-isolation hello_kubernetes_job.py --out-of-cluster --provision
+```
+
+The `--out-of-cluster` flag tells `KubernetesJob` to attach the client's mailbox
+to the host. The `--attach-to` flag tells it which host to attach to. In provisioning
+mode, we automatically expose the port on the pods, do a port-forward for you,
+and attach to that pod.
+
+Some caveats with this approach:
+* Your version of monarch locally and on the cluster must match exactly. If they
+  don't you may get timeouts or errors on the server decoding messages that may have
+  skew between the two versions. If you make local changes to monarch, you must
+  send them out in a new container for the pods
+* Your local python code may not exist on the remote machines. When we send requests
+  to PythonActor, we use `cloudpickle`, which may end up trying to import your
+  modules on the mesh. For this reason, it's also best to ensure your container
+  contains the same versions of all your local modules and source code.
+* Your local client and remote mesh may have different hardware, for example on
+  the cluster you may have access to RDMA and on the client you do not. Same goes
+  for other hardware like GPUs and CPUs. Be careful not to run things on the client
+  that may assume certain hardware. Even functions on torch.Tensor like
+  `tensor.to("cuda:0")` will fail if your client doesn't have that device.
+
+
+
+## Updating monarch build for images
+
+To update the version of monarch used in the cluster, which includes changes to both
+Rust and Python:
+```bash
+# Make sure to build for python 3.12 since the pytorch base image uses that python version
+uv python pin 3.12
+# Build the binary distribution, outputs to "dist/" directory.
+# --no-build-isolation allows using cached rust builds which speeds up subsequent
+# iterations.
+uv build --no-build-isolation --wheel
+
+# With docker:
+# Build and tag a docker image with your build of monarch. You can update the
+# PYTORCH_TAG to use a different base image depending on your needs.
+# The nightly dockerfile is used because it uses the package you already built,
+# rather than downloading from PyPI.
+docker build -f Dockerfile.nightly \
+  -t $USER/monarch:local-tag \
+  --build-arg PYTORCH_TAG=2.12.0.dev20260224-cuda12.8-cudnn9-runtime \
+  --build-arg MONARCH_WHEELS=dist \
+  .
+
+# Push so it's available to the kubernetes cluster.
+# Either (a) push to a container registry so your cluster can access it.
+# Might be slow based on your upload speed and the size of the container.
+docker push $USER/monarch:latest
+# Or (b) if you have a fully local kubernetes cluster you can change it to
+# imagePullPolicy: Never in the manifest and it'll use the image locally. This
+# is the fastest iteration speed.
+
+# With podman + kind:
+# Same build command, replace "docker" with "podman"
+# Save image to archive
+podman save localhost/$USER/monarch:local-tag -o /tmp/monarch-image
+# Then push to your kind cluster for local dev:
+KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive /tmp/monarch-image -n monarch-cluster
+
+```
+
+Then update the docker images from ghcr.io/meta-pytorch/monarch:latest to use
+your new image. Make sure to prepend the service you used for docker login like
+ghcr.io or docker.io, and that you have pushed the image first.
+In `--provision` mode, you can pass `--image` to customize which docker image is
+used for the provisioned hosts.

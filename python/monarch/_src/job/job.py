@@ -373,6 +373,9 @@ class JobState:
                 f"'{attr}' is not a valid host mesh name. Available names: {available}"
             )
 
+    def __repr__(self) -> str:
+        return f"JobState(hosts={self._hosts})"
+
 
 class CachedRunning(NamedTuple):
     job: "JobTrait"
