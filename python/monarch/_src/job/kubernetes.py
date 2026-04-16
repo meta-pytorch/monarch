@@ -293,6 +293,78 @@ class KubernetesJob(JobTrait):
 
         self._meshes[name] = mesh_entry
 
+    def remote_mount(
+        self,
+        source: str,
+        mntpoint: str | None = None,
+        meshes: List[str] | None = None,
+        python_exe: str | None = ".venv/bin/python",
+        **kwargs: Any,
+    ) -> None:
+        """Declare a local directory to be mounted on workers via FUSE.
+
+        In out-of-cluster mode, forces ``num_parallel_streams=1`` so the
+        client-to-leader RDMABuffer transfer routes through the actor
+        message transport (duplex channel) instead of opening direct TCP
+        connections that workers cannot reach back to the client.
+        Leader-to-peer fan-out inside the cluster still uses RDMA or
+        parallel TCP as normal.
+
+        Provisioned meshes targeted by the mount are patched to include
+        ``/dev/fuse`` and ``privileged: true`` so the FUSE filesystem
+        can be mounted inside the container.
+        """
+        if self._kubeconfig.out_of_cluster:
+            kwargs.setdefault("num_parallel_streams", 1)
+
+        # Patch provisioned pod specs to enable FUSE.
+        target_meshes = meshes if meshes is not None else list(self._meshes.keys())
+        for mesh_name in target_meshes:
+            mesh_cfg = self._meshes.get(mesh_name)
+            if mesh_cfg is None or not mesh_cfg.get("provisioned"):
+                continue
+            pod_spec = mesh_cfg.get("pod_spec")
+            if pod_spec is None:
+                continue
+            self._enable_fuse_on_pod_spec(pod_spec)
+
+        super().remote_mount(
+            source, mntpoint=mntpoint, meshes=meshes, python_exe=python_exe, **kwargs
+        )
+
+    @staticmethod
+    def _enable_fuse_on_pod_spec(pod_spec: client.V1PodSpec) -> None:
+        """Patch a V1PodSpec to enable FUSE mounts inside the container.
+
+        Adds a ``/dev/fuse`` hostPath volume and sets ``privileged: true``
+        on the first container so ``mount_chunked_fuse`` can create FUSE
+        filesystems.
+        """
+        fuse_vol_name = "dev-fuse"
+
+        # Add /dev/fuse volume if not already present.
+        if pod_spec.volumes is None:
+            pod_spec.volumes = []
+        if not any(v.name == fuse_vol_name for v in pod_spec.volumes):
+            pod_spec.volumes.append(
+                client.V1Volume(
+                    name=fuse_vol_name,
+                    host_path=client.V1HostPathVolumeSource(path="/dev/fuse"),
+                )
+            )
+
+        # Mount and set privileged on the first container.
+        container = pod_spec.containers[0]
+        if container.volume_mounts is None:
+            container.volume_mounts = []
+        if not any(vm.name == fuse_vol_name for vm in container.volume_mounts):
+            container.volume_mounts.append(
+                client.V1VolumeMount(name=fuse_vol_name, mount_path="/dev/fuse")
+            )
+        if container.security_context is None:
+            container.security_context = client.V1SecurityContext()
+        container.security_context.privileged = True
+
     def _create(self, client_script: str | None) -> None:
         """
         Create MonarchMesh CRDs for provisioned meshes.
