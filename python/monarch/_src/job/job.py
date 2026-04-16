@@ -1264,20 +1264,40 @@ class LoginJob(JobTrait):
 
 
 class SSHJob(LoginJob):
+    """Connect to hosts via SSH and start monarch workers.
+
+    Args:
+        python_exe: Python executable on remote hosts.
+        ssh_args: Extra arguments passed to ssh.
+        monarch_port: Port the worker listens on.
+        transport: Transport type for worker communication. Supported
+            values are "tcp", "metatls" and "metatls-hostname"
+            (see enable_transport).
+    """
+
     def __init__(
         self,
         python_exe: str = "python",
         ssh_args: Sequence[str] = (),
         monarch_port: int = 22222,
+        transport: str = "tcp",
     ):
-        enable_transport("tcp")
+        if transport not in ("tcp", "metatls", "metatls-hostname"):
+            raise ValueError(
+                f"SSHJob only supports tcp, metatls, and metatls-hostname transport types, got {transport!r}"
+            )
+        enable_transport(transport)
         self._python_exe = python_exe
         self._ssh_args = ssh_args
         self._port = monarch_port
+        self._transport = transport
+        self._scheme = (
+            "metatls" if transport in ("metatls", "metatls-hostname") else "tcp"
+        )
         super().__init__()
 
     def _start_host(self, host: str) -> ProcessState:
-        addr = f"tcp://{host}:{self._port}"
+        addr = f"{self._scheme}://{host}:{self._port}"
         startup = f'from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(address={repr(addr)}, ca="trust_all_connections")'
 
         command = f"{shlex.quote(self._python_exe)} -c {shlex.quote(startup)}"
@@ -1293,5 +1313,6 @@ class SSHJob(LoginJob):
             and spec._python_exe == self._python_exe
             and self._port == spec._port
             and self._ssh_args == spec._ssh_args
+            and self._transport == spec._transport
             and super().can_run(spec)
         )
