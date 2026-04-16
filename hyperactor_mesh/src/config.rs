@@ -265,4 +265,13 @@ declare_attrs! {
         Some("pyspy_bin".to_string()),
     ))
     pub attr PYSPY_BIN: String = String::new();
+
+    /// When the cast domain has fewer ranks than this threshold,
+    /// v1 casting sends messages point-to-point instead of through the
+    /// comm actor tree. 0 disables the optimization.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_V1_CAST_POINT_TO_POINT_THRESHOLD".to_string()),
+        Some("v1_cast_point_to_point_threshold".to_string()),
+    ))
+    pub attr V1_CAST_POINT_TO_POINT_THRESHOLD: usize = 0;
 }
