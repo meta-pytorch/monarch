@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import sys
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from functools import cache
 from pathlib import Path
 from typing import (
@@ -22,6 +22,7 @@ from typing import (
     Callable,
     cast,
     Dict,
+    Iterator,
     List,
     Literal,
     Optional,
@@ -40,6 +41,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyPr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Region, Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
+from monarch._rust_bindings.monarch_hyperactor.telemetry import forward_to_tracing
 from monarch._src.actor.actor_mesh import (
     _Actor,
     _create_endpoint_message,
@@ -89,9 +91,108 @@ if TYPE_CHECKING:
 
 logger: logging.Logger = logging.getLogger(__name__)
 
+_COMMON_CUDA_ENV_VARS: Tuple[str, ...] = (
+    "CUDA_VISIBLE_DEVICES",
+    "CUDA_DEVICE_ORDER",
+    "CUDA_LAUNCH_BLOCKING",
+    "CUDA_MODULE_LOADING",
+    "CUDA_CACHE_DISABLE",
+    "PYTORCH_CUDA_ALLOC_CONF",
+)
+
 
 T = TypeVar("T")
 TActor = TypeVar("TActor", bound=Actor)
+
+
+def log_with_tracing(
+    level: int,
+    msg: object,
+    *args: object,
+    stack_info: bool = False,
+    stacklevel: int = 1,
+    extra: Dict[str, object] | None = None,
+    logger: logging.Logger | None = None,
+) -> None:
+    logger = logger or logging.getLogger(__name__)
+
+    fn, lno, func, sinfo = logger.findCaller(
+        stack_info=stack_info,
+        stacklevel=stacklevel + 1,
+    )
+
+    record = logger.makeRecord(
+        logger.name,
+        level,
+        fn,
+        lno,
+        msg,
+        args,
+        None,
+        func,
+        extra=extra,
+        sinfo=sinfo,
+    )
+    logger.handle(record)
+    forward_to_tracing(record)
+
+
+def _cuda_env_snapshot() -> Dict[str, Optional[str]]:
+    return {key: os.environ.get(key) for key in _COMMON_CUDA_ENV_VARS}
+
+
+def _torch_cuda_already_initialized() -> bool:
+    torch_cuda = sys.modules.get("torch.cuda")
+    if torch_cuda is None:
+        return False
+
+    is_initialized = getattr(torch_cuda, "is_initialized", None)
+    if not callable(is_initialized):
+        return False
+    return bool(is_initialized())
+
+
+def _changed_cuda_env_vars(
+    before: Dict[str, Optional[str]],
+    after: Dict[str, Optional[str]],
+) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
+    return {
+        key: (before.get(key), after.get(key))
+        for key in _COMMON_CUDA_ENV_VARS
+        if before.get(key) != after.get(key)
+    }
+
+
+@contextmanager
+def _warn_if_setup_changed_cuda_env_too_late() -> Iterator[None]:
+    cuda_initialized_before = _torch_cuda_already_initialized()
+    cuda_env_before = _cuda_env_snapshot()
+    yield
+
+    if cuda_initialized_before:
+        cuda_env_after = _cuda_env_snapshot()
+        changed_cuda_env_vars = _changed_cuda_env_vars(cuda_env_before, cuda_env_after)
+        if changed_cuda_env_vars:
+            changed_desc = ", ".join(
+                f"{key}: {before!r} -> {after!r}"
+                for key, (before, after) in changed_cuda_env_vars.items()
+            )
+            log_with_tracing(
+                logging.WARNING,
+                "setup actor changed CUDA environment variables after torch.cuda "
+                "was already initialized; these changes may be ignored: %s",
+                changed_desc,
+                stacklevel=2,
+                logger=logger,
+            )
+            return
+
+    log_with_tracing(
+        logging.INFO,
+        "setup actor ran without late CUDA environment variable changes",
+        stacklevel=2,
+        logger=logger,
+    )
 
 
 class SetupActor(Actor):
@@ -185,25 +286,26 @@ class SetupActor(Actor):
         """
         from monarch._src.actor.sync_state import fake_sync_state
 
-        # Run startup callables first (always synchronous)
-        # Use local variable so pyre can narrow the type after the None check
-        startup_callables = self._startup_callables
-        if startup_callables is not None:
-            with fake_sync_state():
-                for callable_fn in startup_callables:
-                    callable_fn()
-
-        # Run user setup
-        # Use local variable so pyre can narrow the type after the None check
-        user_setup = self._user_setup
-        if user_setup is not None:
-            if self._is_async:
-                # pyre-ignore[12]: user_setup is Awaitable here due to _is_async check
-                await user_setup()
-            else:
+        with _warn_if_setup_changed_cuda_env_too_late():
+            # Run startup callables first (always synchronous)
+            # Use local variable so pyre can narrow the type after the None check
+            startup_callables = self._startup_callables
+            if startup_callables is not None:
                 with fake_sync_state():
-                    # pyre-ignore[29]: user_setup is callable here
-                    user_setup()
+                    for callable_fn in startup_callables:
+                        callable_fn()
+
+            # Run user setup
+            # Use local variable so pyre can narrow the type after the None check
+            user_setup = self._user_setup
+            if user_setup is not None:
+                if self._is_async:
+                    # pyre-ignore[12]: user_setup is Awaitable here due to _is_async check
+                    await user_setup()
+                else:
+                    with fake_sync_state():
+                        # pyre-ignore[29]: user_setup is callable here
+                        user_setup()
 
 
 try:

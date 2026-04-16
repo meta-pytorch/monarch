@@ -244,6 +244,15 @@ declare_attrs! {
     ))
     pub attr MESH_ADMIN_PYSPY_CLIENT_TIMEOUT: Duration = Duration::from_secs(20);
 
+    /// Maximum allowed profile duration. Requests exceeding this
+    /// are rejected with a 400. Protects against runaway profile
+    /// captures. See PP-1 in `introspect` module doc.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_PYSPY_MAX_PROFILE_DURATION".to_string()),
+        Some("mesh_admin_pyspy_max_profile_duration".to_string()),
+    ))
+    pub attr MESH_ADMIN_PYSPY_MAX_PROFILE_DURATION: Duration = Duration::from_secs(300);
+
     /// Path to the py-spy binary. When non-empty, tried before
     /// the fallback `"py-spy"` PATH lookup. See PS-3 in
     /// `introspect` module doc.

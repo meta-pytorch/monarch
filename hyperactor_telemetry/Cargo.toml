@@ -21,7 +21,7 @@ opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31.1", features = ["grpc-tonic", "http-proto", "logs", "metrics", "reqwest-blocking-client", "trace", "zstd-tonic"], default-features = false }
 opentelemetry_sdk = { version = "0.31", features = ["experimental_metrics_custom_reader", "metrics", "rt-tokio"] }
 prost = { version = "0.14.3", default-features = false }
-rand = { version = "0.9", features = ["small_rng"] }
+rand = "0.10"
 rusqlite = { version = "0.37.0", features = ["backup", "blob", "bundled", "column_decltype", "functions", "limits", "modern_sqlite", "serde_json"] }
 scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 serde = { version = "1.0.219", features = ["derive", "rc"] }

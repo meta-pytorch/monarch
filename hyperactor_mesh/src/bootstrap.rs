@@ -2062,6 +2062,7 @@ impl ProcManager for BootstrapProcManager {
         };
 
         // Launch via the configured launcher backend.
+        tracing::info!(proc_id = %proc_id, "launching proc with opts={opts:?}");
         let launch_result = self
             .launcher()
             .launch(&proc_id, opts.clone())
@@ -2071,7 +2072,11 @@ impl ProcManager for BootstrapProcManager {
                     ProcLauncherError::Launch(io_err) => io_err,
                     other => std::io::Error::other(other.to_string()),
                 };
-                HostError::ProcessSpawnFailure(proc_id.clone(), io_err)
+                HostError::ProcessSpawnFailure(
+                    proc_id.clone(),
+                    format!("{:?}", opts.command),
+                    io_err,
+                )
             })?;
 
         // Wire up StreamFwders if stdio was captured.
@@ -2534,15 +2539,16 @@ impl Write for Debug {
 }
 
 /// Create a new runtime [`TempDir`]. The directory is created in
-/// `$XDG_RUNTIME_DIR`, otherwise falling back to the system tempdir.
+/// `$XDG_RUNTIME_DIR` if set and the directory exists, otherwise
+/// falling back to the system tempdir.
 fn runtime_dir() -> io::Result<TempDir> {
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(runtime_dir) => {
-            let path = PathBuf::from(runtime_dir);
-            tempfile::tempdir_in(path)
+    if let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let path = PathBuf::from(runtime_dir);
+        if path.is_dir() {
+            return tempfile::tempdir_in(path);
         }
-        None => tempfile::tempdir(),
     }
+    tempfile::tempdir()
 }
 
 #[cfg(test)]

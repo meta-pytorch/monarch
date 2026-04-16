@@ -378,9 +378,14 @@ use crate::introspect::NodeProperties;
 use crate::introspect::dto::NodePayloadDto;
 use crate::introspect::to_node_payload;
 use crate::proc_agent::PROC_AGENT_ACTOR_NAME;
+use crate::proc_agent::ProcAgent;
 use crate::pyspy::PySpyDump;
 use crate::pyspy::PySpyOpts;
+use crate::pyspy::PySpyProfile;
+use crate::pyspy::PySpyProfileOpts;
+use crate::pyspy::PySpyProfileResult;
 use crate::pyspy::PySpyResult;
+use crate::pyspy::ValidatedProfileRequest;
 
 /// Send an `IntrospectMessage` to an actor and receive the reply.
 /// Encapsulates open_once_port + send + timeout + error handling.
@@ -899,13 +904,6 @@ impl Actor for MeshAdminAgent {
         };
         let listener = TcpListener::bind(bind_addr).await?;
         let bound_addr = listener.local_addr()?;
-        // Report the hostname (e.g. Tupperware container name) + port
-        // rather than a raw IP, so the address works with DNS and TLS
-        // certificate validation.
-        let host = hostname::get()
-            .unwrap_or_else(|_| "localhost".into())
-            .into_string()
-            .unwrap_or_else(|_| "localhost".to_string());
         self.admin_addr = Some(bound_addr);
 
         // At Meta: mTLS is mandatory — fail if no certs are found.
@@ -926,6 +924,28 @@ impl Actor for MeshAdminAgent {
             "https"
         } else {
             "http"
+        };
+
+        // Build the host portion of the admin URL.
+        //
+        // Explicit bind (loopback, specific IP): honour the caller's
+        // choice — they bound that address intentionally.
+        //
+        // Wildcard bind: choose an advertised host that the loaded
+        // TLS certificate actually authorizes. Extract SANs from the
+        // cert and pick the first candidate that matches. This avoids
+        // emitting a URL that fails TLS verification.
+        let host = if !bound_addr.ip().is_unspecified() {
+            let ip = bound_addr.ip();
+            if ip.is_loopback() {
+                "localhost".to_string()
+            } else if let std::net::IpAddr::V6(v6) = ip {
+                format!("[{}]", v6)
+            } else {
+                ip.to_string()
+            }
+        } else {
+            advertised_host::from_cert_sans()
         };
         self.admin_host = Some(format!("{}://{}:{}", scheme, host, bound_addr.port()));
 
@@ -1483,6 +1503,7 @@ impl MeshAdminAgent {
 /// - `POST /v1/query` — proxy SQL query to the dashboard server.
 /// - `GET /v1/pyspy/{*proc_reference}` — py-spy stack dump for a proc.
 /// - `POST /v1/pyspy_dump/{*proc_reference}` — py-spy dump + store in Datafusion.
+/// - `POST /v1/pyspy_profile_svg/{*proc_reference}` — py-spy profile → SVG flamegraph.
 /// - `GET /v1/config/{*proc_reference}` — config snapshot for a proc.
 /// - `GET /v1/admin` — admin self-identification (`AdminInfo`).
 /// - `GET /v1/{*reference}` — JSON `NodePayload` for a single reference.
@@ -1502,6 +1523,10 @@ fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
         .route(
             "/v1/pyspy_dump/{*proc_reference}",
             post(pyspy_dump_and_store),
+        )
+        .route(
+            "/v1/pyspy_profile_svg/{*proc_reference}",
+            post(pyspy_profile_svg),
         )
         .route("/v1/config/{*proc_reference}", get(config_bridge))
         .route("/v1/{*reference}", get(resolve_reference_bridge))
@@ -1649,6 +1674,8 @@ pub fn build_openapi_spec() -> serde_json::Value {
             .expect("PyspyDumpAndStoreResponse schema must be serializable");
     let mut admin_info_schema = serde_json::to_value(schemars::schema_for!(AdminInfo))
         .expect("AdminInfo schema must be serializable");
+    let mut profile_opts_schema = serde_json::to_value(schemars::schema_for!(PySpyProfileOpts))
+        .expect("PySpyProfileOpts schema must be serializable");
 
     // Hoist $defs into a shared components/schemas map so
     // OpenAPI tools can resolve references.
@@ -1660,6 +1687,7 @@ pub fn build_openapi_spec() -> serde_json::Value {
     hoist_defs(&mut query_response_schema, &mut shared_schemas);
     hoist_defs(&mut pyspy_dump_response_schema, &mut shared_schemas);
     hoist_defs(&mut admin_info_schema, &mut shared_schemas);
+    hoist_defs(&mut profile_opts_schema, &mut shared_schemas);
     shared_schemas.insert("NodePayload".into(), node_schema);
     shared_schemas.insert("ApiErrorEnvelope".into(), error_schema);
     shared_schemas.insert("PySpyResult".into(), pyspy_schema);
@@ -1670,6 +1698,7 @@ pub fn build_openapi_spec() -> serde_json::Value {
         pyspy_dump_response_schema,
     );
     shared_schemas.insert("AdminInfo".into(), admin_info_schema);
+    shared_schemas.insert("PySpyProfileOpts".into(), profile_opts_schema);
 
     // Rewrite any remaining $defs refs in the hoisted component schemas.
     for value in shared_schemas.values_mut() {
@@ -1926,8 +1955,8 @@ pub fn build_openapi_spec() -> serde_json::Value {
         }
     });
 
-    // Insert /v1/schema/admin outside the json! macro to avoid
-    // hitting the serde_json recursion limit.
+    // Insert paths outside the json! macro to avoid hitting the
+    // serde_json recursion limit.
     if let Some(paths) = spec.pointer_mut("/paths").and_then(|v| v.as_object_mut()) {
         paths.insert(
             "/v1/schema/admin".into(),
@@ -1944,6 +1973,42 @@ pub fn build_openapi_spec() -> serde_json::Value {
                 }
             }),
         );
+        paths.insert(
+            "/v1/pyspy_profile_svg/{proc_reference}".into(),
+            serde_json::json!({
+                "post": {
+                    "summary": "Profile a proc and return SVG flamegraph",
+                    "operationId": "pyspyProfileSvg",
+                    "description": "Runs py-spy record against the target process for the requested duration and returns an SVG flamegraph. Timeout scales with duration_s.",
+                    "parameters": [{
+                        "name": "proc_reference",
+                        "in": "path",
+                        "required": true,
+                        "description": "URL-encoded proc reference (ProcId)",
+                        "schema": { "type": "string" }
+                    }],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/PySpyProfileOpts" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "SVG flamegraph",
+                            "content": { "image/svg+xml": {} }
+                        },
+                        "400": error_response("Bad request (invalid duration/rate or malformed proc reference)"),
+                        "404": error_response("Proc not found or handler not reachable"),
+                        "500": error_response("Internal error (profile failed or SVG generation failed)"),
+                        "503": error_response("Service unavailable (py-spy not available on target host)"),
+                        "504": error_response("Gateway timeout (subprocess timed out)")
+                    }
+                }
+            }),
+        );
     }
 
     spec
@@ -1956,9 +2021,7 @@ async fn serve_openapi() -> Result<axum::response::Json<serde_json::Value>, ApiE
 
 /// Validate and parse a raw proc reference path segment into a
 /// decoded reference string and `ProcId`. Extracted for testability.
-fn parse_pyspy_proc_reference(
-    raw: &str,
-) -> Result<(String, hyperactor_reference::ProcId), ApiError> {
+fn parse_proc_reference(raw: &str) -> Result<(String, hyperactor_reference::ProcId), ApiError> {
     let trimmed = raw.trim_start_matches('/');
     if trimmed.is_empty() {
         return Err(ApiError::bad_request("empty proc reference", None));
@@ -2034,89 +2097,183 @@ async fn probe_actor(
 /// Core py-spy dump logic shared by `pyspy_bridge` and
 /// `pyspy_dump_and_store`.
 ///
-/// Parses the proc reference, routes to the appropriate actor,
-/// probes for reachability, sends `PySpyDump`, and returns the
-/// result.
-async fn do_pyspy_dump(
+/// Typed proc-handler target. Private to this module. The single
+/// minting point is `route_proc_handler` via `ActorRef::attest`.
+/// After minting, all sends go through typed `ActorRef::send`.
+enum ResolvedProcHandler {
+    Host(hyperactor_reference::ActorRef<HostAgent>),
+    Proc(hyperactor_reference::ActorRef<ProcAgent>),
+}
+
+impl ResolvedProcHandler {
+    fn agent_id(&self) -> &hyperactor_reference::ActorId {
+        match self {
+            Self::Host(r) => r.actor_id(),
+            Self::Proc(r) => r.actor_id(),
+        }
+    }
+
+    async fn pyspy_dump(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        opts: PySpyOpts,
+        timeout: std::time::Duration,
+    ) -> Result<PySpyResult, ApiError> {
+        let (reply_handle, reply_rx) = open_once_port::<PySpyResult>(cx);
+        let mut reply_ref = reply_handle.bind();
+        reply_ref.return_undeliverable(false);
+        let msg = PySpyDump {
+            opts,
+            result: reply_ref,
+        };
+        match self {
+            Self::Host(r) => r.send(cx, msg),
+            Self::Proc(r) => r.send(cx, msg),
+        }
+        .map_err(|e| ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to send PySpyDump: {}", e),
+            details: None,
+        })?;
+        tokio::time::timeout(timeout, reply_rx.recv())
+            .await
+            .map_err(|_| ApiError {
+                code: "gateway_timeout".to_string(),
+                message: "timed out waiting for py-spy dump".to_string(),
+                details: None,
+            })?
+            .map_err(|e| ApiError {
+                code: "internal_error".to_string(),
+                message: format!("failed to receive PySpyResult: {}", e),
+                details: None,
+            })
+    }
+
+    async fn pyspy_profile(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        request: ValidatedProfileRequest,
+        timeout: std::time::Duration,
+    ) -> Result<PySpyProfileResult, ApiError> {
+        let (reply_handle, reply_rx) = open_once_port::<PySpyProfileResult>(cx);
+        let mut reply_ref = reply_handle.bind();
+        reply_ref.return_undeliverable(false);
+        let msg = PySpyProfile {
+            request,
+            result: reply_ref,
+        };
+        match self {
+            Self::Host(r) => r.send(cx, msg),
+            Self::Proc(r) => r.send(cx, msg),
+        }
+        .map_err(|e| ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to send PySpyProfile: {}", e),
+            details: None,
+        })?;
+        tokio::time::timeout(timeout, reply_rx.recv())
+            .await
+            .map_err(|_| ApiError {
+                code: "gateway_timeout".to_string(),
+                message: "timed out waiting for py-spy profile".to_string(),
+                details: None,
+            })?
+            .map_err(|e| ApiError {
+                code: "internal_error".to_string(),
+                message: format!("failed to receive PySpyProfileResult: {}", e),
+                details: None,
+            })
+    }
+
+    async fn config_dump(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        timeout: std::time::Duration,
+    ) -> Result<ConfigDumpResult, ApiError> {
+        let (reply_handle, reply_rx) = open_once_port::<ConfigDumpResult>(cx);
+        let mut reply_ref = reply_handle.bind();
+        reply_ref.return_undeliverable(false);
+        let msg = ConfigDump { result: reply_ref };
+        match self {
+            Self::Host(r) => r.send(cx, msg),
+            Self::Proc(r) => r.send(cx, msg),
+        }
+        .map_err(|e| ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to send ConfigDump: {}", e),
+            details: None,
+        })?;
+        tokio::time::timeout(timeout, reply_rx.recv())
+            .await
+            .map_err(|_| ApiError {
+                code: "gateway_timeout".to_string(),
+                message: "timed out waiting for config dump".to_string(),
+                details: None,
+            })?
+            .map_err(|e| ApiError {
+                code: "internal_error".to_string(),
+                message: format!("failed to receive ConfigDumpResult: {}", e),
+                details: None,
+            })
+    }
+}
+
+/// Parse + route + attest. No probe. The single `ActorRef::attest`
+/// minting point. Used by `config_bridge` which intentionally skips
+/// the probe (CFG-4).
+fn route_proc_handler(raw_proc_reference: &str) -> Result<ResolvedProcHandler, ApiError> {
+    let (_proc_reference, proc_id) = parse_proc_reference(raw_proc_reference)?;
+    let is_service = proc_id.base_name() == SERVICE_PROC_NAME;
+    if is_service {
+        let agent_id = proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0);
+        Ok(ResolvedProcHandler::Host(
+            hyperactor_reference::ActorRef::attest(agent_id),
+        ))
+    } else {
+        let agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        Ok(ResolvedProcHandler::Proc(
+            hyperactor_reference::ActorRef::attest(agent_id),
+        ))
+    }
+}
+
+/// Parse + route + attest + probe (PS-13).
+async fn resolve_proc_handler(
     state: &BridgeState,
     raw_proc_reference: &str,
-) -> Result<PySpyResult, ApiError> {
-    let (proc_reference, proc_id) = parse_pyspy_proc_reference(raw_proc_reference)?;
-
-    // PS-12: route by proc name — service proc → HostAgent, all others → ProcAgent.
-    let agent_id = if proc_id.base_name() == SERVICE_PROC_NAME {
-        proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0)
-    } else {
-        proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0)
-    };
-
-    // PS-13: defensive probe — verify the target actor is reachable
-    // before committing to the full py-spy timeout.
+) -> Result<ResolvedProcHandler, ApiError> {
+    let handler = route_proc_handler(raw_proc_reference)?;
     let cx = &state.bridge_cx;
-    if !probe_actor(cx, &agent_id).await? {
+    if !probe_actor(cx, handler.agent_id()).await? {
         return Err(ApiError::not_found(
             format!(
-                "proc {} does not have a reachable py-spy handler (expected {} actor)",
-                proc_reference,
-                if proc_id.base_name() == SERVICE_PROC_NAME {
-                    HOST_MESH_AGENT_ACTOR_NAME
-                } else {
-                    PROC_AGENT_ACTOR_NAME
-                },
+                "proc does not have a reachable handler ({})",
+                raw_proc_reference,
             ),
             None,
         ));
     }
+    Ok(handler)
+}
 
-    let port = hyperactor_reference::PortRef::<PySpyDump>::attest_message_port(&agent_id);
-    let (reply_handle, reply_rx) = open_once_port::<PySpyResult>(cx);
-    // Mark the reply port non-returnable. Same rationale as config_bridge:
-    // a timed-out admin client must not crash the observed actor.
-    let mut reply_ref = reply_handle.bind();
-    reply_ref.return_undeliverable(false);
-    // Native frames are essential for diagnosing hangs in C
-    // extensions and CUDA calls — the primary py-spy use case in
-    // Monarch. These defaults match the old hyperactor_multiprocess
-    // battle-tested diagnostics.
-    port.send(
-        cx,
-        PySpyDump {
-            opts: PySpyOpts {
+async fn do_pyspy_dump(
+    state: &BridgeState,
+    raw_proc_reference: &str,
+) -> Result<PySpyResult, ApiError> {
+    let handler = resolve_proc_handler(state, raw_proc_reference).await?;
+    let timeout = hyperactor_config::global::get(crate::config::MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT);
+    handler
+        .pyspy_dump(
+            &state.bridge_cx,
+            PySpyOpts {
                 threads: false,
                 native: true,
                 native_all: true,
                 nonblocking: false,
             },
-            result: reply_ref,
-        },
-    )
-    .map_err(|e| ApiError {
-        code: "internal_error".to_string(),
-        message: format!("failed to send PySpyDump: {}", e),
-        details: None,
-    })?;
-
-    tokio::time::timeout(
-        hyperactor_config::global::get(crate::config::MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT),
-        reply_rx.recv(),
-    )
-    .await
-    .map_err(|_| {
-        tracing::warn!(
-            proc_reference = %proc_reference,
-            "mesh admin: py-spy dump timed out (gateway_timeout)",
-        );
-        ApiError {
-            code: "gateway_timeout".to_string(),
-            message: format!("timed out waiting for py-spy dump from {}", proc_reference),
-            details: None,
-        }
-    })?
-    .map_err(|e| ApiError {
-        code: "internal_error".to_string(),
-        message: format!("failed to receive PySpyResult: {}", e),
-        details: None,
-    })
+            timeout,
+        )
+        .await
 }
 
 /// HTTP bridge for py-spy stack dump requests.
@@ -2130,6 +2287,99 @@ async fn pyspy_bridge(
     AxumPath(proc_reference): AxumPath<String>,
 ) -> Result<Json<PySpyResult>, ApiError> {
     Ok(Json(do_pyspy_dump(&state, &proc_reference).await?))
+}
+
+async fn do_pyspy_profile(
+    state: &BridgeState,
+    raw_proc_reference: &str,
+    opts: PySpyProfileOpts,
+) -> Result<PySpyProfileResult, ApiError> {
+    let max_duration =
+        hyperactor_config::global::get(crate::config::MESH_ADMIN_PYSPY_MAX_PROFILE_DURATION);
+    let request = ValidatedProfileRequest::try_new(&opts, max_duration)
+        .map_err(|msg| ApiError::bad_request(msg, None))?;
+    let bridge_timeout = request.bridge_timeout();
+    let handler = resolve_proc_handler(state, raw_proc_reference).await?;
+    handler
+        .pyspy_profile(&state.bridge_cx, request, bridge_timeout)
+        .await
+}
+
+/// HTTP bridge for py-spy profile SVG requests.
+///
+/// Accepts `PySpyProfileOpts` as JSON POST body, profiles the target
+/// process, and returns raw SVG.
+async fn pyspy_profile_svg(
+    State(state): State<Arc<BridgeState>>,
+    AxumPath(proc_reference): AxumPath<String>,
+    Json(opts): Json<PySpyProfileOpts>,
+) -> Result<axum::response::Response, ApiError> {
+    let result = do_pyspy_profile(&state, &proc_reference, opts).await?;
+    match result {
+        PySpyProfileResult::Ok { svg, .. } => Ok(axum::response::Response::builder()
+            .header("content-type", "image/svg+xml")
+            .body(axum::body::Body::from(svg))
+            .unwrap()),
+        PySpyProfileResult::BinaryNotFound { searched } => Err(ApiError {
+            code: "service_unavailable".to_string(),
+            message: format!(
+                "py-spy not available on target host; searched: {}",
+                searched.join(", ")
+            ),
+            details: None,
+        }),
+        PySpyProfileResult::TimedOut {
+            timeout_s, stderr, ..
+        } => Err(ApiError {
+            code: "gateway_timeout".to_string(),
+            message: format!(
+                "py-spy record subprocess timed out after {}s: {}",
+                timeout_s,
+                stderr.trim()
+            ),
+            details: None,
+        }),
+        PySpyProfileResult::ExitFailure { stderr, .. } => Err(ApiError {
+            code: "profile_failed".to_string(),
+            message: stderr,
+            details: None,
+        }),
+        PySpyProfileResult::OutputMissing { pid, binary } => Err(ApiError {
+            code: "profile_output_unusable".to_string(),
+            message: format!("py-spy exited 0 but SVG file is missing (pid {pid}, {binary})"),
+            details: None,
+        }),
+        PySpyProfileResult::OutputEmpty { pid, binary } => Err(ApiError {
+            code: "profile_output_unusable".to_string(),
+            message: format!("py-spy exited 0 but SVG output is empty (pid {pid}, {binary})"),
+            details: None,
+        }),
+        PySpyProfileResult::OutputReadFailure { error, .. } => Err(ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to read SVG output: {error}"),
+            details: None,
+        }),
+        PySpyProfileResult::WorkerSpawnFailure { error } => Err(ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to spawn profile worker actor: {error}"),
+            details: None,
+        }),
+        PySpyProfileResult::SubprocessSpawnFailure { error, .. } => Err(ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to execute py-spy: {error}"),
+            details: None,
+        }),
+        PySpyProfileResult::WaitFailure { error, .. } => Err(ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to wait for child: {error}"),
+            details: None,
+        }),
+        PySpyProfileResult::TempDirFailure { error, .. } => Err(ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to create temp dir: {error}"),
+            details: None,
+        }),
+    }
 }
 
 /// Request body for `POST /v1/query`.
@@ -2283,71 +2533,17 @@ async fn pyspy_dump_and_store(
 
 /// HTTP bridge for config dump requests.
 ///
-/// Parses the proc reference, routes to the appropriate actor
-/// (ProcAgent on worker procs, HostAgent on the service proc),
-/// probes for reachability, and sends `ConfigDump` directly.
-/// See CFG-4 in `admin_tui/main.rs`.
+/// Config dump bridge. No preflight probe — the send + bridge
+/// timeout handles both absent and busy actors correctly (CFG-4).
 async fn config_bridge(
     State(state): State<Arc<BridgeState>>,
     AxumPath(proc_reference): AxumPath<String>,
 ) -> Result<Json<ConfigDumpResult>, ApiError> {
-    let (proc_reference, proc_id) = parse_pyspy_proc_reference(&proc_reference)?;
-
-    // Route by proc name — service proc → HostAgent, all others → ProcAgent.
-    let agent_id = if proc_id.base_name() == SERVICE_PROC_NAME {
-        proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0)
-    } else {
-        proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0)
-    };
-
-    // No preflight probe. The previous probe_actor() call used
-    // MESH_ADMIN_QUERY_CHILD_TIMEOUT (100ms) and mapped timeout to 404
-    // "not_found", which misclassifies a live but busy actor as absent.
-    // The ConfigDump send and its own bridge timeout handle both the
-    // absent and busy cases correctly.
-    let cx = &state.bridge_cx;
-
-    let port = hyperactor_reference::PortRef::<ConfigDump>::attest_message_port(&agent_id);
-    let (reply_handle, reply_rx) = open_once_port::<ConfigDumpResult>(cx);
-    // Mark the reply port non-returnable. If the bridge times out and
-    // drops the receiver, the late reply from HostAgent/ProcAgent is
-    // silently dropped instead of bouncing an Undeliverable back to
-    // the observed actor (which would crash it via the default fatal
-    // handle_undeliverable_message).
-    let mut reply_ref = reply_handle.bind();
-    reply_ref.return_undeliverable(false);
-
-    port.send(cx, ConfigDump { result: reply_ref })
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to send ConfigDump: {}", e),
-            details: None,
-        })?;
-
-    // Config dumps go through the actor message queue (not the introspection
-    // callback path). Use the dedicated bridge timeout.
-    let bridge_timeout =
+    let handler = route_proc_handler(&proc_reference)?;
+    let timeout =
         hyperactor_config::global::get(crate::config::MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT);
-    let wire_result = tokio::time::timeout(bridge_timeout, reply_rx.recv())
-        .await
-        .map_err(|_| {
-            tracing::warn!(
-                proc_reference = %proc_reference,
-                "mesh admin: config dump timed out (gateway_timeout)",
-            );
-            ApiError {
-                code: "gateway_timeout".to_string(),
-                message: format!("timed out waiting for config dump from {}", proc_reference),
-                details: None,
-            }
-        })?
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to receive ConfigDumpResult: {}", e),
-            details: None,
-        })?;
-
-    Ok(Json(wire_result))
+    let result = handler.config_dump(&state.bridge_cx, timeout).await?;
+    Ok(Json(result))
 }
 
 /// Resolve an opaque reference string to a `NodePayload` via the
@@ -2751,6 +2947,219 @@ pub async fn resolve_mast_handle(
     AdminHandle::Published(PublishedHandle::Mast(handle.to_string()))
         .resolve(port_override)
         .await
+}
+
+/// Cert-aware advertised host selection for wildcard binds.
+///
+/// The server advertises one URL. For wildcard binds, this module
+/// generates candidate hosts from environment sources and picks
+/// the first candidate covered by the loaded server cert's SAN
+/// set. This ensures the advertised URL is always consistent with
+/// the certificate the server presents.
+mod advertised_host {
+    use std::net::IpAddr;
+
+    /// An identity that can appear as a cert SAN entry.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum SanIdentity {
+        Ip(IpAddr),
+        Dns(String),
+    }
+
+    /// Choose the advertised host for a wildcard-bind admin URL.
+    ///
+    /// Candidates (in preference order):
+    /// 1. `hostname::get()` (preferred — human-readable, no
+    ///    brackets in URLs)
+    /// 2. `host_ipv6_address()` (Meta: TW metadata → fbwhoami →
+    ///    local_ipv6)
+    ///
+    /// The first candidate whose identity is covered by the loaded
+    /// server cert's SANs wins. If no cert is available or no
+    /// candidate matches, falls back to hostname.
+    pub(super) fn from_cert_sans() -> String {
+        let hostname = hostname::get()
+            .unwrap_or_else(|_| "localhost".into())
+            .into_string()
+            .unwrap_or_else(|_| "localhost".to_string());
+
+        // (url_display_form, identity_to_match_against_cert)
+        // Prefer DNS names over IPs — more readable, no brackets
+        // in URLs, more stable across container restarts.
+        let mut candidates: Vec<(String, SanIdentity)> = Vec::new();
+
+        // Candidate 1: hostname (preferred if cert covers it).
+        candidates.push((hostname.clone(), SanIdentity::Dns(hostname.clone())));
+
+        // Candidate 2: host IPv6 address (Meta environments).
+        #[cfg(fbcode_build)]
+        if let Ok(ip_str) = hyperactor::meta::host_ip::host_ipv6_address() {
+            if let Ok(ip) = ip_str.parse::<IpAddr>() {
+                candidates.push((format!("[{}]", ip), SanIdentity::Ip(ip)));
+            }
+        }
+
+        let cert_sans = load_cert_sans();
+        let chosen = pick_candidate(&candidates, &cert_sans, &hostname);
+
+        if chosen != hostname && !cert_sans.is_empty() {
+            tracing::info!("admin URL host '{}' matches cert SAN", chosen);
+        } else if !cert_sans.is_empty() && !candidates.iter().any(|(_, id)| cert_sans.contains(id))
+        {
+            tracing::warn!(
+                "no admin URL candidate matched cert SANs; falling back to hostname '{}'",
+                hostname,
+            );
+        }
+
+        chosen
+    }
+
+    /// Extract SAN entries from the server cert PEM bundle.
+    ///
+    /// Loads the same cert bundle that `try_tls_acceptor` uses,
+    /// parses the leaf cert with `x509_parser`, and returns SAN
+    /// DNS names and IP addresses. Returns empty if no cert is
+    /// available or parsing fails.
+    fn load_cert_sans() -> Vec<SanIdentity> {
+        use std::io::BufReader;
+
+        use x509_parser::prelude::*;
+
+        let bundle = match hyperactor::channel::try_tls_pem_bundle() {
+            Some(b) => b,
+            None => return Vec::new(),
+        };
+
+        let cert_pem = match bundle.cert.reader() {
+            Ok(r) => {
+                let mut buf = Vec::new();
+                if std::io::Read::read_to_end(&mut BufReader::new(r), &mut buf).is_err() {
+                    return Vec::new();
+                }
+                buf
+            }
+            Err(_) => return Vec::new(),
+        };
+
+        let mut cursor = &cert_pem[..];
+        let certs: Vec<_> = rustls_pemfile::certs(&mut cursor)
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let leaf_der = match certs.first() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+
+        let (_, cert) = match X509Certificate::from_der(leaf_der.as_ref()) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                tracing::warn!("failed to parse leaf cert for SAN extraction: {}", e);
+                return Vec::new();
+            }
+        };
+
+        let mut sans = Vec::new();
+        if let Ok(Some(san_ext)) = cert.subject_alternative_name() {
+            for name in &san_ext.value.general_names {
+                match name {
+                    GeneralName::DNSName(dns) => {
+                        sans.push(SanIdentity::Dns(dns.to_string()));
+                    }
+                    GeneralName::IPAddress(bytes) => {
+                        let ip = match bytes.len() {
+                            4 => IpAddr::from(<[u8; 4]>::try_from(*bytes).unwrap()),
+                            16 => IpAddr::from(<[u8; 16]>::try_from(*bytes).unwrap()),
+                            _ => continue,
+                        };
+                        sans.push(SanIdentity::Ip(ip));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        sans
+    }
+
+    /// Pick the first candidate covered by the given SAN set.
+    /// Extracted from `from_cert_sans` for direct unit testing.
+    fn pick_candidate(
+        candidates: &[(String, SanIdentity)],
+        cert_sans: &[SanIdentity],
+        fallback: &str,
+    ) -> String {
+        if cert_sans.is_empty() {
+            return fallback.to_string();
+        }
+        for (url_host, identity) in candidates {
+            if cert_sans.iter().any(|san| san == identity) {
+                return url_host.clone();
+            }
+        }
+        fallback.to_string()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::net::IpAddr;
+        use std::net::Ipv4Addr;
+        use std::net::Ipv6Addr;
+
+        use super::*;
+
+        #[test]
+        fn cert_covers_hostname_only_picks_hostname() {
+            let candidates = vec![
+                ("myhost".to_string(), SanIdentity::Dns("myhost".to_string())),
+                (
+                    "[::1]".to_string(),
+                    SanIdentity::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+                ),
+            ];
+            let sans = vec![SanIdentity::Dns("myhost".to_string())];
+            assert_eq!(pick_candidate(&candidates, &sans, "fallback"), "myhost");
+        }
+
+        #[test]
+        fn cert_covers_ip_only_picks_ip() {
+            let ip = IpAddr::V6("2803:6084:3894:2b36:b5d3:11ef:400:0".parse().unwrap());
+            let candidates = vec![
+                ("myhost".to_string(), SanIdentity::Dns("myhost".to_string())),
+                (format!("[{}]", ip), SanIdentity::Ip(ip)),
+            ];
+            let sans = vec![SanIdentity::Ip(ip)];
+            assert_eq!(
+                pick_candidate(&candidates, &sans, "fallback"),
+                format!("[{}]", ip)
+            );
+        }
+
+        #[test]
+        fn cert_covers_both_prefers_hostname() {
+            let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+            let candidates = vec![
+                ("myhost".to_string(), SanIdentity::Dns("myhost".to_string())),
+                ("10.0.0.1".to_string(), SanIdentity::Ip(ip)),
+            ];
+            let sans = vec![SanIdentity::Dns("myhost".to_string()), SanIdentity::Ip(ip)];
+            assert_eq!(pick_candidate(&candidates, &sans, "fallback"), "myhost");
+        }
+
+        #[test]
+        fn no_sans_returns_fallback() {
+            let candidates = vec![("myhost".to_string(), SanIdentity::Dns("myhost".to_string()))];
+            assert_eq!(pick_candidate(&candidates, &[], "fallback"), "fallback");
+        }
+
+        #[test]
+        fn no_candidate_matches_returns_fallback() {
+            let candidates = vec![("myhost".to_string(), SanIdentity::Dns("myhost".to_string()))];
+            let sans = vec![SanIdentity::Dns("otherhost".to_string())];
+            assert_eq!(pick_candidate(&candidates, &sans, "fallback"), "fallback");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3708,7 +4117,7 @@ mod tests {
         let (caller_cx, _caller_handle) = caller_proc.instance("caller").unwrap();
 
         // 3. Call the real public entrypoint.
-        let admin_url = crate::host_mesh::spawn_admin(
+        let admin_ref = crate::host_mesh::spawn_admin(
             [&host_mesh],
             &caller_cx,
             Some("[::]:0".parse().unwrap()),
@@ -3717,23 +4126,18 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!admin_url.is_empty(), "spawn_admin must return a URL");
-
-        // 4. Prove the admin is on caller_proc: construct an ActorRef
-        //    targeting "mesh_admin[0]" on caller_proc and send it a
-        //    GetAdminAddr message. If the admin were on a different
-        //    proc, this message would be undeliverable.
-        let admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent> =
-            hyperactor_reference::ActorRef::attest(
-                caller_proc.proc_id().actor_id(MESH_ADMIN_ACTOR_NAME, 0),
-            );
-        let probe_proc = Proc::direct(ChannelTransport::Unix.any(), "probe".to_string()).unwrap();
-        let (probe_cx, _probe_handle) = probe_proc.instance("probe").unwrap();
-        let resp = admin_ref.get_admin_addr(&probe_cx).await.unwrap();
-        assert_eq!(
-            resp.addr.as_deref(),
-            Some(admin_url.as_str()),
-            "SA-5: admin on caller_proc must respond to GetAdminAddr"
+        // 4. Prove the returned ActorRef is usable: fetch the URL
+        //    via get_admin_addr. This also proves the admin is on
+        //    caller_proc (undeliverable if not).
+        let admin_url = admin_ref
+            .get_admin_addr(&caller_cx)
+            .await
+            .unwrap()
+            .addr
+            .expect("SA-5: admin must report an address");
+        assert!(
+            !admin_url.is_empty(),
+            "spawn_admin ref must yield a non-empty URL"
         );
     }
 
@@ -3893,7 +4297,7 @@ mod tests {
     #[test]
     fn pyspy_parse_empty_reference() {
         // v1 contract: empty input → bad_request.
-        let err = parse_pyspy_proc_reference("").unwrap_err();
+        let err = parse_proc_reference("").unwrap_err();
         assert_eq!(err.code, "bad_request");
         assert!(err.message.contains("empty"));
     }
@@ -3901,7 +4305,7 @@ mod tests {
     #[test]
     fn pyspy_parse_slash_only() {
         // v1 contract: slash-only (axum wildcard artifact) → bad_request.
-        let err = parse_pyspy_proc_reference("/").unwrap_err();
+        let err = parse_proc_reference("/").unwrap_err();
         assert_eq!(err.code, "bad_request");
         assert!(err.message.contains("empty"));
     }
@@ -3910,7 +4314,7 @@ mod tests {
     fn pyspy_parse_malformed_percent_encoding() {
         // v1 contract: malformed encoding → bad_request.
         // %FF%FE is not valid UTF-8.
-        let err = parse_pyspy_proc_reference("%FF%FE").unwrap_err();
+        let err = parse_proc_reference("%FF%FE").unwrap_err();
         assert_eq!(err.code, "bad_request");
         assert!(err.message.contains("percent-encoding"));
     }
@@ -3918,7 +4322,7 @@ mod tests {
     #[test]
     fn pyspy_parse_invalid_proc_id() {
         // v1 contract: non-ProcId reference → bad_request.
-        let err = parse_pyspy_proc_reference("not-a-valid-proc-id").unwrap_err();
+        let err = parse_proc_reference("not-a-valid-proc-id").unwrap_err();
         assert_eq!(err.code, "bad_request");
         assert!(err.message.contains("invalid proc reference"));
     }
@@ -3930,7 +4334,7 @@ mod tests {
         let proc_id = test_proc_id_with_addr(ChannelAddr::Tcp(addr), "myproc");
         let proc_id_str = proc_id.to_string();
 
-        let (decoded, parsed) = parse_pyspy_proc_reference(&proc_id_str).unwrap();
+        let (decoded, parsed) = parse_proc_reference(&proc_id_str).unwrap();
         assert_eq!(decoded, proc_id_str);
         assert_eq!(parsed, proc_id);
     }
@@ -3942,7 +4346,34 @@ mod tests {
         let proc_id = test_proc_id_with_addr(ChannelAddr::Tcp(addr), "myproc");
         let with_slash = format!("/{}", proc_id);
 
-        let (_, parsed) = parse_pyspy_proc_reference(&with_slash).unwrap();
+        let (_, parsed) = parse_proc_reference(&with_slash).unwrap();
         assert_eq!(parsed, proc_id);
+    }
+
+    /// PS-12: service proc routes to HostAgent.
+    #[test]
+    fn route_proc_handler_service_proc_yields_host() {
+        use hyperactor::reference::ProcId;
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        // Use ProcId::with_name directly — test_proc_id_with_addr
+        // prepends "test_" which would not match SERVICE_PROC_NAME.
+        let proc_id = ProcId::with_name(ChannelAddr::Tcp(addr), SERVICE_PROC_NAME);
+        let handler = route_proc_handler(&proc_id.to_string()).unwrap();
+        assert!(
+            matches!(handler, ResolvedProcHandler::Host(_)),
+            "service proc should resolve to Host variant"
+        );
+    }
+
+    /// PS-12: non-service proc routes to ProcAgent.
+    #[test]
+    fn route_proc_handler_worker_proc_yields_proc() {
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let proc_id = test_proc_id_with_addr(ChannelAddr::Tcp(addr), "worker_0");
+        let handler = route_proc_handler(&proc_id.to_string()).unwrap();
+        assert!(
+            matches!(handler, ResolvedProcHandler::Proc(_)),
+            "non-service proc should resolve to Proc variant"
+        );
     }
 }

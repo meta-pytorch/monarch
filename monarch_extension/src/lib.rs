@@ -27,8 +27,8 @@ mod fast_pack;
 mod panic;
 #[cfg(target_os = "linux")]
 mod readonly_fuse;
-mod tls_receiver;
-mod tls_sender;
+#[cfg(feature = "distributed_sql_telemetry")]
+pub mod snapshot_integration;
 mod trace;
 
 use pyo3::prelude::*;
@@ -237,16 +237,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_extension.fast_pack",
     )?)?;
 
-    crate::tls_receiver::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_extension.tls_receiver",
-    )?)?;
-
-    crate::tls_sender::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_extension.tls_sender",
-    )?)?;
-
     #[cfg(target_os = "linux")]
     crate::chunked_fuse::register_python_bindings(&get_or_add_new_module(
         module,
@@ -262,11 +252,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     monarch_hyperactor::logging::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.logging",
-    )?)?;
-
-    monarch_hyperactor::namespace::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.namespace",
     )?)?;
 
     monarch_hyperactor::proc_launcher_probe::register_python_bindings(&get_or_add_new_module(
@@ -291,6 +276,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         monarch_distributed_telemetry::query_engine::register_python_bindings(
             &get_or_add_new_module(module, "monarch_distributed_telemetry.query_engine")?,
         )?;
+        crate::snapshot_integration::register_python_bindings(&get_or_add_new_module(
+            module,
+            "monarch_extension.snapshot_integration",
+        )?)?;
     }
 
     #[cfg(all(fbcode_build, target_os = "linux"))]

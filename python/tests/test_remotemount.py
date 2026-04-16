@@ -15,16 +15,11 @@ import mmap
 import os
 import shutil
 import stat
-import sys
 import tempfile
 import time
 from collections.abc import Generator
 
 import pytest
-
-if sys.platform != "linux":
-    pytest.skip("linux-only", allow_module_level=True)
-
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_extension.chunked_fuse import (
     FuseMountHandle,
@@ -1858,7 +1853,7 @@ def test_actor_cold_transfer() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            with remotemount(host, src, mnt, transfer_mode="actor"):
+            with remotemount(host, src, mnt, transfer_mode="rdma"):
                 for name, expected in files.items():
                     with open(os.path.join(mnt, name), "rb") as f:
                         assert f.read() == expected, f"content mismatch for {name}"
@@ -1879,7 +1874,7 @@ def test_actor_incremental_no_change() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="actor")
+            rm = remotemount(host, src, mnt, transfer_mode="rdma")
 
             # First open: full transfer.
             rm.open()
@@ -1910,7 +1905,7 @@ def test_actor_incremental_partial() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="actor")
+            rm = remotemount(host, src, mnt, transfer_mode="rdma")
 
             # First open: full transfer.
             rm.open()
@@ -1964,7 +1959,7 @@ def test_unmount_after_mount_returns_ok() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="actor")
+            rm = remotemount(host, src, mnt, transfer_mode="rdma")
             rm.open()
 
             # Verify mount works
@@ -2009,7 +2004,7 @@ def test_tls_cold_transfer() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            with remotemount(host, src, mnt, transfer_mode="rust_tls"):
+            with remotemount(host, src, mnt, transfer_mode="rdma"):
                 for name, expected in files.items():
                     with open(os.path.join(mnt, name), "rb") as f:
                         assert f.read() == expected, f"content mismatch for {name}"
@@ -2031,7 +2026,7 @@ def test_tls_incremental_no_change() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rust_tls")
+            rm = remotemount(host, src, mnt, transfer_mode="rdma")
 
             rm.open()
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
@@ -2061,7 +2056,7 @@ def test_tls_incremental_partial() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="rust_tls")
+            rm = remotemount(host, src, mnt, transfer_mode="rdma")
 
             rm.open()
             with open(os.path.join(mnt, "config.json")) as f:
@@ -2093,7 +2088,7 @@ def test_actor_refresh() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="actor")
+            rm = remotemount(host, src, mnt, transfer_mode="rdma")
 
             rm.open()
             with open(os.path.join(mnt, "config.json")) as f:
@@ -2127,7 +2122,7 @@ def test_actor_refresh_with_open_handles() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="actor")
+            rm = remotemount(host, src, mnt, transfer_mode="rdma")
 
             rm.open()
 
@@ -2163,7 +2158,7 @@ def test_actor_refresh_no_change() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="actor")
+            rm = remotemount(host, src, mnt, transfer_mode="rdma")
 
             rm.open()
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
@@ -2192,7 +2187,7 @@ def test_actor_refresh_add_file() -> None:
 
         with tempfile.TemporaryDirectory() as mnt:
             host = this_host()
-            rm = remotemount(host, src, mnt, transfer_mode="actor")
+            rm = remotemount(host, src, mnt, transfer_mode="rdma")
 
             rm.open()
             assert os.listdir(mnt) == ["a.txt"]
