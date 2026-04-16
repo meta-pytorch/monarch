@@ -17,13 +17,8 @@ use std::path::Path;
 use std::pin::Pin;
 use std::time::Duration;
 
-use hyperactor_mesh::config_dump::ConfigDumpResult;
-
 use crate::harness;
 use crate::harness::WorkloadFixture;
-
-const SERVICE_CONFIG_READY_ATTEMPTS: usize = 30;
-const SERVICE_CONFIG_READY_SLEEP: Duration = Duration::from_secs(4);
 
 /// A fully-initialized dining_philosophers scenario.
 ///
@@ -47,47 +42,6 @@ impl DiningScenario {
             .classify_procs()
             .await
             .expect("failed to classify dining procs");
-
-        // Startup convergence: wait for the service config path to be
-        // usable.
-        //
-        // Product finding: hyperactor_mesh advertises the admin URL
-        // when MeshAdminAgent::init binds the TCP listener
-        // (spawn_admin / GetAdminAddr). That precedes the service
-        // HostAgent being able to serve /v1/config/{service} — the
-        // HostAgent is still processing startup messages
-        // (CreateOrUpdate, ProcStatusChanged for each child proc),
-        // and ConfigDump queues behind them. Under stress-runs 5 this
-        // unreadiness window exceeds 30s.
-        //
-        // This loop is NOT the fix for that product readiness gap. It
-        // is a startup convergence budget so the test waits long
-        // enough for the existing product behavior to settle.
-        // Endpoint assertions (config.rs, tree.rs) remain single-shot
-        // and honest.
-        //
-        // Test readiness preconditions:
-        //   1. Admin URL available          (sentinel in start_workload)
-        //   2. Topology visible             (classify_procs above)
-        //   3. Service config responsive    (poll below)
-        let encoded = urlencoding::encode(&procs.service);
-        let config_path = format!("/v1/config/{encoded}");
-        // Budget: 30 attempts × (up to 5s bridge timeout + 4s sleep)
-        // ≈ 270s.
-        for attempt in 1..=SERVICE_CONFIG_READY_ATTEMPTS {
-            match fixture.get_json::<ConfigDumpResult>(&config_path).await {
-                Ok(_) => break,
-                Err(e) if attempt == SERVICE_CONFIG_READY_ATTEMPTS => {
-                    panic!(
-                        "service config not ready after {attempt} attempts: {e}\n\
-                         path: {config_path}",
-                    );
-                }
-                Err(_) => {
-                    tokio::time::sleep(SERVICE_CONFIG_READY_SLEEP).await;
-                }
-            }
-        }
 
         DiningScenario {
             fixture,
@@ -155,15 +109,15 @@ async fn check_dining_endpoints(bin: &Path) {
     .await;
 }
 
-/// MIT-9, MIT-10, MIT-11, MIT-12, MIT-13, MIT-14, MIT-15:
-/// dining-based endpoint assertions — Rust binary.
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76: dining-based
+/// endpoint assertions — Rust binary.
 pub async fn run_dining_endpoints_rust() {
     let bin = harness::dining_philosophers_rust_binary();
     check_dining_endpoints(&bin).await;
 }
 
-/// MIT-9, MIT-10, MIT-11, MIT-12, MIT-13, MIT-14, MIT-15:
-/// dining-based endpoint assertions — Python binary.
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76: dining-based
+/// endpoint assertions — Python binary.
 pub async fn run_dining_endpoints_python() {
     let bin = harness::dining_philosophers_python_binary();
     check_dining_endpoints(&bin).await;

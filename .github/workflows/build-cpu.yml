@@ -2,33 +2,39 @@ name: Build CPU
 
 on:
   workflow_call:
+    inputs:
+      artifact-name:
+        description: 'Wheel artifact name to upload'
+        type: string
+        default: 'monarch-cpu-py3.10'
+      python-version:
+        description: 'Python version to build with'
+        type: string
+        default: '3.10'
+      runner:
+        description: 'Linux runner to use for the build'
+        type: string
+        default: 'linux.4xlarge'
 
 concurrency:
-  group: build-cpu-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  group: build-cpu-${{ inputs.runner }}-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-cpu:
     name: Build CPU - No Tensor Engine
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
-    strategy:
-      fail-fast: true
-      matrix:
-        python-version: ['3.10']
-        include:
-          - name: 4xlarge
-            runs-on: linux.4xlarge
     with:
       timeout: 60
-      runner: ${{ matrix.runs-on }}
+      runner: ${{ inputs.runner }}
       submodules: recursive
-      upload-artifact: monarch-cpu-${{ github.sha }}-py${{ matrix.python-version }}
+      upload-artifact: ${{ inputs.artifact-name }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
 
         # Setup build environment (conda + system deps + rust + build deps)
-        setup_build_environment ${{ matrix.python-version }}
+        setup_build_environment ${{ inputs.python-version }}
 
         # Install torch nightly (CPU version)
         pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu

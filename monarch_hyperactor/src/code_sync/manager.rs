@@ -593,6 +593,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn test_code_sync_manager_and_mesh() -> Result<()> {
         // Create source workspace with test files

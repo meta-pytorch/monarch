@@ -13,7 +13,13 @@ where RDMA is NOT available. These tests verify error handling and fallback
 behavior when RDMA support is missing.
 """
 
+import sys
+
 import pytest
+
+if sys.platform != "linux":
+    pytest.skip("linux-only", allow_module_level=True)
+
 from monarch.config import configured
 from monarch.rdma import is_ibverbs_available
 
