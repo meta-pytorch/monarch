@@ -1126,6 +1126,8 @@ mod tests {
     use std::net::Ipv6Addr;
     use std::time::Duration;
 
+    use rand::RngExt as _;
+    use rand::distr::Uniform;
     use tokio::task::JoinSet;
 
     use super::net::*;
@@ -1425,9 +1427,6 @@ mod tests {
     }
 
     fn addrs() -> Vec<ChannelAddr> {
-        use rand::Rng;
-        use rand::distr::Uniform;
-
         let rng = rand::rng();
         let uniform = Uniform::new_inclusive('a', 'z').unwrap();
         vec![
