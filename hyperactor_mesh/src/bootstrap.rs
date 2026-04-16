@@ -331,7 +331,6 @@ pub async fn host(
     addr: ChannelAddr,
     command: Option<BootstrapCommand>,
     config: Option<Attrs>,
-    duplex_addr: Option<ChannelAddr>,
     exit_on_shutdown: bool,
 ) -> anyhow::Result<(ActorHandle<HostAgent>, HostShutdownHandle)> {
     if let Some(attrs) = config {
@@ -347,7 +346,7 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    let host = Host::new_with_default(manager, addr, duplex_addr.clone(), None).await?;
+    let host = Host::new_with_default(manager, addr, None).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will call host.serve() inside
@@ -366,9 +365,8 @@ pub async fn host(
     )?;
 
     tracing::info!(
-        "serving host at {} with duplex {:?}, agent: {}",
+        "serving host at {}, agent: {}",
         addr,
-        duplex_addr,
         host_mesh_agent.bind::<HostAgent>()
     );
 
@@ -424,9 +422,6 @@ pub enum Bootstrap {
         /// as the `ClientOverride` layer so the parent's effective config
         /// takes precedence over Defaults.
         config: Option<Attrs>,
-        /// Optional address for a duplex channel server that allows
-        /// remote procs to attach to this host.
-        duplex_addr: Option<ChannelAddr>,
         /// If true, exit the process after handling a shutdown request.
         exit_on_shutdown: bool,
     },
@@ -615,11 +610,10 @@ impl Bootstrap {
                 addr,
                 command,
                 config,
-                duplex_addr,
                 exit_on_shutdown,
             } => {
                 let (_agent_handle, shutdown) =
-                    host(addr, command, config, duplex_addr, exit_on_shutdown).await?;
+                    host(addr, command, config, exit_on_shutdown).await?;
                 shutdown.join().await;
                 halt().await
             }
@@ -2685,7 +2679,6 @@ mod tests {
                 addr: ChannelAddr::any(ChannelTransport::Unix),
                 command: None,
                 config: Some(attrs.clone()),
-                duplex_addr: None,
                 exit_on_shutdown: false,
             };
             let env_str = original.to_env_safe_string().expect("encode bootstrap");
@@ -3656,7 +3649,6 @@ mod tests {
         let handle = host(
             ChannelAddr::any(ChannelTransport::Unix),
             Some(BootstrapCommand::test()),
-            None,
             None,
             false,
         )

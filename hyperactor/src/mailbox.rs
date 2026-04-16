@@ -2643,10 +2643,19 @@ impl MailboxSender for MailboxRouter {
     }
 }
 
+/// A router that first checks a [`MailboxRouter`] for a matching
+/// prefix route, falling back to a default sender when none is found.
 #[derive(Clone)]
-struct FallbackMailboxRouter {
+pub struct FallbackMailboxRouter {
     router: MailboxRouter,
     default: BoxedMailboxSender,
+}
+
+impl FallbackMailboxRouter {
+    /// The fallback sender used when the router has no match.
+    pub fn default_sender(&self) -> &BoxedMailboxSender {
+        &self.default
+    }
 }
 
 #[async_trait]

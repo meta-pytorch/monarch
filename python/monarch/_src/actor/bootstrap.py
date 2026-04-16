@@ -43,7 +43,7 @@ def run_worker_loop_forever(
     private_key: PrivateKey = None,
     ca: CA,
     address: str,
-    duplex_address: Optional[str] = None,
+    bind_address: Optional[str] = None,
 ) -> None:
     """
     Start a monarch server at "address" capable of letting this machine participate in
@@ -61,6 +61,12 @@ def run_worker_loop_forever(
     use this machine as a host. If the client disconnects or cannot be contacted, this server
     kills all the current work and waits for a new connection.
 
+    bind_address is an optional zmq-style address for the interface to bind to.
+    When set, the server binds to this address but advertises ``address`` for
+    routing. This is useful in Kubernetes where the worker should bind to all
+    interfaces (``tcp://0.0.0.0:<port>``) so that ``kubectl port-forward`` can
+    reach it via localhost, while other pods still connect via the FQDN in
+    ``address``.
 
     private_key is a tls private key file loaded as bytes used to establish secure connections.
     Things connecting to this machine must trust this private_key in the certificate authority file.
@@ -81,7 +87,10 @@ def run_worker_loop_forever(
             "implementation does not get the host name right if it was specified as a wild card. We have to fix this"
         )
 
-    _run_worker_loop_forever(address, duplex_address=duplex_address).block_on()
+    if bind_address is not None:
+        address = f"{address}@{bind_address}"
+
+    _run_worker_loop_forever(address).block_on()
 
 
 def attach_to_workers(

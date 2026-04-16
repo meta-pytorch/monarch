@@ -22,7 +22,7 @@ def bootstrap_main() -> int:
     ...
 
 def run_worker_loop_forever(
-    address: str, duplex_addr: Optional[str] = None
+    address: str,
 ) -> PythonTask[None]: ...
 def attach_to_workers(
     instance: Instance,
