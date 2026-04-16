@@ -525,11 +525,7 @@ class DuplexProcessJob(ProcessJob):
             raise RuntimeError("DuplexProcessJob cannot run batch-mode scripts")
 
         self._tmpdir = tempfile.mkdtemp(prefix="monarch_duplex_job_")
-        duplex_ipc = f"ipc://{self._tmpdir}/duplex"
-        # bootstrap_attached parses via ChannelAddr::from_str which expects "unix:<path>"
-        self._duplex_addr = f"unix:{self._tmpdir}/duplex"
 
-        first = True
         for mesh_name, count in self._meshes.items():
             for i in range(count):
                 host_key = f"{mesh_name}_{i}"
@@ -538,27 +534,20 @@ class DuplexProcessJob(ProcessJob):
                 if self._env is not None:
                     worker_env.update(self._env)
 
-                # Only the first host gets the duplex socket.
-                duplex_arg = duplex_ipc if first else None
-                duplex_kwarg = f'duplex_address="{duplex_arg}", ' if duplex_arg else ""
                 cmd = [
                     sys.executable,
                     "-c",
                     "from monarch.actor import run_worker_loop_forever; "
                     f'run_worker_loop_forever(address="{addr}", '
-                    f"{duplex_kwarg}"
                     'ca="trust_all_connections")',
                 ]
                 proc = subprocess.Popen(cmd, env=worker_env, start_new_session=True)
-                # Note that we don't use the duplex address as the connection
-                # address. It will be detected automatically when we send
-                # off-local and the new frontend address will be sent over.
                 self._host_to_pid[host_key] = ProcessState(proc.pid, addr)
-                # Only one host should ever use a duplex address.
-                first = False
 
-        # Wait for the duplex socket to appear.
-        sock_path = f"{self._tmpdir}/duplex"
+        # Wait for the first worker's frontend socket to appear.
+        # The duplex server is now on the same address as the frontend.
+        first_key = f"{next(iter(self._meshes))}_0"
+        sock_path = os.path.join(self._tmpdir, first_key)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if os.path.exists(sock_path):
@@ -566,11 +555,14 @@ class DuplexProcessJob(ProcessJob):
             time.sleep(0.05)
         else:
             self._kill()
-            raise RuntimeError("duplex socket did not appear in time")
+            raise RuntimeError("frontend socket did not appear in time")
+        # The duplex addr is the first worker's frontend (they share
+        # the same address now). Use ipc:// format for zmq URL parsing.
+        self._duplex_addr = f"ipc://{sock_path}"
 
     @property
     def duplex_addr(self) -> str:
-        """Native-format ChannelAddr for the duplex socket (e.g. ``unix:/tmp/.../duplex``)."""
+        """Native-format ChannelAddr for the first worker's frontend/duplex address."""
         if self._duplex_addr is None:
             raise RuntimeError("call apply() first to start the worker")
         return self._duplex_addr

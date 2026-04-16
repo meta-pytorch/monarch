@@ -476,7 +476,6 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         addr: host_addr.clone(),
         command: None, // use current binary
         config: None,
-        duplex_addr: None,
         exit_on_shutdown: false,
     };
     boot.to_env(&mut command);
