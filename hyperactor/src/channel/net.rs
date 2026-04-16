@@ -630,6 +630,10 @@ pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), Se
                 make_channel_addr(&hostname, local_addr.port()),
             ))
         }
+        ChannelAddr::Alias { dial_to, bind_to } => {
+            let (listener, _bound_addr) = listen(*bind_to)?;
+            Ok((listener, *dial_to))
+        }
         other => Err(ServerError::Listen(
             other.clone(),
             std::io::Error::other(format!("unsupported transport: {}", other)),

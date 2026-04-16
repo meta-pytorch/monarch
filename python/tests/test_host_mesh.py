@@ -6,27 +6,42 @@
 
 # pyre-unsafe
 
+import asyncio
 import os
 import pathlib
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import textwrap
 import threading
 import time
-from typing import List, Set
+from typing import Dict, List, Optional, Set, Tuple
 from unittest.mock import patch
 
 import cloudpickle
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
+from monarch._rust_bindings.monarch_hyperactor.actor import (
+    PythonMessage,
+    PythonMessageKind,
+)
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
+from monarch._rust_bindings.monarch_hyperactor.mailbox import (
+    PortId,
+    PortRef,
+    UndeliverableMessageEnvelope,
+)
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import _client_context, Actor, context
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.host_mesh import HostMesh, this_host
+from monarch._src.actor.host_mesh import HostMesh, this_host, this_proc
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.proc_mesh import get_or_spawn_controller
+from monarch._src.job.job import ProcessState
 from monarch._src.job.process import ProcessJob
 from scoped_state import scoped_state
 
@@ -487,3 +502,198 @@ def test_with_python_executable() -> None:
     assert inner_pid != direct_pid, (
         "recursive spawn inherited PID instead of re-running wrapper"
     )
+
+
+class DuplexProcessJob(ProcessJob):
+    """ProcessJob that also exposes a duplex socket on the first host.
+
+    The duplex address is available via ``duplex_addr`` after calling
+    ``state()``.  Pass it to ``context(attach_to=...)`` so the client
+    bootstraps by attaching to the worker.
+    """
+
+    def __init__(
+        self,
+        meshes: Optional[Dict[str, int]] = None,
+        env: Optional[Dict[str, str]] = None,
+    ) -> None:
+        super().__init__(meshes or {"hosts": 1}, env)
+        self._duplex_addr: Optional[str] = None
+
+    def _create(self, client_script: Optional[str]) -> None:
+        if client_script is not None:
+            raise RuntimeError("DuplexProcessJob cannot run batch-mode scripts")
+
+        self._tmpdir = tempfile.mkdtemp(prefix="monarch_duplex_job_")
+
+        for mesh_name, count in self._meshes.items():
+            for i in range(count):
+                host_key = f"{mesh_name}_{i}"
+                addr = f"ipc://{self._tmpdir}/{host_key}"
+                worker_env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
+                if self._env is not None:
+                    worker_env.update(self._env)
+
+                cmd = [
+                    sys.executable,
+                    "-c",
+                    "from monarch.actor import run_worker_loop_forever; "
+                    f'run_worker_loop_forever(address="{addr}", '
+                    'ca="trust_all_connections")',
+                ]
+                proc = subprocess.Popen(cmd, env=worker_env, start_new_session=True)
+                self._host_to_pid[host_key] = ProcessState(proc.pid, addr)
+
+        # Wait for the first worker's frontend socket to appear.
+        # The duplex server is now on the same address as the frontend.
+        first_key = f"{next(iter(self._meshes))}_0"
+        sock_path = os.path.join(self._tmpdir, first_key)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if os.path.exists(sock_path):
+                break
+            time.sleep(0.05)
+        else:
+            self._kill()
+            raise RuntimeError("frontend socket did not appear in time")
+        # The duplex addr is the first worker's frontend (they share
+        # the same address now). Use ipc:// format for zmq URL parsing.
+        self._duplex_addr = f"ipc://{sock_path}"
+
+    @property
+    def duplex_addr(self) -> str:
+        """Native-format ChannelAddr for the first worker's frontend/duplex address."""
+        if self._duplex_addr is None:
+            raise RuntimeError("call apply() first to start the worker")
+        return self._duplex_addr
+
+    @property
+    def frontend_socket_path(self) -> str:
+        """Filesystem path of the first worker's frontend Unix socket."""
+        tmpdir = self._tmpdir
+        if tmpdir is None:
+            raise RuntimeError("call apply() first to start the worker")
+        first_key = f"{next(iter(self._meshes))}_0"
+        return os.path.join(tmpdir, first_key)
+
+
+class EchoActor(Actor):
+    """Replies with the message it receives."""
+
+    @endpoint
+    async def echo(self, msg: str) -> str:
+        return msg
+
+
+class UndeliverableReceiver(Actor):
+    def __init__(self):
+        self._messages: asyncio.Queue = asyncio.Queue()
+
+    @endpoint
+    async def receive(self, sender: str, dest: str, error_msg: str) -> None:
+        await self._messages.put((sender, dest, error_msg))
+
+    @endpoint
+    async def get_message(self) -> Tuple[str, str, str]:
+        return await self._messages.get()
+
+
+class UndeliverableSender(Actor):
+    """Sends a message to a bogus address, triggering an undeliverable bounce."""
+
+    def __init__(self, receiver: UndeliverableReceiver):
+        self._receiver = receiver
+
+    @endpoint
+    def send_to_bogus(self) -> None:
+        actor_instance = context().actor_instance
+        port_id = PortId(
+            actor_id=ActorId(addr="local:0", proc_name="bogus", actor_name="bogus"),
+            port=1234,
+        )
+        port_ref = PortRef(port_id)
+        buf = Buffer()
+        buf.write(b"undeliverable_payload")
+        port_ref.send(
+            actor_instance._as_rust(),
+            PythonMessage(PythonMessageKind.Result(None), buf.freeze()),
+        )
+
+    def _handle_undeliverable_message(
+        self, message: UndeliverableMessageEnvelope
+    ) -> bool:
+        PythonTask.spawn_blocking(
+            self._receiver.receive.call_one(
+                str(message.sender()), str(message.dest()), message.error_msg()
+            ).get
+        )
+        return True
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+async def test_context_attach_to() -> None:
+    """Verify context(attach_to=...) can spawn meshes and send messages —
+    all over the duplex channel.
+
+    After bootstrapping and spawning procs we remove the worker's frontend
+    socket from the filesystem.  Any subsequent client-side messaging that
+    accidentally tries to dial the frontend will fail, proving that
+    endpoint calls, replies, and undeliverable bounces travel exclusively
+    over the duplex channel.
+    """
+    job = DuplexProcessJob()
+    job.apply()
+
+    context(attach_to=job.duplex_addr)
+
+    # Remove the worker's frontend socket.  The client should never need
+    # to dial the frontend — all communication flows through the duplex
+    # channel.  If anything on the client side accidentally tries to
+    # connect to the frontend, it will fail.
+    frontend = job.frontend_socket_path
+    assert os.path.exists(frontend)
+    os.remove(frontend)
+    assert not os.path.exists(frontend)
+
+    # (a) Spawn HostMesh, ProcMesh, and ActorMesh.
+    hm = job.state(cached_path=None).hosts
+    assert hm is not None
+
+    pm = hm.spawn_procs(per_host={"workers": 2})
+    assert pm is not None
+
+    am = pm.spawn("echo", EchoActor)
+
+    # (b) Send messages to the actor mesh.
+    results = am.echo.call("hello").get()
+
+    # (c) Get replies back.
+    for val in results.values():
+        assert val == "hello"
+
+    job.kill()
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_context_attach_to_this_host_and_this_proc() -> None:
+    """After calling context(attach_to=...), this_host() and this_proc()
+    return the attached host and proc meshes."""
+    job = DuplexProcessJob()
+    job.apply()
+
+    context(attach_to=job.duplex_addr)
+
+    proc = this_proc()
+    assert proc is not None
+    host = this_host()
+    assert host is not None
+    assert host is proc.host_mesh
+
+    # Verify the meshes are usable by spawning an actor.
+    am = proc.spawn("echo2", EchoActor)
+    result = am.echo.call_one("ping").get()
+    assert result == "ping"
+
+    job.kill()

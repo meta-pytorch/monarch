@@ -15,6 +15,7 @@ use std::time::Duration;
 use hyperactor::ActorHandle;
 use hyperactor::Instance;
 use hyperactor::Proc;
+use hyperactor::channel::ChannelAddr;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::ProcBind;
@@ -27,6 +28,7 @@ use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::host_mesh::host_agent::ShutdownHost;
 use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
 use hyperactor_mesh::proc_agent::GetProcClient;
+use hyperactor_mesh::proc_agent::ProcAgent;
 use hyperactor_mesh::proc_mesh::ProcRef;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::transport::default_bind_spec;
@@ -591,6 +593,78 @@ fn _spawn_admin(
     })
 }
 
+/// Static storage for the root client instance when using attach-based bootstrap.
+static ROOT_CLIENT_INSTANCE_FOR_ATTACH: OnceLock<Instance<PythonActor>> = OnceLock::new();
+
+/// Bootstrap a client by attaching to a remote host's duplex server.
+///
+/// Returns `(PyProcMesh, PyInstance)` — a singleton proc mesh for the
+/// attached proc and the root client actor instance on it.
+#[pyfunction]
+fn bootstrap_attached(
+    bootstrap_cmd: Option<PyBootstrapCommand>,
+    duplex_address: &str,
+) -> PyResult<PyPythonTask> {
+    let bootstrap_cmd = match bootstrap_cmd {
+        Some(cmd) => cmd.to_rust(),
+        None => BootstrapCommand::current().map_err(|e| PyException::new_err(e.to_string()))?,
+    };
+    let addr = ChannelAddr::from_zmq_url(duplex_address)
+        .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
+
+    PyPythonTask::new(async move {
+        // FIXME: This will supply "this_host()", should it be its own host or the remote one?
+        let (host_mesh_agent, _shutdown) = host(
+            default_bind_spec().binding_addr(),
+            Some(bootstrap_cmd),
+            None,
+            false,
+        )
+        .await
+        .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        // Store the agent for later shutdown
+        HOST_MESH_AGENT_FOR_HOST.set(host_mesh_agent.clone()).ok(); // Ignore error if already set
+
+        let host_mesh_name = hyperactor_mesh::Name::new_reserved("local").unwrap();
+        let host_mesh = HostMeshRef::from_host_agent(host_mesh_name, host_mesh_agent.bind())
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        // Register C so MeshAdminAgent can discover it ("A/C
+        // invariant" - hyperactor_mesh/src/mesh_admin.rs).
+        hyperactor_mesh::global_context::register_client_host(host_mesh.clone());
+        let proc =
+            match tokio::time::timeout(Duration::from_secs(10), Proc::attach_to_host(addr.clone()))
+                .await
+            {
+                Ok(Ok(proc)) => Ok(proc),
+                Ok(Err(e)) => Err(PyRuntimeError::new_err(e.to_string())),
+                Err(e) => Err(PyRuntimeError::new_err(format!(
+                    "timeout waiting for attach to host at address {}: {}",
+                    addr, e
+                ))),
+            }?;
+
+        let agent_handle = ProcAgent::boot_v1(proc.clone(), None)
+            .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        let proc_mesh_name = hyperactor_mesh::Name::new_reserved("attached").unwrap();
+        let proc_ref = ProcRef::new(proc.proc_id().clone(), 0, agent_handle.bind());
+        let proc_mesh = ProcMeshRef::new_singleton(proc_mesh_name, proc_ref);
+
+        let (instance, _handle) = monarch_with_gil(|py| {
+            PythonActor::bootstrap_client_inner(py, proc, &ROOT_CLIENT_INSTANCE_FOR_ATTACH)
+        })
+        .await;
+
+        Ok((
+            PyHostMesh::new_ref(host_mesh),
+            PyProcMesh::new_ref(proc_mesh),
+            PyInstance::from(instance),
+        ))
+    })
+}
+
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     let f = wrap_pyfunction!(py_host_mesh_from_bytes, hyperactor_mod)?;
     f.setattr(
@@ -619,6 +693,13 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
         "monarch._rust_bindings.monarch_hyperactor.host_mesh",
     )?;
     hyperactor_mod.add_function(f4)?;
+
+    let f5 = wrap_pyfunction!(bootstrap_attached, hyperactor_mod)?;
+    f5.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.host_mesh",
+    )?;
+    hyperactor_mod.add_function(f5)?;
 
     hyperactor_mod.add_class::<PyHostMesh>()?;
     hyperactor_mod.add_class::<PyBootstrapCommand>()?;
