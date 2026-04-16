@@ -86,6 +86,7 @@ zbus = { version = "5.14.0", features = ["async-executor", "async-fs", "async-io
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
+fastrand = "2.1.1"
 inventory = "0.3.24"
 itertools = "0.14.0"
 jsonschema = "0.17.0"
