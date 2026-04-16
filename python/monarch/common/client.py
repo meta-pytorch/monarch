@@ -84,7 +84,11 @@ class Client:
 
         # stream._active = Stream("main2", _default=True)
 
-        self._backend_network_init = False
+        # NCCL-initiating messages (BackendNetworkInit, SplitComm, etc.) are
+        # only useful when workers have CUDA. On CPU-only builds we short-
+        # circuit these sends so the actor-only path still functions.
+        self._has_cuda: bool = torch.cuda.is_available()
+        self._backend_network_init = not self._has_cuda
         self._backend_network_init_point_to_point: Set[
             Tuple["StreamRef", "StreamRef"]
         ] = set()
@@ -353,7 +357,7 @@ class Client:
         """Create a split communicator group with the specified ranks, and
         associate it with a specific device mesh and stream.
         """
-        if not torch.cuda.is_available():
+        if not self._has_cuda:
             return
         # For simplicity, just send this message to all ranks and split from the
         # global communicator. As an optimization, the client could remember
@@ -372,9 +376,6 @@ class Client:
         self.created_communicators.add(msg)
 
     def backend_network_init(self) -> None:
-        if not torch.cuda.is_available():
-            self._backend_network_init = True
-            return
         if self._backend_network_init:
             return
         self._backend_network_init = True
@@ -384,7 +385,7 @@ class Client:
     def backend_network_point_to_point_init(
         self, from_stream_ref: "StreamRef", to_stream_ref: "StreamRef"
     ) -> None:
-        if not torch.cuda.is_available():
+        if not self._has_cuda:
             return
         key = (from_stream_ref, to_stream_ref)
 

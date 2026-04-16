@@ -31,6 +31,7 @@ use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::host_mesh::spawn_admin;
+use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
 use ndslice::ViewExt;
 use ndslice::extent;
 use serde::Deserialize;
@@ -264,7 +265,12 @@ async fn main() -> Result<ExitCode> {
 
     // Start the mesh admin agent, which aggregates admin state
     // across all hosts and serves an HTTP API.
-    let mesh_admin_url = spawn_admin([&host_mesh], instance, None, None).await?;
+    let admin_ref = spawn_admin([&host_mesh], instance, None, None).await?;
+    let mesh_admin_url = admin_ref
+        .get_admin_addr(instance)
+        .await?
+        .addr
+        .ok_or_else(|| anyhow::anyhow!("mesh admin did not report an address"))?;
     let mtls_flags = if mesh_admin_url.starts_with("https") {
         "--cacert /var/facebook/rootcanal/ca.pem \
          --cert /var/facebook/x509_identities/server.pem \

@@ -26,6 +26,9 @@ from typing import Any, Callable, Dict, List, Optional
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
     DatabaseScanner,
 )
+from monarch._rust_bindings.monarch_extension.snapshot_integration import (
+    _pre_register_snapshot_schemas,
+)
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
     UndeliverableMessageEnvelope,
@@ -68,13 +71,15 @@ SetupActor.register_startup_function(_scanner_startup)
 def _register_scanner(
     batch_size: int,
     retention_secs: int = 600,
-) -> None:
+) -> DatabaseScanner:
     global _scanner, _scanner_startup_impl, _spawn_callback_registered, _spawned_procs
-    _scanner = DatabaseScanner(
+    scanner = DatabaseScanner(
         current_rank().rank,
         batch_size=batch_size,
         retention_secs=retention_secs,
     )
+    _scanner = scanner
+    # pyre-ignore[9]: startup function is called for side effects; return value discarded.
     _scanner_startup_impl = functools.partial(
         _register_scanner,
         batch_size=batch_size,
@@ -86,6 +91,8 @@ def _register_scanner(
     if not _spawn_callback_registered:
         register_proc_mesh_spawn_callback(_on_proc_mesh_spawned)
         _spawn_callback_registered = True
+
+    return scanner
 
 
 class DistributedTelemetryActor(Actor):
@@ -231,7 +238,7 @@ def start_telemetry(
     retention_secs: int = 600,
     include_dashboard: bool = True,
     dashboard_port: int = 8265,
-) -> "tuple[QueryEngine, str | None]":
+) -> "tuple[QueryEngine, str | None, DatabaseScanner]":
     """
     Start the distributed telemetry system.
 
@@ -247,12 +254,19 @@ def start_telemetry(
         dashboard_port: Preferred port for the dashboard (default 8265).
 
     Returns:
-        A tuple of (QueryEngine, telemetry_url). ``telemetry_url`` is the
-        base URL of the dashboard server (e.g. ``"http://localhost:8265"``)
-        when ``include_dashboard`` is True, otherwise None. Pass it to
-        ``host_mesh._spawn_admin(telemetry_url=...)`` to enable proxy routes.
+        A tuple of (QueryEngine, telemetry_url, scanner).
+        ``telemetry_url`` is the base URL of the dashboard server
+        (e.g. ``"http://localhost:8265"``) when ``include_dashboard``
+        is True, otherwise None. ``scanner`` is the ``DatabaseScanner``
+        for use by snapshot integration.
     """
-    _register_scanner(batch_size, retention_secs=retention_secs)
+    scanner = _register_scanner(batch_size, retention_secs=retention_secs)
+
+    # Pre-register snapshot table schemas unconditionally (SI-6).
+    # Must happen before QueryEngine construction because table
+    # discovery is static.
+    _pre_register_snapshot_schemas(scanner)
+
     coordinator = this_proc().spawn("telemetry_coordinator", DistributedTelemetryActor)
     query_engine = QueryEngine(coordinator)
 
@@ -267,4 +281,4 @@ def start_telemetry(
         logger.info("Monarch Dashboard: %s", telemetry_url)
         print(f"Monarch Dashboard: {telemetry_url}", flush=True)
 
-    return query_engine, telemetry_url
+    return query_engine, telemetry_url, scanner

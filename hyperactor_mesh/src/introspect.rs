@@ -23,6 +23,11 @@
 //! invariants for string-encoded references and timestamps. This module
 //! keeps the internal typed invariants.
 //!
+//! These invariants govern the introspection model and derived
+//! payloads exposed by mesh-admin; lower-level runtime accounting
+//! invariants remain owned by the runtime modules that produce those
+//! values.
+//!
 //! See `hyperactor::introspect` for naming convention, invariant
 //! labels, and the `IntrospectAttr` meta-attribute pattern.
 //!
@@ -34,6 +39,29 @@
 //! - **MK-2 (short-name uniqueness):** Covered by
 //!   `test_introspect_short_names_are_globally_unique` in
 //!   `hyperactor::introspect` (cross-crate).
+//!
+//! ## Proc debug stats invariants (PD-*)
+//!
+//! These invariants govern the proc-debug introspection surface
+//! exposed by mesh-admin: proc attrs, typed proc views, and the
+//! proc-debug portion of `NodeProperties::Proc`.
+//!
+//! They do not define proc runtime mechanics. The underlying
+//! per-actor queue-depth accounting invariants live in
+//! `hyperactor::proc`; this module owns the proc-level debug values
+//! derived from that runtime state.
+//!
+//! - **PD-1:** `actor_work_queue_depth_max <=
+//!   actor_work_queue_depth_total`.
+//! - **PD-2:** `process_rss_bytes` and `process_vm_size_bytes` are
+//!   `None` on non-Linux or read failure. Never fabricated.
+//! - **PD-3:** All debug fields default to zero/None for backward
+//!   compatibility. Old procs that haven't published yet produce a
+//!   valid `ProcDebugStats::default()`.
+//! - **PD-4:** Queue depth aggregation covers live actors only.
+//!   Stopped/retained actor snapshots are excluded.
+//! - **PD-5:** See `hyperactor::proc` module doc for the per-actor
+//!   queue depth accounting invariants (PD-5a through PD-5e).
 //!
 //! ## HTTP boundary invariants (HB-*)
 //!
@@ -206,6 +234,37 @@
 //!   added `warnings: Vec<String>`. Clients reading the old `stack`
 //!   field will see it absent; they must migrate to `stack_traces`.
 //!
+//! ## py-spy profiling (PP-*)
+//!
+//! Profile capture (`py-spy record`) is a separate contract from
+//! dump (`py-spy dump`). Types, messages, workers, and routes are
+//! independent — no shared state, no shared timeout budget.
+//!
+//! - **PP-1 (input validation):** `duration_s` (u32) must be
+//!   non-zero and at most `MESH_ADMIN_PYSPY_MAX_PROFILE_DURATION`.
+//!   `rate_hz` must be 1..1000. Violations → 400 before any
+//!   actor messaging.
+//! - **PP-2 (dynamic timeout cascade):** Subprocess timeout =
+//!   `duration_s + 15s`. Bridge timeout = subprocess + 5s.
+//!   Computed per-request from validated opts, not static config.
+//! - **PP-3 (temp file lifecycle):** `py-spy record` writes to a
+//!   temp file; the worker reads it after successful exit and
+//!   deletes via tempfile drop. On failure or timeout, stderr is
+//!   captured. On timeout, the child is explicitly killed and
+//!   reaped via `start_kill()` + `wait().await`. If the file is
+//!   missing, empty, or unreadable after successful exit, the
+//!   result is `OutputMissing`, `OutputEmpty`, or
+//!   `OutputReadFailure`, not `Ok`.
+//! - **PP-4 (target locality):** Inherits PS-1 — always targets
+//!   `std::process::id()`, never a caller-supplied PID.
+//! - **PP-5 (separate worker):** `PySpyProfileWorker` is a
+//!   distinct actor from `PySpyWorker`. Profile durations block
+//!   for seconds to minutes; isolation prevents starving dumps.
+//! - **PP-6 (wire projection):** `ProfileExecOutcome` maps to
+//!   `PySpyProfileResult` 1:1 via `From`. Every internal variant
+//!   has an identically-named wire variant. The only shape change
+//!   is `TimedOut.timeout: Duration` → `TimedOut.timeout_s: u64`.
+//!
 //! ## Mesh-admin config (MA-*)
 //!
 //! - **MA-C1 (timeout config centralization):** Mesh-admin timeout
@@ -314,6 +373,43 @@ declare_attrs! {
     })
     pub attr NUM_HOSTS: usize = 0;
 
+    // ── Proc debug stats (PD-*) ──────────────────────────────
+
+    /// RSS of the hosting OS process (bytes). `None` means the
+    /// measurement was unavailable (for example non-Linux or procfs
+    /// read/parse failure); values are never fabricated (PD-2).
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "process_rss_bytes".into(),
+        desc: "RSS of the hosting OS process (bytes)".into(),
+    })
+    pub attr PROCESS_RSS_BYTES: Option<u64>;
+
+    /// Virtual memory size of the hosting OS process (bytes). `None`
+    /// means the measurement was unavailable (for example non-Linux
+    /// or procfs read/parse failure); values are never fabricated
+    /// (PD-2).
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "process_vm_size_bytes".into(),
+        desc: "Virtual memory size of the hosting OS process (bytes)".into(),
+    })
+    pub attr PROCESS_VM_SIZE_BYTES: Option<u64>;
+
+    /// Sum of per-actor message queue depths across live actors.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "actor_work_queue_depth_total".into(),
+        desc: "Sum of per-actor message queue depths (live actors only)".into(),
+    })
+    pub attr ACTOR_WORK_QUEUE_DEPTH_TOTAL: u64 = 0;
+
+    /// Maximum current per-actor message queue depth across live
+    /// actors at publish time. This is not a historical high-water
+    /// mark.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "actor_work_queue_depth_max".into(),
+        desc: "Maximum per-actor message queue depth (live actors only)".into(),
+    })
+    pub attr ACTOR_WORK_QUEUE_DEPTH_MAX: u64 = 0;
+
 }
 
 use hyperactor::introspect::AttrsViewError;
@@ -361,12 +457,169 @@ impl RootAttrsView {
     }
 }
 
+/// Memory stats of the hosting OS process. Shared by host and
+/// proc introspection surfaces — both agents are authoritative
+/// for the OS process they run in.
+///
+/// In the common one-proc-per-process deployment these read like
+/// "proc memory". In multi-proc-per-process setups, co-hosted procs
+/// report the same hosting-process values.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    Named
+)]
+pub struct ProcessMemoryStats {
+    /// RSS of the hosting OS process (bytes). `None` on non-Linux
+    /// or read failure (PD-2).
+    pub process_rss_bytes: Option<u64>,
+    /// Virtual memory size of the hosting OS process (bytes).
+    /// `None` on non-Linux or read failure (PD-2).
+    pub process_vm_size_bytes: Option<u64>,
+}
+
+impl ProcessMemoryStats {
+    /// Read the hosting OS process memory stats from procfs.
+    /// Returns `ProcessMemoryStats` with `None` fields on non-Linux
+    /// or any read/parse failure (PD-2: never fabricated).
+    pub fn read_from_procfs() -> Self {
+        let (rss, vm) = read_procfs_memory();
+        Self {
+            process_rss_bytes: rss,
+            process_vm_size_bytes: vm,
+        }
+    }
+
+    pub fn from_attrs(attrs: &Attrs) -> Self {
+        Self {
+            process_rss_bytes: attrs.get(PROCESS_RSS_BYTES).copied().flatten(),
+            process_vm_size_bytes: attrs.get(PROCESS_VM_SIZE_BYTES).copied().flatten(),
+        }
+    }
+
+    pub fn to_attrs(&self, attrs: &mut Attrs) {
+        attrs.set(PROCESS_RSS_BYTES, self.process_rss_bytes);
+        attrs.set(PROCESS_VM_SIZE_BYTES, self.process_vm_size_bytes);
+    }
+}
+
+/// Read RSS and VM size from `/proc/self/statm`.
+///
+/// `statm` field 0 is total program size (virtual memory) in pages;
+/// field 1 is resident set size in pages. This is sufficient for the
+/// Stage 1 operator signal and avoids parsing a larger procfs file.
+/// Returns `(Some(rss_bytes), Some(vm_bytes))` on success and `(None,
+/// None)` on any failure.
+#[cfg(target_os = "linux")]
+fn read_procfs_memory() -> (Option<u64>, Option<u64>) {
+    // SAFETY: sysconf(_SC_PAGESIZE) is a read-only query with no
+    // preconditions. It returns the system page size or -1 on error.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page_size <= 0 {
+        return (None, None);
+    }
+    let page_size = page_size as u64;
+    match std::fs::read_to_string("/proc/self/statm") {
+        Ok(contents) => {
+            let mut fields = contents.split_whitespace();
+            let vm_pages: Option<u64> = fields.next().and_then(|s| s.parse().ok());
+            let rss_pages: Option<u64> = fields.next().and_then(|s| s.parse().ok());
+            (
+                rss_pages.map(|p| p * page_size),
+                vm_pages.map(|p| p * page_size),
+            )
+        }
+        Err(_) => (None, None),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_procfs_memory() -> (Option<u64>, Option<u64>) {
+    (None, None)
+}
+
+/// Proc-level debug/operational stats. Groups hosting-process memory
+/// (process-scoped) and actor queue pressure (proc-scoped) into one
+/// operational summary.
+///
+/// This asymmetry is intentional: memory belongs to the hosting OS
+/// process, while queue pressure is aggregated over live actors in
+/// this Monarch proc only.
+///
+/// Queue depth is an **instantaneous snapshot** at publish time, not
+/// a historical watermark or backlog accumulator. It reflects
+/// currently queued work that has not yet been received by the
+/// actor's run loop. Transient bursts that drain between publishes
+/// will not be observed.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    Named
+)]
+pub struct ProcDebugStats {
+    /// Hosting-process memory (shared type with host surface).
+    pub memory: ProcessMemoryStats,
+    /// Sum of per-actor message queue depths across live actors in
+    /// this proc (PD-4: live actors only).
+    pub actor_work_queue_depth_total: u64,
+    /// Maximum current per-actor message queue depth across live
+    /// actors in this proc at publish time. Not a historical
+    /// high-water mark.
+    pub actor_work_queue_depth_max: u64,
+}
+
+impl ProcDebugStats {
+    pub fn from_attrs(attrs: &Attrs) -> Self {
+        let total = attrs
+            .get(ACTOR_WORK_QUEUE_DEPTH_TOTAL)
+            .copied()
+            .unwrap_or(0);
+        let max = attrs.get(ACTOR_WORK_QUEUE_DEPTH_MAX).copied().unwrap_or(0);
+        // PD-1: max <= total.
+        if max > total {
+            tracing::warn!(
+                "PD-1 violation: actor_work_queue_depth_max ({}) > total ({})",
+                max,
+                total,
+            );
+        }
+        Self {
+            memory: ProcessMemoryStats::from_attrs(attrs),
+            actor_work_queue_depth_total: total,
+            actor_work_queue_depth_max: max,
+        }
+    }
+
+    pub fn to_attrs(&self, attrs: &mut Attrs) {
+        self.memory.to_attrs(attrs);
+        attrs.set(
+            ACTOR_WORK_QUEUE_DEPTH_TOTAL,
+            self.actor_work_queue_depth_total,
+        );
+        attrs.set(ACTOR_WORK_QUEUE_DEPTH_MAX, self.actor_work_queue_depth_max);
+    }
+}
+
 /// Typed view over attrs for a host node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostAttrsView {
     pub addr: String,
     pub num_procs: usize,
     pub system_children: Vec<NodeRef>,
+    /// Hosting-process memory stats.
+    pub memory: ProcessMemoryStats,
 }
 
 impl HostAttrsView {
@@ -380,10 +633,12 @@ impl HostAttrsView {
             .clone();
         let num_procs = *attrs.get(NUM_PROCS).unwrap_or(&0);
         let system_children = attrs.get(SYSTEM_CHILDREN).cloned().unwrap_or_default();
+        let memory = ProcessMemoryStats::from_attrs(attrs);
         Ok(Self {
             addr,
             num_procs,
             system_children,
+            memory,
         })
     }
 
@@ -394,6 +649,7 @@ impl HostAttrsView {
         attrs.set(ADDR, self.addr.clone());
         attrs.set(NUM_PROCS, self.num_procs);
         attrs.set(SYSTEM_CHILDREN, self.system_children.clone());
+        self.memory.to_attrs(&mut attrs);
         attrs
     }
 }
@@ -408,6 +664,8 @@ pub struct ProcAttrsView {
     pub stopped_retention_cap: usize,
     pub is_poisoned: bool,
     pub failed_actor_count: usize,
+    /// Runtime debug/operational stats (PD-*).
+    pub debug: ProcDebugStats,
 }
 
 impl ProcAttrsView {
@@ -434,6 +692,8 @@ impl ProcAttrsView {
             ));
         }
 
+        let debug = ProcDebugStats::from_attrs(attrs);
+
         Ok(Self {
             proc_name,
             num_actors,
@@ -442,6 +702,7 @@ impl ProcAttrsView {
             stopped_retention_cap,
             is_poisoned,
             failed_actor_count,
+            debug,
         })
     }
 
@@ -456,6 +717,7 @@ impl ProcAttrsView {
         attrs.set(STOPPED_RETENTION_CAP, self.stopped_retention_cap);
         attrs.set(IS_POISONED, self.is_poisoned);
         attrs.set(FAILED_ACTOR_COUNT, self.failed_actor_count);
+        self.debug.to_attrs(&mut attrs);
         attrs
     }
 }
@@ -625,6 +887,7 @@ pub enum NodeProperties {
         addr: String,
         num_procs: usize,
         system_children: Vec<NodeRef>,
+        memory: ProcessMemoryStats,
     },
     /// Properties describing a proc running on a host.
     Proc {
@@ -635,6 +898,7 @@ pub enum NodeProperties {
         stopped_retention_cap: usize,
         is_poisoned: bool,
         failed_actor_count: usize,
+        debug: ProcDebugStats,
     },
     /// Runtime metadata for a single actor instance.
     Actor {
@@ -697,6 +961,7 @@ impl IntoNodeProperties for HostAttrsView {
             addr: self.addr,
             num_procs: self.num_procs,
             system_children: self.system_children,
+            memory: self.memory,
         }
     }
 }
@@ -711,6 +976,7 @@ impl IntoNodeProperties for ProcAttrsView {
             stopped_retention_cap: self.stopped_retention_cap,
             is_poisoned: self.is_poisoned,
             failed_actor_count: self.failed_actor_count,
+            debug: self.debug,
         }
     }
 }
@@ -884,6 +1150,17 @@ mod tests {
             ("started_at", STARTED_AT.attrs()),
             ("started_by", STARTED_BY.attrs()),
             ("num_hosts", NUM_HOSTS.attrs()),
+            // PD-* proc debug stats keys.
+            ("process_rss_bytes", PROCESS_RSS_BYTES.attrs()),
+            ("process_vm_size_bytes", PROCESS_VM_SIZE_BYTES.attrs()),
+            (
+                "actor_work_queue_depth_total",
+                ACTOR_WORK_QUEUE_DEPTH_TOTAL.attrs(),
+            ),
+            (
+                "actor_work_queue_depth_max",
+                ACTOR_WORK_QUEUE_DEPTH_MAX.attrs(),
+            ),
         ];
 
         for (expected_name, meta) in &cases {
@@ -940,6 +1217,7 @@ mod tests {
             addr: "10.0.0.1:8080".into(),
             num_procs: 2,
             system_children: vec![test_actor_ref("proc", "sys", 0)],
+            memory: Default::default(),
         }
     }
 
@@ -952,6 +1230,7 @@ mod tests {
             stopped_retention_cap: 10,
             is_poisoned: false,
             failed_actor_count: 0,
+            debug: Default::default(),
         }
     }
 
@@ -984,6 +1263,68 @@ mod tests {
         let view = proc_view();
         let rt = ProcAttrsView::from_attrs(&view.to_attrs()).unwrap();
         assert_eq!(rt, view);
+    }
+
+    /// AV-1: host view with non-default memory round-trips.
+    #[test]
+    fn test_host_view_round_trip_with_memory() {
+        let view = HostAttrsView {
+            addr: "10.0.0.1:8080".into(),
+            num_procs: 2,
+            system_children: vec![],
+            memory: ProcessMemoryStats {
+                process_rss_bytes: Some(512 * 1024 * 1024),
+                process_vm_size_bytes: Some(2 * 1024 * 1024 * 1024),
+            },
+        };
+        let rt = HostAttrsView::from_attrs(&view.to_attrs()).unwrap();
+        assert_eq!(rt, view);
+    }
+
+    /// AV-1: proc view with non-default debug stats round-trips.
+    #[test]
+    fn test_proc_view_round_trip_with_debug() {
+        let view = ProcAttrsView {
+            proc_name: "worker".into(),
+            num_actors: 5,
+            system_children: vec![],
+            stopped_children: vec![],
+            stopped_retention_cap: 10,
+            is_poisoned: false,
+            failed_actor_count: 0,
+            debug: ProcDebugStats {
+                memory: ProcessMemoryStats {
+                    process_rss_bytes: Some(256 * 1024 * 1024),
+                    process_vm_size_bytes: Some(1024 * 1024 * 1024),
+                },
+                actor_work_queue_depth_total: 42,
+                actor_work_queue_depth_max: 7,
+            },
+        };
+        let rt = ProcAttrsView::from_attrs(&view.to_attrs()).unwrap();
+        assert_eq!(rt, view);
+    }
+
+    /// PD-1: max <= total enforced (warning logged, no error).
+    #[test]
+    fn test_proc_debug_stats_pd1_warning_on_violation() {
+        let mut attrs = Attrs::new();
+        attrs.set(PROC_NAME, "test".to_string());
+        attrs.set(ACTOR_WORK_QUEUE_DEPTH_TOTAL, 5u64);
+        attrs.set(ACTOR_WORK_QUEUE_DEPTH_MAX, 10u64); // violation
+        // Should not error, but should log warning.
+        let view = ProcAttrsView::from_attrs(&attrs).unwrap();
+        assert_eq!(view.debug.actor_work_queue_depth_total, 5);
+        assert_eq!(view.debug.actor_work_queue_depth_max, 10);
+    }
+
+    /// PD-3: missing debug attrs default to zero/None.
+    #[test]
+    fn test_proc_debug_stats_defaults_on_missing_attrs() {
+        let mut attrs = Attrs::new();
+        attrs.set(PROC_NAME, "old_proc".to_string());
+        let view = ProcAttrsView::from_attrs(&attrs).unwrap();
+        assert_eq!(view.debug, ProcDebugStats::default());
     }
 
     /// AV-1.
@@ -1278,6 +1619,7 @@ mod tests {
                     addr: "10.0.0.1:8080".into(),
                     num_procs: 2,
                     system_children: vec![test_actor_ref("proc", "sys", 0)],
+                    memory: Default::default(),
                 },
                 children: vec![NodeRef::Proc(proc_id.clone())],
                 parent: Some(NodeRef::Root),
@@ -1293,6 +1635,7 @@ mod tests {
                     stopped_retention_cap: 10,
                     is_poisoned: false,
                     failed_actor_count: 0,
+                    debug: Default::default(),
                 },
                 children: vec![NodeRef::Actor(actor_id.clone())],
                 parent: Some(NodeRef::Host(actor_id.clone())),

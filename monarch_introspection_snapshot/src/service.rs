@@ -16,6 +16,54 @@
 //! once via [`drain_to_batches`], and publishes the same batches to
 //! whichever sinks are active.
 //!
+//! # Usage
+//!
+//! [`SnapshotService::capture`] takes a *resolver* — a closure
+//! `Fn(&NodeRef) -> Future<Result<NodePayload>>` that resolves a
+//! single node reference via the mesh admin. In production this calls
+//! `MeshAdminAgent::resolve`; in tests it can be a stub backed by a
+//! `HashMap`.
+//!
+//! **One-shot capture** — capture a mesh snapshot on demand:
+//!
+//! ```ignore
+//! // Build a resolver that calls MeshAdminAgent::resolve for
+//! // each NodeRef.
+//! let resolve = |node_ref: &NodeRef| {
+//!     let admin_ref = admin_ref.clone();
+//!     let ref_string = node_ref.to_string();
+//!     async move {
+//!         let resp = admin_ref.resolve(instance, ref_string).await?;
+//!         resp.0.map_err(|e| anyhow::anyhow!("{}", e))
+//!     }
+//! };
+//!
+//! let service = SnapshotService::new(Some(table_store));
+//! let result = service.capture(resolve, None).await?;
+//! println!("{} nodes captured", result.node_counts.nodes);
+//! ```
+//!
+//! [`capture`](SnapshotService::capture) is the full pipeline: BFS
+//! traversal, drain to `RecordBatch` pairs, publish to all active
+//! sinks. At least one sink (`table_store` or `export_root`) must be
+//! active.
+//!
+//! **Periodic capture** — spawn a [`SnapshotCaptureActor`]:
+//!
+//! ```ignore
+//! let actor = SnapshotCaptureActor::new(
+//!     table_store,
+//!     admin_ref,
+//!     Duration::from_secs(30),
+//! );
+//! proc.spawn("snapshot_capture", actor)?;
+//! // Actor is stopped by framework lifecycle on proc teardown.
+//! ```
+//!
+//! The actor reuses the same capture pipeline but is live-ingest only
+//! (`export_root` is always `None`). Overlapping ticks are skipped,
+//! not queued. Capture errors are logged and do not stop the timer.
+//!
 //! # Service invariants (SV-*)
 //!
 //! - **SV-1 (sink required):** `capture` returns `Err` when both
@@ -42,19 +90,53 @@
 //!   succeeds and bundle writing fails (or vice versa), you have
 //!   partial success. The sinks are independent and the service
 //!   reports the error.
+//!
+//! # Periodic-trigger invariants (PT-*)
+//!
+//! - **PT-1 (positive interval):** Zero interval rejected before
+//!   spawn.
+//! - **PT-2 (live sink by construction):** The periodic path takes a
+//!   concrete `TableStore`, not an `Option`. A live sink is guaranteed
+//!   by the API shape.
+//! - **PT-3 (immediate first fire):** First capture fires at spawn
+//!   time. Subsequent captures fire after each interval.
+//! - **PT-4 (single in-flight):** Overlapping ticks skipped via CAS.
+//!   `in_flight` is consulted only by the periodic loop; on-demand
+//!   `capture` calls do not check it.
+//! - **PT-5 (actor lifecycle):** The actor is stopped by framework
+//!   lifecycle (proc teardown via `DrainAndStop`). The framework
+//!   guarantees the current handler runs to completion before
+//!   stopping. At most one additional queued capture may execute
+//!   during drain. After stop, snapshot count stabilizes — no
+//!   unbounded reschedule tail. Tested by
+//!   `test_pt5_drain_halts_future_captures`.
+//! - **PT-6 (failure resilience):** Capture `Err` logged, loop
+//!   continues.
+//! - **PT-7 (live-ingest only):** Always `export_root = None`.
 
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::time::Instant;
 
+use async_trait::async_trait;
+use hyperactor::Actor;
+use hyperactor::Context;
+use hyperactor::Handler;
+use hyperactor::Instance;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeRef;
+use hyperactor_mesh::mesh_admin::MeshAdminAgent;
+use hyperactor_mesh::mesh_admin::ResolveReferenceMessageClient;
 use monarch_distributed_telemetry::database_scanner::TableStore;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 use uuid::Uuid;
 
 use crate::bundle::write_bundle;
@@ -66,6 +148,7 @@ use crate::push::drain_to_batches;
 ///
 /// Owns the capture-and-publish pipeline. Captures once per call and
 /// publishes to configured sinks.
+#[derive(Clone)]
 pub struct SnapshotService {
     /// `None` before telemetry integration, `Some` after. When
     /// present, captures are ingested into live storage.
@@ -86,11 +169,6 @@ impl SnapshotService {
             table_store,
             in_flight: Arc::new(AtomicBool::new(false)),
         }
-    }
-
-    /// Returns the in-flight guard for use by the periodic trigger.
-    pub fn in_flight(&self) -> &Arc<AtomicBool> {
-        &self.in_flight
     }
 
     /// Capture a mesh snapshot and publish to configured sinks.
@@ -155,6 +233,148 @@ impl SnapshotService {
             capture_duration_ms: t0.elapsed().as_secs_f64() * 1000.0,
             bundle_path,
         })
+    }
+}
+
+/// Private drop guard that resets `in_flight` to `false` on all exit
+/// paths (success, error, or early return).
+struct InFlightGuard<'a>(&'a AtomicBool);
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Execute one periodic capture tick.
+///
+/// Owns the CAS overlap check (PT-4), drop guard, capture call
+/// (PT-7: always `export_root = None`), and error logging (PT-6).
+/// Returns `true` if a capture was attempted (CAS succeeded),
+/// `false` if skipped due to overlap.
+///
+/// This is the unit of per-tick behavior, factored out of the
+/// spawned timer loop so it can be tested deterministically.
+async fn run_periodic_tick<F, Fut>(service: &SnapshotService, resolve: F) -> bool
+where
+    F: Fn(&NodeRef) -> Fut,
+    Fut: Future<Output = anyhow::Result<NodePayload>>,
+{
+    // PT-4: CAS to acquire overlap guard.
+    if service
+        .in_flight
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        tracing::warn!("periodic capture skipped: previous capture still in flight");
+        return false;
+    }
+    let _guard = InFlightGuard(&service.in_flight);
+
+    // PT-7: always None for export_root.
+    match service.capture(resolve, None).await {
+        Ok(result) => {
+            let c = &result.node_counts;
+            let short_id = &result.snapshot_id[..6];
+            if c.resolution_errors > 0 {
+                tracing::warn!(
+                    "capture partial: {}/{} nodes ({} resolution errors) in {:.0}ms [snap_id={}]",
+                    c.nodes - c.resolution_errors,
+                    c.nodes,
+                    c.resolution_errors,
+                    result.capture_duration_ms,
+                    short_id,
+                );
+            } else {
+                tracing::info!(
+                    "capture ok: {} nodes ({} hosts, {} procs, {} actors) in {:.0}ms [snap_id={}]",
+                    c.nodes,
+                    c.host_nodes,
+                    c.proc_nodes,
+                    c.actor_nodes,
+                    result.capture_duration_ms,
+                    short_id,
+                );
+            }
+        }
+        // PT-6: log and continue.
+        Err(e) => tracing::warn!("periodic capture failed: {:#}", e),
+    }
+    true
+}
+
+/// Self-message that triggers one periodic capture cycle. See PT-3,
+/// PT-5.
+#[derive(Debug, Serialize, Deserialize, Named)]
+pub struct CaptureSnapshot;
+wirevalue::register_type!(CaptureSnapshot);
+
+/// Periodic snapshot capture actor. Owns scheduling and lifecycle;
+/// delegates per-tick execution to [`run_periodic_tick`].
+///
+/// The spawn site sends the first `CaptureSnapshot` (PT-3). The
+/// handler reschedules after each tick via `self_message_with_delay`.
+/// Stopped by framework lifecycle (`DrainAndStop` on proc teardown).
+#[hyperactor::export(handlers = [CaptureSnapshot])]
+pub struct SnapshotCaptureActor {
+    /// Shared snapshot capture pipeline and live-ingest sink.
+    service: SnapshotService,
+    /// Typed admin actor reference used to resolve `NodeRef`s during
+    /// capture.
+    admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent>,
+    /// Delay between periodic capture ticks after the initial
+    /// immediate fire.
+    interval: Duration,
+}
+
+#[async_trait]
+impl Actor for SnapshotCaptureActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<CaptureSnapshot> for SnapshotCaptureActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        _message: CaptureSnapshot,
+    ) -> Result<(), anyhow::Error> {
+        let admin_ref = self.admin_ref.clone();
+        let resolve = |node_ref: &NodeRef| {
+            let admin_ref = admin_ref.clone();
+            let ref_string = node_ref.to_string();
+            async move {
+                let resp = admin_ref.resolve(cx, ref_string).await?;
+                resp.0.map_err(|e| anyhow::anyhow!("{}", e))
+            }
+        };
+        run_periodic_tick(&self.service, resolve).await;
+
+        // Reschedule. If the actor is stopping, this spawns a
+        // detached task whose eventual port.send() fails harmlessly.
+        if let Err(e) = cx.self_message_with_delay(CaptureSnapshot, self.interval) {
+            tracing::error!("snapshot capture actor failed to reschedule: {:#}", e);
+        }
+        Ok(())
+    }
+}
+
+impl SnapshotCaptureActor {
+    /// Create a new snapshot capture actor. Call `proc.spawn()` to
+    /// start it.
+    pub fn new(
+        table_store: TableStore,
+        admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent>,
+        interval: Duration,
+    ) -> Self {
+        Self {
+            service: SnapshotService::new(Some(table_store)),
+            admin_ref,
+            interval,
+        }
     }
 }
 
@@ -282,6 +502,7 @@ mod tests {
                     addr: "10.0.0.1".to_owned(),
                     num_procs: 1,
                     system_children: vec![],
+                    memory: Default::default(),
                 },
                 children: vec![proc_ref.clone()],
                 parent: Some(NodeRef::Root),
@@ -301,6 +522,7 @@ mod tests {
                     stopped_retention_cap: 100,
                     is_poisoned: false,
                     failed_actor_count: 0,
+                    debug: Default::default(),
                 },
                 children: vec![actor_ref.clone()],
                 parent: Some(host_ref),
@@ -592,5 +814,97 @@ mod tests {
         let raw = std::fs::read_to_string(bundle_path.join("manifest.json")).unwrap();
         let manifest: crate::bundle::BundleManifest = serde_json::from_str(&raw).unwrap();
         assert_eq!(manifest.snapshot_id, result.snapshot_id);
+    }
+
+    // --- PT-4, PT-6, PT-7: direct run_periodic_tick tests ---
+    //
+    // These test the per-tick helper directly — no tokio::spawn, no
+    // timers, fully deterministic.
+
+    // PT-4: CAS skip when in_flight is already set.
+    #[tokio::test]
+    async fn test_periodic_tick_skips_when_in_flight() {
+        let store = TableStore::new_empty();
+        let service = SnapshotService::new(Some(store.clone()));
+        let payloads = minimal_mesh_payloads();
+        let resolve = stub_resolver(payloads);
+
+        // Pre-set in_flight to simulate an ongoing capture.
+        service.in_flight.store(true, Ordering::Release);
+
+        let attempted = run_periodic_tick(&service, resolve).await;
+        assert!(!attempted, "PT-4: tick should be skipped when in_flight");
+
+        // Store should be empty — no capture ran.
+        assert_eq!(store.table_names().unwrap().len(), 0);
+
+        // in_flight should still be true (guard did not run).
+        assert!(service.in_flight.load(Ordering::Acquire));
+    }
+
+    // PT-4: CAS succeeds and guard resets in_flight after capture.
+    #[tokio::test]
+    async fn test_periodic_tick_captures_and_resets_guard() {
+        let store = TableStore::new_empty();
+        let service = SnapshotService::new(Some(store.clone()));
+        let payloads = minimal_mesh_payloads();
+        let resolve = stub_resolver(payloads);
+
+        let attempted = run_periodic_tick(&service, resolve).await;
+        assert!(attempted, "PT-4: tick should attempt capture");
+
+        // Store should be populated.
+        assert_eq!(store.table_names().unwrap().len(), 9);
+
+        // in_flight should be reset to false.
+        assert!(!service.in_flight.load(Ordering::Acquire));
+    }
+
+    // PT-6: resolver error does not prevent the tick from completing
+    // and the guard is still reset.
+    #[tokio::test]
+    async fn test_periodic_tick_survives_resolver_error() {
+        let store = TableStore::new_empty();
+        let service = SnapshotService::new(Some(store.clone()));
+
+        let resolve = |_: &NodeRef| std::future::ready(Err(anyhow::anyhow!("simulated failure")));
+
+        let attempted = run_periodic_tick(&service, resolve).await;
+        assert!(
+            attempted,
+            "PT-6: tick should attempt capture even if it fails",
+        );
+
+        // in_flight should be reset to false despite the error.
+        assert!(!service.in_flight.load(Ordering::Acquire));
+
+        // Store should be empty — capture failed before ingestion.
+        assert_eq!(store.table_names().unwrap().len(), 0);
+
+        // PT-6 continued: a later tick on the same service succeeds
+        // after an earlier failure.
+        let payloads = minimal_mesh_payloads();
+        let resolve = stub_resolver(payloads);
+        let attempted = run_periodic_tick(&service, resolve).await;
+        assert!(attempted, "PT-6: second tick should succeed");
+        assert_eq!(store.table_names().unwrap().len(), 9);
+    }
+
+    // PT-7: run_periodic_tick always passes export_root = None.
+    #[tokio::test]
+    async fn test_periodic_tick_no_bundle_export() {
+        let store = TableStore::new_empty();
+        let service = SnapshotService::new(Some(store.clone()));
+        let payloads = minimal_mesh_payloads();
+        let resolve = stub_resolver(payloads);
+
+        run_periodic_tick(&service, resolve).await;
+
+        // Verify store was populated (live ingest happened).
+        assert_eq!(store.table_names().unwrap().len(), 9);
+
+        // PT-7 is structural: run_periodic_tick calls
+        // service.capture(resolve, None). No bundle directory
+        // was created.
     }
 }

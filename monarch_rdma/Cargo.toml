@@ -17,7 +17,7 @@ futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
-rand = { version = "0.9", features = ["small_rng"] }
+rand = "0.10"
 rdmaxcel-sys = { path = "../rdmaxcel-sys" }
 regex = "1.12.3"
 serde = { version = "1.0.219", features = ["derive", "rc"] }

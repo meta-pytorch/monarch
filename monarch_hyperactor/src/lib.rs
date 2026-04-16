@@ -25,7 +25,6 @@ pub mod local_state_broker;
 pub mod logging;
 pub mod mailbox;
 pub mod metrics;
-pub mod namespace;
 pub mod ndslice;
 pub mod pickle;
 pub mod proc;

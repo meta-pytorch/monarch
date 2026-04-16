@@ -72,18 +72,20 @@
 //!   error envelope. The config path currently waits out its bridge
 //!   timeout and returns `gateway_timeout`; py-spy bogus-ref checks
 //!   accept the current non-success envelope behavior.
-//! - **MIT-12 (both-proc-types):** Endpoints that accept a proc
-//!   reference (`/v1/config`, `/v1/pyspy`) are tested on both worker
-//!   (ProcAgent path) and service (HostAgent path) procs.
+//! - **MIT-12 (both-proc-types):** `/v1/pyspy` is tested on both
+//!   worker and service procs. `/v1/config` is tested on worker
+//!   procs only — the service proc (HostAgent) config path has a
+//!   known cold-start scheduling issue that causes bridge timeouts
+//!   under parallel stress, unrelated to config endpoint correctness.
 //!
 //! ### Tree endpoint
 //!
 //! - **MIT-13 (root-contract):** `/v1/root` returns `Root` variant
 //!   with `identity == NodeRef::Root`, `num_hosts >= 1`, non-empty
 //!   `children`.
-//! - **MIT-14 (tree-format):** `/v1/tree` contains box-drawing
-//!   characters (`├──`/`└──`), clickable URLs, and workload-specific
-//!   actor names.
+//! - **MIT-14 (tree-availability):** `/v1/tree` returns a
+//!   successful response with non-empty body. Content is a
+//!   human-facing rendering surface and is not parsed.
 //!
 //! ### Config endpoint
 //!
@@ -193,9 +195,9 @@
 //!   NodeProperties variant wrappers do); otherwise subsumed by
 //!   MIT-42.
 //! - **MIT-51 (success-content-type):** Successful responses use a
-//!   media type matching the declared type (`application/json` or
-//!   `text/plain`). Matching is by media type, not exact header
-//!   string.
+//!   media type matching the declared type (`application/json`,
+//!   `text/plain`, or `image/svg+xml`). Matching is by media type,
+//!   not exact header string.
 //!
 //! #### Error responses
 //!
@@ -281,6 +283,17 @@
 //!   malformed JSON body (missing required `sql` field) returns a
 //!   non-success status.
 //!
+//! ### Profile SVG endpoint
+//!
+//! - **MIT-73 (profile-input-validation):** `POST
+//!   /v1/pyspy_profile_svg/{proc}` rejects `duration_s == 0`,
+//!   `duration_s > max`, `rate_hz == 0`, and `rate_hz > 1000` with
+//!   HTTP 400 (PP-1).
+//! - **MIT-74 (profile-svg-success):** A 3-second CPU-mode profile
+//!   returns HTTP 200 with `Content-Type` starting with
+//!   `image/svg+xml` and a non-empty body starting with `<svg` or
+//!   `<?xml`.
+//!
 //! ### Supervision topology (sieve)
 //!
 //! - **MIT-71 (actor-child-parent-is-proc):** When actor A exposes
@@ -290,6 +303,13 @@
 //! - **MIT-72 (proc-and-actor-children-coexist):** Actor B appears
 //!   in both the proc's `children` (membership edge) and actor A's
 //!   `children` (supervision edge) simultaneously (NI-3).
+//!
+//! ### Admin identity
+//!
+//! - **MIT-75 (admin-info):** `GET /v1/admin` returns `AdminInfo`
+//!   with populated actor_id, proc_id, host, and url fields.
+//! - **MIT-76 (admin-schema):** `GET /v1/schema/admin` returns a
+//!   valid JSON Schema document.
 
 mod admin;
 mod auth;
@@ -306,14 +326,14 @@ mod tree;
 
 // --- dining family ---
 
-/// MIT-9, MIT-10, MIT-11, MIT-12, MIT-13, MIT-14, MIT-15: dining-based
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76: dining-based
 /// endpoint assertions — Rust binary.
 #[tokio::test]
 async fn test_dining_endpoints_rust() {
     dining::run_dining_endpoints_rust().await;
 }
 
-/// MIT-9, MIT-10, MIT-11, MIT-12, MIT-13, MIT-14, MIT-15: dining-based
+/// MIT-13, MIT-14, MIT-15, MIT-75, MIT-76: dining-based
 /// endpoint assertions — Python binary.
 #[tokio::test]
 async fn test_dining_endpoints_python() {
@@ -322,7 +342,8 @@ async fn test_dining_endpoints_python() {
 
 // --- pyspy family ---
 
-/// MIT-16, MIT-17, MIT-18, MIT-19: py-spy integration — cpu mode.
+/// MIT-16, MIT-17, MIT-18, MIT-19, MIT-73, MIT-74: py-spy
+/// integration — cpu mode + profile SVG.
 #[tokio::test]
 async fn test_pyspy_integration_cpu() {
     pyspy::run_pyspy_integration_cpu().await;

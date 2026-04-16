@@ -1119,7 +1119,7 @@ mod tests {
     use pyo3::prelude::*;
     use pyo3::types::PyList;
     use pyo3::types::PyString;
-    use rand::Rng;
+    use rand::RngExt as _;
     use rand::distr::Alphanumeric;
     use timed_test::async_timed_test;
     use torch_sys_cuda::nccl::UniqueIdExt;

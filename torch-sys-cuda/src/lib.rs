@@ -19,6 +19,7 @@
 pub mod cuda;
 #[cfg(feature = "cuda")]
 pub mod nccl;
+pub mod nccl_common;
 #[cfg(not(feature = "cuda"))]
 pub mod nccl_stubs;
 #[cfg(not(feature = "cuda"))]

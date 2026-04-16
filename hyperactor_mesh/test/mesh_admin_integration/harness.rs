@@ -61,7 +61,6 @@ pub(crate) struct WorkloadFixture {
     pub(crate) client: Client,
     ca_pem: Vec<u8>,
     _cert_dir: TempDir,
-    _pyspy_dir: Option<TempDir>,
 }
 
 impl WorkloadFixture {
@@ -327,7 +326,7 @@ pub(crate) async fn start_workload(
 
     let combined_path = cert_dir.path().join("combined.pem");
     let ca_path = cert_dir.path().join("ca.crt");
-    let (pyspy_bin, pyspy_dir) = install_pyspy()?;
+    let pyspy_bin = install_pyspy()?;
 
     let mut cmd = Command::new(binary);
     cmd.args(args)
@@ -337,7 +336,8 @@ pub(crate) async fn start_workload(
         .env("HYPERACTOR_MESH_ADMIN_ADDR", "[::]:0")
         .env("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE", "120s")
         .env("HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE", "120s")
-        .stdout(std::process::Stdio::piped());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
 
     // Match the old shell tests: prefer an fbpkg-fetched py-spy and
     // fall back to whatever is already on PATH if the fetch fails.
@@ -357,7 +357,19 @@ pub(crate) async fn start_workload(
         .stdout
         .take()
         .ok_or_else(|| anyhow!("child stdout not captured"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("child stderr not captured"))?;
     let mut reader = BufReader::new(stdout).lines();
+
+    // Collect stderr in background so it's available on failure.
+    let stderr_handle = tokio::spawn(async move {
+        let mut buf = String::new();
+        let mut stderr_reader = BufReader::new(stderr);
+        let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr_reader, &mut buf).await;
+        buf
+    });
 
     let sentinel = "Mesh admin server listening on ";
     let sentinel_result = tokio::time::timeout(timeout, async {
@@ -374,12 +386,32 @@ pub(crate) async fn start_workload(
         Ok(Ok(url)) => url,
         Ok(Err(e)) => {
             let _ = child.start_kill();
-            return Err(e);
+            let captured = stderr_handle.await.unwrap_or_default();
+            let tail: String = captured
+                .lines()
+                .rev()
+                .take(50)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(e.context(format!("stderr (last 50 lines):\n{tail}")));
         }
         Err(_) => {
             let _ = child.start_kill();
+            let captured = stderr_handle.await.unwrap_or_default();
+            let tail: String = captured
+                .lines()
+                .rev()
+                .take(50)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
             bail!(
-                "MIT-1: admin URL sentinel not observed within {}s",
+                "MIT-1: admin URL sentinel not observed within {}s\nstderr (last 50 lines):\n{tail}",
                 timeout.as_secs(),
             );
         }
@@ -387,6 +419,8 @@ pub(crate) async fn start_workload(
 
     // Drain remaining stdout in background to prevent pipe deadlock.
     tokio::spawn(async move { while let Ok(Some(_)) = reader.next_line().await {} });
+    // Drop the stderr collector — we only need it on failure.
+    stderr_handle.abort();
 
     // MIT-5: Build reqwest client with test CA and client cert.
     let client = build_client(&pki.ca_pem, &pki.cert_pem, &pki.key_pem)?;
@@ -397,32 +431,44 @@ pub(crate) async fn start_workload(
         client,
         ca_pem: pki.ca_pem,
         _cert_dir: cert_dir,
-        _pyspy_dir: pyspy_dir,
     })
 }
 
-fn install_pyspy() -> Result<(Option<PathBuf>, Option<TempDir>)> {
-    let dir = TempDir::new()?;
-    let status = std::process::Command::new("fbpkg")
-        .arg("fetch")
-        .arg("fb-py-spy:prod")
-        .arg("-d")
-        .arg(dir.path())
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .status();
+/// Py-spy install. Attempted exactly once per process via `Once`.
+/// If the fetch fails (transient or permanent), all subsequent
+/// callers get `None` and fall back to PATH. The TempDir is
+/// leaked so the path stays valid for the process lifetime.
+fn install_pyspy() -> Result<Option<PathBuf>> {
+    use std::sync::Mutex;
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    static RESULT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-    match status {
-        Ok(status) if status.success() => {
-            let pyspy = dir.path().join("py-spy");
-            if pyspy.exists() {
-                Ok((Some(pyspy), Some(dir)))
-            } else {
-                Ok((None, None))
-            }
+    INIT.call_once(|| {
+        let Ok(dir) = TempDir::new() else { return };
+        let Ok(status) = std::process::Command::new("fbpkg")
+            .arg("fetch")
+            .arg("fb-py-spy:prod")
+            .arg("-d")
+            .arg(dir.path())
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+        else {
+            return;
+        };
+        if !status.success() {
+            return;
         }
-        Ok(_) | Err(_) => Ok((None, None)),
-    }
+        let pyspy = dir.path().join("py-spy");
+        if pyspy.exists() {
+            *RESULT.lock().unwrap() = Some(pyspy);
+            // Leak the TempDir so the path stays valid.
+            std::mem::forget(dir);
+        }
+    });
+
+    Ok(RESULT.lock().unwrap().clone())
 }
 
 // PKI generation
