@@ -346,7 +346,7 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    let host = Host::new(manager, addr).await?;
+    let host = Host::new_with_default(manager, addr, None).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will call host.serve() inside
@@ -2619,6 +2619,7 @@ mod tests {
             addr: ChannelAddr::any(ChannelTransport::Unix),
             command: None,
             config: None,
+            duplex_addr: None,
             exit_on_shutdown: false,
         };
 
