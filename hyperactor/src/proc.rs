@@ -124,6 +124,7 @@ use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::Mailbox;
+use crate::mailbox::MailboxClient;
 use crate::mailbox::MailboxMuxer;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MailboxServer as _;
@@ -295,6 +296,51 @@ impl Proc {
         Ok(proc)
     }
 
+    /// Connect to a host's duplex server and return a [`Proc`] whose
+    /// identity is assigned by the host. Outbound messages are forwarded
+    /// over the duplex channel; inbound messages are served into the
+    /// proc's muxer. Mirrors [`Proc::direct`] but the identity and
+    /// routing are managed by the remote host.
+    pub async fn attach_to_host(addr: ChannelAddr) -> Result<Self, anyhow::Error> {
+        use crate::channel::Rx;
+        use crate::channel::Tx;
+        use crate::host::AttachRequest;
+        use crate::host::AttachRx;
+        use crate::host::Host2Client;
+        let (duplex_tx, mut duplex_rx) =
+            channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
+        // Send an AttachRequest envelope to signal attach intent.
+        // The host deserializes the first message and enters the
+        // attach protocol when it finds an AttachRequest.
+        let signal_actor_id = reference::ActorId::root(
+            reference::ProcId::with_name(
+                ChannelAddr::any(channel::ChannelTransport::Local),
+                "attach",
+            ),
+            "attach".to_string(),
+        );
+        let signal_port = reference::PortId::new(signal_actor_id.clone(), 0);
+        duplex_tx.post(MessageEnvelope::serialize(
+            signal_actor_id,
+            signal_port,
+            &AttachRequest,
+            Default::default(),
+        )?);
+        // Wait for the host to assign an identity.
+        let assignment = match duplex_rx.recv().await? {
+            Host2Client::Bootstrap(a) => a,
+            Host2Client::Envelope(_) => {
+                anyhow::bail!("expected bootstrap assignment as first message")
+            }
+        };
+        let proc = Self::configured(
+            assignment.proc_id,
+            MailboxClient::new(duplex_tx).into_boxed(),
+        );
+        proc.clone().serve(AttachRx(duplex_rx));
+        Ok(proc)
+    }
+
     /// Set the supervision coordinator's port for this proc. Return Err if it is
     /// already set.
     pub fn set_supervision_coordinator(
@@ -378,6 +424,12 @@ impl Proc {
     /// destinations.
     pub fn forwarder(&self) -> &BoxedMailboxSender {
         &self.inner.forwarder
+    }
+
+    /// The proc's mailbox muxer, which routes messages to actors
+    /// registered on this proc.
+    pub fn muxer(&self) -> &MailboxMuxer {
+        &self.inner.proc_muxer
     }
 
     /// Convenience accessor for state.
