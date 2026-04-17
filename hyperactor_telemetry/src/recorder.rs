@@ -363,18 +363,22 @@ impl Recording {
 
     /// Return a span, which will record events to this recording when entered.
     ///
+    /// The `subject` identifies the entity (actor, proc, etc.) that events
+    /// within this span pertain to. It is rendered as a prefix in glog output.
+    ///
     /// Uses `parent: None` so that this span is always a root span. Without this,
     /// contextual parentage would cause a spawned actor's recording span to become
     /// a child of the spawning actor's recording span (via `Instance::start()`'s
     /// `.instrument(Span::current())`), causing events to leak into the parent
     /// actor's flight recorder.
-    pub fn span(&self) -> Span {
+    pub fn span(&self, subject: &str) -> Span {
         span!(
             parent: None,
             Level::INFO,
             SPAN_FIELD_RECORDING,
             recording = self.recording_key(),
             recorder = self.recorder_key(),
+            subject = subject,
         )
     }
 
@@ -632,7 +636,7 @@ mod tests {
         let recorder = Recorder::new();
         let recording = recorder.record(10);
         tracing::subscriber::with_default(Registry::default().with(recorder.layer()), || {
-            let span = recording.span();
+            let span = recording.span("test");
             let _guard = span.enter();
             info!("This event should be recorded");
             info!("another event");
@@ -659,7 +663,7 @@ mod tests {
         let recorder = Recorder::new();
         let recording = recorder.record(5);
         tracing::subscriber::with_default(Registry::default().with(recorder.layer()), || {
-            let span = recording.span();
+            let span = recording.span("test");
             let _guard = span.enter();
             for i in 0..10 {
                 info!("event {}", i);
@@ -684,7 +688,7 @@ mod tests {
         let recorder = Recorder::new();
         let recording = recorder.record(10);
         tracing::subscriber::with_default(Registry::default().with(recorder.layer()), || {
-            let _span = recording.span(); // not entered
+            let _span = recording.span("test"); // not entered
             info!("This event should NOT be recorded");
         });
         assert_eq!(recording.tail().len(), 0);
@@ -696,7 +700,7 @@ mod tests {
         let recording = recorder.record(10);
 
         tracing::subscriber::with_default(Registry::default().with(recorder.layer()), || {
-            let outer = recording.span();
+            let outer = recording.span("test");
             let _outer_guard = outer.enter();
 
             {
@@ -730,13 +734,13 @@ mod tests {
         let recording_b = recorder.record(10);
 
         tracing::subscriber::with_default(Registry::default().with(recorder.layer()), || {
-            let span_a = recording_a.span();
+            let span_a = recording_a.span("test_a");
             let _guard_a = span_a.enter();
 
             info!("event_from_a");
 
             {
-                let span_b = recording_b.span();
+                let span_b = recording_b.span("test_b");
                 let _guard_b = span_b.enter();
 
                 info!("event_from_b");
@@ -781,7 +785,7 @@ mod tests {
         let recording = recorder.record(10);
 
         tracing::subscriber::with_default(Registry::default().with(recorder.layer()), || {
-            let outer = recording.span();
+            let outer = recording.span("test");
             let _outer_guard = outer.enter();
 
             {

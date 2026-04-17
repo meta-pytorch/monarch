@@ -137,6 +137,7 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+use crate::subject::AsSubject as _;
 
 /// Single accounting path for actor work-queue depth. Two consumers:
 /// introspection-readable `queue_depth` state and OTel telemetry
@@ -237,7 +238,7 @@ impl Drop for ProcState {
         // rather than Proc is dropped. This is because we need to wait for
         // Proc::inner's ref count becomes 0.
         tracing::info!(
-            proc_id = %self.proc_id,
+            subject = %self.proc_id.subject(),
             name = "ProcStatus",
             status = "Dropped"
         );
@@ -265,7 +266,7 @@ impl Proc {
     /// Create a pre-configured proc with the given proc id and forwarder.
     pub fn configured(proc_id: reference::ProcId, forwarder: BoxedMailboxSender) -> Self {
         tracing::info!(
-            proc_id = %proc_id,
+            subject = %proc_id.subject(),
             name = "ProcStatus",
             status = "Created"
         );
@@ -342,16 +343,16 @@ impl Proc {
                 // Normal lifecycle events that fail to send (e.g. coordinator
                 // mailbox already closed during shutdown) are silently dropped.
                 tracing::debug!(
-                    "proc {}: dropping non-error supervision event {}: {:?}",
-                    self.proc_id(),
+                    subject = %self.proc_id().subject(),
+                    "dropping non-error supervision event {}: {:?}",
                     event,
                     err
                 );
                 return;
             }
             tracing::error!(
-                "proc {}: could not propagate supervision event {} due to error: {:?}: crashing",
-                self.proc_id(),
+                subject = %self.proc_id().subject(),
+                "could not propagate supervision event {} due to error: {:?}: crashing",
                 event,
                 err
             );
@@ -441,8 +442,7 @@ impl Proc {
     }
 
     /// Common spawn logic for both root and child actors.
-    /// Creates a tracing span with the correct actor_id before starting the actor.
-    #[hyperactor::instrument(fields(actor_id = actor_id.to_string(), actor_name = actor_id.name(), actor_type = std::any::type_name::<A>()))]
+    #[hyperactor::instrument(fields(subject = actor_id.subject().to_string()))]
     fn spawn_inner<A: Actor>(
         &self,
         actor_id: reference::ActorId,
@@ -502,9 +502,7 @@ impl Proc {
         let actor_id = self.allocate_root_id(name)?;
         let span = tracing::debug_span!(
             "actor_instance",
-            actor_name = name,
-            actor_type = std::any::type_name::<A>(),
-            actor_id = actor_id.to_string(),
+            subject = %actor_id.subject(),
         );
         let _guard = span.enter();
         let (instance, receivers) = Instance::new(self.clone(), actor_id.clone(), false, None);
@@ -642,9 +640,7 @@ impl Proc {
         let actor_id = self.allocate_child_id(parent.actor_id())?;
         let _ = tracing::debug_span!(
             "child_actor_instance",
-            parent_actor_id = %parent.actor_id(),
-            actor_type = std::any::type_name::<()>(),
-            actor_id = %actor_id,
+            subject = %actor_id.subject(),
         );
 
         let (instance, _receivers) = Instance::new(self.clone(), actor_id, false, Some(parent));
@@ -738,8 +734,7 @@ impl Proc {
                     tracing::info!("sending stop signal to {}", cell.actor_id());
                     if let Err(err) = cell.signal(Signal::DrainAndStop(reason)) {
                         tracing::error!(
-                            "{}: failed to send stop signal to pid {}: {:?}",
-                            self.proc_id(),
+                            "failed to send stop signal to pid {}: {:?}",
                             cell.pid(),
                             err
                         );
@@ -750,7 +745,7 @@ impl Proc {
                 }
             }
         } else {
-            tracing::error!("no actor {} found in {}", actor_id, self.proc_id());
+            tracing::error!(subject = %self.proc_id().subject(), "no actor {} found", actor_id);
             None
         }
     }
@@ -781,7 +776,7 @@ impl Proc {
     /// its task.
     /// If except_current is true, don't stop the actor represented by "cx" at
     /// all.
-    #[hyperactor::instrument]
+    #[hyperactor::instrument(fields(subject = self.proc_id().subject().to_string()))]
     pub async fn destroy_and_wait_except_current<A: Actor>(
         &mut self,
         timeout: Duration,
@@ -789,7 +784,7 @@ impl Proc {
         except_current: bool,
         reason: &str,
     ) -> Result<(Vec<reference::ActorId>, Vec<reference::ActorId>), anyhow::Error> {
-        tracing::debug!("{}: proc stopping", self.proc_id());
+        tracing::debug!("proc stopping");
 
         let (this_handle, this_actor_id) = cx.map_or((None, None), |cx| {
             (
@@ -818,7 +813,7 @@ impl Proc {
                 statuses.insert(actor_id, status);
             }
         }
-        tracing::debug!("{}: non-coordinator actors stopped", self.proc_id());
+        tracing::debug!("non-coordinator actors stopped");
 
         let waits: Vec<_> = statuses
             .iter_mut()
@@ -893,17 +888,10 @@ impl Proc {
         let flush_timeout = hyperactor_config::global::get(crate::config::FORWARDER_FLUSH_TIMEOUT);
         match tokio::time::timeout(flush_timeout, self.state().forwarder.flush()).await {
             Ok(Err(err)) => {
-                tracing::warn!(
-                    "{}: forwarder flush failed during proc exit: {:?}",
-                    self.proc_id(),
-                    err
-                );
+                tracing::warn!("forwarder flush failed during proc exit: {:?}", err);
             }
             Err(_elapsed) => {
-                tracing::warn!(
-                    "{}: forwarder flush timed out during proc exit",
-                    self.proc_id(),
-                );
+                tracing::warn!("forwarder flush timed out during proc exit");
             }
             Ok(Ok(())) => {}
         }
@@ -978,7 +966,7 @@ impl Proc {
     }
 
     /// Create a child allocation in the proc.
-    #[hyperactor::instrument(fields(actor_name=parent_id.name()))]
+    #[hyperactor::instrument]
     pub(crate) fn allocate_child_id(
         &self,
         parent_id: &reference::ActorId,
@@ -2007,8 +1995,7 @@ impl<A: Actor> Instance<A> {
             .await
     }
 
-    // Skip serializing all fields except HandlerInfo which includes the typename.
-    #[tracing::instrument(level = "debug", name = "handle_message", skip_all, fields(actor_id = %self.self_id(), message_type = %handler_info))]
+    #[tracing::instrument(level = "debug", name = "handle_message", skip_all, fields(message_type = %handler_info))]
     async fn handle_message_with_handler_info<M: Message>(
         &self,
         actor: &mut A,
@@ -2062,9 +2049,10 @@ impl<A: Actor> Instance<A> {
         // coercion allows the `this` argument to be treated exactly like
         // &Instance<A>.
         let start = Instant::now();
+        let subject_str = self.self_id().subject().to_string();
         let result = actor
             .handle(&context, message)
-            .instrument(self.inner.cell.inner.recording.span())
+            .instrument(self.inner.cell.inner.recording.span(&subject_str))
             .await;
         let elapsed_us = start.elapsed().as_micros() as u64;
         self.inner
