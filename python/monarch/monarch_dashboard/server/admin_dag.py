@@ -18,7 +18,6 @@ for infrastructure actors that aren't flagged (e.g. telemetry, setup).
 import logging
 import os
 import re
-import time
 import urllib.parse
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -27,11 +26,6 @@ import requests
 from . import db
 
 logger = logging.getLogger(__name__)
-
-# Cache the built DAG to avoid re-walking on every poll.
-_dag_cache: Optional[Dict[str, Any]] = None
-_dag_cache_time: float = 0.0
-_DAG_CACHE_TTL = 2.0  # seconds
 
 # Max walk depth: Root(0) -> Host(1) -> Proc(2) -> Actor(3).
 _MAX_TREE_DEPTH = 4
@@ -234,17 +228,9 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
 
     Returns ``{"nodes": [...], "edges": [...]}``.
     """
-    global _dag_cache, _dag_cache_time
-
     admin_url = _get_admin_url()
     if not admin_url:
         return {"nodes": [], "edges": []}
-
-    now = time.monotonic()
-    cached = _dag_cache
-    if cached is not None and now - _dag_cache_time < _DAG_CACHE_TTL:
-        if cached.get("_hide_system") == hide_system:
-            return cached
 
     session = requests.Session()
     configure_tls(session)
@@ -380,10 +366,7 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
     # Add message edges from telemetry.
     _add_message_edges(nodes, edges)
 
-    result = {"nodes": nodes, "edges": edges, "_hide_system": hide_system}
-    _dag_cache = result
-    _dag_cache_time = now
-    return result
+    return {"nodes": nodes, "edges": edges}
 
 
 def _add_message_edges(

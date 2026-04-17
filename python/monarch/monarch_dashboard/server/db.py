@@ -830,43 +830,51 @@ def get_summary() -> dict[str, Any]:
 
     # -- Error details --
     # Use LOWER() so both fake data ("failed") and real telemetry ("Failed") match.
+    # Single query for both failed and stopped actors.
     _error_actor_sql = (
-        "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id"
+        "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id,"
+        " ase.new_status"
         " FROM actor_status_events ase"
         " JOIN actors a ON ase.actor_id = a.id"
         f" INNER JOIN ({_LATEST_ACTOR_STATUS_SQL}) latest"
         " ON ase.actor_id = latest.actor_id"
         "   AND ase.timestamp_us = latest.max_ts"
-        " WHERE LOWER(ase.new_status) = ?"
+        " WHERE LOWER(ase.new_status) IN ('failed', 'stopped')"
         " ORDER BY ase.timestamp_us"
     )
-    failed_actors = _query(_error_actor_sql, ("failed",))
-    stopped_actors = _query(_error_actor_sql, ("stopped",))
+    error_actors = _query(_error_actor_sql)
+    failed_actors = []
+    stopped_actors = []
+    for r in error_actors:
+        status = (r.pop("new_status", None) or "").lower()
+        if status == "failed":
+            failed_actors.append(r)
+        elif status == "stopped":
+            stopped_actors.append(r)
 
     # Hyperactor telemetry doesn't track message delivery failures.
     # Actor failures from undeliverable messages are already surfaced in
     # failed_actors above (the failure reason contains the delivery error).
     failed_messages = 0
 
-    # -- Timeline --
-    time_range = _query_one(
-        "SELECT MIN(timestamp_us) AS start_us, MAX(timestamp_us) AS end_us "
-        "FROM actor_status_events"
+    # -- Timeline (single query instead of four) --
+    timeline_row = _query_one(
+        "SELECT MIN(timestamp_us) AS start_us,"
+        " MAX(timestamp_us) AS end_us,"
+        " MIN(CASE WHEN LOWER(new_status) = 'failed'"
+        "   THEN timestamp_us END) AS failure_onset_us,"
+        " COUNT(*) AS total_status_events"
+        " FROM actor_status_events"
     )
-    start_us = time_range["start_us"] if time_range else 0
-    end_us = time_range["end_us"] if time_range else 0
-
-    failure_onset_row = _query_one(
-        "SELECT MIN(timestamp_us) AS ts FROM actor_status_events "
-        "WHERE LOWER(new_status) = 'failed'"
-    )
+    start_us = timeline_row["start_us"] if timeline_row else 0
+    end_us = timeline_row["end_us"] if timeline_row else 0
     failure_onset_us = (
-        failure_onset_row["ts"]
-        if failure_onset_row and failure_onset_row["ts"]
+        timeline_row["failure_onset_us"]
+        if timeline_row and timeline_row["failure_onset_us"]
         else None
     )
+    total_status_events = timeline_row["total_status_events"] if timeline_row else 0
 
-    total_status_events = _count("SELECT COUNT(*) AS n FROM actor_status_events")
     total_message_events = _count("SELECT COUNT(*) AS n FROM message_status_events")
 
     # -- Health score (0-100) --

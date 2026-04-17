@@ -14,7 +14,6 @@ fxhash = "0.2.1"
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 nccl-sys = { path = "../nccl-sys", optional = true }
 pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
-serde = { version = "1.0.219", features = ["derive", "rc"] }
 thiserror = "2.0.18"
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 

@@ -183,7 +183,7 @@ impl PartialEq for Stream {
     fn eq(&self, other: &Self) -> bool {
         #[cfg(feature = "cuda")]
         {
-            return self.stream() == other.stream();
+            self.stream() == other.stream()
         }
 
         #[cfg(not(feature = "cuda"))]

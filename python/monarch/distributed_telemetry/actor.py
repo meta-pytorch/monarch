@@ -46,6 +46,8 @@ from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAda
 
 logger: logging.Logger = logging.getLogger(__name__)
 
+_SCAN_CHILD_TIMEOUT_SECS: float = 10.0
+
 
 # Module-level scanner created at process startup to avoid race conditions.
 _scanner: Optional[DatabaseScanner] = None
@@ -223,10 +225,14 @@ class DistributedTelemetryActor(Actor):
         total_count = local_count
         for fut in child_futures:
             try:
-                child_results = fut.get()
+                child_results = fut.get(timeout=_SCAN_CHILD_TIMEOUT_SECS)
                 # pyre-ignore[16]: child_results is iterable of tuples
                 for _rank, count in child_results:
                     total_count += count
+            except TimeoutError:
+                logger.warning(
+                    "child scan timed out after %ss", _SCAN_CHILD_TIMEOUT_SECS
+                )
             except Exception:
                 logger.info("child scan failed, skipping")
 
@@ -277,8 +283,9 @@ def start_telemetry(
             adapter=adapter,
             port=dashboard_port,
         )
-        telemetry_url = info["url"]
-        logger.info("Monarch Dashboard: %s", telemetry_url)
-        print(f"Monarch Dashboard: {telemetry_url}", flush=True)
+        telemetry_url = info["local_url"]
+        dashboard_url = info["url"]
+        logger.info("Monarch Dashboard: %s", dashboard_url)
+        print(f"Monarch Dashboard: {dashboard_url}", flush=True)
 
     return query_engine, telemetry_url, scanner
