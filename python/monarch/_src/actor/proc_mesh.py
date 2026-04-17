@@ -701,6 +701,10 @@ class ProcMesh(MeshTrait):
             await self._flush_pending_actor_spawns()
             pm = await self._proc_mesh
             await self._logging_manager.flush_async()
+            # Barrier the logger mesh before we stop the procs so that
+            # `SetLogging` casts issued during `init` don't race the
+            # stop and return as undeliverables.
+            await self._logging_manager.drain_async()
             await pm.stop_nonblocking(instance, reason)
             self._stopped = True
 
