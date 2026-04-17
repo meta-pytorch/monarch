@@ -1811,6 +1811,44 @@ class WrapperActor(Actor):
     # automatically stopped without needing to define one.
 
 
+@pytest.mark.timeout(300)
+@isolate_in_subprocess
+def test_proc_mesh_churn_no_leaked_undeliverables():
+    """Regression test for cross-test cleanup races.
+
+    Creates and stops many proc meshes back-to-back. After the loop we
+    wait for any pending async errors to surface on the root client,
+    then assert that none fired. A failure here means some part of
+    `ProcMesh.stop()` is letting in-flight messages race the shutdown
+    of actors it owns (e.g. the logger mesh), which would otherwise
+    show up later as "Unhandled monarch error on the root actor" in an
+    unrelated test.
+    """
+    failures: list[object] = []
+
+    original_hook = monarch.actor.unhandled_fault_hook
+
+    def capture(failure: object) -> None:
+        failures.append(failure)
+
+    monarch.actor.unhandled_fault_hook = capture
+    try:
+        for _ in range(150):
+            procs = this_host().spawn_procs(per_host={"gpus": 4})
+            procs.stop().get()
+        # Allow any late-arriving undeliverables to surface before we
+        # assert. The error handler is invoked asynchronously by the
+        # RootClientActor's supervision path.
+        time.sleep(3)
+    finally:
+        monarch.actor.unhandled_fault_hook = original_hook
+
+    assert not failures, (
+        f"{len(failures)} unhandled fault(s) fired during proc-mesh churn: "
+        f"{[str(f) for f in failures]}"
+    )
+
+
 @parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 def test_recursive_stop():
