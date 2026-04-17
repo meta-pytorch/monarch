@@ -346,7 +346,7 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    let host = Host::new_with_default(manager, addr, None).await?;
+    let host = Host::new(manager, addr).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will call host.serve() inside
