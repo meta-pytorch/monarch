@@ -464,6 +464,28 @@ def _make_python_wrapper() -> str:
     return wrapper_path
 
 
+class CudaVisibleDevicesActor(Actor):
+    @endpoint
+    def get_cuda_visible_devices(self) -> str:
+        return os.environ.get("CUDA_VISIBLE_DEVICES", "")
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_spawn_procs_with_env() -> None:
+    hm = this_host()
+
+    pm = hm.spawn_procs(per_host={"gpus": 1}, env={"CUDA_VISIBLE_DEVICES": "3"})
+    am = pm.spawn("cuda_marker", CudaVisibleDevicesActor)
+    assert am.get_cuda_visible_devices.call_one().get() == "3"
+
+    # A second spawn without env must not inherit the previous spawn's env,
+    # confirming that with_env is non-mutating on the HostMesh.
+    pm_no_env = hm.spawn_procs(per_host={"gpus": 1})
+    am_no_env = pm_no_env.spawn("cuda_marker_default", CudaVisibleDevicesActor)
+    assert am_no_env.get_cuda_visible_devices.call_one().get() != "3"
+
+
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_with_python_executable() -> None:

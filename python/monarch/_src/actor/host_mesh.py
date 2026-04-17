@@ -140,6 +140,7 @@ class HostMesh(MeshTrait):
         bootstrap: Callable[[], None] | Callable[[], Awaitable[None]] | None = None,
         name: str | None = None,
         proc_bind: list[dict[str, str]] | None = None,
+        env: dict[str, str] | None = None,
     ) -> "ProcMesh":
         """Spawn a ProcMesh onto this host mesh.
 
@@ -151,6 +152,9 @@ class HostMesh(MeshTrait):
                 Length must equal ``math.prod(per_host.values())``.
                 Each dict maps binding keys (``cpunodebind``,
                 ``membind``, ``physcpubind``, ``cpus``) to values.
+            env: optional additional environment variables to set on spawned
+                procs. These supplement (and override on key conflicts) the
+                bootstrap command's existing environment.
         """
         if not per_host:
             per_host = {}
@@ -173,6 +177,7 @@ class HostMesh(MeshTrait):
             bootstrap,
             True,
             proc_bind,
+            env,
         )
 
     def _spawn_nonblocking(
@@ -182,6 +187,7 @@ class HostMesh(MeshTrait):
         setup: Callable[[], None] | Callable[[], Awaitable[None]] | None,
         _attach_controller_controller: bool,
         proc_bind: list[dict[str, str]] | None = None,
+        env: dict[str, str] | None = None,
     ) -> "ProcMesh":
         if set(per_host.labels) & set(self._labels):
             # The rust side will catch this too, but this lets us fail fast
@@ -195,6 +201,8 @@ class HostMesh(MeshTrait):
 
         async def task() -> HyProcMesh:
             hy_host_mesh = await self._hy_host_mesh
+            if env:
+                hy_host_mesh = hy_host_mesh.with_env(env)
             return await hy_host_mesh.spawn_nonblocking(
                 context().actor_instance._as_rust(), name, per_host, proc_bind
             )
