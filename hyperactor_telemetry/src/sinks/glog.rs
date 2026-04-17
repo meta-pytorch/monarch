@@ -192,7 +192,11 @@ impl GlogSink {
                     write!(&mut self.line_buffer, "unknown:0] ")?;
                 }
 
-                if let Some(parent_id) = parent_span {
+                // Render subject as a prefix. Check event fields first,
+                // then fall back to the enclosing span chain.
+                if let Some(subject) = get_field(fields, crate::SUBJECT_KEY) {
+                    Self::write_subject(&mut self.line_buffer, subject)?;
+                } else if let Some(parent_id) = parent_span {
                     self.write_span_context(*parent_id)?;
                 }
 
@@ -207,7 +211,7 @@ impl GlogSink {
                 }
 
                 for (k, v) in fields.iter() {
-                    if *k != "message" {
+                    if *k != "message" && *k != crate::SUBJECT_KEY {
                         write!(&mut self.line_buffer, ", {}:", k)?;
                         match v {
                             FieldValue::Bool(b) => write!(&mut self.line_buffer, "{}", b)?,
@@ -241,59 +245,31 @@ impl GlogSink {
         Ok(())
     }
 
-    /// Writes span context into line_buffer: "[outer{field:value}, inner{field:value}] "
-    fn write_span_context(&mut self, span_id: u64) -> Result<()> {
-        let mut span_ids = Vec::new();
-        let mut current_id = Some(span_id);
+    fn write_subject(buf: &mut LimitedBuffer, value: &FieldValue) -> Result<()> {
+        match value {
+            FieldValue::Str(s) => write!(buf, "{} ", s)?,
+            FieldValue::Debug(s) => write!(buf, "{} ", s)?,
+            _ => {}
+        }
+        Ok(())
+    }
 
+    /// Walks the span chain looking for a `subject` field. If found,
+    /// renders it as a prefix (e.g., `<actor id> `). If no subject is
+    /// found, no span context is rendered.
+    fn write_span_context(&mut self, span_id: u64) -> Result<()> {
+        let mut current_id = Some(span_id);
         while let Some(id) = current_id {
-            if let Some((_, _, parent_id)) = self.active_spans.get(&id) {
-                span_ids.push(id);
+            if let Some((_, fields, parent_id)) = self.active_spans.get(&id) {
+                if let Some(subject) = get_field(fields, crate::SUBJECT_KEY) {
+                    Self::write_subject(&mut self.line_buffer, subject)?;
+                    return Ok(());
+                }
                 current_id = *parent_id;
             } else {
                 break;
             }
         }
-        if span_ids.is_empty() {
-            return Ok(());
-        }
-
-        write!(&mut self.line_buffer, "[")?;
-
-        for (i, id) in span_ids.iter().rev().enumerate() {
-            if i > 0 {
-                write!(&mut self.line_buffer, ", ")?;
-            }
-
-            if let Some((name, fields, _)) = self.active_spans.get(id) {
-                write!(&mut self.line_buffer, "{}", name)?;
-                if !fields.is_empty() {
-                    write!(&mut self.line_buffer, "{{")?;
-
-                    let mut first = true;
-                    for (k, v) in fields.iter() {
-                        if !first {
-                            write!(&mut self.line_buffer, ", ")?;
-                        }
-                        first = false;
-                        write!(&mut self.line_buffer, "{}:", k)?;
-
-                        match v {
-                            FieldValue::Bool(b) => write!(&mut self.line_buffer, "{}", b)?,
-                            FieldValue::I64(i) => write!(&mut self.line_buffer, "{}", i)?,
-                            FieldValue::U64(u) => write!(&mut self.line_buffer, "{}", u)?,
-                            FieldValue::F64(f) => write!(&mut self.line_buffer, "{}", f)?,
-                            FieldValue::Str(s) => write!(&mut self.line_buffer, "{}", s)?,
-                            FieldValue::Debug(s) => write!(&mut self.line_buffer, "{}", s)?,
-                        }
-                    }
-
-                    write!(&mut self.line_buffer, "}}")?;
-                }
-            }
-        }
-
-        write!(&mut self.line_buffer, "] ")?;
         Ok(())
     }
 }
