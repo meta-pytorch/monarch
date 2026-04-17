@@ -167,6 +167,7 @@ pub struct ProcMesh {
     #[allow(dead_code)]
     comm_actor_name: Option<Name>,
     current_ref: ProcMeshRef,
+    controller: Option<hyperactor_reference::ActorRef<crate::mesh_controller::ProcMeshController>>,
 }
 
 impl ProcMesh {
@@ -262,6 +263,7 @@ impl ProcMesh {
             allocation,
             comm_actor_name: comm_actor_name.clone(),
             current_ref,
+            controller: None,
         };
 
         if let Some(comm_actor_name) = comm_actor_name {
@@ -542,8 +544,79 @@ impl ProcMesh {
         mesh
     }
 
+    pub(crate) fn set_controller(
+        &mut self,
+        controller: Option<
+            hyperactor_reference::ActorRef<crate::mesh_controller::ProcMeshController>,
+        >,
+    ) {
+        self.controller = controller;
+    }
+
     /// Stop this mesh gracefully.
+    ///
+    /// If a `ProcMeshController` is present (owned meshes spawned from a host
+    /// mesh), the stop is delegated to the controller via `resource::Stop`,
+    /// then we send `WaitRankStatus` to the controller (which forwards it
+    /// to HostAgents) and wait for all procs to reach terminal state.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
+        if let Some(controller) = self.controller.take() {
+            controller
+                .send(
+                    cx,
+                    resource::Stop {
+                        name: self.name.clone(),
+                        reason,
+                    },
+                )
+                .map_err(|e| {
+                    crate::Error::SendingError(controller.actor_id().clone(), Box::new(e))
+                })?;
+
+            let region = self.current_ref.region().clone();
+            let num_ranks = region.num_ranks();
+            let (port, rx) = cx.mailbox().open_accum_port_opts(
+                crate::StatusMesh::from_single(region.clone(), Status::NotExist),
+                hyperactor::accum::StreamingReducerOpts {
+                    max_update_interval: Some(Duration::from_millis(50)),
+                    initial_update_interval: None,
+                },
+            );
+
+            controller
+                .send(
+                    cx,
+                    resource::WaitRankStatus {
+                        name: self.name.clone(),
+                        min_status: Status::Stopped,
+                        reply: port.bind(),
+                    },
+                )
+                .map_err(|e| {
+                    crate::Error::SendingError(controller.actor_id().clone(), Box::new(e))
+                })?;
+
+            let timeout = hyperactor_config::global::get(crate::host_mesh::PROC_STOP_MAX_IDLE);
+            match GetRankStatus::wait(rx, num_ranks, timeout, region).await {
+                Ok(statuses) => {
+                    let all_stopped = statuses.values().all(|s| s.is_terminating());
+                    if !all_stopped {
+                        anyhow::bail!(
+                            "proc mesh {} not all procs reached terminating state after stop",
+                            self.name
+                        );
+                    }
+                }
+                Err(_) => {
+                    anyhow::bail!(
+                        "proc mesh {} timed out waiting for procs to reach terminating state",
+                        self.name
+                    );
+                }
+            }
+            return Ok(());
+        }
+
         let region = self.region.clone();
         match &mut self.allocation {
             ProcMeshAllocation::Allocated {
@@ -923,6 +996,7 @@ impl ProcMeshRef {
     pub async fn proc_states(
         &self,
         cx: &impl context::Actor,
+        keepalive: Option<std::time::SystemTime>,
     ) -> crate::Result<Option<ValueMesh<resource::State<ProcState>>>> {
         let names = self
             .proc_ids()
@@ -930,7 +1004,7 @@ impl ProcMeshRef {
         if let Some(host_mesh) = &self.host_mesh {
             Ok(Some(
                 host_mesh
-                    .proc_states(cx, names, self.region.clone())
+                    .proc_states(cx, names, self.region.clone(), keepalive)
                     .await?,
             ))
         } else {

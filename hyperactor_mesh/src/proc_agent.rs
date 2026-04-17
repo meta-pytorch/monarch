@@ -80,7 +80,7 @@ declare_attrs! {
     /// Header tag for StreamState subscriber messages. When present on an
     /// undeliverable envelope, ProcAgent removes the dead subscriber instead
     /// of treating it as an error.
-    attr STREAM_STATE_SUBSCRIBER: bool;
+    pub(crate) attr STREAM_STATE_SUBSCRIBER: bool;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
@@ -346,7 +346,7 @@ impl ActorInstanceState {
     Bind,
     Unbind
 )]
-struct SelfCheck {}
+pub(crate) struct SelfCheck {}
 
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
 ///

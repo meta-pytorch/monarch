@@ -6,21 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::Actor;
-use hyperactor::Handler;
-use hyperactor::accum::StreamingReducerOpts;
-use hyperactor::channel::ChannelTransport;
-use hyperactor::host::Host;
-use hyperactor::host::LocalProcManager;
-use hyperactor::host::SERVICE_PROC_NAME;
-use hyperactor_config::CONFIG;
-use hyperactor_config::ConfigAttr;
-use hyperactor_config::attrs::declare_attrs;
-use ndslice::view::CollectMeshExt;
-
-use crate::mesh_admin::MeshAdminAgent;
-use crate::supervision::MeshFailure;
-
 pub mod host_agent;
 
 use std::collections::HashSet;
@@ -31,14 +16,25 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use hyperactor::Actor;
+use hyperactor::Handler;
+use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
+use hyperactor::host::Host;
+use hyperactor::host::LocalProcManager;
+use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::reference as hyperactor_reference;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 use ndslice::Extent;
 use ndslice::Region;
 use ndslice::ViewExt;
 use ndslice::extent;
 use ndslice::view;
+use ndslice::view::CollectMeshExt;
 use ndslice::view::Ranked;
 use ndslice::view::RegionParseError;
 use serde::Deserialize;
@@ -62,6 +58,7 @@ use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::host_agent::SetClientConfigClient;
 use crate::host_mesh::host_agent::ShutdownHostClient;
+use crate::mesh_admin::MeshAdminAgent;
 use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
 use crate::proc_agent::ProcAgent;
@@ -73,6 +70,7 @@ use crate::resource::GetRankStatusClient;
 use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::resource::WaitRankStatusClient;
+use crate::supervision::MeshFailure;
 use crate::transport::DEFAULT_TRANSPORT;
 
 /// Actor name for `HostMeshController` when spawned as a named child.
@@ -1345,7 +1343,7 @@ impl HostMeshRef {
 
         // Wait on accumulated StatusMesh snapshots until complete or
         // timeout.
-        match GetRankStatus::wait(
+        let statuses = match GetRankStatus::wait(
             rx,
             num_ranks,
             hyperactor_config::global::get(PROC_SPAWN_MAX_IDLE),
@@ -1411,6 +1409,7 @@ impl HostMeshRef {
                         mesh_agent,
                     });
                 }
+                statuses
             }
             Err(complete) => {
                 tracing::error!(
@@ -1429,14 +1428,15 @@ impl HostMeshRef {
                 );
                 return Err(crate::Error::ProcSpawnError { statuses: legacy });
             }
-        }
+        };
 
-        let mesh =
+        let mut mesh =
             ProcMesh::create_owned_unchecked(cx, proc_mesh_name, extent, self.clone(), procs).await;
-        if let Ok(ref mesh) = mesh {
+        if let Ok(ref mut mesh) = mesh {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
-            let controller = ProcMeshController::new(mesh.deref().clone());
+            let mesh_ref: ProcMeshRef = (**mesh).clone();
+            let controller = ProcMeshController::new(mesh_ref, statuses);
             // hyperactor::proc AI-3: controller name must include mesh
             // identity for proc-wide ActorId uniqueness.
             let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.name());
@@ -1447,7 +1447,9 @@ impl HostMeshRef {
             // Undeliverable). Without this, the controller's mailbox has no
             // port entries and messages (including introspection queries)
             // are returned as undeliverable.
-            let _: hyperactor::reference::ActorRef<ProcMeshController> = controller_handle.bind();
+            let controller_ref: hyperactor::reference::ActorRef<ProcMeshController> =
+                controller_handle.bind();
+            mesh.set_controller(Some(controller_ref));
         }
         mesh
     }
@@ -1575,16 +1577,44 @@ impl HostMeshRef {
         Ok(())
     }
 
+    /// Send `WaitRankStatus` for each proc to its HostAgent. Agents reply
+    /// directly to the given `reply` port; this method returns immediately.
+    pub(crate) fn send_wait_rank_status(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        procs: impl IntoIterator<Item = hyperactor_reference::ProcId>,
+        min_status: Status,
+        reply: hyperactor_reference::PortRef<crate::StatusOverlay>,
+    ) -> anyhow::Result<()> {
+        for proc_id in procs {
+            let (addr, proc_name) = (proc_id.addr().clone(), proc_id.name().to_string());
+            let proc_name = proc_name.parse::<Name>()?;
+            let host = HostRef(addr);
+            host.mesh_agent().send(
+                cx,
+                resource::WaitRankStatus {
+                    name: proc_name,
+                    min_status: min_status.clone(),
+                    reply: reply.clone(),
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     /// Get the state of all procs with Name in this host mesh.
     /// The procs iterator must be in rank order.
     /// The returned ValueMesh will have a non-empty inner state unless there
     /// was a timeout reaching the host mesh agent.
+    /// If keepalive is Some, tells the HostMeshAgent that the owner of
+    /// the proc mesh is still alive by sending a keepalive with the given expiry time.
     #[allow(clippy::result_large_err)]
     pub(crate) async fn proc_states(
         &self,
         cx: &impl context::Actor,
         procs: impl IntoIterator<Item = hyperactor_reference::ProcId>,
         region: Region,
+        keepalive: Option<std::time::SystemTime>,
     ) -> crate::Result<ValueMesh<resource::State<ProcState>>> {
         let (tx, mut rx) = cx.mailbox().open_port();
 
@@ -1604,17 +1634,24 @@ impl HostMeshRef {
             // If this proc dies or some other issue renders the reply undeliverable,
             // the reply does not need to be returned to the sender.
             reply.return_undeliverable(false);
-            host.mesh_agent()
-                .send(
+            let get_state = resource::GetState {
+                name: proc_name,
+                reply,
+            };
+            let result = if let Some(expires_after) = keepalive {
+                host.mesh_agent().send(
                     cx,
-                    resource::GetState {
-                        name: proc_name,
-                        reply,
+                    resource::KeepaliveGetState {
+                        expires_after,
+                        get_state,
                     },
                 )
-                .map_err(|e| {
-                    crate::Error::CallError(host.mesh_agent().actor_id().clone(), e.into())
-                })?;
+            } else {
+                host.mesh_agent().send(cx, get_state)
+            };
+            result.map_err(|e| {
+                crate::Error::CallError(host.mesh_agent().actor_id().clone(), e.into())
+            })?;
         }
 
         let mut states = Vec::with_capacity(num_ranks);
