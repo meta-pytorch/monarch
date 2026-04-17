@@ -1811,6 +1811,80 @@ class WrapperActor(Actor):
     # automatically stopped without needing to define one.
 
 
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+async def test_proc_mesh_churn_no_leaked_undeliverables():
+    """Regression test for cross-test cleanup races.
+
+    Fires concurrent `spawn_procs` / `stop` cycles for a fixed time
+    budget and then waits for pending async errors to surface on the
+    root client. A failure here means some part of `ProcMesh.stop()`
+    is letting in-flight messages race the shutdown of actors it owns
+    (e.g. the logger mesh), which would otherwise show up later as
+    "Unhandled monarch error on the root actor" in an unrelated test.
+
+    Concurrency is what exercises the race: several proc meshes are
+    simultaneously spawning, interacting with the comm actor, and
+    tearing down, which widens the window for a cast to overtake (or
+    be overtaken by) a stop signal.
+    """
+    failures: list[object] = []
+    iter_times: list[float] = []
+
+    original_hook = monarch.actor.unhandled_fault_hook
+
+    def capture(failure: object) -> None:
+        failures.append(failure)
+
+    async def _churn_one() -> None:
+        t0 = time.perf_counter()
+        procs = this_host().spawn_procs(per_host={"gpus": 4})
+        await procs.stop()
+        iter_times.append(time.perf_counter() - t0)
+
+    monarch.actor.unhandled_fault_hook = capture
+    t_start = time.perf_counter()
+    deadline = t_start + 30.0
+    in_flight: set[asyncio.Task[None]] = set()
+    max_in_flight = 10
+    try:
+        while time.perf_counter() < deadline:
+            task = asyncio.create_task(_churn_one())
+            in_flight.add(task)
+            task.add_done_callback(in_flight.discard)
+            while len(in_flight) >= max_in_flight:
+                await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+        if in_flight:
+            await asyncio.gather(*in_flight)
+        loop_wall = time.perf_counter() - t_start
+        # Allow any late-arriving undeliverables to surface before we
+        # assert. The error handler is invoked asynchronously by the
+        # RootClientActor's supervision path.
+        await asyncio.sleep(3)
+    finally:
+        monarch.actor.unhandled_fault_hook = original_hook
+
+    if iter_times:
+        sorted_times = sorted(iter_times)
+        n = len(sorted_times)
+        mean_ms = 1000 * sum(sorted_times) / n
+        p50_ms = 1000 * sorted_times[n // 2]
+        p95_ms = 1000 * sorted_times[min(n - 1, int(n * 0.95))]
+        print(
+            f"\nchurn-test: n={n} wall={loop_wall:.2f}s "
+            f"min={sorted_times[0] * 1000:.1f}ms "
+            f"p50={p50_ms:.1f}ms "
+            f"mean={mean_ms:.1f}ms "
+            f"p95={p95_ms:.1f}ms "
+            f"max={sorted_times[-1] * 1000:.1f}ms"
+        )
+
+    assert not failures, (
+        f"{len(failures)} unhandled fault(s) fired during proc-mesh churn: "
+        f"{[str(f) for f in failures]}"
+    )
+
+
 @parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 def test_recursive_stop():
