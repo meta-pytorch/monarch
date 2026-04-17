@@ -156,16 +156,25 @@ impl<A: Referable> ActorMesh<A> {
                 .map_err(|e| {
                     crate::Error::SendingError(controller.actor_id().clone(), Box::new(e))
                 })?;
-            let region = ndslice::view::Ranked::region(&self.current_ref);
+            // Wait for all actors to reach terminal state by sending
+            // WaitRankStatus to the controller, which forwards it to ProcAgents.
+            let region = ndslice::view::Ranked::region(&self.current_ref).clone();
             let num_ranks = region.num_ranks();
-            // Wait for the controller to report all actors have stopped.
-            let (port, mut rx) = cx.mailbox().open_port();
+
+            let (port, rx) = cx.mailbox().open_accum_port_opts(
+                crate::StatusMesh::from_single(region.clone(), resource::Status::NotExist),
+                hyperactor::accum::StreamingReducerOpts {
+                    max_update_interval: Some(Duration::from_millis(50)),
+                    initial_update_interval: None,
+                },
+            );
 
             controller
                 .send(
                     cx,
-                    resource::GetState::<resource::mesh::State<()>> {
+                    resource::WaitRankStatus {
                         name: self.name.clone(),
+                        min_status: resource::Status::Stopped,
                         reply: port.bind(),
                     },
                 )
@@ -173,29 +182,30 @@ impl<A: Referable> ActorMesh<A> {
                     crate::Error::SendingError(controller.actor_id().clone(), Box::new(e))
                 })?;
 
-            let statuses = rx.recv().await?;
-            if let Some(state) = &statuses.state {
-                // Check that all actors are in a terminating state (Stopping
-                // or beyond). The actual wait for full cleanup (terminal)
-                // happens in _drain_and_stop via the controller's status watch.
-                let all_stopped = state.statuses.values().all(|s| s.is_terminating());
-                if all_stopped {
-                    Ok(())
-                } else {
+            let max_idle = hyperactor_config::global::get(GET_ACTOR_STATE_MAX_IDLE);
+            match resource::GetRankStatus::wait(rx, num_ranks, max_idle, region.clone()).await {
+                Ok(statuses) => {
+                    let all_stopped = statuses.values().all(|s| s.is_terminating());
+                    if !all_stopped {
+                        let legacy = mesh_to_rankedvalues_with_default(
+                            &statuses,
+                            resource::Status::NotExist,
+                            resource::Status::is_not_exist,
+                            num_ranks,
+                        );
+                        return Err(Error::ActorStopError { statuses: legacy });
+                    }
+                }
+                Err(complete) => {
                     let legacy = mesh_to_rankedvalues_with_default(
-                        &state.statuses,
-                        resource::Status::NotExist,
+                        &complete,
+                        resource::Status::Timeout(Duration::ZERO),
                         resource::Status::is_not_exist,
                         num_ranks,
                     );
-                    Err(Error::ActorStopError { statuses: legacy })
+                    return Err(Error::ActorStopError { statuses: legacy });
                 }
-            } else {
-                Err(Error::Other(anyhow::anyhow!(
-                    "non-existent state in GetState reply from controller: {}",
-                    controller.actor_id()
-                )))
-            }?;
+            }
             // Update health state with the new statuses.
             let mut entry = self.health_state.entry(cx).or_default();
             let health_state = entry.get_mut();
