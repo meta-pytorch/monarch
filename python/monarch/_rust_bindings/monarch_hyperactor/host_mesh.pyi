@@ -62,6 +62,19 @@ class HostMesh:
         """
         ...
 
+    def with_env(self, env: dict[str, str]) -> "HostMesh":
+        """
+        Return a new HostMesh (as a reference) whose bootstrap command is
+        the existing bootstrap command (or the Python default when none
+        is set) with the given env merged on top. Keys in ``env`` override
+        any conflicting keys in the base environment. Does not mutate the
+        original mesh.
+
+        Arguments:
+        - `env`: Additional environment variables to merge.
+        """
+        ...
+
     def sliced(self, region: Region) -> "HostMesh":
         """
         Slice this mesh into a new mesh with the given region.

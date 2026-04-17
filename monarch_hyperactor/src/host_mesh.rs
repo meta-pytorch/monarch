@@ -204,6 +204,26 @@ impl PyHostMesh {
         }
     }
 
+    /// Return a new `HostMesh` (as a `Ref`) whose bootstrap command
+    /// is derived from the existing one (or the Python default when
+    /// none is set) with `env` merged on top. Keys in `env` override
+    /// any conflicting keys in the base environment. Does not mutate
+    /// the original mesh.
+    fn with_env(&self, py: Python<'_>, env: HashMap<String, String>) -> PyResult<Self> {
+        let mesh_ref = self.mesh_ref()?;
+        let base = match mesh_ref.bootstrap_command.clone() {
+            Some(cmd) => cmd,
+            None => PyBootstrapCommand::default(py)?.borrow().to_rust(),
+        };
+        let mut merged_env = base.env.clone();
+        merged_env.extend(env);
+        let new_cmd = BootstrapCommand {
+            env: merged_env,
+            ..base
+        };
+        Ok(Self::new_ref(mesh_ref.with_bootstrap(new_cmd)))
+    }
+
     fn sliced(&self, region: &PyRegion) -> PyResult<Self> {
         Ok(Self::new_ref(
             self.mesh_ref()?.sliced(region.as_inner().clone()),
