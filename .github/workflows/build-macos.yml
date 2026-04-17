@@ -1,0 +1,85 @@
+name: Build macOS Wheels
+
+on:
+  workflow_call:
+    inputs:
+      python-versions:
+        description: 'JSON array of Python versions to build (e.g., ["3.10", "3.11", "3.12", "3.13"])'
+        type: string
+        default: '["3.10", "3.11", "3.12", "3.13"]'
+      torch-spec:
+        description: 'Torch installation specification'
+        type: string
+        default: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu'
+      runner:
+        description: 'macOS runner to use'
+        type: string
+        default: 'macos-latest'
+      version:
+        description: 'Version string for the wheel (default: $current_version.dev<date>)'
+        type: string
+        default: ''
+      timeout:
+        description: 'Job timeout in minutes'
+        type: number
+        default: 60
+
+jobs:
+  build:
+    name: cpu-py${{ matrix.python-version }}-macos
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJson(inputs.python-versions) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install macOS build dependencies
+        shell: bash
+        run: |
+          set -eux
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew install protobuf
+
+      - name: Build macOS wheel
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
+          USE_TENSOR_ENGINE: "0"
+        run: |
+          set -eux
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade "setuptools>=77" wheel
+          python -m pip install -r build-requirements.txt
+          python -m pip install ${{ inputs.torch-spec }}
+
+          if [ -n "${{ inputs.version }}" ]; then
+            export MONARCH_VERSION="${{ inputs.version }}"
+          else
+            export MONARCH_VERSION=0.5.0.dev$(date +'%Y%m%d')
+          fi
+
+          python setup.py bdist_wheel
+          ls -la dist/
+          python -m pip install dist/*.whl
+          python -c "import monarch"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: monarch-py${{ matrix.python-version }}-cpu-macos
+          path: dist/*.whl
+          if-no-files-found: error
