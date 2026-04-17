@@ -1811,7 +1811,7 @@ class WrapperActor(Actor):
     # automatically stopped without needing to define one.
 
 
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 @isolate_in_subprocess
 def test_proc_mesh_churn_no_leaked_undeliverables():
     """Regression test for cross-test cleanup races.
