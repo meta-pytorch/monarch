@@ -9,6 +9,8 @@
 """Tests for distributed telemetry with automatic callback registration."""
 
 import json
+import time
+import unittest.mock
 from typing import cast
 
 import monarch.distributed_telemetry.actor as telemetry_actor
@@ -1543,7 +1545,6 @@ def test_json_columns_are_valid_json() -> None:
 @isolate_in_subprocess
 def test_per_table_row_retention(cleanup_callbacks) -> None:
     """Test that time-based retention deletes old rows from message tables."""
-    import time
 
     # Use a 1-second retention window so rows expire quickly.
     with scoped_state(
@@ -1576,6 +1577,62 @@ def test_per_table_row_retention(cleanup_callbacks) -> None:
         assert after_count < before_count, (
             f"Expected fewer rows after retention, got {after_count} vs {before_count}"
         )
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
+    """Test that scan completes with partial results when a child times out.
+
+    Stops a child proc mesh and patches the scan timeout to a short value,
+    then verifies the query completes within a bounded time instead of hanging.
+    """
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="timeout_test_procs"
+        )
+
+        workers = worker_procs.spawn("timeout_test_worker", WorkerActor)
+        workers.initialized.get()
+        workers.ping.call().get()
+
+        # Verify data exists before stopping
+        result = engine.query(
+            "SELECT full_name FROM actors WHERE full_name LIKE '%timeout_test_worker%'"
+        )
+        pre_count = len(result.to_pydict().get("full_name", []))
+        assert pre_count > 0, "Expected timeout_test_worker actors before stopping"
+
+        # Stop the proc mesh to kill child telemetry actors
+        worker_procs.stop().get()
+
+        # Patch the timeout to a short value so the test doesn't wait 10s
+        with unittest.mock.patch.object(
+            telemetry_actor, "_SCAN_CHILD_TIMEOUT_SECS", 1.0
+        ):
+            start = time.monotonic()
+            result = engine.query("SELECT * FROM actors")
+            elapsed = time.monotonic() - start
+
+            # The query should complete — not hang forever
+            result_dict = result.to_pydict()
+            actor_count = len(result_dict.get("id", []))
+            assert actor_count > 0, (
+                f"Expected actors in result after child timeout, got {actor_count}"
+            )
+
+            # Should complete well within the test timeout (60s).
+            # With a 1s scan timeout, expect completion in a few seconds.
+            assert elapsed < 15, (
+                f"Query took {elapsed:.1f}s — expected it to complete quickly "
+                f"with 1s child scan timeout"
+            )
 
 
 # --- Snapshot integration tests ---

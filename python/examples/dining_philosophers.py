@@ -169,10 +169,6 @@ async def async_main(
     state = job.state(cached_path=None)
     host = state.hosts
 
-    telemetry_url = state.telemetry_url
-    if telemetry_url is not None:
-        print(f"  - Dashboard:     {telemetry_url}")
-
     admin_url = state.admin_url
     assert admin_url is not None
     mtls_flags = (
