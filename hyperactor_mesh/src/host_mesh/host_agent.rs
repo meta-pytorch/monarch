@@ -1144,6 +1144,15 @@ impl Handler<ShutdownHost> for HostAgent {
         // tear down the host's networking prematurely.
         msg.ack.send(cx, ())?;
 
+        // Flush outgoing messages so the ack is wire-delivered before
+        // we signal the bootstrap loop to exit. Without this, the
+        // bootstrap's process::exit(0) can kill the buffer drain task
+        // before the ack reaches the client, leaving it with a broken
+        // link and an undeliverable ShutdownHost 30 s later.
+        if let Err(e) = cx.proc().flush().await {
+            tracing::warn!("failed to flush outgoing messages after ShutdownHost ack: {e}");
+        }
+
         // Drop the host and signal the bootstrap loop to drain the
         // mailbox and exit.
         match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
