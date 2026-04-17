@@ -6,97 +6,27 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::fmt;
-use std::fmt::Write;
 use std::hash::Hasher;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 
 use fxhash::FxHasher32;
+pub use monarch_types::ReduceOp;
+pub use monarch_types::UniqueId;
 use nccl_sys::*;
-use serde::Deserialize;
-use serde::Serialize;
-use thiserror::Error;
 use torch_sys2::CudaDevice;
-use torch_sys2::DeviceType;
-use torch_sys2::ScalarType;
 use torch_sys2::Tensor;
 use torch_sys2::TensorCell;
 use torch_sys2::factory_float_tensor;
 use torch_sys2::is_float8_type;
 
-use crate::cuda::CudaError;
 use crate::cuda::Stream;
 use crate::cuda::set_device;
-
-/// Corresponds to ncclResult_t error cases
-#[derive(Debug, Error)]
-pub enum RawNcclError {
-    #[error("a call to a CUDA function failed")]
-    UnhandledCudaError,
-    #[error("a call to the system failed")]
-    SystemError,
-    #[error("an internal check failed; either bug in nccl or memory corruption")]
-    InternalError,
-    #[error("an argument has an invalid value")]
-    InvalidArgument,
-    #[error("a call to NCCL is incorrect, usually a programming error")]
-    InvalidUsage,
-    #[error(
-        "a call failed possibly due to a network error or a remote process exiting prematurely"
-    )]
-    RemoteError,
-}
-
-/// Types of errors that the safe [`Communicator`] API can return.
-#[derive(Debug, Error)]
-pub enum NcclError {
-    #[error("a NCCL-level error: {0:?}")]
-    NcclError(#[from] RawNcclError),
-
-    #[error("a CUDA-level error: {0:?}")]
-    CudaError(#[from] CudaError),
-
-    #[error("invalid NCCL data type: {0:#?}")]
-    InvalidDataType(ScalarType),
-
-    #[error("tensor used in collective must be contiguous")]
-    NoncontiguousTensor,
-
-    // TODO would be nice to get real device printouts
-    #[error("tensor must be on CUDA device, got: {0:?}")]
-    InvalidDevice(DeviceType),
-
-    #[error("got sparse tensor, only dense tensors allowed")]
-    InvalidSparseTensor,
-
-    #[error("float8 dtypes are not currently supported for NCCL reductions")]
-    Float8Reduction,
-
-    #[error("output tensor must have the same type as input tensor")]
-    TypeMismatch,
-
-    #[error("output tensor size must be equal to world size times input tensor size")]
-    OutputSizeMismatch,
-
-    #[error("input tensor must be the same size as output size times world size")]
-    InputSizeMismatch,
-
-    #[error("ranks passed should be within the global world_size, got: {0:#?}")]
-    InvalidSplit(Vec<i32>),
-
-    #[error("undefined tensor used for NCCL operation")]
-    UndefinedTensor,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NcclStatus {
-    /// Function succeeded.
-    Success,
-    /// A NCCL operation on the communicator is being enqueued and is being
-    /// progressed in the background.
-    InProgress,
-}
+pub use crate::nccl_common::DataType;
+pub use crate::nccl_common::NcclError;
+pub use crate::nccl_common::NcclGroupTicket;
+pub use crate::nccl_common::NcclStatus;
+pub use crate::nccl_common::RawNcclError;
 
 fn nccl_check(result: ncclResult_t) -> Result<NcclStatus, RawNcclError> {
     match result.0 {
@@ -110,18 +40,6 @@ fn nccl_check(result: ncclResult_t) -> Result<NcclStatus, RawNcclError> {
         7 => Ok(NcclStatus::InProgress),
         _ => panic!("Unknown ncclResult_t: {:?}", result.0),
     }
-}
-
-/// A ticket that we use to link group start/end calls. Does not implement
-/// `Send`, to enforce that group start and end calls are on the same thread.
-// This isn't an RAII guard because ncclGroupEnd can raise errors.
-//
-// TODO: technically anyone can manufacture a ticket to pass to group_end. We
-// can prevent this by checking thread id or something, but seems unnecessary;
-// you'd really have to be trying to mess things up.
-pub struct NcclGroupTicket {
-    // marker to disable Send on this type.
-    unsend_marker: PhantomData<*const ()>,
 }
 
 /// Start a new NCCL group. All NCCL calls within this group will be combined,
@@ -141,58 +59,31 @@ pub fn group_end(_ticket: NcclGroupTicket) -> Result<(), NcclError> {
     Ok(())
 }
 
-/// Binding for `ncclUniqueId`.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct UniqueId {
-    inner: ncclUniqueId,
+/// Extension trait providing NCCL-specific operations on `UniqueId`.
+pub trait UniqueIdExt {
+    /// Create a new `UniqueId` using the NCCL runtime.
+    fn new_nccl() -> Result<UniqueId, RawNcclError>;
+
+    /// Convert to the raw `ncclUniqueId` for FFI calls.
+    fn to_nccl(&self) -> ncclUniqueId;
 }
 
-impl fmt::Debug for UniqueId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UniqueId")
-            .field(
-                "inner",
-                &format_args!(
-                    "{}",
-                    self.inner
-                        .internal
-                        .iter()
-                        .fold(String::new(), |mut output, b| {
-                            let _ = write!(output, "{:02x}", b);
-                            output
-                        })
-                ),
-            )
-            .finish()
-    }
-}
-
-impl UniqueId {
-    /// Create a new `UniqueId`.
-    pub fn new() -> Result<Self, RawNcclError> {
+impl UniqueIdExt for UniqueId {
+    fn new_nccl() -> Result<UniqueId, RawNcclError> {
         let mut inner = MaybeUninit::uninit();
         // Safety: intended usage of this function
         let inner = unsafe {
             nccl_check(ncclGetUniqueId(inner.as_mut_ptr()))?;
             inner.assume_init()
         };
-        Ok(Self { inner })
+        Ok(UniqueId::from_internal(inner.internal))
     }
-}
 
-/// Rust version of `ncclDataType_t`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DataType {
-    Int8 = 0,
-    Uint8 = 1,
-    Int32 = 2,
-    Uint32 = 3,
-    Int64 = 4,
-    Uint64 = 5,
-    Float16 = 6,
-    Float32 = 7,
-    Float64 = 8,
-    Bfloat16 = 9,
+    fn to_nccl(&self) -> ncclUniqueId {
+        ncclUniqueId {
+            internal: *self.internal(),
+        }
+    }
 }
 
 impl From<DataType> for ncclDataType_t {
@@ -201,43 +92,8 @@ impl From<DataType> for ncclDataType_t {
     }
 }
 
-impl TryFrom<ScalarType> for DataType {
-    type Error = NcclError;
-
-    fn try_from(value: ScalarType) -> Result<Self, Self::Error> {
-        match value {
-            ScalarType::Char => Ok(DataType::Int8),
-            ScalarType::Byte => Ok(DataType::Uint8),
-            ScalarType::Half => Ok(DataType::Float16),
-            ScalarType::Float => Ok(DataType::Float32),
-            ScalarType::Double => Ok(DataType::Float64),
-            ScalarType::Int => Ok(DataType::Int32),
-            ScalarType::Long => Ok(DataType::Int64),
-            ScalarType::Bool => Ok(DataType::Uint8),
-            ScalarType::BFloat16 => Ok(DataType::Bfloat16),
-            ScalarType::Float8_e5m2 => Ok(DataType::Uint8),
-            ScalarType::Float8_e4m3fn => Ok(DataType::Uint8),
-            ScalarType::Float8_e4m3fnuz => Ok(DataType::Uint8),
-            ScalarType::Float8_e5m2fnuz => Ok(DataType::Uint8),
-            _ => Err(NcclError::InvalidDataType(value)),
-        }
-    }
-}
-
-/// Rust version of `ncclRedOp_t`.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
-pub enum ReduceOp {
-    Sum = 0,
-    Prod = 1,
-    Max = 2,
-    Min = 3,
-    Avg = 4,
-}
-
-impl From<ReduceOp> for ncclRedOp_t {
-    fn from(reduce_op: ReduceOp) -> Self {
-        Self(reduce_op as std::os::raw::c_uint)
-    }
+fn reduce_op_to_nccl(reduce_op: ReduceOp) -> ncclRedOp_t {
+    ncclRedOp_t(reduce_op as std::os::raw::c_uint)
 }
 
 fn check_tensor(tensor: &Tensor, is_p2p: bool) -> Result<(), NcclError> {
@@ -310,7 +166,7 @@ impl Communicator {
             nccl_check(ncclCommInitRank(
                 inner.as_mut_ptr(),
                 world_size,
-                unique_id.inner,
+                unique_id.to_nccl(),
                 rank,
             ))?;
             inner.assume_init()
@@ -403,7 +259,7 @@ impl Communicator {
                 tensor.mut_data_ptr(),
                 tensor.numel() as usize,
                 data_type.into(),
-                reduce_op.into(),
+                reduce_op_to_nccl(reduce_op),
                 self.inner,
                 stream.stream(),
             ))?)
@@ -460,7 +316,7 @@ impl Communicator {
                 tensor.mut_data_ptr(),
                 tensor.numel() as usize,
                 data_type.into(),
-                reduce_op.into(),
+                reduce_op_to_nccl(reduce_op),
                 root,
                 self.inner,
                 stream.stream(),
@@ -617,7 +473,7 @@ impl Communicator {
                 output.mut_data_ptr(),
                 output.numel() as usize,
                 data_type.into(),
-                reduce_op.into(),
+                reduce_op_to_nccl(reduce_op),
                 self.inner,
                 stream.stream(),
             ))?)
@@ -749,7 +605,7 @@ impl Communicator {
                 tensor.mut_data_ptr(),
                 tensor.numel() as usize,
                 data_type.into(),
-                ReduceOp::Sum.into(),
+                reduce_op_to_nccl(ReduceOp::Sum),
                 self.inner,
                 stream.stream(),
             ))?)
@@ -757,7 +613,7 @@ impl Communicator {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use pyo3::Python;
     use torch_sys2::CudaDevice;
@@ -769,6 +625,7 @@ mod tests {
 
     use super::*;
     use crate::cuda::set_device;
+    use crate::nccl::UniqueIdExt;
 
     /// Initialize Python and import torch in a separate thread.
     /// This is a workaround for a pybind11 bug in PyTorch.
@@ -785,7 +642,7 @@ mod tests {
     #[test]
     fn all_reduce() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -811,7 +668,7 @@ mod tests {
     #[test]
     fn broadcast() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -836,7 +693,7 @@ mod tests {
     #[test]
     fn reduce() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -865,7 +722,7 @@ mod tests {
     #[test]
     fn all_gather_into_tensor() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -900,7 +757,7 @@ mod tests {
     #[test]
     fn send_recv() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         let unique_id_ = unique_id.clone();
         handles.push(std::thread::spawn(move || {
@@ -936,7 +793,7 @@ mod tests {
     #[test]
     fn all_to_all_single() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -974,7 +831,7 @@ mod tests {
     #[test]
     fn reduce_scatter_tensor() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -1009,7 +866,7 @@ mod tests {
     #[test]
     fn split_from() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();

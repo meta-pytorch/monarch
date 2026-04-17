@@ -22,6 +22,11 @@ from monarch.builtins.random import (
 )
 from monarch.common.device_mesh import no_mesh
 
+needs_cuda = pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="CUDA not available",
+)
+
 
 @pytest.mark.timeout(120)
 class TestRandomFunctions:
@@ -128,6 +133,7 @@ class TestRandomFunctions:
                     assert not torch.equal(result[0], result[1])
                     assert not torch.equal(result[1], result[2])
 
+    @needs_cuda
     def test_get_rng_state_all_cuda(self):
         NUM_GPUS = 1
         with self.local_device_mesh(1, NUM_GPUS) as device_mesh:
@@ -139,6 +145,7 @@ class TestRandomFunctions:
                     assert isinstance(result, list)
                     assert len(result) == NUM_GPUS
 
+    @needs_cuda
     def test_set_rng_state_all_cuda(self):
         with self.local_device_mesh(1, 1) as device_mesh:
             with device_mesh.activate():
@@ -155,11 +162,13 @@ class TestRandomFunctions:
                 with no_mesh.activate():
                     assert torch.equal(result[0], result[1])
 
+    @needs_cuda
     def test_cuda_manual_seed(self):
         with self.local_device_mesh(1, 1) as device_mesh:
             with device_mesh.activate():
                 self._cuda_seed_test(manual_seed_cuda_remote)
 
+    @needs_cuda
     def test_cuda_manual_seed_all(self):
         with self.local_device_mesh(1, 1) as device_mesh:
             with device_mesh.activate():

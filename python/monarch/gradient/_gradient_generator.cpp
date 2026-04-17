@@ -234,8 +234,13 @@ struct CompareNode {
   bool operator()(
       const std::pair<int, NodeState*>& a,
       const std::pair<int, NodeState*>& b) {
-    if (a.first > b.first) {
-      return true;
+    // Order by stage ascending; only fall back to sequence_nr when stages
+    // are equal. Without this guard, a lower-stage entry can sort after a
+    // higher-stage one, which causes `next()` to yield results_ buffers
+    // before all stage-N producers have run, surfacing as spurious `None`
+    // gradients.
+    if (a.first != b.first) {
+      return a.first > b.first;
     }
     return a.second->node->sequence_nr() < b.second->node->sequence_nr();
   }

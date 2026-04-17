@@ -3894,8 +3894,8 @@ mod tests {
         handle.await;
     }
 
-    // Tokio's I/O driver is not fork-safe on macOS, and this test validates
-    // termination by forking without a coordinator.
+    // Tokio's I/O driver is not fork-safe on macOS, and this test intentionally
+    // validates process termination by forking without a coordinator.
     #[cfg_attr(target_os = "macos", ignore = "tokio runtime fork assertion on macOS")]
     #[tokio::test]
     async fn test_proc_terminate_without_coordinator() {
