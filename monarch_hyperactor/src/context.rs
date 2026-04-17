@@ -153,6 +153,11 @@ impl<I: context::Actor<A = PythonActor>> From<I> for PyInstance {
 pub struct PyContext {
     instance: Py<PyInstance>,
     rank: Point,
+    /// Cloneable handle to a span carrying the actor's recording key.
+    /// When entered, events emitted under this span are captured by
+    /// the per-actor flight recorder. `None` for bootstrap/client
+    /// contexts that are not actor handler execution paths.
+    recording_span: Option<tracing::Span>,
 }
 
 #[pymethods]
@@ -174,6 +179,7 @@ impl PyContext {
         Ok(PyContext {
             instance: instance.into_pyobject(py)?.into(),
             rank: Extent::unity().point_of_rank(0).unwrap(),
+            recording_span: None,
         })
     }
 
@@ -185,6 +191,7 @@ impl PyContext {
         Ok(PyContext {
             instance: instance.into_pyobject(py)?.into(),
             rank: Extent::unity().point_of_rank(0).unwrap(),
+            recording_span: None,
         })
     }
 }
@@ -197,7 +204,26 @@ impl PyContext {
         PyContext {
             instance,
             rank: cx.cast_point(),
+            recording_span: Some(cx.recording_span()),
         }
+    }
+
+    /// The actor's recording span, if this context is an actor handler
+    /// execution path. Used by `forward_to_tracing` to enter the
+    /// recording scope on the asyncio thread so that log events are
+    /// captured in the flight recorder.
+    pub(crate) fn recording_span(&self) -> Option<&tracing::Span> {
+        self.recording_span.as_ref()
+    }
+
+    /// Test-only: build a PyContext with a chosen recording span.
+    /// Uses the root client actor for the instance field (the test
+    /// only exercises the recording_span extraction path).
+    #[doc(hidden)]
+    pub fn for_test(py: Python<'_>, recording_span: Option<tracing::Span>) -> PyResult<PyContext> {
+        let mut ctx = Self::_root_client_context(py)?;
+        ctx.recording_span = recording_span;
+        Ok(ctx)
     }
 }
 

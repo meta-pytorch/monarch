@@ -35,6 +35,21 @@
 //!   under different parents get distinct pids but the same name
 //!   prefix.
 //!
+//! ## Flight recorder span invariants (FR-*)
+//!
+//! - **FR-1 (recording-span route equivalence):**
+//!   `Instance::recording_span()` returns a span bound to the same
+//!   actor-local `Recording` consumed by handler instrumentation and
+//!   introspection. Events emitted under that span land in the same
+//!   flight-recorder ring buffer returned by `introspect_payload()`.
+//! - **FR-2 (recording-span rootness):** Every span returned by
+//!   `Instance::recording_span()` is a fresh root span (`parent:
+//!   None`). Ambient tracing context does not cause events emitted
+//!   under that span to route into a parent actor's flight recorder.
+//! - **FR-3 (fresh-handle, stable-destination):** Repeated calls to
+//!   `Instance::recording_span()` return distinct span handles, but
+//!   all target the same underlying actor recording.
+//!
 //! ## Queue depth accounting invariants (PD-5*)
 //!
 //! - **PD-5a:** Per-actor queue depth counts work items enqueued for
@@ -1579,6 +1594,12 @@ impl<A: Actor> Instance<A> {
     /// requests, not for hot paths.
     pub fn introspect_payload(&self) -> crate::introspect::IntrospectResult {
         crate::introspect::live_actor_payload(&self.inner.cell)
+    }
+
+    /// Return a fresh tracing span bound to this actor's flight
+    /// recorder. See FR-1, FR-2, FR-3 in module doc.
+    pub fn recording_span(&self) -> tracing::Span {
+        self.inner.cell.recording().span()
     }
 
     /// Publish domain-specific properties for introspection.

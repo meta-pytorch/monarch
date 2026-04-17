@@ -7,3 +7,4 @@
  */
 
 mod code_sync;
+mod telemetry;

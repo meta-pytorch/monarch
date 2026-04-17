@@ -40,12 +40,18 @@ so the full dashboard UI is available out of the box.
 
 import argparse
 import asyncio
+import logging
 from enum import auto, Enum
 from typing import Any, cast
 
 from monarch._src.actor.actor_mesh import ActorMesh
+from monarch._src.actor.telemetry import TracingForwarder
 from monarch.actor import Actor, current_rank, endpoint
 from monarch.job import ProcessJob, TelemetryConfig
+
+logger = logging.getLogger("dining_philosophers")
+logger.addHandler(TracingForwarder())
+logger.setLevel(logging.INFO)
 
 
 class ChopstickStatus(Enum):
@@ -103,9 +109,8 @@ class Philosopher(Actor):
             and self.right_status == ChopstickStatus.GRANTED
         ):
             self.meals_eaten += 1
-            print(
-                f"philosopher {self.rank} is eating (meal {self.meals_eaten})",
-                flush=True,
+            logger.info(
+                "philosopher %d is eating (meal %d)", self.rank, self.meals_eaten
             )
             await asyncio.sleep(1)  # savor the meal
             await self._release_chopsticks()
@@ -128,14 +133,19 @@ class Waiter(Actor):
     def _try_grant(self, rank: int, chopstick: int) -> None:
         if chopstick not in self.assignments:
             self.assignments[chopstick] = rank
+            logger.info("granted chopstick %d to philosopher %d", chopstick, rank)
             self.philosophers.slice(replica=rank).grant_chopstick.broadcast(chopstick)
         else:
+            logger.info("chopstick %d busy, philosopher %d queued", chopstick, rank)
             self.requests[chopstick] = rank
 
     def _release(self, chopstick: int) -> None:
         self.assignments.pop(chopstick, None)
         if chopstick in self.requests:
             rank = self.requests.pop(chopstick)
+            logger.info(
+                "chopstick %d released, granting to philosopher %d", chopstick, rank
+            )
             self._try_grant(rank, chopstick)
 
     @endpoint
