@@ -169,7 +169,7 @@ impl Borrow {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use std::collections::HashMap;
 

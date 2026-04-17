@@ -34,7 +34,7 @@ timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [features]
 cuda = []
-default = ["cuda"]
+default = []
 
 [lints]
 rust = { unexpected_cfgs = { check-cfg = ["cfg(test_8_gpus)"], level = "warn" } }

@@ -54,7 +54,6 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
           RUSTFLAGS: --cfg tracing_unstable
-          USE_TENSOR_ENGINE: "0"
         run: |
           set -eux
           cargo nextest run --workspace --profile ci \
