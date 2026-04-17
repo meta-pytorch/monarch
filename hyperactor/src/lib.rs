@@ -81,6 +81,7 @@ pub mod reference;
 pub mod remote;
 mod signal_handler;
 mod stdio_redirect;
+pub mod subject;
 pub mod supervision;
 pub mod sync;
 /// Test utilities.
