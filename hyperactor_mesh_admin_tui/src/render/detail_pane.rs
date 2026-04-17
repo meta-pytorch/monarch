@@ -347,6 +347,23 @@ fn render_proc_detail(
         ),
         scheme,
     ));
+    // Retained queue-pressure evidence (PD-6, PD-7).
+    if debug.actor_work_queue_depth_high_water_mark > 0 {
+        lines.push(detail_line(
+            l.peak_depth,
+            debug.actor_work_queue_depth_high_water_mark.to_string(),
+            scheme,
+        ));
+    }
+    lines.push(detail_line(
+        l.last_busy,
+        match debug.last_nonzero_queue_depth_age_ms {
+            None => "never".to_string(),
+            Some(ms) if ms < 1000 => format!("{}ms ago", ms),
+            Some(ms) => format!("{}s ago", ms / 1000),
+        },
+        scheme,
+    ));
     lines.push(detail_line(
         l.data_as_of,
         format_system_time_relative(&payload.as_of),
@@ -845,6 +862,8 @@ mod tests {
                     },
                     actor_work_queue_depth_total: 42,
                     actor_work_queue_depth_max: 7,
+                    actor_work_queue_depth_high_water_mark: 100,
+                    last_nonzero_queue_depth_age_ms: Some(3000),
                 },
             },
             children: vec![],

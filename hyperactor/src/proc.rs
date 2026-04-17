@@ -50,6 +50,30 @@
 //!   counter are two consumers of one accounting path. The
 //!   `account_enqueue` / `account_dequeue` helpers update both
 //!   together so they cannot drift.
+//!
+//! ## Retained queue-pressure invariants (PD-6 through PD-9)
+//!
+//! `ProcQueueStats` holds proc-level retained evidence of queue
+//! pressure. These are runtime-driven (not publish-time sampled)
+//! so they capture between-publish bursts.
+//!
+//! - **PD-6:** `high_water_mark >= running_total` eventually.
+//!   Because `running_total` is incremented before `high_water_mark`
+//!   is updated, a concurrent reader may transiently observe
+//!   `total > high_water_mark`. This is a sampling artifact, not
+//!   an accounting error.
+//! - **PD-7:** `last_nonzero_age_ms() == None` iff proc queue
+//!   depth has never been non-zero since startup. The timestamp
+//!   is updated on enqueue and on dequeue when the queue remains
+//!   non-zero, so it reflects the last observed non-zero state.
+//! - **PD-8:** transient bursts that drain before publish still
+//!   update both the high-water mark and the last-nonzero state.
+//! - **PD-9:** `last_nonzero_age_ms()` is expected to be
+//!   non-decreasing during quiet periods, but this is not a hard
+//!   guarantee — the implementation uses `SystemTime` (wall clock),
+//!   which can move backward on NTP adjustments. Callers should
+//!   treat the age as best-effort telemetry, not a monotonic
+//!   invariant.
 
 use std::any::Any;
 use std::any::TypeId;
@@ -124,6 +148,7 @@ use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::Mailbox;
+use crate::mailbox::MailboxClient;
 use crate::mailbox::MailboxMuxer;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MailboxServer as _;
@@ -138,20 +163,129 @@ use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
 
-/// Single accounting path for actor work-queue depth. Two consumers:
-/// introspection-readable `queue_depth` state and OTel telemetry
-/// export. Unifying the update in one helper ensures they cannot
-/// drift (PD-5b/PD-5c).
-fn account_enqueue(queue_depth: &AtomicU64, actor_id: &str) {
+/// Returns current epoch-millis from wall clock. Used by
+/// `ProcQueueStats` for timestamp recording. In tests, override
+/// via `ProcQueueStats::with_clock` to get deterministic behavior.
+fn wall_clock_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Proc-level retained queue-pressure state (PD-6 through PD-9).
+///
+/// Runtime-driven and updated from the enqueue/dequeue accounting
+/// path, not from publish-time sampling. These metrics preserve
+/// between-publish queue-pressure evidence that instantaneous
+/// sampling misses.
+pub(crate) struct ProcQueueStats {
+    /// Proc-wide running total of queued work items. Incremented on
+    /// enqueue, decremented on dequeue. O(1) alternative to iterating
+    /// per-actor depths.
+    running_total: AtomicU64,
+    /// Maximum proc-wide queue depth observed since startup (PD-6).
+    high_water_mark: AtomicU64,
+    /// Epoch-millis of the most recent moment when proc-wide queue
+    /// depth was observed non-zero (PD-7). Sentinel 0 means never.
+    /// Updated on enqueue and on dequeue when the queue remains
+    /// non-zero, so the age reflects the last observed non-zero
+    /// state rather than merely the last enqueue.
+    last_nonzero_epoch_ms: AtomicU64,
+    /// Clock function for timestamps. Defaults to `wall_clock_epoch_ms`.
+    /// Tests can override via `with_clock` for deterministic behavior.
+    clock: fn() -> u64,
+}
+
+impl ProcQueueStats {
+    fn new() -> Self {
+        Self {
+            running_total: AtomicU64::new(0),
+            high_water_mark: AtomicU64::new(0),
+            last_nonzero_epoch_ms: AtomicU64::new(0),
+            clock: wall_clock_epoch_ms,
+        }
+    }
+
+    /// Create with a custom clock for testing.
+    #[cfg(test)]
+    fn with_clock(clock: fn() -> u64) -> Self {
+        Self {
+            running_total: AtomicU64::new(0),
+            high_water_mark: AtomicU64::new(0),
+            last_nonzero_epoch_ms: AtomicU64::new(0),
+            clock,
+        }
+    }
+
+    /// Current epoch-millis from this instance's clock.
+    fn now_ms(&self) -> u64 {
+        (self.clock)()
+    }
+
+    /// Current proc-wide running total.
+    pub(crate) fn running_total(&self) -> u64 {
+        self.running_total.load(Ordering::Relaxed)
+    }
+
+    /// Maximum proc-wide queue depth since startup (PD-6).
+    pub(crate) fn high_water_mark(&self) -> u64 {
+        self.high_water_mark.load(Ordering::Relaxed)
+    }
+
+    /// How long ago proc-wide queue depth was last observed non-zero
+    /// (PD-7). `None` means no counted actor work has traversed the
+    /// queue accounting path since startup. Uses the configured clock
+    /// (wall clock in production, injectable in tests).
+    pub(crate) fn last_nonzero_age_ms(&self) -> Option<u64> {
+        let ts = self.last_nonzero_epoch_ms.load(Ordering::Relaxed);
+        if ts == 0 {
+            return None;
+        }
+        Some(self.now_ms().saturating_sub(ts))
+    }
+}
+
+/// Single accounting path for actor work-queue enqueue.
+///
+/// Updates three consumers together: per-actor `queue_depth`,
+/// proc-level retained queue-pressure state (`ProcQueueStats`),
+/// and OTel `ACTOR_MESSAGE_QUEUE_SIZE`. Unifying the update
+/// here ensures they cannot drift.
+fn account_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_id: &str) {
     queue_depth.fetch_add(1, Ordering::Relaxed);
+    let new_total = proc_stats.running_total.fetch_add(1, Ordering::Relaxed) + 1;
+    // PD-6: update high-water mark.
+    proc_stats
+        .high_water_mark
+        .fetch_max(new_total, Ordering::Relaxed);
+    // PD-7: record that the proc is non-zero right now.
+    proc_stats
+        .last_nonzero_epoch_ms
+        .store(proc_stats.now_ms(), Ordering::Relaxed);
     ACTOR_MESSAGE_QUEUE_SIZE.add(
         1,
         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
     );
 }
 
-fn account_dequeue(queue_depth: &AtomicU64, actor_id: &str) {
+/// Single accounting path for actor work-queue dequeue.
+///
+/// Updates per-actor `queue_depth`, proc-level running total,
+/// OTel `ACTOR_MESSAGE_QUEUE_SIZE`, and the last-nonzero
+/// timestamp when the proc-wide queue remains non-zero after
+/// this dequeue.
+fn account_dequeue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_id: &str) {
     queue_depth.fetch_sub(1, Ordering::Relaxed);
+    let prev_total = proc_stats.running_total.fetch_sub(1, Ordering::Relaxed);
+    // PD-7: if the queue is still non-zero after this dequeue,
+    // update the timestamp so last_nonzero_age_ms reflects
+    // "last observed non-zero state," not just "last enqueue."
+    if prev_total > 1 {
+        proc_stats
+            .last_nonzero_epoch_ms
+            .store(proc_stats.now_ms(), Ordering::Relaxed);
+    }
     ACTOR_MESSAGE_QUEUE_SIZE.add(
         -1,
         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
@@ -209,6 +343,12 @@ struct ProcState {
 
     /// All actor instances in this proc.
     instances: DashMap<reference::ActorId, WeakInstanceCell>,
+
+    /// Proc-level queue-pressure accounting (PD-6 through PD-9).
+    /// Runtime-driven — updated from `account_enqueue` /
+    /// `account_dequeue`, not from publish-time sampling.
+    /// `Arc`-wrapped so `Ports<A>` enqueue closures can share it.
+    queue_stats: Arc<ProcQueueStats>,
 
     /// Snapshots of terminated actors for post-mortem introspection.
     /// Populated by the introspect task just before it exits on
@@ -277,6 +417,7 @@ impl Proc {
                 forwarder,
                 roots: DashMap::new(),
                 instances: DashMap::new(),
+                queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
@@ -292,6 +433,51 @@ impl Proc {
         let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
         let handle = proc.clone().serve(rx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
+        Ok(proc)
+    }
+
+    /// Connect to a host's duplex server and return a [`Proc`] whose
+    /// identity is assigned by the host. Outbound messages are forwarded
+    /// over the duplex channel; inbound messages are served into the
+    /// proc's muxer. Mirrors [`Proc::direct`] but the identity and
+    /// routing are managed by the remote host.
+    pub async fn attach_to_host(addr: ChannelAddr) -> Result<Self, anyhow::Error> {
+        use crate::channel::Rx;
+        use crate::channel::Tx;
+        use crate::host::AttachRequest;
+        use crate::host::AttachRx;
+        use crate::host::Host2Client;
+        let (duplex_tx, mut duplex_rx) =
+            channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
+        // Send an AttachRequest envelope to signal attach intent.
+        // The host deserializes the first message and enters the
+        // attach protocol when it finds an AttachRequest.
+        let signal_actor_id = reference::ActorId::root(
+            reference::ProcId::with_name(
+                ChannelAddr::any(channel::ChannelTransport::Local),
+                "attach",
+            ),
+            "attach".to_string(),
+        );
+        let signal_port = reference::PortId::new(signal_actor_id.clone(), 0);
+        duplex_tx.post(MessageEnvelope::serialize(
+            signal_actor_id,
+            signal_port,
+            &AttachRequest,
+            Default::default(),
+        )?);
+        // Wait for the host to assign an identity.
+        let assignment = match duplex_rx.recv().await? {
+            Host2Client::Bootstrap(a) => a,
+            Host2Client::Envelope(_) => {
+                anyhow::bail!("expected bootstrap assignment as first message")
+            }
+        };
+        let proc = Self::configured(
+            assignment.proc_id,
+            MailboxClient::new(duplex_tx).into_boxed(),
+        );
+        proc.clone().serve(AttachRx(duplex_rx));
         Ok(proc)
     }
 
@@ -378,6 +564,12 @@ impl Proc {
     /// destinations.
     pub fn forwarder(&self) -> &BoxedMailboxSender {
         &self.inner.forwarder
+    }
+
+    /// The proc's mailbox muxer, which routes messages to actors
+    /// registered on this proc.
+    pub fn muxer(&self) -> &MailboxMuxer {
+        &self.inner.proc_muxer
     }
 
     /// Convenience accessor for state.
@@ -546,6 +738,21 @@ impl Proc {
                 }
             }
         }
+    }
+
+    /// Proc-wide running total of queued work items.
+    pub fn queue_depth_total(&self) -> u64 {
+        self.state().queue_stats.running_total()
+    }
+
+    /// Maximum proc-wide queue depth observed since startup (PD-6).
+    pub fn queue_depth_high_water_mark(&self) -> u64 {
+        self.state().queue_stats.high_water_mark()
+    }
+
+    /// How long ago proc-wide queue depth was last non-zero (PD-7).
+    pub fn last_nonzero_queue_depth_age_ms(&self) -> Option<u64> {
+        self.state().queue_stats.last_nonzero_age_ms()
     }
 
     /// Look up an instance by ActorId.
@@ -1267,10 +1474,12 @@ impl<A: Actor> Instance<A> {
             hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
         );
         let queue_depth = Arc::new(AtomicU64::new(0));
+        let proc_stats = Arc::clone(&proc.state().queue_stats);
         let ports: Arc<Ports<A>> = Arc::new(Ports::new(
             mailbox.clone(),
             work_tx,
             Arc::clone(&queue_depth),
+            proc_stats,
         ));
         proc.state().proc_muxer.bind_mailbox(mailbox.clone());
         let (status_tx, status_rx) = watch::channel(ActorStatus::Created);
@@ -1873,7 +2082,7 @@ impl<A: Actor> Instance<A> {
             tokio::select! {
                 work = work_rx.recv() => {
                     ACTOR_MESSAGES_RECEIVED.add(1, metric_pairs);
-                    account_dequeue(&self.inner.cell.inner.queue_depth, &actor_id_str);
+                    account_dequeue(&self.inner.cell.inner.queue_depth, &self.inner.proc.state().queue_stats, &actor_id_str);
                     let _ = ACTOR_MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
@@ -1924,7 +2133,11 @@ impl<A: Actor> Instance<A> {
             let mut n = 0;
             while let Ok(work) = work_rx.try_recv() {
                 // PD-5c: drained work items must also be accounted.
-                account_dequeue(&self.inner.cell.inner.queue_depth, &actor_id_str);
+                account_dequeue(
+                    &self.inner.cell.inner.queue_depth,
+                    &self.inner.proc.state().queue_stats,
+                    &actor_id_str,
+                );
                 if let Err(err) = work.handle(actor, self).await {
                     return Err(ActorError::new(
                         self.self_id(),
@@ -2878,12 +3091,10 @@ pub struct Ports<A: Actor> {
     bound: DashMap<u64, &'static str>,
     mailbox: Mailbox,
     workq: OrderedSender<WorkCell<A>>,
-    /// Introspection-readable queue depth (PD-5). Shared leaf
-    /// state owned by both the send-side (`Ports`) and the
-    /// runtime-side (`InstanceCellState`) paths — no
-    /// cycle-breaking role. Updated via `account_enqueue` /
-    /// `account_dequeue` helpers alongside the OTel counter.
+    /// Per-actor queue depth (PD-5). Shared with `InstanceCellState`.
     queue_depth: Arc<AtomicU64>,
+    /// Proc-level queue-pressure stats (PD-6 through PD-9).
+    proc_stats: Arc<ProcQueueStats>,
 }
 
 impl<A: Actor> Ports<A> {
@@ -2891,6 +3102,7 @@ impl<A: Actor> Ports<A> {
         mailbox: Mailbox,
         workq: OrderedSender<WorkCell<A>>,
         queue_depth: Arc<AtomicU64>,
+        proc_stats: Arc<ProcQueueStats>,
     ) -> Self {
         Self {
             ports: DashMap::new(),
@@ -2898,6 +3110,7 @@ impl<A: Actor> Ports<A> {
             mailbox,
             workq,
             queue_depth,
+            proc_stats,
         }
     }
 
@@ -2925,6 +3138,7 @@ impl<A: Actor> Ports<A> {
                 let workq = self.workq.clone();
                 let actor_id = self.mailbox.actor_id().to_string();
                 let enqueue_depth = Arc::clone(&self.queue_depth);
+                let enqueue_proc_stats = Arc::clone(&self.proc_stats);
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
                     let seq_info = headers.get(SEQ_INFO);
 
@@ -2978,7 +3192,7 @@ impl<A: Actor> Ports<A> {
                         workq.direct_send(work).map_err(anyhow::Error::from)
                     };
                     if result.is_ok() {
-                        account_enqueue(&enqueue_depth, &actor_id);
+                        account_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
                     }
                     result
                 });
@@ -4573,5 +4787,139 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    // ── PD-6 through PD-9: retained queue-pressure evidence ───
+
+    // PD-7: cold start — no queue traffic means last-nonzero is None
+    // and watermark is 0.
+    #[async_timed_test(timeout_secs = 5)]
+    async fn test_retained_queue_stats_cold_start() {
+        let proc = Proc::local();
+        assert_eq!(proc.queue_depth_total(), 0);
+        assert_eq!(proc.queue_depth_high_water_mark(), 0);
+        assert_eq!(proc.last_nonzero_queue_depth_age_ms(), None);
+    }
+
+    // PD-6/PD-8: after induced pressure drains, high-water mark
+    // retains the peak and last-nonzero is Some.
+    #[async_timed_test(timeout_secs = 10)]
+    async fn test_retained_queue_stats_burst_then_drain() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let h = proc.spawn("ret_test", TestActor).unwrap();
+
+        // Block the actor.
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (gate_tx, gate_rx) = oneshot::channel::<()>();
+        h.wait(&client, ready_tx, gate_rx).await.unwrap();
+        ready_rx.await.unwrap();
+
+        // Queue work behind it.
+        h.noop(&client).await.unwrap();
+        h.noop(&client).await.unwrap();
+
+        // Poll until watermark is updated.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let hwm = proc.queue_depth_high_water_mark();
+            if hwm >= 2 {
+                // PD-6: watermark >= current total.
+                assert!(hwm >= proc.queue_depth_total());
+                // Active pressure: last-nonzero should be near zero.
+                let age = proc.last_nonzero_queue_depth_age_ms();
+                assert!(
+                    age.is_some(),
+                    "last-nonzero should be Some while pressure is active"
+                );
+                assert!(age.unwrap() < 2000, "last-nonzero age should be near zero");
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for watermark >= 2",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // Unblock and drain.
+        let _ = gate_tx.send(());
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if proc.queue_depth_total() == 0 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for total to drain",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // PD-8: watermark retained after drain.
+        assert!(
+            proc.queue_depth_high_water_mark() >= 2,
+            "watermark should retain the peak after drain",
+        );
+
+        // PD-7: last-nonzero is Some (not None) after pressure.
+        let age = proc.last_nonzero_queue_depth_age_ms();
+        assert!(age.is_some(), "last-nonzero should be Some after pressure");
+    }
+
+    // PD-7: deterministic test of dequeue-side timestamp refresh
+    // using a fake clock. Proves "last observed non-zero" semantics
+    // without timing-dependent sleeps.
+    #[test]
+    fn test_last_nonzero_refreshed_on_dequeue_deterministic() {
+        use std::sync::atomic::AtomicU64;
+
+        static FAKE_NOW: AtomicU64 = AtomicU64::new(0);
+        fn fake_clock() -> u64 {
+            FAKE_NOW.load(Ordering::Relaxed)
+        }
+
+        let stats = ProcQueueStats::with_clock(fake_clock);
+        let depth = Arc::new(AtomicU64::new(0));
+
+        // Cold start: no activity.
+        assert_eq!(stats.last_nonzero_age_ms(), None);
+
+        // t=1000: enqueue two items.
+        FAKE_NOW.store(1000, Ordering::Relaxed);
+        account_enqueue(&depth, &stats, "a");
+        account_enqueue(&depth, &stats, "a");
+        assert_eq!(stats.running_total(), 2);
+        assert_eq!(stats.high_water_mark(), 2);
+
+        // t=2000: read age — should be 1000ms since last nonzero.
+        FAKE_NOW.store(2000, Ordering::Relaxed);
+        assert_eq!(stats.last_nonzero_age_ms(), Some(1000));
+
+        // t=3000: dequeue one item. Queue still non-zero (1 left).
+        // This should refresh the timestamp to 3000.
+        FAKE_NOW.store(3000, Ordering::Relaxed);
+        account_dequeue(&depth, &stats, "a");
+        assert_eq!(stats.running_total(), 1);
+
+        // t=4000: read age — should be 1000ms (4000 - 3000), not
+        // 3000ms (4000 - 1000). This proves the dequeue refreshed
+        // the timestamp.
+        FAKE_NOW.store(4000, Ordering::Relaxed);
+        assert_eq!(stats.last_nonzero_age_ms(), Some(1000));
+
+        // t=5000: dequeue last item. Queue is now zero.
+        // prev_total was 1, so prev_total > 1 is false — timestamp
+        // is NOT refreshed. It stays at 3000.
+        FAKE_NOW.store(5000, Ordering::Relaxed);
+        account_dequeue(&depth, &stats, "a");
+        assert_eq!(stats.running_total(), 0);
+
+        // t=6000: age should be 3000ms (6000 - 3000).
+        FAKE_NOW.store(6000, Ordering::Relaxed);
+        assert_eq!(stats.last_nonzero_age_ms(), Some(3000));
+
+        // Watermark retained.
+        assert_eq!(stats.high_water_mark(), 2);
     }
 }

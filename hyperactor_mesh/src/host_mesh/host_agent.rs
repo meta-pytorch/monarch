@@ -561,13 +561,31 @@ impl Actor for HostAgent {
                     attrs.set(crate::introspect::PROC_NAME, label.to_string());
                     attrs.set(crate::introspect::NUM_ACTORS, actors.len());
                     attrs.set(crate::introspect::SYSTEM_CHILDREN, system_actors.clone());
-                    // PD-*: include hosting-process memory so QueryChild
-                    // results match the publish path. HostAgent cannot
-                    // aggregate per-actor queue depth for these procs
-                    // (that requires ProcAgent), so queue stats default
-                    // to zero — acceptable for system procs.
+                    // PD-*: include proc debug stats so QueryChild
+                    // results carry real signal. Memory from procfs,
+                    // queue stats from the Proc's runtime accounting.
                     let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
                     memory.to_attrs(&mut attrs);
+                    attrs.set(
+                        crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL,
+                        proc.queue_depth_total(),
+                    );
+                    // Per-actor max from the live actor scan.
+                    let mut queue_max: u64 = 0;
+                    for aid in proc.all_instance_keys() {
+                        if let Some(cell) = proc.get_instance(&aid) {
+                            queue_max = queue_max.max(cell.queue_depth());
+                        }
+                    }
+                    attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX, queue_max);
+                    attrs.set(
+                        crate::introspect::ACTOR_WORK_QUEUE_DEPTH_HIGH_WATER_MARK,
+                        proc.queue_depth_high_water_mark(),
+                    );
+                    attrs.set(
+                        crate::introspect::LAST_NONZERO_QUEUE_DEPTH_AGE_MS,
+                        proc.last_nonzero_queue_depth_age_ms(),
+                    );
                     let attrs_json =
                         serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
 
@@ -1831,5 +1849,116 @@ mod tests {
                 ..
             }
         );
+    }
+
+    // PD-6/PD-8 regression: QueryChild(Proc) on the service proc
+    // returns non-zero queue stats after the host_agent has handled
+    // messages. Guards against the bug where the HostAgent closure
+    // defaulted queue stats to zero because it predated Proc-level
+    // queue accessors.
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_service_proc_query_child_has_queue_stats() {
+        use hyperactor::actor::ActorStatus;
+        use hyperactor::introspect::IntrospectMessage;
+        use hyperactor::introspect::IntrospectResult;
+        use hyperactor::reference as hyperactor_reference;
+
+        let host = Host::new(
+            BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
+            ChannelTransport::Unix.any(),
+        )
+        .await
+        .unwrap();
+
+        let system_proc = host.system_proc().clone();
+        let host_agent = system_proc
+            .spawn(
+                HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Process {
+                    host,
+                    shutdown_tx: None,
+                }),
+            )
+            .unwrap();
+
+        // Wait for HostAgent to finish init.
+        host_agent
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        let client_proc =
+            Proc::direct(ChannelTransport::Unix.any(), "qd_client".to_string()).unwrap();
+        let (client, _client_handle) = client_proc.instance("client").unwrap();
+
+        // Spawn a proc so the host_agent processes at least one
+        // CreateOrUpdate message, which goes through the work queue.
+        let name = Name::new("qd_test_proc").unwrap();
+        host_agent
+            .create_or_update(
+                &client,
+                name.clone(),
+                resource::Rank::new(0),
+                ProcSpec::default(),
+            )
+            .await
+            .unwrap();
+
+        // The host_agent has now processed messages on the service
+        // proc. Query the service proc's introspection.
+        let agent_id = system_proc
+            .proc_id()
+            .actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0);
+        let port =
+            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+
+        // Poll until we see non-zero watermark (evidence of queue
+        // traffic since startup).
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
+            port.send(
+                &client,
+                IntrospectMessage::QueryChild {
+                    child_ref: hyperactor_reference::Reference::Proc(system_proc.proc_id().clone()),
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+            let payload = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx.recv())
+                .await
+                .expect("QueryChild timed out")
+                .expect("reply channel closed");
+
+            let attrs: hyperactor_config::Attrs =
+                serde_json::from_str(&payload.attrs).expect("valid attrs JSON");
+
+            let hwm = attrs
+                .get(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_HIGH_WATER_MARK)
+                .copied()
+                .unwrap_or(0);
+            let last_nonzero: Option<u64> = attrs
+                .get(crate::introspect::LAST_NONZERO_QUEUE_DEPTH_AGE_MS)
+                .copied()
+                .flatten();
+
+            if hwm > 0 {
+                // The service proc's watermark should reflect
+                // the messages the host_agent processed.
+                assert!(
+                    last_nonzero.is_some(),
+                    "last-nonzero should be Some when watermark is {hwm}",
+                );
+                break;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for service proc watermark > 0",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 }

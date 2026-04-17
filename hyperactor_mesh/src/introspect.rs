@@ -410,6 +410,27 @@ declare_attrs! {
     })
     pub attr ACTOR_WORK_QUEUE_DEPTH_MAX: u64 = 0;
 
+    /// Maximum proc-wide queue depth observed since startup (PD-6).
+    /// Eventually consistent — concurrent readers may transiently
+    /// observe total > high_water_mark. Retained evidence — driven
+    /// from the runtime accounting path, not publish-time sampling.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "actor_work_queue_depth_high_water_mark".into(),
+        desc: "Maximum proc-wide queue depth since startup (eventually consistent)".into(),
+    })
+    pub attr ACTOR_WORK_QUEUE_DEPTH_HIGH_WATER_MARK: u64 = 0;
+
+    /// How long ago proc-wide queue depth was last observed non-zero
+    /// (PD-7). `None` means no counted actor work has traversed the
+    /// queue accounting path since startup. Uses wall clock, so the
+    /// age is best-effort telemetry and may not be strictly monotonic.
+    /// Retained evidence — driven from the runtime accounting path.
+    @meta(INTROSPECT = IntrospectAttr {
+        name: "last_nonzero_queue_depth_age_ms".into(),
+        desc: "Milliseconds since proc-wide queue depth was last observed non-zero (wall clock)".into(),
+    })
+    pub attr LAST_NONZERO_QUEUE_DEPTH_AGE_MS: Option<u64>;
+
 }
 
 use hyperactor::introspect::AttrsViewError;
@@ -578,6 +599,14 @@ pub struct ProcDebugStats {
     /// actors in this proc at publish time. Not a historical
     /// high-water mark.
     pub actor_work_queue_depth_max: u64,
+    /// Maximum proc-wide queue depth observed since startup (PD-6).
+    /// Eventually consistent — see PD-6 docs. Retained — driven
+    /// from the runtime accounting path.
+    pub actor_work_queue_depth_high_water_mark: u64,
+    /// How long ago proc-wide queue depth was last observed non-zero
+    /// (PD-7). `None` means never. Wall clock — see PD-9 docs.
+    /// Retained — driven from the runtime accounting path.
+    pub last_nonzero_queue_depth_age_ms: Option<u64>,
 }
 
 impl ProcDebugStats {
@@ -595,10 +624,23 @@ impl ProcDebugStats {
                 total,
             );
         }
+        let high_water = attrs
+            .get(ACTOR_WORK_QUEUE_DEPTH_HIGH_WATER_MARK)
+            .copied()
+            .unwrap_or(0);
+        // PD-6: high_water_mark >= total eventually, but concurrent
+        // readers may transiently see total > high_water_mark (a
+        // sampling artifact, not an accounting error).
+        let last_nonzero = attrs
+            .get(LAST_NONZERO_QUEUE_DEPTH_AGE_MS)
+            .copied()
+            .flatten();
         Self {
             memory: ProcessMemoryStats::from_attrs(attrs),
             actor_work_queue_depth_total: total,
             actor_work_queue_depth_max: max,
+            actor_work_queue_depth_high_water_mark: high_water,
+            last_nonzero_queue_depth_age_ms: last_nonzero,
         }
     }
 
@@ -609,6 +651,14 @@ impl ProcDebugStats {
             self.actor_work_queue_depth_total,
         );
         attrs.set(ACTOR_WORK_QUEUE_DEPTH_MAX, self.actor_work_queue_depth_max);
+        attrs.set(
+            ACTOR_WORK_QUEUE_DEPTH_HIGH_WATER_MARK,
+            self.actor_work_queue_depth_high_water_mark,
+        );
+        attrs.set(
+            LAST_NONZERO_QUEUE_DEPTH_AGE_MS,
+            self.last_nonzero_queue_depth_age_ms,
+        );
     }
 }
 
@@ -1161,6 +1211,14 @@ mod tests {
                 "actor_work_queue_depth_max",
                 ACTOR_WORK_QUEUE_DEPTH_MAX.attrs(),
             ),
+            (
+                "actor_work_queue_depth_high_water_mark",
+                ACTOR_WORK_QUEUE_DEPTH_HIGH_WATER_MARK.attrs(),
+            ),
+            (
+                "last_nonzero_queue_depth_age_ms",
+                LAST_NONZERO_QUEUE_DEPTH_AGE_MS.attrs(),
+            ),
         ];
 
         for (expected_name, meta) in &cases {
@@ -1299,6 +1357,8 @@ mod tests {
                 },
                 actor_work_queue_depth_total: 42,
                 actor_work_queue_depth_max: 7,
+                actor_work_queue_depth_high_water_mark: 100,
+                last_nonzero_queue_depth_age_ms: Some(5000),
             },
         };
         let rt = ProcAttrsView::from_attrs(&view.to_attrs()).unwrap();
