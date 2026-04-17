@@ -441,7 +441,12 @@ def _init_client_context() -> Context:
     # module init), so this handler runs first — ensuring the actor system is
     # cleanly shut down (connections flushed, acks delivered) before the tokio
     # runtime is torn down.
-    atexit.register(lambda: shutdown_context().get(timeout=5.0))
+    #
+    # The timeout must be short enough that the process exits before
+    # the test executor's SIGTERM grace period (~2s). Combined with
+    # the 1s shutdown_tokio_runtime timeout, total atexit budget is
+    # ~2s, so we allow 1s here.
+    atexit.register(lambda: shutdown_context().get(timeout=1.0))
 
     return ctx
 
