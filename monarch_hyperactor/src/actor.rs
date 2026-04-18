@@ -545,6 +545,11 @@ pub struct PythonActor {
     spawn_point: OnceLock<Option<Point>>,
     /// Initial message to process during PythonActor::init.
     init_message: Option<PythonMessage>,
+    /// User-facing mesh name plumbed from `PythonActorParams`. Used solely
+    /// to populate `MeshFailure.actor_mesh_name` on the direct actor-handle
+    /// supervision path (FA-1 in `hyperactor/src/supervision.rs`). Not a
+    /// general attribution side channel.
+    mesh_name: Option<String>,
 }
 
 impl PythonActor {
@@ -552,6 +557,7 @@ impl PythonActor {
         actor_type: PickledPyObject,
         init_message: Option<PythonMessage>,
         spawn_point: Option<Point>,
+        mesh_name: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         let use_queue_dispatch = hyperactor_config::global::get(ACTOR_QUEUE_DISPATCH);
 
@@ -585,6 +591,7 @@ impl PythonActor {
                     dispatch_mode,
                     spawn_point: OnceLock::from(spawn_point),
                     init_message,
+                    mesh_name,
                 })
             },
         )?)
@@ -648,6 +655,7 @@ impl PythonActor {
             actor_type,
             Some(init_message),
             Some(extent!().point_of_rank(0).unwrap()),
+            None, // root client actor has no user-facing mesh name
         )
         .expect("create client PythonActor");
 
@@ -1070,7 +1078,9 @@ impl Actor for PythonActor {
         self.handle(
             &cx,
             MeshFailure {
-                actor_mesh_name: None,
+                // FA-1: populate mesh name from the value plumbed through
+                // PythonActorParams at spawn time — no lookup.
+                actor_mesh_name: self.mesh_name.clone(),
                 event: event.clone(),
                 crashed_ranks: vec![],
             },
@@ -1086,13 +1096,25 @@ pub struct PythonActorParams {
     actor_type: PickledPyObject,
     // Python message to process as part of the actor initialization.
     init_message: Option<PythonMessage>,
+    // User-facing mesh name under which this actor was spawned. Plumbed
+    // through `PythonActor` solely to populate `MeshFailure.actor_mesh_name`
+    // on the direct actor-handle supervision path (see FA-1 in
+    // `hyperactor/src/supervision.rs`). Not used as a general attribution
+    // side channel; downstream code must not consume this field for any
+    // other purpose.
+    mesh_name: Option<String>,
 }
 
 impl PythonActorParams {
-    pub(crate) fn new(actor_type: PickledPyObject, init_message: Option<PythonMessage>) -> Self {
+    pub(crate) fn new(
+        actor_type: PickledPyObject,
+        init_message: Option<PythonMessage>,
+        mesh_name: Option<String>,
+    ) -> Self {
         Self {
             actor_type,
             init_message,
+            mesh_name,
         }
     }
 }
@@ -1105,11 +1127,12 @@ impl RemoteSpawn for PythonActor {
         PythonActorParams {
             actor_type,
             init_message,
+            mesh_name,
         }: PythonActorParams,
         environment: Flattrs,
     ) -> Result<Self, anyhow::Error> {
         let spawn_point = environment.get(CAST_POINT);
-        Self::new(actor_type, init_message, spawn_point)
+        Self::new(actor_type, init_message, spawn_point, mesh_name)
     }
 }
 

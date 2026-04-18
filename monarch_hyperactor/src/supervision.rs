@@ -6,6 +6,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! Python-facing supervision boundary.
+//!
+//! See FA-* (failure-attribution invariants) in
+//! `hyperactor/src/supervision.rs` for the user-facing contract on
+//! supervision-path rendering. `SupervisionError`'s pyclass shape is
+//! unchanged by the first-increment plumbing; improvements come
+//! from the upstream `Display` chain having populated mesh name and
+//! Python-class `display_name`.
+
 use async_trait::async_trait;
 use hyperactor::Instance;
 use hyperactor_mesh::supervision::MeshFailure;
