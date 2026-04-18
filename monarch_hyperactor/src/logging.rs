@@ -63,7 +63,19 @@ use crate::runtime::monarch_with_gil;
     Unbind
 )]
 pub enum LoggerRuntimeMessage {
-    SetLogging { level: u8 },
+    SetLogging {
+        level: u8,
+    },
+    /// No-op used as a synchronization barrier. Since casts on a
+    /// given mesh are processed in FIFO order at each receiver,
+    /// a reply to `Drain` implies every previously-cast message
+    /// has been processed by that receiver. `LoggingMeshClient`
+    /// uses this to quiesce the logger mesh before the proc mesh
+    /// is stopped.
+    Drain {
+        #[reply]
+        ack: hyperactor::reference::PortRef<()>,
+    },
 }
 
 /// Simple Rust actor that invokes python logger APIs. It needs a python runtime.
@@ -120,6 +132,10 @@ impl LoggerRuntimeMessageHandler for LoggerRuntimeActor {
                 .map_err(SerializablePyErr::from_fn(py))
         })
         .await?;
+        Ok(())
+    }
+
+    async fn drain(&mut self, _cx: &Context<Self>) -> Result<(), anyhow::Error> {
         Ok(())
     }
 }
@@ -458,6 +474,51 @@ impl LoggingMeshClient {
             Self::flush_internal(instance.deref(), client_actor, forwarder_mesh)
                 .await
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+        })
+    }
+
+    /// Quiesce the per-proc logger mesh: cast a `Drain` barrier and
+    /// wait for every rank to reply. Call this before stopping the
+    /// proc mesh to ensure that any in-flight `SetLogging` casts
+    /// have been delivered before the loggers are torn down. Otherwise
+    /// the casts race the stop and return to the client as
+    /// undeliverables, surfacing later as "Unhandled monarch error".
+    fn drain(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+        let logger_mesh = self.logger_mesh.deref().clone();
+        let instance = instance.clone();
+
+        PyPythonTask::new(async move {
+            let cx = instance.deref();
+            let num_ranks = View::region(&logger_mesh).num_ranks();
+            if num_ranks == 0 {
+                return Ok(());
+            }
+
+            let (port, mut rx) = cx.open_port::<()>();
+            logger_mesh
+                .cast(cx, LoggerRuntimeMessage::Drain { ack: port.bind() })
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+
+            // Bound the wait so a dead proc can't hang shutdown. The drain
+            // is best-effort: it closes the common "set_mode cast in flight
+            // when stop fires" race. If some actor can't ack (the proc
+            // already crashed) we don't need the barrier for that actor
+            // anyway — its messages are already lost.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            for _ in 0..num_ranks {
+                match tokio::time::timeout_at(deadline, rx.recv()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(anyhow::Error::from(e).into()),
+                    Err(_) => {
+                        tracing::info!(
+                            "logger mesh drain timed out; some loggers did not ack, \
+                             proceeding with stop"
+                        );
+                        break;
+                    }
+                }
+            }
+            Ok(())
         })
     }
 }
