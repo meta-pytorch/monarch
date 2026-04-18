@@ -172,12 +172,22 @@ fn extract_attr(dict: &Bound<'_, PyDict>, kind: FileType) -> PyResult<FileAttr> 
         atime: f64_to_system_time(required_key(dict, "st_atime")?),
         mtime: f64_to_system_time(required_key(dict, "st_mtime")?),
         ctime: f64_to_system_time(required_key(dict, "st_ctime")?),
+        #[cfg(target_os = "macos")]
+        crtime: f64_to_system_time(
+            dict.get_item("st_birthtime")?
+                .map(|value| value.extract())
+                .transpose()?
+                .map(Ok)
+                .unwrap_or_else(|| required_key(dict, "st_ctime"))?,
+        ),
         kind,
         perm: (required_key::<u32>(dict, "st_mode")? & 0o7777) as u16,
         nlink: required_key(dict, "st_nlink")?,
         uid: required_key(dict, "st_uid")?,
         gid: required_key(dict, "st_gid")?,
         rdev: 0,
+        #[cfg(target_os = "macos")]
+        flags: 0,
         blksize: 4096,
         #[cfg(target_os = "macos")]
         crtime: std::time::SystemTime::UNIX_EPOCH,
