@@ -18,6 +18,9 @@ use crate::backend::ibverbs::primitives::IbvConfig;
 /// Cached result of EFA device check.
 static EFA_DEVICE_CACHE: OnceLock<bool> = OnceLock::new();
 
+/// Cached result of EFA RDMA read/write capability check.
+static EFA_RDMA_CAPABLE_CACHE: OnceLock<bool> = OnceLock::new();
+
 /// Checks if any EFA device is available in the system.
 ///
 /// Uses `efadv_query_device()` to detect EFA hardware.
@@ -56,6 +59,53 @@ fn is_efa_device_impl() -> bool {
     }
 }
 
+/// Checks if the EFA device supports RDMA read/write operations.
+///
+/// P5/P5en EFA supports RDMA read+write via SRD.
+/// P4d EFA only supports send/recv — RDMA read/write will fail.
+///
+/// When this returns `false` on an EFA device, the ibverbs backend cannot
+/// be used for data transfer and should fall back to TCP transport.
+pub fn efa_supports_rdma() -> bool {
+    *EFA_RDMA_CAPABLE_CACHE.get_or_init(efa_supports_rdma_impl)
+}
+
+fn efa_supports_rdma_impl() -> bool {
+    if !is_efa_device() {
+        // Not EFA — RDMA capability is determined by the device type (RC/UD)
+        return true;
+    }
+    // SAFETY: We are calling C functions from libibverbs and libefa.
+    unsafe {
+        let mut num_devices = 0;
+        let device_list = rdmaxcel_sys::ibv_get_device_list(&mut num_devices);
+        if device_list.is_null() || num_devices == 0 {
+            return false;
+        }
+        let mut supports_rdma = false;
+        for i in 0..num_devices {
+            let device = *device_list.add(i as usize);
+            if device.is_null() {
+                continue;
+            }
+            let context = rdmaxcel_sys::ibv_open_device(device);
+            if context.is_null() {
+                continue;
+            }
+            if rdmaxcel_sys::rdmaxcel_is_efa_dev(context) != 0
+                && rdmaxcel_sys::rdmaxcel_efa_supports_rdma(context) != 0
+            {
+                supports_rdma = true;
+                rdmaxcel_sys::ibv_close_device(context);
+                break;
+            }
+            rdmaxcel_sys::ibv_close_device(context);
+        }
+        rdmaxcel_sys::ibv_free_device_list(device_list);
+        supports_rdma
+    }
+}
+
 /// Applies EFA-specific defaults to an `IbvConfig`.
 ///
 /// EFA devices have different capabilities than standard InfiniBand/RoCE devices:
@@ -72,10 +122,16 @@ pub fn apply_efa_defaults(config: &mut IbvConfig) {
 
 /// Returns the MR access flags appropriate for EFA devices.
 ///
-/// EFA does not support `IBV_ACCESS_REMOTE_ATOMIC`, so this returns only
-/// local write, remote write, and remote read flags.
+/// EFA does not support `IBV_ACCESS_REMOTE_ATOMIC`.
+/// P5/P5en supports remote write and remote read.
+/// P4d only supports local write (no RDMA verbs).
 pub fn mr_access_flags() -> rdmaxcel_sys::ibv_access_flags {
-    rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-        | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-        | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
+    if efa_supports_rdma() {
+        rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+            | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+            | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
+    } else {
+        // P4d: only local write — RDMA read/write not supported
+        rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+    }
 }
