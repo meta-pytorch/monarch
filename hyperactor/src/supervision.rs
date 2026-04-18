@@ -16,6 +16,59 @@
 //!   for structured failure attribution. In particular, if a
 //!   failed parent wraps a stopped child event, the stopped child
 //!   remains the root cause.
+//!
+//! ## Failure-attribution invariants (FA-*)
+//!
+//! User-facing contract for supervision-path failure rendering:
+//! attribution data travels alongside stable identifiers, never
+//! through them.
+//!
+//! - **FA-1 (mesh-name propagation).** When a `MeshFailure` is
+//!   constructed for a supervision event involving a Python actor,
+//!   the mesh name — if locally available to the constructing site
+//!   — is carried on `MeshFailure.actor_mesh_name`. The
+//!   constructing site does not perform a lookup to obtain the
+//!   mesh name. If the mesh name is not locally available at the
+//!   site, `None` is correct; lookups are not used as a
+//!   workaround.
+//!
+//! - **FA-2 (Python-class propagation via `display_name`).** When
+//!   an `ActorSupervisionEvent` is constructed for a Python actor,
+//!   `display_name` is populated via `PythonActor::display_name`
+//!   (or equivalent Python-class-aware hook). `display_name` is a
+//!   **rendered-presentation field only**; downstream code must
+//!   not parse it to recover structured attribution. Programmatic
+//!   attribution fields, if added later, come from separate
+//!   structured carriers, not from parsing `display_name`.
+//!
+//! - **FA-3 (rendering where renderers have a place).** Friendly
+//!   attribution (mesh name, Python class) is added where existing
+//!   supervision-path renderers already have a place to show it —
+//!   primarily the `MeshFailure::Display` wrapper, which adds an
+//!   `on mesh "{name}"` segment when `actor_mesh_name` is
+//!   populated. Stable identifiers remain visible in detail
+//!   segments where those renderers already include them (e.g.
+//!   `ActorSupervisionEvent::Display` falls back to
+//!   `actor_id.to_string()` when `display_name` is absent). FA-3
+//!   does **not** guarantee that friendly names and stable ids are
+//!   both shown at every actor mention: today
+//!   `ActorSupervisionEvent::Display` renders `display_name` **or**
+//!   `actor_id.to_string()` (via `actor_name()`), not both. Moving
+//!   to a "both, always" render is follow-on work outside this
+//!   invariant's current scope. FA-3 is independent of the specific
+//!   identifier encoding used by `ActorId::Display` — it describes
+//!   the render-chain contract, not the id format.
+//!
+//! - **FA-4 (no identifier-format attribution recovery on the
+//!   supervision path).** For supervision-path attribution (the
+//!   rendering covered by FA-3), friendly attribution data (mesh
+//!   name, Python actor class, or any future friendly attribution
+//!   field) must not be recovered at runtime by parsing identifier
+//!   text, formatted `display_name` strings, or other rendered
+//!   output. Structured carriers are the only supported source on
+//!   this path. Other consumers (e.g. telemetry) are outside the
+//!   scope of this invariant; if they parse rendered strings,
+//!   that is a separate concern for their own contract.
 
 use std::fmt;
 use std::fmt::Debug;

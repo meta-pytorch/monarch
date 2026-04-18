@@ -93,7 +93,12 @@ impl PyProcMesh {
                 let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
                 Ok((
                     slf.mesh_ref()?.clone(),
-                    PythonActorParams::new(pickled_type, Some(init_message)),
+                    // FA-1: plumb the user-facing mesh name into the
+                    // actor so the direct actor-handle supervision path
+                    // can populate `MeshFailure.actor_mesh_name` without
+                    // a lookup. `name` is the same mesh name the caller
+                    // passed to `spawn_async`.
+                    PythonActorParams::new(pickled_type, Some(init_message), Some(name.clone())),
                 ))
             })
             .await?;
