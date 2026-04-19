@@ -104,17 +104,14 @@ pub enum IbvQpType {
 }
 
 /// Converts `IbvQpType` to the corresponding integer enum value in rdmaxcel_sys.
+///
+/// In `Auto` mode the function respects
+/// [`RDMA_DISABLE_MLX5DV`](crate::config::RDMA_DISABLE_MLX5DV): when
+/// that flag is set, MLX5 Direct Verbs are skipped even if the hardware
+/// supports them, and `RDMA_QP_TYPE_STANDARD` is used instead.
 pub fn resolve_qp_type(qp_type: IbvQpType) -> u32 {
     match qp_type {
-        IbvQpType::Auto => {
-            if crate::efa::is_efa_device() {
-                rdmaxcel_sys::RDMA_QP_TYPE_EFA
-            } else if mlx5dv_supported() {
-                rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV
-            } else {
-                rdmaxcel_sys::RDMA_QP_TYPE_STANDARD
-            }
-        }
+        IbvQpType::Auto => crate::vendors::resolve_auto_qp_type(),
         IbvQpType::Standard => rdmaxcel_sys::RDMA_QP_TYPE_STANDARD,
         IbvQpType::Mlx5dv => rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV,
         IbvQpType::Efa => rdmaxcel_sys::RDMA_QP_TYPE_EFA,
@@ -199,9 +196,7 @@ impl Default for IbvConfig {
             hw_init_delay_ms: 2,
             qp_type: IbvQpType::Auto,
         };
-        if crate::efa::is_efa_device() {
-            crate::efa::apply_efa_defaults(&mut config);
-        }
+        crate::vendors::apply_vendor_defaults(&mut config);
         config
     }
 }
@@ -688,24 +683,8 @@ static MLX5DV_SUPPORTED_CACHE: OnceLock<bool> = OnceLock::new();
 ///
 /// `true` if mlx5dv extensions are supported, `false` otherwise.
 pub fn mlx5dv_supported() -> bool {
-    *MLX5DV_SUPPORTED_CACHE.get_or_init(mlx5dv_supported_impl)
-}
-
-fn mlx5dv_supported_impl() -> bool {
-    // SAFETY: We are calling C functions from libibverbs and libmlx5.
-    unsafe {
-        let mut mlx5dv_supported = false;
-        let mut num_devices = 0;
-        let device_list = rdmaxcel_sys::ibv_get_device_list(&mut num_devices);
-        if !device_list.is_null() && num_devices > 0 {
-            let device = *device_list;
-            if !device.is_null() {
-                mlx5dv_supported = rdmaxcel_sys::mlx5dv_is_supported(device);
-            }
-            rdmaxcel_sys::ibv_free_device_list(device_list);
-        }
-        mlx5dv_supported
-    }
+    let mlx_backend = MlxBackend;
+    mlx_backend.is_detected()
 }
 
 /// Cached result of ibverbs support check.

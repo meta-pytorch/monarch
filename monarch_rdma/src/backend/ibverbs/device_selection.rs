@@ -99,6 +99,14 @@ pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDevice>> {
     })
 }
 
+fn is_known_rdma_device(name: &str) -> bool {
+
+    crate::vendors::all_known_prefixes()
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+
+}
+
 /// Resolves RDMA device using auto-detection logic when needed.
 ///
 /// Applies auto-detection for default devices, but otherwise
@@ -106,7 +114,7 @@ pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDevice>> {
 pub fn resolve_ibv_device(device: &IbvDevice) -> Option<IbvDevice> {
     let device_name = device.name();
 
-    if device_name.starts_with("mlx") {
+    if is_known_rdma_device(device_name) {
         return Some(device.clone());
     }
 
