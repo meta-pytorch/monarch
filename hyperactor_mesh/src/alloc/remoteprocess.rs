@@ -1432,9 +1432,8 @@ mod test {
             .enumerate()
         {
             let proc_id = test_proc_id(&format!("{i}"));
-            let mesh_agent = hyperactor_reference::ActorRef::<ProcAgent>::attest(
-                proc_id.actor_id("mesh_agent", i),
-            );
+            let mesh_agent =
+                hyperactor_reference::ActorRef::<ProcAgent>::attest(proc_id.actor_id("mesh_agent"));
             alloc.expect_next().times(1).return_once(move || {
                 Some(ProcState::Running {
                     create_key,
@@ -1561,7 +1560,7 @@ mod test {
                     assert_eq!(create_key, create_keys[rank]);
                     let expected_proc_id = test_proc_id(&format!("{}", rank));
                     let expected_mesh_agent = hyperactor_reference::ActorRef::<ProcAgent>::attest(
-                        expected_proc_id.actor_id("mesh_agent", rank),
+                        expected_proc_id.actor_id("mesh_agent"),
                     );
                     assert_eq!(proc_id, expected_proc_id);
                     assert_eq!(mesh_agent, expected_mesh_agent);
