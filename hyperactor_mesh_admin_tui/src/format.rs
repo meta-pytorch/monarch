@@ -234,7 +234,6 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
     use std::time::SystemTime;
 
     use hyperactor::reference as hyperactor_reference;
@@ -245,18 +244,33 @@ mod tests {
     use super::*;
 
     fn mock_actor_ref(name: &str) -> NodeRef {
-        let id_str = format!("unix:@test,world,{}", name);
-        NodeRef::Actor(hyperactor_reference::ActorId::from_str(&id_str).unwrap())
+        let proc_id = hyperactor_reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "world",
+        );
+        NodeRef::Actor(proc_id.actor_id(name))
     }
 
     fn mock_proc_ref(name: &str) -> NodeRef {
-        let id_str = format!("unix:@test,{}", name);
-        NodeRef::Proc(hyperactor_reference::ProcId::from_str(&id_str).unwrap())
+        let proc_id = hyperactor_reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            name,
+        );
+        NodeRef::Proc(proc_id)
     }
 
     fn mock_host_ref(name: &str) -> NodeRef {
-        let id_str = format!("unix:@test,world,{}", name);
-        NodeRef::Host(hyperactor_reference::ActorId::from_str(&id_str).unwrap())
+        let proc_id = hyperactor_reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "world",
+        );
+        NodeRef::Host(proc_id.actor_id(name))
     }
 
     fn proc_payload(proc_name: &str, props: NodeProperties) -> NodePayload {
@@ -546,9 +560,13 @@ mod tests {
 
     #[test]
     fn derive_label_actor_standard_actor_id() {
-        let actor_id =
-            hyperactor_reference::ActorId::from_str("unix:@abc123,myworld,worker").unwrap();
-        let proc_id = hyperactor_reference::ProcId::from_str("unix:@abc123,myworld").unwrap();
+        let proc_id = hyperactor_reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "myworld",
+        );
+        let actor_id = proc_id.actor_id("worker");
         let payload = NodePayload {
             identity: NodeRef::Actor(actor_id),
             properties: NodeProperties::Actor {
