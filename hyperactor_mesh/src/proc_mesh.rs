@@ -810,11 +810,15 @@ impl ProcMeshRef {
     ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
         let agent_mesh = self.agent_mesh();
         let (port, mut rx) = cx.mailbox().open_port::<resource::State<ActorState>>();
+        let mut port = port.bind();
+        // If this proc dies or some other issue renders the reply undeliverable,
+        // the reply does not need to be returned to the sender.
+        port.return_undeliverable(false);
         // TODO: Use accumulation to get back a single value (representing whether
         // *any* of the actors failed) instead of a mesh.
         let get_state = resource::GetState::<ActorState> {
             name: name.clone(),
-            reply: port.bind(),
+            reply: port,
         };
         if let Some(expires_after) = keepalive {
             agent_mesh.cast(
