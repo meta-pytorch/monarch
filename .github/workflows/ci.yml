@@ -8,29 +8,34 @@ on:
   push:
     branches:
       - main
+    tags:
+      - ciflow/rocm/*
   workflow_dispatch: # Allows manual triggering
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
-  build-cuda:
-    name: Build CUDA
-    uses: ./.github/workflows/build-cuda.yml
+  build-gpu:
+    name: Build GPU
+    uses: ./.github/workflows/build-gpu.yml
 
-  build-rocm:
-    name: Build ROCm
-    uses: ./.github/workflows/build-rocm.yml
-
+  # CPU jobs skip on ciflow/rocm tag push since they already run for the pull_request trigger
   build-cpu:
     name: Build CPU
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     uses: ./.github/workflows/build-cpu.yml
     with:
       artifact-name: monarch-cpu-${{ github.sha }}-py3.10
 
   test-cpu-python:
     name: Test CPU Python
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     needs: build-cpu
     uses: ./.github/workflows/test-cpu-python.yml
     with:
@@ -38,17 +43,17 @@ jobs:
 
   test-gpu-python:
     name: Test GPU Python
-    needs: build-cuda
+    needs: build-gpu
     uses: ./.github/workflows/test-gpu-python.yml
-    with:
-      artifact-name: monarch-cuda-${{ github.sha }}-py3.10
 
   test-cpu-rust:
     name: Test CPU Rust
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     uses: ./.github/workflows/test-cpu-rust.yml
 
   test-cpu-rust-arm64:
     name: Test CPU Rust (ARM64)
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     uses: ./.github/workflows/test-cpu-rust.yml
     with:
       runner: linux.arm64.2xlarge
@@ -56,14 +61,13 @@ jobs:
 
   test-gpu-rust:
     name: Test GPU Rust
-    needs: build-cuda
+    needs: build-gpu
     uses: ./.github/workflows/test-gpu-rust.yml
-    with:
-      artifact-name: monarch-cuda-${{ github.sha }}-py3.10
 
   build-docker:
     name: Build Docker image
-    needs: build-cuda
+    needs: build-gpu
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     uses: ./.github/workflows/build-docker.yml
     with:
       # Docker image requires python 3.12
@@ -75,15 +79,7 @@ jobs:
     needs: [test-cpu-python, test-gpu-python, test-cpu-rust, test-cpu-rust-arm64, test-gpu-rust]
     if: always()
     steps:
+      # Fail if any job failed or was cancelled; skipped jobs are OK
       - name: Check all jobs status
-        run: |
-          if [[ "${{ needs.test-cpu-python.result }}" != "success" ]] ||
-             [[ "${{ needs.test-gpu-python.result }}" != "success" ]] ||
-             [[ "${{ needs.test-cpu-rust.result }}" != "success" ]] ||
-             [[ "${{ needs.test-cpu-rust-arm64.result }}" != "success" ]] ||
-             [[ "${{ needs.test-gpu-rust.result }}" != "success" ]]; then
-            echo "One or more jobs failed"
-            exit 1
-          else
-            echo "All jobs passed"
-          fi
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1
