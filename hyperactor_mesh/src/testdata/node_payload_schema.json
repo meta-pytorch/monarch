@@ -277,6 +277,12 @@
     "ProcDebugStats": {
       "description": "Proc-level debug/operational stats (DTO mirror of\n`ProcDebugStats`).",
       "properties": {
+        "actor_work_queue_depth_high_water_mark": {
+          "description": "Maximum proc-wide queue depth since startup (PD-6, eventually consistent).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "actor_work_queue_depth_max": {
           "description": "Max per-actor queue depth (live actors only).",
           "format": "uint64",
@@ -289,6 +295,15 @@
           "minimum": 0,
           "type": "integer"
         },
+        "last_nonzero_queue_depth_age_ms": {
+          "description": "Milliseconds since proc-wide queue depth was last observed non-zero (PD-7, wall clock).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "memory": {
           "$ref": "#/$defs/ProcessMemoryStats",
           "description": "Hosting-process memory."
@@ -297,7 +312,8 @@
       "required": [
         "memory",
         "actor_work_queue_depth_total",
-        "actor_work_queue_depth_max"
+        "actor_work_queue_depth_max",
+        "actor_work_queue_depth_high_water_mark"
       ],
       "type": "object"
     },

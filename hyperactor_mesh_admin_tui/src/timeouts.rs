@@ -29,7 +29,9 @@
 //! - **TP-10:** The effective refresh policy is derived from active
 //!   job state. `RefreshPolicy` implements `JoinSemilattice` so
 //!   multiple sources can be combined when added. Background refresh
-//!   is suspended while a foreground operation is in flight.
+//!   is suspended while any foreground job exists (both in-flight
+//!   and completed overlays). Refresh resumes only when the overlay
+//!   is dismissed.
 
 use std::time::Duration;
 
