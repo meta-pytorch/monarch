@@ -407,7 +407,8 @@ impl ProcMesh {
             // (which expects Allocator2Process, not MessageEnvelope).
             for AllocatedProc { proc_id, addr, .. } in running.iter() {
                 if proc_id.addr() != addr {
-                    router.bind(proc_id.clone().into(), addr.clone());
+                    let proc_ref: hyperactor::ref_::ProcRef = proc_id.clone().into();
+                    router.bind(proc_ref, addr.clone());
                 }
             }
         };
@@ -442,7 +443,7 @@ impl ProcMesh {
             .map(
                 |AllocatedProc {
                      addr, mesh_agent, ..
-                 }| { (mesh_agent.actor_id().proc_id().clone(), addr.clone()) },
+                 }| { (mesh_agent.actor_id().proc_ref().into(), addr.clone()) },
             )
             .collect();
 

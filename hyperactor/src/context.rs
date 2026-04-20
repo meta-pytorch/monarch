@@ -35,6 +35,7 @@ use crate::mailbox;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
 use crate::ordering::SEQ_INFO;
+use crate::ref_;
 use crate::reference;
 use crate::time::Alarm;
 
@@ -73,7 +74,7 @@ pub(crate) trait MailboxExt: Mailbox {
     /// All messages posted from actors should use this implementation.
     fn post(
         &self,
-        dest: reference::PortId,
+        dest: ref_::PortRef,
         headers: Flattrs,
         data: wirevalue::Any,
         return_undeliverable: bool,
@@ -83,24 +84,24 @@ pub(crate) trait MailboxExt: Mailbox {
     /// Split a port, using a provided reducer spec, if provided.
     fn split(
         &self,
-        port_id: reference::PortId,
+        port_id: ref_::PortRef,
         reducer_spec: Option<ReducerSpec>,
         reducer_mode: ReducerMode,
         return_undeliverable: bool,
-    ) -> anyhow::Result<reference::PortId>;
+    ) -> anyhow::Result<ref_::PortRef>;
 }
 
 // Tracks mailboxes that have emitted a `CanSend::post` warning due to
 // missing an `Undeliverable<MessageEnvelope>` binding. In this
 // context, mailboxes are few and long-lived; unbounded growth is not
 // a realistic concern.
-static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<reference::ActorId>> = OnceLock::new();
+static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ref_::ActorRef>> = OnceLock::new();
 
 /// Only actors CanSend because they need a return port.
 impl<T: Actor + Send + Sync> MailboxExt for T {
     fn post(
         &self,
-        dest: reference::PortId,
+        dest: ref_::PortRef,
         mut headers: Flattrs,
         data: wirevalue::Any,
         return_undeliverable: bool,
@@ -110,7 +111,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             let actor_id = self.mailbox().actor_id();
             if CAN_SEND_WARNED_MAILBOXES
                 .get_or_init(DashSet::new)
-                .insert(actor_id.clone())
+                .insert(actor_id.clone().into())
             {
                 let bt = std::backtrace::Backtrace::force_capture();
                 tracing::warn!(
@@ -143,14 +144,14 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
 
     fn split(
         &self,
-        port_id: reference::PortId,
+        port_id: ref_::PortRef,
         reducer_spec: Option<ReducerSpec>,
         reducer_mode: ReducerMode,
         return_undeliverable: bool,
-    ) -> anyhow::Result<reference::PortId> {
+    ) -> anyhow::Result<ref_::PortRef> {
         fn post(
             mailbox: &mailbox::Mailbox,
-            port_id: reference::PortId,
+            port_id: ref_::PortRef,
             msg: wirevalue::Any,
             return_undeliverable: bool,
         ) {
@@ -169,7 +170,10 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         }
 
         let port_index = self.mailbox().allocate_port();
-        let split_port = self.mailbox().actor_id().port_id(port_index);
+        let split_port = self
+            .mailbox()
+            .actor_id()
+            .port_ref(crate::port::Port::from(port_index));
         let mailbox = self.mailbox().clone();
         let reducer = reducer_spec
             .map(

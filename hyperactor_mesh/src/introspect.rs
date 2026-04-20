@@ -1049,7 +1049,7 @@ impl IntoNodeProperties for hyperactor::introspect::ActorAttrsView {
 
         let failure_info = self.failure.map(|fi| FailureInfo {
             error_message: fi.error_message,
-            root_cause_actor: fi.root_cause_actor,
+            root_cause_actor: fi.root_cause_actor.into(),
             root_cause_name: fi.root_cause_name,
             occurred_at: fi.occurred_at,
             is_propagated: fi.is_propagated,

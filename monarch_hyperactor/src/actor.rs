@@ -712,7 +712,7 @@ impl PythonActor {
 
                             let kind = ActorErrorKind::processing(err);
                             let err = ActorError {
-                                actor_id: Box::new(instance.self_id().clone()),
+                                actor_id: Box::new(instance.self_id().clone().into()),
                                 kind: Box::new(kind),
                             };
 
@@ -749,7 +749,7 @@ impl PythonActor {
                             },
                             Ok(Signal::ChildStopped(_)) => {},
                             Ok(Signal::Abort(reason)) => {
-                                break Some(ActorError { actor_id: Box::new(instance.self_id().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
+                                break Some(ActorError { actor_id: Box::new(instance.self_id().clone().into()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
                             },
                             Err(err) => break Some(err),
                         }
@@ -766,7 +766,7 @@ impl PythonActor {
                 while let Ok(work) = work_rx.try_recv() {
                     if let Err(e) = work.handle(&mut actor, instance).await {
                         err = Some(ActorError {
-                            actor_id: Box::new(instance.self_id().clone()),
+                            actor_id: Box::new(instance.self_id().clone().into()),
                             kind: Box::new(ActorErrorKind::processing(e)),
                         });
                         break;
