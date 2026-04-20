@@ -21,9 +21,11 @@ mod mesh_controller;
 mod tensor_worker;
 
 mod blocking;
+#[cfg(target_os = "linux")]
 mod chunked_fuse;
 mod fast_pack;
 mod panic;
+#[cfg(target_os = "linux")]
 mod readonly_fuse;
 #[cfg(feature = "distributed_sql_telemetry")]
 pub mod snapshot_integration;
@@ -235,11 +237,13 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_extension.fast_pack",
     )?)?;
 
+    #[cfg(target_os = "linux")]
     crate::chunked_fuse::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.chunked_fuse",
     )?)?;
 
+    #[cfg(target_os = "linux")]
     crate::readonly_fuse::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.readonly_fuse",
@@ -278,7 +282,7 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         )?)?;
     }
 
-    #[cfg(fbcode_build)]
+    #[cfg(all(fbcode_build, target_os = "linux"))]
     {
         monarch_hyperactor::meta::alloc::register_python_bindings(&get_or_add_new_module(
             module,

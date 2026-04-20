@@ -1,0 +1,37 @@
+name: Build GPU
+
+on:
+  workflow_call:
+
+concurrency:
+  group: build-gpu-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  set-matrix:
+    uses: ./.github/workflows/set-matrix.yaml
+
+  build:
+    name: Build ${{ matrix.name }} (py${{ matrix.python-version }})
+    needs: set-matrix
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.set-matrix.outputs.build-matrix) }}
+    with:
+      timeout: 60
+      runner: linux.c7i.2xlarge
+      docker-image: ${{ matrix.docker-image }}
+      submodules: recursive
+      upload-artifact: monarch-${{ matrix.name }}-${{ github.sha }}-py${{ matrix.python-version }}
+      script: |
+        source scripts/common-setup.sh
+        setup_build_environment ${{ matrix.python-version }}
+        pip install ${{ matrix.torch-spec }}
+        pip install -r build-requirements.txt
+        setup_tensor_engine
+        python setup.py bdist_wheel

@@ -15,4 +15,4 @@ doctest = false
 cc = "1.2.57"
 glob = "0.3.2"
 pyo3-build-config = "0.26"
-which = "4.2.4"
+which = "8.0.2"
