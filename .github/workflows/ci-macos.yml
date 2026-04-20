@@ -1,0 +1,65 @@
+name: CI (macOS)
+
+on:
+  pull_request:
+    branches:
+      - main
+      - gh/**
+    # Only run if the ciflow/macos label is present until we build
+    # confidence in stability.
+    # We include 'labeled' so the workflow triggers when ciflow/macos is added.
+    # 'synchronize' (new pushes) still carries the PR's current labels, so a PR
+    # that already has ciflow/macos will continue to run on subsequent pushes.
+    # The actual gating on the label is done via 'if' conditions on each job.
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allows manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-cpu-macos:
+    name: Build CPU (macOS)
+    # macOS CI is expensive — don't run on every PR. Require the 'ciflow/macos' label.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ciflow/macos')
+    uses: ./.github/workflows/build-cpu-macos.yml
+    with:
+      artifact-name: monarch-cpu-macos-${{ github.sha }}-py3.10
+      runner: macos-latest
+
+  test-cpu-python-macos:
+    name: Test CPU Python (macOS)
+    needs: build-cpu-macos
+    uses: ./.github/workflows/test-cpu-python-macos.yml
+    with:
+      artifact-name: monarch-cpu-macos-${{ github.sha }}-py3.10
+      runner: macos-latest
+
+  test-cpu-rust-macos:
+    name: Test CPU Rust (macOS)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ciflow/macos')
+    uses: ./.github/workflows/test-cpu-rust-macos.yml
+    with:
+      runner: macos-latest
+
+  status-check:
+    name: Status Check
+    runs-on: ubuntu-latest
+    needs: [test-cpu-python-macos, test-cpu-rust-macos]
+    if: always()
+    steps:
+      - name: Check all jobs status
+        run: |
+          python_result="${{ needs.test-cpu-python-macos.result }}"
+          rust_result="${{ needs.test-cpu-rust-macos.result }}"
+          if [[ "$python_result" == "success" || "$python_result" == "skipped" ]] &&
+             [[ "$rust_result" == "success" || "$rust_result" == "skipped" ]]; then
+            echo "All jobs passed or were skipped"
+          else
+            echo "One or more jobs failed"
+            exit 1
+          fi
