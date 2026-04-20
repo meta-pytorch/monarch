@@ -44,5 +44,5 @@ jobs:
         USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
 
         echo "=== sccache stats ==="
-        sccache --show-stats
+        sccache --show-stats || true
         echo "=== end sccache stats ==="
