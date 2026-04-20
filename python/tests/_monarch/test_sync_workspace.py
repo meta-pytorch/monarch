@@ -7,6 +7,7 @@
 # pyre-strict
 
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ from monarch.tools.config.workspace import Workspace
 from scoped_state import scoped_state
 
 
+@unittest.skipUnless(sys.platform == "linux", "linux-only")
 class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tmpdir = Path(tempfile.mkdtemp())
