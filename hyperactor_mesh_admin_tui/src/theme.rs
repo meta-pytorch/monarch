@@ -97,6 +97,8 @@ pub(crate) struct Labels {
     pub(crate) rss: &'static str,
     pub(crate) vm_size: &'static str,
     pub(crate) queue_depth: &'static str,
+    pub(crate) peak_depth: &'static str,
+    pub(crate) last_busy: &'static str,
 
     // Failure detail labels
     pub(crate) error_message: &'static str,
@@ -188,6 +190,8 @@ impl Labels {
             rss: "RSS: ",
             vm_size: "VM Size: ",
             queue_depth: "Queue depth: ",
+            peak_depth: "Peak depth: ",
+            last_busy: "Last busy: ",
             error_message: "Error: ",
             root_cause: "Root cause: ",
             failed_at: "Failed at: ",
@@ -269,6 +273,8 @@ impl Labels {
             rss: "RSS: ",
             vm_size: "虚拟内存: ",
             queue_depth: "队列深度: ",
+            peak_depth: "峰值深度: ",
+            last_busy: "最近繁忙: ",
             error_message: "错误: ",
             root_cause: "根因: ",
             failed_at: "失败时间: ",
