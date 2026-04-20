@@ -826,6 +826,40 @@ struct BridgeState {
     admin_info: AdminInfo,
 }
 
+/// Build an HTTP client for outbound proxy requests to the dashboard.
+///
+/// Loads the root CA via the same bundle-probing logic used by every
+/// other mesh-admin client so the reqwest client can verify the
+/// dashboard's TLS cert. Falls back to the default trust store (and
+/// a default client) when no bundle is available.
+fn build_http_client() -> reqwest::Client {
+    use std::io::Read;
+
+    if let Some(bundle) = hyperactor::channel::try_tls_pem_bundle() {
+        let mut ca_bytes = Vec::new();
+        if let Ok(mut reader) = bundle.ca.reader() {
+            if reader.read_to_end(&mut ca_bytes).is_ok() {
+                let (builder, ca_installed) = crate::mesh_admin_client::add_tls(
+                    reqwest::Client::builder(),
+                    &ca_bytes,
+                    None,
+                    None,
+                );
+                if ca_installed {
+                    if let Ok(client) = builder.build() {
+                        return client;
+                    }
+                    tracing::warn!(
+                        "mesh admin: failed to build reqwest client with root CA; \
+                         falling back to default trust store"
+                    );
+                }
+            }
+        }
+    }
+    reqwest::Client::new()
+}
+
 /// A TCP listener that performs a TLS handshake on each accepted
 /// connection before handing it to axum.
 ///
@@ -904,13 +938,6 @@ impl Actor for MeshAdminAgent {
         };
         let listener = TcpListener::bind(bind_addr).await?;
         let bound_addr = listener.local_addr()?;
-        // Report the hostname (e.g. Tupperware container name) + port
-        // rather than a raw IP, so the address works with DNS and TLS
-        // certificate validation.
-        let host = hostname::get()
-            .unwrap_or_else(|_| "localhost".into())
-            .into_string()
-            .unwrap_or_else(|_| "localhost".to_string());
         self.admin_addr = Some(bound_addr);
 
         // At Meta: mTLS is mandatory — fail if no certs are found.
@@ -931,6 +958,28 @@ impl Actor for MeshAdminAgent {
             "https"
         } else {
             "http"
+        };
+
+        // Build the host portion of the admin URL.
+        //
+        // Explicit bind (loopback, specific IP): honour the caller's
+        // choice — they bound that address intentionally.
+        //
+        // Wildcard bind: choose an advertised host that the loaded
+        // TLS certificate actually authorizes. Extract SANs from the
+        // cert and pick the first candidate that matches. This avoids
+        // emitting a URL that fails TLS verification.
+        let host = if !bound_addr.ip().is_unspecified() {
+            let ip = bound_addr.ip();
+            if ip.is_loopback() {
+                "localhost".to_string()
+            } else if let std::net::IpAddr::V6(v6) = ip {
+                format!("[{}]", v6)
+            } else {
+                ip.to_string()
+            }
+        } else {
+            advertised_host::from_cert_sans()
         };
         self.admin_host = Some(format!("{}://{}:{}", scheme, host, bound_addr.port()));
 
@@ -953,7 +1002,7 @@ impl Actor for MeshAdminAgent {
             )),
             _bridge_handle: bridge_handle,
             telemetry_url: self.telemetry_url.clone(),
-            http_client: reqwest::Client::new(),
+            http_client: build_http_client(),
             admin_info: AdminInfo::new(
                 this.self_id().to_string(),
                 this.self_id().proc_id().to_string(),
@@ -2932,6 +2981,219 @@ pub async fn resolve_mast_handle(
     AdminHandle::Published(PublishedHandle::Mast(handle.to_string()))
         .resolve(port_override)
         .await
+}
+
+/// Cert-aware advertised host selection for wildcard binds.
+///
+/// The server advertises one URL. For wildcard binds, this module
+/// generates candidate hosts from environment sources and picks
+/// the first candidate covered by the loaded server cert's SAN
+/// set. This ensures the advertised URL is always consistent with
+/// the certificate the server presents.
+mod advertised_host {
+    use std::net::IpAddr;
+
+    /// An identity that can appear as a cert SAN entry.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum SanIdentity {
+        Ip(IpAddr),
+        Dns(String),
+    }
+
+    /// Choose the advertised host for a wildcard-bind admin URL.
+    ///
+    /// Candidates (in preference order):
+    /// 1. `hostname::get()` (preferred — human-readable, no
+    ///    brackets in URLs)
+    /// 2. `host_ipv6_address()` (Meta: TW metadata → fbwhoami →
+    ///    local_ipv6)
+    ///
+    /// The first candidate whose identity is covered by the loaded
+    /// server cert's SANs wins. If no cert is available or no
+    /// candidate matches, falls back to hostname.
+    pub(super) fn from_cert_sans() -> String {
+        let hostname = hostname::get()
+            .unwrap_or_else(|_| "localhost".into())
+            .into_string()
+            .unwrap_or_else(|_| "localhost".to_string());
+
+        // (url_display_form, identity_to_match_against_cert)
+        // Prefer DNS names over IPs — more readable, no brackets
+        // in URLs, more stable across container restarts.
+        let mut candidates: Vec<(String, SanIdentity)> = Vec::new();
+
+        // Candidate 1: hostname (preferred if cert covers it).
+        candidates.push((hostname.clone(), SanIdentity::Dns(hostname.clone())));
+
+        // Candidate 2: host IPv6 address (Meta environments).
+        #[cfg(fbcode_build)]
+        if let Ok(ip_str) = hyperactor::meta::host_ip::host_ipv6_address() {
+            if let Ok(ip) = ip_str.parse::<IpAddr>() {
+                candidates.push((format!("[{}]", ip), SanIdentity::Ip(ip)));
+            }
+        }
+
+        let cert_sans = load_cert_sans();
+        let chosen = pick_candidate(&candidates, &cert_sans, &hostname);
+
+        if chosen != hostname && !cert_sans.is_empty() {
+            tracing::info!("admin URL host '{}' matches cert SAN", chosen);
+        } else if !cert_sans.is_empty() && !candidates.iter().any(|(_, id)| cert_sans.contains(id))
+        {
+            tracing::warn!(
+                "no admin URL candidate matched cert SANs; falling back to hostname '{}'",
+                hostname,
+            );
+        }
+
+        chosen
+    }
+
+    /// Extract SAN entries from the server cert PEM bundle.
+    ///
+    /// Loads the same cert bundle that `try_tls_acceptor` uses,
+    /// parses the leaf cert with `x509_parser`, and returns SAN
+    /// DNS names and IP addresses. Returns empty if no cert is
+    /// available or parsing fails.
+    fn load_cert_sans() -> Vec<SanIdentity> {
+        use std::io::BufReader;
+
+        use x509_parser::prelude::*;
+
+        let bundle = match hyperactor::channel::try_tls_pem_bundle() {
+            Some(b) => b,
+            None => return Vec::new(),
+        };
+
+        let cert_pem = match bundle.cert.reader() {
+            Ok(r) => {
+                let mut buf = Vec::new();
+                if std::io::Read::read_to_end(&mut BufReader::new(r), &mut buf).is_err() {
+                    return Vec::new();
+                }
+                buf
+            }
+            Err(_) => return Vec::new(),
+        };
+
+        let mut cursor = &cert_pem[..];
+        let certs: Vec<_> = rustls_pemfile::certs(&mut cursor)
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let leaf_der = match certs.first() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+
+        let (_, cert) = match X509Certificate::from_der(leaf_der.as_ref()) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                tracing::warn!("failed to parse leaf cert for SAN extraction: {}", e);
+                return Vec::new();
+            }
+        };
+
+        let mut sans = Vec::new();
+        if let Ok(Some(san_ext)) = cert.subject_alternative_name() {
+            for name in &san_ext.value.general_names {
+                match name {
+                    GeneralName::DNSName(dns) => {
+                        sans.push(SanIdentity::Dns(dns.to_string()));
+                    }
+                    GeneralName::IPAddress(bytes) => {
+                        let ip = match bytes.len() {
+                            4 => IpAddr::from(<[u8; 4]>::try_from(*bytes).unwrap()),
+                            16 => IpAddr::from(<[u8; 16]>::try_from(*bytes).unwrap()),
+                            _ => continue,
+                        };
+                        sans.push(SanIdentity::Ip(ip));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        sans
+    }
+
+    /// Pick the first candidate covered by the given SAN set.
+    /// Extracted from `from_cert_sans` for direct unit testing.
+    fn pick_candidate(
+        candidates: &[(String, SanIdentity)],
+        cert_sans: &[SanIdentity],
+        fallback: &str,
+    ) -> String {
+        if cert_sans.is_empty() {
+            return fallback.to_string();
+        }
+        for (url_host, identity) in candidates {
+            if cert_sans.iter().any(|san| san == identity) {
+                return url_host.clone();
+            }
+        }
+        fallback.to_string()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::net::IpAddr;
+        use std::net::Ipv4Addr;
+        use std::net::Ipv6Addr;
+
+        use super::*;
+
+        #[test]
+        fn cert_covers_hostname_only_picks_hostname() {
+            let candidates = vec![
+                ("myhost".to_string(), SanIdentity::Dns("myhost".to_string())),
+                (
+                    "[::1]".to_string(),
+                    SanIdentity::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+                ),
+            ];
+            let sans = vec![SanIdentity::Dns("myhost".to_string())];
+            assert_eq!(pick_candidate(&candidates, &sans, "fallback"), "myhost");
+        }
+
+        #[test]
+        fn cert_covers_ip_only_picks_ip() {
+            let ip = IpAddr::V6("2803:6084:3894:2b36:b5d3:11ef:400:0".parse().unwrap());
+            let candidates = vec![
+                ("myhost".to_string(), SanIdentity::Dns("myhost".to_string())),
+                (format!("[{}]", ip), SanIdentity::Ip(ip)),
+            ];
+            let sans = vec![SanIdentity::Ip(ip)];
+            assert_eq!(
+                pick_candidate(&candidates, &sans, "fallback"),
+                format!("[{}]", ip)
+            );
+        }
+
+        #[test]
+        fn cert_covers_both_prefers_hostname() {
+            let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+            let candidates = vec![
+                ("myhost".to_string(), SanIdentity::Dns("myhost".to_string())),
+                ("10.0.0.1".to_string(), SanIdentity::Ip(ip)),
+            ];
+            let sans = vec![SanIdentity::Dns("myhost".to_string()), SanIdentity::Ip(ip)];
+            assert_eq!(pick_candidate(&candidates, &sans, "fallback"), "myhost");
+        }
+
+        #[test]
+        fn no_sans_returns_fallback() {
+            let candidates = vec![("myhost".to_string(), SanIdentity::Dns("myhost".to_string()))];
+            assert_eq!(pick_candidate(&candidates, &[], "fallback"), "fallback");
+        }
+
+        #[test]
+        fn no_candidate_matches_returns_fallback() {
+            let candidates = vec![("myhost".to_string(), SanIdentity::Dns("myhost".to_string()))];
+            let sans = vec![SanIdentity::Dns("otherhost".to_string())];
+            assert_eq!(pick_candidate(&candidates, &sans, "fallback"), "fallback");
+        }
+    }
 }
 
 #[cfg(test)]

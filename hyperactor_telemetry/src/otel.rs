@@ -10,11 +10,11 @@
 pub fn tracing_layer<
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 >() -> Option<impl tracing_subscriber::Layer<S>> {
-    #[cfg(fbcode_build)]
+    #[cfg(all(fbcode_build, target_os = "linux"))]
     {
         Some(crate::meta::tracing_layer())
     }
-    #[cfg(not(fbcode_build))]
+    #[cfg(not(all(fbcode_build, target_os = "linux")))]
     {
         None::<Box<dyn tracing_subscriber::Layer<S> + Send + Sync>>
     }
@@ -22,11 +22,11 @@ pub fn tracing_layer<
 
 #[allow(dead_code)]
 pub fn init_metrics() {
-    #[cfg(fbcode_build)]
+    #[cfg(all(fbcode_build, target_os = "linux"))]
     {
         opentelemetry::global::set_meter_provider(crate::meta::meter_provider());
     }
-    #[cfg(not(fbcode_build))]
+    #[cfg(not(all(fbcode_build, target_os = "linux")))]
     {
         if let Some(provider) = crate::otlp::otlp_meter_provider() {
             opentelemetry::global::set_meter_provider(provider);

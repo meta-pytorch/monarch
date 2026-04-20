@@ -5,7 +5,7 @@
 #   2. C++ extensions (monarch.common._C, gradient_generator) link against libtorch
 #   3. Build-time torch detection determines whether to enable tensor_engine feature
 # The torch index is controlled by [tool.uv.sources] below (e.g., pytorch-cu128)
-requires = ["setuptools>=64", "setuptools-rust", "wheel", "numpy", "torch"]
+requires = ["setuptools>=77", "setuptools-rust", "wheel", "numpy", "torch"]
 build-backend = "setuptools.build_meta"
 
 [project]
