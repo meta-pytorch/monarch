@@ -204,6 +204,12 @@ class SetupActor(Actor):
     with fake_sync_state() to properly handle the async context.
     """
 
+    # PY-SYS-2 (context.rs): actors with this attribute are marked as
+    # system/infrastructure during init and hidden by default in the
+    # TUI. TODO: replace with a @system_actor decorator (also
+    # _ControllerController).
+    _is_system_actor: bool = True
+
     # List of startup functions that are called when spawning a SetupActor.
     # Each function returns Optional[Callable[[], None]] - a callable to run on
     # the remote process. The callable handles its own serialization via __reduce_ex__.
