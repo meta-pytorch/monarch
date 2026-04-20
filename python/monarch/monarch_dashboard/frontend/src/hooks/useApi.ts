@@ -22,13 +22,13 @@ export interface ApiState<T> {
  * Hook for fetching data from the dashboard API.
  *
  * Triggers a fetch on mount and whenever `path` changes.  Automatically
- * re-fetches every `pollIntervalMs` milliseconds (default 1000).
+ * re-fetches every `pollIntervalMs` milliseconds (default 2000).
  * Set `pollIntervalMs` to 0 to disable polling.
  *
  * Only the initial fetch sets loading=true; subsequent polls update
  * data silently to avoid flashing a loading state.
  */
-export function useApi<T>(path: string, pollIntervalMs: number = 1000): ApiState<T> {
+export function useApi<T>(path: string, pollIntervalMs: number = 2000): ApiState<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

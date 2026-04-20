@@ -55,6 +55,13 @@ class MyActor:
                 raise NotImplementedError()
 
 
+def _shutdown_test_target() -> None:
+    import monarch._rust_bindings  # noqa
+    import torch  # noqa
+
+    time.sleep(100)
+
+
 def test_import() -> None:
     try:
         import monarch._rust_bindings  # noqa
@@ -69,13 +76,7 @@ def test_actor_id() -> None:
 
 
 def test_no_hang_on_shutdown() -> None:
-    def test_fn() -> None:
-        import monarch._rust_bindings  # noqa
-        import torch  # noqa
-
-        time.sleep(100)
-
-    proc = multiprocessing.Process(target=test_fn)
+    proc = multiprocessing.Process(target=_shutdown_test_target)
     proc.start()
     pid = proc.pid
     assert pid is not None
