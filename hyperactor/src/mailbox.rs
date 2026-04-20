@@ -943,6 +943,20 @@ impl MailboxServerHandle {
         tracing::info!("stopping mailbox server; reason: {}", reason);
         self.stopped_tx.send(true).expect("stop called twice");
     }
+
+    /// Construct a handle from an already-spawned server task and a
+    /// stop signal. The task must observe `stopped_rx` (the receiver
+    /// paired with `stopped_tx`) and complete once stop is requested,
+    /// so callers can join the handle to confirm shutdown.
+    pub(crate) fn from_parts(
+        join_handle: JoinHandle<Result<(), MailboxServerError>>,
+        stopped_tx: watch::Sender<bool>,
+    ) -> Self {
+        Self {
+            join_handle,
+            stopped_tx,
+        }
+    }
 }
 
 /// Forward future implementation to underlying handle.
@@ -2572,14 +2586,15 @@ impl MailboxRouter {
         WeakMailboxRouter(Arc::downgrade(&self.entries))
     }
 
-    /// Returns a new router that will first attempt to find a route for the message
-    /// in the router's table; otherwise post the message to the provided fallback
-    /// sender.
-    pub fn fallback(&self, default: BoxedMailboxSender) -> impl MailboxSender {
+    /// Returns a boxed sender that first attempts to find a route in
+    /// this router's table; otherwise posts the message to the provided
+    /// fallback sender.
+    pub fn fallback(&self, default: BoxedMailboxSender) -> BoxedMailboxSender {
         FallbackMailboxRouter {
             router: self.clone(),
             default,
         }
+        .into_boxed()
     }
 
     /// Bind the provided sender to the given reference. The destination
@@ -2588,6 +2603,12 @@ impl MailboxRouter {
     pub fn bind(&self, dest: reference::Reference, sender: impl MailboxSender + 'static) {
         let mut w = self.entries.write().unwrap();
         w.insert(dest, Arc::new(sender));
+    }
+
+    /// Remove the binding for the given reference.
+    pub fn unbind(&self, dest: &reference::Reference) {
+        let mut w = self.entries.write().unwrap();
+        w.remove(dest);
     }
 
     fn sender(
@@ -2636,10 +2657,19 @@ impl MailboxSender for MailboxRouter {
     }
 }
 
+/// A router that first checks a [`MailboxRouter`] for a matching
+/// prefix route, falling back to a default sender when none is found.
 #[derive(Clone)]
-struct FallbackMailboxRouter {
+pub struct FallbackMailboxRouter {
     router: MailboxRouter,
     default: BoxedMailboxSender,
+}
+
+impl FallbackMailboxRouter {
+    /// The fallback sender used when the router has no match.
+    pub fn default_sender(&self) -> &BoxedMailboxSender {
+        &self.default
+    }
 }
 
 #[async_trait]

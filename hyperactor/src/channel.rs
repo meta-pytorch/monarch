@@ -453,6 +453,20 @@ impl ChannelTransport {
             ChannelTransport::Unix => false,
         }
     }
+
+    /// Returns true if this transport can carry the duplex byte-stream
+    /// protocol (see [`crate::channel::net::duplex`]). In-process
+    /// transports cannot carry a duplex wire protocol and must fall
+    /// back to a simplex channel.
+    pub fn supports_duplex(&self) -> bool {
+        match self {
+            ChannelTransport::Tcp(_) => true,
+            ChannelTransport::MetaTls(_) => true,
+            ChannelTransport::Tls => true,
+            ChannelTransport::Unix => true,
+            ChannelTransport::Local => false,
+        }
+    }
 }
 
 impl AttrValue for ChannelTransport {
