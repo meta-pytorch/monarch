@@ -35,6 +35,21 @@
 //!   under different parents get distinct pids but the same name
 //!   prefix.
 //!
+//! ## Flight recorder span invariants (FR-*)
+//!
+//! - **FR-1 (recording-span route equivalence):**
+//!   `Instance::recording_span()` returns a span bound to the same
+//!   actor-local `Recording` consumed by handler instrumentation and
+//!   introspection. Events emitted under that span land in the same
+//!   flight-recorder ring buffer returned by `introspect_payload()`.
+//! - **FR-2 (recording-span rootness):** Every span returned by
+//!   `Instance::recording_span()` is a fresh root span (`parent:
+//!   None`). Ambient tracing context does not cause events emitted
+//!   under that span to route into a parent actor's flight recorder.
+//! - **FR-3 (fresh-handle, stable-destination):** Repeated calls to
+//!   `Instance::recording_span()` return distinct span handles, but
+//!   all target the same underlying actor recording.
+//!
 //! ## Queue depth accounting invariants (PD-5*)
 //!
 //! - **PD-5a:** Per-actor queue depth counts work items enqueued for
@@ -285,6 +300,24 @@ fn account_dequeue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_i
             .last_nonzero_epoch_ms
             .store(proc_stats.now_ms(), Ordering::Relaxed);
     }
+    ACTOR_MESSAGE_QUEUE_SIZE.add(
+        -1,
+        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
+    );
+}
+
+/// Roll back an accounted enqueue when the underlying send fails.
+///
+/// Must be paired with a prior `account_enqueue` that has not yet
+/// been balanced by `account_dequeue`. Decrements per-actor
+/// `queue_depth`, proc-level `running_total`, and OTel
+/// `ACTOR_MESSAGE_QUEUE_SIZE` symmetrically. Leaves
+/// `high_water_mark` alone (monotonic by design) and does not
+/// touch `last_nonzero_epoch_ms` (best-effort observational
+/// timestamp; brief overcount on failed sends is acceptable).
+fn account_cancel_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_id: &str) {
+    queue_depth.fetch_sub(1, Ordering::Relaxed);
+    proc_stats.running_total.fetch_sub(1, Ordering::Relaxed);
     ACTOR_MESSAGE_QUEUE_SIZE.add(
         -1,
         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
@@ -1579,6 +1612,12 @@ impl<A: Actor> Instance<A> {
     /// requests, not for hot paths.
     pub fn introspect_payload(&self) -> crate::introspect::IntrospectResult {
         crate::introspect::live_actor_payload(&self.inner.cell)
+    }
+
+    /// Return a fresh tracing span bound to this actor's flight
+    /// recorder. See FR-1, FR-2, FR-3 in module doc.
+    pub fn recording_span(&self) -> tracing::Span {
+        self.inner.cell.recording().span()
     }
 
     /// Publish domain-specific properties for introspection.
@@ -3100,10 +3139,13 @@ impl<A: Actor> Ports<A> {
                             }
                         })
                     });
-                    // PD-5b: account enqueue only after the work item
-                    // is successfully accepted by the work queue. This
-                    // prevents queue_depth from drifting on send failure
-                    // (channel closed, invalid seq, etc.).
+                    // PD-5b: account the enqueue BEFORE handing the work
+                    // to the queue. Otherwise the consumer can race and
+                    // call `account_dequeue` before this thread accounts
+                    // the enqueue, underflowing `running_total`. On send
+                    // failure, `account_cancel_enqueue` rolls back the
+                    // counters so `queue_depth` does not drift.
+                    account_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
                     let result = if workq.enable_buffering {
                         match seq_info {
                             Some(SeqInfo::Session { session_id, seq }) => {
@@ -3133,14 +3175,14 @@ impl<A: Actor> Ports<A> {
                                     std::any::type_name::<M>(),
                                     );
                                 tracing::error!(error_msg);
-                                anyhow::bail!(error_msg);
+                                Err(anyhow::anyhow!(error_msg))
                             }
                         }
                     } else {
                         workq.direct_send(work).map_err(anyhow::Error::from)
                     };
-                    if result.is_ok() {
-                        account_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
+                    if result.is_err() {
+                        account_cancel_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
                     }
                     result
                 });
@@ -4869,5 +4911,40 @@ mod tests {
 
         // Watermark retained.
         assert_eq!(stats.high_water_mark(), 2);
+    }
+
+    // account_cancel_enqueue must symmetrically reverse
+    // account_enqueue on queue_depth and running_total so that a
+    // send failure after accounting cannot leave the proc-wide
+    // counter at u64::MAX (which would panic the next enqueue via
+    // the `fetch_add(1) + 1` path).
+    #[test]
+    fn test_account_cancel_enqueue_restores_counters() {
+        let stats = ProcQueueStats::new();
+        let depth = Arc::new(AtomicU64::new(0));
+
+        account_enqueue(&depth, &stats, "a");
+        assert_eq!(stats.running_total(), 1);
+        assert_eq!(depth.load(Ordering::Relaxed), 1);
+
+        account_cancel_enqueue(&depth, &stats, "a");
+        assert_eq!(
+            stats.running_total(),
+            0,
+            "cancel must restore running_total"
+        );
+        assert_eq!(
+            depth.load(Ordering::Relaxed),
+            0,
+            "cancel must restore queue_depth"
+        );
+
+        // high_water_mark is monotonic by design; cancel does not reset it.
+        assert_eq!(stats.high_water_mark(), 1);
+
+        // A subsequent enqueue must not observe underflow: fetch_add(1) + 1
+        // would panic in debug builds if running_total had wrapped to u64::MAX.
+        account_enqueue(&depth, &stats, "a");
+        assert_eq!(stats.running_total(), 1);
     }
 }
