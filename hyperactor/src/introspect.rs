@@ -132,6 +132,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::InstanceCell;
+use crate::ref_;
 use crate::reference;
 
 /// Typed reference to an introspectable entity.
@@ -501,7 +502,7 @@ impl ActorAttrsView {
             let is_propagated = *attrs.get(FAILURE_IS_PROPAGATED).unwrap_or(&false);
             Some(FailureAttrs {
                 error_message,
-                root_cause_actor,
+                root_cause_actor: root_cause_actor.into(),
                 root_cause_name,
                 occurred_at,
                 is_propagated,
@@ -560,7 +561,10 @@ impl ActorAttrsView {
         attrs.set(IS_SYSTEM, self.is_system);
         if let Some(fi) = &self.failure {
             attrs.set(FAILURE_ERROR_MESSAGE, fi.error_message.clone());
-            attrs.set(FAILURE_ROOT_CAUSE_ACTOR, fi.root_cause_actor.clone());
+            attrs.set(
+                FAILURE_ROOT_CAUSE_ACTOR,
+                reference::ActorId::from(fi.root_cause_actor.clone()),
+            );
             if let Some(name) = &fi.root_cause_name {
                 attrs.set(FAILURE_ROOT_CAUSE_NAME, name.clone());
             }
@@ -737,7 +741,10 @@ fn build_actor_attrs(cell: &crate::InstanceCell, snap: &ActorSnapshot) -> String
     // IA-4 / FI-A1: failure attrs present iff status == "failed".
     if let Some(fi) = &snap.failure {
         attrs.set(FAILURE_ERROR_MESSAGE, fi.error_message.clone());
-        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, fi.root_cause_actor.clone());
+        attrs.set(
+            FAILURE_ROOT_CAUSE_ACTOR,
+            reference::ActorId::from(fi.root_cause_actor.clone()),
+        );
         if let Some(name) = &fi.root_cause_name {
             attrs.set(FAILURE_ROOT_CAUSE_NAME, name.clone());
         }
@@ -763,7 +770,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     let children: Vec<IntrospectRef> = cell
         .child_actor_ids()
         .into_iter()
-        .map(IntrospectRef::Actor)
+        .map(|a| IntrospectRef::Actor(a.into()))
         .collect();
 
     let events = cell.recording().tail();
@@ -787,7 +794,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 
     let supervisor = cell
         .parent()
-        .map(|p| IntrospectRef::Actor(p.actor_id().clone()));
+        .map(|p| IntrospectRef::Actor(p.actor_id().clone().into()));
 
     // FI-3: failure_info is computed from the same status value as
     // actor_status, ensuring they agree on whether the actor failed.
@@ -799,7 +806,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
                 root_cause_actor: root.actor_id.clone(),
                 root_cause_name: root.display_name.clone(),
                 occurred_at: event.occurred_at,
-                is_propagated: root.actor_id != *actor_id,
+                is_propagated: root.actor_id != ref_::ActorRef::from(actor_id.clone()),
             })
         })
     } else {
@@ -817,7 +824,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     let attrs = build_actor_attrs(cell, &snap);
 
     IntrospectResult {
-        identity: IntrospectRef::Actor(actor_id.clone()),
+        identity: IntrospectRef::Actor(actor_id.clone().into()),
         attrs,
         children,
         parent: supervisor,
@@ -885,12 +892,12 @@ pub(crate) async fn serve_introspect(
                             let children: Vec<IntrospectRef> =
                                 published.get(CHILDREN).cloned().unwrap_or_default();
                             IntrospectResult {
-                                identity: IntrospectRef::Actor(cell.actor_id().clone()),
+                                identity: IntrospectRef::Actor(cell.actor_id().clone().into()),
                                 attrs: attrs_json,
                                 children,
                                 parent: cell
                                     .parent()
-                                    .map(|p| IntrospectRef::Actor(p.actor_id().clone())),
+                                    .map(|p| IntrospectRef::Actor(p.actor_id().clone().into())),
                                 as_of: SystemTime::now(),
                             }
                         }
@@ -905,7 +912,8 @@ pub(crate) async fn serve_introspect(
                 )
             }
             IntrospectMessage::QueryChild { child_ref, reply } => {
-                let payload = cell.query_child(&child_ref).unwrap_or_else(|| {
+                let child_ref_: ref_::Reference = child_ref.clone().into();
+                let payload = cell.query_child(&child_ref_).unwrap_or_else(|| {
                     let mut error_attrs = hyperactor_config::Attrs::new();
                     error_attrs.set(ERROR_CODE, "not_found".to_string());
                     error_attrs.set(
@@ -1233,7 +1241,10 @@ mod tests {
         // -- attrs round-trip through ActorAttrsView --
         let mut attrs = failed_actor_attrs();
         attrs.set(FAILURE_ERROR_MESSAGE, snap.error_message);
-        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, snap.root_cause_actor.clone());
+        attrs.set(
+            FAILURE_ROOT_CAUSE_ACTOR,
+            crate::reference::ActorId::from(snap.root_cause_actor.clone()),
+        );
         if let Some(name) = &snap.root_cause_name {
             attrs.set(FAILURE_ROOT_CAUSE_NAME, name.clone());
         }

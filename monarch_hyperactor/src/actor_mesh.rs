@@ -668,7 +668,9 @@ impl PyActorSupervisionEvent {
 
     #[getter]
     pub(crate) fn actor_id(&self) -> PyResult<PyActorId> {
-        Ok(PyActorId::from(self.inner.actor_id.clone()))
+        Ok(PyActorId::from(hyperactor::reference::ActorId::from(
+            self.inner.actor_id.clone(),
+        )))
     }
 
     #[getter]

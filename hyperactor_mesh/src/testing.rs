@@ -82,7 +82,7 @@ impl TestRootClient {
                             }
                             let kind = ActorErrorKind::processing(err);
                             break ActorError {
-                                actor_id: Box::new(instance.self_id().clone()),
+                                actor_id: Box::new(instance.self_id().clone().into()),
                                 kind: Box::new(kind),
                             };
                         }

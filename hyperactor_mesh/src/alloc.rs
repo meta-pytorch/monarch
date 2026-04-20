@@ -757,7 +757,8 @@ pub(crate) mod testing {
             BoxedMailboxSender::new(router.clone()),
         );
         client_proc.clone().serve(client_rx);
-        router.bind(client_proc_id.clone().into(), client_proc_addr);
+        let proc_ref: hyperactor::ref_::ProcRef = client_proc_id.clone().into();
+        router.bind(proc_ref, client_proc_addr);
         (
             router,
             client_proc.instance("test_proc").unwrap().0,
