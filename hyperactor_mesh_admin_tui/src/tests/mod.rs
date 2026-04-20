@@ -10,7 +10,6 @@
 //! tree + cursor + fetch). Per-module unit tests live in each
 //! module's own `#[cfg(test)] mod tests` block.
 
-use std::str::FromStr;
 use std::time::SystemTime;
 
 use crossterm::event::KeyCode;
@@ -44,19 +43,23 @@ fn root() -> NodeRef {
     NodeRef::Root
 }
 
+fn test_addr() -> hyperactor::channel::ChannelAddr {
+    "unix:@test".parse().unwrap()
+}
+
 fn host(name: &str) -> NodeRef {
-    let id_str = format!("unix:@test,world,{}", name);
-    NodeRef::Host(hyperactor_reference::ActorId::from_str(&id_str).unwrap())
+    let proc_id = hyperactor_reference::ProcId::with_name(test_addr(), "world");
+    NodeRef::Host(proc_id.actor_id(name))
 }
 
 fn proc_ref(name: &str) -> NodeRef {
-    let id_str = format!("unix:@test,{}", name);
-    NodeRef::Proc(hyperactor_reference::ProcId::from_str(&id_str).unwrap())
+    let proc_id = hyperactor_reference::ProcId::with_name(test_addr(), name);
+    NodeRef::Proc(proc_id)
 }
 
 fn actor(name: &str) -> NodeRef {
-    let id_str = format!("unix:@test,world,{}", name);
-    NodeRef::Actor(hyperactor_reference::ActorId::from_str(&id_str).unwrap())
+    let proc_id = hyperactor_reference::ProcId::with_name(test_addr(), "world");
+    NodeRef::Actor(proc_id.actor_id(name))
 }
 
 // Empty tree all operations are noops.

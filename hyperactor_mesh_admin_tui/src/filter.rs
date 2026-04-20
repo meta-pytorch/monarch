@@ -54,8 +54,13 @@ mod tests {
     use super::*;
 
     fn mock_actor_id() -> hyperactor::reference::ActorId {
-        use std::str::FromStr;
-        hyperactor::reference::ActorId::from_str("unix:@test,world,a").unwrap()
+        hyperactor::reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "world",
+        )
+        .actor_id("a")
     }
 
     fn actor_props(status: &str) -> NodeProperties {
