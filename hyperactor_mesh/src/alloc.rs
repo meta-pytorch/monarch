@@ -716,8 +716,8 @@ pub(crate) mod testing {
             .keys()
             .filter_map(|proc_id| {
                 proc_id
-                    .name()
-                    .rsplit_once('_')
+                    .label()
+                    .and_then(|l| l.as_str().rsplit_once('_'))
                     .map(|(prefix, _)| prefix.to_string())
             })
             .collect();
