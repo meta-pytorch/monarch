@@ -107,6 +107,10 @@ pub struct ProcDebugStatsDto {
     pub actor_work_queue_depth_total: u64,
     /// Max per-actor queue depth (live actors only).
     pub actor_work_queue_depth_max: u64,
+    /// Maximum proc-wide queue depth since startup (PD-6, eventually consistent).
+    pub actor_work_queue_depth_high_water_mark: u64,
+    /// Milliseconds since proc-wide queue depth was last observed non-zero (PD-7, wall clock).
+    pub last_nonzero_queue_depth_age_ms: Option<u64>,
 }
 
 /// Node-specific metadata. Externally-tagged enum — the JSON
@@ -260,6 +264,9 @@ impl From<NodeProperties> for NodePropertiesDto {
                     },
                     actor_work_queue_depth_total: debug.actor_work_queue_depth_total,
                     actor_work_queue_depth_max: debug.actor_work_queue_depth_max,
+                    actor_work_queue_depth_high_water_mark: debug
+                        .actor_work_queue_depth_high_water_mark,
+                    last_nonzero_queue_depth_age_ms: debug.last_nonzero_queue_depth_age_ms,
                 },
             },
             NodeProperties::Actor {
@@ -386,6 +393,9 @@ impl TryFrom<NodePropertiesDto> for NodeProperties {
                     },
                     actor_work_queue_depth_total: debug.actor_work_queue_depth_total,
                     actor_work_queue_depth_max: debug.actor_work_queue_depth_max,
+                    actor_work_queue_depth_high_water_mark: debug
+                        .actor_work_queue_depth_high_water_mark,
+                    last_nonzero_queue_depth_age_ms: debug.last_nonzero_queue_depth_age_ms,
                 },
             },
             NodePropertiesDto::Actor {

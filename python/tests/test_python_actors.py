@@ -1110,6 +1110,7 @@ class LsActor(Actor):
 
 
 # Workspace sync test - requires rsync server infrastructure.
+@pytest.mark.skipif(sys.platform != "linux", reason="linux-only")
 async def test_sync_workspace() -> None:
     # create two workspaces: one for local and one for remote
     with (
