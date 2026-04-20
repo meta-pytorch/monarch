@@ -5,15 +5,15 @@ on:
     branches:
       - 'docs/**'
   pull_request:
-  # uncomment this to turn on scheduled deploys of nightly docs.
+  # uncomment this to turn on scheduled deploys of main docs.
   # for now, to secure the gh-pages branch, we require PRs to be accepted to
-  # make changes. So nightlies will have too much overhead of requiring accepts.
+  # make changes. So scheduled builds will have too much overhead of requiring accepts.
   # schedule:
-  #   - cron: '17 8 * * *'  # Daily at ~8:17 AM UTC (nightly docs from main)
+  #   - cron: '17 8 * * *'  # Daily at ~8:17 AM UTC (main branch docs)
   workflow_dispatch:
     inputs:
       version:
-        description: "Docs version to build and deploy (e.g. v0.4.0, nightly). If empty, builds dev docs without deploying."
+        description: "Docs version to build and deploy (e.g. v0.4.0, main). If empty, builds dev docs without deploying."
         required: false
         default: ""
 
@@ -39,7 +39,7 @@ jobs:
         elif [[ "$GITHUB_REF" == refs/heads/docs/* ]]; then
             export DOCS_VERSION="${GITHUB_REF#refs/heads/docs/}"
         elif [[ "${{ github.event_name }}" == "schedule" ]]; then
-            export DOCS_VERSION="nightly"
+            export DOCS_VERSION="main"
         else
             export DOCS_VERSION="dev"
         fi
@@ -109,7 +109,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: gh-pages
-          path: gh-pages
           fetch-depth: 1
         continue-on-error: true
 
@@ -125,7 +124,7 @@ jobs:
           if [[ -n "${{ inputs.version }}" ]]; then
             VERSION="${{ inputs.version }}"
           elif [[ "${{ github.event_name }}" == "schedule" ]]; then
-            VERSION="nightly"
+            VERSION="main"
           else
             VERSION="${GITHUB_REF#refs/heads/docs/}"
           fi
@@ -144,19 +143,20 @@ jobs:
           export VERSION="${{ steps.version.outputs.version }}"
           export SITE_URL="https://meta-pytorch.org/monarch"
 
-          # Copy built docs into versioned subdirectory
-          rm -rf "gh-pages/${VERSION}"
-          cp -r artifact/docs-html "gh-pages/${VERSION}"
-
-          # Update versions.json
+          # Update versions.json and handle stable directory management.
+          # For the latest stable release, docs are served from "stable/" instead
+          # of the version key. Since GitHub Pages doesn't support symlinks, we
+          # physically rename directories when the stable version changes.
           python3 - <<'PYEOF'
           import json
           import os
           import re
+          import shutil
 
           version = os.environ["VERSION"]
           site_url = os.environ["SITE_URL"]
-          versions_path = "gh-pages/versions.json"
+          versions_path = "versions.json"
+          stable_version_path = "stable-version.txt"
 
           # Load existing versions or start fresh
           if os.path.exists(versions_path):
@@ -168,11 +168,11 @@ jobs:
           # Remove existing entry for this version
           versions = [v for v in versions if v["version"] != version]
 
-          # Add new entry
+          # Add new entry (URL will be set below based on whether it's the latest stable)
           versions.append({
               "name": version,
               "version": version,
-              "url": f"{site_url}/{version}/",
+              "url": "",  # placeholder, set below
           })
 
           # Sort by semver descending (versions like v0.4.0)
@@ -191,20 +191,57 @@ jobs:
               return bool(re.match(r"v?\d+\.\d+\.\d+$", v["version"]))
 
           # Find the latest stable release (pre-releases are never "stable")
-          latest_stable_idx = next(
-              (i for i, v in enumerate(versions) if is_stable_release(v)),
+          latest_stable_version = next(
+              (v["version"] for v in versions if is_stable_release(v)),
               None,
           )
 
-          for i, v in enumerate(versions):
-              if i == latest_stable_idx:
+          # Read which version currently occupies the "stable" directory
+          prev_stable_version = None
+          if os.path.exists(stable_version_path):
+              prev_stable_version = open(stable_version_path).read().strip() or None
+
+          is_new_version_latest_stable = (version == latest_stable_version)
+
+          # --- Directory management ---
+          if is_new_version_latest_stable:
+              # If a different version currently owns "stable/", rename it back
+              # to its version key so it remains accessible.
+              if prev_stable_version and prev_stable_version != version:
+                  stable_dir = "stable"
+                  old_version_dir = f"{prev_stable_version}"
+                  if os.path.isdir(stable_dir) and not os.path.exists(old_version_dir):
+                      shutil.move(stable_dir, old_version_dir)
+
+              # Deploy new docs into "stable/"
+              dest = "stable"
+              if os.path.isdir(dest):
+                  shutil.rmtree(dest)
+              shutil.copytree("artifact/docs-html", dest)
+
+              # Record which version now owns "stable/"
+              with open(stable_version_path, "w") as f:
+                  f.write(version + "\n")
+          else:
+              # Non-latest-stable version: deploy to its own directory
+              dest = f"{version}"
+              if os.path.isdir(dest):
+                  shutil.rmtree(dest)
+              shutil.copytree("artifact/docs-html", dest)
+
+          # --- Set URLs and labels ---
+          for v in versions:
+              if v["version"] == latest_stable_version:
                   v["name"] = f"{v['version']} (stable)"
+                  v["url"] = f"{site_url}/stable/"
                   v["preferred"] = True
-              elif v["version"] == "nightly":
-                  v["name"] = "nightly"
+              elif v["version"] == "main":
+                  v["name"] = "main"
+                  v["url"] = f"{site_url}/main/"
                   v.pop("preferred", None)
               else:
                   v["name"] = v["version"]
+                  v["url"] = f"{site_url}/{v['version']}/"
                   v.pop("preferred", None)
 
           with open(versions_path, "w") as f:
@@ -212,36 +249,28 @@ jobs:
               f.write("\n")
           PYEOF
 
-          # Generate root index.html redirect to latest stable version
-          LATEST=$(python3 -c "
-          import json, re
-          versions = json.load(open('gh-pages/versions.json'))
-          stable = [v for v in versions if re.match(r'v?\d+\.\d+\.\d+$', v['version'])]
-          print(stable[0]['version'] if stable else 'dev')
-          ")
-
-          cat > gh-pages/index.html <<HTMLEOF
+          # Generate root index.html redirect to stable
+          cat > index.html <<HTMLEOF
           <!DOCTYPE html>
           <html>
           <head>
               <meta charset="utf-8">
               <title>Redirecting to Monarch docs</title>
-              <meta http-equiv="refresh" content="0; url=${LATEST}/">
-              <link rel="canonical" href="${SITE_URL}/${LATEST}/">
+              <meta http-equiv="refresh" content="0; url=stable/">
+              <link rel="canonical" href="${SITE_URL}/stable/">
           </head>
           <body>
-              <p>Redirecting to <a href="${LATEST}/">Monarch ${LATEST} documentation</a>...</p>
+              <p>Redirecting to <a href="stable/">Monarch stable documentation</a>...</p>
           </body>
           </html>
           HTMLEOF
 
           # Add .nojekyll to prevent Jekyll processing
-          touch gh-pages/.nojekyll
+          touch .nojekyll
 
       - name: Push to gh-pages
         if: steps.version.outputs.skip != 'true'
         run: |
-          cd gh-pages
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
