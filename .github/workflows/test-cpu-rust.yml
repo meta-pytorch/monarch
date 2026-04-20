@@ -68,5 +68,5 @@ jobs:
           --exclude monarch_conda
 
         echo "=== sccache stats ==="
-        sccache --show-stats
+        sccache --show-stats || true
         echo "=== end sccache stats ==="

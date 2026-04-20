@@ -577,18 +577,28 @@ impl ProcAgent {
         let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
         memory.to_attrs(&mut attrs);
 
-        // PD-4: aggregate queue depth over live actors only.
-        let mut queue_total: u64 = 0;
+        // Proc-wide total from runtime accounting path (O(1)).
+        let queue_total = self.proc.queue_depth_total();
+        attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL, queue_total);
+
+        // Per-actor max still needs the per-actor scan (PD-4: live actors only).
         let mut queue_max: u64 = 0;
         for actor_id in self.proc.all_instance_keys() {
             if let Some(cell) = self.proc.get_instance(&actor_id) {
-                let depth = cell.queue_depth();
-                queue_total = queue_total.saturating_add(depth);
-                queue_max = queue_max.max(depth);
+                queue_max = queue_max.max(cell.queue_depth());
             }
         }
-        attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL, queue_total);
         attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX, queue_max);
+
+        // Retained queue-pressure evidence (PD-6, PD-7).
+        attrs.set(
+            crate::introspect::ACTOR_WORK_QUEUE_DEPTH_HIGH_WATER_MARK,
+            self.proc.queue_depth_high_water_mark(),
+        );
+        attrs.set(
+            crate::introspect::LAST_NONZERO_QUEUE_DEPTH_AGE_MS,
+            self.proc.last_nonzero_queue_depth_age_ms(),
+        );
 
         cx.instance().publish_attrs(attrs);
     }
@@ -685,17 +695,25 @@ impl Actor for ProcAgent {
                     // to prevent resolution drift from the publish path.
                     let memory = crate::introspect::ProcessMemoryStats::read_from_procfs();
                     memory.to_attrs(&mut attrs);
-                    let mut queue_total: u64 = 0;
+                    attrs.set(
+                        crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL,
+                        proc.queue_depth_total(),
+                    );
                     let mut queue_max: u64 = 0;
                     for aid in proc.all_instance_keys() {
                         if let Some(cell) = proc.get_instance(&aid) {
-                            let depth = cell.queue_depth();
-                            queue_total = queue_total.saturating_add(depth);
-                            queue_max = queue_max.max(depth);
+                            queue_max = queue_max.max(cell.queue_depth());
                         }
                     }
-                    attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_TOTAL, queue_total);
                     attrs.set(crate::introspect::ACTOR_WORK_QUEUE_DEPTH_MAX, queue_max);
+                    attrs.set(
+                        crate::introspect::ACTOR_WORK_QUEUE_DEPTH_HIGH_WATER_MARK,
+                        proc.queue_depth_high_water_mark(),
+                    );
+                    attrs.set(
+                        crate::introspect::LAST_NONZERO_QUEUE_DEPTH_AGE_MS,
+                        proc.last_nonzero_queue_depth_age_ms(),
+                    );
 
                     let attrs_json =
                         serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
