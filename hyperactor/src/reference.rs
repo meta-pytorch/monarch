@@ -130,38 +130,29 @@ impl Reference {
     }
 
     /// The proc id of the reference, if any.
-    pub fn proc_id(&self) -> Option<&ProcId> {
+    pub fn proc_id(&self) -> Option<ProcId> {
         match self {
-            Self::Proc(proc_id) => Some(proc_id),
+            Self::Proc(proc_id) => Some(proc_id.clone()),
             Self::Actor(actor_id) => Some(actor_id.proc_id()),
             Self::Port(port_id) => Some(port_id.actor_id().proc_id()),
         }
     }
 
     /// The actor id of the reference, if any.
-    pub fn actor_id(&self) -> Option<&ActorId> {
+    pub fn actor_id(&self) -> Option<ActorId> {
         match self {
             Self::Proc(_) => None,
-            Self::Actor(actor_id) => Some(actor_id),
+            Self::Actor(actor_id) => Some(actor_id.clone()),
             Self::Port(port_id) => Some(port_id.actor_id()),
         }
     }
 
-    /// The actor name of the reference, if any.
-    fn actor_name(&self) -> Option<&str> {
+    /// The actor uid of the reference, if any.
+    fn actor_uid(&self) -> Option<&Uid> {
         match self {
             Self::Proc(_) => None,
-            Self::Actor(actor_id) => Some(actor_id.name()),
-            Self::Port(port_id) => Some(port_id.actor_id().name()),
-        }
-    }
-
-    /// The pid of the reference, if any.
-    fn pid(&self) -> Option<Index> {
-        match self {
-            Self::Proc(_) => None,
-            Self::Actor(actor_id) => Some(actor_id.pid()),
-            Self::Port(port_id) => Some(port_id.actor_id().pid()),
+            Self::Actor(actor_id) => Some(actor_id.uid()),
+            Self::Port(port_id) => Some(port_id.0.id().actor_id().uid()),
         }
     }
 
@@ -192,11 +183,11 @@ impl PartialOrd for Reference {
 
 impl Ord for Reference {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Order by: proc address/name, then actor_name, then pid, then port
-        (self.proc_id(), self.actor_name(), self.pid(), self.port()).cmp(&(
+        // Order by: proc id, then actor uid, then port.
+        // None < Some ensures Proc < Actor < Port for same proc.
+        (self.proc_id(), self.actor_uid(), self.port()).cmp(&(
             other.proc_id(),
-            other.actor_name(),
-            other.pid(),
+            other.actor_uid(),
             other.port(),
         ))
     }
@@ -262,26 +253,19 @@ impl FromStr for Reference {
 
                     // channeladdr,proc_name,actor_name
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name) =>
-                    Self::Actor(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, 0)),
+                    Self::Actor(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name)),
 
-                    // channeladdr,proc_name,actor_name[pid]
+                    // channeladdr,proc_name,actor_name[port]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
-                        Token::LeftBracket Token::Uint(pid) Token::RightBracket =>
-                        Self::Actor(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, pid)),
+                        Token::LeftBracket Token::Uint(port) Token::RightBracket =>
+                        Self::Port(PortId::new(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name), port as u64)),
 
-                    // channeladdr,proc_name,actor_name[pid][port]
+                    // channeladdr,proc_name,actor_name[port<type>]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
-                        Token::LeftBracket Token::Uint(pid) Token::RightBracket
-                        Token::LeftBracket Token::Uint(index) Token::RightBracket  =>
-                        Self::Port(PortId::new(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, pid), index as u64)),
-
-                    // channeladdr,proc_name,actor_name[pid][port<type>]
-                    Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
-                        Token::LeftBracket Token::Uint(pid) Token::RightBracket
-                        Token::LeftBracket Token::Uint(index)
+                        Token::LeftBracket Token::Uint(port)
                             Token::LessThan Token::Elem(_type) Token::GreaterThan
                         Token::RightBracket =>
-                        Self::Port(PortId::new(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, pid), index as u64)),
+                        Self::Port(PortId::new(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name), port as u64)),
                 }?)
             }
 
@@ -323,7 +307,7 @@ fn parse_resource_name(s: &str) -> (Uid, Option<Label>) {
     // Singleton: _label
     if let Some(rest) = s.strip_prefix('_') {
         if let Ok(label) = Label::new(rest) {
-            return (Uid::Singleton(label), None);
+            return (Uid::Singleton(label.clone()), Some(label));
         }
     }
 
@@ -405,9 +389,9 @@ impl ProcId {
         Self(proc_ref)
     }
 
-    /// Create an actor ID with the provided name and pid within this proc.
-    pub fn actor_id(&self, name: impl Into<String>, pid: Index) -> ActorId {
-        ActorId(self.clone(), name.into(), pid)
+    /// Create an actor ID with the provided name within this proc.
+    pub fn actor_id(&self, name: impl AsRef<str>) -> ActorId {
+        ActorId::new(self.clone(), name)
     }
 
     /// The proc's channel address.
@@ -437,6 +421,26 @@ impl ProcId {
             Uid::Singleton(label) => Some(label),
             _ => None,
         })
+    }
+
+    /// A human-readable name for logging, derived from the label or uid.
+    pub fn log_name(&self) -> &str {
+        self.0.id().label().map(|l| l.as_str()).unwrap_or("?")
+    }
+
+    /// The ResourceId text form of this proc's identity.
+    ///
+    /// Produces `_label` (singleton), `label-hex16` (labeled instance),
+    /// or `hex16` (unlabeled instance). Suitable for filesystem paths
+    /// and string-based lookups that must round-trip through
+    /// `parse_resource_name`.
+    pub fn resource_name(&self) -> String {
+        let id = self.0.id();
+        match (id.uid(), id.label()) {
+            (Uid::Singleton(label), _) => format!("_{}", label),
+            (Uid::Instance(uid), Some(label)) => format!("{}-{:016x}", label, uid),
+            (Uid::Instance(uid), None) => format!("{:016x}", uid),
+        }
     }
 }
 
@@ -468,7 +472,8 @@ impl FromStr for ProcId {
     }
 }
 
-/// Actors are identified by their proc, their name, and pid.
+/// Actors are identified by a typed actor reference pairing an identity
+/// with a network location.
 #[derive(
     Debug,
     Serialize,
@@ -481,50 +486,104 @@ impl FromStr for ProcId {
     Ord,
     typeuri::Named
 )]
-pub struct ActorId(ProcId, String, Index);
+#[serde(transparent)]
+pub struct ActorId(ref_::ActorRef);
 
 hyperactor_config::impl_attrvalue!(ActorId);
 
 impl ActorId {
-    /// Create a new actor ID.
-    pub fn new(proc_id: ProcId, name: impl Into<String>, pid: Index) -> Self {
-        Self(proc_id, name.into(), pid)
+    /// Create a new actor ID from a proc and name string.
+    ///
+    /// Parses the name in ResourceId format to recover the uid deterministically.
+    /// Child actors with random uids are created via [`Self::unique_child_id`].
+    pub fn new(proc_id: ProcId, name: impl AsRef<str>) -> Self {
+        let s = name.as_ref();
+        let (uid, label) = parse_resource_name(s);
+        let actor_id = crate::id::ActorId::new(uid, proc_id.0.id().clone(), label);
+        Self(ref_::ActorRef::new(actor_id, proc_id.0.location().clone()))
     }
 
     /// Create a new port ID with the provided port for this actor.
     pub fn port_id(&self, port: u64) -> PortId {
-        PortId(self.clone(), port)
+        let port_id = crate::id::PortId::new(self.0.id().clone(), crate::port::Port::from(port));
+        PortId(ref_::PortRef::new(port_id, self.0.location().clone()))
     }
 
-    /// Create a child actor ID with the provided PID.
-    pub fn child_id(&self, pid: Index) -> Self {
-        Self(self.0.clone(), self.1.clone(), pid)
+    /// Create a child actor ID with a random uid.
+    pub fn unique_child_id(&self) -> Self {
+        let child = crate::id::ActorId::instance(self.0.id().proc_id().clone());
+        Self(ref_::ActorRef::new(child, self.0.location().clone()))
     }
 
-    /// Return the root actor ID for the provided proc and name.
-    pub fn root(proc_id: ProcId, name: String) -> Self {
-        Self(proc_id, name, 0)
+    /// Return the root actor ID for the provided proc and label.
+    pub fn root(proc_id: ProcId, label: Label) -> Self {
+        let actor_id = crate::id::ActorId::singleton(label, proc_id.0.id().clone());
+        Self(ref_::ActorRef::new(actor_id, proc_id.0.location().clone()))
+    }
+
+    /// Wrap an existing [`ref_::ActorRef`].
+    pub fn from_actor_ref(actor_ref: ref_::ActorRef) -> Self {
+        Self(actor_ref)
     }
 
     /// The proc ID of this actor ID.
-    pub fn proc_id(&self) -> &ProcId {
+    pub fn proc_id(&self) -> ProcId {
+        ProcId(ref_::ProcRef::new(
+            self.0.id().proc_id().clone(),
+            self.0.location().clone(),
+        ))
+    }
+
+    /// The underlying actor identity.
+    pub fn id(&self) -> &crate::id::ActorId {
+        self.0.id()
+    }
+
+    /// The underlying actor reference.
+    pub fn actor_ref(&self) -> &ref_::ActorRef {
         &self.0
     }
 
-    /// The actor's name.
-    pub fn name(&self) -> &str {
-        &self.1
+    /// The actor's uid.
+    pub fn uid(&self) -> &Uid {
+        self.0.id().uid()
     }
 
-    /// The actor's pid.
-    pub fn pid(&self) -> Index {
-        self.2
+    /// The actor's label.
+    pub fn label(&self) -> Option<&Label> {
+        self.0.id().label()
+    }
+
+    /// The actor's network address (same as proc's).
+    pub fn addr(&self) -> &ChannelAddr {
+        self.0.location().addr()
+    }
+
+    /// Whether this is a root (singleton) actor.
+    pub fn is_root(&self) -> bool {
+        matches!(self.0.id().uid(), Uid::Singleton(_))
+    }
+
+    /// A human-readable name for logging, derived from the label or uid.
+    pub fn log_name(&self) -> &str {
+        self.0.id().label().map(|l| l.as_str()).unwrap_or("?")
     }
 }
 
 impl fmt::Display for ActorId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{},{}[{}]", self.0, self.1, self.2)
+        // Compat format: "proc_display,actor_resource_name"
+        let id = self.0.id();
+        let proc_id = self.proc_id();
+        match (id.uid(), id.label()) {
+            (Uid::Singleton(label), _) => write!(f, "{},_{}", proc_id, label),
+            (Uid::Instance(uid), Some(label)) => {
+                write!(f, "{},{}-{:016x}", proc_id, label, uid)
+            }
+            (Uid::Instance(uid), None) => {
+                write!(f, "{},{:016x}", proc_id, uid)
+            }
+        }
     }
 }
 impl<A: Referable> From<ActorRef<A>> for ActorId {
@@ -704,9 +763,6 @@ impl<A: Referable> Hash for ActorRef<A> {
 }
 
 /// Port ids identify [`crate::mailbox::Port`]s of an actor.
-///
-/// TODO: consider moving [`crate::mailbox::Port`] to `PortRef` in this
-/// module for consistency with actors,
 #[derive(
     Debug,
     Serialize,
@@ -719,31 +775,37 @@ impl<A: Referable> Hash for ActorRef<A> {
     Ord,
     typeuri::Named
 )]
-pub struct PortId(ActorId, u64);
+#[serde(transparent)]
+pub struct PortId(ref_::PortRef);
 
 impl PortId {
     /// Create a new port ID.
     pub fn new(actor_id: ActorId, port: u64) -> Self {
-        Self(actor_id, port)
+        let port_id =
+            crate::id::PortId::new(actor_id.0.id().clone(), crate::port::Port::from(port));
+        Self(ref_::PortRef::new(port_id, actor_id.0.location().clone()))
     }
 
     /// The ID of the port's owning actor.
-    pub fn actor_id(&self) -> &ActorId {
-        &self.0
+    pub fn actor_id(&self) -> ActorId {
+        ActorId(ref_::ActorRef::new(
+            self.0.id().actor_id().clone(),
+            self.0.location().clone(),
+        ))
     }
 
     /// Convert this port ID into an actor ID.
     pub fn into_actor_id(self) -> ActorId {
-        self.0
+        self.actor_id()
     }
 
     /// This port's index.
     pub fn index(&self) -> u64 {
-        self.1
+        self.0.id().port().as_u64()
     }
 
     pub(crate) fn is_actor_port(&self) -> bool {
-        self.1 & ACTOR_PORT_BIT != 0
+        self.0.id().port().is_handler()
     }
 
     /// Send a serialized message to this port, provided a sending capability,
@@ -811,9 +873,10 @@ impl FromStr for PortId {
 
 impl fmt::Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let PortId(actor_id, port) = self;
+        let actor_id = self.actor_id();
+        let port = self.index();
         if self.is_actor_port() {
-            let type_info = TypeInfo::get(*port).or_else(|| TypeInfo::get(*port & !ACTOR_PORT_BIT));
+            let type_info = TypeInfo::get(port).or_else(|| TypeInfo::get(port & !ACTOR_PORT_BIT));
             let typename = type_info.map_or("unknown", TypeInfo::typename);
             write!(f, "{}[{}<{}>]", actor_id, port, typename)
         } else {
@@ -1249,22 +1312,29 @@ mod tests {
                 ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test").into(),
             ),
             (
-                "tcp:[::1]:1234,test,testactor[123]",
+                "tcp:[::1]:1234,test,testactor",
                 ActorId::new(
                     ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test"),
                     "testactor",
-                    123,
                 )
                 .into(),
             ),
             (
-                // type annotations are ignored
-                "tcp:[::1]:1234,test,testactor[0][123<my::type>]",
+                // instance actor (label-hex16 format)
+                "tcp:[::1]:1234,test,myactor-00000000deadbeef",
+                ActorId::new(
+                    ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test"),
+                    "myactor-00000000deadbeef",
+                )
+                .into(),
+            ),
+            (
+                // one bracket group = port (type annotations ignored)
+                "tcp:[::1]:1234,test,testactor[123<my::type>]",
                 PortId::new(
                     ActorId::new(
                         ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test"),
                         "testactor",
-                        0,
                     ),
                     123,
                 )
@@ -1314,13 +1384,19 @@ mod tests {
             ActorId::new(
                 ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test"),
                 "testactor",
-                1,
             ),
             MyType::port(),
         );
-        assert_eq!(
-            port_id.to_string(),
-            "tcp:[::1]:1234,_test,testactor[1][17867850292987402005<hyperactor::reference::tests::MyType>]"
+        let s = port_id.to_string();
+        assert!(
+            s.starts_with("tcp:[::1]:1234,_test,_testactor["),
+            "unexpected format: {}",
+            s
+        );
+        assert!(
+            s.contains("<hyperactor::reference::tests::MyType>"),
+            "missing type annotation: {}",
+            s
         );
     }
 
