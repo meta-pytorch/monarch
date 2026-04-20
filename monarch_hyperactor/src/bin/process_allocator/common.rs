@@ -320,6 +320,7 @@ mod tests {
 
     /// Tests that an allocator with a timeout, that has a process running and
     /// receives no messages, will keep running as long as the processes do.
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn test_timeout_not_during_execution() -> Result<(), anyhow::Error> {
         hyperactor::initialize_with_current_runtime();
