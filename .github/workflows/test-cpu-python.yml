@@ -7,9 +7,17 @@ on:
         description: 'Wheel artifact name from build workflow'
         required: true
         type: string
+      python-version:
+        description: 'Python version to test with'
+        type: string
+        default: '3.10'
+      runner:
+        description: 'Linux runner to use for the test'
+        type: string
+        default: 'linux.4xlarge'
 
 concurrency:
-  group: test-cpu-python-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  group: test-cpu-python-${{ inputs.runner }}-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -18,7 +26,7 @@ jobs:
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 60
-      runner: linux.4xlarge
+      runner: ${{ inputs.runner }}
       submodules: recursive
       download-artifact: ${{ inputs.artifact-name }}
       script: |

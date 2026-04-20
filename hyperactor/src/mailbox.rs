@@ -943,6 +943,20 @@ impl MailboxServerHandle {
         tracing::info!("stopping mailbox server; reason: {}", reason);
         self.stopped_tx.send(true).expect("stop called twice");
     }
+
+    /// Construct a handle from an already-spawned server task and a
+    /// stop signal. The task must observe `stopped_rx` (the receiver
+    /// paired with `stopped_tx`) and complete once stop is requested,
+    /// so callers can join the handle to confirm shutdown.
+    pub(crate) fn from_parts(
+        join_handle: JoinHandle<Result<(), MailboxServerError>>,
+        stopped_tx: watch::Sender<bool>,
+    ) -> Self {
+        Self {
+            join_handle,
+            stopped_tx,
+        }
+    }
 }
 
 /// Forward future implementation to underlying handle.

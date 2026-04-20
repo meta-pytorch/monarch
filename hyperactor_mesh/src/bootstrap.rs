@@ -2619,7 +2619,6 @@ mod tests {
             addr: ChannelAddr::any(ChannelTransport::Unix),
             command: None,
             config: None,
-            duplex_addr: None,
             exit_on_shutdown: false,
         };
 
