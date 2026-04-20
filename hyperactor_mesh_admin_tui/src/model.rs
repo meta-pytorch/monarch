@@ -343,16 +343,23 @@ mod tests {
     use super::*;
 
     fn mock_actor_ref(name: &str) -> NodeRef {
-        use std::str::FromStr;
-        // Create a simple ActorId for testing.
-        let id_str = format!("unix:@test,world,{}", name);
-        NodeRef::Actor(hyperactor::reference::ActorId::from_str(&id_str).unwrap())
+        let proc_id = hyperactor::reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "world",
+        );
+        NodeRef::Actor(proc_id.actor_id(name))
     }
 
     fn mock_proc_ref(name: &str) -> NodeRef {
-        use std::str::FromStr;
-        let id_str = format!("unix:@test,{}", name);
-        NodeRef::Proc(hyperactor::reference::ProcId::from_str(&id_str).unwrap())
+        let proc_id = hyperactor::reference::ProcId::with_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            name,
+        );
+        NodeRef::Proc(proc_id)
     }
 
     // Helper to create test payloads
@@ -679,8 +686,13 @@ mod tests {
     fn from_payload_sets_failed_for_actor_with_failure_info() {
         let r = mock_actor_ref("actor1");
         let worker_id = {
-            use std::str::FromStr;
-            hyperactor::reference::ActorId::from_str("unix:@test,world,worker").unwrap()
+            hyperactor::reference::ProcId::with_name(
+                "unix:@test"
+                    .parse::<hyperactor::channel::ChannelAddr>()
+                    .unwrap(),
+                "world",
+            )
+            .actor_id("worker")
         };
         let payload = NodePayload {
             identity: r.clone(),
