@@ -167,3 +167,20 @@ class LoggingManager:
             )
         except Exception:
             pass
+
+    async def drain_async(self) -> None:
+        """Quiesce the per-proc logger mesh so that any in-flight
+        `SetLogging` casts have been delivered before the mesh is
+        stopped. Without this barrier the casts race the proc-mesh
+        shutdown and surface later as undeliverables on the root
+        client. See `LoggingMeshClient::drain` for details."""
+        if self._logging_mesh_client is None:
+            return
+        try:
+            await (
+                self._logging_mesh_client.drain(context().actor_instance._as_rust())
+                .spawn()
+                .task()
+            )
+        except Exception:
+            pass
