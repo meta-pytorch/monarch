@@ -54,6 +54,8 @@ mod inner {
             HIP_POINTER_ATTRIBUTE_MEMORY_TYPE;
         pub const CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL: hipPointer_attribute =
             HIP_POINTER_ATTRIBUTE_DEVICE_ORDINAL;
+        pub const CU_POINTER_ATTRIBUTE_CONTEXT: hipPointer_attribute =
+            HIP_POINTER_ATTRIBUTE_CONTEXT;
 
         // Memory types
         pub const CU_MEMORYTYPE_DEVICE: u32 = 2; // hipMemoryTypeDevice = 2

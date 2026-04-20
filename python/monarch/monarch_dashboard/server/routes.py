@@ -18,6 +18,7 @@ from flask import Blueprint, jsonify, request
 
 from . import db
 from .admin_dag import build_admin_dag
+from .cache import cached
 from .system_actors import get_system_actor_names
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -62,7 +63,7 @@ def health():
 @api.route("/summary")
 def summary():
     """Aggregate metrics for the summary dashboard."""
-    return jsonify(_sanitize_for_js(db.get_summary()))
+    return jsonify(cached("summary", lambda: _sanitize_for_js(db.get_summary())))
 
 
 @api.route("/dag")
@@ -79,24 +80,26 @@ def dag():
     Optional: ?hide_system=true (default) to filter system actors.
     """
     hide_system = request.args.get("hide_system", "true").lower() != "false"
+    cache_key = f"dag:hide_system={hide_system}"
     try:
-        # Prefer the admin API for a clean TUI-like hierarchy.
-        if os.environ.get("MONARCH_ADMIN_URL"):
-            result = build_admin_dag(hide_system=hide_system)
-            if result.get("nodes"):
-                # Strip internal cache keys before returning.
-                return jsonify(
-                    _sanitize_for_js(
+
+        def _compute_dag():
+            # Prefer the admin API for a clean TUI-like hierarchy.
+            if os.environ.get("MONARCH_ADMIN_URL"):
+                result = build_admin_dag(hide_system=hide_system)
+                if result.get("nodes"):
+                    return _sanitize_for_js(
                         {
                             "nodes": result["nodes"],
                             "edges": result["edges"],
                         }
                     )
-                )
 
-        # Fallback: telemetry SQL layer.
-        system_names = get_system_actor_names() if hide_system else set()
-        return jsonify(_sanitize_for_js(db.get_dag_data(system_names=system_names)))
+            # Fallback: telemetry SQL layer.
+            system_names = get_system_actor_names() if hide_system else set()
+            return _sanitize_for_js(db.get_dag_data(system_names=system_names))
+
+        return jsonify(cached(cache_key, _compute_dag))
     except Exception as exc:
         return jsonify({"error": str(exc), "nodes": [], "edges": []}), 500
 
@@ -120,13 +123,17 @@ def list_meshes():
     parent_mesh_id = request.args.get("parent_mesh_id", type=int)
     exclude_raw = request.args.get("exclude_classes", type=str)
     exclude_classes = exclude_raw.split(",") if exclude_raw else None
+    cache_key = f"meshes:{class_filter}:{parent_mesh_id}:{exclude_raw}"
     return jsonify(
-        _sanitize_for_js(
-            db.list_meshes(
-                class_filter=class_filter,
-                parent_mesh_id=parent_mesh_id,
-                exclude_classes=exclude_classes,
-            )
+        cached(
+            cache_key,
+            lambda: _sanitize_for_js(
+                db.list_meshes(
+                    class_filter=class_filter,
+                    parent_mesh_id=parent_mesh_id,
+                    exclude_classes=exclude_classes,
+                )
+            ),
         )
     )
 
@@ -167,7 +174,10 @@ def get_mesh_children(mesh_id):
 def list_actors():
     """List all actors.  Optional: ?mesh_id=1"""
     mesh_id = request.args.get("mesh_id", type=int)
-    return jsonify(_sanitize_for_js(db.list_actors(mesh_id=mesh_id)))
+    cache_key = f"actors:mesh_id={mesh_id}"
+    return jsonify(
+        cached(cache_key, lambda: _sanitize_for_js(db.list_actors(mesh_id=mesh_id)))
+    )
 
 
 @api.route("/actors/<int:actor_id>")
