@@ -1390,6 +1390,21 @@ impl view::RankedSliceable for ProcMeshRef {
 ///
 /// The supervision display name format is `{instance}.<{module}.{ClassName} {mesh_name}>`.
 /// Returns `"Python<ClassName>"` if the format matches, `None` otherwise.
+///
+/// Scope note: this function sits outside FA-4 (which is
+/// supervision-path attribution only — see
+/// `hyperactor/src/supervision.rs`). Its sole production caller is
+/// the `MeshEvent.class` telemetry field, which needs the Python
+/// class as a structured string and has no structured carrier
+/// today.
+///
+/// TODO: retained only because the telemetry path needs a
+/// structured Python-class string and this is the only available
+/// source. This path is **out of scope for the first increment**
+/// of the failure-attribution work. The follow-up increment
+/// should add a structured carrier (e.g. `actor_class` on
+/// `ActorSupervisionEvent`, or a dedicated telemetry-side field)
+/// and delete this function.
 fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
     let inner = sdn.rsplit_once('<')?.1.strip_suffix('>')?;
     let qualified = inner.split_whitespace().next()?;

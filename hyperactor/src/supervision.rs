@@ -16,6 +16,59 @@
 //!   for structured failure attribution. In particular, if a
 //!   failed parent wraps a stopped child event, the stopped child
 //!   remains the root cause.
+//!
+//! ## Failure-attribution invariants (FA-*)
+//!
+//! These invariants govern the supervision-path rendering contract
+//! at the hyperactor substrate level. They describe how
+//! `ActorSupervisionEvent` and its renderer must behave, and what
+//! higher-level crates (for example, crates that add friendly
+//! attribution fields such as a mesh name or a language-binding
+//! class name) must do when they plug data into this substrate.
+//! Hyperactor itself does not define mesh-level or binding-level
+//! concepts; those interpretations live alongside the types that
+//! introduce them (for mesh-specific interpretation, see
+//! `hyperactor_mesh/src/supervision.rs`; for Python-binding
+//! interpretation, see the spawn path in
+//! `monarch_hyperactor/src/actor.rs`).
+//!
+//! - **FA-1 (no lookup at construction).** When a higher-level
+//!   crate attaches friendly-attribution data to an
+//!   `ActorSupervisionEvent` — or to a wrapper that carries one —
+//!   the value must come from structured context already in scope
+//!   at the construction site. Construction sites do not perform a
+//!   lookup to obtain attribution. If the value is not locally
+//!   available, `None` is correct; lookups are not a permitted
+//!   workaround.
+//!
+//! - **FA-2 (`display_name` is presentation-only).**
+//!   `ActorSupervisionEvent.display_name` is a
+//!   rendered-presentation string carried for display. Downstream
+//!   code MUST NOT parse it to recover structured attribution. If
+//!   a consumer needs a programmatic attribution field, that field
+//!   travels on its own structured carrier — never on
+//!   `display_name`.
+//!
+//! - **FA-3 (rendering falls back to stable ids).**
+//!   `ActorSupervisionEvent::Display` and the helpers it uses
+//!   (notably `actor_name()`) render `display_name` when present
+//!   and fall back to `actor_id.to_string()` otherwise. This means
+//!   a given actor mention renders **either** the friendly
+//!   display name **or** the stable id, not both. Ensuring both
+//!   appear at every mention is follow-on work outside the scope
+//!   of this invariant. FA-3 is independent of the specific text
+//!   format used by `ActorId::Display` — it describes the
+//!   render-chain fallback contract, not the id format.
+//!
+//! - **FA-4 (no rendered-output parsing back into attribution).**
+//!   Structured attribution must not be recovered at runtime by
+//!   parsing formatted `display_name` strings, identifier text, or
+//!   other rendered output from this path. Higher-level crates
+//!   that add supervision-path attribution do so via structured
+//!   carriers, not by inversion of rendered text. Consumers that
+//!   sit outside this path (for example, generic telemetry that
+//!   happens to read a rendered string) are outside this
+//!   invariant's scope; their own contracts govern what they do.
 
 use std::fmt;
 use std::fmt::Debug;

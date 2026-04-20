@@ -93,7 +93,20 @@ impl PyProcMesh {
                 let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
                 Ok((
                     slf.mesh_ref()?.clone(),
-                    PythonActorParams::new(pickled_type, Some(init_message)),
+                    // Plumb the user-provided mesh base-name string (the
+                    // `name` argument the caller passed to
+                    // `spawn_async`) into the actor as
+                    // `PythonActorParams.mesh_base_name`. The direct
+                    // actor-handle supervision path uses it to populate
+                    // `MeshFailure.actor_mesh_name` without a lookup
+                    // (mesh-specific FA-1 interpretation in
+                    // `hyperactor_mesh/src/supervision.rs`). This
+                    // carrier is mesh-name data only; it is NOT actor
+                    // display text and is kept deliberately separate
+                    // from `supervision_display_name` below, which is
+                    // the rendered supervision display string passed
+                    // through `spawn_with_name(...)`.
+                    PythonActorParams::new(pickled_type, Some(init_message), Some(name.clone())),
                 ))
             })
             .await?;
@@ -104,6 +117,13 @@ impl PyProcMesh {
                     instance.deref(),
                     full_name,
                     &params,
+                    // `supervision_display_name` is the rendered
+                    // supervision display string. It is distinct from
+                    // `mesh_base_name` above: the latter is the mesh
+                    // base-name carrier used for
+                    // `MeshFailure.actor_mesh_name`; this is the
+                    // presentation-layer display name handed to
+                    // `spawn_with_name(...)` for supervision rendering.
                     supervision_display_name,
                     false,
                 )
