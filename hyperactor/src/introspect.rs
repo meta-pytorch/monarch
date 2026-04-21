@@ -1055,7 +1055,7 @@ mod tests {
     }
 
     fn test_actor_id(proc_name: &str, actor_name: &str, pid: usize) -> crate::reference::ActorId {
-        ProcId::with_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name, pid)
+        ProcId::from_resource_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name, pid)
     }
 
     fn failed_actor_attrs() -> Attrs {
@@ -1191,7 +1191,7 @@ mod tests {
     /// integration coverage.
     #[test]
     fn test_fi7_fi8_propagated_stopped_child() {
-        let proc_id = ProcId::with_name(ChannelAddr::Local(0), "test_proc");
+        let proc_id = ProcId::from_resource_name(ChannelAddr::Local(0), "test_proc");
         let child_id = proc_id.actor_id("proc_agent", 0);
         let parent_id = proc_id.actor_id("mesh_actor", 0);
 

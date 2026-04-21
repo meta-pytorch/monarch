@@ -37,7 +37,7 @@ impl ListCommand {
 
         // Codify obtaining a proc's agent in `hyperactor_mesh` somewhere.
         let agent: reference::ActorRef<HostAgent> = reference::ActorRef::attest(
-            reference::ProcId::with_name(host, SERVICE_PROC_NAME)
+            reference::ProcId::from_resource_name(host, SERVICE_PROC_NAME)
                 .actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0),
         );
 
