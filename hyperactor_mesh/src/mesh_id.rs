@@ -28,8 +28,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use crate::Name;
-
 /// Errors that can occur when parsing a [`ResourceId`] from a string.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourceIdParseError {
@@ -80,9 +78,30 @@ impl ResourceId {
         &self.uid
     }
 
-    /// Returns the label.
+    /// Returns the explicit label metadata, if any.
     pub fn label(&self) -> Option<&Label> {
         self.label.as_ref()
+    }
+
+    /// Returns a human-readable label: the explicit label for instances,
+    /// or the singleton name for singletons.
+    pub fn display_label(&self) -> Option<&Label> {
+        self.label.as_ref().or(match &self.uid {
+            Uid::Singleton(label) => Some(label),
+            _ => None,
+        })
+    }
+
+    /// Returns the routing-safe actor name string. Unlike [`Display`],
+    /// singletons render without the `_` prefix, so the result is
+    /// directly usable as an actor name. Unique instances include the
+    /// hex uid suffix so they remain unique.
+    pub fn actor_name(&self) -> String {
+        match (&self.uid, &self.label) {
+            (Uid::Singleton(label), _) => label.to_string(),
+            (Uid::Instance(uid), Some(label)) => format!("{label}-{uid:016x}"),
+            (Uid::Instance(uid), None) => format!("{uid:016x}"),
+        }
     }
 }
 
@@ -174,26 +193,6 @@ impl FromStr for ResourceId {
     }
 }
 
-/// Converts a [`Name`] to a [`ResourceId`] for migration.
-///
-/// `Name::Suffixed` maps to an instance uid (preserving the `ShortUuid`'s
-/// inner u64) with a stripped label. `Name::Reserved` maps to a singleton
-/// uid with the name as the label.
-impl From<Name> for ResourceId {
-    fn from(name: Name) -> Self {
-        match name {
-            Name::Suffixed(s, uuid) => ResourceId {
-                uid: Uid::Instance(uuid.0),
-                label: Some(Label::strip(&s)),
-            },
-            Name::Reserved(s) => {
-                let label = Label::new(&s).unwrap_or_else(|_| Label::strip(&s));
-                ResourceId::singleton(label)
-            }
-        }
-    }
-}
-
 macro_rules! define_mesh_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
@@ -223,9 +222,20 @@ macro_rules! define_mesh_id {
                 self.0.uid()
             }
 
-            /// Returns the label.
+            /// Returns the explicit label metadata, if any.
             pub fn label(&self) -> Option<&Label> {
                 self.0.label()
+            }
+
+            /// Returns a human-readable label: the explicit label for
+            /// instances, or the singleton name for singletons.
+            pub fn display_label(&self) -> Option<&Label> {
+                self.0.display_label()
+            }
+
+            /// Returns the routing-safe actor name string.
+            pub fn actor_name(&self) -> String {
+                self.0.actor_name()
             }
 
             /// Returns the inner [`ResourceId`].
@@ -246,11 +256,6 @@ macro_rules! define_mesh_id {
             }
         }
 
-        impl From<Name> for $name {
-            fn from(name: Name) -> Self {
-                Self(ResourceId::from(name))
-            }
-        }
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -288,6 +293,16 @@ define_mesh_id!(
     /// Identifies an actor mesh.
     ActorMeshId
 );
+
+impl hyperactor_config::AttrValue for ActorMeshId {
+    fn display(&self) -> String {
+        self.to_string()
+    }
+
+    fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        Ok(value.parse()?)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -462,30 +477,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resource_id_from_name_suffixed() {
-        let name = Name::new("workers").unwrap();
-        let uuid_val = name.uuid().unwrap().0;
-        let id = ResourceId::from(name);
-        assert_eq!(*id.uid(), Uid::Instance(uuid_val));
-        assert_eq!(id.label().map(|l| l.as_str()), Some("workers"));
-    }
-
-    #[test]
-    fn test_resource_id_from_name_reserved() {
-        let name = Name::new_reserved("local").unwrap();
-        let id = ResourceId::from(name);
-        assert_eq!(*id.uid(), Uid::Singleton(Label::new("local").unwrap()));
-        assert_eq!(id.label(), None);
-    }
-
-    #[test]
-    fn test_resource_id_from_name_reserved_with_underscores() {
-        let name = Name::new_reserved("host_agent").unwrap();
-        let id = ResourceId::from(name);
-        assert_eq!(*id.uid(), Uid::Singleton(Label::new("host_agent").unwrap()));
-    }
-
-    #[test]
     fn test_mesh_id_construction() {
         let host = HostMeshId::singleton(Label::new("local").unwrap());
         assert_eq!(host.to_string(), "_local");
@@ -537,15 +528,6 @@ mod tests {
 
         let back: HostMeshId = resource_id.into();
         assert_eq!(host, back);
-    }
-
-    #[test]
-    fn test_mesh_id_from_name() {
-        let name = Name::new("workers").unwrap();
-        let uuid_val = name.uuid().unwrap().0;
-        let id = ActorMeshId::from(name);
-        assert_eq!(*id.uid(), Uid::Instance(uuid_val));
-        assert_eq!(id.label().map(|l| l.as_str()), Some("workers"));
     }
 
     #[test]
