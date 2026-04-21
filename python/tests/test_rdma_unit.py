@@ -76,8 +76,10 @@ Adding a New Test:
 """
 
 import asyncio
+import gc
 import os
 import uuid
+import weakref
 from functools import partial
 from typing import Callable
 
@@ -178,6 +180,42 @@ class RDMABufferTestReceiver(Actor):
         assert torch.equal(tensor_copy, tensor), (
             "Source tensor was modified during write_from()."
         )
+
+    @endpoint
+    async def do_read_into_with_dropped_local_ref(
+        self, buffer: RDMABuffer, tensor_shape, tensor_dtype
+    ):
+        """Drop the caller's reference to the destination tensor between the
+        ``read_into`` call and awaiting its event, then assert that the tensor
+        is still alive until the event completes."""
+        tensor = torch.zeros(*tensor_shape, dtype=tensor_dtype, device=self.device)
+        ref = weakref.ref(tensor)
+        event = buffer.read_into(tensor, timeout=TIMEOUT)
+        del tensor
+        gc.collect()
+        assert ref() is not None, (
+            "local tensor was freed before the read_into event completed"
+        )
+        await event
+
+    @endpoint
+    async def do_write_from_with_dropped_local_ref(
+        self, buffer: RDMABuffer, tensor_shape, tensor_dtype, *, seed
+    ):
+        """Drop the caller's reference to the source tensor between the
+        ``write_from`` call and awaiting its event, then assert that the tensor
+        is still alive until the event completes."""
+        tensor = _get_random_tensor(
+            *tensor_shape, dtype=tensor_dtype, device=self.device, seed=seed
+        )
+        ref = weakref.ref(tensor)
+        event = buffer.write_from(tensor, timeout=TIMEOUT)
+        del tensor
+        gc.collect()
+        assert ref() is not None, (
+            "local tensor was freed before the write_from event completed"
+        )
+        await event
 
 
 class RDMABufferTestController(Actor):
@@ -307,6 +345,32 @@ class RDMABufferTestController(Actor):
             )
         except Exception as e:
             return e
+
+    @endpoint
+    async def test_rdma_buffer_local_tensor_lifetime(self) -> Exception | None:
+        """Test that the local tensor passed to ``read_into`` / ``write_from``
+        stays alive until the returned event completes, even when the caller
+        drops its reference to the tensor between the call and the await.
+        """
+        try:
+            tensor = torch.zeros(128, dtype=torch.float32, device=self.device)
+            buffer = RDMABuffer(tensor)
+            await self.receiver_actor.do_read_into_with_dropped_local_ref.call_one(
+                buffer, tensor.shape, tensor.dtype
+            )
+            seed = 256
+            await self.receiver_actor.do_write_from_with_dropped_local_ref.call_one(
+                buffer, tensor.shape, tensor.dtype, seed=seed
+            )
+            expected = _get_random_tensor(
+                *tensor.shape, dtype=tensor.dtype, device=self.device, seed=seed
+            )
+            assert torch.equal(tensor, expected), (
+                "Buffer contents do not match the source tensor after write_from."
+            )
+        except Exception as e:
+            return e
+        return None
 
     # Start test for value errors
     # --------------------------------------------------------------------------------------------
@@ -700,6 +764,24 @@ async def test_rdma_buffer_read_into(
 ):
     await _do_test(
         lambda controller: controller.test_rdma_buffer_read_into.call_one(),
+        dtype,
+        data_getter,
+        controller_device,
+        receiver_device,
+        rdma_backend,
+    )
+
+
+@_test_with_all_data
+async def test_rdma_buffer_local_tensor_lifetime(
+    dtype, data_getter, controller_device, receiver_device, rdma_backend
+):
+    """The local tensor passed to ``read_into`` / ``write_from`` must stay
+    alive until the returned event completes, even when the caller drops its
+    reference to the tensor between the call and the ``await``.
+    """
+    await _do_test(
+        lambda controller: controller.test_rdma_buffer_local_tensor_lifetime.call_one(),
         dtype,
         data_getter,
         controller_device,
