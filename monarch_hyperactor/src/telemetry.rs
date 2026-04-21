@@ -36,6 +36,15 @@ pub fn forward_to_tracing(py: Python, record: Py<PyAny>) -> PyResult<()> {
         .ok()
         .and_then(|attr| attr.extract::<String>(py).ok());
 
+    // Enter the actor's recording span (if present) so RecorderLayer
+    // captures this event in the per-actor flight recorder. The span
+    // is entered synchronously for the duration of the tracing emit
+    // only — no cross-contamination in shared-asyncio mode.
+    //
+    // Gracefully falls back to plain tracing when _context is absent,
+    // None, or contains an unexpected type.
+    let _recording_guard = extract_recording_span(py);
+
     // Map level number to level name
     match level {
         40 | 50 => {
@@ -84,6 +93,31 @@ pub fn forward_to_tracing(py: Python, record: Py<PyAny>) -> PyResult<()> {
         }
     }
     Ok(())
+}
+
+/// Extract the recording span from the current Python actor context.
+///
+/// Looks up the `_context` ContextVar in
+/// `monarch._src.actor.actor_mesh`, downcasts to `PyContext`, and
+/// clones the recording span. Returns an entered span guard that
+/// routes tracing events to the actor's flight recorder.
+///
+/// Returns `None` on any failure — missing module, absent context,
+/// unexpected type, or no recording span. This function is called
+/// from arbitrary Python logging contexts (import-time, client-side,
+/// non-actor threads) and must never fail.
+fn extract_recording_span(py: Python) -> Option<tracing::span::EnteredSpan> {
+    let actor_mesh = py.import("monarch._src.actor.actor_mesh").ok()?;
+    let ctx_var = actor_mesh.getattr("_context").ok()?;
+    let ctx_obj = ctx_var.call_method1("get", (py.None(),)).ok()?;
+    if ctx_obj.is_none() {
+        return None;
+    }
+    let py_ctx = ctx_obj
+        .extract::<PyRef<'_, crate::context::PyContext>>()
+        .ok()?;
+    let span = py_ctx.recording_span()?.clone();
+    Some(span.entered())
 }
 
 /// Get the current execution ID
@@ -291,9 +325,6 @@ impl PySqliteTracing {
     }
 }
 
-use pyo3::Bound;
-use pyo3::types::PyModule;
-
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the forward_to_tracing function
     let f = wrap_pyfunction!(forward_to_tracing, module)?;
@@ -331,4 +362,85 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyUpDownCounter>()?;
     module.add_class::<PySqliteTracing>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::ffi::c_str;
+    use pyo3::prelude::*;
+
+    use super::*;
+
+    fn init_python() {
+        pyo3::Python::initialize();
+    }
+
+    /// Helper: create a Python logging.LogRecord with the given message.
+    fn make_log_record(py: Python, message: &str) -> Py<PyAny> {
+        let locals = pyo3::types::PyDict::new(py);
+        locals.set_item("msg", message).unwrap();
+        py.run(
+            c_str!(
+                "import logging\n\
+                 record = logging.LogRecord('test', logging.INFO, 'test.py', 1, msg, (), None)"
+            ),
+            None,
+            Some(&locals),
+        )
+        .unwrap();
+        locals.get_item("record").unwrap().unwrap().into()
+    }
+
+    /// forward_to_tracing returns Ok when _context is absent.
+    /// Must never crash in non-actor logging contexts.
+    #[test]
+    fn forward_to_tracing_without_context_does_not_crash() {
+        init_python();
+        Python::attach(|py| {
+            let record = make_log_record(py, "no context marker");
+            let result = forward_to_tracing(py, record);
+            assert!(result.is_ok());
+        });
+    }
+
+    /// When a recording span is entered on the current thread,
+    /// events emitted by forward_to_tracing are captured in the
+    /// recording's ring buffer.
+    #[test]
+    fn forward_to_tracing_captures_when_recording_span_entered() {
+        init_python();
+        hyperactor_telemetry::initialize_logging_for_test();
+
+        let recording = hyperactor_telemetry::recorder().record(64);
+        let span = recording.span();
+
+        Python::attach(|py| {
+            let record = make_log_record(py, "recorder marker");
+            let _guard = span.enter();
+            let result = forward_to_tracing(py, record);
+            assert!(result.is_ok());
+        });
+
+        let events = recording.tail();
+        assert!(
+            !events.is_empty(),
+            "expected at least one event in recording"
+        );
+        let last = events.last().unwrap();
+        let fields = format!("{:?}", last);
+        assert!(
+            fields.contains("recorder marker"),
+            "expected 'recorder marker' in event fields, got: {fields}"
+        );
+    }
+
+    /// extract_recording_span returns None when _context is absent.
+    #[test]
+    fn extract_recording_span_returns_none_without_context() {
+        init_python();
+        Python::attach(|py| {
+            let result = extract_recording_span(py);
+            assert!(result.is_none());
+        });
+    }
 }
