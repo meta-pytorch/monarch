@@ -14,11 +14,67 @@
 //!
 //! See MIT-9, MIT-13, MIT-14 in `main` module doc.
 
+use std::time::Duration;
+
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeProperties;
 use hyperactor_mesh::introspect::NodeRef;
 
 use crate::dining::DiningScenario;
+
+const TREE_READY_ATTEMPTS: usize = 30;
+const TREE_READY_SLEEP: Duration = Duration::from_secs(2);
+const TOPOLOGY_READY_ATTEMPTS: usize = 45;
+const TOPOLOGY_READY_SLEEP: Duration = Duration::from_secs(2);
+
+fn actor_name(r: &NodeRef) -> &str {
+    match r {
+        NodeRef::Actor(id) => id.label().map(|l| l.as_str()).unwrap_or("?"),
+        other => panic!("expected actor ref, got {other:?}"),
+    }
+}
+
+fn enc(r: &NodeRef) -> String {
+    urlencoding::encode(&r.to_string()).into_owned()
+}
+
+async fn topology_has_dining_actors(s: &DiningScenario) -> bool {
+    let root: NodePayload = match s.fixture.get_node_payload("/v1/root").await {
+        Ok(root) => root,
+        Err(_) => return false,
+    };
+
+    for host_ref in &root.children {
+        let host: NodePayload = match s
+            .fixture
+            .get_node_payload(&format!("/v1/{}", enc(host_ref)))
+            .await
+        {
+            Ok(host) => host,
+            Err(_) => continue,
+        };
+
+        for proc_ref in &host.children {
+            let proc_node: NodePayload = match s
+                .fixture
+                .get_node_payload(&format!("/v1/{}", enc(proc_ref)))
+                .await
+            {
+                Ok(proc) => proc,
+                Err(_) => continue,
+            };
+
+            if proc_node.children.iter().any(|actor_ref| {
+                let name = actor_name(actor_ref);
+                name.starts_with("philosopher") || name.starts_with("waiter")
+            }) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
 
 /// MIT-9, MIT-13, MIT-14: Tree and root assertions.
 pub(crate) async fn check(s: &DiningScenario) {

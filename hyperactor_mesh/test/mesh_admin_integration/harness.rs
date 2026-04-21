@@ -235,7 +235,9 @@ impl WorkloadFixture {
 
                     let has_actor = |name: &str| {
                         proc_node.children.iter().any(|r| match r {
-                            hyperactor_mesh::introspect::NodeRef::Actor(id) => id.name() == name,
+                            hyperactor_mesh::introspect::NodeRef::Actor(id) => {
+                                id.label().map(|l| l.as_str()) == Some(name)
+                            }
                             _ => false,
                         })
                     };
