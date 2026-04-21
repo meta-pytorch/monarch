@@ -583,7 +583,7 @@ impl HostMesh {
         for _rank in 0..extent.num_ranks() {
             let mesh_agent = mesh_agents_rx.recv().await?;
 
-            let addr = mesh_agent.actor_id().proc_id().addr().clone();
+            let addr = mesh_agent.actor_id().addr().clone();
 
             let host_ref = HostRef(addr);
             if host_ref.mesh_agent() != mesh_agent {
@@ -1829,7 +1829,7 @@ pub async fn spawn_admin(
         crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
         crate::mesh_admin::MeshAdminAgent::new(
             hosts,
-            Some(root_client_id),
+            Some(root_client_id.into()),
             admin_addr,
             telemetry_url,
         ),

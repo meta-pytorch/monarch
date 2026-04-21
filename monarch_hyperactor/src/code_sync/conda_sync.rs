@@ -85,7 +85,7 @@ impl Handler<CondaSyncMessage> for CondaSyncActor {
     ) -> Result<(), anyhow::Error> {
         let res = async {
             let workspace = workspace.resolve()?;
-            let (connect_msg, completer) = Connect::allocate(cx.self_id().clone(), cx);
+            let (connect_msg, completer) = Connect::allocate(cx.self_id().clone().into(), cx);
             connect.send(cx, connect_msg)?;
             let (mut read, mut write) = completer.complete().await?.into_split();
             let path_prefix_replacements = path_prefix_replacements
@@ -127,9 +127,10 @@ pub async fn conda_sync_mesh(
             .take(actor_mesh.region().slice().len())
             .err_into::<anyhow::Error>()
             .try_for_each_concurrent(None, |connect| async {
-                let (mut read, mut write) = accept(instance, instance.self_id().clone(), connect)
-                    .await?
-                    .into_split();
+                let (mut read, mut write) =
+                    accept(instance, instance.self_id().clone().into(), connect)
+                        .await?
+                        .into_split();
                 let res = sender(&local_workspace, &mut read, &mut write).await;
 
                 // Shutdown our end, then read from the other end till exhaustion to avoid undeliverable

@@ -437,14 +437,15 @@ impl RemoteProcessAllocator {
                                     // TODO(meriksen, direct addressing): disable remapping in direct addressing mode
                                     tracing::debug!("remapping mesh_agent {}: addr {} -> {}", mesh_agent, addr, forward_addr);
                                     mesh_agents_by_create_key.insert(create_key.clone(), mesh_agent.clone());
-                                    router.bind(mesh_agent.actor_id().proc_id().clone().into(), addr);
+                                    let proc_ref = mesh_agent.actor_id().proc_ref();
+                                    router.bind(hyperactor::ref_::Reference::from(proc_ref), addr);
                                     ProcState::Running { create_key, proc_id, mesh_agent, addr: forward_addr.clone() }
                                 },
                                 ProcState::Stopped { create_key, reason } => {
                                     match mesh_agents_by_create_key.remove(&create_key) {
                                         Some(mesh_agent) => {
                                             tracing::debug!("unmapping mesh_agent {}", mesh_agent);
-                                            let agent_ref: hyperactor::reference::Reference = mesh_agent.actor_id().proc_id().clone().into();
+                                            let agent_ref = hyperactor::ref_::Reference::from(mesh_agent.actor_id().proc_ref());
                                             router.unbind(&agent_ref);
                                         },
                                         None => {

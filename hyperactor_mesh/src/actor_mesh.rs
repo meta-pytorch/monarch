@@ -485,7 +485,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 multicast::set_cast_info_on_headers(
                     &mut headers,
                     point,
-                    cx.instance().self_id().clone(),
+                    cx.instance().self_id().clone().into(),
                 );
 
                 // Make sure that we re-bind ranks, as these may be used for
