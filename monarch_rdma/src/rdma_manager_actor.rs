@@ -162,7 +162,7 @@ impl RdmaManagerActor {
     /// Construct an [`ActorHandle`] for the [`RdmaManagerActor`] co-located
     /// with the caller.
     pub fn local_handle(client: &impl context::Actor) -> ActorHandle<Self> {
-        let proc_id = client.mailbox().actor_id().proc_id().clone();
+        let proc_id = client.mailbox().actor_id().proc_ref().into();
         let actor_ref =
             reference::ActorRef::attest(reference::ActorId::new(proc_id, "rdma_manager"));
         actor_ref

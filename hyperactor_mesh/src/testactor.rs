@@ -130,7 +130,7 @@ impl Handler<GetActorId> for TestActor {
         GetActorId(reply): GetActorId,
     ) -> Result<(), anyhow::Error> {
         let seq_info = cx.headers().get(SEQ_INFO);
-        reply.send(cx, (cx.self_id().clone(), seq_info))?;
+        reply.send(cx, (cx.self_id().clone().into(), seq_info))?;
         Ok(())
     }
 }

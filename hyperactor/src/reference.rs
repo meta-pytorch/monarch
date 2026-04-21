@@ -421,6 +421,25 @@ impl fmt::Display for ProcId {
     }
 }
 
+impl From<ProcId> for ref_::ProcRef {
+    fn from(p: ProcId) -> Self {
+        p.0
+    }
+}
+
+impl From<ref_::ProcRef> for ProcId {
+    fn from(p: ref_::ProcRef) -> Self {
+        Self(p)
+    }
+}
+
+impl std::ops::Deref for ProcId {
+    type Target = ref_::ProcRef;
+    fn deref(&self) -> &ref_::ProcRef {
+        &self.0
+    }
+}
+
 impl FromStr for ProcId {
     type Err = ReferenceParsingError;
 
@@ -558,6 +577,25 @@ impl FromStr for ActorId {
             .parse()
             .map_err(|e| ReferenceParsingError::Unexpected(format!("{}", e)))?;
         Ok(Self(actor_ref))
+    }
+}
+
+impl From<ActorId> for ref_::ActorRef {
+    fn from(a: ActorId) -> Self {
+        a.0
+    }
+}
+
+impl From<ref_::ActorRef> for ActorId {
+    fn from(a: ref_::ActorRef) -> Self {
+        Self(a)
+    }
+}
+
+impl std::ops::Deref for ActorId {
+    type Target = ref_::ActorRef;
+    fn deref(&self) -> &ref_::ActorRef {
+        &self.0
     }
 }
 
@@ -767,7 +805,7 @@ impl PortId {
         let mut headers = Flattrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         cx.post(
-            self.clone(),
+            self.clone().into(),
             headers,
             serialized,
             true,
@@ -786,7 +824,7 @@ impl PortId {
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         cx.post(
-            self.clone(),
+            self.clone().into(),
             headers,
             serialized,
             true,
@@ -804,11 +842,12 @@ impl PortId {
         return_undeliverable: bool,
     ) -> anyhow::Result<PortId> {
         cx.split(
-            self.clone(),
+            self.clone().into(),
             reducer_spec,
             reducer_mode,
             return_undeliverable,
         )
+        .map(|p| p.into())
     }
 }
 
@@ -826,6 +865,46 @@ impl FromStr for PortId {
 impl fmt::Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl From<PortId> for ref_::PortRef {
+    fn from(p: PortId) -> Self {
+        p.0
+    }
+}
+
+impl From<ref_::PortRef> for PortId {
+    fn from(p: ref_::PortRef) -> Self {
+        Self(p)
+    }
+}
+
+impl std::ops::Deref for PortId {
+    type Target = ref_::PortRef;
+    fn deref(&self) -> &ref_::PortRef {
+        &self.0
+    }
+}
+
+// Also bridge Reference <-> ref_::Reference.
+impl From<Reference> for ref_::Reference {
+    fn from(r: Reference) -> Self {
+        match r {
+            Reference::Proc(p) => ref_::Reference::Proc(p.0),
+            Reference::Actor(a) => ref_::Reference::Actor(a.0),
+            Reference::Port(p) => ref_::Reference::Port(p.0),
+        }
+    }
+}
+
+impl From<ref_::Reference> for Reference {
+    fn from(r: ref_::Reference) -> Self {
+        match r {
+            ref_::Reference::Proc(p) => Reference::Proc(ProcId(p)),
+            ref_::Reference::Actor(a) => Reference::Actor(ActorId(a)),
+            ref_::Reference::Port(p) => Reference::Port(PortId(p)),
+        }
     }
 }
 
@@ -966,7 +1045,7 @@ impl<M: RemoteMessage> PortRef<M> {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
         cx.post(
-            self.port_id.clone(),
+            self.port_id.clone().into(),
             headers,
             message,
             self.return_undeliverable,
@@ -1152,7 +1231,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
             )
         })?;
         cx.post(
-            self.port_id.clone(),
+            self.port_id.clone().into(),
             headers,
             serialized,
             self.return_undeliverable,
@@ -1365,12 +1444,12 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap().unwrap(), SeqInfo::Direct);
 
         port_handle.bind_actor_port();
-        let port_id = match port_handle.location() {
-            PortLocation::Bound(port_id) => port_id,
+        let port_ref_val = match port_handle.location() {
+            PortLocation::Bound(port_ref) => port_ref,
             _ => panic!("port_handle should be bound"),
         };
-        assert!(port_id.is_actor_port());
-        let port_ref = PortRef::attest(port_id.clone());
+        assert!(port_ref_val.is_actor_port());
+        let port_ref = PortRef::attest(port_ref_val.clone().into());
 
         port_handle.send(&client, ()).unwrap();
         let SeqInfo::Session {
@@ -1412,9 +1491,10 @@ mod tests {
                 assert_seq_info(&mut rx, session_id, &mut seq);
             }
 
-            // From port_id
+            // From port_ref
+            let port_id_conv: PortId = port_ref_val.clone().into();
             for _ in 0..3 {
-                port_id.send(&client, wirevalue::Any::serialize(&()).unwrap());
+                port_id_conv.send(&client, wirevalue::Any::serialize(&()).unwrap());
                 assert_seq_info(&mut rx, session_id, &mut seq);
             }
         }
@@ -1439,12 +1519,12 @@ mod tests {
 
         // Bind to the allocated port.
         port_handle.bind();
-        let port_id = match port_handle.location() {
-            PortLocation::Bound(port_id) => port_id,
+        let port_ref_val = match port_handle.location() {
+            PortLocation::Bound(port_ref) => port_ref,
             _ => panic!("port_handle should be bound"),
         };
         // This is a non-actor port, but it still gets seq info (per-port sequence).
-        assert!(!port_id.is_actor_port());
+        assert!(!port_ref_val.is_actor_port());
 
         // After binding, non-actor ports get their own sequence.
         port_handle.send(&client, ()).unwrap();
@@ -1461,7 +1541,7 @@ mod tests {
         assert_eq!(seq1, 1);
         assert_eq!(session_id, client.sequencer().session_id());
 
-        let port_ref = PortRef::attest(port_id.clone());
+        let port_ref = PortRef::attest(port_ref_val.clone().into());
         port_ref.send(&client, ()).unwrap();
         let SeqInfo::Session { seq: seq2, .. } = rx
             .try_recv()
@@ -1472,7 +1552,8 @@ mod tests {
         };
         assert_eq!(seq2, 2);
 
-        port_id.send(&client, wirevalue::Any::serialize(&()).unwrap());
+        let port_id_conv: PortId = port_ref_val.clone().into();
+        port_id_conv.send(&client, wirevalue::Any::serialize(&()).unwrap());
         let SeqInfo::Session { seq: seq3, .. } = rx
             .try_recv()
             .unwrap()

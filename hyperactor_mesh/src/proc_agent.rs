@@ -127,9 +127,9 @@ fn collect_live_children(
     for id in all_keys {
         if let Some(cell) = proc.get_instance(&id) {
             if cell.is_system() {
-                system_children.push(crate::introspect::NodeRef::Actor(id.clone()));
+                system_children.push(crate::introspect::NodeRef::Actor(id.clone().into()));
             }
-            children.push(hyperactor::introspect::IntrospectRef::Actor(id));
+            children.push(hyperactor::introspect::IntrospectRef::Actor(id.into()));
         }
     }
     (children, system_children)
@@ -522,8 +522,8 @@ impl ProcAgent {
         // TUI can filter/gray without per-child fetches.
         let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
         for id in self.proc.all_terminated_actor_ids() {
-            let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
-            let node_ref = crate::introspect::NodeRef::Actor(id.clone());
+            let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone().into());
+            let node_ref = crate::introspect::NodeRef::Actor(id.clone().into());
             stopped_children.push(node_ref.clone());
             if let Some(snapshot) = self.proc.terminated_snapshot(&id) {
                 let snapshot_attrs: hyperactor_config::Attrs =
@@ -622,8 +622,8 @@ impl Actor for ProcAgent {
         this.set_query_child_handler(move |child_ref| {
             use hyperactor::introspect::IntrospectResult;
 
-            if let hyperactor::reference::Reference::Actor(id) = child_ref {
-                if let Some(snapshot) = proc.terminated_snapshot(id) {
+            if let hyperactor::ref_::Reference::Actor(actor_ref) = child_ref {
+                if let Some(snapshot) = proc.terminated_snapshot(actor_ref) {
                     return snapshot;
                 }
             }
@@ -635,14 +635,15 @@ impl Actor for ProcAgent {
             // next QueryChild(Reference::Proc) response without an
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
-            if let hyperactor::reference::Reference::Proc(proc_id) = child_ref {
-                if proc_id == proc.proc_id() {
+            if let hyperactor::ref_::Reference::Proc(proc_ref) = child_ref {
+                if *proc_ref == *proc.proc_id() {
                     let (mut children, mut system_children) = collect_live_children(&proc);
 
                     let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
                     for id in proc.all_terminated_actor_ids() {
-                        let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
-                        let node_ref = crate::introspect::NodeRef::Actor(id.clone());
+                        let child_ref =
+                            hyperactor::introspect::IntrospectRef::Actor(id.clone().into());
+                        let node_ref = crate::introspect::NodeRef::Actor(id.clone().into());
                         stopped_children.push(node_ref.clone());
                         if let Some(snapshot) = proc.terminated_snapshot(&id) {
                             let snapshot_attrs: hyperactor_config::Attrs =
@@ -686,10 +687,10 @@ impl Actor for ProcAgent {
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
                     attrs.set(
                         crate::introspect::PROC_NAME,
-                        proc_id
+                        proc_ref
                             .label()
                             .map(|l| l.as_str().to_string())
-                            .unwrap_or_else(|| proc_id.id().to_string()),
+                            .unwrap_or_else(|| proc_ref.id().to_string()),
                     );
                     attrs.set(crate::introspect::NUM_ACTORS, num_live);
                     attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
@@ -729,7 +730,9 @@ impl Actor for ProcAgent {
                         serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
 
                     return IntrospectResult {
-                        identity: hyperactor::introspect::IntrospectRef::Proc(proc_id.clone()),
+                        identity: hyperactor::introspect::IntrospectRef::Proc(
+                            proc_ref.clone().into(),
+                        ),
                         attrs: attrs_json,
                         children,
                         parent: None,
@@ -746,14 +749,14 @@ impl Actor for ProcAgent {
                     format!("child {} not found", child_ref),
                 );
                 let identity = match child_ref {
-                    hyperactor::reference::Reference::Proc(id) => {
-                        hyperactor::introspect::IntrospectRef::Proc(id.clone())
+                    hyperactor::ref_::Reference::Proc(p) => {
+                        hyperactor::introspect::IntrospectRef::Proc(p.clone().into())
                     }
-                    hyperactor::reference::Reference::Actor(id) => {
-                        hyperactor::introspect::IntrospectRef::Actor(id.clone())
+                    hyperactor::ref_::Reference::Actor(a) => {
+                        hyperactor::introspect::IntrospectRef::Actor(a.clone().into())
                     }
-                    hyperactor::reference::Reference::Port(id) => {
-                        hyperactor::introspect::IntrospectRef::Actor(id.actor_id().clone())
+                    hyperactor::ref_::Reference::Port(p) => {
+                        hyperactor::introspect::IntrospectRef::Actor(p.actor_ref().into())
                     }
                 };
                 IntrospectResult {
@@ -778,7 +781,7 @@ impl Actor for ProcAgent {
         envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         if let Some(true) = envelope.0.headers().get(STREAM_STATE_SUBSCRIBER) {
-            let dest_port_id = envelope.0.dest().clone();
+            let dest_port_id: hyperactor_reference::PortId = envelope.0.dest().clone().into();
             let port =
                 hyperactor_reference::PortRef::<resource::State<ActorState>>::attest(dest_port_id);
             // Remove this subscriber from whichever actor instance holds it.
@@ -816,7 +819,8 @@ impl MeshAgentMessageHandler for ProcAgent {
             DialMailboxRouter::new_with_default_direct_addressed_remote_only(client.into_boxed());
 
         for (proc_id, addr) in address_book {
-            router.bind(proc_id.into(), addr);
+            let proc_ref: hyperactor::ref_::ProcRef = proc_id.into();
+            router.bind(hyperactor::ref_::Reference::from(proc_ref), addr);
         }
 
         let sender = take(&mut self.state).into_unconfigured_v0().unwrap();
@@ -963,7 +967,7 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
             // the whole process on error events.
             tracing::error!(
                 name = "supervision_event_transmit_failed",
-                proc_id = %cx.self_id().proc_id(),
+                proc_id = %cx.self_id().proc_ref(),
                 %event,
                 "could not propagate supervision event, crashing",
             );
@@ -1755,7 +1759,8 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME);
+        let agent_id: hyperactor_reference::ActorId =
+            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
@@ -1766,7 +1771,7 @@ mod tests {
             port.send(
                 client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone().into()),
                     reply: reply_port.bind(),
                 },
             )
@@ -1863,7 +1868,8 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME);
+        let agent_id: hyperactor_reference::ActorId =
+            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
@@ -1882,7 +1888,9 @@ mod tests {
                     .send(
                         &query_client,
                         IntrospectMessage::QueryChild {
-                            child_ref: hyperactor_reference::Reference::Proc(query_proc_id.clone()),
+                            child_ref: hyperactor_reference::Reference::Proc(
+                                query_proc_id.clone().into(),
+                            ),
                             reply: reply_port.bind(),
                         },
                     )
@@ -1943,7 +1951,7 @@ mod tests {
         port.send(
             &client,
             IntrospectMessage::QueryChild {
-                child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
+                child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone().into()),
                 reply: reply_port.bind(),
             },
         )
@@ -2187,7 +2195,8 @@ mod tests {
 
         // QueryChild(Proc) — same aggregation logic as mesh-admin
         // resolution.
-        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME);
+        let agent_id: hyperactor_reference::ActorId =
+            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
@@ -2198,7 +2207,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone().into()),
                     reply: reply_port.bind(),
                 },
             )

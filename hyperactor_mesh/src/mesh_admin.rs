@@ -929,7 +929,7 @@ impl Actor for MeshAdminAgent {
         // as soon as the admin is reachable.
         this.bind::<Self>();
         this.set_system();
-        self.self_actor_id = Some(this.self_id().clone());
+        self.self_actor_id = Some(this.self_id().clone().into());
 
         let bind_addr = match self.admin_addr_override {
             Some(addr) => addr,
@@ -996,7 +996,7 @@ impl Actor for MeshAdminAgent {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
         let bridge_state = Arc::new(BridgeState {
-            admin_ref: hyperactor_reference::ActorRef::attest(this.self_id().clone()),
+            admin_ref: hyperactor_reference::ActorRef::attest(this.self_id().clone().into()),
             bridge_cx,
             resolve_semaphore: tokio::sync::Semaphore::new(hyperactor_config::global::get(
                 crate::config::MESH_ADMIN_MAX_CONCURRENT_RESOLVES,
@@ -1006,7 +1006,7 @@ impl Actor for MeshAdminAgent {
             http_client: build_http_client(),
             admin_info: AdminInfo::new(
                 this.self_id().to_string(),
-                this.self_id().proc_id().to_string(),
+                this.self_id().proc_ref().to_string(),
                 admin_url,
             )?,
         });
@@ -3704,7 +3704,7 @@ mod tests {
             .await
             .unwrap();
         let host_node = host_resp.0.unwrap();
-        let local_proc_node_ref = crate::introspect::NodeRef::Proc(local_proc_id.clone());
+        let local_proc_node_ref = crate::introspect::NodeRef::Proc(local_proc_id.clone().into());
         assert!(
             host_node.children.contains(&local_proc_node_ref),
             "host children {:?} should contain local proc {:?}",
@@ -3976,7 +3976,7 @@ mod tests {
         );
 
         // -- 6. Verify host children contain the system proc --
-        let expected_system_ref = crate::introspect::NodeRef::Proc(system_proc_id.clone());
+        let expected_system_ref = crate::introspect::NodeRef::Proc(system_proc_id.clone().into());
         assert!(
             host_node.children.contains(&expected_system_ref),
             "host children {:?} should contain the system proc ref {:?}",
