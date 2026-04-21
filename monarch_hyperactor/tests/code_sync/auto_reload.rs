@@ -10,7 +10,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use hyperactor::context::Mailbox;
 use hyperactor_mesh::ActorMesh;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::test_utils;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadActor;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadMessage;
@@ -43,10 +43,11 @@ CONSTANT = "initial_constant"
 "#;
     fs::write(&py_file_path, initial_content).await?;
 
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
     let mut host_mesh = test_utils::local_host_mesh(1).await;
     let proc_mesh = host_mesh
-        .spawn(instance, "auto_reload_test", ndslice::Extent::unity())
+        .spawn(instance, "auto_reload_test", ndslice::Extent::unity(), None)
         .await
         .unwrap();
     let params = AutoReloadParams {};

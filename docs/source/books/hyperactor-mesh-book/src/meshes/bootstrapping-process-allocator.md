@@ -2,7 +2,7 @@
 
 ## 2. Get something that can spawn processes
 
-In the canonical v1 flow we need a *thing in the parent* that can say "start another OS process that will come up as a hyperactor proc/host and talk back to me." In this codebase that "thing" is the **process allocator**, implemented as `hyperactor::alloc::ProcessAllocator` defined in `hyperactor/src/process.rs`.
+In the canonical flow we need a *thing in the parent* that can say "start another OS process that will come up as a hyperactor proc/host and talk back to me." In this codebase that "thing" is the **process allocator**, implemented as `hyperactor_mesh::alloc::ProcessAllocator` defined in `hyperactor_mesh/src/alloc/process.rs`.
 
 In the unit-test version (`bootstrap_canonical_simple`) it looks like this:
 
@@ -40,7 +40,7 @@ Then it builds a `ProcessAlloc` that tracks:
 - the `AllocSpec` you passed (which includes the extent and the transport),
 - the `bootstrap_addr` it just created,
 - the set of children it will spawn,
-- and the world/rank bookkeeping (`Ranks`) so each child gets a proper ranked `ProcId`.
+- and the world/rank bookkeeping so each child gets a proper `ProcId`.
 
 So far: **no process has been started yet**, we just prepared an allocation.
 
@@ -216,11 +216,9 @@ That's the full round-trip for the v0 allocator + test bootstrap binary: parent 
 
 When the allocator receives the child's `Hello(...)` and decides to start a proc, **the allocator chooses the proc id**.
 
-- If `AllocSpec.proc_name` is **`None`**, the allocator builds a ranked id:
-  - `ProcId::Ranked(WorldId(<this allocation's uuid>), <child index>)`
-  - meaning "you are proc #i in this allocation."
+- If `AllocSpec.proc_name` is **`None`**, the allocator builds a default id using the allocation's uuid and child index.
 - If `AllocSpec.proc_name` is **`Some(name)`**, the allocator builds a direct id:
-  - `ProcId::Direct(<child's hello address>, name)`
+  - `ProcId(<child's hello address>, name)`
 
 So: the parent always decides the identity; the child just accepts it.
 

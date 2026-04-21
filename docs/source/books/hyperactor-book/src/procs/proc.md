@@ -4,10 +4,10 @@ A `Proc` is the fundamental container for actors in hyperactor. It provides the 
 
 ## Construction
 
-Create a proc using `Proc::new()`:
+Create a pre-configured proc using `Proc::configured()`:
 
 ```rust
-pub fn new(proc_id: ProcId, forwarder: BoxedMailboxSender) -> Self
+pub fn configured(proc_id: ProcId, forwarder: BoxedMailboxSender) -> Self
 ```
 
 **Parameters:**
@@ -24,32 +24,32 @@ From `Host::new()`:
 ```rust
 let router = DialMailboxRouter::new();
 
-let service_proc_id = ProcId::Direct(
+let service_proc_id = ProcId(
     frontend_addr.clone(),
     "service".to_string()
 );
 
-let service_proc = Proc::new(service_proc_id, router.boxed());
+let service_proc = Proc::configured(service_proc_id, router.boxed());
 ```
 
 Here:
-- The proc is identified by `ProcId::Direct(frontend_addr, "service")`
+- The proc is identified by `ProcId(frontend_addr, "service")`
 - All outbound messages use the `DialMailboxRouter` as their forwarder
 - The router will look up target procs and dial their backend addresses
 
-## ProcId: Direct Addressing
+## ProcId: Addressing
 
-Procs are identified using `ProcId::Direct`:
+Procs are identified using `ProcId`:
 
 ```rust
-ProcId::Direct(ChannelAddr, String)
+ProcId(ChannelAddr, String)
 ```
 
 Example:
 
 ```rust
 let addr: ChannelAddr = "unix:@abc123".parse()?;
-let proc_id = ProcId::Direct(addr, "service".to_string());
+let proc_id = ProcId(addr, "service".to_string());
 ```
 
 The proc is addressed by:
@@ -68,7 +68,7 @@ Routes messages by looking up target addresses and dialing connections:
 
 ```rust
 let router = DialMailboxRouter::new();
-let proc = Proc::new(proc_id, router.boxed());
+let proc = Proc::configured(proc_id, router.boxed());
 ```
 
 When an actor sends a message to another proc, the router:
@@ -92,7 +92,7 @@ let proc_forwarder = LocalProcDialer::new(
     socket_dir,           // Directory where procs place Unix sockets
     backend_sender,       // Fallback for remote procs
 );
-let proc = Proc::new(proc_id, proc_forwarder.boxed());
+let proc = Proc::configured(proc_id, proc_forwarder.boxed());
 ```
 
 The forwarder checks each outbound message: if the destination is a local proc (matching the host's frontend address), it dials directly via the proc's Unix socket. Otherwise, it routes through the backend sender:

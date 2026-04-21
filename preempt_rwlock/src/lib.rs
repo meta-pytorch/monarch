@@ -217,7 +217,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[allow(clippy::disallowed_methods)]
     async fn test_preempt_reader() -> Result<()> {
         let lock = PreemptibleRwLock::new(());
 
@@ -240,7 +239,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::disallowed_methods)]
     async fn test_preempt_owned_reader_after_lock_dropped() -> Result<()> {
         let lock = Arc::new(PreemptibleRwLock::new(42));
 

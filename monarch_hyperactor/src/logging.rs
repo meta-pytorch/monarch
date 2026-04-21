@@ -522,7 +522,7 @@ impl Drop for LoggingMeshClient {
 
 /// Turns a python exception into a string with a traceback. If the traceback doesn't
 /// exist or can't be formatted, returns just the exception message.
-fn format_traceback<'py>(py: Python<'py>, err: PyErr) -> String {
+pub(crate) fn format_traceback<'py>(py: Python<'py>, err: &PyErr) -> String {
     let traceback = err.traceback(py);
     if traceback.is_some() {
         let inner = || -> PyResult<String> {
@@ -550,7 +550,7 @@ fn log_endpoint_exception<'py>(
     actor_id: PyActorId,
 ) {
     let pyerr = PyErr::from_value(e.into_bound(py));
-    let exception_str = format_traceback(py, pyerr);
+    let exception_str = format_traceback(py, &pyerr);
     let endpoint = endpoint.into_bound(py).to_string();
     tracing::info!(
         actor_id = actor_id.inner.to_string(),
@@ -612,13 +612,14 @@ mod tests {
         .expect("failed to bootstrap HostMesh");
 
         let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity())
+            .spawn(&instance, "p0", Extent::unity(), None)
             .await
             .expect("failed to spawn ProcMesh");
 
         Ok((proc, instance, host_mesh, proc_mesh))
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn test_world_smoke() {
         let (proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
@@ -642,6 +643,7 @@ mod tests {
         host_mesh.shutdown(&instance).await.expect("host shutdown");
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn spawn_respects_forwarding_flag() {
         let (_, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
@@ -701,6 +703,7 @@ mod tests {
         host_mesh.shutdown(&instance).await.expect("host shutdown");
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn set_mode_behaviors() {
         let (_proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
@@ -818,6 +821,7 @@ mod tests {
         host_mesh.shutdown(&instance).await.expect("host shutdown");
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn flush_behaviors() {
         let (_proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");

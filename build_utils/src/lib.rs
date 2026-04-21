@@ -16,6 +16,12 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use glob::glob;
+// pyo3_build_config is only called inside #[cfg(not(fbcode_build))],
+// so the Buck compiler never sees a direct reference. This import
+// suppresses the unused_extern warning while keeping the dep explicit
+// in the generated Cargo.toml (autocargo doesn't propagate transitive
+// deps).
+use pyo3_build_config as _;
 use which::which;
 
 pub mod rocm;
@@ -373,6 +379,7 @@ impl CppStaticLibsConfig {
         let rdma_static_libraries = std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_STATIC_LIBRARIES")
             .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_STATIC_LIBRARIES not set - add monarch_cpp_static_libs as build-dependency")
             .split(';')
+            .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect();
 
@@ -410,6 +417,64 @@ pub fn setup_cpp_static_libs() -> CppStaticLibsConfig {
     config
 }
 
+/// Detect GPU compute platform (CUDA or ROCm)
+///
+/// Returns (is_rocm, compute_home_path)
+///
+/// Detection order:
+/// 1. MONARCH_RDMA_GPU_PLATFORM environment variable ("cuda" or "rocm")
+/// 2. Auto-detect: try CUDA first, fall back to ROCm
+/// 3. If both found, prefer CUDA (user can override with env var)
+pub fn detect_gpu_platform() -> (bool, String) {
+    // Check for explicit platform selection via env var
+    if let Ok(platform) = env::var("MONARCH_RDMA_GPU_PLATFORM") {
+        match platform.to_lowercase().as_str() {
+            "rocm" => {
+                let rocm_home = rocm::validate_rocm_installation()
+                    .expect("MONARCH_RDMA_GPU_PLATFORM=rocm but ROCm installation not found");
+                println!("cargo:warning=Using ROCm from {} (explicit)", rocm_home);
+                return (true, rocm_home);
+            }
+            "cuda" => {
+                let cuda_home = validate_cuda_installation()
+                    .expect("MONARCH_RDMA_GPU_PLATFORM=cuda but CUDA installation not found");
+                println!("cargo:warning=Using CUDA from {} (explicit)", cuda_home);
+                return (false, cuda_home);
+            }
+            _ => panic!(
+                "Invalid MONARCH_RDMA_GPU_PLATFORM value: {}. Must be 'rocm' or 'cuda'",
+                platform
+            ),
+        }
+    }
+
+    // Auto-detect: try CUDA first, fall back to ROCm
+    let cuda_result = validate_cuda_installation();
+    let rocm_result = rocm::validate_rocm_installation();
+
+    match (rocm_result.is_ok(), cuda_result.is_ok()) {
+        (true, false) => {
+            let rocm_home = rocm_result.unwrap();
+            println!("cargo:warning=Using ROCm from {}", rocm_home);
+            (true, rocm_home)
+        }
+        (false, true) => {
+            let cuda_home = cuda_result.unwrap();
+            println!("cargo:warning=Using CUDA from {}", cuda_home);
+            (false, cuda_home)
+        }
+        (true, true) => {
+            panic!(
+                "Both ROCm and CUDA detected. Set MONARCH_RDMA_GPU_PLATFORM=cuda or \
+                 MONARCH_RDMA_GPU_PLATFORM=rocm to select the platform."
+            );
+        }
+        (false, false) => {
+            panic!("Neither CUDA nor ROCm installation found");
+        }
+    }
+}
+
 /// Set rpath for Python library directory
 ///
 /// This emits cargo directives to add the Python library directory to the rpath,
@@ -426,7 +491,22 @@ pub fn set_python_rpath() {
         let python_config = pyo3_build_config::get();
 
         if let Some(lib_dir) = &python_config.lib_dir {
-            println!("cargo::rustc-link-arg=-Wl,-rpath,{}", lib_dir);
+            let lib_dir = Path::new(lib_dir);
+            if cfg!(target_os = "macos") {
+                // Python.framework uses the framework root as the install-name base.
+                if let Some(framework_root) = lib_dir.ancestors().find(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".framework"))
+                }) {
+                    println!(
+                        "cargo::rustc-link-arg=-Wl,-rpath,{}",
+                        framework_root.display()
+                    );
+                    return;
+                }
+            }
+            println!("cargo::rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
         }
     }
 }

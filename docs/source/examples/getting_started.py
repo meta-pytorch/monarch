@@ -189,9 +189,12 @@ print(trainers.step.call().get())
 # ---------------------
 # Since we're talking about having multiple hosts now, it's worth briefly covering how Monarch handles distributed logging.
 # User logs from a Monarch job are routed to stdout and stderr of the corresponding process.
-# In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity:
+# In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity.
+# ``logging_option`` is an async method, so it must be awaited:
 
-procs.logging_option(stream_to_client=True, aggregate_window_sec=3)
+import asyncio
+
+asyncio.run(procs.logging_option(stream_to_client=True, aggregate_window_sec=3))
 
 
 # %%
@@ -316,11 +319,13 @@ class SupervisorActor(Actor):
 # %%
 # If a MeshFailure is not handled by any __supervise__ in the supervision tree,
 # it will reach the client, where monarch.actor.unhandled_fault_hook will be
-# called with the MeshFailure object. By default, this function crashes the
-# client process with exit code 1.
+# called with the MeshFailure object. By default, this function exits the process
+# with a KeyboardInterrupt.
 
 # You can overwrite the global unhandled_fault_hook function to customize this
-# behavior.
+# behavior. The function can either:
+# - raise any exception (including BaseException) to indicate that the failure was not handled
+# - return any value (including None) to indicate that the failure was handled
 
 import monarch.actor
 
@@ -510,8 +515,8 @@ print(c.get_context_info.call().get())
 
 
 # %%
-# ranks are always multidimension and reported as dictionaries of the dimension names
-# and the point within that dimension.
+# Ranks are always multidimensional and reported as Point objects (dict-like mappings)
+# of the dimension names to the index within that dimension.
 
 
 # %%
@@ -539,11 +544,11 @@ with trainer_procs.activate():
 # ================================
 # It is sometimes useful to establish direct channels between two points,
 # or forward the handling of some messages from one actor to another.
-# To enable this, all messaging in monarch is build out of port objects.
+# To enable this, all messaging in monarch is built out of port objects.
 
 # %%
 # An actor can create a new channel, which provides a Port for sending and
-# a PortReceiver for receiving messages. The Port object can then be send
+# a PortReceiver for receiving messages. The Port object can then be sent
 # to any endpoint.
 
 from monarch.actor import Channel, Port

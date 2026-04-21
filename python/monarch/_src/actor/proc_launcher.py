@@ -40,6 +40,8 @@ class LaunchOptions:
             (0 = none).
         log_channel: Optional ChannelAddr string for mesh log
             forwarding.
+        proc_bind: Optional CPU/NUMA binding configuration dict.
+            Keys may include cpunodebind, membind, physcpubind, cpus.
     """
 
     bootstrap_payload: str
@@ -51,6 +53,7 @@ class LaunchOptions:
     want_stdio: bool
     tail_lines: int
     log_channel: str | None
+    proc_bind: dict[str, str] | None
 
 
 @dataclass
@@ -75,7 +78,7 @@ class ProcLauncher(Actor, ABC):
     Implementations control how procs are spawned (Docker, VMs, custom
     orchestrators, etc.) while Monarch handles lifecycle wiring.
 
-    The launcher runs in the same proc as HostMeshAgent.
+    The launcher runs in the same proc as HostAgent.
     """
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:

@@ -17,10 +17,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use hyperactor::Proc;
+use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::PanickingMailboxSender;
-use hyperactor::reference::ProcId;
-use hyperactor::reference::id;
+use hyperactor::reference;
 use once_cell::sync::Lazy;
 use once_cell::unsync::OnceCell as UnsyncOnceCell;
 use pyo3::PyResult;
@@ -87,8 +88,9 @@ pub fn shutdown_tokio_runtime(py: Python<'_>) {
 pub(crate) fn get_proc_runtime() -> &'static Proc {
     static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
     RUNTIME_PROC.get_or_init(|| {
-        let proc_id = ProcId::Ranked(id!(monarch_hyperactor_runtime), 0);
-        Proc::new(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
+        let addr = ChannelAddr::any(ChannelTransport::Local);
+        let proc_id = reference::ProcId::unique(addr, "monarch_hyperactor_runtime");
+        Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     })
 }
 
@@ -150,6 +152,13 @@ pub fn is_main_thread() -> bool {
 }
 
 pub fn initialize(py: Python) -> Result<()> {
+    // Eagerly initialize the main thread ID while we're on the main thread
+    // with the GIL held. If this were lazily initialized on a background
+    // tokio thread during shutdown, the `py.import("threading")` call inside
+    // get_main_thread_native_id() would trigger module_from_spec on a
+    // partially-finalized interpreter, causing a segfault.
+    let _ = get_main_thread_native_id();
+
     let atexit = py.import("atexit")?;
     let shutdown_fn = wrap_pyfunction!(shutdown_tokio_runtime, py)?;
     atexit.call_method1("register", (shutdown_fn,))?;
@@ -191,7 +200,6 @@ where
                             // Acquiring the GIL in a loop is sad, hopefully once
                             // every 100ms is fine.
                             Python::attach(|py| py.check_signals())?;
-                            #[allow(clippy::disallowed_methods)]
                             tokio::time::sleep(sleep_for).await;
                         }
                     } => signal
@@ -215,7 +223,6 @@ pub fn sleep_indefinitely_for_unit_tests(py: Python) -> PyResult<()> {
     let future = async {
         loop {
             tracing::info!("idef sleeping for 100ms");
-            #[allow(clippy::disallowed_methods)]
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     };

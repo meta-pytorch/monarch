@@ -42,7 +42,10 @@ impl MessageEnvelope {
 ```rust
 impl MessageEnvelope {
   fn new_unknown(dest: PortId, data: Serialized) -> Self {
-    Self::new(id!(unknown[0].unknown), dest, data)
+    let unknown_addr = ChannelAddr::any(ChannelTransport::Local);
+    let unknown_proc_id = ProcId::unique(unknown_addr, "unknown");
+    let unknown_actor_id = ActorId::root(unknown_proc_id, "unknown".to_string());
+    Self::new(unknown_actor_id, dest, data)
   }
 }
 ```

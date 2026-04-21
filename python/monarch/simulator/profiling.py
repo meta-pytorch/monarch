@@ -30,18 +30,115 @@ from typing import (
 
 import torch
 import torch.distributed as dist
-from monarch.common import messages
-from monarch.common.function import resolvable_function
-from monarch.common.function_caching import (
+
+
+def _measure_cuda_time(
+    run_iteration: Callable[[], None],
+    warmup_iters: int = 2,
+    actual_iters: int = 3,
+) -> int:
+    """Measure mean execution time in microseconds using CUDA events."""
+    for _ in range(warmup_iters):
+        run_iteration()
+
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    start_event.record(torch.cuda.current_stream())
+    for _ in range(actual_iters):
+        run_iteration()
+    end_event.record(torch.cuda.current_stream())
+    torch.cuda.synchronize()
+    cuda_time = start_event.elapsed_time(end_event)
+    return int(cuda_time / actual_iters * 1000)
+
+
+def expand_func_path(func_name: str) -> str:
+    """Expand aten.* to torch.ops.aten.* path."""
+    if func_name.startswith("aten."):
+        return f"torch.ops.{func_name}"
+    return func_name
+
+
+def profile_function(
+    func_path: str,
+    shapes: List[Tuple[Tuple[int, ...], Optional[torch.dtype]]],
+) -> int:
+    """Profile a function on GPU and return mean execution time in microseconds.
+
+    Args:
+        func_path: Function name (e.g., "aten.mm" which gets expanded to "torch.ops.aten.mm")
+        shapes: List of (shape, dtype) tuples for input tensors
+
+    Returns:
+        Mean execution time in microseconds
+
+    Raises:
+        RuntimeError: If CUDA is not available
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required for GPU profiling")
+
+    from monarch.common.function import ResolvableFunctionFromPath
+
+    func_path = expand_func_path(func_path)
+    func = ResolvableFunctionFromPath(func_path).resolve()
+
+    dtype = shapes[0][1] if shapes and shapes[0][1] else torch.float32
+
+    # Handle special cases based on function type
+    if (
+        "rand" in func_path
+        or "randn" in func_path
+        or "zeros" in func_path
+        or "ones" in func_path
+    ):
+        # Tensor creation ops: pass shape as size argument
+        size = list(shapes[0][0]) if shapes else [1]
+        args = [size]
+        kwargs = {"dtype": dtype, "device": "cuda"}
+    elif "permute" in func_path or "transpose" in func_path:
+        # Permutation ops: create tensor and reverse dimensions
+        tensor = (
+            torch.randn(shapes[0][0], dtype=dtype, device="cuda")
+            if shapes
+            else torch.randn(1, device="cuda")
+        )
+        dims = list(range(len(shapes[0][0]) - 1, -1, -1)) if shapes else [0]
+        args = [tensor, dims]
+        kwargs = {}
+    else:
+        # Standard ops: create tensors from shapes
+        tensors = []
+        for tensor_dims, dt in shapes:
+            tensors.append(
+                torch.randn(tensor_dims, dtype=dt or torch.float32, device="cuda")
+            )
+        # For binary ops with only 1 input tracked, duplicate the tensor
+        if len(tensors) == 1 and any(
+            op in func_path for op in ["mul", "add", "sub", "div", "pow"]
+        ):
+            tensors.append(tensors[0].clone())
+        args = tensors
+        kwargs = {}
+
+    return _measure_cuda_time(lambda: func(*args, **kwargs))
+
+
+# Imports below are placed after the functions above to avoid circular imports.
+# ir.py imports expand_func_path and profile_function from this module, and
+# command_history.py (imported below) imports from ir.py.
+from monarch.common import messages  # noqa: E402
+from monarch.common.function import resolvable_function  # noqa: E402
+from monarch.common.function_caching import (  # noqa: E402
     hashable_tensor_flatten,
     HashableTreeSpec,
     key_filters,
     TensorGroup,
 )
-from monarch.common.tensor_factory import TensorFactory
-from monarch.simulator.command_history import CommandHistory, DTensorRef
-from torch.utils import _pytree as pytree
-from torch.utils._mode_utils import no_dispatch
+from monarch.common.tensor_factory import TensorFactory  # noqa: E402
+from monarch.simulator.command_history import CommandHistory, DTensorRef  # noqa: E402
+from torch.utils import _pytree as pytree  # noqa: E402
+from torch.utils._mode_utils import no_dispatch  # noqa: E402
 
 
 def get_free_port() -> int:
@@ -187,21 +284,11 @@ class ProfilingWorker:
             args, kwargs = materialize()
             r = func(*args, **kwargs)
 
-            warmup_iters, actual_iters = 2, 3
-            for _ in range(warmup_iters):
-                args, kwargs = materialize()
-                func(*args, **kwargs)
+            def run_iter():
+                a, kw = materialize()
+                func(*a, **kw)
 
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record(torch.cuda.current_stream())
-            for _ in range(actual_iters):
-                args, kwargs = materialize()
-                func(*args, **kwargs)
-            end_event.record(torch.cuda.current_stream())
-            torch.cuda.synchronize()
-            cuda_time = start_event.elapsed_time(end_event)
-            mean_op_time = int(cuda_time / actual_iters * 1000)
+            mean_op_time = _measure_cuda_time(run_iter)
 
         return r, mean_op_time
 

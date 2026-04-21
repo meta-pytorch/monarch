@@ -25,9 +25,7 @@ use backoff::backoff::Backoff;
 use dashmap::DashSet;
 use hyperactor_config::Flattrs;
 
-use crate::ActorId;
 use crate::Instance;
-use crate::PortId;
 use crate::accum;
 use crate::accum::ErasedCommReducer;
 use crate::accum::ReducerMode;
@@ -37,6 +35,7 @@ use crate::mailbox;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
 use crate::ordering::SEQ_INFO;
+use crate::reference;
 use crate::time::Alarm;
 
 /// Policy for handling SEQ_INFO in message headers.
@@ -74,7 +73,7 @@ pub(crate) trait MailboxExt: Mailbox {
     /// All messages posted from actors should use this implementation.
     fn post(
         &self,
-        dest: PortId,
+        dest: reference::PortId,
         headers: Flattrs,
         data: wirevalue::Any,
         return_undeliverable: bool,
@@ -84,24 +83,24 @@ pub(crate) trait MailboxExt: Mailbox {
     /// Split a port, using a provided reducer spec, if provided.
     fn split(
         &self,
-        port_id: PortId,
+        port_id: reference::PortId,
         reducer_spec: Option<ReducerSpec>,
         reducer_mode: ReducerMode,
         return_undeliverable: bool,
-    ) -> anyhow::Result<PortId>;
+    ) -> anyhow::Result<reference::PortId>;
 }
 
 // Tracks mailboxes that have emitted a `CanSend::post` warning due to
 // missing an `Undeliverable<MessageEnvelope>` binding. In this
 // context, mailboxes are few and long-lived; unbounded growth is not
 // a realistic concern.
-static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<ActorId>> = OnceLock::new();
+static CAN_SEND_WARNED_MAILBOXES: OnceLock<DashSet<reference::ActorId>> = OnceLock::new();
 
 /// Only actors CanSend because they need a return port.
 impl<T: Actor + Send + Sync> MailboxExt for T {
     fn post(
         &self,
-        dest: PortId,
+        dest: reference::PortId,
         mut headers: Flattrs,
         data: wirevalue::Any,
         return_undeliverable: bool,
@@ -144,14 +143,14 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
 
     fn split(
         &self,
-        port_id: PortId,
+        port_id: reference::PortId,
         reducer_spec: Option<ReducerSpec>,
         reducer_mode: ReducerMode,
         return_undeliverable: bool,
-    ) -> anyhow::Result<PortId> {
+    ) -> anyhow::Result<reference::PortId> {
         fn post(
             mailbox: &mailbox::Mailbox,
-            port_id: PortId,
+            port_id: reference::PortId,
             msg: wirevalue::Any,
             return_undeliverable: bool,
         ) {

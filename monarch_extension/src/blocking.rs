@@ -12,7 +12,6 @@ use tokio::time::Duration;
 
 extern "C" fn exit_handler() {
     loop {
-        #[allow(clippy::disallowed_methods)]
         std::thread::sleep(Duration::from_mins(1));
     }
 }

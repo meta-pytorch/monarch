@@ -14,15 +14,11 @@ use std::time::Duration;
 use anyhow::Result;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Signal;
-use hyperactor::clock::Clock;
-use hyperactor::clock::ClockKind;
+use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
-use hyperactor::reference::ActorId;
-use hyperactor::reference::Index;
-use hyperactor::reference::ProcId;
-use hyperactor::reference::WorldId;
+use hyperactor::reference;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -55,20 +51,13 @@ impl PyProc {
     }
 
     #[getter]
-    fn world_name(&self) -> String {
-        self.inner
-            .proc_id()
-            .world_name()
-            .expect("proc must be ranked for world name")
-            .to_string()
+    fn addr(&self) -> String {
+        self.inner.proc_id().addr().to_string()
     }
 
     #[getter]
-    fn rank(&self) -> usize {
-        self.inner
-            .proc_id()
-            .rank()
-            .expect("proc must be ranked for rank access")
+    fn name(&self) -> String {
+        self.inner.proc_id().name().to_string()
     }
 
     #[getter]
@@ -150,16 +139,16 @@ impl PyProc {
 )]
 #[derive(Clone)]
 pub struct PyActorId {
-    pub(super) inner: ActorId,
+    pub(super) inner: reference::ActorId,
 }
 
-impl From<ActorId> for PyActorId {
-    fn from(actor_id: ActorId) -> Self {
+impl From<reference::ActorId> for PyActorId {
+    fn from(actor_id: reference::ActorId) -> Self {
         Self { inner: actor_id }
     }
 }
 
-impl From<PyActorId> for ActorId {
+impl From<PyActorId> for reference::ActorId {
     fn from(val: PyActorId) -> Self {
         val.inner
     }
@@ -168,15 +157,18 @@ impl From<PyActorId> for ActorId {
 #[pymethods]
 impl PyActorId {
     #[new]
-    #[pyo3(signature = (*, world_name, rank, actor_name, pid = 0))]
-    fn new(world_name: &str, rank: Index, actor_name: &str, pid: Index) -> Self {
-        Self {
-            inner: ActorId(
-                ProcId::Ranked(WorldId(world_name.to_string()), rank),
-                actor_name.to_string(),
+    #[pyo3(signature = (*, addr, proc_name, actor_name, pid = 0))]
+    fn new(addr: &str, proc_name: &str, actor_name: &str, pid: reference::Index) -> PyResult<Self> {
+        let addr: ChannelAddr = addr.parse().map_err(|e| {
+            PyValueError::new_err(format!("Failed to parse channel address '{}': {}", addr, e))
+        })?;
+        Ok(Self {
+            inner: reference::ActorId::new(
+                reference::ProcId::with_name(addr, proc_name),
+                actor_name,
                 pid,
             ),
-        }
+        })
     }
 
     #[staticmethod]
@@ -192,13 +184,13 @@ impl PyActorId {
     }
 
     #[getter]
-    fn world_name(&self) -> String {
-        self.inner.world_name().to_string()
+    fn addr(&self) -> String {
+        self.inner.proc_id().addr().to_string()
     }
 
     #[getter]
-    fn rank(&self) -> Index {
-        self.inner.rank()
+    fn proc_name(&self) -> String {
+        self.inner.proc_id().name().to_string()
     }
 
     #[getter]
@@ -207,7 +199,7 @@ impl PyActorId {
     }
 
     #[getter]
-    fn pid(&self) -> Index {
+    fn pid(&self) -> reference::Index {
         self.inner.pid()
     }
 
@@ -239,7 +231,7 @@ impl PyActorId {
     }
 }
 
-impl From<&PyActorId> for ActorId {
+impl From<&PyActorId> for reference::ActorId {
     fn from(actor_id: &PyActorId) -> Self {
         actor_id.inner.clone()
     }
@@ -305,20 +297,12 @@ pub struct InstanceWrapper<M: RemoteMessage> {
     message_receiver: PortReceiver<M>,
     signal_receiver: PortReceiver<Signal>,
     status: InstanceStatus,
-
-    clock: ClockKind,
-    actor_id: ActorId,
+    actor_id: reference::ActorId,
 }
 
 impl<M: RemoteMessage> InstanceWrapper<M> {
     pub fn new(proc: &PyProc, actor_name: &str) -> Result<Self> {
-        InstanceWrapper::new_with_instance_and_clock(
-            proc.inner.instance(actor_name)?.0,
-            proc.inner.clock().clone(),
-        )
-    }
-
-    fn new_with_instance_and_clock(instance: Instance<()>, clock: ClockKind) -> Result<Self> {
+        let instance = proc.inner.instance(actor_name)?.0;
         // TEMPORARY: remove after using fixed message ports.
         let (_message_port, message_receiver) = instance.bind_actor_port::<M>();
 
@@ -331,7 +315,6 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             message_receiver,
             signal_receiver,
             status: InstanceStatus::Running,
-            clock,
             actor_id,
         })
     }
@@ -405,7 +388,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             }
             Some(timeout_msec) => {
                 // Blocking wait with a timeout.
-                match self.clock.timeout(
+                match tokio::time::timeout(
                     Duration::from_millis(timeout_msec),
                     self.message_receiver.recv(),
                 )
@@ -440,7 +423,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         &self.instance
     }
 
-    pub fn actor_id(&self) -> &ActorId {
+    pub fn actor_id(&self) -> &reference::ActorId {
         &self.actor_id
     }
 }

@@ -80,10 +80,6 @@ impl TryFrom<ChannelTransport> for PyChannelTransport {
             ChannelTransport::Tls => Ok(PyChannelTransport::Tls),
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
-            _ => Err(PyValueError::new_err(format!(
-                "unsupported transport: {}",
-                transport
-            ))),
         }
     }
 }
@@ -224,11 +220,6 @@ impl PyChannelAddr {
             ChannelTransport::Tls => Ok(PyChannelTransport::Tls),
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
-            _ => Err(PyRuntimeError::new_err(format!(
-                "unsupported transport: `{:?}` for address: `{}`",
-                self.inner.transport(),
-                self.inner
-            ))),
         }
     }
 }
@@ -275,16 +266,6 @@ mod tests {
             let address = PyChannelAddr::any(transport)?;
             let _ = PyChannelAddr::parse(&address)?;
         }
-        Ok(())
-    }
-
-    #[test]
-    fn test_channel_unsupported_transport() -> PyResult<()> {
-        let sim_addr = ChannelAddr::any(ChannelTransport::Sim(Box::new(ChannelTransport::Unix)));
-        let addr = PyChannelAddr { inner: sim_addr };
-
-        assert!(addr.get_port().is_err());
-        assert!(addr.get_transport().is_err());
         Ok(())
     }
 

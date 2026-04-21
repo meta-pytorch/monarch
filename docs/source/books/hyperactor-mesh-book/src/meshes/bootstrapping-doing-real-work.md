@@ -34,7 +34,7 @@ This is **not** the same as the earlier `ProcMesh::allocate(...)` we saw inside 
 
 What actually happens here, per `HostMeshRef::spawn(...)` in `hyperactor_mesh/src/v1/host_mesh.rs`:
 
-1. For **each host** we already have, it sends a `create_or_update(...)` to that host's **HostMeshAgent** saying "you should have a proc named `p0_0` (then `p0_1`, ...) with this create-rank."
+1. For **each host** we already have, it sends a `create_or_update(...)` to that host's **HostAgent** saying "you should have a proc named `p0_0` (then `p0_1`, ...) with this create-rank."
 2. Each host uses its embedded **BootstrapProcManager** to do the *real* OS-level thing: spawn a new child process, run `bootstrap_or_die()` in it, and have it come back as a proc for that host.
 3. The parent waits for status from every host (so it doesn't return too early).
 4. Finally it gathers all those per-host procs into a `ProcMesh`.
@@ -109,6 +109,10 @@ host_mesh.shutdown(&instance).await.expect("host shutdown");
 ```
 
 This is important: the host is holding a `BootstrapProcManager`, and that thing is the one that really owns the PIDs of the procs it spawned. `shutdown(...)` walks the hosts, tells each agent to terminate its children, and drops the host. If you don't do this, you can leak the OS children.
+
+You can use host_mesh.stop instead, which also cleans up all of the procs, but leaves the
+host running and a new host mesh can connect to it. This is useful for interactive
+sessions where you don't want to restart the server process.
 
 ---
 

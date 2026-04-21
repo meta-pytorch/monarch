@@ -24,9 +24,7 @@ use async_trait::async_trait;
 use hyperactor::ActorHandle;
 use hyperactor::Instance;
 use hyperactor::Mailbox;
-use hyperactor::ProcId;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
+use hyperactor::reference;
 use hyperactor_mesh::proc_launcher::LaunchOptions;
 use hyperactor_mesh::proc_launcher::LaunchResult;
 use hyperactor_mesh::proc_launcher::ProcExitKind;
@@ -569,7 +567,7 @@ pub struct ActorProcLauncher {
     ///
     /// Not used for correctness; used for diagnostics and sanity
     /// checks.
-    active_procs: Arc<Mutex<HashSet<ProcId>>>,
+    active_procs: Arc<Mutex<HashSet<reference::ProcId>>>,
 }
 
 impl ActorProcLauncher {
@@ -623,7 +621,7 @@ impl ProcLauncher for ActorProcLauncher {
     ///   resolves to `ProcExitKind::Failed` with a decode error reason.
     async fn launch(
         &self,
-        proc_id: &ProcId,
+        proc_id: &reference::ProcId,
         opts: LaunchOptions,
     ) -> Result<LaunchResult, ProcLauncherError> {
         let (exit_port, exit_port_rx) = self.mailbox.open_once_port::<PythonMessage>();
@@ -648,6 +646,23 @@ impl ProcLauncher for ActorProcLauncher {
                     .map_err(|e| ProcLauncherError::Other(format!("set env item: {e}")))?;
             }
 
+            let py_proc_bind = opts.proc_bind.as_ref().map(|bind| {
+                let d = pyo3::types::PyDict::new(py);
+                if let Some(v) = &bind.cpunodebind {
+                    d.set_item("cpunodebind", v).unwrap();
+                }
+                if let Some(v) = &bind.membind {
+                    d.set_item("membind", v).unwrap();
+                }
+                if let Some(v) = &bind.physcpubind {
+                    d.set_item("physcpubind", v).unwrap();
+                }
+                if let Some(v) = &bind.cpus {
+                    d.set_item("cpus", v).unwrap();
+                }
+                d
+            });
+
             let py_opts = launch_opts_cls
                 .call1((
                     &opts.bootstrap_payload,
@@ -659,6 +674,7 @@ impl ProcLauncher for ActorProcLauncher {
                     opts.want_stdio,
                     opts.tail_lines,
                     opts.log_channel.as_ref().map(|a| a.to_string()),
+                    py_proc_bind,
                 ))
                 .map_err(|e| ProcLauncherError::Other(format!("construct LaunchOptions: {e}")))?;
 
@@ -717,7 +733,7 @@ impl ProcLauncher for ActorProcLauncher {
 
         Ok(LaunchResult {
             pid: None,
-            started_at: RealClock.system_time_now(),
+            started_at: std::time::SystemTime::now(),
             stdio: StdioHandling::ManagedByLauncher,
             exit_rx,
         })
@@ -739,7 +755,7 @@ impl ProcLauncher for ActorProcLauncher {
     /// - send the message to the spawner actor.
     async fn terminate(
         &self,
-        proc_id: &ProcId,
+        proc_id: &reference::ProcId,
         timeout: Duration,
     ) -> Result<(), ProcLauncherError> {
         let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
@@ -782,7 +798,7 @@ impl ProcLauncher for ActorProcLauncher {
     /// Returns `ProcLauncherError::Kill` if we fail to:
     /// - import/serialize the request via `cloudpickle`, or
     /// - send the message to the spawner actor.
-    async fn kill(&self, proc_id: &ProcId) -> Result<(), ProcLauncherError> {
+    async fn kill(&self, proc_id: &reference::ProcId) -> Result<(), ProcLauncherError> {
         let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
             let cloudpickle =
                 import_cloudpickle(py).map_err(|e| ProcLauncherError::Kill(format!("{e}")))?;

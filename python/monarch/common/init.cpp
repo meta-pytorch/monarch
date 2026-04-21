@@ -8,8 +8,22 @@
 
 #include <Python.h>
 #include <torch/version.h> // @manual=//caffe2:version_cpp
+
+#ifdef MONARCH_BUILD_CUDA
 // @lint-ignore CLANGTIDY facebook-hte-RelativeInclude
 #include "mock_cuda.h"
+#else
+// No-op stubs when building without CUDA (e.g. ROCm)
+static PyObject* patch_cuda(PyObject*, PyObject*) {
+  Py_RETURN_NONE;
+}
+static PyObject* mock_cuda(PyObject*, PyObject*) {
+  Py_RETURN_NONE;
+}
+static PyObject* unmock_cuda(PyObject*, PyObject*) {
+  Py_RETURN_NONE;
+}
+#endif
 
 // @lint-ignore-every CLANGTIDY facebook-hte-NullableReturn
 static PyObject* getBuiltPytorchVersion(PyObject*, PyObject*) {
@@ -56,17 +70,28 @@ static PyMethodDef _C_methods[] = {
      "Get the version of pytorch monarch was built against."},
     {NULL, NULL, 0, NULL}};
 
+static int module_exec(PyObject* /* module */) {
+  return 0;
+}
+
+static PyModuleDef_Slot _C_slots[] = {
+    {Py_mod_exec, (void*)module_exec},
+#if PY_VERSION_HEX >= 0x030D0000
+    {Py_mod_gil, Py_MOD_GIL_USED},
+#endif
+    {0, NULL}};
+
 static struct PyModuleDef _C_module = {
     PyModuleDef_HEAD_INIT,
     "_C",
     "A module containing monarch C++ functionality.",
-    -1,
+    0,
     _C_methods,
-    NULL,
+    _C_slots,
     NULL,
     NULL,
     NULL};
 
 PyMODINIT_FUNC PyInit__C(void) {
-  return PyModule_Create(&_C_module);
+  return PyModuleDef_Init(&_C_module);
 }

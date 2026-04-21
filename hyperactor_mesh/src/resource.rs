@@ -27,7 +27,6 @@ use enum_as_inner::EnumAsInner;
 use hyperactor::Bind;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteMessage;
 use hyperactor::Unbind;
@@ -35,6 +34,7 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::attrs::Attrs;
 use ndslice::Region;
 use ndslice::ViewExt;
@@ -45,7 +45,9 @@ use typeuri::Named;
 use crate::Name;
 use crate::StatusOverlay;
 use crate::bootstrap;
-use crate::host_mesh::mesh_agent::ProcState;
+use crate::bootstrap::BootstrapCommand;
+use crate::bootstrap::ProcBind;
+use crate::host_mesh::host_agent::ProcState;
 use crate::proc_agent::ActorSpec;
 use crate::proc_agent::ActorState;
 
@@ -62,7 +64,9 @@ use crate::proc_agent::ActorState;
     Eq,
     Hash,
     EnumAsInner,
-    strum::Display
+    strum::Display,
+    Bind,
+    Unbind
 )]
 pub enum Status {
     /// The resource does not exist.
@@ -86,7 +90,7 @@ pub enum Status {
 }
 
 impl Status {
-    /// Returns whether the status is a terminating status.
+    /// Returns whether the status is a terminating status (includes `Stopping`).
     pub fn is_terminating(&self) -> bool {
         matches!(
             self,
@@ -101,8 +105,31 @@ impl Status {
         matches!(self, Self::Failed(_) | Self::Timeout(_))
     }
 
+    /// Returns whether the status is fully terminal (the resource has
+    /// stopped, failed, or timed out — but NOT merely `Stopping`).
+    pub fn is_terminated(&self) -> bool {
+        matches!(
+            self,
+            Status::Stopped | Status::Failed(_) | Status::Timeout(_)
+        )
+    }
+
     pub fn is_healthy(&self) -> bool {
         matches!(self, Status::Initializing | Status::Running)
+    }
+
+    /// Ensure this status is at least as terminal as `floor`.
+    ///
+    /// If `floor` is a terminating status (Stopping, Stopped, Failed,
+    /// Timeout) and `self` is not, returns `floor`. Otherwise returns
+    /// `self` unchanged. This is used to prevent a child resource
+    /// from appearing healthier than its parent.
+    pub fn clamp_min(self, floor: Status) -> Status {
+        if floor.is_terminating() && !self.is_terminating() {
+            floor
+        } else {
+            self
+        }
     }
 }
 
@@ -116,6 +143,15 @@ impl From<bootstrap::ProcStatus> for Status {
             ProcStatus::Stopped { .. } => Status::Stopped,
             ProcStatus::Failed { reason } => Status::Failed(reason),
             ProcStatus::Killed { .. } => Status::Failed(format!("{}", status)),
+        }
+    }
+}
+
+impl From<hyperactor::host::LocalProcStatus> for Status {
+    fn from(status: hyperactor::host::LocalProcStatus) -> Self {
+        match status {
+            hyperactor::host::LocalProcStatus::Stopping => Status::Stopping,
+            hyperactor::host::LocalProcStatus::Stopped => Status::Stopped,
         }
     }
 }
@@ -176,7 +212,34 @@ pub struct GetRankStatus {
     pub name: Name,
     /// Sparse status updates (overlays) from a rank.
     #[binding(include)]
-    pub reply: PortRef<StatusOverlay>,
+    pub reply: hyperactor_reference::PortRef<StatusOverlay>,
+}
+
+/// Like [`GetRankStatus`], but the handler defers its reply until the
+/// resource's status is >= `min_status`. This avoids the race where
+/// the caller sees `Stopping` before the process has actually exited.
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Named,
+    Handler,
+    HandleClient,
+    RefClient,
+    Bind,
+    Unbind
+)]
+pub struct WaitRankStatus {
+    /// The name of the resource.
+    pub name: Name,
+    /// The minimum status the caller wants to observe.
+    /// The handler will not reply until the resource's status
+    /// is >= this threshold.
+    pub min_status: Status,
+    /// Sparse status updates (overlays) from a rank.
+    #[binding(include)]
+    pub reply: hyperactor_reference::PortRef<StatusOverlay>,
 }
 
 impl GetRankStatus {
@@ -224,7 +287,18 @@ impl GetRankStatus {
 }
 
 /// The state of a resource.
-#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Named,
+    PartialEq,
+    Eq,
+    Handler,
+    Bind,
+    Unbind
+)]
 pub struct State<S> {
     /// The name of the resource.
     pub name: Name,
@@ -232,7 +306,12 @@ pub struct State<S> {
     pub status: Status,
     /// Optionally, a resource-defined state.
     pub state: Option<S>,
+    /// Monotonic generation counter for last-writer-wins ordering.
+    pub generation: u64,
+    /// Wall-clock timestamp for debugging context.
+    pub timestamp: std::time::SystemTime,
 }
+wirevalue::register_type!(State<ActorState>);
 
 impl<S: Serialize> fmt::Display for State<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -318,7 +397,7 @@ pub struct GetState<S> {
     pub name: Name,
     /// A reply containing the state.
     #[reply]
-    pub reply: PortRef<State<S>>,
+    pub reply: hyperactor_reference::PortRef<State<S>>,
 }
 wirevalue::register_type!(GetState<ProcState>);
 wirevalue::register_type!(GetState<ActorState>);
@@ -356,12 +435,102 @@ where
     }
 }
 
+/// Same as GetState, but additionally tells the receiver that the owner is still alive.
+/// If the receiver does not receive this message for a while, it might assume the owner is dead.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct KeepaliveGetState<S> {
+    /// The time at which the actor should be considered expired if no further
+    /// keepalive is received.
+    pub expires_after: std::time::SystemTime,
+    pub get_state: GetState<S>,
+}
+wirevalue::register_type!(KeepaliveGetState<ProcState>);
+wirevalue::register_type!(KeepaliveGetState<ActorState>);
+
+// Cannot derive Bind and Unbind for this generic, implement manually.
+impl<S> Unbind for KeepaliveGetState<S>
+where
+    S: RemoteMessage,
+    S: Unbind,
+{
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.get_state.unbind(bindings)
+    }
+}
+
+impl<S> Bind for KeepaliveGetState<S>
+where
+    S: RemoteMessage,
+    S: Bind,
+{
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.get_state.bind(bindings)
+    }
+}
+
+impl<S> Clone for KeepaliveGetState<S>
+where
+    S: RemoteMessage,
+{
+    fn clone(&self) -> Self {
+        Self {
+            expires_after: self.expires_after.clone(),
+            get_state: self.get_state.clone(),
+        }
+    }
+}
+
+/// Subscribe to streaming state updates for a named resource.
+/// The subscriber port will receive `State<S>` whenever the resource's
+/// state changes. The current state is sent immediately upon subscription.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct StreamState<S> {
+    /// The name of the resource to subscribe to.
+    pub name: Name,
+    /// A streaming port that will receive state updates.
+    pub subscriber: hyperactor_reference::PortRef<State<S>>,
+}
+wirevalue::register_type!(StreamState<ActorState>);
+
+// Cannot derive Bind and Unbind for this generic, implement manually.
+impl<S> Unbind for StreamState<S>
+where
+    S: RemoteMessage,
+    S: Unbind,
+{
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.subscriber.unbind(bindings)
+    }
+}
+
+impl<S> Bind for StreamState<S>
+where
+    S: RemoteMessage,
+    S: Bind,
+{
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.subscriber.bind(bindings)
+    }
+}
+
+impl<S> Clone for StreamState<S>
+where
+    S: RemoteMessage,
+{
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            subscriber: self.subscriber.clone(),
+        }
+    }
+}
+
 /// List the set of resources managed by the controller.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
 pub struct List {
     /// List of resource names managed by this controller.
     #[reply]
-    pub reply: PortRef<Vec<Name>>,
+    pub reply: hyperactor_reference::PortRef<Vec<Name>>,
 }
 wirevalue::register_type!(List);
 
@@ -634,16 +803,17 @@ pub(crate) struct ProcSpec {
     /// Config values to set on the spawned proc's global config,
     /// at the `ClientOverride` layer.
     pub(crate) client_config_override: Attrs,
+    /// Optional per-process CPU/NUMA binding configuration.
+    pub(crate) proc_bind: Option<ProcBind>,
+    /// Optional bootstrap command override. When set, this command is used
+    /// to spawn the proc instead of the host agent's default bootstrap command.
+    pub(crate) bootstrap_command: Option<BootstrapCommand>,
+    /// The name of the HostMesh that owns this proc. Used by
+    /// `DrainHost` to selectively drain only procs belonging to a
+    /// specific mesh.
+    pub(crate) host_mesh_name: Option<crate::Name>,
 }
 wirevalue::register_type!(ProcSpec);
-
-impl ProcSpec {
-    pub(crate) fn new(client_config_override: Attrs) -> Self {
-        Self {
-            client_config_override,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -134,7 +134,7 @@ async fn log(
             for line in message_lines {
                 Self::print_log_line(hostname, pid, output_target, line);
             }
-            self.last_flush_time = RealClock.system_time_now();
+            self.last_flush_time = std::time::SystemTime::now();
         }
 
         // --- aggregate within a time window, then flush ---
@@ -155,7 +155,7 @@ async fn log(
 
             // compute (or tighten) the next flush deadline and self-schedule
             let new_deadline = self.last_flush_time + Duration::from_secs(window);
-            let now = RealClock.system_time_now();
+            let now = std::time::SystemTime::now();
             if new_deadline <= now {
                 self.flush_internal(); // prints and resets aggregators
             } else {

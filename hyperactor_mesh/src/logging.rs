@@ -21,14 +21,11 @@ use chrono::DateTime;
 use chrono::Local;
 use hostname;
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortRef;
-use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::channel;
@@ -39,8 +36,7 @@ use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -197,14 +193,14 @@ impl Aggregator {
     fn new_with_threshold(threshold: f64) -> Self {
         Aggregator {
             lines: vec![],
-            start_time: RealClock.system_time_now(),
+            start_time: std::time::SystemTime::now(),
             similarity_threshold: threshold,
         }
     }
 
     fn reset(&mut self) {
         self.lines.clear();
-        self.start_time = RealClock.system_time_now();
+        self.start_time = std::time::SystemTime::now();
     }
 
     fn add_line(&mut self, line: &str) -> anyhow::Result<()> {
@@ -250,7 +246,7 @@ impl fmt::Display for Aggregator {
         let start_time_str = format_system_time(self.start_time);
 
         // Get and format the current time
-        let current_time = RealClock.system_time_now();
+        let current_time = std::time::SystemTime::now();
         let end_time_str = format_system_time(current_time);
 
         // Write the header with formatted time window
@@ -327,9 +323,9 @@ pub enum LogClientMessage {
         /// Expect these many procs to ack the flush message.
         expected_procs: usize,
         /// Return once we have received the acks from all the procs
-        reply: OncePortRef<()>,
+        reply: hyperactor_reference::OncePortRef<()>,
         /// Return to the caller the current flush version
-        version: OncePortRef<u64>,
+        version: hyperactor_reference::OncePortRef<u64>,
     },
 }
 
@@ -370,7 +366,10 @@ pub struct LocalLogSender {
 }
 
 impl LocalLogSender {
-    fn new(log_channel: ChannelAddr, proc_id: &ProcId) -> Result<Self, anyhow::Error> {
+    fn new(
+        log_channel: ChannelAddr,
+        proc_id: &hyperactor_reference::ProcId,
+    ) -> Result<Self, anyhow::Error> {
         let tx = channel::dial::<LogMessage>(log_channel)?;
         let status = tx.status().clone();
 
@@ -854,7 +853,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        proc_id: &ProcId,
+        proc_id: &hyperactor_reference::ProcId,
         local_rank: usize,
     ) -> Self {
         let prefix = match hyperactor_config::global::get(PREFIX_WITH_RANK) {
@@ -883,7 +882,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        proc_id: &ProcId,
+        proc_id: &hyperactor_reference::ProcId,
         prefix: Option<String>,
     ) -> Self {
         // Sanity: when there is no file sink, no log forwarding, and
@@ -993,7 +992,7 @@ pub struct LogForwardActor {
     rx: ChannelRx<LogMessage>,
     flush_tx: Arc<Mutex<ChannelTx<LogMessage>>>,
     next_flush_deadline: SystemTime,
-    logging_client_ref: ActorRef<LogClientActor>,
+    logging_client_ref: hyperactor_reference::ActorRef<LogClientActor>,
     stream_to_client: bool,
 }
 
@@ -1015,7 +1014,7 @@ impl Actor for LogForwardActor {
 
 #[async_trait]
 impl hyperactor::RemoteSpawn for LogForwardActor {
-    type Params = ActorRef<LogClientActor>;
+    type Params = hyperactor_reference::ActorRef<LogClientActor>;
 
     async fn new(logging_client_ref: Self::Params, _environment: Flattrs) -> Result<Self> {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
@@ -1052,7 +1051,7 @@ impl hyperactor::RemoteSpawn for LogForwardActor {
 
         // Dial the same channel to send flush message to drain the log queue.
         let flush_tx = Arc::new(Mutex::new(channel::dial::<LogMessage>(log_channel)?));
-        let now = RealClock.system_time_now();
+        let now = std::time::SystemTime::now();
 
         Ok(Self {
             rx,
@@ -1070,7 +1069,7 @@ impl LogForwardMessageHandler for LogForwardActor {
     async fn forward(&mut self, ctx: &Context<Self>) -> Result<(), anyhow::Error> {
         match self.rx.recv().await {
             Ok(LogMessage::Flush { sync_version }) => {
-                let now = RealClock.system_time_now();
+                let now = std::time::SystemTime::now();
                 match sync_version {
                     None => {
                         // Schedule another flush to keep the log channel from deadlocking.
@@ -1079,7 +1078,7 @@ impl LogForwardMessageHandler for LogForwardActor {
                             self.next_flush_deadline = now + delay;
                             let flush_tx = self.flush_tx.clone();
                             tokio::spawn(async move {
-                                RealClock.sleep(delay).await;
+                                tokio::time::sleep(delay).await;
                                 if let Err(e) = flush_tx
                                     .lock()
                                     .await
@@ -1181,7 +1180,7 @@ pub struct LogClientActor {
 
     // For flush sync barrier
     current_flush_version: u64,
-    current_flush_port: Option<OncePortRef<()>>,
+    current_flush_port: Option<hyperactor_reference::OncePortRef<()>>,
     current_unflushed_procs: usize,
 }
 
@@ -1195,7 +1194,7 @@ impl Default for LogClientActor {
         Self {
             aggregate_window_sec: Some(DEFAULT_AGGREGATE_WINDOW_SEC),
             aggregators,
-            last_flush_time: RealClock.system_time_now(),
+            last_flush_time: std::time::SystemTime::now(),
             next_flush_deadline: None,
             current_flush_version: 0,
             current_flush_port: None,
@@ -1246,7 +1245,7 @@ impl LogClientActor {
 
     fn flush_internal(&mut self) {
         self.print_aggregators();
-        self.last_flush_time = RealClock.system_time_now();
+        self.last_flush_time = std::time::SystemTime::now();
         self.next_flush_deadline = None;
     }
 }
@@ -1279,7 +1278,7 @@ impl LogMessageHandler for LogClientActor {
                 for line in message_lines {
                     Self::print_log_line(hostname, &proc_id, output_target, line);
                 }
-                self.last_flush_time = RealClock.system_time_now();
+                self.last_flush_time = std::time::SystemTime::now();
             }
             Some(window) => {
                 for line in message_lines {
@@ -1297,7 +1296,7 @@ impl LogMessageHandler for LogClientActor {
                 }
 
                 let new_deadline = self.last_flush_time + Duration::from_secs(window);
-                let now = RealClock.system_time_now();
+                let now = std::time::SystemTime::now();
                 if new_deadline <= now {
                     self.flush_internal();
                 } else {
@@ -1393,8 +1392,8 @@ impl LogClientMessageHandler for LogClientActor {
         &mut self,
         cx: &Context<Self>,
         expected_procs_flushed: usize,
-        reply: OncePortRef<()>,
-        version: OncePortRef<u64>,
+        reply: hyperactor_reference::OncePortRef<()>,
+        version: hyperactor_reference::OncePortRef<u64>,
     ) -> Result<(), anyhow::Error> {
         if self.current_unflushed_procs > 0 || self.current_flush_port.is_some() {
             tracing::warn!(
@@ -1470,11 +1469,11 @@ mod tests {
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTx;
     use hyperactor::channel::Tx;
-    use hyperactor::id;
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::DialMailboxRouter;
     use hyperactor::mailbox::MailboxServer;
     use hyperactor::proc::Proc;
+    use hyperactor::testing::ids::test_proc_id;
     use tokio::io::AsyncSeek;
     use tokio::io::AsyncSeekExt;
     use tokio::io::AsyncWriteExt;
@@ -1596,9 +1595,12 @@ mod tests {
         let router = DialMailboxRouter::new();
         let (proc_addr, client_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
+        let proc = Proc::configured(
+            test_proc_id("client_0"),
+            BoxedMailboxSender::new(router.clone()),
+        );
         proc.clone().serve(client_rx);
-        router.bind(id!(client[0]).into(), proc_addr.clone());
+        router.bind(test_proc_id("client_0").into(), proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 
         // Spin up both the forwarder and the client
@@ -1608,12 +1610,12 @@ mod tests {
             std::env::set_var(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         }
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> =
+        let log_client: hyperactor_reference::ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
         let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
             .await
             .unwrap();
-        let log_forwarder: ActorRef<LogForwardActor> = proc
+        let log_forwarder: hyperactor_reference::ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
             .bind();
@@ -1835,7 +1837,7 @@ mod tests {
             .as_ref()
             .map(|fm| fm.addr_for(OutputTarget::Stdout));
 
-        let test_proc_id = id!(testproc[0]);
+        let the_test_proc_id = test_proc_id("testproc_0");
         let monitor = StreamFwder::start_with_writer(
             reader,
             Box::new(file_writer),
@@ -1843,12 +1845,12 @@ mod tests {
             OutputTarget::Stdout,
             3, // max_buffer_size
             Some(log_channel),
-            &test_proc_id,
+            &the_test_proc_id,
             None, // no prefix
         );
 
         // Wait a bit for set up to be done
-        RealClock.sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Write initial content through the input writer
         writer.write_all(b"Initial log line\n").await.unwrap();
@@ -1864,17 +1866,16 @@ mod tests {
         writer.flush().await.unwrap();
 
         // Wait a bit for the file to be written and the watcher to detect changes
-        RealClock.sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Wait until log sender gets message
         let timeout = Duration::from_secs(1);
-        let _ = RealClock
-            .timeout(timeout, rx.recv())
+        let _ = tokio::time::timeout(timeout, rx.recv())
             .await
             .unwrap_or_else(|_| panic!("Did not get log message within {:?}", timeout));
 
         // Wait a bit more for all lines to be processed
-        RealClock.sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         let (recent_lines, _result) = monitor.abort().await;
 
@@ -1949,7 +1950,7 @@ mod tests {
     async fn test_local_log_sender_inactive_status() {
         let (log_channel, _) =
             channel::serve::<LogMessage>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let test_proc_id = id!(testproc[0]);
+        let test_proc_id = test_proc_id("testproc_0");
         let mut sender = LocalLogSender::new(log_channel, &test_proc_id).unwrap();
 
         // This test verifies that the sender handles inactive status gracefully
@@ -2395,7 +2396,7 @@ mod tests {
         let (mut writer, reader) = tokio::io::duplex(8192);
 
         // Start StreamFwder
-        let test_proc_id = id!(testproc[0]);
+        let test_proc_id = test_proc_id("testproc_0");
         let monitor = StreamFwder::start_with_writer(
             reader,
             Box::new(tokio::io::sink()), // discard output

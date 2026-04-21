@@ -121,7 +121,6 @@ mod tests {
             flag.await;
         });
 
-        #[allow(clippy::disallowed_methods)]
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         guard.signal();

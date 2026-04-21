@@ -73,7 +73,6 @@ async fn client(
 
     for _ in 0..10 {
         // Warmup
-        #[allow(clippy::disallowed_methods)]
         let _t = Instant::now();
         server_tx.post(message.clone() /*cheap */);
         client_rx.recv().await?;
@@ -83,7 +82,6 @@ async fn client(
     let mut total_bytes_sent = 0usize;
     let mut total_bytes_received = 0usize;
 
-    #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
     for i in 0usize.. {
         if num_iter.is_some_and(|n| i >= n) {
@@ -91,7 +89,6 @@ async fn client(
         }
 
         total_bytes_sent += message.len();
-        #[allow(clippy::disallowed_methods)]
         let start = Instant::now();
         server_tx.post(message.clone() /*cheap */);
         total_bytes_received += client_rx.recv().await?.len();

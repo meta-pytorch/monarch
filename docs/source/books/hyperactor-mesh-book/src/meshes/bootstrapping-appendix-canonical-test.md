@@ -13,7 +13,6 @@ async fn bootstrap_canonical_simple() {
 
     // 1) Create a "root" direct-addressed proc.
     let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
-        .await
         .unwrap();
 
     // 2) Create an actor instance we'll use to send and receive messages.
@@ -43,16 +42,16 @@ async fn bootstrap_canonical_simple() {
     //
     // (2) Host::serve(..) sets up a Host in the same OS process
     //     (no new process). It binds front/back channels, creates
-    //     an in-process service proc (`Proc::new(..)`), and
+    //     an in-process service proc (`Proc::configured(..)`), and
     //     stores the `BootstrapProcManager` for later spawns.
     //
-    // (3) Install HostMeshAgent (still no new OS process).
-    //     `host.system_proc().spawn::<HostMeshAgent>("agent",
-    //     host).await?` creates the HostMeshAgent actor in that
+    // (3) Install HostAgent (still no new OS process).
+    //     `host.system_proc().spawn::<HostAgent>("host_agent",
+    //     host).await?` creates the HostAgent actor in that
     //     service proc.
     //
     // (4) Collect & assemble. The trampoline returns a
-    //     direct-addressed `ActorRef<HostMeshAgent>`; we collect
+    //     direct-addressed `ActorRef<HostAgent>`; we collect
     //     one per rank and assemble a `HostMesh`.
     //
     // Note: When the Host is later asked to start a proc
@@ -66,7 +65,7 @@ async fn bootstrap_canonical_simple() {
 
     // 6) Spawn a ProcMesh named "p0" on the host mesh:
     //
-    // (1) Each HostMeshAgent (running inside its host's service
+    // (1) Each HostAgent (running inside its host's service
     //     proc) receives the request.
     //
     // (2) The Host calls into its `BootstrapProcManager::spawn`,

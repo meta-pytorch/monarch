@@ -27,22 +27,23 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::context::Actor as ContextActor;
-use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
+use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::casting::update_undeliverable_envelope_for_casting;
 use hyperactor_mesh::comm::multicast::CAST_POINT;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh::transport::default_bind_spec;
+use hyperactor_mesh::value_mesh::ValueOverlay;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
+use monarch_types::py_global;
 use ndslice::Point;
 use ndslice::extent;
 use pyo3::IntoPyObjectExt;
@@ -82,6 +83,12 @@ use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::supervision::PyMeshFailure;
+
+py_global!(
+    unhandled_fault_hook_exception,
+    "monarch._src.actor.supervision",
+    "UnhandledFaultHookException"
+);
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -125,6 +132,29 @@ impl MethodSpecifier {
     }
 }
 
+/// The payload of a single actor response, without rank information.
+///
+/// The rank is captured by the overlay's range key, so it is stripped
+/// from the value to enable RLE dedup: two ranks returning the same
+/// payload will have byte-identical values and can be coalesced into
+/// a single run.
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+pub enum PythonResponseMessage {
+    Result(serde_multipart::Part),
+    Exception(serde_multipart::Part),
+}
+
+wirevalue::register_type!(PythonResponseMessage);
+wirevalue::register_type!(ValueOverlay<PythonResponseMessage>);
+
+/// Newtype wrapper around [`ValueOverlay<PythonResponseMessage>`] needed
+/// because `PythonMessageKind` is a `#[pyclass]` enum, requiring all variant
+/// fields to implement PyO3 traits. `ValueOverlay` is defined in another crate
+/// and does not implement `PyClass`.
+#[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AccumulatedResponses(ValueOverlay<PythonResponseMessage>);
+
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq)]
 pub enum PythonMessageKind {
@@ -147,6 +177,7 @@ pub enum PythonMessageKind {
         // or the next argument of the local state.
         unflatten_args: Vec<UnflattenArg>,
     },
+    AccumulatedResponses(AccumulatedResponses),
 }
 wirevalue::register_type!(PythonMessageKind);
 
@@ -168,7 +199,103 @@ pub struct PythonMessage {
     pub message: Part,
 }
 
-wirevalue::register_type!(PythonMessage);
+/// Extract the endpoint method name from a [`PythonMessage`].
+fn python_message_endpoint_name(msg: &PythonMessage) -> Option<String> {
+    match &msg.kind {
+        PythonMessageKind::CallMethod { name, .. }
+        | PythonMessageKind::CallMethodIndirect { name, .. } => Some(name.name().to_string()),
+        _ => None,
+    }
+}
+
+// We use manual `submit!` instead of `register_type!` because PythonMessage is a
+// struct, so the default `endpoint_name` (which delegates to `arm_unchecked`)
+// always returns None. The custom implementation inspects `PythonMessageKind` to
+// extract the method name. This registration handles direct (non-cast) dispatch.
+wirevalue::submit! {
+    wirevalue::TypeInfo {
+        typename: <PythonMessage as wirevalue::Named>::typename,
+        typehash: <PythonMessage as wirevalue::Named>::typehash,
+        typeid: <PythonMessage as wirevalue::Named>::typeid,
+        port: <PythonMessage as wirevalue::Named>::port,
+        dump: Some(<PythonMessage as wirevalue::NamedDumpable>::dump),
+        arm_unchecked: <PythonMessage as wirevalue::Named>::arm_unchecked,
+        endpoint_name: |ptr| {
+            // SAFETY: ptr points to a PythonMessage.
+            let msg = unsafe { &*(ptr as *const PythonMessage) };
+            python_message_endpoint_name(msg)
+        },
+    }
+}
+
+// Cast messages arrive as IndexedErasedUnbound<PythonMessage>, which wraps a
+// serialized PythonMessage. This type has no `register_type!` by default (it
+// shares ErasedUnbound's wire format), so we register it explicitly. The
+// endpoint_name deserializes the inner payload to read the method name. This
+// costs one extra deserialization per message, but the Part payload uses
+// zero-copy Bytes refcounting, and Python actor throughput is GIL-bounded,
+// so the serde overhead is negligible relative to Python-side processing.
+wirevalue::submit! {
+    wirevalue::TypeInfo {
+        typename: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typename,
+        typehash: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typehash,
+        typeid: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typeid,
+        port: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::port,
+        dump: None,
+        arm_unchecked: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::arm_unchecked,
+        endpoint_name: |ptr| {
+            // SAFETY: ptr points to an IndexedErasedUnbound<PythonMessage>.
+            let erased = unsafe { &*(ptr as *const IndexedErasedUnbound<PythonMessage>) };
+            erased
+                .inner_any()
+                .deserialized_unchecked::<PythonMessage>()
+                .ok()
+                .and_then(|msg| python_message_endpoint_name(&msg))
+        },
+    }
+}
+
+impl From<ValueOverlay<PythonResponseMessage>> for PythonMessage {
+    fn from(overlay: ValueOverlay<PythonResponseMessage>) -> Self {
+        PythonMessage {
+            kind: PythonMessageKind::AccumulatedResponses(AccumulatedResponses(overlay)),
+            message: Default::default(),
+        }
+    }
+}
+
+impl PythonMessage {
+    /// Consume this message and extract a `ValueOverlay<PythonResponseMessage>`.
+    ///
+    /// Handles both already-collected responses and leaf `Result`/`Exception`
+    /// messages by wrapping them in a single-run overlay.
+    pub fn into_overlay(self) -> anyhow::Result<ValueOverlay<PythonResponseMessage>> {
+        match self.kind {
+            PythonMessageKind::AccumulatedResponses(overlay) => Ok(overlay.0),
+            PythonMessageKind::Result { rank, .. } => {
+                let rank = rank.expect("accumulated response should have a rank");
+                let mut overlay = ValueOverlay::new();
+                overlay.push_run(rank..rank + 1, PythonResponseMessage::Result(self.message))?;
+                Ok(overlay)
+            }
+            PythonMessageKind::Exception { rank, .. } => {
+                let rank = rank.expect("accumulated exception should have a rank");
+                let mut overlay = ValueOverlay::new();
+                overlay.push_run(
+                    rank..rank + 1,
+                    PythonResponseMessage::Exception(self.message),
+                )?;
+                Ok(overlay)
+            }
+            other => {
+                anyhow::bail!(
+                    "unexpected message kind {:?} in collected responses reducer",
+                    other
+                );
+            }
+        }
+    }
+}
 
 struct ResolvedCallMethod {
     method: MethodSpecifier,
@@ -476,10 +603,9 @@ impl PythonActor {
     pub(crate) fn bootstrap_client(py: Python<'_>) -> (&'static Instance<Self>, ActorHandle<Self>) {
         static ROOT_CLIENT_INSTANCE: OnceLock<Instance<PythonActor>> = OnceLock::new();
 
-        let client_proc = Proc::direct_with_default(
+        let client_proc = Proc::direct(
             default_bind_spec().binding_addr(),
             "mesh_root_client_proc".into(),
-            router::global().clone().boxed(),
         )
         .unwrap();
 
@@ -494,12 +620,6 @@ impl PythonActor {
         client_proc: Proc,
         root_client_instance: &'static OnceLock<Instance<PythonActor>>,
     ) -> (&'static Instance<Self>, ActorHandle<Self>) {
-        // Make this proc reachable through the global router, so that we can use the
-        // same client in both direct-addressed and ranked-addressed modes.
-        //
-        // DEPRECATE after v0 removal
-        router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
-
         let actor_mesh_mod = py
             .import("monarch._src.actor.actor_mesh")
             .expect("import actor_mesh");
@@ -552,6 +672,11 @@ impl PythonActor {
             .unwrap();
         let instance = root_client_instance.get().unwrap();
 
+        // The root client PythonActor uses a custom run loop that
+        // bypasses Actor::init, so mark it as system explicitly
+        // (matching GlobalClientActor::fresh_instance).
+        instance.set_system();
+
         // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
         // are bound.
         let _client_ref = handle.bind::<PythonActor>();
@@ -569,11 +694,32 @@ impl PythonActor {
                     work = work_rx.recv() => {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut actor, instance).await {
+                            // Check for UnhandledFaultHookException on the raw
+                            // anyhow::Error before wrapping in ActorErrorKind.
+                            // If __supervise__ already processed the supervision
+                            // event and the hook raised, don't re-handle it via
+                            // handle_supervision_event — that would call
+                            // __supervise__ a second time.
+                            let is_hook_exception = monarch_with_gil(|py| {
+                                err.downcast_ref::<pyo3::PyErr>()
+                                    .is_some_and(|pyerr| {
+                                        pyerr.is_instance(
+                                            py,
+                                            &unhandled_fault_hook_exception(py),
+                                        )
+                                    })
+                            }).await;
+
                             let kind = ActorErrorKind::processing(err);
                             let err = ActorError {
                                 actor_id: Box::new(instance.self_id().clone()),
                                 kind: Box::new(kind),
                             };
+
+                            if is_hook_exception {
+                                break Some(err);
+                            }
+
                             // Give the actor a chance to handle the error produced
                             // in its own message handler. This is important because
                             // we want Undeliverable<MessageEnvelope>, which returns
@@ -636,13 +782,36 @@ impl PythonActor {
                 // monitor the client ProcAgent for now.
                 tracing::error!(
                     actor_id = %instance.self_id(),
-                    "could not propagate supervision event {} because it reached the global client: exiting the process with code 1",
+                    "could not propagate supervision event {} because it reached the global client: signaling KeyboardInterrupt to main thread",
                     event,
                 );
 
-                std::process::exit(1);
+                // This is running in a background thread, and thus cannot run
+                // Py_FinalizeEx when it exits the process to properly shut down
+                // all python objects.
+                // We use _thread.interrupt_main to raise a KeyboardInterrupt
+                // to the main thread at some point in the future.
+                // There is no way to propagate the exception message, but it
+                // will at least run proper shutdown code as long as BaseException
+                // isn't caught.
+                monarch_with_gil_blocking(|py| {
+                    // Use _thread.interrupt_main to force the client to exit if it has an
+                    // unhandled supervision event.
+                    let thread_mod = py.import("_thread").expect("import _thread");
+                    let interrupt_main = thread_mod
+                        .getattr("interrupt_main")
+                        .expect("get interrupt_main");
+
+                    // Ignore any exception from calling interrupt_main
+                    if let Err(e) = interrupt_main.call0() {
+                        tracing::error!("unable to interrupt main, exiting the process instead: {:?}", e);
+                        eprintln!("unable to interrupt main, exiting the process with code 1 instead: {:?}", e);
+                        std::process::exit(1);
+                    }
+                });
             } else {
                 tracing::info!(actor_id = %instance.self_id(), "client stopped");
+                instance.change_status(hyperactor::actor::ActorStatus::Stopped("client stopped".into()));
             }
         });
 
@@ -832,10 +1001,11 @@ impl Actor for PythonActor {
             envelope.0.sender(),
             ins.self_id(),
             "undeliverable message was returned to the wrong actor. \
-            Return address = {}, src actor = {}, dest actor port = {}, envelope headers = {}",
+            Return address = {}, src actor = {}, dest actor port = {}, message type = {}, envelope headers = {}",
             envelope.0.sender(),
             ins.self_id(),
             envelope.0.dest(),
+            envelope.0.data().typename().unwrap_or("unknown"),
             envelope.0.headers()
         );
 
@@ -901,8 +1071,8 @@ impl Actor for PythonActor {
             &cx,
             MeshFailure {
                 actor_mesh_name: None,
-                rank: None,
                 event: event.clone(),
+                crashed_ranks: vec![],
             },
         )
         .await
@@ -1235,6 +1405,17 @@ impl Handler<MeshFailure> for PythonActor {
                     }
                 }
                 Err(err) => {
+                    // If __supervise__ raised UnhandledFaultHookException,
+                    // return the PyErr directly without wrapping in
+                    // ActorErrorKind. The custom run loop detects this by
+                    // downcasting the anyhow::Error to PyErr.
+                    if err.is_instance(
+                        py,
+                        &unhandled_fault_hook_exception(py),
+                    ) {
+                        return Err(err.into());
+                    }
+
                     // Any other exception will supersede in the propagation chain,
                     // and will become its own supervision failure.
                     // Include the event it was handling in the error message.
@@ -1504,16 +1685,15 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use hyperactor::PortRef;
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
-    use hyperactor::id;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
-    use hyperactor::reference::UnboundPort;
+    use hyperactor::reference;
+    use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::Name;
-    use hyperactor_mesh::host_mesh::mesh_agent::ProcState;
+    use hyperactor_mesh::host_mesh::host_agent::ProcState;
     use hyperactor_mesh::resource::Status;
     use hyperactor_mesh::resource::{self};
     use pyo3::PyTypeInfo;
@@ -1527,8 +1707,8 @@ mod tests {
             typehash: 123,
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
         };
-        let port_ref = PortRef::<PythonMessage>::attest_reducible(
-            id!(world[0].client[0][123]),
+        let port_ref = reference::PortRef::<PythonMessage>::attest_reducible(
+            test_port_id("world_0", "client", 123),
             Some(reducer_spec),
             StreamingReducerOpts::default(),
         );
@@ -1545,12 +1725,12 @@ mod tests {
             let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
             let mut bindings = vec![];
             erased
-                .visit_mut::<UnboundPort>(|b| {
+                .visit_mut::<reference::UnboundPort>(|b| {
                     bindings.push(b.clone());
                     Ok(())
                 })
                 .unwrap();
-            assert_eq!(bindings, vec![UnboundPort::from(&port_ref)]);
+            assert_eq!(bindings, vec![reference::UnboundPort::from(&port_ref)]);
             let unbound = Unbound::try_from_message(message.clone()).unwrap();
             assert_eq!(message, unbound.bind().unwrap());
         }
@@ -1568,7 +1748,7 @@ mod tests {
             let mut erased = ErasedUnbound::try_from_message(no_port_message.clone()).unwrap();
             let mut bindings = vec![];
             erased
-                .visit_mut::<UnboundPort>(|b| {
+                .visit_mut::<reference::UnboundPort>(|b| {
                     bindings.push(b.clone());
                     Ok(())
                 })
@@ -1586,12 +1766,22 @@ mod tests {
             name: Name::new("my_proc").unwrap(),
             status: Status::Failed("boom".into()),
             state: None,
+            generation: 0,
+            timestamp: std::time::SystemTime::now(),
         };
 
         // A ProcCreationError
+        let mesh_agent: hyperactor::reference::ActorRef<hyperactor_mesh::host_mesh::HostAgent> =
+            hyperactor::reference::ActorRef::attest(
+                test_port_id("hello_0", "actor", 0).actor_id().clone(),
+            );
+        let expected_prefix = format!(
+            "error creating proc (host rank 0) on host mesh agent {}",
+            mesh_agent
+        );
         let err = MeshError::ProcCreationError {
             host_rank: 0,
-            mesh_agent: hyperactor::ActorRef::attest(id!(hello[0].actor[0])),
+            mesh_agent,
             state: Box::new(state),
         };
 
@@ -1609,8 +1799,7 @@ mod tests {
             assert!(py_msg.contains(", state: "));
             assert!(py_msg.contains("\"status\":{\"Failed\":\"boom\"}"));
             // 3) Starts with the expected prefix
-            let expected_prefix = "error creating proc (host rank 0) on host mesh agent hello[0].actor[0]<hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent>";
-            assert!(py_msg.starts_with(expected_prefix));
+            assert!(py_msg.starts_with(&expected_prefix));
         });
     }
 }

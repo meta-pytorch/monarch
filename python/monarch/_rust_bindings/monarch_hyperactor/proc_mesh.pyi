@@ -11,7 +11,6 @@ from typing import Any, final, Type, TYPE_CHECKING
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
-from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.pickle import PendingMessage
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
@@ -19,21 +18,6 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Region
 
 @final
 class ProcMesh:
-    @classmethod
-    def allocate_nonblocking(
-        self, instance: Instance, alloc: Alloc, name: str
-    ) -> PythonTask["ProcMesh"]:
-        """
-        Allocate a process mesh according to the provided alloc.
-        Returns when the mesh is fully allocated.
-
-        Arguments:
-        - `instance`: The actor instance used to allocate the mesh.
-        - `alloc`: The alloc to allocate according to.
-        - `name`: Name of the mesh.
-        """
-        ...
-
     @staticmethod
     def spawn_async(
         proc_mesh: Shared["ProcMesh"],

@@ -13,10 +13,10 @@
 #![allow(unused_assignments)]
 
 use enum_as_inner::EnumAsInner;
-use hyperactor::ActorId;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
+use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -94,7 +94,7 @@ pub enum ClientMessage {
     /// Notify the client of a debugger event.
     DebuggerMessage {
         /// The actor id of the debugger.
-        debugger_actor_id: ActorId,
+        debugger_actor_id: reference::ActorId,
         /// The action to take.
         action: DebuggerAction,
     },

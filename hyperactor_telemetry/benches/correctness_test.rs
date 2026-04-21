@@ -17,9 +17,8 @@
 //! Usage:
 //!   buck2 run //monarch/hyperactor_telemetry:correctness_test
 
-#![allow(clippy::disallowed_methods)] // don't want to take a dependency on `hyperactor`` just for `hyperactor::clock::Clock`
-
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -273,7 +272,7 @@ impl CorrectnessTestHarness {
         Ok(())
     }
 
-    fn compare_sqlite_databases(&self, old_db: &PathBuf, unified_db: &PathBuf) -> Result<()> {
+    fn compare_sqlite_databases(&self, old_db: &Path, unified_db: &Path) -> Result<()> {
         println!("\n[Comparing SQLite Databases]");
         println!("  Old: {}", old_db.display());
         println!("  Unified: {}", unified_db.display());
@@ -674,15 +673,14 @@ fn run_single_test(test_name: &str, impl_type: &str) -> Result<()> {
     let results = match impl_type {
         "--old" => {
             println!("Running with OLD implementation...");
+            // SAFETY: Setting before any telemetry initialization
+            unsafe {
+                std::env::set_var("USE_UNIFIED_LAYER", "0");
+            }
             harness.run(workload, false)?
         }
         "--unified" => {
             println!("Running with UNIFIED implementation...");
-            // Set USE_UNIFIED_LAYER to use unified implementation
-            // SAFETY: Setting before any telemetry initialization
-            unsafe {
-                std::env::set_var("USE_UNIFIED_LAYER", "1");
-            }
             harness.run(workload, true)?
         }
         _ => {

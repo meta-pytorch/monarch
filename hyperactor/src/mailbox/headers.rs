@@ -18,8 +18,6 @@ use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global;
 
-use crate::clock::Clock;
-use crate::clock::RealClock;
 use crate::metrics::MESSAGE_LATENCY_MICROS;
 
 declare_attrs! {
@@ -28,12 +26,21 @@ declare_attrs! {
 
     /// The rust type of the message.
     pub attr RUST_MESSAGE_TYPE: String;
+
+    /// Hashed ActorId of the message sender, injected in post_unchecked().
+    pub attr SENDER_ACTOR_ID_HASH: u64;
+
+    /// Telemetry message ID for correlating lifecycle events, injected in post_unchecked().
+    pub attr TELEMETRY_MESSAGE_ID: u64;
+
+    /// Port index the message was delivered to, injected in post_unchecked().
+    pub attr TELEMETRY_PORT_ID: u64;
 }
 
 /// Set the send timestamp for latency tracking if timestamp not already set.
 pub fn set_send_timestamp(headers: &mut Flattrs) {
     if !headers.contains_key(SEND_TIMESTAMP) {
-        let time = RealClock.system_time_now();
+        let time = std::time::SystemTime::now();
         headers.set(SEND_TIMESTAMP, time);
     }
 }
@@ -65,7 +72,7 @@ pub fn log_message_latency_if_sampling(headers: &Flattrs, actor_id: String) {
     let Some(send_timestamp) = headers.get(SEND_TIMESTAMP) else {
         return;
     };
-    let now = RealClock.system_time_now();
+    let now = std::time::SystemTime::now();
     let latency = now.duration_since(send_timestamp).unwrap_or_default();
     MESSAGE_LATENCY_MICROS.record(latency.as_micros() as f64, metric_pairs);
 }

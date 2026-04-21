@@ -16,43 +16,35 @@
 //!
 //! Supporting this scale requires us to impose additional structure
 //! at the level of the framework, so that we can efficiently refer to
-//! _gangs_ of actors that implement the same worker runtimes.
+//! _meshes_ of actors that implement the same worker runtimes.
 //!
-//! Similarly, Hyperactor must gang-schedule actors in order to support
+//! Similarly, Hyperactor must co-schedule actors in order to support
 //! collective communicaton between actors.
 //!
-//! Hyperactor is organized into a hierarchy, wherein parents manage
-//! the lifecycle of their children:
+//! Hyperactor is organized into a hierarchy:
 //!
-//! * Each _world_ represents a fixed number of _procs_, scheduled as
-//!   a gang.
 //! * Each _proc_ represents a single actor runtime instance, and hosts
 //!   zero or more actors.
-//! * Actors are _spawned_ into worlds, and assigned a global name.
+//! * Actors are _spawned_ into procs, and assigned a global name.
 //!   Actors spawned in this way are assigned a local PID (pid) of 0.
 //!   Actors in turn can spawn local actors. These inherit the global pid
 //!   of their parent, but receive a unique pid.
 //!
-//! Actors that share a name within a world are called a _gang_.
-//!
 //! This scheme confers several benefits:
 //!
 //! * Routing of messages can be performed by prefix. For example, we
-//!   can route a message to an actor based on the world the actor belongs
-//!   to; from there, we can identify the _proc_ of the actor and send
-//!   the message to it, which can then in turn be routed locally.
+//!   can identify the _proc_ of the actor and send the message to it,
+//!   which can then in turn be routed locally.
 //!
-//! * We can represent gangs of actors in a uniform and compact way.
+//! * We can represent meshes of actors in a uniform and compact way.
 //!   This is the basis on which we implement efficient multicasting
 //!   within the system.
 //!
 //!
-//! | Entity    | Identifier                |
-//! |-----------|---------------------------|
-//! | World     | `worldid`                 |
-//! | Proc      | `worldid[rank]`           |
-//! | Actor     | `worldid[rank].name[pid]` |
-//! | Gang      | `worldid.name`            |
+//! | Entity    | Identifier                    |
+//! |-----------|-------------------------------|
+//! | Proc      | `addr,proc_name`              |
+//! | Actor     | `addr,proc_name,name[pid]`    |
 
 #![feature(anonymous_lifetime_in_impl_trait)]
 #![feature(assert_matches)]
@@ -71,11 +63,10 @@ pub mod accum;
 pub mod actor;
 pub mod actor_local;
 pub mod channel;
-pub mod checkpoint;
-pub mod clock;
 pub mod config;
 pub mod context;
 pub mod host;
+pub mod id;
 mod init;
 pub mod introspect;
 pub mod mailbox;
@@ -83,19 +74,22 @@ pub mod message;
 pub mod metrics;
 pub mod ordering;
 pub mod panic_handler;
+pub mod port;
 pub mod proc;
+pub mod ref_;
 pub mod reference;
+pub mod remote;
 mod signal_handler;
-pub mod simnet;
 mod stdio_redirect;
+pub mod subject;
 pub mod supervision;
 pub mod sync;
-/// Test utilities
-pub mod test_utils;
+/// Test utilities.
+pub mod testing;
 pub mod time;
 
 #[cfg(fbcode_build)]
-mod meta;
+pub mod meta;
 
 /// Re-exports of external crates used by hyperactor_macros codegen.
 /// This module is not part of the public API and should not be used directly.
@@ -140,12 +134,16 @@ pub use hyperactor_macros::instrument;
 pub use hyperactor_macros::instrument_infallible;
 pub use hyperactor_macros::observe_async;
 pub use hyperactor_macros::observe_result;
+#[doc(inline)]
+pub use hyperactor_macros::uid;
 pub use hyperactor_telemetry::declare_static_counter;
 pub use hyperactor_telemetry::declare_static_gauge;
 pub use hyperactor_telemetry::declare_static_histogram;
 pub use hyperactor_telemetry::declare_static_timer;
 pub use hyperactor_telemetry::key_value;
 pub use hyperactor_telemetry::kv_pairs;
+pub use id::Label;
+pub use id::Uid;
 #[doc(inline)]
 pub use init::initialize;
 #[doc(inline)]
@@ -163,15 +161,10 @@ pub use proc::Instance;
 pub use proc::InstanceCell;
 pub use proc::Proc;
 pub use proc::WeakProc;
-pub use reference::ActorId;
+// Re-exported because `hyperactor_macros::RefClient` generates code referencing `hyperactor::ActorRef`.
+#[doc(hidden)]
 pub use reference::ActorRef;
-pub use reference::GangId;
-pub use reference::GangRef;
-pub use reference::OncePortRef;
-pub use reference::PortId;
-pub use reference::PortRef;
-pub use reference::ProcId;
-pub use reference::WorldId;
+pub use remote::Accepts;
 #[doc(inline)]
 pub use signal_handler::SignalCleanupGuard;
 #[doc(inline)]

@@ -6,761 +6,267 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! TODO
+//! Server (receive) side of simplex channels.
 
-use std::any::type_name;
 use std::fmt;
-use std::mem::replace;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 
-use anyhow::Context;
-use bytes::Bytes;
+use async_trait::async_trait;
 use dashmap::DashMap;
-use dashmap::mapref::entry::Entry;
-use tokio::io::AsyncRead;
-use tokio::io::AsyncWrite;
-use tokio::io::AsyncWriteExt as _;
-use tokio::io::ReadHalf;
-use tokio::io::WriteHalf;
 use tokio::sync::mpsc;
-use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tokio::task::JoinSet;
-use tokio::time::Duration;
 use tokio::time::Interval;
-use tokio_util::net::Listener;
 use tokio_util::sync::CancellationToken;
-use tracing::Instrument;
-use tracing::Span;
 
-use super::serialize_response;
+use super::ClientError;
+use super::Link;
+use super::SessionId;
+use super::read_link_init;
+use super::session;
+use super::session::Next;
+use super::session::Session;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelTransport;
-use crate::channel::net::Frame;
 use crate::channel::net::NetRx;
-use crate::channel::net::NetRxResponse;
 use crate::channel::net::ServerError;
-use crate::channel::net::framed::FrameReader;
-use crate::channel::net::framed::FrameWrite;
-use crate::channel::net::framed::WriteState;
+use crate::channel::net::Stream;
 use crate::channel::net::meta;
 use crate::channel::net::tls;
-use crate::clock::Clock;
-use crate::clock::RealClock;
 use crate::config;
 use crate::metrics;
 use crate::sync::mvar::MVar;
 
-fn process_state_span(
-    source: &ChannelAddr,
-    dest: &ChannelAddr,
-    session_id: u64,
-    next: &Next,
-) -> Span {
-    // No span at INFO
-    if !tracing::enabled!(tracing::Level::DEBUG) {
-        return Span::none();
-    }
-
-    hyperactor_telemetry::context_span!(
-        "net i/o loop",
-        dest = %dest,
-        session_id = session_id,
-        source = %source,
-        next_seq = next.seq,
-    )
+/// Server-side link that receives pre-established streams from the
+/// dispatcher via an MVar. Implements [`Link`] so it can be used
+/// with [`Session::new`].
+pub(super) struct AcceptorLink<S: Stream> {
+    pub(super) dest: ChannelAddr,
+    pub(super) session_id: SessionId,
+    pub(super) stream: MVar<S>,
+    pub(super) cancel: CancellationToken,
 }
 
-pub(super) struct ServerConn<S> {
-    reader: FrameReader<ReadHalf<S>>,
-    write_state: WriteState<WriteHalf<S>, Bytes, u64>,
-    source: ChannelAddr,
-    dest: ChannelAddr,
-}
-
-impl<S: AsyncRead + AsyncWrite> ServerConn<S> {
-    pub(super) fn new(stream: S, source: ChannelAddr, dest: ChannelAddr) -> Self {
-        let (reader, writer) = tokio::io::split(stream);
-        Self {
-            reader: FrameReader::new(
-                reader,
-                hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
-            ),
-            write_state: WriteState::Idle(writer),
-            source,
-            dest,
-        }
-    }
-}
-
-#[derive(Debug)]
-enum RejectConn {
-    /// Reject the connection due to the given error.
-    EncounterError(String),
-    /// The server is being closed.
-    ServerClosing,
-    /// Do not reject the connection.
-    No,
-}
-
-impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
-    async fn handshake<M: RemoteMessage>(&mut self) -> Result<u64, anyhow::Error> {
-        let Some(frame) = self
-            .reader
-            .next()
-            .instrument(hyperactor_telemetry::context_span!("read handshake"))
-            .await?
-        else {
-            anyhow::bail!("end of stream before first frame from {}", self.source);
-        };
-        let message = serde_multipart::Message::from_framed(frame)?;
-        let Frame::Init(session_id) = serde_multipart::deserialize_bincode::<Frame<M>>(message)?
-        else {
-            anyhow::bail!("unexpected initial frame from {}", self.source);
-        };
-        Ok(session_id)
-    }
-
-    async fn process_step<M: RemoteMessage>(
-        &mut self,
-        session_id: u64,
-        tx: &mpsc::Sender<M>,
-        cancel_token: &CancellationToken,
-        next: &Next,
-        last_ack_time: &mut tokio::time::Instant,
-        rcv_raw_frame_count: &mut u64,
-        ack_time_interval: Duration,
-        ack_msg_interval: u64,
-        log_id: &str,
-        read_bytes_span: Span,
-    ) -> (Next, Option<(Result<(), anyhow::Error>, RejectConn)>) {
-        let mut next = next.clone();
-        if self.write_state.is_idle()
-            && (next.ack + ack_msg_interval <= next.seq
-                || (next.ack < next.seq && last_ack_time.elapsed() > ack_time_interval))
-        {
-            let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle() else {
-                panic!("illegal state");
-            };
-            let ack = match serialize_response(NetRxResponse::Ack(next.seq - 1)) {
-                Ok(ack) => ack,
-                Err(err) => {
-                    return (
-                        next,
-                        Some((
-                            Err::<(), anyhow::Error>(err.into())
-                                .context(format!("{log_id}: serializing ack")),
-                            RejectConn::No,
-                        )),
-                    );
-                }
-            };
-            match FrameWrite::new(
-                writer,
-                ack,
-                hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
-            ) {
-                Ok(fw) => {
-                    self.write_state = WriteState::Writing(fw, next.seq);
-                }
-                Err((writer, e)) => {
-                    debug_assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-                    tracing::error!(
-                        source = %self.source,
-                        dest = %self.dest,
-                        error = %e,
-                        "failed to create ack frame"
-                    );
-                    self.write_state = WriteState::Idle(writer);
-                }
-            }
-        }
-
-        tokio::select! {
-            // Prioritize ack, and then shutdown. Leave read last because
-            // there could be a large volume of messages to read, which
-            // subsequently starves the other select! branches.
-            biased;
-
-            // We have to be careful to manage the ack write state here, so that we do not
-            // write partial acks in the presence of cancellation.
-            ack_result = self.write_state.send() => {
-                match ack_result {
-                    Ok(acked_seq) => {
-                        *last_ack_time = RealClock.now();
-                        next.ack = acked_seq;
-                    }
-                    Err(err) => {
-                        let v = self.write_state.value();
-                        return (
-                            next,
-                            Some((
-                                Err::<(), anyhow::Error>(err.into())
-                                    .context(format!("{log_id}: acking peer message: {v:?}")),
-                                RejectConn::No,
-                            )),
-                        );
-                    }
-                }
-            },
-            // Have a tick to abort select! call to make sure the ack for the last message can get the chance
-            // to be sent as a result of time interval being reached.
-            _ = RealClock.sleep_until(*last_ack_time + ack_time_interval), if next.ack < next.seq => {},
-
-            _ = cancel_token.cancelled() => return (next, Some((Ok(()), RejectConn::ServerClosing))),
-
-            bytes_result = self.reader.next().instrument(read_bytes_span) => {
-                *rcv_raw_frame_count += 1;
-                // First handle transport-level I/O errors, and EOFs.
-                let bytes = match bytes_result {
-                    Ok(Some(bytes)) => bytes,
-                    Ok(None) => {
-                        tracing::debug!(
-                                source = %self.source,
-                                dest = %self.dest,
-                                "received EOF from client"
-                            );
-                        return (next, Some((Ok(()), RejectConn::No)));
-                    }
-                    Err(err) => {
-                        return (
-                            next,
-                            Some((
-                                Err::<(), anyhow::Error>(err.into()).context(format!(
-                                    "{log_id}: reading into Frame with M = {}",
-                                    type_name::<M>(),
-                                )),
-                                RejectConn::No,
-                            )),
-                        )
-                    }
-                };
-
-                // De-frame the multi-part message.
-                let bytes_len = bytes.len();
-                let message = match serde_multipart::Message::from_framed(bytes) {
-                    Ok(message) => message,
-                    Err(err) => {
-                        // Track deframing error for this channel pair
-                        metrics::CHANNEL_ERRORS.add(
-                            1,
-                            hyperactor_telemetry::kv_pairs!(
-                                "source" => self.source.to_string(),
-                                "dest" => self.dest.to_string(),
-                                "session_id" => session_id.to_string(),
-                                "error_type" => metrics::ChannelErrorType::DeframeError.as_str(),
-                            ),
-                        );
-                        return (
-                            next,
-                            Some((
-                                Err::<(), anyhow::Error>(err.into()).context(format!(
-                                    "{log_id}: de-frame message with M = {}",
-                                    type_name::<M>(),
-                                )),
-                                RejectConn::No,
-                            )),
-                        )
-                    }
-                };
-
-                // Finally decode the message. This assembles the M-typed message
-                // from its constituent parts.
-                match serde_multipart::deserialize_bincode(message) {
-                    Ok(Frame::Init(_)) => {
-                        return (
-                            next,
-                            Some((
-                                Err(anyhow::anyhow!("{log_id}: unexpected init frame")),
-                                RejectConn::EncounterError("expect Frame::Message; got Frame::Int".to_string())
-                            )),
-                        )
-                    },
-                    // Ignore retransmits.
-                    Ok(Frame::Message(seq, _)) if seq < next.seq => {
-                        tracing::debug!(
-                            source = %self.source,
-                            dest = %self.dest,
-                            seq = seq,
-                            "ignoring retransmit; retransmit seq: {}; expected next seq: {}",
-                            seq,
-                            next.seq
-                        );
-                    },
-                    // The following segment ensures exactly-once semantics.
-                    // That means No out-of-order delivery and no duplicate delivery.
-                    Ok(Frame::Message(seq, message)) => {
-                        // received seq should be equal to next seq. Else error out!
-                        if seq > next.seq {
-                            let error_msg = format!("out-of-sequence message, expected seq {}, got {}", next.seq, seq);
-                            tracing::error!(
-                                source = %self.source,
-                                dest = %self.dest,
-                                seq = seq,
-                                "{}", error_msg
-                            );
-                            return (
-                                next,
-                                Some((
-                                    Err(anyhow::anyhow!(format!("{log_id}: {error_msg}"))),
-                                    RejectConn::EncounterError(error_msg)
-                                ))
-                            )
-                        }
-                        match self.send_with_buffer_metric(session_id, tx, message).await
-                        {
-                            Ok(()) => {
-                                // Track throughput for this channel pair
-                                metrics::CHANNEL_THROUGHPUT_BYTES.add(
-                                    bytes_len as u64,
-                                    hyperactor_telemetry::kv_pairs!(
-                                        "source" => self.source.to_string(),
-                                        "dest" => self.dest.to_string(),
-                                        "session_id" => session_id.to_string(),
-                                    ),
-                                );
-                                metrics::CHANNEL_THROUGHPUT_MESSAGES.add(
-                                    1,
-                                    hyperactor_telemetry::kv_pairs!(
-                                        "source" => self.source.to_string(),
-                                        "dest" => self.dest.to_string(),
-                                        "session_id" => session_id.to_string(),
-                                    ),
-                                );
-                                // In channel's contract, "delivered" means the message
-                                // is sent to the NetRx object. Therefore, we could bump
-                                // `next_seq` as far as the message is put on the mpsc
-                                // channel.
-                                //
-                                // Note that when/how the messages in NetRx are processed
-                                // is not covered by channel's contract. For example,
-                                // the message might never be taken out of netRx, but
-                                // channel still considers those messages delivered.
-                                next.seq = seq+1;
-                            }
-                            Err(err) => {
-                                return (
-                                    next,
-                                    Some((
-                                        Err::<(), anyhow::Error>(err)
-                                            .context(format!("{log_id}: relaying message to mpsc channel")),
-                                        RejectConn::No,
-                                    )),
-                                )
-                            }
-                        }
-                    },
-                    Err(err) => {
-                        // Track deserialization error for this channel pair
-                        metrics::CHANNEL_ERRORS.add(
-                            1,
-                            hyperactor_telemetry::kv_pairs!(
-                                "source" => self.source.to_string(),
-                                "dest" => self.dest.to_string(),
-                                "session_id" => session_id.to_string(),
-                                "error_type" => metrics::ChannelErrorType::DeserializeError.as_str(),
-                            ),
-                        );
-                        return (
-                           next,
-                            Some((
-                                Err::<(), anyhow::Error>(err.into()).context(format!(
-                                    "{log_id}: deserialize message with M = {}",
-                                    type_name::<M>(),
-                                )),
-                                RejectConn::No,
-                            )),
-                        )
-                    }
-                }
-            },
-        }
-
-        (next, None)
-    }
-
-    /// Handles a server side stream created during the `listen` loop.
-    async fn process<M: RemoteMessage>(
-        &mut self,
-        session_id: u64,
-        tx: mpsc::Sender<M>,
-        cancel_token: CancellationToken,
-        mut next: Next,
-    ) -> (Next, Result<(), anyhow::Error>) {
-        let log_id = format!("session {}.{}<-{}", self.dest, session_id, self.source);
-        let initial_next: Next = next.clone();
-        let mut rcv_raw_frame_count = 0u64;
-        let mut last_ack_time = RealClock.now();
-
-        let ack_time_interval = hyperactor_config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
-        let ack_msg_interval = hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
-        let read_bytes_span = tracing::debug_span!("read bytes");
-
-        let (mut final_next, final_result, reject_conn) = loop {
-            let span = process_state_span(&self.source, &self.dest, session_id, &next);
-
-            let (new_next, break_info) = self
-                .process_step(
-                    session_id,
-                    &tx,
-                    &cancel_token,
-                    &next,
-                    &mut last_ack_time,
-                    &mut rcv_raw_frame_count,
-                    ack_time_interval,
-                    ack_msg_interval,
-                    &log_id,
-                    read_bytes_span.clone(),
-                )
-                .instrument(span)
-                .await;
-
-            next = new_next;
-
-            if let Some((result, reject_conn)) = break_info {
-                break (next, result, reject_conn);
-            }
-        };
-
-        // Note:
-        //   1. processed seq/ack is Next-1;
-        //   2. rcv_raw_frame_count contains the last frame which might not be
-        //      desrializable, e.g. EOF, error, etc.
-        let debug_msg = format!(
-            "NetRx::process exited its loop with states: initial Next \
-            was {initial_next}; final Next is {final_next}; since acked: {}sec; \
-            rcv raw frame count is {rcv_raw_frame_count}; final result: {:?}; \
-            reject_conn is {:?}",
-            last_ack_time.elapsed().as_secs(),
-            final_result,
-            reject_conn,
-        );
-        tracing::info!(
-            source = %self.source,
-            dest = %self.dest,
-            session_id,
-            "{}", debug_msg
-        );
-
-        let mut final_ack = final_next.ack;
-        // Flush any ongoing write.
-        if self.write_state.is_writing() {
-            if let Ok(acked_seq) = self.write_state.send().await {
-                if acked_seq > final_ack {
-                    final_ack = acked_seq;
-                }
-            };
-        }
-        // best effort: "flush" any remaining ack before closing this session
-        if self.write_state.is_idle() && final_ack < final_next.seq {
-            let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle() else {
-                panic!("illegal state");
-            };
-            let result = async {
-                let ack = serialize_response(NetRxResponse::Ack(final_next.seq - 1))
-                    .map_err(anyhow::Error::from)?;
-
-                let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
-                let fw =
-                    FrameWrite::new(writer, ack, max).map_err(|(_, e)| anyhow::Error::from(e))?;
-                self.write_state = WriteState::Writing(fw, final_next.seq);
-                self.write_state.send().await.map_err(anyhow::Error::from)
-            };
-
-            match result.await {
-                Ok(acked_seq) => {
-                    final_next.ack = acked_seq;
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        session_id,
-                        source = %self.source,
-                        dest = %self.dest,
-                        error = %e,
-                        "failed to flush acks during cleanup"
-                    );
-                }
-            }
-        }
-
-        if self.write_state.is_idle()
-            && matches!(
-                reject_conn,
-                RejectConn::EncounterError(_) | RejectConn::ServerClosing
-            )
-        {
-            let Ok(writer) = replace(&mut self.write_state, WriteState::Broken).into_idle() else {
-                panic!("illegal state");
-            };
-            let rsp = match reject_conn {
-                RejectConn::EncounterError(reason) => NetRxResponse::Reject(reason),
-                RejectConn::ServerClosing => NetRxResponse::Closed,
-                RejectConn::No => panic!("illegal state"),
-            };
-            if let Ok(data) = serialize_response(rsp) {
-                match FrameWrite::new(
-                    writer,
-                    data,
-                    hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
-                ) {
-                    Ok(fw) => {
-                        self.write_state = WriteState::Writing(fw, 0);
-                        let _ = self.write_state.send().await;
-                    }
-                    Err((w, e)) => {
-                        debug_assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-                        tracing::debug!(
-                            source = %self.source,
-                            dest = %self.dest,
-                            session_id = session_id,
-                            error = %e,
-                            "failed to create reject frame"
-                        );
-                        self.write_state = WriteState::Idle(w);
-                        // drop the reject; we're closing anyway
-                    }
-                }
-            };
-        }
-
-        if let Some(mut w) = replace(&mut self.write_state, WriteState::Broken).into_writer() {
-            // Try to shutdown the connection gracefully. This is a best effort
-            // operation, and we don't care if it fails.
-            let _ = w.shutdown().await;
-        }
-
-        (final_next, final_result)
-    }
-
-    // NetRx's buffer, i.e. the mpsc channel between NetRx and its
-    // client, should rarely be full for long. But when it is full, it
-    // will block NetRx from taking more messages, sending back ack,
-    // and subsequently lead to uncommon behaviors such as ack
-    // timeout, backpressure on NetTx, etc. In order to aid debugging,
-    // it is important to add a metric measuring full buffer
-    // occurences.
-    async fn send_with_buffer_metric<M: RemoteMessage>(
-        &mut self,
-        session_id: u64,
-        tx: &mpsc::Sender<M>,
-        message: M,
-    ) -> anyhow::Result<()> {
-        let start = RealClock.now();
-        loop {
-            tokio::select! {
-                biased;
-                permit_result = tx.reserve() => {
-                    permit_result?.send(message);
-                    return Ok(())
-                }
-                _ = RealClock.sleep(hyperactor_config::global::get(config::CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL)) => {
-                    // When buffer is full too long, we log it.
-                    metrics::CHANNEL_NET_RX_BUFFER_FULL.add(
-                        1,
-                        hyperactor_telemetry::kv_pairs!(
-                            "dest" => self.dest.to_string(),
-                            "source" => self.source.to_string(),
-                            "session_id" => session_id.to_string(),
-                        ),
-                    );
-                    // Full buffer should happen rarely. So we also add a log
-                    // here to make debugging easy.
-                     tracing::debug!(
-                        source = %self.source,
-                        dest = %self.dest,
-                        session_id = session_id,
-                        "encountered full mpsc channel for {} secs",
-                        start.elapsed().as_secs(),
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Used to bookkeep message processing states.
-#[derive(Clone)]
-struct Next {
-    // The last received message's seq number + 1.
-    seq: u64,
-    // The last acked seq number + 1.
-    ack: u64,
-}
-
-impl fmt::Display for Next {
+impl<S: Stream> fmt::Debug for AcceptorLink<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "(seq: {}, ack: {})", self.seq, self.ack)
+        f.debug_struct("AcceptorLink")
+            .field("dest", &self.dest)
+            .field("session_id", &self.session_id)
+            .finish()
     }
 }
 
-/// Manages persistent sessions, ensuring that only one connection can own
-/// a session at a time, and arranging for session handover.
-#[derive(Clone)]
-pub(super) struct SessionManager {
-    sessions: Arc<DashMap<u64, MVar<Next>>>,
-}
+#[async_trait]
+impl<S: Stream> Link for AcceptorLink<S> {
+    type Stream = S;
 
-impl SessionManager {
-    pub(super) fn new() -> Self {
-        Self {
-            sessions: Arc::new(DashMap::new()),
+    fn dest(&self) -> ChannelAddr {
+        self.dest.clone()
+    }
+
+    fn link_id(&self) -> SessionId {
+        self.session_id
+    }
+
+    async fn next(&self) -> Result<S, ClientError> {
+        tokio::select! {
+            stream = self.stream.take() => Ok(stream),
+            _ = self.cancel.cancelled() => Err(ClientError::Connect(
+                self.dest.clone(),
+                std::io::Error::other("acceptor closed"),
+                "acceptor channel closed".into(),
+            )),
         }
     }
-
-    pub(super) async fn serve<S, M>(
-        &self,
-        mut conn: ServerConn<S>,
-        tx: mpsc::Sender<M>,
-        cancel_token: CancellationToken,
-    ) -> Result<(), anyhow::Error>
-    where
-        S: AsyncRead + AsyncWrite + Send + 'static + Unpin,
-        M: RemoteMessage,
-    {
-        let session_id = conn
-            .handshake::<M>()
-            .await
-            .context("while serving handshake")?;
-
-        let session_var = match self.sessions.entry(session_id) {
-            Entry::Occupied(entry) => entry.get().clone(),
-            Entry::Vacant(entry) => {
-                // We haven't seen this session before. We begin with seq=0 and ack=0.
-                let var = MVar::full(Next { seq: 0, ack: 0 });
-                entry.insert(var.clone());
-                var
-            }
-        };
-
-        let source = conn.source.clone();
-        let dest = conn.dest.clone();
-
-        let next = session_var.take().await;
-        let (next, res) = conn.process(session_id, tx, cancel_token, next).await;
-        session_var.put(next).await;
-
-        if let Err(ref err) = res {
-            tracing::info!(
-                source = %source,
-                dest = %dest,
-                error = ?err,
-                session_id = session_id,
-                "process encountered an error"
-            );
-        }
-
-        res
-    }
 }
 
-/// Main listen loop that actually runs the server. The loop will exit when `parent_cancel_token` is
-/// canceled.
-async fn listen<M: RemoteMessage, L: Listener>(
-    mut listener: L,
-    listener_channel_addr: ChannelAddr,
+/// Dispatch a stream to the appropriate session, creating one if this
+/// is the first connection for the given session ID.
+pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
+    session_id: SessionId,
+    conn: S,
+    sessions: &DashMap<SessionId, MVar<S>>,
+    dest: ChannelAddr,
     tx: mpsc::Sender<M>,
-    parent_cancel_token: CancellationToken,
-    is_tls: bool,
+    cancel: CancellationToken,
+) {
+    let stream = {
+        let entry = sessions.entry(session_id);
+        match entry {
+            dashmap::mapref::entry::Entry::Occupied(e) => e.get().clone(),
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                let stream: MVar<S> = MVar::empty();
+                let link = AcceptorLink {
+                    dest: dest.clone(),
+                    session_id,
+                    stream: stream.clone(),
+                    cancel: cancel.clone(),
+                };
+                let deliver_tx = tx;
+                let ct = cancel.clone();
+                tokio::spawn(async move {
+                    let mut session = Session::new(link);
+                    let mut next = Next { seq: 0, ack: 0 };
+
+                    loop {
+                        let connected = match session.connect().await {
+                            Ok(s) => s,
+                            Err(_) => break,
+                        };
+
+                        let result = {
+                            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            tokio::select! {
+                                r = session::recv_connected::<M, _, _>(
+                                    &conn,
+                                    &deliver_tx,
+                                    &mut next,
+                                ) => r,
+                                _ = ct.cancelled() => Err(session::RecvLoopError::Cancelled),
+                            }
+                        };
+
+                        // Flush remaining ack if behind.
+                        if next.ack < next.seq {
+                            let ack =
+                                super::serialize_response(super::NetRxResponse::Ack(next.seq - 1))
+                                    .unwrap();
+                            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            let mut completion = conn.write(ack);
+                            match completion.drive().await {
+                                Ok(()) => {
+                                    next.ack = next.seq;
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        error = %e,
+                                        "failed to flush acks during cleanup"
+                                    );
+                                }
+                            }
+                        }
+
+                        // Send reject or closed response if appropriate.
+                        let terminal_response = match &result {
+                            Err(session::RecvLoopError::SequenceError(reason)) => {
+                                Some(super::NetRxResponse::Reject(reason.clone()))
+                            }
+                            Err(session::RecvLoopError::Cancelled) => {
+                                Some(super::NetRxResponse::Closed)
+                            }
+                            _ => None,
+                        };
+                        if let Some(rsp) = terminal_response {
+                            let data = super::serialize_response(rsp).unwrap();
+                            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            let mut completion = conn.write(data);
+                            let _ = completion.drive().await;
+                        }
+
+                        let recoverable =
+                            matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));
+
+                        match &result {
+                            Ok(()) => {
+                                tracing::info!(
+                                    %dest,
+                                    %session_id,
+                                    "recv_connected returned EOF, awaiting reconnect"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::info!(
+                                    %dest,
+                                    %session_id,
+                                    error = %e,
+                                    recoverable,
+                                    "recv_connected returned error"
+                                );
+                            }
+                        }
+
+                        session = connected.release();
+
+                        if recoverable {
+                            continue;
+                        }
+                        break; // SequenceError or Cancelled
+                    }
+                });
+                e.insert(stream.clone());
+                stream
+            }
+        }
+    };
+
+    stream.put(conn).await;
+}
+
+/// Generic accept loop. Accepts connections from `listener`, transforms
+/// each via `prepare` (which may do TLS negotiation), then hands them
+/// to `dispatch`.
+pub(super) async fn accept_loop<S, L, F, Fut, D, DFut>(
+    listener: &mut L,
+    listener_addr: &ChannelAddr,
+    parent_cancel: &CancellationToken,
+    prepare: F,
+    dispatch: D,
 ) -> Result<(), ServerError>
 where
-    L::Addr: Send + Sync + fmt::Debug + 'static + Into<ChannelAddr>,
-    L::Io: Send + Unpin + fmt::Debug + 'static,
+    S: Stream,
+    L: super::Listener,
+    F: Fn(L::Stream, ChannelAddr) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<(SessionId, S), anyhow::Error>> + Send + 'static,
+    D: Fn(SessionId, S) -> DFut + Clone + Send + 'static,
+    DFut: Future<Output = ()> + Send + 'static,
 {
     let mut connections: JoinSet<Result<(), anyhow::Error>> = JoinSet::new();
 
-    // Cancellation token used to cancel our children only.
-    let child_cancel_token = CancellationToken::new();
-
-    let manager = SessionManager::new();
-
-    // Heartbeat timer for server health metrics
     let heartbeat_interval = hyperactor_config::global::get(config::SERVER_HEARTBEAT_INTERVAL);
     let mut heartbeat_timer: Interval = tokio::time::interval(heartbeat_interval);
 
     let result: Result<(), ServerError> = loop {
-        let _ = tracing::info_span!("channel_listen_accept_loop");
         tokio::select! {
             result = listener.accept() => {
                 match result {
-                    Ok((stream, addr)) => {
-                        let source : ChannelAddr = addr.into();
+                    Ok((stream, source)) => {
                         tracing::debug!(
                             source = %source,
-                            dest = %listener_channel_addr,
+                            dest = %listener_addr,
                             "new connection accepted"
                         );
                         metrics::CHANNEL_CONNECTIONS.add(
                             1,
                             hyperactor_telemetry::kv_pairs!(
-                                "transport" => listener_channel_addr.transport().to_string(),
+                                "transport" => listener_addr.transport().to_string(),
                                 "operation" => "accept"
                             ),
                         );
 
-                        let tx = tx.clone();
-                        let child_cancel_token = child_cancel_token.child_token();
-                        let dest  = listener_channel_addr.clone();
-                        let manager = manager.clone();
+                        let prepare = prepare.clone();
+                        let dispatch = dispatch.clone();
                         connections.spawn(async move {
-                            let res = if is_tls {
-                                // Choose TLS acceptor based on transport type
-                                let tls_acceptor = match dest.transport() {
-                                    ChannelTransport::Tls => tls::tls_acceptor()?,
-                                    _ => meta::tls_acceptor(true)?,
-                                };
-                                let conn = ServerConn::new(tls_acceptor
-                                    .accept(stream)
-                                    .await?, source.clone(), dest.clone());
-                                manager.serve(conn, tx, child_cancel_token).await
-                            } else {
-                                let conn = ServerConn::new(stream, source.clone(), dest.clone());
-                                manager.serve(conn, tx, child_cancel_token).await
-                            };
-
-                            if let Err(ref err) = res {
-                                        metrics::CHANNEL_ERRORS.add(
-                                    1,
-                                    hyperactor_telemetry::kv_pairs!(
-                                        "transport" => dest.transport().to_string(),
-                                        "error" => err.to_string(),
-                                        "error_type" => metrics::ChannelErrorType::ConnectionError.as_str(),
-                                        "dest" => dest.to_string(),
-                                    ),
-                                );
-
-                                // we don't want the health probe TCP connections to be counted as an error.
-                                match source {
-                                    ChannelAddr::Tcp(source_addr) if source_addr.ip().is_loopback() => {},
-                                    _ => {
-                                        tracing::info!(
-                                            source = %source,
-                                            dest = %dest,
-                                            error = ?err,
-                                            "error processing peer connection"
-                                        );
-
-                                    }
-                                }
-                            }
-                            res
-                    });
+                            let (session_id, stream) = prepare(stream, source).await?;
+                            dispatch(session_id, stream).await;
+                            Ok(())
+                        });
                     }
                     Err(err) => {
                         metrics::CHANNEL_ERRORS.add(
                             1,
                             hyperactor_telemetry::kv_pairs!(
-                                "transport" => listener_channel_addr.transport().to_string(),
+                                "transport" => listener_addr.transport().to_string(),
                                 "operation" => "accept",
                                 "error" => err.to_string(),
                                 "error_type" => metrics::ChannelErrorType::ConnectionError.as_str(),
                             ),
                         );
-
                         tracing::info!(
-                            dest = %listener_channel_addr,
+                            dest = %listener_addr,
                             error = %err,
                             "accept error"
                         );
@@ -772,23 +278,23 @@ where
                 metrics::SERVER_HEARTBEAT.add(
                     1,
                     hyperactor_telemetry::kv_pairs!(
-                        "dest" => listener_channel_addr.to_string()
+                        "dest" => listener_addr.to_string()
                     ),
                 );
             }
 
-            _ = parent_cancel_token.cancelled() => {
+            _ = parent_cancel.cancelled() => {
                 tracing::info!(
-                    dest = %listener_channel_addr,
+                    dest = %listener_addr,
                     "received parent token cancellation"
                 );
                 break Ok(());
             }
 
-            result = join_nonempty(&mut connections) => {
+            result = session::join_nonempty(&mut connections) => {
                 if let Err(err) = result {
                     tracing::info!(
-                        dest = %listener_channel_addr,
+                        dest = %listener_addr,
                         error = %err,
                         "connection task join error"
                     );
@@ -797,17 +303,8 @@ where
         }
     };
 
-    child_cancel_token.cancel();
     while connections.join_next().await.is_some() {}
-
     result
-}
-
-async fn join_nonempty<T: 'static>(set: &mut JoinSet<T>) -> Result<T, JoinError> {
-    match set.join_next().await {
-        None => std::future::pending::<Result<T, JoinError>>().await,
-        Some(result) => result,
-    }
 }
 
 /// Handle to an underlying server that is actively listening.
@@ -831,6 +328,19 @@ impl fmt::Display for ServerHandle {
 }
 
 impl ServerHandle {
+    /// Create a new server handle.
+    pub(super) fn new(
+        join_handle: JoinHandle<Result<(), ServerError>>,
+        cancel_token: CancellationToken,
+        channel_addr: ChannelAddr,
+    ) -> Self {
+        Self {
+            join_handle,
+            cancel_token,
+            channel_addr,
+        }
+    }
+
     /// Signal the server to stop. This will stop accepting new
     /// incoming connection requests, and drain pending operations
     /// on active connections. After draining is completed, the
@@ -845,11 +355,6 @@ impl ServerHandle {
         );
         self.cancel_token.cancel();
     }
-
-    /// Reference to the channel that was used to start the server.
-    fn local_channel_addr(&self) -> &ChannelAddr {
-        &self.channel_addr
-    }
 }
 
 impl Future for ServerHandle {
@@ -863,16 +368,15 @@ impl Future for ServerHandle {
     }
 }
 
-/// serve new connections that are accepted from the given listener.
-pub(super) fn serve<M: RemoteMessage, L: Listener + Send + Unpin + 'static>(
-    listener: L,
-    channel_addr: ChannelAddr,
-    is_tls: bool,
-) -> Result<(ChannelAddr, NetRx<M>), ServerError>
-where
-    L::Addr: Sync + Send + fmt::Debug + Into<ChannelAddr>,
-    L::Io: Sync + Send + Unpin + fmt::Debug,
-{
+/// Serve new connections on the given address, optionally using a pre-opened TCP listener.
+/// When `prebound_listener` is `Some`, it is used instead of binding a new socket.
+/// This is only supported for TCP-based transports (Tcp, Tls, MetaTls).
+pub(in crate::channel) fn serve<M: RemoteMessage>(
+    addr: ChannelAddr,
+    prebound_listener: Option<std::net::TcpListener>,
+) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
+    let (mut listener, channel_addr) = super::listen_with_prebound(addr, prebound_listener)?;
+
     metrics::CHANNEL_CONNECTIONS.add(
         1,
         hyperactor_telemetry::kv_pairs!(
@@ -883,13 +387,62 @@ where
 
     let (tx, rx) = mpsc::channel::<M>(1024);
     let cancel_token = CancellationToken::new();
-    let join_handle = tokio::spawn(listen(
-        listener,
-        channel_addr.clone(),
-        tx,
-        cancel_token.child_token(),
-        is_tls,
-    ));
+    let child_token = cancel_token.child_token();
+
+    let is_tls = matches!(
+        channel_addr.transport(),
+        ChannelTransport::Tls | ChannelTransport::MetaTls(_)
+    );
+    let dest = channel_addr.clone();
+    let prepare = move |stream: Box<dyn Stream>, source: ChannelAddr| {
+        let dest = dest.clone();
+        async move {
+            if is_tls {
+                let tls_acceptor = match dest.transport() {
+                    ChannelTransport::Tls => tls::tls_acceptor()?,
+                    _ => meta::tls_acceptor(true)?,
+                };
+                let mut tls_stream = tls_acceptor.accept(stream).await?;
+                let session_id = read_link_init(&mut tls_stream)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+                Ok((session_id, Box::new(tls_stream) as Box<dyn Stream>))
+            } else {
+                let mut stream = stream;
+                let session_id = read_link_init(&mut stream)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+                Ok((session_id, stream))
+            }
+        }
+    };
+
+    let sessions: Arc<DashMap<SessionId, MVar<Box<dyn Stream>>>> = Arc::new(DashMap::new());
+    let child_cancel = CancellationToken::new();
+    let dispatch_dest = channel_addr.clone();
+    let dispatch = {
+        let sessions = Arc::clone(&sessions);
+        let tx = tx.clone();
+        let child_cancel = child_cancel.clone();
+        let dest = dispatch_dest;
+        move |session_id: SessionId, stream: Box<dyn Stream>| {
+            let sessions = Arc::clone(&sessions);
+            let tx = tx.clone();
+            let cancel = child_cancel.child_token();
+            let dest = dest.clone();
+            async move {
+                dispatch_stream(session_id, stream, &sessions, dest, tx, cancel).await;
+            }
+        }
+    };
+
+    let ca: ChannelAddr = channel_addr.clone();
+    let join_handle = tokio::spawn(async move {
+        let result = accept_loop(&mut listener, &ca, &child_token, prepare, dispatch).await;
+        child_cancel.cancel();
+        result
+    });
+
     let server_handle = ServerHandle {
         join_handle,
         cancel_token,
@@ -897,7 +450,67 @@ where
     };
 
     Ok((
-        server_handle.local_channel_addr().clone(),
+        server_handle.channel_addr.clone(),
+        NetRx(rx, channel_addr, server_handle),
+    ))
+}
+
+/// Test-only variant that accepts an arbitrary `Listener`. Used by
+/// mock-link tests that cannot go through `net::listen()`.
+#[cfg(test)]
+pub(super) fn serve_with_listener<M, L>(
+    mut listener: L,
+    channel_addr: ChannelAddr,
+) -> Result<(ChannelAddr, NetRx<M>), ServerError>
+where
+    M: RemoteMessage,
+    L: super::Listener + 'static,
+    L::Stream: Unpin + std::fmt::Debug + 'static,
+{
+    let (tx, rx) = mpsc::channel::<M>(1024);
+    let cancel_token = CancellationToken::new();
+    let child_token = cancel_token.child_token();
+
+    let prepare = |mut stream: L::Stream, source: ChannelAddr| async move {
+        let session_id = read_link_init(&mut stream)
+            .await
+            .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+        Ok((session_id, stream))
+    };
+
+    let sessions: Arc<DashMap<SessionId, MVar<L::Stream>>> = Arc::new(DashMap::new());
+    let child_cancel = CancellationToken::new();
+    let dispatch = {
+        let sessions = Arc::clone(&sessions);
+        let tx = tx.clone();
+        let child_cancel = child_cancel.clone();
+        let dest = channel_addr.clone();
+        move |session_id: SessionId, stream: L::Stream| {
+            let sessions = Arc::clone(&sessions);
+            let tx = tx.clone();
+            let cancel = child_cancel.child_token();
+            let dest = dest.clone();
+            async move {
+                dispatch_stream(session_id, stream, &sessions, dest, tx, cancel).await;
+            }
+        }
+    };
+
+    let ca = channel_addr.clone();
+    let join_handle = tokio::spawn(async move {
+        let result = accept_loop(&mut listener, &ca, &child_token, prepare, dispatch).await;
+        child_cancel.cancel();
+        result
+    });
+
+    let server_handle = ServerHandle {
+        join_handle,
+        cancel_token,
+        channel_addr: channel_addr.clone(),
+    };
+
+    Ok((
+        server_handle.channel_addr.clone(),
         NetRx(rx, channel_addr, server_handle),
     ))
 }

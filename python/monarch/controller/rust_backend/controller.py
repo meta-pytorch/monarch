@@ -106,7 +106,7 @@ class RustController:
     def stop_mesh(self) -> None:
         logger.info("rust controller stopping the system")
         self._actor.stop_worlds(
-            [self._controller_actor.world_name, self._worker_world_name]
+            [self._controller_actor.proc_name, self._worker_world_name]
         )
 
     def drain_and_stop(
@@ -134,10 +134,10 @@ class RustController:
         self._pending_debugger_sessions.append(message.debugger_actor_id)
         while self._pending_debugger_sessions:
             debugger_actor_id = self._pending_debugger_sessions.popleft()
-            rank = debugger_actor_id.rank
+            pid = debugger_actor_id.pid
             proc_id = debugger_actor_id.proc_id
             debugger_write(
-                f"pdb attached to proc {proc_id} with rank {rank}, debugger actor {debugger_actor_id} \n"
+                f"pdb attached to proc {proc_id} with pid {pid}, debugger actor {debugger_actor_id} \n"
             )
 
             self._actor.send(
@@ -159,8 +159,8 @@ class RustController:
                         continue
                     else:
                         raise RuntimeError(
-                            f"unexpected debugger message {msg} from rank {msg.debugger_actor_id.rank} "
-                            f"when debugging rank {debugger_actor_id.rank}"
+                            f"unexpected debugger message {msg} from pid {msg.debugger_actor_id.pid} "
+                            f"when debugging pid {debugger_actor_id.pid}"
                         )
 
                 action = msg.action
@@ -181,7 +181,7 @@ class RustController:
                     )
                 else:
                     raise RuntimeError(
-                        f"unexpected debugger message {msg} when debugging rank {debugger_actor_id.rank}"
+                        f"unexpected debugger message {msg} when debugging pid {debugger_actor_id.pid}"
                     )
 
 

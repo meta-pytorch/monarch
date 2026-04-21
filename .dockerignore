@@ -1,8 +1,25 @@
 .git
 .github
+.ipynb_checkpoints
+.monarch
 .pyre
+.venv
+.vscode
+dist
 docs
 *_meta/**
 **/*_meta/**
 **/*_meta.rs
 **/meta/**
+*/.DS_Store
+
+# Rust stuff
+target/
+Cargo.lock
+
+# Sphinx build files
+build/**
+docs/_build/**
+docs/build/**
+docs/**/generated/**
+*/sg_execution_times.rst

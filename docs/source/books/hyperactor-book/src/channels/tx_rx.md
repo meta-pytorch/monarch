@@ -119,7 +119,4 @@ Concrete channel implementations that satisfy `Tx<M>` / `Rx<M>`:
 - **MetaTLS** — TCP wrapped in TLS via `tokio-rustls`; same framing/ack semantics; Meta cert plumbing.
   _Dial/serve:_ `metatls:HOST:PORT`.
 
-- **Sim** — simulation transport for tests; exercises the same channel semantics without real sockets.
-  _Dial/serve:_ `sim:<inner-addr>`.
-
 <!-- ## Integration with Transports -->

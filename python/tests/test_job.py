@@ -11,11 +11,20 @@ import subprocess
 import sys
 import tempfile
 from typing import cast, Dict, Optional, Sequence
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 # Import directly from _src since job module isn't properly exposed
-from monarch._src.job.job import job_load, job_loads, JobState, JobTrait, LocalJob
+from monarch._src.job.job import (
+    job_load,
+    job_loads,
+    JobState,
+    JobTrait,
+    LocalJob,
+    MeshAdminConfig,
+    TelemetryConfig,
+)
 from monarch.actor import HostMesh
 
 
@@ -24,7 +33,11 @@ class MockJobTrait(JobTrait):
     Mock implementation of JobTrait for testing purposes.
     """
 
-    def __init__(self, host_names: Sequence[str] = ("default",), compatible_specs=None):
+    def __init__(
+        self,
+        host_names: Sequence[str] = ("default",),
+        compatible_specs=None,
+    ):
         """
         Initialize a mock job trait.
 
@@ -299,6 +312,135 @@ def test_kill():
     assert job.kill_called
 
 
+def test_state_query_engine_none_without_telemetry():
+    """Test that query_engine is None when no telemetry is configured."""
+    job = MockJobTrait()
+    state = job.state(cached_path=None)
+    assert state.query_engine is None
+    assert state.telemetry_url is None
+
+
+@patch("monarch._src.job.job.start_telemetry")
+def test_state_query_engine_set_with_telemetry(mock_start):
+    """Test that query_engine is set when telemetry is configured."""
+    mock_engine = MagicMock()
+    mock_url = "http://localhost:8265"
+    mock_start.return_value = (mock_engine, mock_url, MagicMock())
+
+    job = MockJobTrait().enable_telemetry(TelemetryConfig())
+    state = job.state(cached_path=None)
+
+    assert state.query_engine is not None
+    assert state.query_engine is mock_engine
+    assert state.telemetry_url == mock_url
+
+
+@patch("monarch._src.job.job.start_telemetry")
+def test_telemetry_started_only_once(mock_start):
+    """Test that telemetry is not restarted on subsequent state() calls."""
+    mock_start.return_value = (MagicMock(), "http://localhost:8265", MagicMock())
+
+    job = MockJobTrait().enable_telemetry(TelemetryConfig())
+    job.state(cached_path=None)
+    job.state(cached_path=None)
+
+    mock_start.assert_called_once()
+
+
+@patch("monarch._src.job.job.start_telemetry")
+def test_telemetry_dropped_on_pickle(mock_start):
+    """Test that query_engine is dropped during pickling and restored after."""
+    mock_start.return_value = (MagicMock(), "http://localhost:8265", MagicMock())
+
+    job = MockJobTrait().enable_telemetry(TelemetryConfig())
+    job.state(cached_path=None)
+    assert mock_start.call_count == 1
+
+    # Serialize and deserialize — query_engine should be dropped
+    loaded_job = job_loads(job.dumps())
+    assert loaded_job._query_engine is None
+    assert loaded_job._telemetry_url is None
+
+    # Getting state again should re-initialize telemetry
+    state = loaded_job.state(cached_path=None)
+    assert mock_start.call_count == 2
+    assert state.query_engine is not None
+
+
+def test_state_admin_url_none_without_mesh_admin():
+    """Test that admin_url is None when no mesh admin is configured."""
+    job = MockJobTrait()
+    state = job.state(cached_path=None)
+    assert state.admin_url is None
+
+
+@patch("monarch._src.job.job._spawn_admin")
+def test_state_admin_url_set_with_mesh_admin(mock_spawn):
+    """Test that admin_url is available on the first state() call."""
+    mock_future = MagicMock()
+    mock_admin_ref = MagicMock()
+    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
+    mock_spawn.return_value = mock_future
+
+    job = MockJobTrait().enable_admin(MeshAdminConfig())
+    state = job.state(cached_path=None)
+
+    mock_spawn.assert_called_once()
+    assert state.admin_url == "http://localhost:1729"
+
+
+@patch("monarch._src.job.job._spawn_admin")
+def test_mesh_admin_started_only_once(mock_spawn):
+    """Test that mesh admin is not restarted on subsequent state() calls."""
+    mock_future = MagicMock()
+    mock_admin_ref = MagicMock()
+    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
+    mock_spawn.return_value = mock_future
+
+    job = MockJobTrait().enable_admin(MeshAdminConfig())
+    job.state(cached_path=None)
+    job.state(cached_path=None)
+
+    mock_spawn.assert_called_once()
+
+
+@patch("monarch._src.job.job._spawn_admin")
+def test_mesh_admin_dropped_on_pickle(mock_spawn):
+    """Test that admin_url is dropped during pickling and restored after."""
+    mock_future = MagicMock()
+    mock_admin_ref = MagicMock()
+    mock_future.get.return_value = ("http://localhost:1729", mock_admin_ref)
+    mock_spawn.return_value = mock_future
+
+    job = MockJobTrait().enable_admin(MeshAdminConfig())
+    job.state(cached_path=None)
+    assert mock_spawn.call_count == 1
+
+    # Serialize and deserialize — admin_url should be dropped
+    loaded_job = job_loads(job.dumps())
+    assert loaded_job._admin_url is None
+
+    # Getting state again should re-spawn admin
+    state = loaded_job.state(cached_path=None)
+    assert mock_spawn.call_count == 2
+    assert state.admin_url is not None
+
+
+@patch("monarch._src.job.job._spawn_admin")
+def test_mesh_admin_receives_custom_addr(mock_spawn):
+    """Test that MeshAdminConfig.admin_addr is forwarded to _spawn_admin."""
+    mock_future = MagicMock()
+    mock_admin_ref = MagicMock()
+    mock_future.get.return_value = ("http://myhost:9999", mock_admin_ref)
+    mock_spawn.return_value = mock_future
+
+    job = MockJobTrait().enable_admin(MeshAdminConfig(admin_addr="myhost:9999"))
+    job.state(cached_path=None)
+
+    _, kwargs = mock_spawn.call_args
+    assert kwargs.get("admin_addr") == "myhost:9999"
+
+
 # Tests for LocalJob implementation
 
 
@@ -408,3 +550,274 @@ def test_train_script_job_state_batch():
         # Clean up
         if os.path.exists(".monarch/job_state.pkl"):
             os.unlink(".monarch/job_state.pkl")
+
+
+# ── BashActor tests ────────────────────────────────────────────────────────
+
+
+def _bash(script: str) -> dict:
+    """Run a script using the same logic as BashActor.run, bypassing the actor framework."""
+    import selectors
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=True) as f:
+        f.write(script)
+        f.flush()
+        proc = subprocess.Popen(
+            ["bash", f.name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout = proc.stdout
+        stderr = proc.stderr
+        assert stdout is not None
+        assert stderr is not None
+        stdout_lines: list = []
+        stderr_lines: list = []
+        sel = selectors.DefaultSelector()
+        sel.register(stdout, selectors.EVENT_READ, "stdout")
+        sel.register(stderr, selectors.EVENT_READ, "stderr")
+        while sel.get_map():
+            for key, _ in sel.select():
+                # pyre-ignore[16]: fileobj is IO[str] here, not int
+                line = key.fileobj.readline()
+                if not line:
+                    sel.unregister(key.fileobj)
+                    continue
+                if key.data == "stdout":
+                    stdout_lines.append(line)
+                else:
+                    stderr_lines.append(line)
+        sel.close()
+        proc.wait()
+    return {
+        "returncode": proc.returncode,
+        "stdout": "".join(stdout_lines),
+        "stderr": "".join(stderr_lines),
+    }
+
+
+def test_bash_actor_stdout():
+    result = _bash("#!/bin/bash\necho hello\necho world\n")
+    assert result["returncode"] == 0
+    assert "hello" in result["stdout"]
+    assert "world" in result["stdout"]
+
+
+def test_bash_actor_stderr():
+    result = _bash("#!/bin/bash\necho oops >&2\n")
+    assert result["returncode"] == 0
+    assert "oops" in result["stderr"]
+
+
+def test_bash_actor_exit_code():
+    result = _bash("#!/bin/bash\nexit 42\n")
+    assert result["returncode"] == 42
+
+
+def test_bash_actor_interleaved():
+    result = _bash("#!/bin/bash\necho out1\necho err1 >&2\necho out2\necho err2 >&2\n")
+    assert result["returncode"] == 0
+    assert "out1" in result["stdout"]
+    assert "out2" in result["stdout"]
+    assert "err1" in result["stderr"]
+    assert "err2" in result["stderr"]
+
+
+def test_bash_actor_large_output():
+    """Large output must not deadlock (pipe buffer overflow)."""
+    result = _bash("#!/bin/bash\nfor i in $(seq 1 10000); do echo line$i; done\n")
+    assert result["returncode"] == 0
+    lines = result["stdout"].strip().split("\n")
+    assert len(lines) == 10000
+    assert lines[0] == "line1"
+    assert lines[-1] == "line10000"
+
+
+# ── BashActor target_ranks tests ──────────────────────────────────────────
+
+
+def _bash_with_rank(script: str, my_rank: int, target_ranks: list | None) -> dict:
+    """Simulate BashActor.run with target_ranks, bypassing the actor framework."""
+    if target_ranks is not None and my_rank not in target_ranks:
+        return {"returncode": 0, "stdout": "", "stderr": "", "skipped": True}
+    return _bash(script)
+
+
+def test_bash_actor_target_ranks_skipped():
+    """Non-targeted ranks should skip execution."""
+    result = _bash_with_rank(
+        "#!/bin/bash\necho should-not-run\n", my_rank=1, target_ranks=[0]
+    )
+    assert result.get("skipped") is True
+    assert result["returncode"] == 0
+    assert result["stdout"] == ""
+
+
+def test_bash_actor_target_ranks_executed():
+    """Targeted ranks should execute normally."""
+    result = _bash_with_rank("#!/bin/bash\necho hello\n", my_rank=0, target_ranks=[0])
+    assert result.get("skipped") is None
+    assert result["returncode"] == 0
+    assert "hello" in result["stdout"]
+
+
+def test_bash_actor_target_ranks_none_runs_all():
+    """When target_ranks is None, all ranks execute."""
+    result = _bash_with_rank("#!/bin/bash\necho hello\n", my_rank=5, target_ranks=None)
+    assert result.get("skipped") is None
+    assert result["returncode"] == 0
+    assert "hello" in result["stdout"]
+
+
+# ── Streaming BashActor tests ─────────────────────────────────────────────
+
+
+def _bash_streaming(script: str) -> dict:
+    """Run a script using the same streaming logic as BashActor.run_streaming,
+    bypassing the actor framework.  Simulates Port.send() by appending
+    tagged lines to a list.
+    """
+    import selectors
+
+    messages: list[str] = []
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=True) as f:
+        f.write(script)
+        f.flush()
+        proc = subprocess.Popen(
+            ["bash", f.name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout = proc.stdout
+        stderr = proc.stderr
+        assert stdout is not None
+        assert stderr is not None
+        sel = selectors.DefaultSelector()
+        sel.register(stdout, selectors.EVENT_READ, "stdout")
+        sel.register(stderr, selectors.EVENT_READ, "stderr")
+        while sel.get_map():
+            for key, _ in sel.select():
+                # pyre-ignore[16]: fileobj is IO[str] here, not int
+                line = key.fileobj.readline()
+                if not line:
+                    sel.unregister(key.fileobj)
+                    continue
+                tag = "out" if key.data == "stdout" else "err"
+                messages.append(f"0:{tag}:{line}")
+        sel.close()
+        proc.wait()
+    messages.append(f"0:rc:{proc.returncode}")
+
+    # Parse messages back into stdout/stderr/returncode
+    # Format: "rank:tag:content"
+    stdout_parts = []
+    stderr_parts = []
+    returncode = -1
+    for msg in messages:
+        if msg.startswith("skip:"):
+            continue
+        rank_str, tag, content = msg.split(":", 2)
+        if tag == "out":
+            stdout_parts.append(content)
+        elif tag == "err":
+            stderr_parts.append(content)
+        elif tag == "rc":
+            returncode = int(content)
+
+    return {
+        "returncode": returncode,
+        "stdout": "".join(stdout_parts),
+        "stderr": "".join(stderr_parts),
+        "messages": messages,
+    }
+
+
+def test_streaming_stdout():
+    result = _bash_streaming("#!/bin/bash\necho hello\necho world\n")
+    assert result["returncode"] == 0
+    assert "hello" in result["stdout"]
+    assert "world" in result["stdout"]
+    # Verify messages are tagged with rank:tag:content format
+    out_msgs = [m for m in result["messages"] if ":out:" in m]
+    assert len(out_msgs) == 2
+    assert out_msgs[0] == "0:out:hello\n"
+    assert out_msgs[1] == "0:out:world\n"
+    # Last message is always rank:rc:code
+    assert result["messages"][-1] == "0:rc:0"
+
+
+def test_streaming_stderr():
+    result = _bash_streaming("#!/bin/bash\necho oops >&2\n")
+    assert result["returncode"] == 0
+    assert "oops" in result["stderr"]
+    err_msgs = [m for m in result["messages"] if ":err:" in m]
+    assert len(err_msgs) == 1
+    assert err_msgs[0] == "0:err:oops\n"
+
+
+def test_streaming_exit_code():
+    result = _bash_streaming("#!/bin/bash\nexit 42\n")
+    assert result["returncode"] == 42
+    assert result["messages"][-1] == "0:rc:42"
+
+
+def test_streaming_interleaved():
+    result = _bash_streaming(
+        "#!/bin/bash\necho out1\necho err1 >&2\necho out2\necho err2 >&2\n"
+    )
+    assert result["returncode"] == 0
+    assert "out1" in result["stdout"]
+    assert "out2" in result["stdout"]
+    assert "err1" in result["stderr"]
+    assert "err2" in result["stderr"]
+    # Verify we got tagged messages for each line
+    out_msgs = [m for m in result["messages"] if ":out:" in m]
+    err_msgs = [m for m in result["messages"] if ":err:" in m]
+    assert len(out_msgs) == 2
+    assert len(err_msgs) == 2
+
+
+def test_streaming_large_output():
+    """Streaming large output must not deadlock."""
+    result = _bash_streaming(
+        "#!/bin/bash\nfor i in $(seq 1 10000); do echo line$i; done\n"
+    )
+    assert result["returncode"] == 0
+    lines = result["stdout"].strip().split("\n")
+    assert len(lines) == 10000
+    assert lines[0] == "line1"
+    assert lines[-1] == "line10000"
+    # Each line should be a separate message
+    out_msgs = [m for m in result["messages"] if ":out:" in m]
+    assert len(out_msgs) == 10000
+
+
+def test_streaming_matches_blocking():
+    """Streaming mode produces the same stdout/stderr as blocking mode."""
+    script = "#!/bin/bash\necho hello\necho oops >&2\necho world\nexit 7\n"
+    blocking = _bash(script)
+    streaming = _bash_streaming(script)
+    assert blocking["returncode"] == streaming["returncode"]
+    assert blocking["stdout"] == streaming["stdout"]
+    assert blocking["stderr"] == streaming["stderr"]
+
+
+# ── MASTJob __getstate__ test ──────────────────────────────────────────────
+
+
+def test_mast_job_get_runner_is_lazy():
+    """MASTJob._get_runner uses lazy import to avoid slow top-level loads."""
+    import inspect
+
+    try:
+        from monarch._src.job.meta.mast import MASTJob
+    except ModuleNotFoundError:
+        pytest.skip("monarch._src.job.meta not available (OSS build)")
+
+    source = inspect.getsource(MASTJob._get_runner)
+    # The import must be inside the method, not at module level.
+    assert "from monarch._src.tools.commands import torchx_runner" in source

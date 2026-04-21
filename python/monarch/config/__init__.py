@@ -81,6 +81,12 @@ if TYPE_CHECKING:
             proc_stop_max_idle: NotRequired[str]
             get_proc_state_max_idle: NotRequired[str]
             actor_queue_dispatch: NotRequired[bool]
+            mesh_admin_addr: NotRequired[str]
+            mesh_attach_config_timeout: NotRequired[str]
+            mesh_orphan_timeout: NotRequired[str]
+            rdma_allow_tcp_fallback: NotRequired[bool]
+            rdma_disable_ibverbs: NotRequired[bool]
+            rdma_max_chunk_size_mb: NotRequired[int]
 
         ConfigureKwargsType = Unpack[ConfigureArgs]
     else:
@@ -160,6 +166,24 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
         Host mesh timeouts:
             proc_stop_max_idle: Maximum idle time while stopping procs (humantime).
             get_proc_state_max_idle: Maximum idle time for proc state queries (humantime).
+
+        Mesh admin:
+            mesh_admin_addr: Default socket address for the mesh admin HTTP server
+                (e.g. ``"[::]:1729"``, ``"0.0.0.0:8080"``).
+
+        Mesh attach:
+            mesh_attach_config_timeout: Timeout for the config-push barrier
+                during ``attach_to_workers()`` (humantime, default ``"10s"``).
+                Best-effort: if exceeded, a warning is logged and attach continues.
+
+        RDMA configuration:
+            rdma_allow_tcp_fallback: Allow TCP fallback when ibverbs RDMA
+                is unavailable. When True, RDMA operations use a TCP-based
+                backend instead of failing.
+            rdma_disable_ibverbs: Force-disable ibverbs even when available,
+                causing all RDMA operations to use the TCP fallback backend.
+            rdma_max_chunk_size_mb: Maximum chunk size in megabytes for RDMA
+                transfers.
 
         **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """

@@ -6,6 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! ## Bootstrap invariants (BS-*)
+//!
+//! - **BS-1 (locking):** Do not acquire other locks from inside
+//!   `transition(...)`. The state lock is held for the duration of
+//!   the transition; acquiring another lock risks deadlock.
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::env::VarError;
@@ -30,28 +36,24 @@ use futures::StreamExt;
 use futures::stream;
 use humantime::format_duration;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
-use hyperactor::ProcId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
 use hyperactor::host::ProcHandle;
 use hyperactor::host::ProcManager;
 use hyperactor::host::TerminateSummary;
-use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
+use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::Attrs;
@@ -68,8 +70,8 @@ use tracing::Level;
 use typeuri::Named;
 
 use crate::config::MESH_PROC_LAUNCHER_KIND;
-use crate::host_mesh::mesh_agent::HostAgentMode;
-use crate::host_mesh::mesh_agent::HostMeshAgent;
+use crate::host_mesh::host_agent::HostAgent;
+use crate::host_mesh::host_agent::HostAgentMode;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::proc_agent::ProcAgent;
@@ -206,7 +208,11 @@ pub(crate) enum Process2AllocatorMessage {
     /// served at the provided channel address. Procs are started
     /// after instruction by the allocator through the corresponding
     /// [`Allocator2Process`] message.
-    StartedProc(ProcId, ActorRef<ProcAgent>, ChannelAddr),
+    StartedProc(
+        hyperactor_reference::ProcId,
+        hyperactor_reference::ActorRef<ProcAgent>,
+        ChannelAddr,
+    ),
 
     Heartbeat,
 }
@@ -217,7 +223,7 @@ wirevalue::register_type!(Process2AllocatorMessage);
 pub(crate) enum Allocator2Process {
     /// Request to start a new proc with the provided ID, listening
     /// to an address on the indicated channel transport.
-    StartProc(ProcId, ChannelTransport),
+    StartProc(hyperactor_reference::ProcId, ChannelTransport),
 
     /// A request for the process to shut down its procs and exit the
     /// process with the provided code.
@@ -246,7 +252,7 @@ async fn exit_if_missed_heartbeat(bootstrap_index: usize, bootstrap_addr: Channe
         "Heartbeat connection established to allocator (idx: {bootstrap_index}, addr: {bootstrap_addr:?})",
     );
     loop {
-        RealClock.sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
 
         let result = tx
             .send(Process2Allocator(
@@ -281,6 +287,37 @@ pub async fn halt<R>() -> R {
     unreachable!()
 }
 
+/// A handle that waits for a host to finish shutting down.
+///
+/// Obtained from [`host`]. Awaiting [`HostShutdownHandle::join`] blocks until
+/// the [`ShutdownHost`] handler sends back the mailbox server handle, drains
+/// it, and (if `exit_on_shutdown`) calls `process::exit`.
+///
+/// Note: [`DrainHost`] does **not** trigger this handle — a drained host
+/// keeps its mailbox server (and Unix socket) alive so new clients can
+/// reconnect to the same address.
+pub struct HostShutdownHandle {
+    rx: tokio::sync::oneshot::Receiver<MailboxServerHandle>,
+    exit_on_shutdown: bool,
+}
+
+impl HostShutdownHandle {
+    /// Wait for the host to finish shutting down, drain its mailbox server,
+    /// and optionally exit the process.
+    pub async fn join(self) {
+        match self.rx.await {
+            Ok(mailbox_handle) => {
+                mailbox_handle.stop("host shutting down");
+                let _ = mailbox_handle.await;
+            }
+            Err(_) => {} // sender dropped without sending — nothing to drain
+        }
+        if self.exit_on_shutdown {
+            std::process::exit(0);
+        }
+    }
+}
+
 /// Bootstrap a host in this process, returning a handle to the mesh agent.
 ///
 /// To obtain the local proc, use `GetLocalProc` on the returned host mesh agent,
@@ -289,7 +326,7 @@ pub async fn halt<R>() -> R {
 /// - `addr`: the listening address of the host; this is used to bind the frontend address;
 /// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`];
 /// - `config`: optional runtime config overlay.
-/// - `exit_on_shutdown`: if true, exit the process after handling a shutdown request.
+/// - `exit_on_shutdown`: if true, [`HostShutdownHandle::join`] will call `process::exit` after draining.
 /// - `listener`: when `Some`, it is used as the frontend listening socket
 ///   instead of binding a new one.
 pub async fn host(
@@ -298,7 +335,7 @@ pub async fn host(
     config: Option<Attrs>,
     exit_on_shutdown: bool,
     listener: Option<std::net::TcpListener>,
-) -> anyhow::Result<ActorHandle<HostMeshAgent>> {
+) -> anyhow::Result<(ActorHandle<HostAgent>, HostShutdownHandle)> {
     if let Some(attrs) = config {
         hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
         tracing::debug!("bootstrap: installed Runtime config snapshot (Host)");
@@ -321,22 +358,35 @@ pub async fn host(
     )
     .await?;
     let addr = host.addr().clone();
+
+    // The ShutdownHost handler will call host.serve() inside
+    // HostAgent::init (after this.bind::<Self>(), so the actor port is bound
+    // before the frontend starts routing messages), then send the resulting
+    // MailboxServerHandle back here for draining.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<MailboxServerHandle>();
+
     let system_proc = host.system_proc().clone();
-    let host_mesh_agent = system_proc.spawn::<HostMeshAgent>(
-        "agent",
-        HostMeshAgent::new(HostAgentMode::Process {
+    let host_mesh_agent = system_proc.spawn::<HostAgent>(
+        "host_agent",
+        HostAgent::new(HostAgentMode::Process {
             host,
-            exit_on_shutdown,
+            shutdown_tx: Some(shutdown_tx),
         }),
     )?;
 
     tracing::info!(
         "serving host at {}, agent: {}",
         addr,
-        host_mesh_agent.bind::<HostMeshAgent>()
+        host_mesh_agent.bind::<HostAgent>()
     );
 
-    Ok(host_mesh_agent)
+    Ok((
+        host_mesh_agent,
+        HostShutdownHandle {
+            rx: shutdown_rx,
+            exit_on_shutdown,
+        },
+    ))
 }
 
 /// Bootstrap configures how a mesh process starts up.
@@ -352,7 +402,7 @@ pub enum Bootstrap {
     /// Bootstrap as a "v1" proc
     Proc {
         /// The ProcId of the proc to be bootstrapped.
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
         /// The backend address to which messages are forwarded.
         /// See [`hyperactor::host`] for channel topology details.
         backend_addr: ChannelAddr,
@@ -370,7 +420,7 @@ pub enum Bootstrap {
     },
 
     /// Bootstrap as a "v1" host bootstrap. This sets up a new `Host`,
-    /// managed by a [`crate::host_mesh::mesh_agent::HostMeshAgent`].
+    /// managed by a [`crate::host_mesh::host_agent::HostAgent`].
     Host {
         /// The address on which to serve the host.
         addr: ChannelAddr,
@@ -442,8 +492,9 @@ impl Bootstrap {
     }
 
     /// Bootstrap this binary according to this configuration.
-    /// This either runs forever, or returns an error.
-    pub async fn bootstrap(self) -> anyhow::Error {
+    /// This runs until all processes are ready to exit, or returns an error.
+    /// The Ok value is the exit code that should be used.
+    pub async fn bootstrap(self) -> anyhow::Result<i32> {
         tracing::info!(
             "bootstrapping mesh process: {}",
             serde_json::to_string(&self).unwrap()
@@ -522,9 +573,7 @@ impl Bootstrap {
                     eprintln!("(bootstrap) PDEATHSIG disabled via config");
                 }
 
-                let (local_addr, name) = ok!(proc_id
-                    .as_direct()
-                    .ok_or_else(|| anyhow::anyhow!("invalid proc id type: {}", proc_id)));
+                let (local_addr, name) = (proc_id.addr().clone(), proc_id.name());
                 // TODO provide a direct way to construct these
                 let serve_addr = format!("unix:{}", socket_dir_path.join(name).display());
                 let serve_addr = serve_addr.parse().unwrap();
@@ -536,33 +585,36 @@ impl Bootstrap {
                 let proc_sender = mailbox::LocalProcDialer::new(
                     local_addr.clone(),
                     socket_dir_path,
-                    ok!(MailboxClient::dial(backend_addr)),
+                    MailboxClient::dial(backend_addr)?,
                 );
 
-                let proc = Proc::new(proc_id.clone(), proc_sender.into_boxed());
+                let proc = Proc::configured(proc_id.clone(), proc_sender.into_boxed());
 
                 let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<i32>();
-                let agent_handle = ok!(ProcAgent::boot_v1(proc.clone(), Some(shutdown_tx))
-                    .map_err(|e| HostError::AgentSpawnFailure(proc_id, e)));
+                let agent_handle = ProcAgent::boot_v1(proc.clone(), Some(shutdown_tx))
+                    .map_err(|e| HostError::AgentSpawnFailure(proc_id, e))?;
 
                 let span = entered.exit();
 
                 // Finally serve the proc on the same transport as the backend address,
                 // and call back.
-                let (proc_addr, proc_rx) = ok!(channel::serve(serve_addr));
+                let (proc_addr, proc_rx) = channel::serve(serve_addr)?;
                 let mailbox_handle = proc.clone().serve(proc_rx);
-                ok!(ok!(channel::dial(callback_addr))
+                channel::dial(callback_addr)?
                     .send((proc_addr, agent_handle.bind::<ProcAgent>()))
                     .instrument(span)
                     .await
-                    .map_err(ChannelError::from));
+                    .map_err(ChannelError::from)?;
 
                 // Wait for the StopAll handler to signal the exit code, then
                 // gracefully stop the mailbox server before exiting.
                 let exit_code = shutdown_rx.await.unwrap_or(1);
                 mailbox_handle.stop("process shutting down");
                 let _ = mailbox_handle.await;
-                std::process::exit(exit_code)
+                tracing::info!("bootstrap shutting down with exit code {}", exit_code);
+                // Don't exit the proc, return Ok so the parent function can decide
+                // how to stop.
+                Ok(exit_code)
             }
             Bootstrap::Host {
                 addr,
@@ -570,19 +622,26 @@ impl Bootstrap {
                 config,
                 exit_on_shutdown,
             } => {
-                ok!(host(addr, command, config, exit_on_shutdown, None).await);
+                let (_agent_handle, shutdown) =
+                    host(addr, command, config, exit_on_shutdown, None).await?;
+                shutdown.join().await;
                 halt().await
             }
-            Bootstrap::V0ProcMesh { config } => bootstrap_v0_proc_mesh(config).await,
+            Bootstrap::V0ProcMesh { config } => Err(bootstrap_v0_proc_mesh(config).await),
         }
     }
 
     /// A variant of [`bootstrap`] that logs the error and exits the process
     /// if bootstrapping fails.
     pub async fn bootstrap_or_die(self) -> ! {
-        let err = self.bootstrap().await;
-        tracing::error!("failed to bootstrap mesh process: {}", err);
-        std::process::exit(1)
+        let exit_code = match self.bootstrap().await {
+            Ok(exit_code) => exit_code,
+            Err(err) => {
+                tracing::error!("failed to bootstrap mesh process: {}", err);
+                1
+            }
+        };
+        std::process::exit(exit_code);
     }
 }
 
@@ -645,7 +704,7 @@ pub enum ProcStatus {
     Ready {
         started_at: SystemTime,
         addr: ChannelAddr,
-        agent: ActorRef<ProcAgent>,
+        agent: hyperactor_reference::ActorRef<ProcAgent>,
     },
     /// A stop has been requested (SIGTERM, graceful shutdown, etc.),
     /// but the OS process has not yet fully exited. (Proc-level:
@@ -782,7 +841,7 @@ impl std::error::Error for ReadyError {}
 #[derive(Clone)]
 pub struct BootstrapProcHandle {
     /// Logical identity of the proc in the mesh.
-    proc_id: ProcId,
+    proc_id: hyperactor_reference::ProcId,
 
     /// Live lifecycle snapshot (see [`ProcStatus`]). Kept in a mutex
     /// so [`BootstrapProcHandle::status`] can return a synchronous
@@ -838,9 +897,7 @@ impl fmt::Debug for BootstrapProcHandle {
     }
 }
 
-// Locking invariant:
-// - Do not acquire other locks from inside `transition(...)` (it
-//   holds the status mutex).
+// See BS-1 in module doc.
 impl BootstrapProcHandle {
     /// Construct a new [`BootstrapProcHandle`] for a freshly spawned
     /// OS process hosting a proc.
@@ -852,7 +909,10 @@ impl BootstrapProcHandle {
     /// This is the canonical entry point used by
     /// `BootstrapProcManager` when it launches a proc into a new
     /// process.
-    pub(crate) fn new(proc_id: ProcId, launcher: Weak<dyn ProcLauncher>) -> Self {
+    pub(crate) fn new(
+        proc_id: hyperactor_reference::ProcId,
+        launcher: Weak<dyn ProcLauncher>,
+    ) -> Self {
         let (tx, rx) = watch::channel(ProcStatus::Starting);
         Self {
             proc_id,
@@ -867,7 +927,7 @@ impl BootstrapProcHandle {
 
     /// Return the logical proc identity in the mesh.
     #[inline]
-    pub fn proc_id(&self) -> &ProcId {
+    pub fn proc_id(&self) -> &hyperactor_reference::ProcId {
         &self.proc_id
     }
 
@@ -985,14 +1045,18 @@ impl BootstrapProcHandle {
     /// `Running`), or `false` if the current state did not allow
     /// moving to `Ready`. In the latter case the state is left
     /// unchanged and a warning is logged.
-    pub(crate) fn mark_ready(&self, addr: ChannelAddr, agent: ActorRef<ProcAgent>) -> bool {
+    pub(crate) fn mark_ready(
+        &self,
+        addr: ChannelAddr,
+        agent: hyperactor_reference::ActorRef<ProcAgent>,
+    ) -> bool {
         tracing::info!(proc_id = %self.proc_id, %addr, "{} ready at {}", self.proc_id, addr);
         self.transition(|st| match st {
             ProcStatus::Starting => {
                 // Unexpected: we should be Running before Ready, but
                 // handle gracefully with current time.
                 *st = ProcStatus::Ready {
-                    started_at: RealClock.system_time_now(),
+                    started_at: std::time::SystemTime::now(),
                     addr,
                     agent,
                 };
@@ -1021,7 +1085,7 @@ impl BootstrapProcHandle {
     /// graceful shutdown via SIGTERM), but the underlying process has
     /// not yet fully exited.
     pub(crate) fn mark_stopping(&self) -> bool {
-        let now = hyperactor::clock::RealClock.system_time_now();
+        let now = std::time::SystemTime::now();
 
         self.transition(|st| match *st {
             ProcStatus::Running { started_at } => {
@@ -1210,7 +1274,7 @@ impl BootstrapProcHandle {
     /// already been sent. It waits for exit, then escalates through
     /// terminate and kill if needed.
     pub(crate) async fn wait_or_brutally_kill(&self, timeout: Duration) {
-        match RealClock.timeout(timeout, self.wait_inner()).await {
+        match tokio::time::timeout(timeout, self.wait_inner()).await {
             Ok(st) if st.is_exit() => return,
             _ => {}
         }
@@ -1237,7 +1301,7 @@ impl BootstrapProcHandle {
     async fn send_stop_all(
         &self,
         cx: &impl context::Actor,
-        agent: ActorRef<ProcAgent>,
+        agent: hyperactor_reference::ActorRef<ProcAgent>,
         timeout: Duration,
         reason: &str,
     ) -> anyhow::Result<ProcStatus> {
@@ -1257,7 +1321,7 @@ impl BootstrapProcHandle {
         )?;
         // The agent handling Stop should exit the process, if it doesn't within
         // the time window, we escalate to SIGTERM.
-        match RealClock.timeout(timeout, self.wait()).await {
+        match tokio::time::timeout(timeout, self.wait()).await {
             Ok(Ok(st)) => Ok(st),
             Ok(Err(e)) => Err(anyhow::anyhow!("agent did not exit the process: {:?}", e)),
             Err(_) => Err(anyhow::anyhow!("agent did not exit the process in time")),
@@ -1271,7 +1335,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     type TerminalStatus = ProcStatus;
 
     #[inline]
-    fn proc_id(&self) -> &ProcId {
+    fn proc_id(&self) -> &hyperactor_reference::ProcId {
         &self.proc_id
     }
 
@@ -1284,7 +1348,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     }
 
     #[inline]
-    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
+    fn agent_ref(&self) -> Option<hyperactor_reference::ActorRef<Self::Agent>> {
         match &*self.status.lock().expect("status mutex poisoned") {
             ProcStatus::Ready { agent, .. } => Some(agent.clone()),
             _ => None,
@@ -1457,7 +1521,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
 }
 
 /// A specification of the command used to bootstrap procs.
-#[derive(Debug, Named, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Named, Serialize, Deserialize, Clone, Default)]
 pub struct BootstrapCommand {
     pub program: PathBuf,
     pub arg0: Option<String>,
@@ -1465,6 +1529,28 @@ pub struct BootstrapCommand {
     pub env: HashMap<String, String>,
 }
 wirevalue::register_type!(BootstrapCommand);
+
+impl std::hash::Hash for BootstrapCommand {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.program.hash(state);
+        self.arg0.hash(state);
+        self.args.hash(state);
+        let mut pairs: Vec<_> = self.env.iter().collect();
+        pairs.sort();
+        pairs.hash(state);
+    }
+}
+
+impl PartialEq for BootstrapCommand {
+    fn eq(&self, other: &Self) -> bool {
+        self.program == other.program
+            && self.arg0 == other.arg0
+            && self.args == other.args
+            && self.env == other.env
+    }
+}
+
+impl Eq for BootstrapCommand {}
 
 impl BootstrapCommand {
     /// Creates a bootstrap command specification to replicate the
@@ -1630,7 +1716,7 @@ pub struct BootstrapProcManager {
     /// Async registry of running children, keyed by [`ProcId`]. Holds
     /// [`BootstrapProcHandle`]s so callers can query or monitor
     /// status.
-    children: Arc<tokio::sync::Mutex<HashMap<ProcId, BootstrapProcHandle>>>,
+    children: Arc<tokio::sync::Mutex<HashMap<hyperactor_reference::ProcId, BootstrapProcHandle>>>,
 
     /// FileMonitor that aggregates logs from all children. None if
     /// file monitor creation failed.
@@ -1728,8 +1814,17 @@ impl BootstrapProcManager {
     ///
     /// Returns `None` if the manager has no record of the proc (e.g.
     /// never spawned here, or entry already removed).
-    pub async fn status(&self, proc_id: &ProcId) -> Option<ProcStatus> {
+    pub async fn status(&self, proc_id: &hyperactor_reference::ProcId) -> Option<ProcStatus> {
         self.children.lock().await.get(proc_id).map(|h| h.status())
+    }
+
+    /// Return a watch receiver for the given proc's status stream,
+    /// if the proc is known to this manager.
+    pub async fn watch(
+        &self,
+        proc_id: &hyperactor_reference::ProcId,
+    ) -> Option<tokio::sync::watch::Receiver<ProcStatus>> {
+        self.children.lock().await.get(proc_id).map(|h| h.watch())
     }
 
     /// Non-blocking stop: send `StopAll`, then spawn a background task
@@ -1741,7 +1836,7 @@ impl BootstrapProcManager {
     pub(crate) async fn request_stop(
         &self,
         cx: &impl context::Actor,
-        proc: &ProcId,
+        proc: &hyperactor_reference::ProcId,
         timeout: Duration,
         reason: &str,
     ) {
@@ -1776,7 +1871,7 @@ impl BootstrapProcManager {
 
     fn spawn_exit_monitor(
         &self,
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
         handle: BootstrapProcHandle,
         exit_rx: tokio::sync::oneshot::Receiver<ProcExitResult>,
     ) {
@@ -1864,6 +1959,8 @@ impl BootstrapProcManager {
     }
 }
 
+pub use crate::proc_launcher::ProcBind;
+
 /// The configuration used for bootstrapped procs.
 pub struct BootstrapProcConfig {
     /// The proc's create rank.
@@ -1872,6 +1969,14 @@ pub struct BootstrapProcConfig {
     /// Config values to set on the spawned proc's global config,
     /// at the `ClientOverride` layer.
     pub client_config_override: Attrs,
+
+    /// Optional per-process CPU/NUMA binding configuration.
+    /// When set, the bootstrap command is wrapped with `numactl`
+    /// (on NUMA systems) or `taskset` (Linux fallback) before launch.
+    pub proc_bind: Option<ProcBind>,
+    /// Optional bootstrap command override. When set, this command is used
+    /// to spawn the proc instead of the manager's default bootstrap command.
+    pub bootstrap_command: Option<BootstrapCommand>,
 }
 
 #[async_trait]
@@ -1919,13 +2024,14 @@ impl ProcManager for BootstrapProcManager {
     #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string()))]
     async fn spawn(
         &self,
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
         backend_addr: ChannelAddr,
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
-        let (callback_addr, mut callback_rx) = channel::serve::<(ChannelAddr, ActorRef<ProcAgent>)>(
-            ChannelAddr::any(ChannelTransport::Unix),
-        )?;
+        let (callback_addr, mut callback_rx) =
+            channel::serve::<(ChannelAddr, hyperactor_reference::ActorRef<ProcAgent>)>(
+                ChannelAddr::any(ChannelTransport::Unix),
+            )?;
 
         // Decide whether we need to capture stdio.
         let overrides = &config.client_config_override;
@@ -1950,7 +2056,11 @@ impl ProcManager for BootstrapProcManager {
         let opts = LaunchOptions {
             bootstrap_payload,
             process_name: format_process_name(&proc_id),
-            command: self.command.clone(),
+            command: config
+                .bootstrap_command
+                .as_ref()
+                .unwrap_or(&self.command)
+                .clone(),
             want_stdio: need_stdio,
             tail_lines: tail_size,
             log_channel: if enable_forwarding {
@@ -1958,9 +2068,11 @@ impl ProcManager for BootstrapProcManager {
             } else {
                 None
             },
+            proc_bind: config.proc_bind.clone(),
         };
 
         // Launch via the configured launcher backend.
+        tracing::info!(proc_id = %proc_id, "launching proc with opts={opts:?}");
         let launch_result = self
             .launcher()
             .launch(&proc_id, opts.clone())
@@ -1970,7 +2082,11 @@ impl ProcManager for BootstrapProcManager {
                     ProcLauncherError::Launch(io_err) => io_err,
                     other => std::io::Error::other(other.to_string()),
                 };
-                HostError::ProcessSpawnFailure(proc_id.clone(), io_err)
+                HostError::ProcessSpawnFailure(
+                    proc_id.clone(),
+                    format!("{:?}", opts.command),
+                    io_err,
+                )
             })?;
 
         // Wire up StreamFwders if stdio was captured.
@@ -2070,10 +2186,16 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
-        proc: &ProcId,
+        proc: &hyperactor_reference::ProcId,
         timeout: Duration,
         reason: &str,
-    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+    ) -> Result<
+        (
+            Vec<hyperactor_reference::ActorId>,
+            Vec<hyperactor_reference::ActorId>,
+        ),
+        anyhow::Error,
+    > {
         // Snapshot to avoid holding the lock across awaits.
         let proc_handle: Option<BootstrapProcHandle> = {
             let mut guard = self.children.lock().await;
@@ -2113,10 +2235,11 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
         max_in_flight: usize,
         reason: &str,
     ) -> TerminateSummary {
-        // Snapshot to avoid holding the lock across awaits.
+        // Drain the children list to avoid holding the lock across awaits and
+        // avoid subsequent calls from trying to terminate again.
         let handles: Vec<BootstrapProcHandle> = {
-            let guard = self.children.lock().await;
-            guard.values().cloned().collect()
+            let mut guard = self.children.lock().await;
+            guard.drain().map(|(_, v)| v).collect()
         };
 
         let attempted = handles.len();
@@ -2166,8 +2289,10 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
 /// ```
 ///
 /// Use [`bootstrap_or_die`] to implement this behavior directly.
-pub async fn bootstrap() -> anyhow::Error {
-    let boot = ok!(Bootstrap::get_from_env()).unwrap_or_else(Bootstrap::default);
+/// Else if the bootstrap returns Ok, the process has cleaned up successfully and
+/// should exit the "main" of the program.
+pub async fn bootstrap() -> anyhow::Result<i32> {
+    let boot = Bootstrap::get_from_env()?.unwrap_or_else(Bootstrap::default);
     boot.bootstrap().await
 }
 
@@ -2323,10 +2448,14 @@ async fn bootstrap_v0_proc_mesh(config: Option<Attrs>) -> anyhow::Error {
 /// A variant of [`bootstrap`] that logs the error and exits the process
 /// if bootstrapping fails.
 pub async fn bootstrap_or_die() -> ! {
-    let err = bootstrap().await;
-    let _ = writeln!(Debug, "failed to bootstrap mesh process: {}", err);
-    tracing::error!("failed to bootstrap mesh process: {}", err);
-    std::process::exit(1)
+    match bootstrap().await {
+        Ok(exit_code) => std::process::exit(exit_code),
+        Err(err) => {
+            let _ = writeln!(Debug, "failed to bootstrap mesh process: {}", err);
+            tracing::error!("failed to bootstrap mesh process: {}", err);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[derive(enum_as_inner::EnumAsInner)]
@@ -2420,33 +2549,31 @@ impl Write for Debug {
 }
 
 /// Create a new runtime [`TempDir`]. The directory is created in
-/// `$XDG_RUNTIME_DIR`, otherwise falling back to the system tempdir.
+/// `$XDG_RUNTIME_DIR` if set and the directory exists, otherwise
+/// falling back to the system tempdir.
 fn runtime_dir() -> io::Result<TempDir> {
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(runtime_dir) => {
-            let path = PathBuf::from(runtime_dir);
-            tempfile::tempdir_in(path)
+    if let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let path = PathBuf::from(runtime_dir);
+        if path.is_dir() {
+            return tempfile::tempdir_in(path);
         }
-        None => tempfile::tempdir(),
     }
+    tempfile::tempdir()
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use hyperactor::ActorId;
-    use hyperactor::ActorRef;
-    use hyperactor::ProcId;
     use hyperactor::RemoteSpawn;
-    use hyperactor::WorldId;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::TcpMode;
-    use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
     use hyperactor::host::ProcHandle;
-    use hyperactor::id;
+    use hyperactor::reference as hyperactor_reference;
+    use hyperactor::testing::ids::test_proc_id;
+    use hyperactor::testing::ids::test_proc_id_with_addr;
     use hyperactor_config::Flattrs;
     use ndslice::Extent;
     use ndslice::ViewExt;
@@ -2462,18 +2589,12 @@ mod tests {
     use crate::testactor;
     use crate::testing;
 
-    // Helper: Avoid repeating
-    // `ChannelAddr::any(ChannelTransport::Unix)`.
-    fn any_addr_for_test() -> ChannelAddr {
-        ChannelAddr::any(ChannelTransport::Unix)
-    }
-
     #[test]
     fn test_bootstrap_mode_env_string_none_config_proc() {
         let values = [
             Bootstrap::default(),
             Bootstrap::Proc {
-                proc_id: id!(foo[0]),
+                proc_id: test_proc_id("foo_0"),
                 backend_addr: ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 socket_dir_path: PathBuf::from("notexist"),
@@ -2543,7 +2664,7 @@ mod tests {
         // Proc case
         {
             let original = Bootstrap::Proc {
-                proc_id: id!(foo[42]),
+                proc_id: test_proc_id("foo_42"),
                 backend_addr: ChannelAddr::any(ChannelTransport::Unix),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 config: Some(attrs.clone()),
@@ -2618,9 +2739,12 @@ mod tests {
         let router = DialMailboxRouter::new();
         let (proc_addr, proc_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
+        let proc = Proc::configured(
+            test_proc_id("client_0"),
+            BoxedMailboxSender::new(router.clone()),
+        );
         proc.clone().serve(proc_rx);
-        router.bind(id!(client[0]).into(), proc_addr.clone());
+        router.bind(test_proc_id("client_0").into(), proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 
         let (tap_tx, mut tap_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -2635,7 +2759,7 @@ mod tests {
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> =
+        let log_client: hyperactor_reference::ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
@@ -2644,7 +2768,7 @@ mod tests {
         let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
             .await
             .unwrap();
-        let _log_forwarder: ActorRef<LogForwardActor> = proc
+        let _log_forwarder: hyperactor_reference::ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
             .bind();
@@ -2663,8 +2787,7 @@ mod tests {
         });
 
         // Assert we see it via the tap.
-        let line = RealClock
-            .timeout(Duration::from_secs(2), tap_rx.recv())
+        let line = tokio::time::timeout(Duration::from_secs(2), tap_rx.recv())
             .await
             .expect("timed out waiting for log line")
             .expect("tap channel closed unexpectedly");
@@ -2680,14 +2803,11 @@ mod tests {
         use std::time::Duration;
 
         use async_trait::async_trait;
-        use hyperactor::ActorId;
-        use hyperactor::ActorRef;
-        use hyperactor::ProcId;
-        use hyperactor::WorldId;
         use hyperactor::host::ProcHandle;
+        use hyperactor::reference as hyperactor_reference;
+        use hyperactor::testing::ids::test_proc_id;
 
         use super::super::*;
-        use super::any_addr_for_test;
         use crate::proc_launcher::LaunchOptions;
         use crate::proc_launcher::LaunchResult;
         use crate::proc_launcher::ProcLauncher;
@@ -2706,7 +2826,7 @@ mod tests {
         impl ProcLauncher for TestProcLauncher {
             async fn launch(
                 &self,
-                _proc_id: &ProcId,
+                _proc_id: &hyperactor_reference::ProcId,
                 _opts: LaunchOptions,
             ) -> Result<LaunchResult, ProcLauncherError> {
                 panic!("TestProcLauncher::launch should not be called in unit tests");
@@ -2714,13 +2834,16 @@ mod tests {
 
             async fn terminate(
                 &self,
-                _proc_id: &ProcId,
+                _proc_id: &hyperactor_reference::ProcId,
                 _timeout: Duration,
             ) -> Result<(), ProcLauncherError> {
                 panic!("TestProcLauncher::terminate should not be called in unit tests");
             }
 
-            async fn kill(&self, _proc_id: &ProcId) -> Result<(), ProcLauncherError> {
+            async fn kill(
+                &self,
+                _proc_id: &hyperactor_reference::ProcId,
+            ) -> Result<(), ProcLauncherError> {
                 panic!("TestProcLauncher::kill should not be called in unit tests");
             }
         }
@@ -2732,7 +2855,7 @@ mod tests {
         // ensuring tests only exercise status transitions and not
         // actual process lifecycle.
         fn handle_for_test() -> BootstrapProcHandle {
-            let proc_id = ProcId::Ranked(WorldId("test".into()), 0);
+            let proc_id = test_proc_id("0");
             let launcher: Arc<dyn ProcLauncher> = Arc::new(TestProcLauncher);
             BootstrapProcHandle::new(proc_id, Arc::downgrade(&launcher))
         }
@@ -2741,7 +2864,7 @@ mod tests {
         async fn starting_to_running_ok() {
             let h = handle_for_test();
             assert!(matches!(h.status(), ProcStatus::Starting));
-            let child_started_at = RealClock.system_time_now();
+            let child_started_at = std::time::SystemTime::now();
             assert!(h.mark_running(child_started_at));
             match h.status() {
                 ProcStatus::Running { started_at } => {
@@ -2754,7 +2877,7 @@ mod tests {
         #[tokio::test]
         async fn running_to_stopping_to_stopped_ok() {
             let h = handle_for_test();
-            let child_started_at = RealClock.system_time_now();
+            let child_started_at = std::time::SystemTime::now();
             assert!(h.mark_running(child_started_at));
             assert!(h.mark_stopping());
             assert!(matches!(h.status(), ProcStatus::Stopping { .. }));
@@ -2768,7 +2891,7 @@ mod tests {
         #[tokio::test]
         async fn running_to_killed_ok() {
             let h = handle_for_test();
-            let child_started_at = RealClock.system_time_now();
+            let child_started_at = std::time::SystemTime::now();
             assert!(h.mark_running(child_started_at));
             assert!(h.mark_killed(9, true));
             assert!(matches!(
@@ -2783,7 +2906,7 @@ mod tests {
         #[tokio::test]
         async fn running_to_failed_ok() {
             let h = handle_for_test();
-            let child_started_at = RealClock.system_time_now();
+            let child_started_at = std::time::SystemTime::now();
             assert!(h.mark_running(child_started_at));
             assert!(h.mark_failed("bootstrap error"));
             match h.status() {
@@ -2797,10 +2920,10 @@ mod tests {
         #[tokio::test]
         async fn illegal_transitions_are_rejected() {
             let h = handle_for_test();
-            let child_started_at = RealClock.system_time_now();
+            let child_started_at = std::time::SystemTime::now();
             // Starting -> Running is fine; second Running should be rejected.
             assert!(h.mark_running(child_started_at));
-            assert!(!h.mark_running(RealClock.system_time_now()));
+            assert!(!h.mark_running(std::time::SystemTime::now()));
             assert!(matches!(h.status(), ProcStatus::Running { .. }));
             // Once Stopped, we can't go to Running/Killed/Failed/etc.
             assert!(h.mark_stopping());
@@ -2818,15 +2941,16 @@ mod tests {
         #[tokio::test]
         async fn transitions_from_ready_are_legal() {
             let h = handle_for_test();
-            let addr = any_addr_for_test();
+            let addr = ChannelAddr::any(ChannelTransport::Unix);
             // Mark Running.
-            let t0 = RealClock.system_time_now();
+            let t0 = std::time::SystemTime::now();
             assert!(h.mark_running(t0));
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = ActorId(proc_id.clone(), "proc_agent".into(), 0);
-            let agent_ref: ActorRef<ProcAgent> = ActorRef::attest(actor_id);
+            let actor_id = proc_id.actor_id("proc_agent", 0);
+            let agent_ref: hyperactor_reference::ActorRef<ProcAgent> =
+                hyperactor_reference::ActorRef::attest(actor_id);
             // Ready -> Stopping -> Stopped should be legal.
             assert!(h.mark_ready(addr, agent_ref));
             assert!(h.mark_stopping());
@@ -2836,15 +2960,16 @@ mod tests {
         #[tokio::test]
         async fn ready_to_killed_is_legal() {
             let h = handle_for_test();
-            let addr = any_addr_for_test();
+            let addr = ChannelAddr::any(ChannelTransport::Unix);
             // Starting -> Running
-            let t0 = RealClock.system_time_now();
+            let t0 = std::time::SystemTime::now();
             assert!(h.mark_running(t0));
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = ActorId(proc_id.clone(), "proc_agent".into(), 0);
-            let agent: ActorRef<ProcAgent> = ActorRef::attest(actor_id);
+            let actor_id = proc_id.actor_id("proc_agent", 0);
+            let agent: hyperactor_reference::ActorRef<ProcAgent> =
+                hyperactor_reference::ActorRef::attest(actor_id);
             // Running -> Ready
             assert!(h.mark_ready(addr, agent));
             // Ready -> Killed
@@ -2881,7 +3006,7 @@ mod tests {
     impl crate::proc_launcher::ProcLauncher for TestLauncher {
         async fn launch(
             &self,
-            _proc_id: &ProcId,
+            _proc_id: &hyperactor_reference::ProcId,
             _opts: crate::proc_launcher::LaunchOptions,
         ) -> Result<crate::proc_launcher::LaunchResult, crate::proc_launcher::ProcLauncherError>
         {
@@ -2890,7 +3015,7 @@ mod tests {
 
         async fn terminate(
             &self,
-            _proc_id: &ProcId,
+            _proc_id: &hyperactor_reference::ProcId,
             _timeout: std::time::Duration,
         ) -> Result<(), crate::proc_launcher::ProcLauncherError> {
             panic!("TestLauncher::terminate should not be called in unit tests");
@@ -2898,13 +3023,13 @@ mod tests {
 
         async fn kill(
             &self,
-            _proc_id: &ProcId,
+            _proc_id: &hyperactor_reference::ProcId,
         ) -> Result<(), crate::proc_launcher::ProcLauncherError> {
             panic!("TestLauncher::kill should not be called in unit tests");
         }
     }
 
-    fn test_handle(proc_id: ProcId) -> BootstrapProcHandle {
+    fn test_handle(proc_id: hyperactor_reference::ProcId) -> BootstrapProcHandle {
         let launcher: std::sync::Arc<dyn crate::proc_launcher::ProcLauncher> =
             std::sync::Arc::new(TestLauncher);
         BootstrapProcHandle::new(proc_id, std::sync::Arc::downgrade(&launcher))
@@ -2912,12 +3037,12 @@ mod tests {
 
     #[tokio::test]
     async fn watch_notifies_on_status_changes() {
-        let proc_id = ProcId::Ranked(WorldId("test".into()), 1);
+        let proc_id = test_proc_id("1");
         let handle = test_handle(proc_id);
         let mut rx = handle.watch();
 
         // Starting -> Running
-        let now = RealClock.system_time_now();
+        let now = std::time::SystemTime::now();
         assert!(handle.mark_running(now));
         rx.changed().await.ok(); // Observe the transition.
         match &*rx.borrow() {
@@ -2938,10 +3063,8 @@ mod tests {
 
     #[tokio::test]
     async fn ready_errs_if_process_exits_before_running() {
-        let proc_id = ProcId::Direct(
-            ChannelAddr::any(ChannelTransport::Unix),
-            "early-exit".into(),
-        );
+        let proc_id =
+            test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "early-exit");
         let handle = test_handle(proc_id);
 
         // Simulate the exit monitor doing its job directly here.
@@ -2965,24 +3088,25 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let unknown = ProcId::Direct(ChannelAddr::any(ChannelTransport::Unix), "nope".into());
+        let unknown = test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "nope");
         assert!(manager.status(&unknown).await.is_none());
     }
 
     #[tokio::test]
     async fn handle_ready_allows_waiters() {
-        let proc_id = ProcId::Ranked(WorldId("test".into()), 42);
+        let proc_id = test_proc_id("42");
         let handle = test_handle(proc_id.clone());
 
-        let started_at = RealClock.system_time_now();
+        let started_at = std::time::SystemTime::now();
         assert!(handle.mark_running(started_at));
 
-        let actor_id = ActorId(proc_id.clone(), "proc_agent".into(), 0);
-        let agent_ref: ActorRef<ProcAgent> = ActorRef::attest(actor_id);
+        let actor_id = proc_id.actor_id("proc_agent", 0);
+        let agent_ref: hyperactor_reference::ActorRef<ProcAgent> =
+            hyperactor_reference::ActorRef::attest(actor_id);
 
         // Pick any addr to carry in Ready (what the child would have
         // called back with).
-        let ready_addr = any_addr_for_test();
+        let ready_addr = ChannelAddr::any(ChannelTransport::Unix);
 
         // Stamp Ready and assert ready().await unblocks.
         assert!(handle.mark_ready(ready_addr.clone(), agent_ref));
@@ -3008,7 +3132,7 @@ mod tests {
 
     #[test]
     fn display_running_includes_uptime() {
-        let started_at = RealClock.system_time_now() - Duration::from_secs(42);
+        let started_at = std::time::SystemTime::now() - Duration::from_secs(42);
         let st = ProcStatus::Running { started_at };
 
         let s = format!("{}", st);
@@ -3018,10 +3142,12 @@ mod tests {
 
     #[test]
     fn display_ready_includes_addr() {
-        let started_at = RealClock.system_time_now() - Duration::from_secs(5);
+        let started_at = std::time::SystemTime::now() - Duration::from_secs(5);
         let addr = ChannelAddr::any(ChannelTransport::Unix);
-        let agent =
-            ActorRef::attest(ProcId::Direct(addr.clone(), "proc".into()).actor_id("proc_agent", 0));
+        let agent = hyperactor_reference::ActorRef::attest(
+            test_proc_id_with_addr(addr.clone(), "proc")
+                .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
+        );
 
         let st = ProcStatus::Ready {
             started_at,
@@ -3050,14 +3176,14 @@ mod tests {
         let samples = vec![
             ProcStatus::Starting,
             ProcStatus::Stopping {
-                started_at: RealClock.system_time_now(),
+                started_at: std::time::SystemTime::now(),
             },
             ProcStatus::Ready {
-                started_at: RealClock.system_time_now(),
+                started_at: std::time::SystemTime::now(),
                 addr: ChannelAddr::any(ChannelTransport::Unix),
-                agent: ActorRef::attest(
-                    ProcId::Direct(ChannelAddr::any(ChannelTransport::Unix), "x".into())
-                        .actor_id("proc_agent", 0),
+                agent: hyperactor_reference::ActorRef::attest(
+                    test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "x")
+                        .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
                 ),
             },
             ProcStatus::Killed {
@@ -3076,17 +3202,18 @@ mod tests {
 
     #[tokio::test]
     async fn proc_handle_ready_ok_through_trait() {
-        let proc_id = ProcId::Direct(any_addr_for_test(), "ph-ready-ok".into());
+        let proc_id =
+            test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "ph-ready-ok");
         let handle = test_handle(proc_id.clone());
 
         // Starting -> Running
-        let t0 = RealClock.system_time_now();
+        let t0 = std::time::SystemTime::now();
         assert!(handle.mark_running(t0));
 
         // Synthesize Ready data
-        let addr = any_addr_for_test();
-        let agent: ActorRef<ProcAgent> =
-            ActorRef::attest(ActorId(proc_id.clone(), "proc_agent".into(), 0));
+        let addr = ChannelAddr::any(ChannelTransport::Unix);
+        let agent: hyperactor_reference::ActorRef<ProcAgent> =
+            hyperactor_reference::ActorRef::attest(proc_id.actor_id("proc_agent", 0));
         assert!(handle.mark_ready(addr, agent));
 
         // Call the trait method (not ready_inner).
@@ -3096,7 +3223,7 @@ mod tests {
 
     #[tokio::test]
     async fn proc_handle_wait_returns_terminal_status() {
-        let proc_id = ProcId::Direct(any_addr_for_test(), "ph-wait".into());
+        let proc_id = test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "ph-wait");
         let handle = test_handle(proc_id);
 
         // Drive directly to a terminal state before calling wait()
@@ -3115,7 +3242,7 @@ mod tests {
 
     #[tokio::test]
     async fn ready_wrapper_maps_terminal_to_trait_error() {
-        let proc_id = ProcId::Direct(any_addr_for_test(), "wrap".into());
+        let proc_id = test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "wrap");
         let handle = test_handle(proc_id);
 
         assert!(handle.mark_stopped(7, Vec::new()));
@@ -3143,7 +3270,7 @@ mod tests {
     async fn make_proc_id_and_backend_addr(
         instance: &hyperactor::Instance<()>,
         _tag: &str,
-    ) -> (ProcId, ChannelAddr) {
+    ) -> (hyperactor_reference::ProcId, ChannelAddr) {
         // Serve a Unix channel as the "backend_addr" and hook it into
         // this test proc.
         let (backend_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
@@ -3155,7 +3282,7 @@ mod tests {
 
         // We return an arbitrary (but unbound!) unix direct proc id here;
         // it is okay, as we're not testing connectivity.
-        let proc_id = ProcId::Direct(ChannelTransport::Unix.any(), "test".to_string());
+        let proc_id = test_proc_id_with_addr(ChannelTransport::Unix.any(), "proc");
         (proc_id, backend_addr)
     }
 
@@ -3176,6 +3303,8 @@ mod tests {
                 BootstrapProcConfig {
                     create_rank: 0,
                     client_config_override: Attrs::new(),
+                    proc_bind: None,
+                    bootstrap_command: None,
                 },
             )
             .await
@@ -3184,12 +3313,11 @@ mod tests {
         handle.ready().await.expect("ready");
 
         let deadline = Duration::from_secs(2);
-        match RealClock
-            .timeout(
-                deadline * 2,
-                handle.terminate(&instance, deadline, "test terminate"),
-            )
-            .await
+        match tokio::time::timeout(
+            deadline * 2,
+            handle.terminate(&instance, deadline, "test terminate"),
+        )
+        .await
         {
             Err(_) => panic!("terminate() future hung"),
             Ok(Ok(st)) => {
@@ -3246,6 +3374,8 @@ mod tests {
                 BootstrapProcConfig {
                     create_rank: 0,
                     client_config_override: Attrs::new(),
+                    proc_bind: None,
+                    bootstrap_command: None,
                 },
             )
             .await
@@ -3258,7 +3388,7 @@ mod tests {
         // Force-kill the child and assert we observe a Killed
         // terminal status.
         let deadline = Duration::from_secs(5);
-        match RealClock.timeout(deadline, handle.kill()).await {
+        match tokio::time::timeout(deadline, handle.kill()).await {
             Err(_) => panic!("kill() future hung"),
             Ok(Ok(st)) => {
                 // We expect a KILLED terminal state.
@@ -3310,16 +3440,16 @@ mod tests {
         //
         // (2) Host::serve(..) sets up a Host in the same OS process
         //     (no new process). It binds front/back channels, creates
-        //     an in-process service proc (`Proc::new(..)`), and
+        //     an in-process service proc (`Proc::configured(..)`), and
         //     stores the `BootstrapProcManager` for later spawns.
         //
-        // (3) Install HostMeshAgent (still no new OS process).
-        //     `host.system_proc().spawn::<HostMeshAgent>("agent",
-        //     host).await?` creates the HostMeshAgent actor in that
+        // (3) Install HostAgent (still no new OS process).
+        //     `host.system_proc().spawn::<HostAgent>("host_agent",
+        //     host).await?` creates the HostAgent actor in that
         //     service proc.
         //
         // (4) Collect & assemble. The trampoline returns a
-        //     direct-addressed `ActorRef<HostMeshAgent>`; we collect
+        //     direct-addressed `ActorRef<HostAgent>`; we collect
         //     one per rank and assemble a `HostMesh`.
         //
         // Note: When the Host is later asked to start a proc
@@ -3333,7 +3463,7 @@ mod tests {
 
         // Spawn a ProcMesh named "p0" on the host mesh:
         //
-        // (1) Each HostMeshAgent (running inside its host's service
+        // (1) Each HostAgent (running inside its host's service
         // proc) receives the request.
         //
         // (2) The Host calls into its `BootstrapProcManager::spawn`,
@@ -3346,7 +3476,7 @@ mod tests {
         // (4) We collect the per-host procs into a `ProcMesh` and
         // return it.
         let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity())
+            .spawn(&instance, "p0", Extent::unity(), None)
             .await
             .unwrap();
 
@@ -3394,13 +3524,18 @@ mod tests {
     #[tokio::test]
     #[cfg(all(fbcode_build, target_os = "linux"))]
     async fn bootstrap_canonical_simple_systemd_launcher() {
-        // Acquire exclusive config lock and select systemd launcher.
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(MESH_PROC_LAUNCHER_KIND, "systemd".to_string());
-
         // Create an actor instance we'll use to send and receive
         // messages.
         let instance = testing::instance();
+
+        // Set an absurdly high flush timeout to prove the flush
+        // completes naturally (host networking stays alive during
+        // worker teardown) and never relies on the timeout.
+        let config = hyperactor_config::global::lock();
+        let _flush_guard = config.override_key(
+            hyperactor::config::FORWARDER_FLUSH_TIMEOUT,
+            std::time::Duration::from_secs(600),
+        );
 
         // Configure a ProcessAllocator with the bootstrap binary.
         let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
@@ -3427,7 +3562,7 @@ mod tests {
 
         // Spawn a ProcMesh named "p0" on the host mesh.
         let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity())
+            .spawn(&instance, "p0", Extent::unity(), None)
             .await
             .unwrap();
 
@@ -3501,7 +3636,7 @@ mod tests {
                     }
                 }
             }
-            RealClock.sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert!(
             ok,
@@ -3512,7 +3647,7 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_host_bootstrap() {
-        use crate::host_mesh::mesh_agent::GetLocalProcClient;
+        use crate::host_mesh::host_agent::GetLocalProcClient;
         use crate::proc_agent::NewClientInstanceClient;
 
         // Create a local instance just to call the local bootstrap actor.
@@ -3521,7 +3656,7 @@ mod tests {
         let (temp_instance, _) = temp_proc.instance("temp").unwrap();
 
         let handle = host(
-            any_addr_for_test(),
+            ChannelAddr::any(ChannelTransport::Unix),
             Some(BootstrapCommand::test()),
             None,
             false,
@@ -3530,7 +3665,7 @@ mod tests {
         .await
         .unwrap();
 
-        let local_proc = handle.get_local_proc(&temp_instance).await.unwrap();
+        let local_proc = handle.0.get_local_proc(&temp_instance).await.unwrap();
         let _local_instance = local_proc
             .new_client_instance(&temp_instance)
             .await
@@ -3575,7 +3710,7 @@ mod tests {
     impl ProcLauncher for DummyLauncher {
         async fn launch(
             &self,
-            _proc_id: &ProcId,
+            _proc_id: &hyperactor_reference::ProcId,
             _opts: LaunchOptions,
         ) -> Result<LaunchResult, ProcLauncherError> {
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -3586,7 +3721,7 @@ mod tests {
             });
             Ok(LaunchResult {
                 pid: None,
-                started_at: RealClock.system_time_now(),
+                started_at: std::time::SystemTime::now(),
                 stdio: StdioHandling::ManagedByLauncher,
                 exit_rx: rx,
             })
@@ -3594,13 +3729,16 @@ mod tests {
 
         async fn terminate(
             &self,
-            _proc_id: &ProcId,
+            _proc_id: &hyperactor_reference::ProcId,
             _timeout: Duration,
         ) -> Result<(), ProcLauncherError> {
             Ok(())
         }
 
-        async fn kill(&self, _proc_id: &ProcId) -> Result<(), ProcLauncherError> {
+        async fn kill(
+            &self,
+            _proc_id: &hyperactor_reference::ProcId,
+        ) -> Result<(), ProcLauncherError> {
             Ok(())
         }
     }

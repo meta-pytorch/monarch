@@ -121,7 +121,40 @@ impl AttrValue for ConfigAttr {
     }
 }
 
-// Declare the CONFIG meta-attribute
+/// Metadata describing how an attribute key is exposed through the
+/// HTTP introspection schema.
+///
+/// Each `IntrospectAttr` value defines the public schema entry for a
+/// Rust attribute key as exposed by endpoints such as `GET
+/// /v1/_schema`:
+/// - `name`: short public key name used in HTTP JSON and schema
+///   output (for example, `"node_type"` instead of a fully qualified
+///   Rust path)
+/// - `desc`: human-readable description shown in the schema output
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IntrospectAttr {
+    /// Short public name for the key in HTTP JSON and schema.
+    pub name: String,
+
+    /// Human-readable description for the schema endpoint.
+    pub desc: String,
+}
+
+impl Named for IntrospectAttr {
+    fn typename() -> &'static str {
+        "hyperactor_config::IntrospectAttr"
+    }
+}
+
+impl AttrValue for IntrospectAttr {
+    fn display(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "<invalid IntrospectAttr>".into())
+    }
+    fn parse(s: &str) -> Result<Self, anyhow::Error> {
+        Ok(serde_json::from_str(s)?)
+    }
+}
+
 declare_attrs! {
     /// This is a meta-attribute marking a configuration key.
     ///
@@ -135,6 +168,19 @@ declare_attrs! {
     /// All configuration keys should be annotated with this
     /// attribute.
     pub attr CONFIG: ConfigAttr;
+
+    /// This is a meta-attribute marking a key as part of the HTTP
+    /// introspection schema.
+    ///
+    /// It carries the public schema metadata used to expose actor and
+    /// mesh topology attributes through the introspection API.
+    ///
+    /// Keys that should be visible through the introspection HTTP
+    /// surface should be annotated with this attribute, for example:
+    ///
+    /// `@meta(INTROSPECT = IntrospectAttr { name: "...".into(), desc:
+    /// "...".into() })`
+    pub attr INTROSPECT: IntrospectAttr;
 }
 
 /// Load configuration from environment variables
@@ -521,5 +567,34 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&temp_path);
+    }
+
+    // Verify that the INTROSPECT meta-attribute attaches structured
+    // introspection metadata to an attribute key and that the
+    // metadata can be retrieved through the attrs API.
+    //
+    // The declare_attrs! block defines a key annotated with
+    // `@meta(INTROSPECT = IntrospectAttr { ... })`. Calling
+    // `.attrs()` on the key should expose that metadata, and
+    // `meta.get(INTROSPECT)` should return the stored
+    // `IntrospectAttr` with the declared `name` and `desc` values.
+    #[test]
+    fn test_introspect_meta_key() {
+        use crate::INTROSPECT;
+        use crate::IntrospectAttr;
+
+        declare_attrs! {
+            @meta(INTROSPECT = IntrospectAttr {
+                name: "test_key".into(),
+                desc: "A test introspection key".into(),
+            })
+            attr TEST_INTROSPECT_KEY: String;
+        }
+        let meta = TEST_INTROSPECT_KEY.attrs();
+        let introspect = meta
+            .get(INTROSPECT)
+            .expect("INTROSPECT meta-attr should be set");
+        assert_eq!(introspect.name, "test_key");
+        assert_eq!(introspect.desc, "A test introspection key");
     }
 }

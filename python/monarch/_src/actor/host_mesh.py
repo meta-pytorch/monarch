@@ -6,24 +6,26 @@
 
 # pyre-strict
 
+import os
+import subprocess
+import sys
+import tempfile
 import warnings
+from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
+    _spawn_admin as _hy_spawn_admin,
     BootstrapCommand,
     HostMesh as HyHostMesh,
+    PyMeshAdminRef,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
 from monarch._src.actor.actor_mesh import _Lazy, context
-from monarch._src.actor.allocator import (
-    AllocateMixin,
-    AllocHandle,
-    LocalAllocator,
-    ProcessAllocator,
-)
+from monarch._src.actor.allocator import AllocateMixin, AllocHandle, LocalAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
@@ -61,6 +63,18 @@ class HostMesh(MeshTrait):
     """
     HostMesh represents a collection of compute hosts that can be used to spawn
     processes and actors.
+
+    Can be used as an async context manager, which will shut down the hosts on
+    exit:
+    ```
+    host_mesh = job.state().hosts
+    async with host_mesh:
+        # spawn proc meshes, actor meshes, etc.
+    # shutdown() is called automatically on exit.
+    ```
+
+    If you don't want to shutdown the hosts, you don't need to use it as a
+    context manager.
     """
 
     def __init__(
@@ -69,16 +83,18 @@ class HostMesh(MeshTrait):
         region: Region,
         stream_logs: bool,
         is_fake_in_process: bool,
-        _code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"],
+        code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"],
     ) -> None:
-        self._hy_host_mesh = hy_host_mesh
+        self._inner_host_mesh: Optional[Shared[HyHostMesh]] = hy_host_mesh
         self._region = region
         self._stream_logs = stream_logs
         self._is_fake_in_process = is_fake_in_process
-        self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = _code_sync_proc_mesh
+        self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = code_sync_proc_mesh
+        self._pending_spawns: list[Shared[HyProcMesh]] = []
+        self._proc_meshes: list["ProcMesh"] = []
 
     @classmethod
-    def allocate_nonblocking(
+    def _allocate_nonblocking(
         cls,
         name: str,
         extent: Extent,
@@ -123,47 +139,41 @@ class HostMesh(MeshTrait):
         per_host: Dict[str, int] | None = None,
         bootstrap: Callable[[], None] | Callable[[], Awaitable[None]] | None = None,
         name: str | None = None,
+        proc_bind: list[dict[str, str]] | None = None,
     ) -> "ProcMesh":
+        """Spawn a ProcMesh onto this host mesh.
+
+        Args:
+            per_host: shape of procs per host, e.g. ``{"gpus": 4}``.
+            bootstrap: optional setup callable run on each proc.
+            name: optional name for the proc mesh.
+            proc_bind: optional per-process CPU/NUMA binding config.
+                Length must equal ``math.prod(per_host.values())``.
+                Each dict maps binding keys (``cpunodebind``,
+                ``membind``, ``physcpubind``, ``cpus``) to values.
+        """
         if not per_host:
             per_host = {}
 
         if not name:
             name = "anon"
 
+        import math
+
+        procs_per_host = math.prod(per_host.values()) if per_host else 1
+        if proc_bind is not None and len(proc_bind) != procs_per_host:
+            raise ValueError(
+                f"proc_bind length ({len(proc_bind)}) must equal "
+                f"procs_per_host ({procs_per_host})"
+            )
+
         return self._spawn_nonblocking(
             name,
             Extent(list(per_host.keys()), list(per_host.values())),
             bootstrap,
             True,
+            proc_bind,
         )
-
-    def _spawn_admin(self, admin_port: Optional[int] = None) -> "Future[str]":
-        """
-        Spawn a MeshAdminAgent on the head host's system proc and
-        return its HTTP address.
-
-        The admin agent aggregates topology across all hosts and serves
-        an HTTP API. Use the returned address to connect the admin TUI::
-
-            head = host_mesh.slice(hosts=0)
-            addr = head._spawn_admin(admin_port=8080).get()
-
-        Args:
-            admin_port: Optional fixed port for the admin HTTP server.
-                When provided, the server binds to ``[::]:<port>``.
-                When ``None``, an ephemeral port is chosen.
-
-        Returns:
-            Future[str]: The admin HTTP URL (e.g. ``"http://myhost.facebook.com:8080"``).
-        """
-
-        async def task() -> str:
-            hy_mesh = await self._hy_host_mesh
-            return await hy_mesh._spawn_admin(
-                context().actor_instance._as_rust(), admin_port
-            )
-
-        return Future(coro=task())
 
     def _spawn_nonblocking(
         self,
@@ -171,22 +181,30 @@ class HostMesh(MeshTrait):
         per_host: Extent,
         setup: Callable[[], None] | Callable[[], Awaitable[None]] | None,
         _attach_controller_controller: bool,
+        proc_bind: list[dict[str, str]] | None = None,
     ) -> "ProcMesh":
         if set(per_host.labels) & set(self._labels):
             # The rust side will catch this too, but this lets us fail fast
             raise ValueError(
                 f"per_host labels {per_host.labels} overlap with host labels {self._labels}"
             )
+        # This is checked inside the task as well, but we can pre-emptively raise
+        # earlier.
+        if self._inner_host_mesh is None:
+            raise RuntimeError("HostMesh has already been shut down")
 
         async def task() -> HyProcMesh:
             hy_host_mesh = await self._hy_host_mesh
             return await hy_host_mesh.spawn_nonblocking(
-                context().actor_instance._as_rust(), name, per_host
+                context().actor_instance._as_rust(), name, per_host, proc_bind
             )
 
-        return ProcMesh.from_host_mesh(
+        spawn_shared = PythonTask.from_coroutine(task()).spawn()
+        self._pending_spawns.append(spawn_shared)
+
+        pm = ProcMesh.from_host_mesh(
             self,
-            PythonTask.from_coroutine(task()).spawn(),
+            spawn_shared,
             Extent(
                 self._labels + tuple(per_host.labels),
                 self.region.slice().sizes + list(per_host.sizes),
@@ -194,6 +212,8 @@ class HostMesh(MeshTrait):
             setup,
             _attach_controller_controller,
         )
+        self._proc_meshes.append(pm)
+        return pm
 
     @property
     def _ndslice(self) -> NDSlice:
@@ -264,6 +284,37 @@ class HostMesh(MeshTrait):
             is_fake_in_process=False,
         )
 
+    def with_python_executable(self, python_executable: str) -> "HostMesh":
+        """
+        Return a new HostMesh that will use the given Python executable when
+        spawning procs. Procs spawned from this mesh will also inherit this
+        Python executable when they call ``this_host().spawn_procs(...)``.
+
+        Args:
+            python_executable: Path to the Python executable to use.
+
+        Returns:
+            A new HostMesh configured to use the specified Python executable.
+        """
+        _, _, bootstrap_env = _get_bootstrap_args()
+        bootstrap_cmd: BootstrapCommand = BootstrapCommand(
+            python_executable,
+            None,
+            ["-m", "monarch._src.actor.bootstrap_main"],
+            bootstrap_env,
+        )
+
+        async def task() -> HyHostMesh:
+            return (await self._hy_host_mesh).with_bootstrap(bootstrap_cmd)
+
+        return HostMesh(
+            PythonTask.from_coroutine(task()).spawn(),
+            self._region,
+            self._stream_logs,
+            self._is_fake_in_process,
+            None,
+        )
+
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         return HostMesh, (
             self._hy_host_mesh,
@@ -289,22 +340,78 @@ class HostMesh(MeshTrait):
     def _initialized_mesh(self) -> HyHostMesh:
         return self._hy_host_mesh.poll() or self._hy_host_mesh.block_on()
 
+    async def _flush_pending_spawns(self) -> None:
+        for shared in self._pending_spawns:
+            try:
+                await shared
+            except Exception:
+                pass
+        self._pending_spawns.clear()
+        for pm in self._proc_meshes:
+            await pm._flush_pending_actor_spawns()
+            try:
+                await pm._logging_manager.flush_async()
+            except Exception:
+                pass
+
     def shutdown(self) -> Future[None]:
         """
         Shutdown the host mesh and all of its processes. It will throw an exception
         if this host mesh is a *reference* rather than *owned*, which can happen
         if this `HostMesh` object was received from a remote actor or if it was
         produced by slicing.
+        After shutting down, the hosts in this mesh will be unusable, and no new
+        HostMeshes will be able to connect to them.
+        If you want to stop everything on the host but keep them available for
+        new clients, use `stop()` instead.
+
+        This is run automatically on __aexit__ when used as an async context manager.
 
         Returns:
             Future[None]: A future that completes when the host mesh has been shut down.
         """
 
         async def task() -> None:
+            await self._flush_pending_spawns()
             hy_mesh = await self._hy_host_mesh
             await hy_mesh.shutdown(context().actor_instance._as_rust())
+            # Remove the inner host mesh to clean up associated memory.
+            self._inner_host_mesh = None
 
         return Future(coro=task())
+
+    def stop(self) -> Future[None]:
+        """
+        Stop the host mesh, releasing all resources but keeping worker
+        processes alive for reconnection. A new HostMesh can be created that
+        points to the same hosts.
+
+        Like `shutdown`, this throws if the host mesh is a reference
+        rather than owned.
+
+        Returns:
+            Future[None]: A future that completes when the host mesh has been stopped.
+        """
+
+        async def task() -> None:
+            await self._flush_pending_spawns()
+            hy_mesh = await self._hy_host_mesh
+            await hy_mesh.stop(context().actor_instance._as_rust())
+
+        return Future(coro=task())
+
+    async def __aenter__(self) -> "HostMesh":
+        if self._inner_host_mesh is None:
+            raise RuntimeError("HostMesh has already been shut down")
+        return self
+
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
+        # In case there are multiple nested "async with" statements, we only
+        # want it to close once.
+        if self._inner_host_mesh is not None:
+            await self.shutdown()
 
     async def sync_workspace(
         self,
@@ -333,7 +440,7 @@ class HostMesh(MeshTrait):
     def initialized(self) -> Future[Literal[True]]:
         """
         Future completes with 'True' when the `HostMesh` has initialized.
-        Because `HostMesh` are remote objects, there is no guarentee that the `HostMesh` is
+        Because `HostMesh` are remote objects, there is no guarantee that the `HostMesh` is
         still usable after this completes, only that at some point in the past it was usable.
         """
         hm: Shared[HyHostMesh] = self._hy_host_mesh
@@ -343,6 +450,50 @@ class HostMesh(MeshTrait):
             return True
 
         return Future(coro=task())
+
+    @property
+    def _hy_host_mesh(self) -> Shared[HyHostMesh]:
+        if self._inner_host_mesh is None:
+            raise RuntimeError("HostMesh has already been shut down")
+        return self._inner_host_mesh
+
+
+def _spawn_admin(
+    host_meshes: list["HostMesh"],
+    admin_addr: Optional[str] = None,
+    telemetry_url: Optional[str] = None,
+) -> "Future[tuple[str, PyMeshAdminRef]]":
+    """
+    Spawn a MeshAdminAgent aggregating topology across one or more HostMeshes.
+
+    Returns ``(admin_url, admin_ref)`` where ``admin_ref`` is an opaque
+    capability token for immediate use only.
+
+    Args:
+        host_meshes: One or more HostMeshes whose hosts the admin
+            will aggregate for introspection. Must not be empty.
+        admin_addr: Optional socket address for the admin HTTP server.
+            When ``None``, reads ``MESH_ADMIN_ADDR`` from config.
+        telemetry_url: Optional base URL of the Monarch telemetry dashboard.
+
+    Returns:
+        Future[tuple[str, PyMeshAdminRef]]: (admin_url, admin_ref).
+
+    Raises:
+        ValueError: If host_meshes is empty.
+    """
+    if not host_meshes:
+        raise ValueError("_spawn_admin requires at least one HostMesh")
+
+    async def task() -> tuple[str, PyMeshAdminRef]:
+        hy_meshes = [await m._hy_host_mesh for m in host_meshes]
+        admin_url, admin_ref = await _hy_spawn_admin(
+            hy_meshes, context().actor_instance._as_rust(), admin_addr, telemetry_url
+        )
+        os.environ["MONARCH_ADMIN_URL"] = admin_url
+        return admin_url, admin_ref
+
+    return Future(coro=task())
 
 
 def hosts_from_config(name: str) -> HostMesh:
@@ -355,10 +506,26 @@ def hosts_from_config(name: str) -> HostMesh:
     WARNING: This function is a standin so that our getting_started example code works. The real implementation
     needs an RFC design.
     """
+    num_hosts = 2
+    tmpdir = tempfile.mkdtemp(prefix="monarch_hosts_from_config_")
+    workers = []
+    for i in range(num_hosts):
+        addr = f"ipc://{tmpdir}/{name}_{i}"
+        env = {**os.environ}
+        cmd = [
+            sys.executable,
+            "-c",
+            "from monarch.actor import run_worker_loop_forever; "
+            f'run_worker_loop_forever(address="{addr}", '
+            'ca="trust_all_connections")',
+        ]
+        subprocess.Popen(cmd, env=env, start_new_session=True)
+        workers.append(addr)
 
-    return HostMesh.allocate_nonblocking(
-        name,
-        Extent(["hosts"], [2]),
-        ProcessAllocator(*_get_bootstrap_args()),
-        bootstrap_cmd=_bootstrap_cmd(),
+    from monarch._src.actor.bootstrap import attach_to_workers
+
+    return attach_to_workers(
+        name=name,
+        ca="trust_all_connections",
+        workers=workers,
     )

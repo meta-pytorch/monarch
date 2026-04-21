@@ -13,7 +13,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
@@ -22,8 +21,7 @@ use hyperactor::Proc;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 
 use super::IbvBuffer;
@@ -32,11 +30,10 @@ use super::manager_actor::IbvManagerMessageClient;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::PollTarget;
 use crate::IbvConfig;
-use crate::RawLocalMemory;
-use crate::RdmaLocalMemory;
 use crate::RdmaManagerMessageClient;
 use crate::RdmaRemoteBuffer;
-use crate::cu_check;
+use crate::local_memory::RdmaLocalMemory;
+use crate::local_memory::UnsafeLocalMemory;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
 
@@ -97,23 +94,23 @@ impl RemoteSpawn for CudaActor {
 pub enum CudaActorMessage {
     CreateBuffer {
         size: usize,
-        rdma_actor: ActorRef<RdmaManagerActor>,
+        rdma_actor: reference::ActorRef<RdmaManagerActor>,
         #[reply]
-        reply: hyperactor::OncePortRef<(RdmaRemoteBuffer, usize)>,
+        reply: reference::OncePortRef<(RdmaRemoteBuffer, usize)>,
     },
     FillBuffer {
         device_ptr: usize,
         size: usize,
         value: u8,
         #[reply]
-        reply: hyperactor::OncePortRef<()>,
+        reply: reference::OncePortRef<()>,
     },
     VerifyBuffer {
         cpu_buffer_ptr: usize,
         device_ptr: usize,
         size: usize,
         #[reply]
-        reply: hyperactor::OncePortRef<()>,
+        reply: reference::OncePortRef<()>,
     },
 }
 
@@ -146,8 +143,17 @@ impl Handler<CudaActorMessage> for CudaActor {
                     prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
                     prop.location.id = device;
                     prop.allocFlags.gpuDirectRDMACapable = 1;
-                    prop.requestedHandleTypes =
-                        rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+                    // ROCm bindgen generates a different struct layout with anonymous union
+                    #[cfg(feature = "rocm")]
+                    {
+                        prop.__bindgen_anon_1.requestedHandleTypes =
+                            rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+                    }
+                    #[cfg(not(feature = "rocm"))]
+                    {
+                        prop.requestedHandleTypes =
+                            rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+                    }
 
                     cu_check!(rdmaxcel_sys::rdmaxcel_cuMemGetAllocationGranularity(
                         &mut granularity as *mut usize,
@@ -191,19 +197,19 @@ impl Handler<CudaActorMessage> for CudaActor {
                         1
                     ));
 
-                    (dptr, padded_size)
+                    (dptr as usize, padded_size)
                 };
 
                 // Register via RdmaManagerActor request_buffer; the ibverbs MR
                 // will be registered lazily by resolve_ibv().
                 let local_memory: Arc<dyn RdmaLocalMemory> =
-                    Arc::new(RawLocalMemory::new(dptr as usize, padded_size));
+                    Arc::new(UnsafeLocalMemory::new(dptr, padded_size));
                 let handle = rdma_actor
                     .downcast_handle(cx)
                     .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
                 let rdma_handle = handle.request_buffer(cx, local_memory).await?;
 
-                reply.send(cx, (rdma_handle, dptr as usize))?;
+                reply.send(cx, (rdma_handle, dptr))?;
                 Ok(())
             }
             CudaActorMessage::FillBuffer {
@@ -288,7 +294,7 @@ pub async fn wait_for_completion(
                 if remaining.is_empty() {
                     return Ok(true);
                 }
-                RealClock.sleep(Duration::from_millis(1)).await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
             Err(e) => {
                 return Err(anyhow::anyhow!(e));
@@ -366,7 +372,7 @@ pub async fn recv_wqe_gpu(
 }
 
 pub async fn ring_db_gpu(qp: &IbvQueuePair) -> Result<(), anyhow::Error> {
-    RealClock.sleep(Duration::from_millis(2)).await;
+    tokio::time::sleep(Duration::from_millis(2)).await;
     unsafe {
         let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
         let base_ptr = (*dv_qp).sq.buf as *mut u8;
@@ -440,7 +446,7 @@ pub async fn wait_for_completion_gpu(
                 }
                 _ => {
                     // No completion yet, sleep and try again
-                    RealClock.sleep(Duration::from_millis(1)).await;
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
             }
         }
@@ -455,18 +461,18 @@ pub struct IbvTestEnv {
     buffer_2: Buffer,
     pub client_1: Instance<()>,
     pub client_2: Instance<()>,
-    pub actor_1: ActorRef<RdmaManagerActor>,
-    pub actor_2: ActorRef<RdmaManagerActor>,
-    pub ibv_actor_1: ActorRef<IbvManagerActor>,
-    pub ibv_actor_2: ActorRef<IbvManagerActor>,
+    pub actor_1: reference::ActorRef<RdmaManagerActor>,
+    pub actor_2: reference::ActorRef<RdmaManagerActor>,
+    pub ibv_actor_1: reference::ActorRef<IbvManagerActor>,
+    pub ibv_actor_2: reference::ActorRef<IbvManagerActor>,
     pub rdma_handle_1: RdmaRemoteBuffer,
     pub rdma_handle_2: RdmaRemoteBuffer,
     pub local_memory_1: Arc<dyn RdmaLocalMemory>,
     pub local_memory_2: Arc<dyn RdmaLocalMemory>,
     pub ibv_buffer_1: IbvBuffer,
     pub ibv_buffer_2: IbvBuffer,
-    cuda_actor_1: Option<ActorRef<CudaActor>>,
-    cuda_actor_2: Option<ActorRef<CudaActor>>,
+    cuda_actor_1: Option<reference::ActorRef<CudaActor>>,
+    cuda_actor_2: Option<reference::ActorRef<CudaActor>>,
     device_ptr_1: Option<usize>,
     device_ptr_2: Option<usize>,
 }
@@ -542,11 +548,11 @@ impl IbvTestEnv {
 
         let rdma_actor_1 = RdmaManagerActor::new(Some(config1), Flattrs::default()).await?;
         let rdma_actor_handle_1 = proc_1.spawn("rdma_manager", rdma_actor_1)?;
-        let actor_1: ActorRef<RdmaManagerActor> = rdma_actor_handle_1.bind();
+        let actor_1: reference::ActorRef<RdmaManagerActor> = rdma_actor_handle_1.bind();
 
         let rdma_actor_2 = RdmaManagerActor::new(Some(config2), Flattrs::default()).await?;
         let rdma_actor_handle_2 = proc_2.spawn("rdma_manager", rdma_actor_2)?;
-        let actor_2: ActorRef<RdmaManagerActor> = rdma_actor_handle_2.bind();
+        let actor_2: reference::ActorRef<RdmaManagerActor> = rdma_actor_handle_2.bind();
 
         let mut buf_vec = Vec::new();
         let mut cuda_actor_1 = None;
@@ -568,7 +574,7 @@ impl IbvTestEnv {
                 len: buffer.len(),
                 cpu_ref: Some(buffer),
             });
-            local_memory_1 = Arc::new(RawLocalMemory::new(ptr as usize, buffer_size));
+            local_memory_1 = Arc::new(UnsafeLocalMemory::new(ptr as usize, buffer_size));
             let handle_1 = actor_1
                 .downcast_handle(&instance_1)
                 .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -579,14 +585,14 @@ impl IbvTestEnv {
             // CUDA case - spawn CudaActor on the same proc
             let cuda_actor = CudaActor::new(parsed_accel1.1 as i32, Flattrs::default()).await?;
             let cuda_handle = proc_1.spawn("cuda_init", cuda_actor)?;
-            let cuda_actor_ref_1: ActorRef<CudaActor> = cuda_handle.bind();
+            let cuda_actor_ref_1: reference::ActorRef<CudaActor> = cuda_handle.bind();
 
             let (rdma_buf, dev_ptr) = cuda_actor_ref_1
                 .create_buffer(&instance_1, buffer_size, actor_1.clone())
                 .await?;
             rdma_handle_1 = rdma_buf;
             device_ptr_1 = Some(dev_ptr);
-            local_memory_1 = Arc::new(RawLocalMemory::new(dev_ptr, buffer_size));
+            local_memory_1 = Arc::new(UnsafeLocalMemory::new(dev_ptr, buffer_size));
 
             buf_vec.push(Buffer {
                 ptr: dev_ptr as u64,
@@ -605,7 +611,7 @@ impl IbvTestEnv {
                 len: buffer.len(),
                 cpu_ref: Some(buffer),
             });
-            local_memory_2 = Arc::new(RawLocalMemory::new(ptr as usize, buffer_size));
+            local_memory_2 = Arc::new(UnsafeLocalMemory::new(ptr as usize, buffer_size));
             let handle_2 = actor_2
                 .downcast_handle(&instance_2)
                 .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -616,14 +622,14 @@ impl IbvTestEnv {
             // CUDA case - spawn CudaActor on the same proc
             let cuda_actor = CudaActor::new(parsed_accel2.1 as i32, Flattrs::default()).await?;
             let cuda_handle = proc_2.spawn("cuda_init", cuda_actor)?;
-            let cuda_actor_ref_2: ActorRef<CudaActor> = cuda_handle.bind();
+            let cuda_actor_ref_2: reference::ActorRef<CudaActor> = cuda_handle.bind();
 
             let (rdma_buf, dev_ptr) = cuda_actor_ref_2
                 .create_buffer(&instance_2, buffer_size, actor_2.clone())
                 .await?;
             rdma_handle_2 = rdma_buf;
             device_ptr_2 = Some(dev_ptr);
-            local_memory_2 = Arc::new(RawLocalMemory::new(dev_ptr, buffer_size));
+            local_memory_2 = Arc::new(UnsafeLocalMemory::new(dev_ptr, buffer_size));
 
             buf_vec.push(Buffer {
                 ptr: dev_ptr as u64,
@@ -634,8 +640,14 @@ impl IbvTestEnv {
         }
 
         // Resolve ibverbs details lazily via resolve_ibv
-        let (ibv_actor_1, ibv_buffer_1) = rdma_handle_1.resolve_ibv(&instance_1).await?;
-        let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2.resolve_ibv(&instance_2).await?;
+        let (ibv_actor_1, ibv_buffer_1) = rdma_handle_1
+            .resolve_ibv(&instance_1)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 1"))??;
+        let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2
+            .resolve_ibv(&instance_2)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 2"))??;
 
         // Fill buffer1 with test data
         if parsed_accel1.0 == "cuda" {
@@ -768,4 +780,28 @@ impl IbvTestEnv {
         }
         Ok(())
     }
+}
+
+/// Finds two CUDA devices that map to different RDMA NICs via PCI topology.
+/// Returns `Some((device_a, device_b))` or `None` if all devices share one NIC.
+#[cfg(test_8_gpus)]
+pub(crate) fn find_devices_on_different_nics() -> Option<(i32, i32)> {
+    use super::device_selection::select_optimal_ibv_device;
+
+    let mut gpu_to_nic: Vec<(i32, String)> = Vec::new();
+    for gpu_idx in 0..8 {
+        let hint = format!("cuda:{gpu_idx}");
+        if let Some(device) = select_optimal_ibv_device(Some(&hint)) {
+            gpu_to_nic.push((gpu_idx, device.name().to_string()));
+        }
+    }
+
+    for i in 0..gpu_to_nic.len() {
+        for j in (i + 1)..gpu_to_nic.len() {
+            if gpu_to_nic[i].1 != gpu_to_nic[j].1 {
+                return Some((gpu_to_nic[i].0, gpu_to_nic[j].0));
+            }
+        }
+    }
+    None
 }

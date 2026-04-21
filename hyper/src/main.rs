@@ -10,10 +10,15 @@ mod commands;
 
 use clap::Parser;
 use clap::Subcommand;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
+// tokio is used by #[tokio::main] in OSS builds
+// (cfg(not(fbcode_build))). In fbcode builds fbinit-tokio provides
+// the runtime, so the compiler doesn't see a direct reference. This
+// import suppresses the unused_extern warning while keeping tokio
+// explicit in the generated Cargo.toml.
+use tokio as _;
 
 use crate::commands::list::ListCommand;
+use crate::commands::resolve::ResolveCommand;
 use crate::commands::show::ShowCommand;
 
 #[derive(Parser)]
@@ -30,11 +35,14 @@ enum Command {
 
     #[clap(about = r#"List available resources"#)]
     List(ListCommand),
+
+    #[clap(about = "Resolve a MAST job handle to a mesh admin URL")]
+    Resolve(ResolveCommand),
 }
 
 #[cfg(fbcode_build)]
 #[fbinit::main]
-async fn main(_: fbinit::FacebookInit) -> Result<(), anyhow::Error> {
+async fn main(_fb: fbinit::FacebookInit) -> Result<(), anyhow::Error> {
     run().await
 }
 
@@ -51,14 +59,15 @@ async fn run() -> Result<(), anyhow::Error> {
     let result = match args.command {
         Command::Show(command) => command.run().await,
         Command::List(command) => command.run().await,
+        Command::Resolve(command) => command.run().await,
     };
 
     // Allow the channel layer to flush pending acks before exit.
     // Without this, the remote host's MailboxClient observes a
     // broken link (30 s ack timeout) and the resulting undeliverable
-    // message crashes the HostMeshAgent, tearing down the entire
+    // message crashes the HostAgent, tearing down the entire
     // mesh.  The ack interval is 500 ms, so 1 s is sufficient.
-    RealClock.sleep(std::time::Duration::from_secs(1)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     result
 }

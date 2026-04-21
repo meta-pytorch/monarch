@@ -8,7 +8,6 @@
 
 //! Names in hyperactor.
 
-use rand::RngCore as _;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -32,7 +31,7 @@ pub struct Uid(u64);
 impl Uid {
     /// Generate a new uid.
     pub fn generate() -> Self {
-        Self(rand::thread_rng().next_u64())
+        Self(rand::random())
     }
 
     pub(crate) fn zero() -> Self {

@@ -19,7 +19,7 @@ use hyperactor_config::Flattrs;
 use crate::Actor;
 use crate::Data;
 use crate::proc::Proc;
-use crate::reference::ActorId;
+use crate::reference;
 
 /// The offset of user-defined ports (i.e., arbitrarily bound).
 pub const USER_PORT_OFFSET: u64 = 1024;
@@ -69,7 +69,9 @@ pub struct SpawnableActor {
         &str,
         Data,
         Flattrs,
-    ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>>,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<reference::ActorId, anyhow::Error>> + Send>,
+    >,
 
     /// A function to retrieve the type id of the actor itself. This is
     /// used to translate a concrete type to a global name.
@@ -126,7 +128,7 @@ impl Remote {
         actor_name: &str,
         params: Data,
         environment: Flattrs,
-    ) -> Result<ActorId, anyhow::Error> {
+    ) -> Result<reference::ActorId, anyhow::Error> {
         let entry = self
             .by_name
             .get(actor_type)

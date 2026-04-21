@@ -17,10 +17,6 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PanicFlag,
     PythonMessageKind,
 )
-from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    AllocConstraints,
-    AllocSpec,
-)
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PendingMessage,
@@ -29,7 +25,8 @@ from monarch._rust_bindings.monarch_hyperactor.pickle import (
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._src.actor.allocator import LocalAllocator
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent
+from monarch._src.actor.host_mesh import HostMesh, this_host
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch.actor import context
 
@@ -58,6 +55,13 @@ class MyActor:
                 raise NotImplementedError()
 
 
+def _shutdown_test_target() -> None:
+    import monarch._rust_bindings  # noqa
+    import torch  # noqa
+
+    time.sleep(100)
+
+
 def test_import() -> None:
     try:
         import monarch._rust_bindings  # noqa
@@ -66,19 +70,13 @@ def test_import() -> None:
 
 
 def test_actor_id() -> None:
-    actor_id = ActorId(world_name="test", rank=0, actor_name="actor")
+    actor_id = ActorId(addr="local:0", proc_name="test", actor_name="actor")
     assert actor_id.pid == 0
-    assert str(actor_id) == "test[0].actor[0]"
+    assert str(actor_id) == "local:0,test,actor[0]"
 
 
 def test_no_hang_on_shutdown() -> None:
-    def test_fn() -> None:
-        import monarch._rust_bindings  # noqa
-        import torch  # noqa
-
-        time.sleep(100)
-
-    proc = multiprocessing.Process(target=test_fn)
+    proc = multiprocessing.Process(target=_shutdown_test_target)
     proc.start()
     pid = proc.pid
     assert pid is not None
@@ -88,12 +86,6 @@ def test_no_hang_on_shutdown() -> None:
     pid, code = os.waitpid(pid, os.WNOHANG)
     assert pid > 0
     assert code == signal.SIGTERM, code
-
-
-async def test_allocator() -> None:
-    spec = AllocSpec(AllocConstraints(), replica=2)
-    allocator = LocalAllocator()
-    _ = allocator.allocate(spec)
 
 
 def _python_task_test(
@@ -108,23 +100,31 @@ def _python_task_test(
 
 @_python_task_test
 async def test_proc_mesh() -> None:
-    spec = AllocSpec(AllocConstraints(), replica=2)
-    allocator = LocalAllocator()
-    alloc = await allocator.allocate_nonblocking(spec)
-    instance = context().actor_instance._as_rust()
-    proc_mesh = await ProcMesh.allocate_nonblocking(instance, alloc, "proc_mesh")
+    host_mesh: HostMesh = this_host()
+
+    async def task() -> ProcMesh:
+        hy_host_mesh = await host_mesh._hy_host_mesh
+        return await hy_host_mesh.spawn_nonblocking(
+            context().actor_instance._as_rust(),
+            "proc_mesh",
+            Extent(["replicas"], [2]),
+        )
+
+    proc_mesh = await PythonTask.from_coroutine(task()).spawn()
     # v1 has a different repr format
     assert "ProcMesh" in str(proc_mesh)
 
 
 @_python_task_test
 async def test_actor_mesh() -> None:
+    host_mesh: HostMesh = this_host()
+
     async def task() -> ProcMesh:
-        spec = AllocSpec(AllocConstraints(), replica=2)
-        allocator = LocalAllocator()
-        alloc = await allocator.allocate_nonblocking(spec)
-        return await ProcMesh.allocate_nonblocking(
-            context().actor_instance._as_rust(), alloc, "test"
+        hy_host_mesh = await host_mesh._hy_host_mesh
+        return await hy_host_mesh.spawn_nonblocking(
+            context().actor_instance._as_rust(),
+            "test",
+            Extent(["replicas"], [2]),
         )
 
     proc_mesh_task: Shared[ProcMesh] = PythonTask.from_coroutine(task()).spawn()

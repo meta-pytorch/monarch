@@ -82,9 +82,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use hyperactor::ProcId;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
+use hyperactor::reference as hyperactor_reference;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
@@ -96,6 +94,7 @@ use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::PROCESS_NAME_ENV;
 use crate::proc_launcher::LaunchOptions;
 use crate::proc_launcher::LaunchResult;
+use crate::proc_launcher::ProcBind;
 use crate::proc_launcher::ProcExitKind;
 use crate::proc_launcher::ProcExitResult;
 use crate::proc_launcher::ProcLauncher;
@@ -129,7 +128,7 @@ pub(crate) struct NativeProcLauncher {
     /// removed by the exit-monitor task after `wait()` completes.
     /// Missing entries are treated as idempotent success (already
     /// exited / unknown).
-    pid_table: Arc<Mutex<HashMap<ProcId, u32>>>,
+    pid_table: Arc<Mutex<HashMap<hyperactor_reference::ProcId, u32>>>,
 }
 
 impl NativeProcLauncher {
@@ -184,6 +183,57 @@ impl NativeProcLauncher {
             Err(kind(format!("signal(pgid={pgid}, {sig}) failed: {e}")))
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+/// Wrap a [`BootstrapCommand`] with `numactl` or `taskset` based on the
+/// binding config. On NUMA-capable systems the numactl keys
+/// (`cpunodebind`, `membind`, `physcpubind`) take precedence. On Linux,
+/// `cpus` falls back to `taskset -c`.
+fn wrap_command_for_binding(mut cmd: BootstrapCommand, bind: &ProcBind) -> BootstrapCommand {
+    let numa = std::path::Path::new("/sys/devices/system/node/node0").exists();
+
+    if numa {
+        let mut numactl_args = Vec::new();
+        if let Some(v) = bind.cpunodebind.as_deref() {
+            numactl_args.push(format!("--cpunodebind={v}"));
+        }
+        if let Some(v) = bind.membind.as_deref() {
+            numactl_args.push(format!("--membind={v}"));
+        }
+        if let Some(v) = bind.physcpubind.as_deref() {
+            numactl_args.push(format!("--physcpubind={v}"));
+        }
+        if !numactl_args.is_empty() {
+            numactl_args.push(cmd.program.to_string_lossy().into_owned());
+            numactl_args.append(&mut cmd.args);
+            cmd.program = "numactl".into();
+            cmd.arg0 = None;
+            cmd.args = numactl_args;
+            return cmd;
+        }
+    }
+
+    // Fallback: taskset for CPU pinning on Linux.
+    if let Some(cpus) = bind.cpus.as_deref() {
+        let mut taskset_args = vec![
+            "-c".to_string(),
+            cpus.to_string(),
+            cmd.program.to_string_lossy().into_owned(),
+        ];
+        taskset_args.append(&mut cmd.args);
+        cmd.program = "taskset".into();
+        cmd.arg0 = None;
+        cmd.args = taskset_args;
+    }
+
+    cmd
+}
+
+#[cfg(not(target_os = "linux"))]
+/// No bindings available outside of Linux.
+fn wrap_command_for_binding(cmd: BootstrapCommand, _bind: &ProcBind) -> BootstrapCommand {
+    cmd
 }
 
 /// Convert a platform `std::process::ExitStatus` into our
@@ -264,11 +314,17 @@ impl ProcLauncher for NativeProcLauncher {
     )]
     async fn launch(
         &self,
-        proc_id: &ProcId,
+        proc_id: &hyperactor_reference::ProcId,
         opts: LaunchOptions,
     ) -> Result<LaunchResult, ProcLauncherError> {
+        // Apply NUMA/CPU binding if requested.
+        let command = match &opts.proc_bind {
+            Some(bind) => wrap_command_for_binding(opts.command.clone(), bind),
+            None => opts.command.clone(),
+        };
+
         // New Tokio Command from BootstrapCommand (template)
-        let mut cmd = opts.command.new();
+        let mut cmd = command.new();
 
         // Bootstrap payload
         cmd.env(BOOTSTRAP_MODE_ENV, opts.bootstrap_payload);
@@ -304,7 +360,7 @@ impl ProcLauncher for NativeProcLauncher {
             });
         }
 
-        let started_at = hyperactor::clock::RealClock.system_time_now();
+        let started_at = std::time::SystemTime::now();
 
         let mut child = cmd.spawn().map_err(ProcLauncherError::Launch)?;
         let pid = child.id().expect("spawned child pid unavailable");
@@ -415,14 +471,14 @@ impl ProcLauncher for NativeProcLauncher {
     /// ## Implementation notes
     ///
     /// - Escalation is performed by a background task that sleeps for
-    ///   `timeout` using [`RealClock`], re-checks `pid_table`, and
+    ///   `timeout` using `tokio::time::sleep`, re-checks `pid_table`, and
     ///   sends SIGKILL if the proc is still present.
     /// - We rely on the exit-monitor task spawned in `launch` to
     ///   remove the proc from `pid_table` and resolve the `exit_rx`
     ///   channel when the proc actually terminates.
     async fn terminate(
         &self,
-        proc_id: &ProcId,
+        proc_id: &hyperactor_reference::ProcId,
         timeout: Duration,
     ) -> Result<(), ProcLauncherError> {
         let pid = {
@@ -460,7 +516,7 @@ impl ProcLauncher for NativeProcLauncher {
 
         tokio::spawn(
             async move {
-                RealClock.sleep(timeout).await;
+                tokio::time::sleep(timeout).await;
 
                 let pid = {
                     let table = pid_table.lock().expect("pid_table mutex poisoned");
@@ -502,7 +558,7 @@ impl ProcLauncher for NativeProcLauncher {
     /// - We do not remove `proc_id` from `pid_table` here; the
     ///   exit-monitor task spawned in `launch` removes it once the
     ///   child actually exits.
-    async fn kill(&self, proc_id: &ProcId) -> Result<(), ProcLauncherError> {
+    async fn kill(&self, proc_id: &hyperactor_reference::ProcId) -> Result<(), ProcLauncherError> {
         let pid = {
             let table = self.pid_table.lock().expect("pid_table mutex poisoned");
             table.get(proc_id).copied()
@@ -549,7 +605,7 @@ impl Drop for NativeProcLauncher {
     fn drop(&mut self) {
         // Collect PIDs while holding the lock, then release before killing.
         // This avoids holding the lock during syscalls.
-        let pids: Vec<(ProcId, u32)> = {
+        let pids: Vec<(hyperactor_reference::ProcId, u32)> = {
             let table = self.pid_table.lock().expect("pid_table mutex poisoned");
             table.iter().map(|(k, v)| (k.clone(), *v)).collect()
         };
@@ -573,6 +629,7 @@ mod tests {
 
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
+    use hyperactor::testing::ids::test_proc_id;
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncReadExt;
     use tokio::io::BufReader;
@@ -661,7 +718,7 @@ mod tests {
 
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId::Ranked(hyperactor::WorldId("test".into()), 7);
+        let proc_id = test_proc_id("7");
         let opts = LaunchOptions {
             command: with_sh(script),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -669,6 +726,7 @@ mod tests {
             want_stdio: true,
             tail_lines: 0,
             log_channel: Some(log_channel.clone()),
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -694,23 +752,22 @@ mod tests {
             "env-safe encoding should be deterministic/stable"
         );
 
-        // Process name: don't overfit; assert it includes the "proc "
-        // prefix and rank identity.
+        // Process name: don't overfit; assert it includes the proc name
+        // and " @ " separator.
         assert!(
-            proc_name_env.starts_with("proc "),
+            proc_name_env.starts_with("test_7"),
             "PROCESS_NAME_ENV looks wrong: {proc_name_env:?}"
         );
         assert!(
-            proc_name_env.contains("[7]"),
-            "expected rank marker in process name: {proc_name_env:?}"
+            proc_name_env.contains(" @ "),
+            "expected ' @ ' separator in process name: {proc_name_env:?}"
         );
 
         // Log channel propagated
         assert_eq!(log_env.as_str(), log_channel.to_string().as_str());
 
         // Ensure the exit channel resolves cleanly.
-        let exit = RealClock
-            .timeout(Duration::from_secs(2), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(2), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -748,7 +805,8 @@ mod tests {
             let launcher = NativeProcLauncher::new();
             // v0 bootstrap by default but it doesn't matter here.
             let bootstrap = Bootstrap::default();
-            let proc_id = ProcId::Direct(any_unix_addr(), "stdio-captured".into());
+            let proc_id =
+                hyperactor_reference::ProcId::with_name(any_unix_addr(), "stdio-captured");
             let opts = LaunchOptions {
                 command: with_sh(script),
                 bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -756,6 +814,7 @@ mod tests {
                 want_stdio: true,
                 tail_lines: 0,
                 log_channel: None,
+                proc_bind: None,
             };
             let lr = launcher.launch(&proc_id, opts).await.expect("launch");
             let (lines, stderr_bytes) = read_captured_lines(lr.stdio).await;
@@ -769,8 +828,7 @@ mod tests {
                 String::from_utf8_lossy(&stderr_bytes)
             );
 
-            let exit = RealClock
-                .timeout(Duration::from_secs(2), lr.exit_rx)
+            let exit = tokio::time::timeout(Duration::from_secs(2), lr.exit_rx)
                 .await
                 .expect("timed out waiting for exit_rx")
                 .expect("exit_rx dropped");
@@ -782,7 +840,8 @@ mod tests {
             let launcher = NativeProcLauncher::new();
             // v0 bootstrap by default but it doesn't matter here.
             let bootstrap = Bootstrap::default();
-            let proc_id = ProcId::Direct(any_unix_addr(), "stdio-inherited".into());
+            let proc_id =
+                hyperactor_reference::ProcId::with_name(any_unix_addr(), "stdio-inherited");
             let opts = LaunchOptions {
                 command: with_sh(script),
                 bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -790,13 +849,13 @@ mod tests {
                 want_stdio: false,
                 tail_lines: 0,
                 log_channel: None,
+                proc_bind: None,
             };
             let lr = launcher.launch(&proc_id, opts).await.expect("launch");
 
             assert!(matches!(lr.stdio, StdioHandling::Inherited));
 
-            let exit = RealClock
-                .timeout(Duration::from_secs(2), lr.exit_rx)
+            let exit = tokio::time::timeout(Duration::from_secs(2), lr.exit_rx)
                 .await
                 .expect("timed out waiting for exit_rx")
                 .expect("exit_rx dropped");
@@ -820,7 +879,7 @@ mod tests {
         let launcher = NativeProcLauncher::new();
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId::Direct(any_unix_addr(), "exit-7".into());
+        let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "exit-7");
         let opts = LaunchOptions {
             command: with_sh("exit 7"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -828,11 +887,11 @@ mod tests {
             want_stdio: false,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
-        let exit = RealClock
-            .timeout(Duration::from_secs(2), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(2), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -859,7 +918,7 @@ mod tests {
         let launcher = NativeProcLauncher::new();
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId::Direct(any_unix_addr(), "killed".into());
+        let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "killed");
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -867,6 +926,7 @@ mod tests {
             want_stdio: false,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -879,8 +939,7 @@ mod tests {
 
         launcher.kill(&proc_id).await.expect("kill");
 
-        let exit = RealClock
-            .timeout(Duration::from_secs(2), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(2), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -931,7 +990,7 @@ mod tests {
 
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId::Direct(any_unix_addr(), "term-escalate".into());
+        let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "term-escalate");
         let opts = LaunchOptions {
             command: with_sh(script),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -940,6 +999,7 @@ mod tests {
             want_stdio: true,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -953,8 +1013,7 @@ mod tests {
 
         let mut out = BufReader::new(stdout);
         let mut line = String::new();
-        RealClock
-            .timeout(Duration::from_secs(2), out.read_line(&mut line))
+        tokio::time::timeout(Duration::from_secs(2), out.read_line(&mut line))
             .await
             .expect("timed out waiting for READY")
             .expect("read_line failed");
@@ -975,8 +1034,7 @@ mod tests {
 
         // Give enough time for: sleep(timeout) + SIGKILL delivery +
         // wait() + oneshot send.
-        let exit = RealClock
-            .timeout(Duration::from_secs(5), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(5), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -1019,7 +1077,7 @@ while True:
         };
 
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId::Direct(any_unix_addr(), "drop-cleanup-test".into());
+        let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "drop-cleanup-test");
         let opts = LaunchOptions {
             command,
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1027,6 +1085,7 @@ while True:
             want_stdio: true,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         // Keep stdout in outer scope so we can read after launcher
@@ -1046,8 +1105,7 @@ while True:
 
             // Wait for "READY".
             let mut line = String::new();
-            RealClock
-                .timeout(Duration::from_secs(2), stdout_reader.read_line(&mut line))
+            tokio::time::timeout(Duration::from_secs(2), stdout_reader.read_line(&mut line))
                 .await
                 .expect("timeout waiting for READY")
                 .expect("read_line failed");
@@ -1055,8 +1113,7 @@ while True:
 
             // Prove child is alive by reading one dot.
             let mut b = [0u8; 1];
-            RealClock
-                .timeout(Duration::from_secs(2), stdout_reader.read_exact(&mut b))
+            tokio::time::timeout(Duration::from_secs(2), stdout_reader.read_exact(&mut b))
                 .await
                 .expect("timeout waiting for dot")
                 .expect("read_exact failed");
@@ -1079,8 +1136,7 @@ while True:
             }
         };
 
-        RealClock
-            .timeout(Duration::from_secs(2), drain_eof)
+        tokio::time::timeout(Duration::from_secs(2), drain_eof)
             .await
             .expect("never observed EOF after launcher drop - child likely still alive");
     }

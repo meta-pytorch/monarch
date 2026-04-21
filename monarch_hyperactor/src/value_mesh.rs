@@ -6,22 +6,71 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::sync::Mutex;
+
 use hyperactor_mesh::ValueMesh;
 use ndslice::Extent;
 use ndslice::Region;
 use ndslice::view::BuildFromRegion;
 use ndslice::view::Ranked;
-use ndslice::view::ViewExt;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pyo3::types::PyList;
+use serde_multipart::Part;
 
+use crate::buffers::FrozenBuffer;
+use crate::pickle::unpickle;
 use crate::shape::PyShape;
+
+/// A value that is either raw pickled bytes or an already-unpickled
+/// Python object. On first access, [`Pickled`] is unpickled and
+/// replaced with [`Unpickled`] so subsequent accesses skip
+/// deserialization.
+#[derive(Clone)]
+enum LazyPyObject {
+    Pickled(Part),
+    Unpickled(Py<PyAny>),
+}
+
+type LazyCell = Mutex<LazyPyObject>;
+
+impl LazyPyObject {
+    /// Resolve to a Python object, caching the result in place.
+    /// After this call the cell will contain [`Unpickled`].
+    fn resolve(cell: &LazyCell, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let mut guard = cell.lock().unwrap();
+
+        match &*guard {
+            LazyPyObject::Unpickled(obj) => Ok(obj.clone_ref(py)),
+            LazyPyObject::Pickled(part) => {
+                let py_obj = unpickle(
+                    py,
+                    FrozenBuffer {
+                        inner: part.clone().into_bytes(),
+                    },
+                )?
+                .unbind();
+
+                *guard = LazyPyObject::Unpickled(py_obj.clone_ref(py));
+
+                Ok(py_obj)
+            }
+        }
+    }
+}
+
+fn compress(inner: &mut ValueMesh<LazyCell>) {
+    inner.compress_adjacent_in_place_by(|a, b| match (&*a.lock().unwrap(), &*b.lock().unwrap()) {
+        (LazyPyObject::Unpickled(a), LazyPyObject::Unpickled(b)) => a.as_ptr() == b.as_ptr(),
+        (LazyPyObject::Pickled(a), LazyPyObject::Pickled(b)) => a == b,
+        _ => false,
+    });
+}
 
 #[pyclass(name = "ValueMesh", module = "monarch._src.actor.actor_mesh")]
 pub struct PyValueMesh {
-    inner: ValueMesh<Py<PyAny>>,
+    inner: ValueMesh<LazyCell>,
 }
 
 #[pymethods]
@@ -34,11 +83,14 @@ impl PyValueMesh {
         // Shape.
         let s = shape.get_inner();
         let region = Region::new(s.labels().to_vec(), s.slice().clone());
-        let vals: Vec<Py<PyAny>> = values.extract()?;
+        let vals: Vec<LazyCell> = values
+            .extract::<Vec<Py<PyAny>>>()?
+            .into_iter()
+            .map(|v| Mutex::new(LazyPyObject::Unpickled(v)))
+            .collect();
 
-        // Build & validate cardinality against region.
         let mut inner =
-            <ValueMesh<Py<PyAny>> as BuildFromRegion<Py<PyAny>>>::build_dense(region, vals)
+            <ValueMesh<LazyCell> as BuildFromRegion<LazyCell>>::build_dense(region, vals)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         // Coalesce adjacent identical Python objects (same pointer
@@ -47,7 +99,7 @@ impl PyValueMesh {
         // pointer are merged into RLE runs. This tends to compress
         // sentinel/categorical/boolean data, but not freshly
         // allocated numerics/strings.
-        inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
+        compress(&mut inner);
 
         Ok(Self { inner })
     }
@@ -65,9 +117,11 @@ impl PyValueMesh {
 
     /// Return the values in region/iteration order as a Python list.
     fn values(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        // Clone the inner Py objects into a Python list (just bumps
-        // refcounts).
-        let vec: Vec<Py<PyAny>> = self.inner.values().collect();
+        let n = self.inner.region().num_ranks();
+        let mut vec: Vec<Py<PyAny>> = Vec::with_capacity(n);
+        for rank in 0..n {
+            vec.push(LazyPyObject::resolve(self.inner.get(rank).unwrap(), py)?);
+        }
         Ok(PyList::new(py, vec)?.into())
     }
 
@@ -81,13 +135,7 @@ impl PyValueMesh {
             )));
         }
 
-        // ValueMesh::get() returns &Py<PyAny>; we clone the smart
-        // pointer (incrementing the Python refcount) to return an
-        // owned Py<PyAny>. `unwrap` is safe because the bounds have
-        // been checked.
-        let v: Py<PyAny> = self.inner.get(rank).unwrap().clone_ref(py);
-
-        Ok(v)
+        LazyPyObject::resolve(self.inner.get(rank).unwrap(), py)
     }
 
     /// Build from (rank, value) pairs with last-write-wins semantics.
@@ -100,9 +148,13 @@ impl PyValueMesh {
         // Preserve the shape's original Slice (offset/strides).
         let s = shape.get_inner();
         let region = Region::new(s.labels().to_vec(), s.slice().clone());
-        let mut inner = <ValueMesh<Py<PyAny>> as ndslice::view::BuildFromRegionIndexed<
-            Py<PyAny>,
-        >>::build_indexed(region, pairs)
+        let lazy_pairs: Vec<(usize, LazyCell)> = pairs
+            .into_iter()
+            .map(|(rank, obj)| (rank, Mutex::new(LazyPyObject::Unpickled(obj))))
+            .collect();
+        let mut inner = <ValueMesh<LazyCell> as ndslice::view::BuildFromRegionIndexed<
+            LazyCell,
+        >>::build_indexed(region, lazy_pairs)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
         // Coalesce adjacent identical Python objects (same pointer
@@ -111,21 +163,26 @@ impl PyValueMesh {
         // pointer are merged into RLE runs. This tends to compress
         // sentinel/categorical/boolean data, but not freshly
         // allocated numerics/strings.
-        inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
+        compress(&mut inner);
 
         Ok(Self { inner })
     }
 }
 
 impl PyValueMesh {
-    /// Create a ValueMesh from an extent and a pre-populated Vec of values.
-    pub fn build_dense_from_extent(extent: &Extent, values: Vec<Py<PyAny>>) -> PyResult<Self> {
-        let mut inner = <ValueMesh<Py<PyAny>> as BuildFromRegion<Py<PyAny>>>::build_dense(
+    /// Create a lazy ValueMesh from an extent and raw pickled parts.
+    /// Values are unpickled on demand when accessed via `get()` or `values()`.
+    pub fn build_from_parts(extent: &Extent, parts: Vec<Part>) -> PyResult<Self> {
+        let lazy_values: Vec<LazyCell> = parts
+            .into_iter()
+            .map(|p| Mutex::new(LazyPyObject::Pickled(p)))
+            .collect();
+        let mut inner = <ValueMesh<LazyCell> as BuildFromRegion<LazyCell>>::build_dense(
             ndslice::View::region(extent),
-            values,
+            lazy_values,
         )
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
+        compress(&mut inner);
 
         Ok(Self { inner })
     }
@@ -150,10 +207,14 @@ fn _make_test_value_mesh(
     let slice =
         ndslice::Slice::new(0, sizes, strides).map_err(|e| PyValueError::new_err(e.to_string()))?;
     let region = Region::new(labels, slice);
-    let vals: Vec<Py<PyAny>> = values.extract()?;
-    let mut inner = <ValueMesh<Py<PyAny>> as BuildFromRegion<Py<PyAny>>>::build_dense(region, vals)
+    let vals: Vec<LazyCell> = values
+        .extract::<Vec<Py<PyAny>>>()?
+        .into_iter()
+        .map(|v| Mutex::new(LazyPyObject::Unpickled(v)))
+        .collect();
+    let mut inner = <ValueMesh<LazyCell> as BuildFromRegion<LazyCell>>::build_dense(region, vals)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
+    compress(&mut inner);
     Ok(PyValueMesh { inner })
 }
 

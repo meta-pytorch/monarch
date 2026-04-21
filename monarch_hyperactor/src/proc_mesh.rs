@@ -17,7 +17,6 @@ use monarch_types::py_module_add_function;
 use ndslice::View;
 use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
-use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -28,7 +27,6 @@ use crate::actor::PythonActorParams;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::PythonActorMeshImpl;
 use crate::actor_mesh::SupervisableActorMesh;
-use crate::alloc::PyAlloc;
 use crate::context::PyInstance;
 use crate::pickle::PendingMessage;
 use crate::pytokio::PyPythonTask;
@@ -70,31 +68,6 @@ impl PyProcMesh {
 
 #[pymethods]
 impl PyProcMesh {
-    #[classmethod]
-    fn allocate_nonblocking<'py>(
-        _cls: &Bound<'_, PyType>,
-        _py: Python<'py>,
-        instance: &PyInstance,
-        alloc: &mut PyAlloc,
-        name: String,
-    ) -> PyResult<PyPythonTask> {
-        let alloc = match alloc.take() {
-            Some(alloc) => alloc,
-            None => {
-                return Err(PyException::new_err(
-                    "Alloc object already used".to_string(),
-                ));
-            }
-        };
-        let instance = instance.clone();
-        PyPythonTask::new(async move {
-            let mesh = ProcMesh::allocate(instance.deref(), alloc, &name)
-                .await
-                .map_err(|err| PyException::new_err(err.to_string()))?;
-            Ok(Self::new_owned(mesh))
-        })
-    }
-
     #[staticmethod]
     #[pyo3(signature = (proc_mesh, instance, name, actor, init_message, emulated, supervision_display_name = None))]
     fn spawn_async(

@@ -29,6 +29,7 @@ import asyncio
 import functools
 import os
 import pickle
+import signal
 import subprocess
 import sys
 import traceback
@@ -98,6 +99,7 @@ def isolate_in_subprocess(test_fn=None, *, env=None):
             launch_cmd,
             env=sub_env,
             pass_fds=(fn_read_fd, result_write_fd),
+            start_new_session=True,
         )
         # Close the child's ends in the parent.
         os.close(fn_read_fd)
@@ -122,16 +124,26 @@ def isolate_in_subprocess(test_fn=None, *, env=None):
 
         returncode = proc.wait()
 
-        if returncode != 0:
-            # Subprocess crashed — don't try to read from the pipe.
+        # Read the result before killing the process group, since we need
+        # the pipe data while the child's fd is still valid.
+        if returncode == 0:
+            with os.fdopen(result_read_fd, "rb") as f:
+                data = f.read()
+        else:
             os.close(result_read_fd)
+            data = None
+
+        # Kill the entire process group to clean up any leaked child
+        # processes (e.g. spawned proc meshes, worker processes).
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass  # Already gone.
+
+        if returncode != 0:
             pytest.fail(
                 f"Subprocess crashed with exit code {returncode}", pytrace=False
             )
-
-        # Subprocess exited cleanly — read the result.
-        with os.fdopen(result_read_fd, "rb") as f:
-            data = f.read()
 
         if not data:
             pytest.fail(

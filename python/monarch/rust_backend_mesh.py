@@ -100,7 +100,7 @@ class PoolDeviceMeshProvider:
         mesh_worlds_to_remove = []
         for mesh_world, _ in self._mesh_map.items():
             worker_world, controller_id = mesh_world
-            controller_world = controller_id.world_name
+            controller_world = controller_id.proc_name
 
             if (
                 world_status.get(worker_world) is None

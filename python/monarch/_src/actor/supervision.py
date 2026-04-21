@@ -6,12 +6,20 @@
 
 # pyre-strict
 
-import os
-import socket
 import sys
-from datetime import datetime
 
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
+
+
+class UnhandledFaultHookException(Exception):
+    """Wraps exceptions raised by the unhandled fault hook.
+
+    When `unhandled_fault_hook` raises (e.g. `sys.exit`), the
+    `RootClientActor` catches the exception, logs it, and re-raises
+    it wrapped in this type. The Rust root-client message loop
+    recognises this wrapper and skips re-dispatching the supervision
+    event, which would otherwise call `__supervise__` a second time.
+    """
 
 
 def unhandled_fault_hook(failure: MeshFailure) -> None:
@@ -20,9 +28,10 @@ def unhandled_fault_hook(failure: MeshFailure) -> None:
     The default implementation is to exit the process with error code 1
     after logging the event.
     If this function raises any exception (including BaseException classes such
-    as SystemExit), the client process will exit. Any normal return value will
-    cause the fault to be dropped. Logs will be written containing the failure
-    message in either case.
+    as SystemExit from sys.exit), this fault is considered unhandled.
+    Any normal return value will cause the fault to be dropped. Logs will be
+    written containing the failure message in either case.
+
     To customize this behavior, overwrite this function in your client code like so:
     ```
     import monarch.actor
@@ -35,19 +44,11 @@ def unhandled_fault_hook(failure: MeshFailure) -> None:
 
     monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook
     ```
-    """
-    from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
 
-    pid = os.getpid()
-    hostname = socket.gethostname()
-    message = (
-        f"Unhandled monarch error on the root actor, hostname={hostname}, "
-        f"PID={pid} at time {datetime.now()}: {failure.report()}\n"
-    )
-    # use stderr, not a logger because loggers are sometimes set
-    # not print anything (e.g. in pytest)
-    sys.stderr.write(message)
-    sys.stderr.flush()
-    # In addition to writing to stderr, log the event to telemetry.
-    instant_event(message)
+    If the fault is unhandled, it exits the main thread by delivering a KeyboardInterrupt.
+    This is done because the Python Interpreter can only be finalized to run
+    destructors and atexit hooks from the main thread. So if you see a
+    "KeyboardInterrupt" happening that you didn't send, it's because there was
+    an unhandled fault.
+    """
     sys.exit(1)
