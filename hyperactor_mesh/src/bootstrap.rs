@@ -349,14 +349,7 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    // REMOVE(V0): forward unknown destinations to the default sender.
-    let host = Host::new_with_default(
-        manager,
-        addr,
-        Some(crate::router::global().clone().boxed()),
-        listener,
-    )
-    .await?;
+    let host = Host::new_with_default(manager, addr, None, listener).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will call host.serve() inside
