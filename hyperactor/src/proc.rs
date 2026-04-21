@@ -1603,9 +1603,14 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Return a fresh tracing span bound to this actor's flight
-    /// recorder. See FR-1, FR-2, FR-3 in module doc.
+    /// recorder, with this actor as the subject. See FR-1, FR-2, FR-3
+    /// in module doc.
     pub fn recording_span(&self) -> tracing::Span {
-        self.inner.cell.recording().span()
+        use crate::subject::AsSubject;
+        self.inner
+            .cell
+            .recording()
+            .span(&self.self_id().subject().to_string())
     }
 
     /// Publish domain-specific properties for introspection.
