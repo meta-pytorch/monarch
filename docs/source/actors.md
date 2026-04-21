@@ -9,7 +9,8 @@
 6. [ActorMesh](#actormesh)
 7. [Error Handling in Meshes](#error-handling-in-meshes)
 8. [Advanced Patterns](#advanced-patterns)
-9. [Best Practices](#best-practices)
+9. [CPU/NUMA Binding](#cpunuma-binding)
+10. [Best Practices](#best-practices)
 
 ---
 
@@ -347,8 +348,9 @@ with procs.activate():
 Stream responses as they arrive.
 
 ```python
-# Process responses as they come
-async for result in workers.compute.stream(data):
+# Process responses as they arrive (stream returns Iterator[Future])
+for future in workers.compute.stream(data):
+    result = future.get()
     print(f"Got result: {result}")
     process_result(result)
 ```
@@ -414,8 +416,8 @@ class ContextAwareActor(Actor):
         # Get actor instance
         actor_inst = ctx.actor_instance
 
-        # Get process reference
-        proc = ctx.proc
+        # Get process reference (via actor instance)
+        proc = actor_inst.proc
 
         return {
             "rank": rank,
@@ -434,7 +436,7 @@ The position in the mesh for the current message.
 @endpoint
 def process(self):
     rank = context().message_rank
-    # rank is a dict: {"hosts": 0, "gpus": 3}
+    # rank is a Point (dict-like): {"hosts": 0, "gpus": 3}
 
     if rank["gpus"] == 0:
         print("I'm the first GPU!")
@@ -477,8 +479,8 @@ Reference to the process hosting this actor.
 ```python
 @endpoint
 def spawn_sibling(self):
-    # Get our process
-    proc = context().proc
+    # Get our process (via actor instance)
+    proc = context().actor_instance.proc
 
     # Spawn sibling actor on same process
     sibling = proc.spawn("sibling", SiblingActor)
@@ -491,14 +493,13 @@ def spawn_sibling(self):
 graph TD
     A[context] --> B[message_rank]
     A --> C[actor_instance]
-    A --> D[proc]
 
     C --> C1[actor_id]
     C --> C2[rank]
     C --> C3[proc_id]
+    C --> D[proc]
 
     D --> D1[spawn]
-    D --> D2[host_mesh]
 
     style A fill:#007c88,stroke:#333,stroke-width:2px
 ```
@@ -684,7 +685,7 @@ From these principles, we can also derive that ownership follows a strict hierar
 We can always draw a single path from any mesh to some "root" owner. This makes
 the supervision hierarchy a tree. There are no orphan (managed) objects in the system: all failures must propagate.
 
-The following is a further axiomitization, separating actor supervision from mesh lifecycle management:
+The following is a further axiomatization, separating actor supervision from mesh lifecycle management:
 
 #### Actors
 Actors form a strict hierarchy of ownership. Typically the root of the hierarchy is the main script's client actor. We say that an actor is owned by its parent. A root actor is not owned.
@@ -783,21 +784,19 @@ class SupervisorActor(Actor):
     def __init__(self):
         self.children = []
 
-    def __supervise__(self, event):
-        print(f"Supervision event: {event}")
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        # failure.report() returns a human-readable error string
+        # failure.mesh_name identifies which owned mesh failed
+        print(f"Supervision event for {failure.mesh_name}: {failure.report()}")
 
-        if event.is_recoverable():
-            # Restart failed actor
-            self.restart_child(event.actor_id)
-            return True  # Handled
-        else:
-            # Propagate to parent
-            return False
+        # Return True to mark the failure as handled,
+        # or False to propagate it up the ownership hierarchy.
+        return False
 
     @endpoint
     def spawn_worker(self):
-        # Spawn supervised child
-        worker = context().proc.spawn("worker", WorkerActor)
+        # Spawn supervised child (proc accessed via actor instance)
+        worker = context().actor_instance.proc.spawn("worker", WorkerActor)
         self.children.append(worker)
         return worker
 ```
@@ -845,6 +844,7 @@ Share readonly state across actor mesh:
 
 ```python
 from monarch.actor import ValueMesh
+from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 
 class ConfigActor(Actor):
     def __init__(self, config_mesh: ValueMesh[dict]):
@@ -856,13 +856,84 @@ class ConfigActor(Actor):
     def get_config(self):
         return self.config
 
-# Create value mesh
+# Create value mesh: build a Shape, then pass values
 configs = [{"id": i, "param": i * 10} for i in range(8)]
-config_mesh = ValueMesh.from_list(configs, extent={"gpus": 8})
+shape = Shape(["gpus"], Slice(offset=0, sizes=[8], strides=[1]))
+config_mesh = ValueMesh(shape, configs)
 
 # Spawn actors with value mesh
 actors = procs.spawn("actors", ConfigActor, config_mesh)
 ```
+
+---
+
+## CPU/NUMA Binding
+
+On multi-socket machines, pinning each process to a specific NUMA node
+or CPU set can significantly improve memory bandwidth and reduce
+cross-socket traffic. Monarch exposes this through the `proc_bind`
+parameter on `HostMesh.spawn_procs()`.
+
+### How it works
+
+Each entry in the `proc_bind` list is a dict of binding keys that map
+to the corresponding process in the mesh. On NUMA-capable Linux hosts,
+Monarch wraps the process command with `numactl`; on other Linux hosts
+it falls back to `taskset`. Non-Linux platforms ignore binding.
+
+### Binding keys
+
+| Key | Tool | Effect |
+|---|---|---|
+| `cpunodebind` | `numactl --cpunodebind` | Pin CPUs to a NUMA node |
+| `membind` | `numactl --membind` | Pin memory allocation to a NUMA node |
+| `physcpubind` | `numactl --physcpubind` | Pin to specific physical CPU cores |
+| `cpus` | `taskset -c` | Fallback CPU set (used when NUMA is unavailable) |
+
+The `numactl` keys (`cpunodebind`, `membind`, `physcpubind`) take
+precedence when the host is NUMA-capable. If none of them are set,
+`cpus` is used with `taskset` as a fallback.
+
+### Example: pin each GPU process to its NUMA node
+
+```python
+from monarch.actor import this_host
+
+host = this_host()
+
+# 8 GPUs, 2 NUMA nodes. Pin GPUs 0-3 to node 0, GPUs 4-7 to node 1.
+bindings = [
+    {"cpunodebind": "0", "membind": "0"} for _ in range(4)
+] + [
+    {"cpunodebind": "1", "membind": "1"} for _ in range(4)
+]
+
+procs = host.spawn_procs(per_host={"gpus": 8}, proc_bind=bindings)
+trainers = procs.spawn("trainers", Trainer)
+```
+
+### Example: pin to specific CPU cores with taskset
+
+```python
+# 4 processes, each pinned to a disjoint set of cores.
+bindings = [
+    {"cpus": "0-15"},
+    {"cpus": "16-31"},
+    {"cpus": "32-47"},
+    {"cpus": "48-63"},
+]
+
+procs = host.spawn_procs(per_host={"gpus": 4}, proc_bind=bindings)
+```
+
+### Notes
+
+- The length of `proc_bind` must equal the total number of processes
+  per host (i.e. `math.prod(per_host.values())`).
+- Passing `None` (the default) disables binding entirely.
+- Custom proc launchers receive the binding configuration in
+  `LaunchOptions.proc_bind` and may apply it using backend-appropriate
+  mechanisms (e.g., systemd unit properties, Docker `--cpuset-cpus`).
 
 ---
 
@@ -1078,7 +1149,7 @@ from monarch.actor import context
 def my_endpoint(self):
     ctx = context()
     rank = ctx.message_rank
-    proc = ctx.proc
+    proc = ctx.actor_instance.proc
 ```
 
 ### Supervision

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use hyperactor::ActorRef;
+use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -28,10 +28,12 @@ pub use queue_pair::PollTarget;
 #[cfg(test)]
 mod ibv_manager_actor_tests;
 #[cfg(test)]
+mod mlx5dv_tests;
+#[cfg(test)]
 mod test_utils;
 
-use crate::RdmaLocalMemory;
 use crate::RdmaOpType;
+use crate::local_memory::RdmaLocalMemory;
 
 /// Lazily-initialized ibverbs transport details for a registered memory
 /// region. Retrieved on demand from the [`IbvManagerActor`] via
@@ -48,11 +50,11 @@ pub struct IbvBuffer {
     pub device_name: String,
 }
 
-/// A single RDMA op for the [`IbvSubmit`] message.
+/// A single RDMA op for the [`IbvBackend`](manager_actor::IbvBackend).
 #[derive(Debug, Clone, Named)]
 pub struct IbvOp {
     pub op_type: RdmaOpType,
     pub local_memory: Arc<dyn RdmaLocalMemory>,
     pub remote_buffer: IbvBuffer,
-    pub remote_manager: ActorRef<IbvManagerActor>,
+    pub remote_manager: reference::ActorRef<IbvManagerActor>,
 }

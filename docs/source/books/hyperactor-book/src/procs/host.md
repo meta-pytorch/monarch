@@ -71,17 +71,17 @@ impl<M: ProcManager> Host<M> {
 
         let router = DialMailboxRouter::new();
 
-        let service_proc_id = ProcId::Direct(
+        let service_proc_id = ProcId::unique(
             frontend_addr.clone(),
-            "service".to_string()
+            "service",
         );
-        let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
+        let service_proc = Proc::configured(service_proc_id.clone(), router.boxed());
 
-        let local_proc_id = ProcId::Direct(
+        let local_proc_id = ProcId::unique(
             frontend_addr.clone(),
-            "local".to_string()
+            "local",
         );
-        let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
+        let local_proc = Proc::configured(local_proc_id.clone(), router.boxed());
 
         let host = Host {
             procs: HashSet::new(),
@@ -127,34 +127,34 @@ See [Channel Addresses](../channels/addresses.md) and [Transmits and Receives](.
 
 ### The Service Proc and Local Proc
 
-The host creates two procs identified by `ProcId::Direct`:
+The host creates two procs identified by `ProcId`:
 
 **Service Proc:**
 ```rust
-let service_proc_id = ProcId::Direct(
+let service_proc_id = ProcId(
     frontend_addr.clone(),
     "service".to_string()
 );
-let service_proc = Proc::new(service_proc_id, router.boxed());
+let service_proc = Proc::configured(service_proc_id, router.boxed());
 ```
 
 **Local Proc:**
 ```rust
-let local_proc_id = ProcId::Direct(
+let local_proc_id = ProcId(
     frontend_addr.clone(),
     "local".to_string()
 );
-let local_proc = Proc::new(local_proc_id, router.boxed());
+let local_proc = Proc::configured(local_proc_id, router.boxed());
 ```
 
 Both procs:
 - Live within the host process
-- Use `ProcId::Direct(frontend_addr, name)` as their identity
+- Use `ProcId(frontend_addr, name)` as their identity
 - Forward outbound messages through the `DialMailboxRouter`
 - The service proc hosts system-level actors that manage proc lifecycle and coordination
 - The local proc hosts user-level actors
 
-See [`ProcId` variants](../references/proc_id.md) for the distinction between `Ranked` and `Direct` addressing.
+See [`ProcId`](../references/proc_id.md) for details on proc addressing.
 
 ## Routing Architecture
 

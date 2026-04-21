@@ -17,12 +17,15 @@ use hyperactor::Instance;
 use hyperactor::Proc;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
+use hyperactor_mesh::bootstrap::ProcBind;
 use hyperactor_mesh::bootstrap::host;
+use hyperactor_mesh::host_mesh;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::host_mesh::HostMeshRef;
-use hyperactor_mesh::host_mesh::mesh_agent::GetLocalProcClient;
-use hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent;
-use hyperactor_mesh::host_mesh::mesh_agent::ShutdownHost;
+use hyperactor_mesh::host_mesh::host_agent::GetLocalProcClient;
+use hyperactor_mesh::host_mesh::host_agent::HostAgent;
+use hyperactor_mesh::host_mesh::host_agent::ShutdownHost;
+use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
 use hyperactor_mesh::proc_agent::GetProcClient;
 use hyperactor_mesh::proc_mesh::ProcRef;
 use hyperactor_mesh::shared_cell::SharedCell;
@@ -163,18 +166,21 @@ impl PyHostMesh {
         })
     }
 
+    #[pyo3(signature = (instance, name, per_host, proc_bind = None))]
     fn spawn_nonblocking(
         &self,
         instance: &PyInstance,
         name: String,
         per_host: &PyExtent,
+        proc_bind: Option<Vec<HashMap<String, String>>>,
     ) -> PyResult<PyPythonTask> {
         let host_mesh = self.mesh_ref()?.clone();
         let instance = instance.clone();
         let per_host = per_host.clone().into();
+        let proc_bind = proc_bind.map(|v| v.into_iter().map(ProcBind::from).collect());
         let mesh_impl = async move {
             let proc_mesh = host_mesh
-                .spawn(instance.deref(), &name, per_host)
+                .spawn(instance.deref(), &name, per_host, proc_bind)
                 .await
                 .map_err(to_py_error)?;
             Ok(PyProcMesh::new_owned(proc_mesh))
@@ -182,28 +188,20 @@ impl PyHostMesh {
         PyPythonTask::new(mesh_impl)
     }
 
-    /// Spawn a MeshAdminAgent on the head host's system proc and
-    /// return its HTTP address as a string.
-    ///
-    /// When `admin_port` is provided, the HTTP server binds to that
-    /// fixed port; otherwise an ephemeral port is chosen.
-    fn _spawn_admin(
-        &self,
-        instance: &PyInstance,
-        admin_port: Option<u16>,
-    ) -> PyResult<PyPythonTask> {
-        let host_mesh = self.mesh_ref()?.clone();
-        let instance = instance.clone();
-        PyPythonTask::new(async move {
-            // Sends a SpawnMeshAdmin message to ranks[0]'s
-            // HostMeshAgent, which spawns the admin on that host's
-            // system proc.
-            let addr = host_mesh
-                .spawn_admin(instance.deref(), admin_port)
-                .await
-                .map_err(|e| PyException::new_err(e.to_string()))?;
-            Ok(addr)
-        })
+    fn with_bootstrap(&self, bootstrap_command: &PyBootstrapCommand) -> PyResult<Self> {
+        match self {
+            PyHostMesh::Owned(inner) => {
+                let cmd = bootstrap_command.to_rust();
+                inner
+                    .0
+                    .try_with_mut(|mesh| mesh.set_bootstrap(cmd))
+                    .map_err(|e| PyException::new_err(e.to_string()))?;
+                Ok(Self::Owned(inner.clone()))
+            }
+            PyHostMesh::Ref(_) => Ok(Self::new_ref(
+                self.mesh_ref()?.with_bootstrap(bootstrap_command.to_rust()),
+            )),
+        }
     }
 
     fn sliced(&self, region: &PyRegion) -> PyResult<Self> {
@@ -257,6 +255,31 @@ impl PyHostMesh {
             )),
         }
     }
+
+    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+        match self {
+            PyHostMesh::Owned(inner) => {
+                let instance = instance.clone();
+                let mesh_borrow = inner.0.clone();
+                let fut = async move {
+                    match mesh_borrow.take().await {
+                        Ok(mut mesh) => {
+                            mesh.stop(instance.deref()).await?;
+                            Ok(())
+                        }
+                        Err(_) => {
+                            tracing::info!("stop was already called on host mesh");
+                            Ok(())
+                        }
+                    }
+                };
+                PyPythonTask::new(fut)
+            }
+            PyHostMesh::Ref(_) => Err(PyRuntimeError::new_err(
+                "cannot stop `HostMesh` that is a reference instead of owned",
+            )),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -283,7 +306,14 @@ impl PyHostMeshRefImpl {
 static ROOT_CLIENT_INSTANCE_FOR_HOST: OnceLock<Instance<PythonActor>> = OnceLock::new();
 
 /// Static storage for the host mesh agent created by bootstrap_host().
-static HOST_MESH_AGENT_FOR_HOST: OnceLock<ActorHandle<HostMeshAgent>> = OnceLock::new();
+static HOST_MESH_AGENT_FOR_HOST: OnceLock<ActorHandle<HostAgent>> = OnceLock::new();
+
+/// Static storage for the host shutdown handle created by bootstrap_host().
+/// Used during shutdown_context to join the mailbox server and flush
+/// receive-side acks.
+static HOST_SHUTDOWN_HANDLE: OnceLock<
+    tokio::sync::Mutex<Option<hyperactor_mesh::bootstrap::HostShutdownHandle>>,
+> = OnceLock::new();
 
 /// Bootstrap the client host and root client actor.
 ///
@@ -306,7 +336,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
     };
 
     PyPythonTask::new(async move {
-        let host_mesh_agent = host(
+        let (host_mesh_agent, shutdown_handle) = host(
             default_bind_spec().binding_addr(),
             Some(bootstrap_cmd),
             None,
@@ -315,12 +345,17 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        // Store the agent for later shutdown
-        HOST_MESH_AGENT_FOR_HOST.set(host_mesh_agent.clone()).ok(); // Ignore error if already set
+        // Store the agent and shutdown handle for later shutdown
+        HOST_MESH_AGENT_FOR_HOST.set(host_mesh_agent.clone()).ok();
+        HOST_SHUTDOWN_HANDLE.get_or_init(|| tokio::sync::Mutex::new(Some(shutdown_handle)));
 
         let host_mesh_name = hyperactor_mesh::Name::new_reserved("local").unwrap();
         let host_mesh = HostMeshRef::from_host_agent(host_mesh_name, host_mesh_agent.bind())
             .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        // Register C so MeshAdminAgent can discover it ("A/C
+        // invariant" - hyperactor_mesh/src/mesh_admin.rs).
+        hyperactor_mesh::global_context::register_client_host(host_mesh.clone());
 
         // We require a temporary instance to make a call to the host/proc agent.
         let temp_proc = Proc::local();
@@ -353,6 +388,79 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             PythonActor::bootstrap_client_inner(py, local_proc, &ROOT_CLIENT_INSTANCE_FOR_HOST)
         })
         .await;
+
+        // Notify telemetry of the bootstrap host mesh, proc mesh, and client actor.
+        {
+            let now = std::time::SystemTime::now();
+
+            let host_name_str = host_mesh.name().to_string();
+            let host_mesh_id = hyperactor_telemetry::hash_to_u64(&host_name_str);
+            hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
+                id: host_mesh_id,
+                timestamp: now,
+                class: "Host".to_string(),
+                given_name: host_mesh.name().name().to_string(),
+                full_name: host_name_str,
+                shape_json: serde_json::to_string(&host_mesh.region().extent()).unwrap_or_default(),
+                parent_mesh_id: None,
+                parent_view_json: None,
+            });
+
+            let host_agent_id = host_mesh_agent.actor_id();
+            hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                id: hyperactor_telemetry::hash_to_u64(host_agent_id),
+                timestamp: now,
+                mesh_id: host_mesh_id,
+                rank: 0,
+                full_name: host_agent_id.to_string(),
+                display_name: None,
+            });
+
+            let proc_name_str = proc_mesh.name().to_string();
+            let proc_mesh_id = hyperactor_telemetry::hash_to_u64(&proc_name_str);
+            hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
+                id: proc_mesh_id,
+                timestamp: now,
+                class: "Proc".to_string(),
+                given_name: proc_mesh.name().name().to_string(),
+                full_name: proc_name_str,
+                shape_json: serde_json::to_string(&proc_mesh.region().extent()).unwrap_or_default(),
+                parent_mesh_id: Some(host_mesh_id),
+                parent_view_json: None,
+            });
+
+            let proc_agent_id = local_proc_agent.actor_id();
+            hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                id: hyperactor_telemetry::hash_to_u64(proc_agent_id),
+                timestamp: now,
+                mesh_id: proc_mesh_id,
+                rank: 0,
+                full_name: proc_agent_id.to_string(),
+                display_name: None,
+            });
+
+            let client_mesh_name = format!("{}/client", proc_mesh.name());
+            let client_mesh_id = hyperactor_telemetry::hash_to_u64(&client_mesh_name);
+            hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
+                id: client_mesh_id,
+                timestamp: now,
+                class: <PythonActor as typeuri::Named>::typename().to_string(),
+                given_name: "client".to_string(),
+                full_name: client_mesh_name,
+                shape_json: serde_json::to_string(&proc_mesh.region().extent()).unwrap_or_default(),
+                parent_mesh_id: Some(proc_mesh_id),
+                parent_view_json: None,
+            });
+
+            hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                id: hyperactor_telemetry::hash_to_u64(instance.self_id()),
+                timestamp: now,
+                mesh_id: client_mesh_id,
+                rank: 0,
+                full_name: instance.self_id().to_string(),
+                display_name: Some("<root>".to_string()),
+            });
+        }
 
         Ok((
             PyHostMesh::new_ref(host_mesh),
@@ -407,7 +515,79 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
             )
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
+        // Join the host's mailbox server to flush receive-side acks
+        // before the process exits.
+        if let Some(lock) = HOST_SHUTDOWN_HANDLE.get() {
+            if let Some(handle) = lock.lock().await.take() {
+                handle.join().await;
+            }
+        }
+
         Ok(())
+    })
+}
+
+/// Opaque capability token for `ActorRef<MeshAdminAgent>` across the
+/// Python boundary. No methods, no getters — Python never inspects
+/// this. It exists solely to transport the typed ref from
+/// `_spawn_admin` to `_start_periodic_snapshots`.
+#[pyclass(
+    name = "PyMeshAdminRef",
+    module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"
+)]
+#[derive(Clone)]
+pub struct PyMeshAdminRef(
+    hyperactor::reference::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent>,
+);
+
+impl PyMeshAdminRef {
+    pub fn actor_ref(
+        &self,
+    ) -> hyperactor::reference::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent> {
+        self.0.clone()
+    }
+}
+
+/// `MESH_ADMIN_ADDR` config.
+///
+/// Python-facing wrapper around
+/// [`hyperactor_mesh::host_mesh::spawn_admin`].
+#[pyfunction]
+fn _spawn_admin(
+    host_meshes: Vec<PyRef<'_, PyHostMesh>>,
+    instance: &PyInstance,
+    admin_addr: Option<String>,
+    telemetry_url: Option<String>,
+) -> PyResult<PyPythonTask> {
+    if host_meshes.is_empty() {
+        return Err(PyException::new_err("at least one mesh is required"));
+    }
+
+    let admin_addr = admin_addr
+        .map(|s| {
+            s.parse::<std::net::SocketAddr>()
+                .map_err(|e| PyException::new_err(format!("invalid admin_addr '{}': {}", s, e)))
+        })
+        .transpose()?;
+
+    let mesh_refs = host_meshes
+        .iter()
+        .map(|m| -> PyResult<HostMeshRef> { Ok(m.mesh_ref()?.clone()) })
+        .collect::<PyResult<Vec<HostMeshRef>>>()?;
+
+    let instance = instance.clone();
+    PyPythonTask::new(async move {
+        let admin_ref =
+            host_mesh::spawn_admin(&mesh_refs, instance.deref(), admin_addr, telemetry_url)
+                .await
+                .map_err(|e| PyException::new_err(e.to_string()))?;
+        let admin_url = admin_ref
+            .get_admin_addr(instance.deref())
+            .await
+            .map_err(|e| PyException::new_err(e.to_string()))?
+            .addr
+            .ok_or_else(|| PyException::new_err("mesh admin agent did not report an address"))?;
+        Ok((admin_url, PyMeshAdminRef(admin_ref)))
     })
 }
 
@@ -433,7 +613,15 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     )?;
     hyperactor_mod.add_function(f3)?;
 
+    let f4 = wrap_pyfunction!(_spawn_admin, hyperactor_mod)?;
+    f4.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.host_mesh",
+    )?;
+    hyperactor_mod.add_function(f4)?;
+
     hyperactor_mod.add_class::<PyHostMesh>()?;
     hyperactor_mod.add_class::<PyBootstrapCommand>()?;
+    hyperactor_mod.add_class::<PyMeshAdminRef>()?;
     Ok(())
 }

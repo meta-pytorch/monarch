@@ -98,8 +98,6 @@ use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -623,8 +621,7 @@ impl PyPythonTask {
         let task = self.take_task()?;
         PyPythonTask::new_with_traceback(
             async move {
-                RealClock
-                    .timeout(std::time::Duration::from_secs_f64(seconds), task)
+                tokio::time::timeout(std::time::Duration::from_secs_f64(seconds), task)
                     .await
                     .map_err(|_| PyTimeoutError::new_err(()))?
             },
@@ -705,9 +702,7 @@ impl PyPythonTask {
     #[staticmethod]
     fn sleep(seconds: f64) -> PyResult<PyPythonTask> {
         PyPythonTask::new(async move {
-            RealClock
-                .sleep(tokio::time::Duration::from_secs_f64(seconds))
-                .await;
+            tokio::time::sleep(tokio::time::Duration::from_secs_f64(seconds)).await;
             Ok(())
         })
     }

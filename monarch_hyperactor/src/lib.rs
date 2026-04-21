@@ -25,7 +25,6 @@ pub mod local_state_broker;
 pub mod logging;
 pub mod mailbox;
 pub mod metrics;
-pub mod namespace;
 pub mod ndslice;
 pub mod pickle;
 pub mod proc;
@@ -45,7 +44,7 @@ pub mod testing;
 mod testresource;
 pub mod value_mesh;
 
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, target_os = "linux"))]
 pub mod meta;
 
 // Register types from dependent crates that don't have wirevalue as a dependency

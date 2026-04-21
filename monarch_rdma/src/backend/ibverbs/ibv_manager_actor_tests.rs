@@ -41,7 +41,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         // Poll for completion
@@ -79,7 +80,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
@@ -118,7 +120,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.get(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         // Poll for completion
@@ -148,7 +151,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
 
@@ -176,7 +180,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         let mut qp_2 = env
             .ibv_actor_2
             .request_queue_pair(
@@ -185,7 +190,8 @@ mod tests {
                 env.ibv_buffer_2.device_name.clone(),
                 env.ibv_buffer_1.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         qp_1.recv(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         let wr_id = qp_2.put_with_recv(env.ibv_buffer_2.clone(), env.ibv_buffer_1.clone())?;
         wait_for_completion(&mut qp_2, PollTarget::Send, &wr_id, 5).await?;
@@ -214,7 +220,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         qp_1.ring_doorbell()?;
         // Poll for completion
@@ -244,7 +251,8 @@ mod tests {
                 env.ibv_buffer_2.device_name.clone(),
                 env.ibv_buffer_1.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_2.enqueue_get(env.ibv_buffer_2.clone(), env.ibv_buffer_1.clone())?;
         qp_2.ring_doorbell()?;
         // Poll for completion
@@ -335,7 +343,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         ring_db_gpu(&qp_1).await?;
         // Poll for completion
@@ -374,7 +383,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         qp_1.enqueue_get(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         ring_db_gpu(&qp_1).await?;
         // Poll for completion
@@ -412,7 +422,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         let mut qp_2 = env
             .ibv_actor_2
             .request_queue_pair(
@@ -421,7 +432,8 @@ mod tests {
                 env.ibv_buffer_2.device_name.clone(),
                 env.ibv_buffer_1.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         recv_wqe_gpu(
             &mut qp_1,
             &env.ibv_buffer_1,
@@ -469,7 +481,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
@@ -504,7 +517,8 @@ mod tests {
                 env.ibv_buffer_1.device_name.clone(),
                 env.ibv_buffer_2.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;

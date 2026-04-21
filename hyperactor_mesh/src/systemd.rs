@@ -56,14 +56,6 @@
 //! assert_eq!(unit.active_state().await?, "active");
 //! ```
 
-// Treat this as a regular dep (dependencies) despite it only being
-// used in the tests (dev-dependencies). This 'trick' allows the
-// systemd crate to be marked 'optional' in Cargo.toml. This use is to
-// assuage the "unused dependencies" linter.
-#[cfg(all(target_os = "linux", feature = "systemd"))]
-use ::systemd as _;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use zbus::Connection;
 use zbus::Result;
 use zbus::proxy;
@@ -285,7 +277,7 @@ async fn wait_unit_gone(conn: &Connection, name: &str, timeout: std::time::Durat
             return;
         }
 
-        RealClock.sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 
@@ -335,8 +327,6 @@ mod tests {
     use std::time::Duration;
 
     use futures::StreamExt;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use tokio::io::AsyncBufReadExt;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
@@ -454,7 +444,7 @@ mod tests {
                 return;
             }
 
-            RealClock.sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -507,7 +497,7 @@ mod tests {
                     want_active, want_sub, timeout, active, sub
                 );
             }
-            RealClock.sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -645,7 +635,7 @@ mod tests {
                     a, s
                 );
             }
-            RealClock.sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         };
 
         let initial_state = UnitState::Active {
@@ -728,7 +718,7 @@ mod tests {
 
         // Wait for monitor to be set up (or time out and keep going;
         // the test will fail meaningfully).
-        let _ = RealClock.timeout(Duration::from_secs(1), ready_rx).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), ready_rx).await;
 
         // Stop the unit — IMPORTANT: do NOT
         // "cleanup_unit_best_effort" yet, it races away the
@@ -769,7 +759,7 @@ mod tests {
             if std::time::Instant::now() >= wait_deadline {
                 break;
             }
-            RealClock.sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
         // Now do best-effort cleanup (stop/reset/wait-gone).
@@ -840,172 +830,6 @@ mod tests {
     /// See the `test_tail_unit_logs_via_fd*` tests for a working
     /// alternative that uses FD-passing instead of journald.
     ///
-    /// The code uses the crate 'systemd'. I avoid "failed to run
-    /// custom build command libsystemd-sys" in GitHub CI where the
-    /// 'libsystemd-dev' package is not installed by gating it on a
-    /// feature.
-    #[cfg(all(target_os = "linux", feature = "systemd"))]
-    #[tokio::test]
-    async fn test_tail_unit_logs_via_journal() -> Result<()> {
-        use systemd::journal;
-        use systemd::journal::JournalWaitResult;
-
-        // Skip if no session bus available (GitHub CI runners).
-        let conn = match Connection::session().await {
-            Ok(conn) => conn,
-            Err(_) => {
-                eprintln!("Skipping test: D-Bus session bus not available");
-                return Ok(());
-            }
-        };
-
-        // Skip if we can't open the journal (no systemd-journald).
-        if journal::OpenOptions::default()
-            .current_user(true)
-            .local_only(true)
-            .open()
-            .is_err()
-        {
-            eprintln!("Skipping test: systemd journal not available");
-            return Ok(());
-        }
-
-        let unit_name = unique_unit_name("test-tail-logs");
-        let marker = "TAIL_MARKER_TEST";
-
-        let (log_tx, mut log_rx) = mpsc::channel::<String>(128);
-        let cancel = CancellationToken::new();
-
-        // Spawn an OS thread to read from journald (`Journal` is
-        // `!Send`).
-        let journal_forwarder = std::thread::spawn({
-            let cancel = cancel.clone();
-            let log_tx = log_tx.clone();
-            let unit_name = unit_name.clone();
-
-            move || -> anyhow::Result<()> {
-                let mut journal = journal::OpenOptions::default()
-                    .current_user(true)
-                    .local_only(true)
-                    .open()?;
-
-                // Per
-                // https://www.internalfb.com/wiki/Development_Environment/Debugging_systemd_Services/#examples
-                // we are setting up for the equivalent of
-                // `journalctl _UID=$(id -u $USER) _SYSTEMD_USER_UNIT=test-tail-logs.service -f`
-                // but (on Meta infra) that needs to be run under `sudo`
-                // and there's nothing we can do here to elevate our
-                // privilges like that.
-                let uid = nix::unistd::Uid::current();
-                journal.match_add("_UID", uid.to_string().as_bytes())?;
-                journal.match_add("_SYSTEMD_USER_UNIT", unit_name.as_bytes())?;
-
-                journal.seek_tail()?;
-                journal.next()?;
-
-                loop {
-                    if cancel.is_cancelled() {
-                        break;
-                    }
-
-                    match journal.wait(Some(Duration::from_secs(1)))? {
-                        JournalWaitResult::Nop => {}
-                        JournalWaitResult::Invalidate => {
-                            journal.seek_tail()?;
-                            journal.next()?;
-                        }
-                        JournalWaitResult::Append => {
-                            while let Some(rec) = journal.next_entry()? {
-                                if let Some(msg) = rec.get("MESSAGE") {
-                                    let _ = log_tx.blocking_send(msg.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Ok(())
-            }
-        });
-
-        // This unit prints a marker several times, then exits.
-        let exec_start = vec![(
-            "/bin/sh".to_string(),
-            vec![
-                "/bin/sh".to_string(),
-                "-c".to_string(),
-                format!("for i in 1 2 3 4 5; do echo {}; sleep 1; done", marker),
-            ],
-            false,
-        )];
-        let props = vec![
-            (
-                "Description",
-                Value::from("unit that logs to stdout via journald"),
-            ),
-            ("StandardOutput", Value::from("journal")),
-            ("StandardError", Value::from("journal")),
-            ("ExecStart", Value::from(exec_start)),
-            ("CollectMode", Value::from("inactive-or-failed")),
-        ];
-        let aux: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
-
-        let _handle =
-            start_transient_service_clean(&conn, &unit_name, "replace", props, aux).await?;
-
-        // Wait for the marker to appear in the forwarded logs (up to
-        // ~4s).
-        let mut seen_marker = false;
-        for _ in 0..4 {
-            match RealClock
-                .timeout(Duration::from_secs(1), log_rx.recv())
-                .await
-            {
-                Ok(Some(line)) => {
-                    println!("[{}] {}", unit_name, line);
-                    if line.contains(marker) {
-                        seen_marker = true;
-                        break;
-                    }
-                }
-                Ok(None) => {
-                    // Journal forwarder closed the channel; nothing
-                    // more to read.
-                    break;
-                }
-                Err(_) => {
-                    // Timeout: just loop and try again.
-                }
-            }
-        }
-
-        // Stop the unit and let systemd clean it up.
-        cleanup_unit_best_effort(&conn, &unit_name).await;
-
-        // Tell the journal forwarder to exit and wait for it.
-        cancel.cancel();
-        drop(log_tx); // In case the journal forwarder is blocked on
-        // `blocking_send`.
-        let _ = journal_forwarder
-            .join()
-            .expect("journald forwarder thread panicked");
-
-        // If we never saw the marker, don't fail the test outright.
-        // In practice this probably means journald isn't configured
-        // to expose this user's logs (e.g. requires sudo, different
-        // journal namespaces, etc.), not that the logic is wrong.
-        if !seen_marker {
-            eprintln!(
-                "test_tail_unit_logs_to_parent_stdout: did not observe marker '{}' in journald logs.\n\
-                 This is most likely due to journal visibility/permissions in this environment.\n\
-                 Treating this as a soft skip instead of a hard failure.",
-                marker,
-            );
-        }
-
-        Ok(())
-    }
-
     /// Test tailing unit logs via file descriptor passing (sync
     /// thread version).
     ///
@@ -1084,10 +908,7 @@ mod tests {
         // Wait for the marker to appear in the forwarded logs.
         let mut seen_marker = false;
         for _ in 0..10 {
-            match RealClock
-                .timeout(Duration::from_secs(1), log_rx.recv())
-                .await
-            {
+            match tokio::time::timeout(Duration::from_secs(1), log_rx.recv()).await {
                 Ok(Some(line)) => {
                     if line.contains(marker) {
                         seen_marker = true;
@@ -1158,9 +979,7 @@ mod tests {
                         break;
                     }
 
-                    match RealClock
-                        .timeout(Duration::from_millis(100), lines.next_line())
-                        .await
+                    match tokio::time::timeout(Duration::from_millis(100), lines.next_line()).await
                     {
                         Ok(Ok(Some(line))) => {
                             println!("  [fd-async] {}", line);
@@ -1206,10 +1025,7 @@ mod tests {
         // Wait for the marker to appear in the forwarded logs.
         let mut seen_marker = false;
         for _ in 0..10 {
-            match RealClock
-                .timeout(Duration::from_secs(1), log_rx.recv())
-                .await
-            {
+            match tokio::time::timeout(Duration::from_secs(1), log_rx.recv()).await {
                 Ok(Some(line)) => {
                     if line.contains(marker) {
                         seen_marker = true;
@@ -1319,9 +1135,11 @@ mod tests {
                     let mut any_read = false;
                     for (idx, lines_reader) in readers.iter_mut() {
                         // Try to read with a small timeout.
-                        match RealClock
-                            .timeout(Duration::from_millis(10), lines_reader.next_line())
-                            .await
+                        match tokio::time::timeout(
+                            Duration::from_millis(10),
+                            lines_reader.next_line(),
+                        )
+                        .await
                         {
                             Ok(Ok(Some(line))) => {
                                 let unit_name = units[*idx].0.clone();
@@ -1343,7 +1161,7 @@ mod tests {
 
                     // If no data from any reader, sleep briefly.
                     if !any_read {
-                        RealClock.sleep(Duration::from_millis(50)).await;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
             }
@@ -1389,10 +1207,7 @@ mod tests {
 
         // Wait for markers from all units (up to 15 seconds total).
         for _ in 0..150 {
-            match RealClock
-                .timeout(Duration::from_millis(100), log_rx.recv())
-                .await
-            {
+            match tokio::time::timeout(Duration::from_millis(100), log_rx.recv()).await {
                 Ok(Some((unit_name, line))) => {
                     // Check if this line contains the expected marker
                     // for this unit.
@@ -1449,8 +1264,6 @@ mod tests {
     async fn test_service_exec_main_status_nonzero_exit() -> Result<()> {
         use std::time::Duration;
 
-        use hyperactor::clock::Clock;
-        use hyperactor::clock::RealClock;
         use zbus::Connection;
         use zbus::zvariant::Value;
 
@@ -1521,7 +1334,7 @@ mod tests {
             if active == "failed" {
                 break;
             }
-            RealClock.sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
         // Now wait for ExecMainStatus to reflect the exit code
@@ -1536,7 +1349,7 @@ mod tests {
             if status == exit_code && !result.is_empty() {
                 break;
             }
-            RealClock.sleep(Duration::from_millis(25)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
         // Assertions.

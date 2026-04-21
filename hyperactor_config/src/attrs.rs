@@ -417,6 +417,19 @@ impl AttrValue for std::time::SystemTime {
 // SystemTimes never have an empty display.
 impl DisplayNonEmpty for std::time::SystemTime {}
 
+impl<T> AttrValue for Vec<T>
+where
+    T: AttrValue,
+{
+    fn display(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        Ok(serde_json::from_str(value)?)
+    }
+}
+
 impl<T, E> AttrValue for std::ops::Range<T>
 where
     T: Named
@@ -1408,5 +1421,32 @@ mod tests {
         assert!(msg.contains("unknown attr key"), "got: {msg}");
         assert!(msg.contains(bad_key), "got: {msg}");
         assert!(msg.contains(&exe_str), "got: {msg}");
+    }
+
+    // Verify that Vec<T> values work as attribute values when T:
+    // AttrValue.
+    //
+    // This checks two things:
+    //  1. A Vec<String> can be stored and retrieved through the Attrs
+    //    API.
+    //  2. The value survives a JSON round-trip via serde
+    //     serialization.
+    #[test]
+    fn test_vec_string_attr() {
+        declare_attrs! {
+            attr TEST_VEC: Vec<String>;
+        }
+        let mut attrs = Attrs::new();
+        let original = vec!["a".to_string(), "b".to_string()];
+        attrs.set(TEST_VEC, original.clone());
+        assert_eq!(attrs.get(TEST_VEC), Some(&original));
+        // Round-trip through Attrs JSON serialization
+        let json = serde_json::to_string(&attrs).unwrap();
+        let attrs2: Attrs = serde_json::from_str(&json).unwrap();
+        assert_eq!(attrs2.get(TEST_VEC), Some(&original));
+        // Round-trip through AttrValue display/parse
+        let displayed = AttrValue::display(&original);
+        let parsed: Vec<String> = AttrValue::parse(&displayed).unwrap();
+        assert_eq!(parsed, original);
     }
 }

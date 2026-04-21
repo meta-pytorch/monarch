@@ -772,18 +772,7 @@ static PyObject* PyGradientGenerator_iternext(PyObject* self) {
 
 static PyTypeObject PyGradientGeneratorType = {PyVarObject_HEAD_INIT(NULL, 0)};
 
-static PyModuleDef gradientmodule = {
-    PyModuleDef_HEAD_INIT,
-    "monarch.gradient._gradient_generator",
-    "Python interface for the GradientGenerator C++ class",
-    -1,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    NULL};
-
-PyMODINIT_FUNC PyInit__gradient_generator(void) {
+static int gradientmodule_exec(PyObject* m) {
   PyGradientGeneratorType.tp_name =
       "monarch.gradient._gradient_generator.GradientGenerator";
   PyGradientGeneratorType.tp_basicsize = sizeof(PyGradientGenerator);
@@ -797,20 +786,36 @@ PyMODINIT_FUNC PyInit__gradient_generator(void) {
   PyGradientGeneratorType.tp_init = (initproc)PyGradientGenerator_init;
   PyGradientGeneratorType.tp_new = PyType_GenericNew;
 
-  PyObject* m;
   if (PyType_Ready(&PyGradientGeneratorType) < 0) {
-    return NULL;
-  }
-  m = PyModule_Create(&gradientmodule);
-  if (m == NULL) {
-    return NULL;
+    return -1;
   }
   Py_INCREF(&PyGradientGeneratorType);
   if (PyModule_AddObject(
           m, "GradientGenerator", (PyObject*)&PyGradientGeneratorType) < 0) {
     Py_DECREF(&PyGradientGeneratorType);
-    Py_DECREF(m);
-    return NULL;
+    return -1;
   }
-  return m;
+  return 0;
+}
+
+static PyModuleDef_Slot gradientmodule_slots[] = {
+    {Py_mod_exec, (void*)gradientmodule_exec},
+#if PY_VERSION_HEX >= 0x030D0000
+    {Py_mod_gil, Py_MOD_GIL_USED},
+#endif
+    {0, NULL}};
+
+static PyModuleDef gradientmodule = {
+    PyModuleDef_HEAD_INIT,
+    "monarch.gradient._gradient_generator",
+    "Python interface for the GradientGenerator C++ class",
+    0,
+    NULL,
+    gradientmodule_slots,
+    NULL,
+    NULL,
+    NULL};
+
+PyMODINIT_FUNC PyInit__gradient_generator(void) {
+  return PyModuleDef_Init(&gradientmodule);
 }

@@ -230,6 +230,16 @@ declare_attrs! {
     ))
     pub attr SERVER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
+    /// Timeout for best-effort forwarder flush during proc/actor
+    /// teardown. If the remote side has already torn down its
+    /// networking, acks may never arrive; this timeout prevents the
+    /// flush from hanging indefinitely.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_FORWARDER_FLUSH_TIMEOUT".to_string()),
+        Some("forwarder_flush_timeout".to_string()),
+    ))
+    pub attr FORWARDER_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+
     /// Path to TLS certificate file for the 'tls' transport.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_TLS_CERT".to_string()),

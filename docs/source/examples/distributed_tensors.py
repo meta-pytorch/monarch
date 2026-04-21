@@ -1,12 +1,8 @@
-#!/usr/bin/env -S grimaldi --kernel monarch_demo_local
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
-
-# FILE_UID: f083db77-6303-4fbf-a9ec-8be986f0926a
-# NOTEBOOK_NUMBER: N6185324 (8543474375772761)
 
 """
 Distributed Tensors in Monarch
@@ -250,7 +246,6 @@ def simulate():
         simulator.display()
 
 
-# Make sure pop-ups are enabled in your browser for internalfb.com
 simulate()
 
 # %%
@@ -265,13 +260,15 @@ main = monarch.get_active_stream()
 comms = monarch.Stream("comms")
 
 # %%
-# <img src="https://lookaside.internalfb.com/intern/pixelcloudnew/asset/?id=468246752388474" width=500>
+# The ``main`` stream runs computation sequentially, while the ``comms`` stream
+# runs communication (e.g. allreduce) in parallel on the same device.
 
 # %%
-# To use a tensor from one stream on another we borrow it. The borrow API ensures determinstic memory usage,
+# To use a tensor from one stream on another we borrow it. The borrow API ensures deterministic memory usage,
 # and eliminates the race conditions in the torch.cuda.stream API.
 #
-# <img src="https://lookaside.internalfb.com/intern/pixelcloudnew/asset/?id=556746733733298" width=500>
+# A borrow transfers a tensor from one stream to another. The original stream
+# cannot use the tensor until ``borrow.drop()`` is called, ensuring no races.
 
 # %%
 # The DDP example again, but using multiple streams.
@@ -304,17 +301,13 @@ simulate()
 
 # %%
 # The simulation result showed the results did not overlap much
-# due to wherethe borrow.drop was placed.
-#
-# <img src="https://lookaside.internalfb.com/intern/pixelcloudnew/asset/?id=1282606659410255" width=500>
+# due to where the borrow.drop was placed. The reduce on the comms stream
+# completed before the next backward step started on the main stream.
 
 # %%
-# The goal is to get overlap like so:
-#
-# <img src="https://lookaside.internalfb.com/intern/pixelcloudnew/asset/?id=1110575440645591" width=500>
-#
-# We can achieve this by ending the borrow after the grad step but before
-# we update the param.
+# The goal is to overlap the reduce (comms stream) with the next backward
+# step (main stream). We can achieve this by ending the borrow after the
+# grad step but before we update the param.
 
 
 def train(model, input, target):

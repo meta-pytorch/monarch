@@ -22,15 +22,15 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
-use hyperactor_mesh::global_root_client;
-use hyperactor_mesh::host_mesh::HostMesh;
+use hyperactor_mesh::context;
+use hyperactor_mesh::host_mesh::spawn_admin;
+use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
+use hyperactor_mesh::this_host;
+use hyperactor_mesh::this_proc;
 use ndslice::View;
-use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -58,7 +58,7 @@ pub struct NextNumber {
     /// Candidate number to test.
     pub number: u64,
     /// Port for reporting discovered primes.
-    pub prime_collector: PortRef<u64>,
+    pub prime_collector: reference::PortRef<u64>,
 }
 
 /// Parameters for spawning a `SieveActor`.
@@ -137,43 +137,49 @@ async fn main() -> Result<ExitCode> {
     hyperactor::initialize_with_current_runtime();
     let args = Args::parse();
 
-    let mut host_mesh = HostMesh::local().await?;
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     // Start the mesh admin agent.
-    let mesh_admin_url = host_mesh.spawn_admin(instance, None).await?;
-    let cacert = if mesh_admin_url.starts_with("https") {
-        "--cacert /var/facebook/rootcanal/ca.pem "
+    let h = this_host().await;
+    let admin_ref = spawn_admin([&h], instance, None, None).await?;
+    let mesh_admin_url = admin_ref
+        .get_admin_addr(instance)
+        .await?
+        .addr
+        .ok_or_else(|| anyhow::anyhow!("mesh admin did not report an address"))?;
+    let mtls_flags = if mesh_admin_url.starts_with("https") {
+        "--cacert /var/facebook/rootcanal/ca.pem \
+         --cert /var/facebook/x509_identities/server.pem \
+         --key /var/facebook/x509_identities/server.pem "
     } else {
         ""
     };
     println!("Mesh admin server listening on {}", mesh_admin_url);
     println!(
         "  - Root node:     curl {}{}/v1/root",
-        cacert, mesh_admin_url
+        mtls_flags, mesh_admin_url
     );
     println!(
         "  - Mesh tree:     curl {}{}/v1/tree",
-        cacert, mesh_admin_url
+        mtls_flags, mesh_admin_url
     );
     println!(
         "  - API docs:      curl {}{}/SKILL.md",
-        cacert, mesh_admin_url
+        mtls_flags, mesh_admin_url
     );
     println!(
-        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {}",
-        mesh_admin_url
+        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr {}\n                   cargo run -p hyperactor_mesh_admin_tui_lib --bin hyperactor_mesh_admin_tui -- --addr {}",
+        mesh_admin_url, mesh_admin_url
     );
     println!();
 
     // TODO: put an indicatif spinner here
     println!("Starts in 5 seconds.");
-    RealClock.sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
     println!("Starting...");
 
-    let proc_mesh = host_mesh
-        .spawn(instance, "sieve", extent!(replica = 1))
-        .await?;
+    let proc_mesh = this_proc().await;
 
     let sieve_params = SieveParams { prime: 2 };
     let sieve_mesh: hyperactor_mesh::ActorMesh<SieveActor> =
@@ -230,11 +236,6 @@ async fn main() -> Result<ExitCode> {
     println!("Found {} primes: {:?}", primes.len(), primes);
     println!("Press Ctrl+C to exit.");
     tokio::signal::ctrl_c().await?;
-
-    // Clean shutdown: stop all hosts and child processes before
-    // exiting so that Drop has nothing left to do and C++ static
-    // destructors run in the right order.
-    host_mesh.shutdown(instance).await?;
 
     Ok(ExitCode::SUCCESS)
 }

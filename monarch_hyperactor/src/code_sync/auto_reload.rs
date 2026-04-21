@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use monarch_types::SerializablePyErr;
 use pyo3::prelude::*;
@@ -27,7 +27,7 @@ use crate::runtime::monarch_with_gil_blocking;
 /// Message to trigger module reloading
 #[derive(Debug, Clone, Named, Serialize, Deserialize)]
 pub struct AutoReloadMessage {
-    pub result: PortRef<Result<(), String>>,
+    pub result: reference::PortRef<Result<(), String>>,
 }
 wirevalue::register_type!(AutoReloadMessage);
 

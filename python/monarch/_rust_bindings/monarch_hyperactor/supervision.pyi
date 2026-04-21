@@ -30,6 +30,12 @@ class MeshFailure:
     """
     @property
     def mesh(self) -> object: ...
+    @property
+    def mesh_name(self) -> str:
+        """The name of the mesh that this failure occurred on. Can be compared
+        to existing meshes names to determine identity"""
+        ...
+
     def report(self) -> str:
         """
         User-readable error report for this particular failure.

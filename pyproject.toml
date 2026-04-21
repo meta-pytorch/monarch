@@ -5,7 +5,7 @@
 #   2. C++ extensions (monarch.common._C, gradient_generator) link against libtorch
 #   3. Build-time torch detection determines whether to enable tensor_engine feature
 # The torch index is controlled by [tool.uv.sources] below (e.g., pytorch-cu128)
-requires = ["setuptools>=64", "setuptools-rust", "wheel", "numpy", "torch"]
+requires = ["setuptools>=77", "setuptools-rust", "wheel", "numpy", "torch"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -18,6 +18,20 @@ license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 authors = [
     {name = "Meta", email = "oncall+monarch@xmail.facebook.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Distributed Computing",
 ]
 
 dependencies = [
@@ -33,6 +47,9 @@ dependencies = [
     "tabulate",
     "opentelemetry-api",
     "clusterscope",
+    "flask>=2.0",
+    "xxhash",
+    "py-spy",
 ]
 
 # PyTorch nightly build indices for different platforms
@@ -76,11 +93,14 @@ python-downloads = "automatic"  # Automatically download Python if needed
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "setup.py" },
-    { file = "**/*.rs" },
-    { file = "**/Cargo.toml" },
+    # Note: we intentionally avoid "**/*.rs" because it matches generated
+    # .rs files in target/release/build/, causing a full rebuild every time.
+    { file = "*/src/**/*.rs" },
+    { file = "*/Cargo.toml" },
     { file = "Cargo.lock" },
-    { file = "**/*.{cc, cpp, c, h}" },
-    { file = "**/*.{cu, cuh}" },
+    { file = "*/src/**/*.{cc,cpp,c,h}" },
+    { file = "*/src/**/*.{cu,cuh}" },
+    { file = "python/monarch/**/*.{cpp,c,h}" },
 ]
 
 [project.optional-dependencies]
@@ -108,19 +128,32 @@ dev = [
     "pytest-timeout>=2.0",
     "pytest-asyncio>=0.21",
     "pytest-xdist>=3.0",
+    "pytest-split",
     "pyright>=1.1",
     "torch>=2.9.1",
+    "setuptools-rust",
 ]
+
+[project.urls]
+Homepage = "https://meta-pytorch.org/monarch/"
+Documentation = "https://meta-pytorch.org/monarch/"
+Repository = "https://github.com/meta-pytorch/monarch"
+Issues = "https://github.com/meta-pytorch/monarch/issues"
 
 [project.scripts]
 monarch = "monarch.tools.cli:main"
 monarch_bootstrap = "monarch._src.actor.bootstrap_main:invoke_main"
+monarch-dashboard = "monarch.monarch_dashboard.__main__:main"
 
 [tool.setuptools]
 packages = {find = {where = ["python"]}}
 
 [tool.setuptools.package-dir]
 "" = "python"
+
+[tool.setuptools.package-data]
+"monarch.monarch_dashboard" = ["frontend/build/**/*"]
+"monarch.tools" = ["SKILL.md"]
 
 [tool.pytest.ini_options]
 markers = [

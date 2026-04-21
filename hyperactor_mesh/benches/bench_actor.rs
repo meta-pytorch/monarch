@@ -14,10 +14,9 @@ use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
-use hyperactor::clock::Clock;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -26,7 +25,7 @@ use typeuri::Named;
 #[derive(Debug, Clone, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct BenchMessage {
     pub step: usize,
-    pub reply: PortRef<usize>,
+    pub reply: reference::PortRef<usize>,
     #[serde(with = "serde_bytes")]
     pub payload: Vec<u8>,
 }
@@ -61,9 +60,7 @@ impl Handler<BenchMessage> for BenchActor {
         ctx: &Context<Self>,
         msg: BenchMessage,
     ) -> Result<(), anyhow::Error> {
-        hyperactor::clock::ClockKind::default()
-            .sleep(self.processing_time.clone())
-            .await;
+        tokio::time::sleep(self.processing_time.clone()).await;
 
         let _ = msg.reply.send(ctx, msg.step);
         Ok(())

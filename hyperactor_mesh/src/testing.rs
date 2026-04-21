@@ -23,12 +23,12 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::id;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::testing::ids::test_proc_id;
 use ndslice::Extent;
 use tokio::process::Command;
 use tokio::sync::OnceCell;
@@ -44,6 +44,7 @@ use crate::alloc::Allocator;
 use crate::alloc::LocalAllocator;
 use crate::alloc::ProcessAllocator;
 use crate::host_mesh::HostMesh;
+use crate::host_mesh::HostMeshShutdownGuard;
 use crate::supervision::MeshFailure;
 use crate::transport::default_transport;
 
@@ -172,7 +173,7 @@ async fn fresh_instance_with_router() -> (
 ) {
     static INSTANCE: OnceLock<(Instance<TestRootClient>, DialMailboxRouter)> = OnceLock::new();
     let router = DialMailboxRouter::new();
-    let proc = Proc::new(id!(test[0]), router.boxed());
+    let proc = Proc::configured(test_proc_id("0"), router.boxed());
     let ai = proc.actor_instance("testclient").unwrap();
     // Use the OnceLock to get a 'static lifetime for the instance.
     INSTANCE
@@ -232,7 +233,7 @@ pub async fn local_proc_mesh(
 /// // spawn a process mesh on this host mesh with the name "test", abd per_host
 /// // extent gpu = 8.
 /// let proc_mesh = host_mesh
-///     .spawn(instance, "test", extent!(gpu = 8))
+///     .spawn(instance, "test", extent!(gpu = 8), None)
 ///     .await
 ///     .unwrap();
 /// // ... do something with the proc mesh ...
@@ -240,7 +241,7 @@ pub async fn local_proc_mesh(
 /// let _ = host_mesh.shutdown(&instance).await;
 /// ```
 #[cfg(fbcode_build)]
-pub async fn host_mesh(n: usize) -> HostMesh {
+pub async fn host_mesh(n: usize) -> HostMeshShutdownGuard {
     use crate::Name;
 
     let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
@@ -270,5 +271,5 @@ pub async fn host_mesh(n: usize) -> HostMesh {
     }
 
     let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), host_addrs);
-    HostMesh::take(host_mesh)
+    HostMesh::take(host_mesh).shutdown_guard()
 }

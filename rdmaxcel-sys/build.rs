@@ -25,7 +25,7 @@ fn main() {
     let rdma_include = &cpp_static_libs_config.rdma_include_dir;
 
     // Detect platform: ROCm or CUDA
-    let (is_rocm, compute_home) = detect_platform();
+    let (is_rocm, compute_home) = build_utils::detect_gpu_platform();
 
     // Get the directory of the current crate
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
@@ -50,7 +50,20 @@ fn main() {
     let source_dir = if is_rocm {
         // For ROCm: hipify sources first, then use hipified directory
         let hip_dir = out_path.join("hipified_src");
-        hipify_sources(&src_dir, &hip_dir, &manifest_dir);
+        build_utils::rocm::hipify_sources(
+            &src_dir,
+            &[
+                "rdmaxcel.h",
+                "rdmaxcel.c",
+                "rdmaxcel.cpp",
+                "rdmaxcel.cu",
+                "driver_api.h",
+                "driver_api.cpp",
+            ],
+            &hip_dir,
+            &manifest_dir,
+        )
+        .expect("hipify failed");
         hip_dir
     } else {
         // For CUDA: use original sources
@@ -128,7 +141,7 @@ fn main() {
         .allowlist_function("launch_send_wqe")
         .allowlist_function("launch_recv_wqe")
         .allowlist_function("rdma_get_active_segment_count")
-        .allowlist_function("rdma_get_all_segment_info")
+        .allowlist_function("rdma_get_all_registered_segment_info")
         .allowlist_function("register_segments")
         .allowlist_function("deregister_segments")
         .allowlist_function("rdmaxcel_cu.*")
@@ -160,6 +173,8 @@ fn main() {
         .allowlist_type("rdmaxcel_segment_scanner_fn")
         // EFA types
         .allowlist_type("efadv_.*")
+        // CUDA types needed by monarch_rdma
+        .allowlist_type("CUmemorytype.*")
         // Vars
         .allowlist_var("MLX5_.*")
         .allowlist_var("IBV_.*")
@@ -273,91 +288,9 @@ fn main() {
         &compute_include_path,
         rdma_include,
         &source_dir,
-        &manifest_dir,
         &out_dir,
         is_rocm,
     );
-}
-
-/// Detect whether to use ROCm or CUDA
-fn detect_platform() -> (bool, String) {
-    // Check for explicit platform selection via env var
-    if let Ok(platform) = std::env::var("MONARCH_RDMA_GPU_PLATFORM") {
-        match platform.to_lowercase().as_str() {
-            "rocm" => {
-                let rocm_home = build_utils::rocm::validate_rocm_installation()
-                    .expect("MONARCH_RDMA_GPU_PLATFORM=rocm but ROCm installation not found");
-                println!("cargo:warning=Using ROCm from {} (explicit)", rocm_home);
-                return (true, rocm_home);
-            }
-            "cuda" => {
-                let cuda_home = build_utils::validate_cuda_installation()
-                    .expect("MONARCH_RDMA_GPU_PLATFORM=cuda but CUDA installation not found");
-                println!("cargo:warning=Using CUDA from {} (explicit)", cuda_home);
-                return (false, cuda_home);
-            }
-            _ => panic!(
-                "MONARCH_RDMA_GPU_PLATFORM must be 'cuda' or 'rocm', got '{}'",
-                platform
-            ),
-        }
-    }
-
-    // Auto-detect when env var not set
-    let rocm_result = build_utils::rocm::validate_rocm_installation();
-    let cuda_result = build_utils::validate_cuda_installation();
-
-    match (rocm_result.is_ok(), cuda_result.is_ok()) {
-        (true, true) => {
-            panic!(
-                "Both ROCm and CUDA detected. Set MONARCH_RDMA_GPU_PLATFORM=cuda or \
-                 MONARCH_RDMA_GPU_PLATFORM=rocm to select the platform."
-            );
-        }
-        (true, false) => {
-            let rocm_home = rocm_result.unwrap();
-            println!("cargo:warning=Using ROCm from {}", rocm_home);
-            (true, rocm_home)
-        }
-        (false, true) => {
-            let cuda_home = cuda_result.unwrap();
-            println!("cargo:warning=Using CUDA from {}", cuda_home);
-            (false, cuda_home)
-        }
-        (false, false) => {
-            panic!("Neither CUDA nor ROCm installation found");
-        }
-    }
-}
-
-/// Hipify CUDA sources to HIP
-fn hipify_sources(src_dir: &Path, hip_dir: &Path, manifest_dir: &str) {
-    println!("cargo:warning=Hipifying CUDA sources to {:?}...", hip_dir);
-
-    let source_files: Vec<PathBuf> = [
-        "rdmaxcel.h",
-        "rdmaxcel.c",
-        "rdmaxcel.cpp",
-        "rdmaxcel.cu",
-        "driver_api.h",
-        "driver_api.cpp",
-    ]
-    .iter()
-    .map(|f| src_dir.join(f))
-    .filter(|p| p.exists())
-    .collect();
-
-    let project_root = PathBuf::from(manifest_dir)
-        .parent()
-        .expect("Failed to find project root")
-        .to_path_buf();
-
-    // No custom mapping needed - CUDA Driver API differences handled via #ifdef USE_ROCM
-    // in the source files (driver_api.h, driver_api.cpp, rdmaxcel.cpp)
-    build_utils::rocm::run_hipify_torch(&project_root, &source_files, hip_dir)
-        .expect("hipify_torch failed");
-
-    println!("cargo:warning=Hipification complete");
 }
 
 /// Find the main header file (rdmaxcel.h or rdmaxcel_hip.h)
@@ -428,7 +361,6 @@ fn compile_gpu_source(
     compute_include: &str,
     rdma_include: &str,
     source_dir: &Path,
-    manifest_dir: &str,
     out_dir: &str,
     is_rocm: bool,
 ) {
@@ -438,7 +370,7 @@ fn compile_gpu_source(
         format!("{}/bin/nvcc", compute_home)
     };
 
-    let gpu_build_dir = PathBuf::from(manifest_dir).join("target/gpu_build");
+    let gpu_build_dir = PathBuf::from(out_dir).join("gpu_build");
     std::fs::create_dir_all(&gpu_build_dir).expect("Failed to create GPU build directory");
 
     let obj_name = if is_rocm {
@@ -457,7 +389,7 @@ fn compile_gpu_source(
 
     // Compile with nvcc/hipcc
     let mut cmd = std::process::Command::new(&compiler);
-    cmd.args(&[
+    cmd.args([
         "-c",
         &gpu_source.to_string_lossy(),
         "-o",
@@ -469,9 +401,9 @@ fn compile_gpu_source(
     ]);
 
     if is_rocm {
-        cmd.args(&["-fPIC", "-D__HIP_PLATFORM_AMD__=1", "-DUSE_ROCM=1"]);
+        cmd.args(["-fPIC", "-D__HIP_PLATFORM_AMD__=1", "-DUSE_ROCM=1"]);
     } else {
-        cmd.args(&[
+        cmd.args([
             "--compiler-options",
             "-fPIC",
             "--expt-extended-lambda",
@@ -497,7 +429,7 @@ fn compile_gpu_source(
 
     // Create static library
     let ar_output = std::process::Command::new("ar")
-        .args(&[
+        .args([
             "rcs",
             &lib_path.to_string_lossy(),
             &obj_path.to_string_lossy(),

@@ -190,7 +190,7 @@ pub(crate) fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
 ///   (equal-adjacent merged).
 /// - Output is sorted, non-overlapping, coalesced.
 /// - On overlaps, `right_in` overwrites `left_in` (last-writer-wins).
-pub(crate) fn merge_value_runs<T: Eq + Clone>(
+pub fn merge_value_runs<T: Eq + Clone>(
     left_in: Vec<(Range<usize>, T)>,
     right_in: Vec<(Range<usize>, T)>,
 ) -> Vec<(Range<usize>, T)> {
@@ -221,7 +221,7 @@ pub(crate) fn merge_value_runs<T: Eq + Clone>(
     // Main merge loop: runs as long as both sides have a current
     // item.
     //
-    // Invariant: all runs emitted so far are sorted, non-overlapping,
+    // VO-1 postcondition: all runs emitted so far are sorted, non-overlapping,
     // and coalesced; `left` and `right` point to the next unprocessed
     // run on each side.
     while left.is_some() && right.is_some() {

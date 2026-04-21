@@ -17,12 +17,18 @@ pub mod convert;
 mod debugger;
 #[cfg(feature = "tensor_engine")]
 mod mesh_controller;
-mod simulation_tools;
 #[cfg(feature = "tensor_engine")]
 mod tensor_worker;
 
 mod blocking;
+#[cfg(target_os = "linux")]
+mod chunked_fuse;
+mod fast_pack;
 mod panic;
+#[cfg(target_os = "linux")]
+mod readonly_fuse;
+#[cfg(feature = "distributed_sql_telemetry")]
+pub mod snapshot_integration;
 mod trace;
 
 use pyo3::prelude::*;
@@ -122,10 +128,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         )?)?;
         monarch_rdma_extension::register_python_bindings(&get_or_add_new_module(module, "rdma")?)?;
     }
-    simulation_tools::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_extension.simulation_tools",
-    )?)?;
     monarch_hyperactor::bootstrap::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.bootstrap",
@@ -230,14 +232,26 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_extension.blocking",
     )?)?;
 
+    crate::fast_pack::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.fast_pack",
+    )?)?;
+
+    #[cfg(target_os = "linux")]
+    crate::chunked_fuse::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.chunked_fuse",
+    )?)?;
+
+    #[cfg(target_os = "linux")]
+    crate::readonly_fuse::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.readonly_fuse",
+    )?)?;
+
     monarch_hyperactor::logging::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.logging",
-    )?)?;
-
-    monarch_hyperactor::namespace::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.namespace",
     )?)?;
 
     monarch_hyperactor::proc_launcher_probe::register_python_bindings(&get_or_add_new_module(
@@ -262,17 +276,17 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         monarch_distributed_telemetry::query_engine::register_python_bindings(
             &get_or_add_new_module(module, "monarch_distributed_telemetry.query_engine")?,
         )?;
+        crate::snapshot_integration::register_python_bindings(&get_or_add_new_module(
+            module,
+            "monarch_extension.snapshot_integration",
+        )?)?;
     }
 
-    #[cfg(fbcode_build)]
+    #[cfg(all(fbcode_build, target_os = "linux"))]
     {
         monarch_hyperactor::meta::alloc::register_python_bindings(&get_or_add_new_module(
             module,
             "monarch_hyperactor.meta.alloc",
-        )?)?;
-        monarch_hyperactor::meta::alloc_mock::register_python_bindings(&get_or_add_new_module(
-            module,
-            "monarch_hyperactor.meta.alloc_mock",
         )?)?;
     }
     // Add feature detection function

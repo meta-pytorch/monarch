@@ -1,12 +1,12 @@
 # Reconfigurable Senders
 
 Some actors are constructed before the full messaging graph is available.
-For example, the `ReconfigurableMailboxSender` is used during `MeshAgent::bootstrap` to allow early creation of the `Proc` and agent before outbound routing is available.
+For example, the `ReconfigurableMailboxSender` is used during `HostAgent::bootstrap` to allow early creation of the `Proc` and agent before outbound routing is available.
 The `.configure(...)` method installs the actual router later, once mesh wiring is complete.
 
 ## Motivation
 
-Actors like `mesh_agent` are created before remote routing infrastructure is established. These actors need to send messages during setup, but the concrete `MailboxSender` they will use hasn't been determined yet.
+Actors like `HostAgent` are created before remote routing infrastructure is established. These actors need to send messages during setup, but the concrete `MailboxSender` they will use hasn't been determined yet.
 
 To solve this, `ReconfigurableMailboxSender` implements [`MailboxSender`] and supports **deferred configuration**: it starts by queueing messages in memory, then later transitions to forwarding once a real sender is available.
 

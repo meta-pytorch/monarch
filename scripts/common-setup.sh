@@ -9,10 +9,33 @@
 
 set -ex
 
+# Ensure conda is available. Checks common locations first, then
+# installs Miniconda if conda is not found anywhere.
+initialize_conda() {
+    if command -v conda &> /dev/null; then
+        return
+    fi
+    # Some images have conda installed but not on PATH.
+    if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
+        source /opt/conda/etc/profile.d/conda.sh
+        return
+    fi
+    # Install Miniconda if conda is not present at all.
+    echo "conda not found, installing Miniconda..."
+    local arch
+    arch=$(uname -m)
+    local installer_url="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-${arch}.sh"
+    curl -fsSL -o /tmp/miniconda.sh "$installer_url"
+    bash /tmp/miniconda.sh -b -p /opt/conda
+    rm /tmp/miniconda.sh
+    source /opt/conda/etc/profile.d/conda.sh
+}
+
 # Setup conda environment. Defaults to Python 3.10.
 setup_conda_environment() {
     local python_version=${1:-3.10}
     echo "Setting up conda environment with Python ${python_version}..."
+    initialize_conda
     conda create -n venv python="${python_version}" -y
     conda activate venv
     export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:$LD_LIBRARY_PATH"
@@ -26,6 +49,19 @@ install_system_dependencies() {
     dnf update -y
     # Protobuf compiler is required for the tracing-perfetto-sdk-schema crate.
     dnf install clang-devel libunwind libunwind-devel protobuf-compiler -y
+    # ninja is needed by monarch_cpp_static_libs to build rdma-core from source
+    # (cmake's Makefile generator cannot build by output file path, but Ninja can).
+    # Try dnf first (package name varies by distro), fall back to pip if unavailable.
+    if ! command -v ninja &> /dev/null; then
+        dnf install -y ninja-build 2>/dev/null || dnf install -y ninja 2>/dev/null || pip install ninja || echo "Warning: ninja not available, rdma-core build may use make instead"
+    fi
+}
+
+# Install Node.js and npm (needed to build the dashboard frontend).
+install_node() {
+    echo "Installing Node.js..."
+    conda install -y -c conda-forge 'nodejs>=18'
+    echo "Node $(node --version), npm $(npm --version)"
 }
 
 # Install and configure Rust nightly toolchain
@@ -35,15 +71,54 @@ setup_rust_toolchain() {
     source "${HOME}"/.cargo/env
     rustup toolchain install nightly
     rustup default nightly
+    # Explicitly install the pinned toolchain from rust-toolchain file.
+    # Some Docker images have it registered with a corrupt/missing manifest,
+    # which prevents rustup's auto-install from working.
+    if [ -f rust-toolchain ]; then
+        PINNED_CHANNEL=$(grep 'channel' rust-toolchain | sed 's/.*= *"\(.*\)"/\1/')
+        if [ -n "$PINNED_CHANNEL" ]; then
+            echo "Installing pinned toolchain: $PINNED_CHANNEL"
+            rustup toolchain install "$PINNED_CHANNEL"
+        fi
+    fi
     # We use cargo nextest to run tests in individual processes for similarity
     # to buck test.
     # Replace "cargo test" commands with "cargo nextest run".
-    cargo install cargo-nextest --locked
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "aarch64" ]; then
+        NEXTEST_URL="https://get.nexte.st/latest/linux-arm"
+    else
+        NEXTEST_URL="https://get.nexte.st/latest/linux"
+    fi
+    curl -LsSf "$NEXTEST_URL" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+    # Setup sccache for distributed Rust compilation caching via S3.
+    setup_sccache
 
     # We amend the RUSTFLAGS here because they have already been altered by `setup_cuda_environment`
     # (and a few other places); RUSTFLAGS environment variable overrides the definition in
     # .cargo/config.toml.
     export RUSTFLAGS="--cfg tracing_unstable ${RUSTFLAGS:-}"
+}
+
+# Setup sccache for Rust compilation caching.
+# Uses the pytorch ossci-compiler-cache S3 bucket if available.
+setup_sccache() {
+    # Skip sccache on ROCm — runners lack AWS credentials for the S3 cache backend
+    if command -v rocminfo &>/dev/null; then
+        echo "ROCm environment detected, skipping sccache setup"
+        return
+    fi
+
+    echo "Setting up sccache..."
+    pip install sccache
+
+    export RUSTC_WRAPPER=sccache
+    export SCCACHE_BUCKET=ossci-compiler-cache
+    export SCCACHE_REGION=us-east-1
+    export SCCACHE_S3_KEY_PREFIX=monarch
+
+    echo "sccache configured: bucket=${SCCACHE_BUCKET}, prefix=${SCCACHE_S3_KEY_PREFIX}"
 }
 
 # Install Python test dependencies
@@ -64,23 +139,37 @@ setup_tensor_engine() {
     echo "Installing Tensor Engine dependencies..."
     # Install the fmt library for C++ headers in pytorch.
     conda install -y -c conda-forge fmt
-    dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
+    # libnl3-devel is needed by rdma-core's cmake to enable mlx5/efa providers
+    # and generate ENABLE_STATIC targets (lib/statics/*.a).
+    dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel libefa libnl3-devel
 }
 
 # Install PyTorch with C++ development headers (libtorch) for Rust compilation
+# Usage: setup_pytorch_with_headers <gpu-arch-type> <gpu-arch-version> <torch-spec>
 setup_pytorch_with_headers() {
-    local gpu_arch_version=${1:-"12.8"}
-    local torch_spec=${2:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128"}
+    local gpu_arch_type=${1:-"cuda"}
+    local gpu_arch_version=${2:-"12.8"}
+    local torch_spec=${3:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128"}
 
-    echo "Setting up PyTorch with C++ headers (GPU arch: ${gpu_arch_version})..."
+    echo "Setting up PyTorch with C++ headers (${gpu_arch_type} ${gpu_arch_version})..."
 
-    # Extract CUDA version for libtorch URL (remove dots: "12.8" -> "128")
-    local cuda_version_short=$(echo "${gpu_arch_version}" | tr -d '.')
-    local libtorch_url="https://download.pytorch.org/libtorch/nightly/cu${cuda_version_short}/libtorch-cxx11-abi-shared-with-deps-latest.zip"
+    # Construct libtorch URL based on GPU type
+    local libtorch_variant
+    local libtorch_filename
+    if [[ "${gpu_arch_type}" == "rocm" ]]; then
+        # ROCm uses version with dots: "7.1" -> "rocm7.1"
+        libtorch_variant="rocm${gpu_arch_version}"
+        libtorch_filename="libtorch-shared-with-deps-latest.zip"
+    else
+        # CUDA uses version without dots: "12.8" -> "cu128"
+        libtorch_variant="cu$(echo "${gpu_arch_version}" | tr -d '.')"
+        libtorch_filename="libtorch-cxx11-abi-shared-with-deps-latest.zip"
+    fi
+    local libtorch_url="https://download.pytorch.org/libtorch/nightly/${libtorch_variant}/${libtorch_filename}"
 
     echo "Downloading libtorch from: ${libtorch_url}"
     wget -q "${libtorch_url}"
-    unzip -q "libtorch-cxx11-abi-shared-with-deps-latest.zip"
+    unzip -q "${libtorch_filename}"
 
     # Set environment variables for libtorch
     export LIBTORCH_ROOT="$PWD/libtorch"
@@ -109,11 +198,30 @@ setup_pytorch_with_headers() {
     ls -la "$LIBTORCH_ROOT/lib/lib"*.so | head -5 || echo "No .so files found"
 }
 
+# Install CUDA toolkit for build-only (no GPU required).
+# Used on ARM64 runners that lack a GPU but need CUDA for compilation.
+setup_cuda_toolkit() {
+    echo "Installing CUDA toolkit for build-only (no GPU required)..."
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "aarch64" ]; then
+        dnf config-manager --add-repo \
+            https://developer.download.nvidia.com/compute/cuda/repos/rhel9/sbsa/cuda-rhel9.repo
+    else
+        dnf config-manager --add-repo \
+            https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
+    fi
+    dnf install -y cuda-toolkit-12-8
+    export CUDA_HOME=/usr/local/cuda-12.8
+    export PATH="$CUDA_HOME/bin:$PATH"
+    export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+}
+
 # Common setup for build workflows (environment + system deps + rust)
 setup_build_environment() {
     local python_version=${1:-3.10}
     setup_conda_environment "${python_version}"
     install_system_dependencies
+    install_node
     setup_rust_toolchain
 }
 
@@ -145,6 +253,22 @@ setup_cuda_environment() {
     export RUSTFLAGS="-L native=$CUDA_LIB_DIR -L native=/lib64 -L native=/usr/lib64 ${RUSTFLAGS:-}"
 
     echo "✓ CUDA environment configured (CUDA_LIB_DIR: $CUDA_LIB_DIR)"
+}
+
+# Detect and configure ROCm environment for linking
+setup_rocm_environment() {
+    echo "Setting up ROCm environment..."
+
+    ROCM_HOME="${ROCM_HOME:-/opt/rocm}"
+
+    if [ -d "$ROCM_HOME" ]; then
+        export PATH="$ROCM_HOME/bin:$PATH"
+        export LD_LIBRARY_PATH="$ROCM_HOME/lib:$ROCM_HOME/lib64:${LD_LIBRARY_PATH:-}"
+        export LIBRARY_PATH="$ROCM_HOME/lib:$ROCM_HOME/lib64:${LIBRARY_PATH:-}"
+        echo "✓ ROCm environment configured (ROCM_HOME: $ROCM_HOME)"
+    else
+        echo "⚠ ROCm not found at $ROCM_HOME"
+    fi
 }
 
 # Common setup for test workflows (environment only)

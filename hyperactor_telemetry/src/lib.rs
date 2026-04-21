@@ -7,7 +7,6 @@
  */
 
 #![allow(internal_features)]
-#![allow(clippy::disallowed_methods)] // hyperactor_telemetry can't use hyperactor::clock::Clock (circular dependency)
 #![feature(assert_matches)]
 #![feature(sync_unsafe_cell)]
 #![feature(mpmc_channel)]
@@ -26,6 +25,11 @@ const LOG_LEVEL_DEBUG: &str = "debug";
 const SPAN_FIELD_RECORDING: &str = "recording";
 #[allow(dead_code)]
 const SPAN_FIELD_RECORDER: &str = "recorder";
+
+/// Well-known tracing field name for the log subject.
+/// Spans carrying this field identify the entity (actor, proc, etc.)
+/// that log events within the span pertain to.
+pub const SUBJECT_KEY: &str = "subject";
 
 // Environment value constants
 const ENV_VALUE_LOCAL: &str = "local";
@@ -52,9 +56,10 @@ pub const skip_record: bool = true;
 
 mod config;
 pub mod in_memory_reader;
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, target_os = "linux"))]
 mod meta;
 mod otel;
+pub(crate) mod otlp;
 mod pool;
 mod rate_limit;
 pub mod recorder;
@@ -66,10 +71,15 @@ pub mod trace;
 pub mod trace_dispatcher;
 
 // Re-export key types for external sink implementations
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Instant;
 use std::time::SystemTime;
@@ -111,6 +121,13 @@ use crate::config::USE_UNIFIED_LAYER;
 use crate::recorder::Recorder;
 use crate::sqlite::get_reloadable_sqlite_layer;
 
+/// Hash any hashable value to a u64 using DefaultHasher.
+pub fn hash_to_u64(value: &impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TelemetrySample {
     fields: Vec<(String, String)>,
@@ -127,7 +144,7 @@ impl TelemetrySample {
     }
 }
 
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, target_os = "linux"))]
 impl From<crate::meta::sample_buffer::Sample> for TelemetrySample {
     fn from(sample: crate::meta::sample_buffer::Sample) -> Self {
         let mut fields = Vec::new();
@@ -140,7 +157,7 @@ impl From<crate::meta::sample_buffer::Sample> for TelemetrySample {
     }
 }
 
-#[cfg(not(fbcode_build))]
+#[cfg(not(all(fbcode_build, target_os = "linux")))]
 impl TelemetrySample {
     pub fn new() -> Self {
         Self { fields: Vec::new() }
@@ -151,12 +168,12 @@ pub trait TelemetryTestHandle {
     fn get_tracing_samples(&self) -> Vec<TelemetrySample>;
 }
 
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, target_os = "linux"))]
 struct MockScubaHandle {
     tracing_client: crate::meta::scuba_utils::MockScubaClient,
 }
 
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, target_os = "linux"))]
 impl TelemetryTestHandle for MockScubaHandle {
     fn get_tracing_samples(&self) -> Vec<TelemetrySample> {
         self.tracing_client
@@ -290,7 +307,7 @@ lazy_static! {
     /// Global unified entity event dispatcher with pre-registration buffering.
     /// Events emitted before a dispatcher is registered are buffered and replayed
     /// when `set_entity_dispatcher` is called. This ensures bootstrap actors
-    /// (e.g., HostMeshAgent and ProcAgent) are captured even though they are spawned before the
+    /// (e.g., HostAgent and ProcAgent) are captured even though they are spawned before the
     /// telemetry system is initialized.
     static ref ENTITY_EVENT_STATE: Mutex<EntityEventState> = Mutex::new(
         EntityEventState::Buffering(Vec::new())
@@ -320,6 +337,8 @@ pub struct ActorEvent {
     pub rank: u64,
     /// Full hierarchical name of this actor
     pub full_name: String,
+    /// User-facing name for this actor
+    pub display_name: Option<String>,
 }
 
 /// Notify the registered dispatcher that an actor was created.
@@ -362,14 +381,14 @@ pub fn notify_mesh_created(event: MeshEvent) {
 /// This is passed to EntityEventDispatcher implementations when an actor changes status.
 #[derive(Debug, Clone)]
 pub struct ActorStatusEvent {
-    /// Actor ID as a string (e.g. "proc_id/actor_name")
-    pub actor_id: String,
+    /// Unique identifier for this event
+    pub id: u64,
     /// Timestamp when the status change occurred
     pub timestamp: SystemTime,
-    /// The new status arm name (e.g. "Created", "Idle", "Failed")
+    /// ID of the actor whose status changed
+    pub actor_id: u64,
+    /// New status value (e.g. "Created", "Idle", "Failed")
     pub new_status: String,
-    /// The previous status arm name
-    pub prev_status: String,
     /// Reason for the status change (e.g. error details for Failed)
     pub reason: Option<String>,
 }
@@ -381,16 +400,118 @@ pub fn notify_actor_status_changed(event: ActorStatusEvent) {
     dispatch_or_buffer(EntityEvent::ActorStatus(event));
 }
 
+/// Event fired when a message is sent to an actor mesh.
+///
+/// Emitted from `cast_with_selection` in `actor_mesh.rs`, which is the common
+/// path for all Python send methods: `call`, `call_one`, `broadcast`, and `choose`.
+#[derive(Debug, Clone)]
+pub struct SentMessageEvent {
+    pub timestamp: SystemTime,
+    /// Hash of the sending actor's [`ActorId`].
+    pub sender_actor_id: u64,
+    /// Hash of the target actor mesh's name.
+    pub actor_mesh_id: u64,
+    /// The view (slice) of the actor mesh that was targeted, serialized from
+    /// [`ndslice::Region`]. For full-mesh sends (call, broadcast) this covers
+    /// all dimensions; for sliced sends (call_one) collapsed dimensions are
+    /// absent; for choose this is a scalar (0-dim) Region.
+    pub view_json: String,
+    /// The shape of the view, serialized from [`ndslice::Shape`] (converted
+    /// from the view Region via `Region::into::<Shape>`).
+    pub shape_json: String,
+}
+
+/// Notify the registered dispatcher that a message was sent.
+/// If no dispatcher is registered yet, the event is buffered and will be
+/// replayed when `set_entity_dispatcher` is called.
+pub fn notify_sent_message(event: SentMessageEvent) {
+    dispatch_or_buffer(EntityEvent::SentMessage(event));
+}
+
+/// Event fired when a message is received (from receiver's perspective).
+#[derive(Debug, Clone)]
+pub struct MessageEvent {
+    pub timestamp: SystemTime,
+    /// Unique identifier for this received message.
+    pub id: u64,
+    /// Hash of sender's ActorId.
+    pub from_actor_id: u64,
+    /// Hash of receiver's ActorId.
+    pub to_actor_id: u64,
+    /// Endpoint name if this message targets a specific actor endpoint
+    pub endpoint: Option<String>,
+    /// Destination port ID
+    pub port_id: Option<u64>,
+}
+
+/// Notify the registered dispatcher that a message was received.
+pub fn notify_message(event: MessageEvent) {
+    dispatch_or_buffer(EntityEvent::Message(event));
+}
+
+/// Event fired when a received message changes status.
+#[derive(Debug, Clone)]
+pub struct MessageStatusEvent {
+    pub timestamp: SystemTime,
+    /// Unique identifier for this status event.
+    pub id: u64,
+    /// The message whose status changed (FK to MessageEvent.id).
+    pub message_id: u64,
+    /// New status: "queued", "active", or "complete".
+    pub status: String,
+}
+
+/// Notify the registered dispatcher that a message changed status.
+pub fn notify_message_status(event: MessageStatusEvent) {
+    dispatch_or_buffer(EntityEvent::MessageStatus(event));
+}
+
+static ACTOR_STATUS_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a globally unique ActorStatusEvent ID.
+///
+/// Combines the actor's unique ID with a process-local sequence number,
+/// then hashes the pair to produce an ID that is unique across processes.
+pub fn generate_actor_status_event_id(actor_id: u64) -> u64 {
+    let seq = ACTOR_STATUS_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(actor_id, seq))
+}
+
+static SEND_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a globally unique SentMessage ID.
+pub fn generate_sent_message_id(sender_actor_id: u64) -> u64 {
+    let seq = SEND_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(sender_actor_id, seq))
+}
+
+static RECV_MSG_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a unique received-message ID (cross-process unique).
+///
+/// Hashes (to_actor_id, seq) following the same pattern as
+/// `generate_sent_message_id`.
+pub fn generate_message_id(to_actor_id: u64) -> u64 {
+    let seq = RECV_MSG_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(to_actor_id, seq))
+}
+
+static STATUS_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a unique message-status-event ID (cross-process unique).
+///
+/// Hashes (message_id, seq) following the same pattern as
+/// `generate_sent_message_id`.
+pub fn generate_status_event_id(message_id: u64) -> u64 {
+    let seq = STATUS_EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(message_id, seq))
+}
+
 /// Unified event enum for all entity lifecycle events.
 ///
 /// This enum wraps all entity events (actors, meshes, and future event types)
 /// into a single type. This enables a single sink to handle all entity events,
 /// simplifying the registration and notification infrastructure.
-///
-/// # Future Extensions
-/// Additional variants can be added for:
-/// - `Message(MessageEvent)` - message sends/receives
-/// - `SentMessage(SentMessageEvent)` - outgoing message tracking
 #[derive(Debug, Clone)]
 pub enum EntityEvent {
     /// An actor was created.
@@ -399,6 +520,12 @@ pub enum EntityEvent {
     Mesh(MeshEvent),
     /// An actor changed status.
     ActorStatus(ActorStatusEvent),
+    /// A message was sent.
+    SentMessage(SentMessageEvent),
+    /// A message was received.
+    Message(MessageEvent),
+    /// A received message changed status.
+    MessageStatus(MessageStatusEvent),
 }
 
 /// Trait for dispatchers that receive unified entity events.
@@ -422,6 +549,9 @@ pub enum EntityEvent {
 ///             EntityEvent::Actor(actor) => println!("Actor: {}", actor.full_name),
 ///             EntityEvent::Mesh(mesh) => println!("Mesh: {}", mesh.full_name),
 ///             EntityEvent::ActorStatus(status) => println!("Status: {}", status.new_status),
+///             EntityEvent::SentMessage(msg) => println!("Sent: {}", msg.id),
+///             EntityEvent::Message(msg) => println!("Recv: {}", msg.id),
+///             EntityEvent::MessageStatus(s) => println!("Status: {}", s.status),
 ///         }
 ///         Ok(())
 ///     }
@@ -920,7 +1050,7 @@ fn initialize_logging_with_log_prefix_impl(
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    #[cfg(fbcode_build)]
+    #[cfg(all(fbcode_build, target_os = "linux"))]
     {
         let mut mock_scuba_client: Option<crate::meta::scuba_utils::MockScubaClient> = None;
 
@@ -968,7 +1098,6 @@ fn initialize_logging_with_log_prefix_impl(
             {
                 if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
                     use crate::meta;
-                    use crate::meta::get_tracing_targets;
                     use crate::meta::scuba_utils::LOG_ENTER_EXIT;
 
                     if mock_scuba {
@@ -982,14 +1111,14 @@ fn initialize_logging_with_log_prefix_impl(
                                     _ => false,
                                 },
                             )
-                            .with_target_filter(get_tracing_targets()),
+                            .with_target_filter(crate::config::get_tracing_targets()),
                         ));
 
                         mock_scuba_client = Some(tracing_client);
                     } else {
                         sinks.push(Box::new(
                             meta::scuba_sink::ScubaSink::new(meta::tracing_resource())
-                                .with_target_filter(get_tracing_targets()),
+                                .with_target_filter(crate::config::get_tracing_targets()),
                         ));
                     }
                 }
@@ -1119,7 +1248,7 @@ fn initialize_logging_with_log_prefix_impl(
             Box::new(EmptyTestHandle)
         }
     }
-    #[cfg(not(fbcode_build))]
+    #[cfg(not(all(fbcode_build, target_os = "linux")))]
     {
         let registry =
             Registry::default().with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
@@ -1149,6 +1278,10 @@ fn initialize_logging_with_log_prefix_impl(
                 prefix_env_var.clone(),
                 file_log_level,
             )));
+
+            if let Some(log_sink) = otlp::otlp_log_sink() {
+                sinks.push(log_sink);
+            }
 
             let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
 
@@ -1186,6 +1319,8 @@ fn initialize_logging_with_log_prefix_impl(
                 tracing::debug!("logging already initialized for this process: {}", err);
             }
         }
+
+        otel::init_metrics();
 
         Box::new(EmptyTestHandle)
     }
@@ -1278,8 +1413,6 @@ macro_rules! context_span {
 }
 
 pub mod env {
-    use rand::RngCore;
-
     /// Env var name set when monarch launches subprocesses to forward the execution context
     pub const HYPERACTOR_EXECUTION_ID_ENV: &str = "HYPERACTOR_EXECUTION_ID";
     pub const OTEL_EXPORTER: &str = "HYPERACTOR_OTEL_EXPORTER";
@@ -1300,7 +1433,7 @@ pub mod env {
                 let datetime: chrono::DateTime<chrono::Local> = now.into();
                 datetime.format("%b-%d_%H:%M").to_string()
             };
-            let random_number: u16 = (rand::rng().next_u32() % 1000) as u16;
+            let random_number: u16 = (rand::random::<u32>() % 1000) as u16;
             let execution_id = format!("{}_{}_{}", username, now, random_number);
             execution_id
         });
@@ -1313,13 +1446,13 @@ pub mod env {
     }
 
     /// Returns a URL for the execution trace, if available.
-    #[cfg(fbcode_build)]
+    #[cfg(all(fbcode_build, target_os = "linux"))]
     pub async fn execution_url() -> anyhow::Result<Option<String>> {
         Ok(Some(
             crate::meta::scuba_tracing::url::get_samples_shorturl(&execution_id()).await?,
         ))
     }
-    #[cfg(not(fbcode_build))]
+    #[cfg(not(all(fbcode_build, target_os = "linux")))]
     pub async fn execution_url() -> anyhow::Result<Option<String>> {
         Ok(None)
     }

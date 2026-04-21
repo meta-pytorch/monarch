@@ -25,8 +25,7 @@ use tokio::sync::mpsc::error::SendError;
 use typeuri::Named;
 use uuid::Uuid;
 
-use crate::ActorId;
-use crate::PortId;
+use crate::reference;
 
 /// A client's re-ordering buffer state.
 struct BufferState<T> {
@@ -180,9 +179,9 @@ impl<T> OrderedSender<T> {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum SeqKey {
     /// Shared sequence for all actor ports of an actor
-    Actor(ActorId),
+    Actor(reference::ActorId),
     /// Individual sequence for a specific non-actor port
-    Port(PortId),
+    Port(reference::PortId),
 }
 
 /// A message's sequencer number infomation.
@@ -256,7 +255,7 @@ impl Sequencer {
     ///
     /// - Actor ports: share the same sequence scheme per actor (keyed by ActorId)
     /// - Non-actor ports: get individual sequence schemes (keyed by PortId)
-    pub fn assign_seq(&self, port_id: &PortId) -> SeqInfo {
+    pub fn assign_seq(&self, port_id: &reference::PortId) -> SeqInfo {
         let key = if port_id.is_actor_port() {
             SeqKey::Actor(port_id.actor_id().clone())
         } else {
@@ -283,7 +282,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::id;
+    use crate::testing::ids::test_actor_id;
 
     /// Test message type 1 for actor port sequencing tests.
     #[derive(Named)]
@@ -475,7 +474,7 @@ mod tests {
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_id = id!(test[0].test);
+        let actor_id = test_actor_id("test_0", "test");
         let port_id = actor_id.port_id(1);
 
         // Modify original sequencer
@@ -495,7 +494,7 @@ mod tests {
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_id = id!(worker[0].worker);
+        let actor_id = test_actor_id("worker_0", "worker");
         // Two different actor ports for the same actor (using Named::port())
         let actor_port_1 = actor_id.port_id(TestMsg1::port());
         let actor_port_2 = actor_id.port_id(TestMsg2::port());
@@ -506,7 +505,7 @@ mod tests {
         assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 3);
 
         // Actor ports from a different actor get their own shared sequence
-        let actor_id_2 = id!(worker[1].worker);
+        let actor_id_2 = test_actor_id("worker_1", "worker");
         let actor_port_3 = actor_id_2.port_id(TestMsg1::port());
         assert_eq!(get_seq(sequencer.assign_seq(&actor_port_3)), 1); // independent from actor_id
     }
@@ -518,8 +517,8 @@ mod tests {
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_id_0 = id!(worker[0].worker);
-        let actor_id_1 = id!(worker[1].worker);
+        let actor_id_0 = test_actor_id("worker_0", "worker");
+        let actor_id_1 = test_actor_id("worker_1", "worker");
 
         // Non-actor ports from the same actor (without ACTOR_PORT_BIT)
         let port_1 = actor_id_0.port_id(1);
@@ -545,7 +544,7 @@ mod tests {
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_id = id!(worker[0].worker);
+        let actor_id = test_actor_id("worker_0", "worker");
 
         // Actor ports (share sequence per actor)
         let actor_port_1 = actor_id.port_id(TestMsg1::port());

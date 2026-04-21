@@ -18,11 +18,11 @@ use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::handle;
 use hyperactor::instrument;
 use hyperactor::instrument_infallible;
+use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -37,13 +37,13 @@ enum ShoppingList {
 
     // Call messages dispatch a request, expecting a reply to the
     // provided port, which must be in the last position.
-    Exists(String, #[reply] OncePortRef<bool>),
+    Exists(String, #[reply] reference::OncePortRef<bool>),
 
     // Tests macro hygience. We use 'result' as a keyword in the implementation.
     Clobber {
         arg: String,
         #[reply]
-        result: OncePortRef<bool>,
+        result: reference::OncePortRef<bool>,
     },
 }
 
@@ -65,16 +65,16 @@ enum TestVariantForms {
     CallStruct {
         a: u64,
         #[reply]
-        b: OncePortRef<u64>,
+        b: reference::OncePortRef<u64>,
     },
 
-    CallTuple(u64, #[reply] OncePortRef<u64>),
+    CallTuple(u64, #[reply] reference::OncePortRef<u64>),
 
-    CallTupleNoArgs(#[reply] OncePortRef<u64>),
+    CallTupleNoArgs(#[reply] reference::OncePortRef<u64>),
 
     CallStructNoArgs {
         #[reply]
-        a: OncePortRef<u64>,
+        a: reference::OncePortRef<u64>,
     },
 }
 
@@ -166,7 +166,10 @@ struct SimpleStructMessage {
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::id::Label;
+    use hyperactor::id::Uid;
     use hyperactor::proc::Proc;
+    use hyperactor::uid;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -187,5 +190,18 @@ mod tests {
 
         let actor_ref = actor_handle.bind::<TestVariantFormsActor>();
         assert_eq!(actor_ref.call_struct(&client, 10).await.unwrap(), 10,);
+    }
+
+    #[test]
+    fn test_uid_macro_singleton() {
+        let id = uid!(_my - singleton);
+        assert_eq!(id, Uid::Singleton(Label::new("my-singleton").unwrap()));
+        assert_eq!(id.to_string(), "_my-singleton");
+    }
+
+    #[test]
+    fn test_uid_macro_instance() {
+        let id = uid!(d5d54d7201103869);
+        assert_eq!(id, Uid::Instance(0xd5d54d7201103869));
     }
 }

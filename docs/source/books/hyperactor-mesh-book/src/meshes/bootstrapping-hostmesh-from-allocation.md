@@ -22,7 +22,7 @@ This is the step that turns "I have OS processes that can run a proc" into "I ha
 The function is:
 
 ```rust
-// from hyperactor_mesh/src/v1/host_mesh.rs
+// from hyperactor_mesh/src/host_mesh.rs
 pub async fn allocate(
     cx: &impl context::Actor,
     alloc: Box<dyn Alloc + Send + Sync>,
@@ -43,7 +43,7 @@ So this function **consumes** an allocation; it doesn't spawn OS processes by it
 The first real work `HostMesh::allocate(...)` does is to **consume** the `Alloc` you handed it and turn it into a `ProcMesh`:
 
 ```rust
-// from hyperactor_mesh/src/v1/host_mesh.rs (`fn HostMesh::allocate`)
+// from hyperactor_mesh/src/host_mesh.rs (`fn HostMesh::allocate`)
 let transport = alloc.transport();
 let extent = alloc.extent().clone();
 let is_local = alloc.is_local();
@@ -131,7 +131,7 @@ what we mean concretely is:
 Right after turning the allocation into a `ProcMesh`, the code does:
 
 ```rust
-// from hyperactor_mesh/src/v1/host_mesh.rs `HostMesh::allocate()`
+// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()`
 let (mesh_agents, mut mesh_agents_rx) = cx.mailbox().open_port();
 let _trampoline_actor_mesh = proc_mesh
     .spawn::<HostMeshAgentProcMeshTrampoline>(
@@ -144,13 +144,13 @@ let _trampoline_actor_mesh = proc_mesh
 
 This is the key hop: we now have **one remote proc per rank**, but we want **one host per remote proc**. Rather than building the host from the parent, we send a tiny actor *to* each remote proc that will build the host *there*.
 
-The long doc comment above `HostMesh::allocate()` in `hyperactor_mesh/src/v1/host_mesh.rs` explains the pattern. The short version:
+The long doc comment above `HostMesh::allocate()` in `hyperactor_mesh/src/host_mesh.rs` explains the pattern. The short version:
 
 1. we open a port locally (`open_port()`) so that the remote side can send back "I'm your host, here is my agent";
 2. we ask **every proc in the proc-mesh** to spawn `HostMeshAgentProcMeshTrampoline`;
 3. that trampoline (running *in the remote proc*) does:
-   - `Host::serve(...)` in that process, using a `BootstrapProcManager`, so this host can later spawn procs as new OS children,
-   - `host.system_proc().spawn::<HostMeshAgent>(...)` to put a `HostMeshAgent` on the host's service proc,
+   - `Host::new(...)` in that process, using a `BootstrapProcManager`, so this host can later spawn procs as new OS children,
+   - `host.system_proc().spawn::<HostAgent>(...)` to put a `HostAgent` on the host's service proc,
    - and finally `send(mesh_agents_port, that_host_agent_ref)` back to us.
 
 The ASCII diagram from the source shows exactly that flow:
@@ -205,14 +205,12 @@ After this, the parent just waits on `mesh_agents_rx.recv()` once per rank (see 
 After spawning those trampolines, `HostMesh::allocate()` does:
 
 ```rust
-// from hyperactor_mesh/src/v1/host_mesh.rs `HostMesh::allocate()`
+// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()`
 let mut hosts = Vec::new();
 for _rank in 0..extent.num_ranks() {
     let mesh_agent = mesh_agents_rx.recv().await?;
 
-    let Some((addr, _)) = mesh_agent.actor_id().proc_id().as_direct() else {
-        return Err(...);
-    };
+    let addr = mesh_agent.actor_id().proc_id().addr();
 
     let host_ref = HostRef(addr.clone());
     if host_ref.mesh_agent() != mesh_agent {
@@ -226,14 +224,14 @@ That means:
 
 - it expects **exactly one** reply per rank
 - each reply is the remote host's agent
-- it checks that the agent is **direct-addressed** (host listens on a channel) and that the id matches what it would derive from the host address
+- it extracts the host address from the agent's proc id and checks that the id matches what it would derive from the host address
 
 And this line:
 ```rust
 if host_ref.mesh_agent() != mesh_agent { ... }
 ```
 
-isn't decorative — it's proving that the agent we just got back is actually "the host-mesh agent that lives on the service proc at this address." We already know the service address (`addr`), so we can construct the actor id we expect for that host: `HostRef(addr).mesh_agent()`. The trampoline just sent us a real `ActorRef<HostMeshAgent>` from the child. We compare the expected id to the actual one; if they don't match, we bail, because that would mean we're about to assemble a host mesh with an agent that isn't actually running on that host's proc.
+isn't decorative — it's proving that the agent we just got back is actually "the host-mesh agent that lives on the service proc at this address." We already know the service address (`addr`), so we can construct the actor id we expect for that host: `HostRef(addr).mesh_agent()`. The trampoline just sent us a real `ActorRef<HostAgent>` from the child. We compare the expected id to the actual one; if they don't match, we bail, because that would mean we're about to assemble a host mesh with an agent that isn't actually running on that host's proc.
 
 - and it turns that into a `HostRef` it can store
 
@@ -241,10 +239,10 @@ At the end of that loop we have a `Vec<HostRef>` — one per remote OS process w
 
 ### 3.5 What the trampoline actually does (remote side)
 
-This is the bit from `hyperactor_mesh/src/v1/host_mesh.rs` right after we opened the port and before we start collecting agents:
+This is the bit from `hyperactor_mesh/src/host_mesh.rs` right after we opened the port and before we start collecting agents:
 
 ```rust
-// from hyperactor_mesh/src/v1/host_mesh.rs `HostMesh::allocate()`
+// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()`
 let (mesh_agents, mut mesh_agents_rx) = cx.mailbox().open_port();
 let _trampoline_actor_mesh = proc_mesh
     .spawn::<HostMeshAgentProcMeshTrampoline>(
@@ -261,11 +259,11 @@ We've already said "we spawn a trampoline on every allocated proc," but here's w
    Remember: `proc_mesh.spawn::<...>(...)` sends a spawn to *each* of the procs that came from the allocator. So the code above is not running locally — it's telling each remote proc "please run this actor."
 
 2. **Its job is to finish turning ‘bare proc' into ‘host'**
-   At this point the remote OS process is only running a proc (the thing the allocator told it to start). That proc is reachable and can run actors, but it is not yet a *host* in the v1 sense. The trampoline actor's whole purpose is:
-   - call `Host::serve(...)` **inside that remote process**
+   At this point the remote OS process is only running a proc (the thing the allocator told it to start). That proc is reachable and can run actors, but it is not yet a *host*. The trampoline actor's whole purpose is:
+   - call `Host::new(...)` **inside that remote process**
    - give it a `BootstrapProcManager` so it can later spawn *more* OS processes for procs
-   - spawn the real `HostMeshAgent` on the host's service proc
-   - report back to the parent with an `ActorRef<HostMeshAgent>`
+   - spawn the real `HostAgent` on the host's service proc
+   - report back to the parent with an `ActorRef<HostAgent>`
 
 3. **It reports back using the port we passed down**
    We gave it `mesh_agents.bind()` in the spawn args. That means the trampoline can do:
@@ -288,18 +286,18 @@ So the trampoline is the "last mile" that runs *inside the child process* and up
 
 ### 3.6 Assemble the `HostMesh`
 
-At this point in `hyperactor_mesh/src/v1/host_mesh.rs` (inside `HostMesh::allocate(...)`) we've already:
+At this point in `hyperactor_mesh/src/host_mesh.rs` (inside `HostMesh::allocate(...)`) we've already:
 
 - turned the `Alloc` into a `ProcMesh` (one proc per rank, running in the OS processes the allocator started),
 - spawned a `HostMeshAgentProcMeshTrampoline` on each of those procs,
-- received exactly one `ActorRef<HostMeshAgent>` back per rank over the port,
+- received exactly one `ActorRef<HostAgent>` back per rank over the port,
 - verified that each agent really lives on the direct-addressed "service" proc for that host, and
 - converted those into a `Vec<HostRef>`.
 
 The function then just packages all of that into an owned `HostMesh`:
 
 ```rust
-// from hyperactor_mesh/src/v1/host_mesh.rs `HostMesh::allocate(...)`
+// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate(...)`
 Ok(Self {
     name: name.clone(),
     extent: extent.clone(),
@@ -344,5 +342,5 @@ So now the flow looks like:
 1. parent has a proc + instance (can send/receive)
 2. parent allocates OS processes via `ProcessAllocator` (child runs v0 bootstrap)
 3. `ProcMesh::allocate(...)` tells those children "start a proc" → we now have N procs
-4. `HostMesh::allocate(...)` logs into each of those procs, has each one stand up a Host, and collects the `HostMeshAgent` refs
+4. `HostMesh::allocate(...)` logs into each of those procs, has each one stand up a Host, and collects the `HostAgent` refs
 5. we now have an actual `HostMesh`

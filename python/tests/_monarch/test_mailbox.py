@@ -32,12 +32,12 @@ from monarch._rust_bindings.monarch_hyperactor.pickle import (
     pickle as monarch_pickle,
 )
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._src.actor.allocator import LocalAllocator
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent
+from monarch._src.actor.host_mesh import HostMesh, this_host
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PortProtocol
 
-from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     PortReceiver,
@@ -108,12 +108,14 @@ class Accumulator(Generic[S, U]):
 
 
 def allocate() -> Shared[ProcMesh]:
+    host_mesh: HostMesh = this_host()
+
     async def task() -> ProcMesh:
-        spec = AllocSpec(AllocConstraints(), replica=1)
-        allocator = LocalAllocator()
-        alloc = await allocator.allocate_nonblocking(spec)
-        return await ProcMesh.allocate_nonblocking(
-            context().actor_instance._as_rust(), alloc, "test"
+        hy_host_mesh = await host_mesh._hy_host_mesh
+        return await hy_host_mesh.spawn_nonblocking(
+            context().actor_instance._as_rust(),
+            "test",
+            Extent(["replicas"], [1]),
         )
 
     return PythonTask.from_coroutine(task()).spawn()

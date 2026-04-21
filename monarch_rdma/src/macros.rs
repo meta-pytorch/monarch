@@ -9,14 +9,24 @@
 #[macro_export]
 macro_rules! cu_check {
     ($result:expr) => {
-        if $result != rdmaxcel_sys::CUDA_SUCCESS {
+        let result = $result;
+        if result != rdmaxcel_sys::CUDA_SUCCESS {
             let mut error_string: *const std::os::raw::c_char = std::ptr::null();
-            rdmaxcel_sys::rdmaxcel_cuGetErrorString($result, &mut error_string);
+            let err_result = rdmaxcel_sys::rdmaxcel_cuGetErrorString(result, &mut error_string);
+            if err_result != rdmaxcel_sys::CUDA_SUCCESS || error_string.is_null() {
+                panic!(
+                    "cuda failure {}:{} {:?} (cuGetErrorString failed with {:?})",
+                    file!(),
+                    line!(),
+                    result,
+                    err_result,
+                );
+            }
             panic!(
                 "cuda failure {}:{} {:?} '{}'",
                 file!(),
                 line!(),
-                $result,
+                result,
                 std::ffi::CStr::from_ptr(error_string).to_string_lossy()
             );
         }

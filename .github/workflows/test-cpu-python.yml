@@ -7,9 +7,17 @@ on:
         description: 'Wheel artifact name from build workflow'
         required: true
         type: string
+      python-version:
+        description: 'Python version to test with'
+        type: string
+        default: '3.10'
+      runner:
+        description: 'Linux runner to use for the test'
+        type: string
+        default: 'linux.4xlarge'
 
 concurrency:
-  group: test-cpu-python-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  group: test-cpu-python-${{ inputs.runner }}-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -18,12 +26,16 @@ jobs:
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 60
-      runner: linux.4xlarge
+      runner: ${{ inputs.runner }}
       submodules: recursive
       download-artifact: ${{ inputs.artifact-name }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
+
+        # Fetch tests disabled via GitHub issues titled "DISABLED <test-name>".
+        # Writes disabled_tests.txt (read by conftest.py).
+        python3 scripts/fetch_disabled_tests.py
 
         # Setup test environment
         setup_conda_environment

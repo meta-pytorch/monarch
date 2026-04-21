@@ -60,15 +60,14 @@ use async_trait::async_trait;
 use clap::Arg;
 use clap::Command as ClapCommand;
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
@@ -76,16 +75,16 @@ use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostMeshRef;
 use hyperactor_mesh::Name;
 use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_rdma::IbvConfig;
-use monarch_rdma::RawLocalMemory;
-use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use monarch_rdma::cu_check;
+use monarch_rdma::local_memory::RdmaLocalMemory;
+use monarch_rdma::local_memory::UnsafeLocalMemory;
 use ndslice::Extent;
 use ndslice::ViewExt;
 use serde::Deserialize;
@@ -265,7 +264,7 @@ pub struct CudaRdmaActor {
     // RDMA buffer handle for the CUDA memory
     rdma_buffer_handle: Option<RdmaRemoteBuffer>,
     // Reference to the RDMA manager actor
-    rdma_manager: ActorRef<RdmaManagerActor>,
+    rdma_manager: reference::ActorRef<RdmaManagerActor>,
 }
 
 #[async_trait]
@@ -273,9 +272,12 @@ impl Actor for CudaRdmaActor {
     async fn handle_supervision_event(
         &mut self,
         _cx: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
+        event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        tracing::error!("CudaRdmaActor supervision event: {:?}", _event);
+        if !event.is_error() {
+            return Ok(true);
+        }
+        tracing::error!("CudaRdmaActor supervision event: {:?}", event);
         tracing::error!("CudaRdmaActor error occurred, stop the worker process, exit code: 1");
         std::process::exit(1);
     }
@@ -283,7 +285,7 @@ impl Actor for CudaRdmaActor {
 
 #[async_trait]
 impl RemoteSpawn for CudaRdmaActor {
-    type Params = (ActorRef<RdmaManagerActor>, usize, usize);
+    type Params = (reference::ActorRef<RdmaManagerActor>, usize, usize);
 
     async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         let (rdma_manager, device_id, buffer_size) = params;
@@ -383,21 +385,21 @@ impl RemoteSpawn for CudaRdmaActor {
 
 // Message to initialize the buffer with data
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-struct InitializeBuffer(pub u8, pub OncePortRef<bool>);
+struct InitializeBuffer(pub u8, pub reference::OncePortRef<bool>);
 
 // Message to perform an RDMA ping-pong operation with another actor
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct PerformPingPong(
-    pub ActorRef<CudaRdmaActor>,
+    pub reference::ActorRef<CudaRdmaActor>,
     pub RdmaRemoteBuffer,
     pub i32,
     pub i32,
-    pub OncePortRef<bool>,
+    pub reference::OncePortRef<bool>,
 );
 
 // Message to verify the buffer contents
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-struct VerifyBuffer(pub Box<[u8]>, pub OncePortRef<bool>);
+struct VerifyBuffer(pub Box<[u8]>, pub reference::OncePortRef<bool>);
 
 #[async_trait]
 impl Handler<InitializeBuffer> for CudaRdmaActor {
@@ -429,7 +431,8 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
         if self.rdma_buffer_handle.is_none() {
             let addr = self.cu_ptr;
             let size = self.cpu_buffer.len();
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(addr, size));
+            let local_memory: Arc<dyn RdmaLocalMemory> =
+                Arc::new(UnsafeLocalMemory::new(addr, size));
             let handle = self
                 .rdma_manager
                 .downcast_handle(cx)
@@ -500,8 +503,14 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         }
 
         // Resolve IbvManagerActor refs and IbvBuffers from backends
-        let (local_ibv_manager, local_ibv) = local_buffer.resolve_ibv(cx).await?;
-        let (remote_ibv_manager, remote_ibv) = remote_buffer.resolve_ibv(cx).await?;
+        let (local_ibv_manager, local_ibv) = local_buffer
+            .resolve_ibv(cx)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for local buffer"))??;
+        let (remote_ibv_manager, remote_ibv) = remote_buffer
+            .resolve_ibv(cx)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for remote buffer"))??;
 
         let qp = local_ibv_manager
             .request_queue_pair(
@@ -510,7 +519,8 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
                 local_ibv.device_name.clone(),
                 remote_ibv.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         unsafe {
             let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
@@ -648,7 +658,7 @@ impl Handler<VerifyBuffer> for CudaRdmaActor {
 
 // Message to get the buffer handle from an actor
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-struct GetBufferHandle(#[binding(include)] pub OncePortRef<RdmaRemoteBuffer>);
+struct GetBufferHandle(#[binding(include)] pub reference::OncePortRef<RdmaRemoteBuffer>);
 
 #[async_trait]
 impl Handler<GetBufferHandle> for CudaRdmaActor {
@@ -717,7 +727,8 @@ pub async fn run() -> Result<(), anyhow::Error> {
         device_2_ibv_config = IbvConfig::default();
     }
 
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     // Setup host meshes and proc meshes
     let program =
@@ -750,10 +761,10 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     // Create proc meshes (one proc per host mesh)
     let device_1_proc_mesh: ProcMesh = host_mesh_1
-        .spawn(&instance, "procs", Extent::unity())
+        .spawn(&instance, "procs", Extent::unity(), None)
         .await?;
     let device_2_proc_mesh: ProcMesh = host_mesh_2
-        .spawn(&instance, "procs", Extent::unity())
+        .spawn(&instance, "procs", Extent::unity(), None)
         .await?;
 
     // Create RDMA manager for the first device

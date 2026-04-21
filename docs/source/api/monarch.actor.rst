@@ -9,8 +9,8 @@ The ``monarch.actor`` module provides the actor-based programming model for dist
 Creating Actors
 ===============
 
-Actors are created on multidmensional meshes of processes that
-are launch across hosts. HostMesh represents a mesh of hosts. ProcMesh is a mesh of processes.
+Actors are created on multidimensional meshes of processes that
+are launched across hosts. HostMesh represents a mesh of hosts. ProcMesh is a mesh of processes.
 
 .. autoclass:: HostMesh
    :members:
@@ -23,11 +23,13 @@ are launch across hosts. HostMesh represents a mesh of hosts. ProcMesh is a mesh
    :undoc-members:
    :inherited-members:
    :show-inheritance:
-   :exclude-members: __init__, monitor, from_alloc, sync_workspace, logging_option, get
+   :exclude-members: __init__, monitor, _from_alloc, sync_workspace, logging_option, get
 
 .. autofunction:: get_or_spawn_controller
 
 .. autofunction:: this_host
+
+.. autofunction:: this_proc
 
 
 Defining Actors
@@ -148,3 +150,13 @@ Use these functions to look up what actor is running the currently executing cod
    :inherited-members:
    :show-inheritance:
    :exclude-members: from_bytes, labels, sizes
+
+
+Supervision
+===========
+Types used for error handling and supervision in actor meshes.
+
+.. autoclass:: MeshFailure
+   :members:
+   :undoc-members:
+   :show-inheritance:

@@ -8,7 +8,8 @@
 
 use std::sync::OnceLock;
 
-use crate::clock::ClockKind;
+use hyperactor_telemetry::DefaultTelemetryClock;
+
 use crate::panic_handler;
 
 /// A global runtime handle used for spawning tasks. Do not use for executing long running or
@@ -49,7 +50,7 @@ pub fn initialize_with_log_prefix(
 
     panic_handler::set_panic_hook();
     hyperactor_telemetry::initialize_logging_with_log_prefix(
-        ClockKind::default(),
+        DefaultTelemetryClock {},
         env_var_log_prefix,
     );
 }

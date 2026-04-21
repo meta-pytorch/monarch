@@ -26,11 +26,9 @@ use futures::try_join;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
-use hyperactor::PortRef;
 use hyperactor::Unbind;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::context;
+use hyperactor::reference;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -260,7 +258,7 @@ impl RsyncDaemon {
     read only = true
     write only = false
     uid = {uid}
-    hosts allow = localhost
+    hosts allow = localhost ip6-localhost
 "#,
             workspace = workspace.display(),
             uid = nix::unistd::getuid().as_raw(),
@@ -297,7 +295,7 @@ impl RsyncDaemon {
                 loop {
                     match TcpStream::connect(addr).await {
                         Err(err) if err.kind() == ErrorKind::ConnectionRefused => {
-                            RealClock.sleep(Duration::from_millis(1)).await
+                            tokio::time::sleep(Duration::from_millis(1)).await
                         }
                         Err(err) => return Err(err.into()),
                         Ok(_) => break,
@@ -329,9 +327,9 @@ impl RsyncDaemon {
 #[derive(Debug, Clone, Named, Serialize, Deserialize, Bind, Unbind)]
 pub struct RsyncMessage {
     /// The connect message to create a duplex bytestream with the client.
-    pub connect: PortRef<Connect>,
+    pub connect: reference::PortRef<Connect>,
     /// A port to send back the rsync result or any errors.
-    pub result: PortRef<Result<RsyncResult, String>>,
+    pub result: reference::PortRef<Result<RsyncResult, String>>,
     /// The location of the workspace to sync.
     pub workspace: WorkspaceLocation,
 }
@@ -457,7 +455,7 @@ mod tests {
     use anyhow::Result;
     use anyhow::anyhow;
     use hyperactor_mesh::ActorMesh;
-    use hyperactor_mesh::global_root_client;
+    use hyperactor_mesh::context;
     use hyperactor_mesh::test_utils;
     use tempfile::TempDir;
     use tokio::fs;
@@ -501,10 +499,11 @@ mod tests {
         fs::write(target_workspace.path().join("foo.txt"), "something").await?;
 
         // Set up actor mesh with 2 RsyncActors
-        let instance = global_root_client();
+        let cx = context().await;
+        let instance = cx.actor_instance;
         let mut host_mesh = test_utils::local_host_mesh(1).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "rsync_test", ndslice::Extent::unity())
+            .spawn(instance, "rsync_test", ndslice::Extent::unity(), None)
             .await
             .unwrap();
         // Spawn actor mesh with RsyncActors

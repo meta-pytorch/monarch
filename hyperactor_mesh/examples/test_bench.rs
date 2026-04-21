@@ -19,14 +19,12 @@ use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::PortRef;
 use hyperactor::Unbind;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
+use hyperactor::reference;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::Point;
 use ndslice::ViewExt;
@@ -48,7 +46,7 @@ impl Actor for TestActor {}
 
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
 enum TestMessage {
-    Ping(#[binding(include)] PortRef<Point>),
+    Ping(#[binding(include)] reference::PortRef<Point>),
 }
 
 #[async_trait]
@@ -73,10 +71,11 @@ async fn main() {
         .await
         .unwrap();
 
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     let proc_mesh = host_mesh
-        .spawn(instance, "test", extent!(procs = 2))
+        .spawn(instance, "test", extent!(procs = 2), None)
         .await
         .unwrap();
 
@@ -85,7 +84,7 @@ async fn main() {
     loop {
         let mut received = HashSet::new();
         let (port, mut rx) = instance.open_port();
-        let begin = RealClock.now();
+        let begin = tokio::time::Instant::now();
         actor_mesh
             .cast(instance, TestMessage::Ping(port.bind()))
             .unwrap();
@@ -94,6 +93,6 @@ async fn main() {
         }
 
         eprintln!("ping {}ms", begin.elapsed().as_millis());
-        RealClock.sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }

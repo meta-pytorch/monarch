@@ -18,8 +18,6 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
-use hyperactor::ProcId;
-use hyperactor::WorldId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
@@ -27,7 +25,7 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
-use hyperactor::channel::TxStatus;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor::sync::flag;
 use hyperactor::sync::monitor;
 use ndslice::view::Extent;
@@ -41,6 +39,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 use super::Alloc;
+use super::AllocName;
 use super::AllocSpec;
 use super::Allocator;
 use super::AllocatorError;
@@ -98,16 +97,16 @@ impl Allocator for ProcessAllocator {
         }
 
         let name = ShortUuid::generate();
-        let world_id = WorldId(name.to_string());
+        let alloc_name = AllocName(name.to_string());
         tracing::info!(
             name = "ProcessAllocStatus",
-            alloc_name = %world_id,
+            alloc_name = %alloc_name,
             addr = %bootstrap_addr,
             status = "Allocated",
         );
         Ok(ProcessAlloc {
             name: name.clone(),
-            world_id,
+            alloc_name,
             spec: spec.clone(),
             bootstrap_addr,
             rx,
@@ -141,7 +140,7 @@ pub struct ClientContext {
 /// An allocation produced by [`ProcessAllocator`].
 pub struct ProcessAlloc {
     name: ShortUuid,
-    world_id: WorldId, // to provide storage
+    alloc_name: AllocName,
     spec: AllocSpec,
     bootstrap_addr: ChannelAddr,
     rx: channel::ChannelRx<Process2Allocator>,
@@ -181,7 +180,7 @@ impl Child {
         mut process: tokio::process::Child,
         log_channel: Option<ChannelAddr>,
         tail_size: usize,
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
     ) -> (Self, impl Future<Output = ProcStopReason>) {
         let (group, handle) = monitor::group();
         let (exit_flag, exit_guard) = flag::guarded();
@@ -323,9 +322,7 @@ impl Child {
                 // Monitor the channel, killing the process if it becomes unavailable
                 // (fails keepalive).
                 self.group.spawn(async move {
-                    let _ = status
-                        .wait_for(|status| matches!(status, TxStatus::Closed))
-                        .await;
+                    let _ = status.wait_for(|status| status.is_closed()).await;
                     Result::<(), ()>::Err(())
                 });
             }
@@ -348,7 +345,6 @@ impl Child {
         tokio::spawn(async move {
             let exit_timeout =
                 hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
-            #[allow(clippy::disallowed_methods)]
             if tokio::time::timeout(exit_timeout, exit_flag).await.is_err() {
                 tracing::info!("watchdog timeout, killing process");
                 let _ = stop_reason.set(ProcStopReason::Watchdog);
@@ -400,12 +396,16 @@ impl ProcessAlloc {
     // the process.
 
     #[hyperactor::instrument_infallible]
-    fn stop(&mut self, proc_id: &ProcId, reason: ProcStopReason) -> Result<(), anyhow::Error> {
+    fn stop(
+        &mut self,
+        proc_id: &hyperactor_reference::ProcId,
+        reason: ProcStopReason,
+    ) -> Result<(), anyhow::Error> {
         self.get_mut(proc_id)?.stop(reason);
         Ok(())
     }
 
-    fn get(&self, proc_id: &ProcId) -> Result<&Child, anyhow::Error> {
+    fn get(&self, proc_id: &hyperactor_reference::ProcId) -> Result<&Child, anyhow::Error> {
         self.active.get(&self.index(proc_id)?).ok_or_else(|| {
             anyhow::anyhow!(
                 "proc {} not currently active in alloc {}",
@@ -415,7 +415,10 @@ impl ProcessAlloc {
         })
     }
 
-    fn get_mut(&mut self, proc_id: &ProcId) -> Result<&mut Child, anyhow::Error> {
+    fn get_mut(
+        &mut self,
+        proc_id: &hyperactor_reference::ProcId,
+    ) -> Result<&mut Child, anyhow::Error> {
         self.active.get_mut(&self.index(proc_id)?).ok_or_else(|| {
             anyhow::anyhow!(
                 "proc {} not currently active in alloc {}",
@@ -430,20 +433,20 @@ impl ProcessAlloc {
         &self.name
     }
 
-    fn index(&self, proc_id: &ProcId) -> Result<usize, anyhow::Error> {
+    fn index(&self, proc_id: &hyperactor_reference::ProcId) -> Result<usize, anyhow::Error> {
+        // ProcId names have format "{alloc_name}_{index}" (e.g., "abc123_0")
+        let name = proc_id.name();
+        let expected_prefix = format!("{}_", self.name);
         anyhow::ensure!(
-            proc_id
-                .world_name()
-                .expect("proc must be ranked for allocation index")
-                .parse::<ShortUuid>()?
-                == self.name,
+            name.starts_with(&expected_prefix),
             "proc {} does not belong to alloc {}",
             proc_id,
             self.name
         );
-        Ok(proc_id
-            .rank()
-            .expect("proc must be ranked for allocation index"))
+        let index_str = &name[expected_prefix.len()..];
+        index_str
+            .parse::<usize>()
+            .map_err(|e| anyhow::anyhow!("failed to parse index from proc name '{}': {}", name, e))
     }
 
     #[hyperactor::instrument_infallible]
@@ -475,7 +478,7 @@ impl ProcessAlloc {
         // (c.f. `enable_forwarding`), we do not do log forwarding on
         // these procs. This is because, now that we are on the v1
         // path, the only procs we spawn via this code path are those
-        // to support `HostMeshAgent`s.
+        // to support `HostAgent`s.
         let log_channel: Option<ChannelAddr> = None;
 
         let index = self.created.len();
@@ -522,7 +525,7 @@ impl ProcessAlloc {
                 tracing::error!(message);
                 self.failed = true;
                 Some(ProcState::Failed {
-                    world_id: self.world_id.clone(),
+                    alloc_name: self.alloc_name.clone(),
                     description: message,
                 })
             }
@@ -535,7 +538,13 @@ impl ProcessAlloc {
                         None
                     }
                     Ok(rank) => {
-                        let proc_id = ProcId::Ranked(self.world_id.clone(), rank);
+                        // For spawned processes, we use a temporary placeholder ProcId.
+                        // The actual ProcId will be set when the process calls Hello with its address.
+                        let temp_addr = ChannelAddr::any(ChannelTransport::Local);
+                        let proc_id = hyperactor_reference::ProcId::with_name(
+                            temp_addr,
+                            format!("{}_{}", self.alloc_name.name(), rank),
+                        );
                         let (handle, monitor) =
                             Child::monitored(rank, process, log_channel, tail_size, proc_id);
 
@@ -601,10 +610,12 @@ impl Alloc for ProcessAlloc {
                                 continue;
                             }
 
+                            let proc_name = match &self.spec.proc_name {
+                                Some(name) => name.clone(),
+                                None => format!("{}_{}", self.name, index),
+                            };
                             child.post(Allocator2Process::StartProc(
-                                self.spec.proc_name.clone().map_or(
-                                    ProcId::Ranked(WorldId(self.name.to_string()), index),
-                                    |name| ProcId::Direct(addr.clone(), name)),
+                                hyperactor_reference::ProcId::with_name(addr.clone(), proc_name),
                                 transport,
                             ));
                         }
@@ -674,14 +685,14 @@ impl Alloc for ProcessAlloc {
         &self.spec.extent
     }
 
-    fn world_id(&self) -> &WorldId {
-        &self.world_id
+    fn alloc_name(&self) -> &AllocName {
+        &self.alloc_name
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {
         tracing::info!(
             name = "ProcessAllocStatus",
-            alloc_name = %self.world_id(),
+            alloc_name = %self.alloc_name(),
             status = "Stopping",
         );
         // We rely on the teardown here, and that the process should
@@ -696,7 +707,7 @@ impl Alloc for ProcessAlloc {
         self.running = false;
         tracing::info!(
             name = "ProcessAllocStatus",
-            alloc_name = %self.world_id(),
+            alloc_name = %self.alloc_name(),
             status = "Stop::Sent",
             "StopAndExit was sent to allocators; check their logs for the stop progress."
         );
@@ -708,11 +719,11 @@ impl Drop for ProcessAlloc {
     fn drop(&mut self) {
         tracing::info!(
             name = "ProcessAllocStatus",
-            alloc_name = %self.world_id(),
+            alloc_name = %self.alloc_name(),
             status = "Dropped",
-            "dropping ProcessAlloc of name: {}, world id: {}",
+            "dropping ProcessAlloc of name: {}, alloc_name: {}",
             self.name,
-            self.world_id
+            self.alloc_name
         );
     }
 }
@@ -761,9 +772,9 @@ mod tests {
         };
 
         if let Some(child) = alloc.active.get(
-            &proc_id
-                .rank()
-                .expect("proc must be ranked for allocation lookup"),
+            &alloc
+                .index(&proc_id)
+                .expect("proc must be in allocation for lookup"),
         ) {
             child.fail_group();
         }

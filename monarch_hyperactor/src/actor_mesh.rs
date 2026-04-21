@@ -17,8 +17,8 @@ use async_trait::async_trait;
 use futures::future;
 use futures::future::FutureExt;
 use futures::future::Shared;
-use hyperactor::ActorRef;
 use hyperactor::Instance;
+use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
@@ -109,6 +109,9 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     fn initialized(&self) -> PyResult<PyPythonTask> {
         PyPythonTask::new(async { Ok(None::<()>) })
     }
+
+    /// The name of the mesh.
+    fn name(&self) -> PyResult<PyPythonTask>;
 }
 
 pub(crate) trait SupervisableActorMesh: ActorMeshProtocol + Supervisable {
@@ -195,6 +198,10 @@ impl PythonActorMesh {
 
     fn initialized(&self) -> PyResult<PyPythonTask> {
         self.inner.initialized()
+    }
+
+    fn name(&self) -> PyResult<PyPythonTask> {
+        self.inner.name()
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
@@ -322,18 +329,44 @@ impl ActorMeshProtocol for AsyncActorMesh {
             .await;
             if let (Some(mut port_ref), Err(pyerr)) = (port, result) {
                 let _ = monarch_with_gil(|py: Python<'_>| {
+                    let exception_str = crate::logging::format_traceback(py, &pyerr);
+                    tracing::error!(
+                        actor_id = instance.self_id().to_string(),
+                        "error occurred during cast unresolved: {}",
+                        exception_str
+                    );
+
+                    // Endpoint calls create a response port: the
+                    // PortRef is sent to the remote worker (to send
+                    // results back), and collect_valuemesh owns the
+                    // PortReceiver. If mesh.cast() fails here, we try
+                    // to send the exception back to the caller via
+                    // the PortRef ourselves. But a supervision event
+                    // can cause collect_valuemesh to drop the
+                    // PortReceiver (removing the port from the
+                    // mailbox) before we get here. Disable
+                    // return-undeliverable so a delivery failure
+                    // doesn't bounce back and crash the root client.
+                    //
+                    // TODO: Tie the lifetime of this queued work to
+                    // the PortReceiver (e.g. a cancellation token set
+                    // on drop) so we can distinguish
+                    // supervision-caused failures — where the caller
+                    // already knows — from other cast errors where
+                    // the caller actually needs this exception.
+
+                    port_ref.set_return_undeliverable(false);
+
                     let mut state =
                         crate::pickle::pickle(py, pyerr.into_value(py).into_any(), false, false)?;
-                    port_ref
-                        .send(
-                            &instance,
-                            PythonMessage::new_from_buf(
-                                PythonMessageKind::Exception { rank: Some(0) },
-                                state.take_inner()?.take_buffer(),
-                            ),
-                        )
-                        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-                        .unwrap();
+                    let _ = port_ref.send(
+                        &instance,
+                        PythonMessage::new_from_buf(
+                            PythonMessageKind::Exception { rank: Some(0) },
+                            state.take_inner()?.take_buffer(),
+                        ),
+                    );
+
                     Ok::<_, PyErr>(())
                 })
                 .await;
@@ -378,6 +411,18 @@ impl ActorMeshProtocol for AsyncActorMesh {
             mesh.await?;
             Ok(None::<()>)
         })
+    }
+
+    fn name(&self) -> PyResult<PyPythonTask> {
+        let mesh = self.mesh.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.push(async move {
+            let result = async move { mesh.await?.name()?.take_task()?.await }.await;
+            if tx.send(result).is_err() {
+                panic!("oneshot failed");
+            }
+        });
+        PyPythonTask::new(async move { rx.await.map_err(anyhow::Error::from)? })
     }
 }
 
@@ -500,6 +545,11 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         self.mesh_ref().__reduce__(py)
     }
+
+    fn name(&self) -> PyResult<PyPythonTask> {
+        let name = self.mesh_ref().name().to_string();
+        PyPythonTask::new(async move { Ok(name) })
+    }
 }
 
 impl SupervisableActorMesh for PythonActorMeshImpl {
@@ -571,6 +621,11 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         let from_bytes = module.getattr("py_actor_mesh_from_bytes").unwrap();
         Ok((from_bytes, py_bytes))
     }
+
+    fn name(&self) -> PyResult<PyPythonTask> {
+        let name = self.name().to_string();
+        PyPythonTask::new(async move { Ok(name) })
+    }
 }
 
 #[pymethods]
@@ -579,7 +634,7 @@ impl PythonActorMeshImpl {
         Ok(self
             .mesh_ref()
             .get(rank)
-            .map(|r| ActorRef::into_actor_id(r.clone()))
+            .map(|r| reference::ActorRef::into_actor_id(r.clone()))
             .map(PyActorId::from))
     }
 
@@ -650,16 +705,13 @@ fn py_identity(obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
 ///     hold_secs: Seconds to hold the GIL
 #[pyfunction]
 #[pyo3(name = "hold_gil_for_test", signature = (delay_secs, hold_secs))]
-#[allow(clippy::disallowed_methods)] // Intentional: we need blocking sleep to hold the GIL
 pub fn hold_gil_for_test(delay_secs: f64, hold_secs: f64) {
     thread::spawn(move || {
         // Wait before grabbing the GIL (blocking sleep is fine here, we're in a spawned thread)
-        #[allow(clippy::disallowed_methods)]
         thread::sleep(Duration::from_secs_f64(delay_secs));
         // Acquire and hold the GIL - MUST use blocking sleep to keep GIL held
         Python::attach(|_py| {
             tracing::info!("start holding the gil...");
-            #[allow(clippy::disallowed_methods)]
             thread::sleep(Duration::from_secs_f64(hold_secs));
             tracing::info!("end holding the gil...");
         });
@@ -701,8 +753,6 @@ mod tests {
     use hyperactor::Proc;
     use hyperactor::actor::Signal;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use hyperactor::mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::proc::WorkCell;
@@ -875,8 +925,7 @@ mod tests {
         controller
             .send(instance, GetSubscriberCount(port.bind()))
             .unwrap();
-        let initial_count = RealClock
-            .timeout(Duration::from_secs(5), rx.recv())
+        let initial_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
             .expect("channel closed");
@@ -891,7 +940,7 @@ mod tests {
                 _ = python_actor_mesh.inner.supervision_event(&py_instance) => {
                     panic!("unexpected supervision event on healthy mesh");
                 }
-                _ = RealClock.sleep(Duration::from_millis(200)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
             }
         }
 
@@ -901,8 +950,7 @@ mod tests {
         controller
             .send(instance, GetSubscriberCount(port.bind()))
             .unwrap();
-        let after_count = RealClock
-            .timeout(Duration::from_secs(5), rx.recv())
+        let after_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
             .expect("channel closed");
@@ -917,7 +965,7 @@ mod tests {
                 _ = python_actor_mesh.inner.supervision_event(&py_instance) => {
                     panic!("unexpected supervision event on healthy mesh");
                 }
-                _ = RealClock.sleep(Duration::from_millis(200)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
             }
         }
 
@@ -925,8 +973,7 @@ mod tests {
         controller
             .send(instance, GetSubscriberCount(port.bind()))
             .unwrap();
-        let final_count = RealClock
-            .timeout(Duration::from_secs(5), rx.recv())
+        let final_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
             .expect("channel closed");

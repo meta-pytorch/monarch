@@ -27,22 +27,24 @@ pub mod bootstrap;
 pub mod casting;
 pub mod comm;
 pub mod config;
+pub mod config_dump;
 pub mod connect;
-pub mod global_client;
+pub mod global_context;
 pub mod host_mesh;
+pub mod introspect;
 pub mod logging;
 pub mod mesh;
 pub mod mesh_admin;
+pub mod mesh_admin_client;
 pub mod mesh_controller;
 pub mod mesh_selection;
 mod metrics;
-pub mod namespace;
 pub mod proc_agent;
 pub mod proc_launcher;
 pub mod proc_mesh;
+pub mod pyspy;
 pub mod reference;
 pub mod resource;
-pub mod router;
 pub mod shared_cell;
 pub mod shortuuid;
 pub mod supervision;
@@ -67,12 +69,12 @@ pub use casting::CastError;
 pub use comm::CommActor;
 pub use dashmap;
 use enum_as_inner::EnumAsInner;
-pub use global_client::GlobalClientActor;
-pub use global_client::global_root_client;
+pub use global_context::GlobalClientActor;
+pub use global_context::GlobalContext;
+pub use global_context::context;
+pub use global_context::this_host;
+pub use global_context::this_proc;
 pub use host_mesh::HostMeshRef;
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
-use hyperactor::ProcId;
 use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::reference as hyperactor_reference;
@@ -88,9 +90,9 @@ use serde::Serialize;
 use typeuri::Named;
 pub use value_mesh::ValueMesh;
 
-use crate::host_mesh::HostMeshAgent;
+use crate::host_mesh::HostAgent;
 use crate::host_mesh::HostMeshRefParseError;
-use crate::host_mesh::mesh_agent::ProcState;
+use crate::host_mesh::host_agent::ProcState;
 use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::shortuuid::ShortUuid;
@@ -148,7 +150,7 @@ pub enum Error {
     UnroutableMesh(),
 
     #[error("error while calling actor {0}: {1}")]
-    CallError(ActorId, anyhow::Error),
+    CallError(hyperactor_reference::ActorId, anyhow::Error),
 
     #[error("actor not registered for type {0}")]
     ActorTypeNotRegistered(String),
@@ -158,13 +160,13 @@ pub enum Error {
     GspawnError(Name, String),
 
     #[error("error while sending message to actor {0}: {1}")]
-    SendingError(ActorId, Box<MailboxSenderError>),
+    SendingError(hyperactor_reference::ActorId, Box<MailboxSenderError>),
 
     #[error("error while casting message to {0}: {1}")]
     CastingError(Name, anyhow::Error),
 
     #[error("error configuring host mesh agent {0}: {1}")]
-    HostMeshAgentConfigurationError(ActorId, String),
+    HostMeshAgentConfigurationError(hyperactor_reference::ActorId, String),
 
     #[error(
         "error creating proc (host rank {host_rank}) on host mesh agent {mesh_agent}, state: {state}"
@@ -172,7 +174,7 @@ pub enum Error {
     ProcCreationError {
         state: Box<resource::State<ProcState>>,
         host_rank: usize,
-        mesh_agent: ActorRef<HostMeshAgent>,
+        mesh_agent: hyperactor_reference::ActorRef<HostAgent>,
     },
 
     #[error(
@@ -200,7 +202,7 @@ pub enum Error {
     ControllerActorSpawnError(Name, anyhow::Error),
 
     #[error("proc {0} must be direct-addressable")]
-    RankedProc(ProcId),
+    RankedProc(hyperactor_reference::ProcId),
 
     #[error("{0}")]
     Supervision(Box<MeshFailure>),
@@ -284,6 +286,22 @@ impl From<view::InvalidCardinality> for Error {
 
 /// The type of result used in `hyperactor_mesh`.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Construct a per-actor display name from a mesh-level base name and a
+/// rank's coordinates. Inserts `point.format_as_dict()` before the last
+/// `>` in `base`, or appends it if no `>` is found. Returns `base`
+/// unchanged for scalar (empty) points.
+pub(crate) fn actor_display_name(base: &str, point: &view::Point) -> String {
+    if point.is_empty() {
+        return base.to_string();
+    }
+    let coords = point.format_as_dict();
+    if let Some(pos) = base.rfind('>') {
+        format!("{}{}{}", &base[..pos], coords, &base[pos..])
+    } else {
+        format!("{}{}", base, coords)
+    }
+}
 
 /// Names are used to identify objects in the system. They have a user-provided name,
 /// and a unique UUID.

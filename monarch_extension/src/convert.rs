@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use hyperactor::ActorId;
+use hyperactor::reference;
 use monarch_hyperactor::ndslice::PySlice;
 use monarch_hyperactor::proc::PyActorId;
 use monarch_messages::controller::Seq;
@@ -176,7 +176,10 @@ impl<'a> MessageParser<'a> {
     fn parseWorkerMessageList(&self, name: &str) -> PyResult<Vec<WorkerMessage>> {
         self.attr(name)?.try_iter()?.map(|x| convert(x?)).collect()
     }
-    fn parse_error_reason(&self, name: &str) -> PyResult<Option<(Option<ActorId>, String)>> {
+    fn parse_error_reason(
+        &self,
+        name: &str,
+    ) -> PyResult<Option<(Option<reference::ActorId>, String)>> {
         let err = self.attr(name)?;
         if err.is_none() {
             return Ok(None);

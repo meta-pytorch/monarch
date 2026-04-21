@@ -9,10 +9,9 @@
 use futures::future::try_join_all;
 use hyperactor::channel::ChannelAddr;
 use hyperactor_mesh::Bootstrap;
-use hyperactor_mesh::HostMeshRef;
 use hyperactor_mesh::Name;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
-use hyperactor_mesh::bootstrap_or_die;
+use hyperactor_mesh::bootstrap::bootstrap;
 use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_types::MapPyErr;
 use pyo3::Bound;
@@ -20,6 +19,7 @@ use pyo3::PyAny;
 use pyo3::PyResult;
 use pyo3::Python;
 use pyo3::exceptions::PyException;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::pyfunction;
 use pyo3::types::PyAnyMethods;
 use pyo3::types::PyModule;
@@ -39,13 +39,15 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
     };
 
     hyperactor::internal_macro_support::tracing::debug!("entering async bootstrap");
-    crate::runtime::future_into_py::<_, ()>(py, async move {
+    crate::runtime::future_into_py::<_, i32>(py, async move {
         // SAFETY:
         // - Only one of these is ever created.
         // - This is the entry point of this program, so this will be dropped when
         // no more FB C++ code is running.
         let _destroy_guard = unsafe { fbinit::DestroyGuard::new() };
-        bootstrap_or_die().await;
+        bootstrap()
+            .await
+            .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
     })
 }
 
@@ -74,13 +76,19 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
             env,
         }
     } else {
-        // For regular Python builds: use current_exe() and -m arguments
-        let current_exe = std::env::current_exe().map_err(|e| {
-            pyo3::PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to get current executable: {}",
-                e
-            ))
-        })?;
+        // For regular Python builds: use argv[0] to preserve the original
+        // invocation path.  current_exe() resolves symlinks, which breaks
+        // virtual environments — the resolved path doesn't find pyvenv.cfg
+        // so site-packages aren't activated in subprocesses.
+        let current_exe = std::env::args()
+            .next()
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::current_exe().ok())
+            .ok_or_else(|| {
+                pyo3::PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "Failed to determine current executable",
+                )
+            })?;
         let current_exe_str = current_exe.to_string_lossy().to_string();
         BootstrapCommand {
             program: current_exe,
@@ -103,7 +111,8 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
     };
 
     PyPythonTask::new(async {
-        let err = boot.bootstrap().await;
+        // This should never return Ok because exit_on_shutdown is true.
+        let err = boot.bootstrap().await.unwrap_err();
         Err(err).map_pyerr()?;
         Ok(())
     })
@@ -111,6 +120,7 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
 
 #[pyfunction]
 pub fn attach_to_workers<'py>(
+    instance: &crate::context::PyInstance,
     workers: Vec<Bound<'py, PyPythonTask>>,
     name: Option<&str>,
 ) -> PyResult<PyPythonTask> {
@@ -121,6 +131,7 @@ pub fn attach_to_workers<'py>(
 
     let name =
         Name::new(name.unwrap_or("hosts")).map_err(|err| PyException::new_err(err.to_string()))?;
+    let instance = instance.clone();
     PyPythonTask::new(async move {
         let results = try_join_all(tasks).await?;
 
@@ -136,7 +147,9 @@ pub fn attach_to_workers<'py>(
         .await;
         let addresses = addresses?;
 
-        let host_mesh = HostMesh::take(HostMeshRef::from_hosts(name, addresses));
+        let host_mesh = HostMesh::attach(&*instance, name, addresses)
+            .await
+            .map_err(|e| anyhow::anyhow!("attach failed: {}", e))?;
         Ok(PyHostMesh::new_owned(host_mesh))
     })
 }

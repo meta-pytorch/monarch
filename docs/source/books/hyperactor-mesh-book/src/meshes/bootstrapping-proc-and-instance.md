@@ -4,7 +4,6 @@ We begin in a process that can already run hyperactor code and create an instanc
 
 ```rust
 let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
-    .await
     .unwrap();
 let (instance, _handle) = proc.instance("client").unwrap();
 ```
@@ -22,11 +21,11 @@ Under the hood it does (cf. `Proc::direct` in the source):
    - the actual bound address, and
    - a receiver for incoming messages.
 
-2. **Name the proc as "direct"**
-   It builds a `ProcId::Direct(bound_addr, name)`. That's just how this proc identifies itself to the rest of the world: "I am this channel, and my human-ish name is `root`."
+2. **Name the proc**
+   It builds a `ProcId::unique(bound_addr, name)`. That's just how this proc identifies itself to the rest of the world: "I am this channel, and my human-ish name is `root`."
 
 3. **Create a proc with a dial-able forwarder**
-   It does `Proc::new(proc_id, DialMailboxRouter::new().into_boxed())`. That "dial mailbox router" is the bit that lets this proc send to other procs later — it knows how to connect out.
+   It does `Proc::configured(proc_id, DialMailboxRouter::new().into_boxed())`. That "dial mailbox router" is the bit that lets this proc send to other procs later — it knows how to connect out.
 
 4. **Hook the incoming channel into the proc**
    It calls `proc.clone().serve(rx);` so that anything that shows up on that channel gets demuxed into the proc's mailbox muxer.

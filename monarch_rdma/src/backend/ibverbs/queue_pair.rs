@@ -19,8 +19,6 @@ use std::io::Error;
 use std::result::Result;
 use std::time::Duration;
 
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -32,6 +30,34 @@ use super::primitives::IbvOperation;
 use super::primitives::IbvQpInfo;
 use super::primitives::IbvWc;
 use super::primitives::resolve_qp_type;
+
+/// A structured error from [`IbvQueuePair::poll_completion`].
+///
+/// Carries the `ibv_wc_status` and vendor error code (when available) so
+/// callers can match on specific completion statuses without string parsing.
+#[derive(Debug)]
+pub struct PollCompletionError {
+    pub status: Option<rdmaxcel_sys::ibv_wc_status::Type>,
+    pub vendor_err: Option<u32>,
+    message: String,
+}
+
+impl std::fmt::Display for PollCompletionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for PollCompletionError {}
+
+impl PollCompletionError {
+    /// Returns `true` when the completion status is `IBV_WC_WR_FLUSH_ERR`,
+    /// which typically indicates a secondary failure after the QP entered
+    /// error state due to a different work request's failure.
+    pub fn is_wr_flush_err(&self) -> bool {
+        self.status == Some(rdmaxcel_sys::ibv_wc_status::IBV_WC_WR_FLUSH_ERR)
+    }
+}
 
 /// A doorbell trigger for batched RDMA operations.
 ///
@@ -99,8 +125,7 @@ impl IbvQueuePair {
                     rts_timestamp != u64::MAX,
                     "First operation attempted before queue pair reached RTS state! Call connect() first."
                 );
-                let current_nanos = RealClock
-                    .system_time_now()
+                let current_nanos = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos() as u64;
@@ -109,10 +134,9 @@ impl IbvQueuePair {
                 let init_delay = Duration::from_millis(self.config.hw_init_delay_ms);
                 if elapsed < init_delay {
                     let remaining_delay = init_delay - elapsed;
-                    // Sync context within unsafe block; Clock::sleep is async
+                    // Sync context within unsafe block; tokio::time::sleep is async
                     // and converting would require propagating async through the
                     // entire post_op / ring_doorbell call chain.
-                    #[allow(clippy::disallowed_methods)]
                     std::thread::sleep(remaining_delay);
                 }
             }
@@ -396,8 +420,7 @@ impl IbvQueuePair {
                 qp
             );
 
-            let rts_timestamp_nanos = RealClock
-                .system_time_now()
+            let rts_timestamp_nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64;
@@ -436,8 +459,7 @@ impl IbvQueuePair {
         }
 
         // Store RTS timestamp for first-op delay
-        let rts_timestamp_nanos = RealClock
-            .system_time_now()
+        let rts_timestamp_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
@@ -918,7 +940,7 @@ impl IbvQueuePair {
         &mut self,
         target: PollTarget,
         expected_wr_ids: &[u64],
-    ) -> Result<Vec<(u64, IbvWc)>, anyhow::Error> {
+    ) -> Result<Vec<(u64, IbvWc)>, PollCompletionError> {
         if expected_wr_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -957,13 +979,14 @@ impl IbvQueuePair {
                     1 => {
                         if !wc.is_valid() {
                             if let Some((status, vendor_err)) = wc.error() {
-                                return Err(anyhow::anyhow!(
-                                    "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
-                                    cq_type,
-                                    expected_wr_id,
-                                    status,
-                                    vendor_err,
-                                ));
+                                return Err(PollCompletionError {
+                                    status: Some(status),
+                                    vendor_err: Some(vendor_err),
+                                    message: format!(
+                                        "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
+                                        cq_type, expected_wr_id, status, vendor_err,
+                                    ),
+                                });
                             }
                         }
                         results.push((expected_wr_id, IbvWc::from(wc)));
@@ -977,25 +1000,33 @@ impl IbvQueuePair {
                                 .to_str()
                                 .unwrap_or("Unknown error");
                         if let Some((status, vendor_err)) = wc.error() {
-                            return Err(anyhow::anyhow!(
-                                "Failed to poll {} CQ for wr_id={}: {} [status={:?}, vendor_err={}, qp_num={}, byte_len={}]",
-                                cq_type,
-                                expected_wr_id,
-                                error_msg,
-                                status,
-                                vendor_err,
-                                wc.qp_num,
-                                wc.len(),
-                            ));
+                            return Err(PollCompletionError {
+                                status: Some(status),
+                                vendor_err: Some(vendor_err),
+                                message: format!(
+                                    "Failed to poll {} CQ for wr_id={}: {} [status={:?}, vendor_err={}, qp_num={}, byte_len={}]",
+                                    cq_type,
+                                    expected_wr_id,
+                                    error_msg,
+                                    status,
+                                    vendor_err,
+                                    wc.qp_num,
+                                    wc.len(),
+                                ),
+                            });
                         } else {
-                            return Err(anyhow::anyhow!(
-                                "Failed to poll {} CQ for wr_id={}: {} [qp_num={}, byte_len={}]",
-                                cq_type,
-                                expected_wr_id,
-                                error_msg,
-                                wc.qp_num,
-                                wc.len(),
-                            ));
+                            return Err(PollCompletionError {
+                                status: None,
+                                vendor_err: None,
+                                message: format!(
+                                    "Failed to poll {} CQ for wr_id={}: {} [qp_num={}, byte_len={}]",
+                                    cq_type,
+                                    expected_wr_id,
+                                    error_msg,
+                                    wc.qp_num,
+                                    wc.len(),
+                                ),
+                            });
                         }
                     }
                     _ => {
@@ -1003,12 +1034,14 @@ impl IbvQueuePair {
                             std::ffi::CStr::from_ptr(rdmaxcel_sys::rdmaxcel_error_string(ret))
                                 .to_str()
                                 .unwrap_or("Unknown error");
-                        return Err(anyhow::anyhow!(
-                            "Failed to poll {} CQ for wr_id={}: {}",
-                            cq_type,
-                            expected_wr_id,
-                            error_msg
-                        ));
+                        return Err(PollCompletionError {
+                            status: None,
+                            vendor_err: None,
+                            message: format!(
+                                "Failed to poll {} CQ for wr_id={}: {}",
+                                cq_type, expected_wr_id, error_msg,
+                            ),
+                        });
                     }
                 }
             }

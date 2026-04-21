@@ -17,7 +17,6 @@ use crate::Instance;
 // for macros
 use crate::Message;
 use crate::Proc;
-use crate::id;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
@@ -42,7 +41,8 @@ pub(crate) fn new_undeliverable_port() -> (
     PortHandle<Undeliverable<MessageEnvelope>>,
     PortReceiver<Undeliverable<MessageEnvelope>>,
 ) {
-    crate::mailbox::Mailbox::new_detached(id!(world[0].proc))
+    let proc = Proc::local();
+    crate::mailbox::Mailbox::new_detached(proc.proc_id().actor_id("undeliverable", 0))
         .open_port::<Undeliverable<MessageEnvelope>>()
 }
 
@@ -139,6 +139,11 @@ impl std::fmt::Display for UndeliverableMessageError {
                 )?;
                 writeln!(f, "\tsender: {}", envelope.sender())?;
                 writeln!(f, "\tdest: {}", envelope.dest())?;
+                writeln!(
+                    f,
+                    "\tmessage type: {}",
+                    envelope.data().typename().unwrap_or("unknown")
+                )?;
                 writeln!(f, "\theaders: {}", envelope.headers())?;
                 writeln!(f, "\tdata: {}", envelope.data())?;
                 writeln!(
@@ -155,6 +160,11 @@ impl std::fmt::Display for UndeliverableMessageError {
                 )?;
                 writeln!(f, "\toriginal sender: {}", envelope.sender())?;
                 writeln!(f, "\toriginal dest: {}", envelope.dest())?;
+                writeln!(
+                    f,
+                    "\tmessage type: {}",
+                    envelope.data().typename().unwrap_or("unknown")
+                )?;
                 writeln!(f, "\theaders: {}", envelope.headers())?;
                 writeln!(f, "\tdata: {}", envelope.data())?;
                 writeln!(

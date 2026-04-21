@@ -538,9 +538,9 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// use hyperactor::HandleClient;
 /// use hyperactor::Handler;
 /// use hyperactor::Instance;
-/// use hyperactor::OncePortRef;
 /// use hyperactor::RefClient;
 /// use hyperactor::proc::Proc;
+/// use hyperactor::reference;
 /// use serde::Deserialize;
 /// use serde::Serialize;
 /// use typeuri::Named;
@@ -553,9 +553,9 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///
 ///     // Call messages dispatch a request, expecting a reply to the
 ///     // provided port, which must be in the last position.
-///     Exists(String, #[reply] OncePortRef<bool>),
+///     Exists(String, #[reply] reference::OncePortRef<bool>),
 ///
-///     List(#[reply] OncePortRef<Vec<String>>),
+///     List(#[reply] reference::OncePortRef<Vec<String>>),
 /// }
 ///
 /// // Define an actor.
@@ -1378,6 +1378,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     for ty in &tys {
         handles.push(quote! {
             impl #impl_generics hyperactor::actor::RemoteHandles<#ty> for #data_type_name #ty_generics #where_clause {}
+            impl #impl_generics hyperactor::remote::Accepts<#ty> for #data_type_name #ty_generics #where_clause {}
         });
         bindings.push(quote! {
             ports.bind::<#ty>();
@@ -1398,9 +1399,11 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Always export the `Signal` type.
         impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name #ty_generics #where_clause {}
+        impl #impl_generics hyperactor::remote::Accepts<hyperactor::actor::Signal> for #data_type_name #ty_generics #where_clause {}
 
         // Always export the `IntrospectMessage` type.
         impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::introspect::IntrospectMessage> for #data_type_name #ty_generics #where_clause {}
+        impl #impl_generics hyperactor::remote::Accepts<hyperactor::introspect::IntrospectMessage> for #data_type_name #ty_generics #where_clause {}
 
         impl #impl_generics hyperactor::actor::Binds<#data_type_name #ty_generics> for #data_type_name #ty_generics #where_clause {
             fn bind(ports: &hyperactor::proc::Ports<Self>) {
@@ -1581,6 +1584,7 @@ pub fn behavior(input: TokenStream) -> TokenStream {
 
         #(
             impl #impl_generics hyperactor::actor::RemoteHandles<#tys> for #behavior #ty_generics #where_clause {}
+            impl #impl_generics hyperactor::remote::Accepts<#tys> for #behavior #ty_generics #where_clause {}
         )*
     };
 
@@ -2150,4 +2154,80 @@ pub fn observe_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+fn validate_label(s: &str) -> Result<(), String> {
+    if s.is_empty() {
+        return Err("label must not be empty".to_string());
+    }
+    if s.len() > 63 {
+        return Err("label exceeds 63 characters".to_string());
+    }
+    let first = s.as_bytes()[0];
+    if !first.is_ascii_lowercase() {
+        return Err("label must start with a lowercase letter".to_string());
+    }
+    let last = s.as_bytes()[s.len() - 1];
+    if !last.is_ascii_lowercase() && !last.is_ascii_digit() {
+        return Err("label must end with a lowercase letter or digit".to_string());
+    }
+    for ch in s.chars() {
+        if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' {
+            return Err(format!("label contains invalid character '{ch}'"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_hex_uid(s: &str) -> Result<u64, String> {
+    if s.is_empty() || s.len() > 16 {
+        return Err(format!("hex uid must be 1-16 hex characters, got '{s}'"));
+    }
+    for ch in s.chars() {
+        if !ch.is_ascii_hexdigit() {
+            return Err(format!("hex uid contains invalid character '{ch}'"));
+        }
+    }
+    u64::from_str_radix(s, 16).map_err(|e| format!("invalid hex uid '{s}': {e}"))
+}
+
+/// Compile-time validated [`hyperactor::id::Uid`] construction.
+///
+/// Accepts two forms:
+/// - `uid!(_my-singleton)` — a singleton Uid
+/// - `uid!(d5d54d7201103869)` — an instance Uid
+#[proc_macro]
+pub fn uid(input: TokenStream) -> TokenStream {
+    let input2: proc_macro2::TokenStream = input.into();
+    let combined: String = input2.into_iter().map(|tt| tt.to_string()).collect();
+
+    if combined.is_empty() {
+        return TokenStream::from(quote! { compile_error!("uid! macro requires an argument") });
+    }
+
+    // Singleton: starts with '_'
+    if let Some(rest) = combined.strip_prefix('_') {
+        return match validate_label(rest) {
+            Ok(()) => TokenStream::from(quote! {
+                hyperactor::id::Uid::Singleton(
+                    hyperactor::id::Label::new(#rest).unwrap()
+                )
+            }),
+            Err(e) => {
+                let msg = format!("invalid singleton uid: {e}");
+                TokenStream::from(quote! { compile_error!(#msg) })
+            }
+        };
+    }
+
+    // Instance: bare hex
+    match validate_hex_uid(&combined) {
+        Ok(uid_val) => TokenStream::from(quote! {
+            hyperactor::id::Uid::Instance(#uid_val)
+        }),
+        Err(e) => {
+            let msg = format!("invalid uid: {e}");
+            TokenStream::from(quote! { compile_error!(#msg) })
+        }
+    }
 }

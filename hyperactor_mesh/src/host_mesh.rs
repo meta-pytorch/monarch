@@ -10,29 +10,30 @@ use hyperactor::Actor;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::host::Host;
 use hyperactor::host::LocalProcManager;
+use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::view::CollectMeshExt;
 
+use crate::mesh_admin::MeshAdminAgent;
 use crate::supervision::MeshFailure;
 
-pub mod mesh_agent;
+pub mod host_agent;
 
 use std::collections::HashSet;
+use std::hash::Hash;
 use std::ops::Deref;
+use std::ops::DerefMut;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyperactor::ActorRef;
-use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
+use hyperactor::reference as hyperactor_reference;
 use ndslice::Extent;
 use ndslice::Region;
 use ndslice::ViewExt;
@@ -52,13 +53,15 @@ use crate::ValueMesh;
 use crate::alloc::Alloc;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
-use crate::host_mesh::mesh_agent::HostAgentMode;
-pub use crate::host_mesh::mesh_agent::HostMeshAgent;
-use crate::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
-use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-use crate::host_mesh::mesh_agent::ProcState;
-use crate::host_mesh::mesh_agent::ShutdownHostClient;
-use crate::host_mesh::mesh_agent::SpawnMeshAdminClient;
+use crate::bootstrap::ProcBind;
+use crate::host_mesh::host_agent::DrainHostClient;
+pub use crate::host_mesh::host_agent::HostAgent;
+use crate::host_mesh::host_agent::HostAgentMode;
+use crate::host_mesh::host_agent::HostMeshAgentProcMeshTrampoline;
+use crate::host_mesh::host_agent::ProcManagerSpawnFn;
+use crate::host_mesh::host_agent::ProcState;
+use crate::host_mesh::host_agent::SetClientConfigClient;
+use crate::host_mesh::host_agent::ShutdownHostClient;
 use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
 use crate::proc_agent::ProcAgent;
@@ -67,10 +70,16 @@ use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
 use crate::resource::GetRankStatusClient;
-use crate::resource::ProcSpec;
 use crate::resource::RankedValues;
 use crate::resource::Status;
+use crate::resource::WaitRankStatusClient;
 use crate::transport::DEFAULT_TRANSPORT;
+
+/// Actor name for `HostMeshController` when spawned as a named child.
+pub const HOST_MESH_CONTROLLER_NAME: &str = "host_mesh_controller";
+
+/// Actor name for `ProcMeshController` when spawned as a named child.
+pub const PROC_MESH_CONTROLLER_NAME: &str = "proc_mesh_controller";
 
 declare_attrs! {
     /// The maximum idle time between updates while spawning proc
@@ -105,18 +114,21 @@ wirevalue::register_type!(HostRef);
 
 impl HostRef {
     /// The host mesh agent associated with this host.
-    fn mesh_agent(&self) -> ActorRef<HostMeshAgent> {
-        ActorRef::attest(self.service_proc().actor_id("agent", 0))
+    fn mesh_agent(&self) -> hyperactor_reference::ActorRef<HostAgent> {
+        hyperactor_reference::ActorRef::attest(
+            self.service_proc()
+                .actor_id(host_agent::HOST_MESH_AGENT_ACTOR_NAME, 0),
+        )
     }
 
     /// The ProcId for the proc with name `name` on this host.
-    fn named_proc(&self, name: &Name) -> ProcId {
-        ProcId::Direct(self.0.clone(), name.to_string())
+    fn named_proc(&self, name: &Name) -> hyperactor_reference::ProcId {
+        hyperactor_reference::ProcId::with_name(self.0.clone(), name.to_string())
     }
 
     /// The service proc on this host.
-    fn service_proc(&self) -> ProcId {
-        ProcId::Direct(self.0.clone(), "service".to_string())
+    fn service_proc(&self) -> hyperactor_reference::ProcId {
+        hyperactor_reference::ProcId::with_name(self.0.clone(), SERVICE_PROC_NAME)
     }
 
     /// Request an orderly teardown of this host and all procs it
@@ -151,17 +163,38 @@ impl HostRef {
             .await?;
         Ok(())
     }
+
+    /// Drain all user procs on this host but keep the host, service
+    /// proc, and networking alive. Used during mesh stop/shutdown so
+    /// that forwarder flushes can still reach remote hosts.
+    pub(crate) async fn drain(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        host_mesh_name: Option<Name>,
+    ) -> anyhow::Result<()> {
+        let agent = self.mesh_agent();
+        let terminate_timeout =
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
+        let max_in_flight =
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
+        agent
+            .drain_host(
+                cx,
+                terminate_timeout,
+                max_in_flight.clamp(1, 256),
+                host_mesh_name,
+            )
+            .await?;
+        Ok(())
+    }
 }
 
-impl TryFrom<ActorRef<HostMeshAgent>> for HostRef {
+impl TryFrom<hyperactor_reference::ActorRef<HostAgent>> for HostRef {
     type Error = crate::Error;
 
-    fn try_from(value: ActorRef<HostMeshAgent>) -> Result<Self, crate::Error> {
+    fn try_from(value: hyperactor_reference::ActorRef<HostAgent>) -> Result<Self, crate::Error> {
         let proc_id = value.actor_id().proc_id();
-        match proc_id.as_direct() {
-            Some((addr, _)) => Ok(HostRef(addr.clone())),
-            None => Err(crate::Error::RankedProc(proc_id.clone())),
-        }
+        Ok(HostRef(proc_id.addr().clone()))
     }
 }
 
@@ -183,15 +216,12 @@ impl FromStr for HostRef {
 ///
 /// # Lifecycle
 /// `HostMesh` owns host lifecycles. Callers **must** invoke
-/// [`HostMesh::shutdown`] for deterministic teardown. The `Drop` impl
-/// performs **best-effort** cleanup only (spawned via Tokio if
-/// available); it is a safety net, not a substitute for orderly
-/// shutdown.
+/// [`HostMesh::shutdown`] for deterministic teardown.
 ///
 /// In tests and production, prefer explicit shutdown to guarantee
 /// that host agents drop their `BootstrapProcManager`s and that all
-/// child procs are reaped.
-#[allow(dead_code)]
+/// child procs are reaped. You can use `shutdown_guard` to get a wrapper
+/// which will try to do a best-effort shutdown on Drop.
 pub struct HostMesh {
     name: Name,
     extent: Extent,
@@ -240,6 +270,38 @@ enum HostMeshAllocation {
 }
 
 impl HostMesh {
+    /// Emit a telemetry event for this host mesh creation.
+    fn notify_created(&self) {
+        let name_str = self.name.to_string();
+        let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
+
+        hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
+            id: mesh_id_hash,
+            timestamp: std::time::SystemTime::now(),
+            class: "Host".to_string(),
+            given_name: self.name.name().to_string(),
+            full_name: name_str,
+            shape_json: serde_json::to_string(&self.extent).unwrap_or_default(),
+            parent_mesh_id: None,
+            parent_view_json: None,
+        });
+
+        // Notify telemetry of each HostAgent actor in this mesh.
+        // These are skipped in Proc::spawn_inner. mesh_id directly points to host mesh.
+        let now = std::time::SystemTime::now();
+        for (rank, host) in self.current_ref.hosts().iter().enumerate() {
+            let actor = host.mesh_agent();
+            hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                id: hyperactor_telemetry::hash_to_u64(actor.actor_id()),
+                timestamp: now,
+                mesh_id: mesh_id_hash,
+                rank: rank as u64,
+                full_name: actor.actor_id().to_string(),
+                display_name: None,
+            });
+        }
+    }
+
     /// Bring up a local single-host mesh and, in the launcher
     /// process, return a `HostMesh` handle for it.
     ///
@@ -254,7 +316,7 @@ impl HostMesh {
     ///   does not produce a `HostMesh`.
     ///
     /// - launcher mode: otherwise, we are the process that is setting
-    ///   up the mesh. we create a `Host`, spawn a `HostMeshAgent` in
+    ///   up the mesh. we create a `Host`, spawn a `HostAgent` in
     ///   it, and build a single-host `HostMesh` around that. that
     ///   `HostMesh` is returned to the caller.
     ///
@@ -275,8 +337,10 @@ impl HostMesh {
     /// `boot.bootstrap().await` in those children.
     pub async fn local_with_bootstrap(bootstrap_cmd: BootstrapCommand) -> crate::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
-            let err = boot.bootstrap().await;
-            tracing::error!("failed to bootstrap local host mesh process: {}", err);
+            let result = boot.bootstrap().await;
+            if let Err(err) = result {
+                tracing::error!("failed to bootstrap local host mesh process: {}", err);
+            }
             std::process::exit(1);
         }
 
@@ -288,14 +352,14 @@ impl HostMesh {
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
             .spawn(
-                "agent",
-                HostMeshAgent::new(HostAgentMode::Process {
+                "host_agent",
+                HostAgent::new(HostAgentMode::Process {
                     host,
-                    exit_on_shutdown: false,
+                    shutdown_tx: None,
                 }),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
-        host_mesh_agent.bind::<HostMeshAgent>();
+        host_mesh_agent.bind::<HostAgent>();
 
         let host = HostRef(addr);
         let host_mesh_ref = HostMeshRef::new(
@@ -351,9 +415,12 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(
+                host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
+            )
             .map_err(crate::Error::SingletonActorSpawnError)?;
-        host_mesh_agent.bind::<HostMeshAgent>();
+        host_mesh_agent.bind::<HostAgent>();
         Ok(HostRef(addr))
     }
 
@@ -369,8 +436,10 @@ impl HostMesh {
     /// TODO: thread through ownership
     pub async fn process(extent: Extent, command: BootstrapCommand) -> crate::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
-            let err = boot.bootstrap().await;
-            tracing::error!("failed to bootstrap process host mesh process: {}", err);
+            let result = boot.bootstrap().await;
+            if let Err(err) = result {
+                tracing::error!("failed to bootstrap process host mesh process: {}", err);
+            }
             std::process::exit(1);
         }
 
@@ -404,7 +473,7 @@ impl HostMesh {
     ///
     /// Because HostMeshes use direct-addressed procs, and must fully control the procs they are
     /// managing, `HostMesh::allocate` uses a trampoline actor to launch the host, which in turn
-    /// runs a [`crate::host_mesh::mesh_agent::HostMeshAgent`] actor to manage the host itself.
+    /// runs a [`crate::host_mesh::host_agent::HostAgent`] actor to manage the host itself.
     /// The host (and thus all of its procs) are exposed directly through a separate listening
     /// channel, established by the host.
     ///
@@ -490,14 +559,9 @@ impl HostMesh {
         for _rank in 0..extent.num_ranks() {
             let mesh_agent = mesh_agents_rx.recv().await?;
 
-            let Some((addr, _)) = mesh_agent.actor_id().proc_id().as_direct() else {
-                return Err(crate::Error::HostMeshAgentConfigurationError(
-                    mesh_agent.actor_id().clone(),
-                    "host mesh agent must be a direct actor".to_string(),
-                ));
-            };
+            let addr = mesh_agent.actor_id().proc_id().addr().clone();
 
-            let host_ref = HostRef(addr.clone());
+            let host_ref = HostRef(addr);
             if host_ref.mesh_agent() != mesh_agent {
                 return Err(crate::Error::HostMeshAgentConfigurationError(
                     mesh_agent.actor_id().clone(),
@@ -525,16 +589,22 @@ impl HostMesh {
         // Spawn a unique mesh controller for each proc mesh, so the type of the
         // mesh can be preserved.
         let controller = HostMeshController::new(mesh.deref().clone());
+        // hyperactor::proc AI-3: controller name must include mesh
+        // identity for proc-wide ActorId uniqueness.
+        let controller_name = format!("{}_{}", HOST_MESH_CONTROLLER_NAME, mesh.name());
         let controller_handle = controller
-            .spawn(cx)
+            .spawn_with_name(cx, &controller_name)
             .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         // Bind the actor's well-known ports (Signal, IntrospectMessage,
         // Undeliverable). Without this, the controller's mailbox has no
         // port entries and messages (including introspection queries)
         // are returned as undeliverable.
-        let _: hyperactor::ActorRef<HostMeshController> = controller_handle.bind();
+        let _: hyperactor::reference::ActorRef<HostMeshController> = controller_handle.bind();
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
+
+        mesh.notify_created();
+
         Ok(mesh)
     }
 
@@ -551,29 +621,84 @@ impl HostMesh {
         let current_ref = HostMeshRef::new(mesh.name.clone(), region.clone(), hosts.clone())
             .expect("region/hosts cardinality must match");
 
-        Self {
+        let result = Self {
             name: mesh.name,
             extent: region.extent().clone(),
             allocation: HostMeshAllocation::Owned { hosts },
             current_ref,
-        }
+        };
+        result.notify_created();
+        result
+    }
+
+    /// Attach to pre-existing workers and push client config.
+    ///
+    /// This is the "simple bootstrap" attach protocol:
+    /// 1. Wraps the provided addresses into a `HostMeshRef`.
+    /// 2. Snapshots `propagatable_attrs()` from the client's global config.
+    /// 3. Pushes the config to each host agent as `Source::ClientOverride`,
+    ///    with a barrier to confirm installation.
+    /// 4. Returns the owned `HostMesh`.
+    ///
+    /// After this returns, host agents have the client's config.
+    pub async fn attach(
+        cx: &impl context::Actor,
+        name: Name,
+        addresses: Vec<ChannelAddr>,
+    ) -> crate::Result<Self> {
+        let mesh_ref = HostMeshRef::from_hosts(name, addresses);
+        let config = hyperactor_config::global::propagatable_attrs();
+        mesh_ref.push_config(cx, config).await;
+        Ok(Self::take(mesh_ref))
     }
 
     /// Request a clean shutdown of all hosts owned by this
     /// `HostMesh`.
     ///
-    /// For each host, this sends `ShutdownHost` to its
-    /// `HostMeshAgent`. The agent takes and drops its `Host` (via
-    /// `Option::take()`), which in turn drops the embedded
-    /// `BootstrapProcManager`. On drop, the manager walks its PID
-    /// table and sends SIGKILL to any procs it spawned—tying proc
-    /// lifetimes to their hosts and preventing leaks.
+    /// Uses a two-phase approach:
+    /// 1. **Terminate children** on every host concurrently. Service
+    ///    infrastructure (host agent, comm proc, networking) stays
+    ///    alive so that forwarder flushes can still reach remote hosts.
+    /// 2. **Shut down hosts** concurrently. No user procs remain, so
+    ///    this is fast and cannot deadlock on cross-host flush
+    ///    timeouts.
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
     pub async fn shutdown(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+        let t0 = std::time::Instant::now();
         tracing::info!(name = "HostMeshStatus", status = "Shutdown::Attempt");
+
+        // Phase 1: terminate all user procs while service infrastructure
+        // stays alive so forwarder flushes can complete across hosts.
+        let results = futures::future::join_all(
+            self.current_ref
+                .values()
+                .map(|host| async move { host.drain(cx, None).await }),
+        )
+        .await;
+        let phase1_ms = t0.elapsed().as_millis();
+        for result in &results {
+            if let Err(e) = result {
+                tracing::warn!(
+                    name = "HostMeshStatus",
+                    status = "Shutdown::Drain::Failed",
+                    error = %e,
+                    "drain failed on a host"
+                );
+            }
+        }
+
+        // Phase 2: shut down hosts concurrently. No user procs remain.
+        let t1 = std::time::Instant::now();
+        let results = futures::future::join_all(self.current_ref.values().map(|host| async move {
+            let result = host.shutdown(cx).await;
+            (host, result)
+        }))
+        .await;
+        let phase2_ms = t1.elapsed().as_millis();
+        let total_ms = t0.elapsed().as_millis();
         let mut failed_hosts = vec![];
-        for host in self.current_ref.values() {
-            if let Err(e) = host.shutdown(cx).await {
+        for (host, result) in &results {
+            if let Err(e) = result {
                 tracing::warn!(
                     name = "HostMeshStatus",
                     status = "Shutdown::Host::Failed",
@@ -585,11 +710,20 @@ impl HostMesh {
             }
         }
         if failed_hosts.is_empty() {
-            tracing::info!(name = "HostMeshStatus", status = "Shutdown::Success");
+            tracing::info!(
+                name = "HostMeshStatus",
+                status = "Shutdown::Success",
+                phase1_ms,
+                phase2_ms,
+                total_ms,
+            );
         } else {
             tracing::error!(
                 name = "HostMeshStatus",
                 status = "Shutdown::Failed",
+                phase1_ms,
+                phase2_ms,
+                total_ms,
                 "host mesh shutdown failed; check the logs of the failed hosts for details: {:?}",
                 failed_hosts
             );
@@ -603,6 +737,72 @@ impl HostMesh {
         }
         Ok(())
     }
+
+    /// Consumes and wraps this HostMesh with a HostMeshShutdownGuard, which will
+    /// ensure shutdown is run on Drop.
+    pub fn shutdown_guard(self) -> HostMeshShutdownGuard {
+        HostMeshShutdownGuard(self)
+    }
+
+    /// Stop all hosts owned by this `HostMesh`, draining user procs
+    /// but keeping worker processes and their sockets alive for
+    /// reconnection.
+    ///
+    /// After `stop`, the same worker addresses can be passed to
+    /// [`HostMesh::attach`] to create a new mesh.
+    #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
+    pub async fn stop(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+        let t0 = std::time::Instant::now();
+        tracing::info!(name = "HostMeshStatus", status = "Stop::Attempt");
+
+        let mesh_name = self.name.clone();
+        let results = futures::future::join_all(self.current_ref.values().map(|host| {
+            let mesh_name = Some(mesh_name.clone());
+            async move { host.drain(cx, mesh_name).await }
+        }))
+        .await;
+        let total_ms = t0.elapsed().as_millis();
+        let mut failed_hosts = vec![];
+        for (i, result) in results.iter().enumerate() {
+            if let Err(e) = result {
+                tracing::warn!(
+                    name = "HostMeshStatus",
+                    status = "Stop::Drain::Failed",
+                    error = %e,
+                    "drain failed on a host"
+                );
+                failed_hosts.push(i);
+            }
+        }
+        if failed_hosts.is_empty() {
+            tracing::info!(name = "HostMeshStatus", status = "Stop::Success", total_ms,);
+        } else {
+            tracing::error!(
+                name = "HostMeshStatus",
+                status = "Stop::Failed",
+                total_ms,
+                "host mesh stop failed; check the logs of the failed hosts for details: {:?}",
+                failed_hosts
+            );
+        }
+
+        // Defuse the Drop impl so it doesn't send ShutdownHost to hosts
+        // we intentionally kept alive. Replace the allocation with an
+        // empty Owned variant so Drop has no hosts to iterate.
+        self.allocation = HostMeshAllocation::Owned { hosts: vec![] };
+
+        Ok(())
+    }
+}
+
+impl HostMesh {
+    /// Set the bootstrap command on the underlying `HostMeshRef`,
+    /// so that future `spawn` calls use it. Unlike
+    /// `HostMeshRef::with_bootstrap` this mutates in place,
+    /// preserving ownership.
+    pub fn set_bootstrap(&mut self, cmd: BootstrapCommand) {
+        self.current_ref = self.current_ref.clone().with_bootstrap(cmd);
+    }
 }
 
 impl Deref for HostMesh {
@@ -613,7 +813,36 @@ impl Deref for HostMesh {
     }
 }
 
-impl Drop for HostMesh {
+impl AsRef<HostMeshRef> for HostMesh {
+    fn as_ref(&self) -> &HostMeshRef {
+        self
+    }
+}
+
+impl AsRef<HostMeshRef> for HostMeshRef {
+    fn as_ref(&self) -> &HostMeshRef {
+        self
+    }
+}
+
+/// Wrapper around HostMesh that runs shutdown on Drop.
+pub struct HostMeshShutdownGuard(pub HostMesh);
+
+impl Deref for HostMeshShutdownGuard {
+    type Target = HostMesh;
+
+    fn deref(&self) -> &HostMesh {
+        &self.0
+    }
+}
+
+impl DerefMut for HostMeshShutdownGuard {
+    fn deref_mut(&mut self) -> &mut HostMesh {
+        &mut self.0
+    }
+}
+
+impl Drop for HostMeshShutdownGuard {
     /// Best-effort cleanup for owned host meshes on drop.
     ///
     /// When a `HostMesh` is dropped, it attempts to shut down all
@@ -634,11 +863,11 @@ impl Drop for HostMesh {
     fn drop(&mut self) {
         tracing::info!(
             name = "HostMeshStatus",
-            host_mesh = %self.name,
+            host_mesh = %self.0.name,
             status = "Dropping",
         );
         // Snapshot the owned hosts we're responsible for.
-        let hosts: Vec<HostRef> = match &self.allocation {
+        let hosts: Vec<HostRef> = match &self.0.allocation {
             HostMeshAllocation::ProcMesh { hosts, .. } | HostMeshAllocation::Owned { hosts } => {
                 hosts.clone()
             }
@@ -646,8 +875,8 @@ impl Drop for HostMesh {
 
         // Best-effort only when a Tokio runtime is available.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let mesh_name = self.name.clone();
-            let allocation_label = match &self.allocation {
+            let mesh_name = self.0.name.clone();
+            let allocation_label = match &self.0.allocation {
                 HostMeshAllocation::ProcMesh { .. } => "proc_mesh",
                 HostMeshAllocation::Owned { .. } => "owned",
             }
@@ -718,7 +947,7 @@ impl Drop for HostMesh {
             // No runtime here; PDEATHSIG and manager Drop remain the
             // last-resort safety net.
             tracing::warn!(
-                host_mesh = %self.name,
+                host_mesh = %self.0.name,
                 hosts = hosts.len(),
                 "HostMesh dropped without a Tokio runtime; skipping \
                  best-effort shutdown. This indicates that .shutdown() \
@@ -732,7 +961,7 @@ impl Drop for HostMesh {
 
         tracing::info!(
             name = "HostMeshStatus",
-            host_mesh = %self.name,
+            host_mesh = %self.0.name,
             status = "Dropped",
         );
     }
@@ -788,6 +1017,10 @@ pub struct HostMeshRef {
     name: Name,
     region: Region,
     ranks: Arc<Vec<HostRef>>,
+    /// Bootstrap command to use when spawning procs on this mesh.
+    /// When `None`, each host agent uses its own default command.
+    #[serde(default)]
+    pub bootstrap_command: Option<BootstrapCommand>,
 }
 wirevalue::register_type!(HostMeshRef);
 
@@ -806,6 +1039,7 @@ impl HostMeshRef {
             name,
             region,
             ranks: Arc::new(ranks),
+            bootstrap_command: None,
         })
     }
 
@@ -816,13 +1050,14 @@ impl HostMeshRef {
             name,
             region: extent!(hosts = hosts.len()).into(),
             ranks: Arc::new(hosts.into_iter().map(HostRef).collect()),
+            bootstrap_command: None,
         }
     }
 
     /// Create a new HostMeshRef from an arbitrary set of host mesh agents.
     pub fn from_host_agents(
         name: Name,
-        agents: Vec<ActorRef<HostMeshAgent>>,
+        agents: Vec<hyperactor_reference::ActorRef<HostAgent>>,
     ) -> crate::Result<Self> {
         Ok(Self {
             name,
@@ -833,20 +1068,110 @@ impl HostMeshRef {
                     .map(HostRef::try_from)
                     .collect::<crate::Result<_>>()?,
             ),
+            bootstrap_command: None,
         })
     }
 
     /// Create a unit HostMeshRef from a host mesh agent.
-    pub fn from_host_agent(name: Name, agent: ActorRef<HostMeshAgent>) -> crate::Result<Self> {
+    pub fn from_host_agent(
+        name: Name,
+        agent: hyperactor_reference::ActorRef<HostAgent>,
+    ) -> crate::Result<Self> {
         Ok(Self {
             name,
             region: Extent::unity().into(),
             ranks: Arc::new(vec![HostRef::try_from(agent)?]),
+            bootstrap_command: None,
         })
+    }
+
+    /// Return a new `HostMeshRef` that will use `cmd` when spawning procs,
+    /// overriding the host agent's default bootstrap command.
+    pub fn with_bootstrap(self, cmd: BootstrapCommand) -> Self {
+        Self {
+            bootstrap_command: Some(cmd),
+            ..self
+        }
+    }
+
+    /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.
+    /// Used by `MeshAdminAgent::effective_hosts()` to merge C into the
+    /// admin's host list (see CH-1 in mesh_admin module doc).
+    pub(crate) fn host_entries(&self) -> Vec<(String, hyperactor_reference::ActorRef<HostAgent>)> {
+        self.ranks
+            .iter()
+            .map(|h| (h.0.to_string(), h.mesh_agent()))
+            .collect()
+    }
+
+    /// Push client config to all host agents in this mesh, in parallel.
+    ///
+    /// Each host installs the attrs as `Source::ClientOverride`.
+    /// Idempotent: sending the same attrs twice replaces the layer.
+    ///
+    /// Sends request-reply to each host and barriers on all replies.
+    /// Best-effort: on timeout or error, logs a warning and continues.
+    /// Timeout controlled by `MESH_ATTACH_CONFIG_TIMEOUT` (default 10s).
+    pub(crate) async fn push_config(
+        &self,
+        cx: &impl context::Actor,
+        attrs: hyperactor_config::attrs::Attrs,
+    ) {
+        let timeout = hyperactor_config::global::get(crate::config::MESH_ATTACH_CONFIG_TIMEOUT);
+        let hosts: Vec<_> = self.values().collect();
+        let num_hosts = hosts.len();
+
+        let barrier = futures::future::join_all(hosts.into_iter().map(|host| {
+            let attrs = attrs.clone();
+            let agent_id = host.mesh_agent().actor_id().clone();
+            async move {
+                match host.mesh_agent().set_client_config(cx, attrs).await {
+                    Ok(()) => {
+                        tracing::debug!(host = %agent_id, "host agent config installed");
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            host = %agent_id,
+                            error = %e,
+                            "failed to push client config to host agent, \
+                             continuing without it",
+                        );
+                        false
+                    }
+                }
+            }
+        }));
+
+        match tokio::time::timeout(timeout, barrier).await {
+            Ok(results) => {
+                let success = results.iter().filter(|&&r| r).count();
+                let failed = num_hosts - success;
+                tracing::info!(
+                    success = success,
+                    failed = failed,
+                    "push_config barrier complete",
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    num_hosts = num_hosts,
+                    timeout_secs = timeout.as_secs(),
+                    "push_config barrier timed out, some hosts may not \
+                     have received client config",
+                );
+            }
+        }
     }
 
     /// Spawn a ProcMesh onto this host mesh. The per_host extent specifies the shape
     /// of the procs to spawn on each host.
+    ///
+    /// `proc_bind`, when provided, is a per-process CPU/NUMA binding
+    /// configuration. Its length must equal the number of ranks in
+    /// `per_host`. Each entry maps binding keys (`cpunodebind`,
+    /// `membind`, `physcpubind`, `cpus`) to their values.
+    /// Only takes effect when running on Linux.
     ///
     /// Currently, spawn issues direct calls to each host agent. This will be fixed by
     /// maintaining a comm actor on the host service procs themselves.
@@ -856,11 +1181,13 @@ impl HostMeshRef {
         cx: &C,
         name: &str,
         per_host: Extent,
+        proc_bind: Option<Vec<ProcBind>>,
     ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
     {
-        self.spawn_inner(cx, Name::new(name)?, per_host).await
+        self.spawn_inner(cx, Name::new(name)?, per_host, proc_bind)
+            .await
     }
 
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string(), proc_mesh=proc_mesh_name.to_string()))]
@@ -869,13 +1196,16 @@ impl HostMeshRef {
         cx: &C,
         proc_mesh_name: Name,
         per_host: Extent,
+        proc_bind: Option<Vec<ProcBind>>,
     ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
     {
         tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Attempt");
         tracing::info!(name = "ProcMeshStatus", status = "Spawn::Attempt",);
-        let result = self.spawn_inner_inner(cx, proc_mesh_name, per_host).await;
+        let result = self
+            .spawn_inner_inner(cx, proc_mesh_name, per_host, proc_bind)
+            .await;
         match &result {
             Ok(_) => {
                 tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Success");
@@ -894,6 +1224,7 @@ impl HostMeshRef {
         cx: &C,
         proc_mesh_name: Name,
         per_host: Extent,
+        proc_bind: Option<Vec<ProcBind>>,
     ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
@@ -908,6 +1239,13 @@ impl HostMeshRef {
             return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
                 "per_host dims overlap with existing dims when spawning proc mesh"
             )));
+        }
+        if let Some(proc_bind) = proc_bind.as_ref() {
+            if proc_bind.len() != per_host.num_ranks() {
+                return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
+                    "proc_bind length does not match per_host extent"
+                )));
+            }
         }
 
         let extent = self
@@ -950,12 +1288,19 @@ impl HostMeshRef {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
                 let proc_name = Name::new(format!("{}_{}", proc_mesh_name.name(), per_host_rank))?;
                 proc_names.push(proc_name.clone());
+                let bind = proc_bind.as_ref().map(|v| v[per_host_rank].clone());
+                let proc_spec = resource::ProcSpec {
+                    client_config_override: client_config_override.clone(),
+                    bootstrap_command: self.bootstrap_command.clone(),
+                    proc_bind: bind,
+                    host_mesh_name: Some(self.name.clone()),
+                };
                 host.mesh_agent()
                     .create_or_update(
                         cx,
                         proc_name.clone(),
                         resource::Rank::new(create_rank),
-                        ProcSpec::new(client_config_override.clone()),
+                        proc_spec,
                     )
                     .await
                     .map_err(|e| {
@@ -988,12 +1333,15 @@ impl HostMeshRef {
                     proc_id,
                     create_rank,
                     // TODO: specify or retrieve from state instead, to avoid attestation.
-                    ActorRef::attest(host.named_proc(&proc_name).actor_id("proc_agent", 0)),
+                    hyperactor_reference::ActorRef::attest(
+                        host.named_proc(&proc_name)
+                            .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
+                    ),
                 ));
             }
         }
 
-        let start_time = RealClock.now();
+        let start_time = tokio::time::Instant::now();
 
         // Wait on accumulated StatusMesh snapshots until complete or
         // timeout.
@@ -1032,18 +1380,19 @@ impl HostMeshRef {
                         .map_err(|e| {
                             crate::Error::SendingError(mesh_agent.actor_id().clone(), e.into())
                         })?;
-                    let state = match RealClock
-                        .timeout(
-                            hyperactor_config::global::get(PROC_SPAWN_MAX_IDLE),
-                            reply_rx.recv(),
-                        )
-                        .await
+                    let state = match tokio::time::timeout(
+                        hyperactor_config::global::get(PROC_SPAWN_MAX_IDLE),
+                        reply_rx.recv(),
+                    )
+                    .await
                     {
                         Ok(Ok(state)) => state,
                         _ => resource::State {
                             name: proc_name.clone(),
                             status,
                             state: None,
+                            generation: 0,
+                            timestamp: std::time::SystemTime::now(),
                         },
                     };
 
@@ -1088,14 +1437,17 @@ impl HostMeshRef {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
             let controller = ProcMeshController::new(mesh.deref().clone());
+            // hyperactor::proc AI-3: controller name must include mesh
+            // identity for proc-wide ActorId uniqueness.
+            let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.name());
             let controller_handle = controller
-                .spawn(cx)
+                .spawn_with_name(cx, &controller_name)
                 .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
             // Bind the actor's well-known ports (Signal, IntrospectMessage,
             // Undeliverable). Without this, the controller's mailbox has no
             // port entries and messages (including introspection queries)
             // are returned as undeliverable.
-            let _: hyperactor::ActorRef<ProcMeshController> = controller_handle.bind();
+            let _: hyperactor::reference::ActorRef<ProcMeshController> = controller_handle.bind();
         }
         mesh
     }
@@ -1110,39 +1462,12 @@ impl HostMeshRef {
         &self.ranks
     }
 
-    /// Spawn a [`MeshAdminAgent`] on the head host's system proc and
-    /// return its HTTP address.
-    ///
-    /// Sends a `SpawnMeshAdmin` message to `ranks[0]`'s
-    /// `HostMeshAgent`, which spawns the admin agent on that host's
-    /// system proc. When `admin_port` is `Some`, the HTTP server
-    /// binds to that fixed port; otherwise it picks an ephemeral one.
-    pub async fn spawn_admin(
-        &self,
-        cx: &impl hyperactor::context::Actor,
-        admin_port: Option<u16>,
-    ) -> anyhow::Result<String> {
-        let hosts: Vec<(String, ActorRef<HostMeshAgent>)> = self
-            .ranks
-            .iter()
-            .map(|h| (h.0.to_string(), h.mesh_agent()))
-            .collect();
-        let root_client_id = crate::global_root_client().self_id().clone();
-
-        let head_agent = self.ranks[0].mesh_agent();
-        let addr = head_agent
-            .spawn_mesh_admin(cx, hosts, Some(root_client_id), admin_port)
-            .await?;
-
-        Ok(addr)
-    }
-
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string(), proc_mesh=proc_mesh_name.to_string()))]
     pub(crate) async fn stop_proc_mesh(
         &self,
         cx: &impl hyperactor::context::Actor,
         proc_mesh_name: &Name,
-        procs: impl IntoIterator<Item = ProcId>,
+        procs: impl IntoIterator<Item = hyperactor_reference::ProcId>,
         region: Region,
         reason: String,
     ) -> anyhow::Result<()> {
@@ -1160,13 +1485,8 @@ impl HostMeshRef {
             },
         );
         for proc_id in procs.into_iter() {
-            let Some((addr, proc_name)) = proc_id.as_direct() else {
-                return Err(anyhow::anyhow!(
-                    "host mesh proc {} must be direct addressed",
-                    proc_id,
-                ));
-            };
-            // The name stored in HostMeshAgent is not the same as the
+            let (addr, proc_name) = (proc_id.addr().clone(), proc_id.name().to_string());
+            // The name stored in HostAgent is not the same as the
             // one stored in the ProcMesh. We instead take each proc id
             // and map it to that particular agent.
             let proc_name = proc_name.parse::<Name>()?;
@@ -1174,7 +1494,7 @@ impl HostMeshRef {
 
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
-            let host = HostRef(addr.clone());
+            let host = HostRef(addr);
             host.mesh_agent().send(
                 cx,
                 resource::Stop {
@@ -1183,7 +1503,7 @@ impl HostMeshRef {
                 },
             )?;
             host.mesh_agent()
-                .get_rank_status(cx, proc_name, port.bind())
+                .wait_rank_status(cx, proc_name, Status::Stopped, port.bind())
                 .await?;
 
             tracing::info!(
@@ -1204,7 +1524,7 @@ impl HostMeshRef {
                 .join(", ")
         );
 
-        let start_time = RealClock.now();
+        let start_time = tokio::time::Instant::now();
 
         match GetRankStatus::wait(
             rx,
@@ -1215,7 +1535,7 @@ impl HostMeshRef {
         .await
         {
             Ok(statuses) => {
-                let all_stopped = statuses.values().all(|s| s.is_terminating());
+                let all_stopped = statuses.values().all(|s| s.is_terminated());
                 if !all_stopped {
                     tracing::error!(
                         name = "ProcMeshStatus",
@@ -1263,26 +1583,21 @@ impl HostMeshRef {
     pub(crate) async fn proc_states(
         &self,
         cx: &impl context::Actor,
-        procs: impl IntoIterator<Item = ProcId>,
+        procs: impl IntoIterator<Item = hyperactor_reference::ProcId>,
         region: Region,
     ) -> crate::Result<ValueMesh<resource::State<ProcState>>> {
         let (tx, mut rx) = cx.mailbox().open_port();
 
         let mut num_ranks = 0;
-        let procs: Vec<ProcId> = procs.into_iter().collect();
+        let procs: Vec<hyperactor_reference::ProcId> = procs.into_iter().collect();
         let mut proc_names = Vec::new();
         for proc_id in procs.iter() {
             num_ranks += 1;
-            let Some((addr, proc_name)) = proc_id.as_direct() else {
-                return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
-                    "host mesh proc {} must be direct addressed",
-                    proc_id,
-                )));
-            };
+            let (addr, proc_name) = (proc_id.addr().clone(), proc_id.name().to_string());
 
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
-            let host = HostRef(addr.clone());
+            let host = HostRef(addr);
             let proc_name = proc_name.parse::<Name>()?;
             proc_names.push(proc_name.clone());
             let mut reply = tx.bind();
@@ -1310,7 +1625,7 @@ impl HostMeshRef {
             // the agent will be unresponsive.
             // We handle this by setting a timeout on the recv, and if we don't get a
             // message we assume the agent is dead and return a failed state.
-            let state = RealClock.timeout(timeout, rx.recv()).await;
+            let state = tokio::time::timeout(timeout, rx.recv()).await;
             if let Ok(state) = state {
                 // Handle non-timeout receiver error.
                 let state = state?;
@@ -1344,6 +1659,8 @@ impl HostMeshRef {
                             name: proc_names[rank].clone(),
                             status: resource::Status::Timeout(timeout),
                             state: None,
+                            generation: 0,
+                            timestamp: std::time::SystemTime::now(),
                         },
                     ));
                 }
@@ -1360,6 +1677,124 @@ impl HostMeshRef {
             .collect_mesh::<ValueMesh<_>>(region)?;
         Ok(vm)
     }
+}
+
+/// An ordered set of host entries, deduplicated by `HostAgent` `ActorId`
+/// in first-seen order.
+///
+/// Insertion is idempotent by construction — SA-3 (dedup by ActorId)
+/// is a property of this type, not a comment on careful control flow.
+/// First-seen order is preserved: the first occurrence of a given
+/// ActorId wins; subsequent duplicates are silently dropped.
+struct HostSet {
+    seen: HashSet<hyperactor_reference::ActorId>,
+    entries: Vec<(String, hyperactor_reference::ActorRef<HostAgent>)>,
+}
+
+impl HostSet {
+    fn new() -> Self {
+        Self {
+            seen: HashSet::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    /// Insert a host entry. No-op if `ActorId` already present (SA-3).
+    /// First-seen order is preserved.
+    fn insert(&mut self, addr: String, agent_ref: hyperactor_reference::ActorRef<HostAgent>) {
+        if self.seen.insert(agent_ref.actor_id().clone()) {
+            self.entries.push((addr, agent_ref));
+        }
+    }
+
+    /// Extend from a `HostMeshRef`. SA-3 applies per entry.
+    fn extend_from_mesh(&mut self, mesh: &HostMeshRef) {
+        for h in mesh.hosts() {
+            self.insert(h.0.to_string(), h.mesh_agent());
+        }
+    }
+
+    fn into_vec(self) -> Vec<(String, hyperactor_reference::ActorRef<HostAgent>)> {
+        self.entries
+    }
+}
+
+/// Ordered union of hosts from meshes and optional client host
+/// entries, deduplicated by `HostAgent` `ActorId` in first-seen
+/// order.
+///
+/// SA-3 dedup and SA-6 client-host merge are structural properties
+/// of [`HostSet`], not invariants on this function's control flow.
+fn aggregate_hosts(
+    meshes: &[impl AsRef<HostMeshRef>],
+    client_host_entries: Option<Vec<(String, hyperactor_reference::ActorRef<HostAgent>)>>,
+) -> Vec<(String, hyperactor_reference::ActorRef<HostAgent>)> {
+    let mut set = HostSet::new();
+
+    // SA-3: dedup across all mesh hosts in first-seen order.
+    for mesh in meshes {
+        set.extend_from_mesh(mesh.as_ref());
+    }
+
+    // CH-1 / SA-6: client host entries merged after mesh aggregation.
+    if let Some(entries) = client_host_entries {
+        for (addr, agent_ref) in entries {
+            set.insert(addr, agent_ref);
+        }
+    }
+
+    set.into_vec()
+}
+
+/// Spawn a [`MeshAdminAgent`] that aggregates hosts from multiple
+/// meshes.
+///
+/// The admin agent runs on the caller's local proc — the `Proc` of
+/// the actor context `cx`. Hosts are deduplicated by actor ID across
+/// all meshes.
+///
+/// Spawn a `MeshAdminAgent` aggregating topology across one or more
+/// meshes. Returns a typed `ActorRef<MeshAdminAgent>`. Callers that
+/// need the admin URL query it via `get_admin_addr`.
+///
+/// See the `mesh_admin` module doc for the SA-* (spawn/aggregation),
+/// CH-* (client host), and AI-* (admin identity) invariants.
+pub async fn spawn_admin(
+    meshes: impl IntoIterator<Item = impl AsRef<HostMeshRef>>,
+    cx: &impl hyperactor::context::Actor,
+    admin_addr: Option<std::net::SocketAddr>,
+    telemetry_url: Option<String>,
+) -> anyhow::Result<hyperactor_reference::ActorRef<MeshAdminAgent>> {
+    let meshes: Vec<_> = meshes.into_iter().collect();
+    anyhow::ensure!(!meshes.is_empty(), "at least one mesh is required (SA-1)");
+    for (i, mesh) in meshes.iter().enumerate() {
+        anyhow::ensure!(
+            !mesh.as_ref().hosts().is_empty(),
+            "mesh at index {} has no hosts (SA-2)",
+            i,
+        );
+    }
+
+    let client_entries =
+        crate::global_context::try_this_host().map(|client_host| client_host.host_entries());
+    let hosts = aggregate_hosts(&meshes, client_entries);
+
+    let root_client_id = cx.mailbox().actor_id().clone();
+
+    // Spawn the admin on the caller's local proc. Placement now
+    // follows the caller context rather than mesh topology.
+    let local_proc = cx.instance().proc();
+    let agent_handle = local_proc.spawn(
+        crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
+        crate::mesh_admin::MeshAdminAgent::new(
+            hosts,
+            Some(root_client_id),
+            admin_addr,
+            telemetry_url,
+        ),
+    )?;
+    let admin_ref = agent_handle.bind();
+    Ok(admin_ref)
 }
 
 impl view::Ranked for HostMeshRef {
@@ -1381,7 +1816,10 @@ impl view::RankedSliceable for HostMeshRef {
             .remap(&region)
             .unwrap()
             .map(|index| self.get(index).unwrap().clone());
-        Self::new(self.name.clone(), region, ranks.collect()).unwrap()
+        Self {
+            bootstrap_command: self.bootstrap_command.clone(),
+            ..Self::new(self.name.clone(), region, ranks.collect()).unwrap()
+        }
     }
 }
 
@@ -1534,7 +1972,7 @@ mod tests {
                 .unwrap();
 
             let proc_mesh1 = host_mesh
-                .spawn(instance, "test_1", Extent::unity())
+                .spawn(instance, "test_1", Extent::unity(), None)
                 .await
                 .unwrap();
 
@@ -1542,7 +1980,7 @@ mod tests {
                 proc_mesh1.spawn(instance, "test", &()).await.unwrap();
 
             let proc_mesh2 = host_mesh
-                .spawn(instance, "test_2", extent!(gpus = 3, extra = 2))
+                .spawn(instance, "test_2", extent!(gpus = 3, extra = 2), None)
                 .await
                 .unwrap();
             assert_eq!(
@@ -1674,7 +2112,7 @@ mod tests {
         let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
         let proc_mesh = host_mesh
-            .spawn(&testing::instance(), "test", Extent::unity())
+            .spawn(&testing::instance(), "test", Extent::unity(), None)
             .await
             .unwrap();
 
@@ -1737,7 +2175,7 @@ mod tests {
         let instance = testing::instance();
 
         let err = host_mesh
-            .spawn(&instance, "test", Extent::unity())
+            .spawn(&instance, "test", Extent::unity(), None)
             .await
             .unwrap_err();
         assert_matches!(
@@ -1783,7 +2221,7 @@ mod tests {
         let instance = testing::instance();
 
         let err = host_mesh
-            .spawn(&instance, "test", Extent::unity())
+            .spawn(&instance, "test", Extent::unity(), None)
             .await
             .unwrap_err();
         let statuses = err.into_proc_spawn_error().unwrap();
@@ -1819,7 +2257,10 @@ mod tests {
         let instance = testing::instance();
 
         let mut hm = testing::host_mesh(2).await;
-        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
+        let proc_mesh = hm
+            .spawn(instance, "test", Extent::unity(), None)
+            .await
+            .unwrap();
 
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(instance, "test", &()).await.unwrap();
@@ -1857,5 +2298,114 @@ mod tests {
         );
 
         let _ = hm.shutdown(instance).await;
+    }
+
+    // ---- SA-* invariant tests ----
+
+    #[tokio::test]
+    async fn test_sa1_empty_mesh_set_rejected() {
+        let instance = testing::instance();
+        let result = spawn_admin(std::iter::empty::<&HostMeshRef>(), instance, None, None).await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("SA-1"), "expected SA-1 error, got: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_sa2_empty_hosts_rejected() {
+        let instance = testing::instance();
+        let mesh = HostMeshRef::from_hosts(Name::new("empty").unwrap(), vec![]);
+        let result = spawn_admin([&mesh], instance, None, None).await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("SA-2"), "expected SA-2 error, got: {err}");
+    }
+
+    /// SA-3: `HostSet::insert` is idempotent — inserting the same
+    /// `ActorId` twice does not add a duplicate entry, and first-seen
+    /// order is preserved. This is a structural property of `HostSet`,
+    /// not an invariant on `aggregate_hosts` control flow.
+    #[test]
+    fn test_sa3_host_set_insert_idempotent() {
+        let addr_a: ChannelAddr = "tcp:127.0.0.1:2001".parse().unwrap();
+        let addr_b: ChannelAddr = "tcp:127.0.0.1:2002".parse().unwrap();
+
+        let ref_a = HostRef(addr_a.clone()).mesh_agent();
+        let ref_b = HostRef(addr_b.clone()).mesh_agent();
+
+        let mut set = HostSet::new();
+        set.insert(addr_a.to_string(), ref_a.clone());
+        set.insert(addr_b.to_string(), ref_b.clone());
+        // Insert ref_a again — should be a no-op (SA-3).
+        set.insert("duplicate_addr".to_string(), ref_a.clone());
+
+        let result = set.into_vec();
+        assert_eq!(
+            result.len(),
+            2,
+            "SA-3: duplicate ActorId must not add entry"
+        );
+        assert_eq!(
+            result[0].0,
+            addr_a.to_string(),
+            "SA-3: first-seen order preserved"
+        );
+        assert_eq!(
+            result[1].0,
+            addr_b.to_string(),
+            "SA-3: first-seen order preserved"
+        );
+    }
+
+    #[test]
+    fn test_sa3_aggregate_hosts_dedup() {
+        let addr_a: ChannelAddr = "tcp:127.0.0.1:1001".parse().unwrap();
+        let addr_b: ChannelAddr = "tcp:127.0.0.1:1002".parse().unwrap();
+        let addr_c: ChannelAddr = "tcp:127.0.0.1:1003".parse().unwrap();
+
+        // mesh_a: hosts a, b
+        let mesh_a = HostMeshRef::from_hosts(
+            Name::new("mesh_a").unwrap(),
+            vec![addr_a.clone(), addr_b.clone()],
+        );
+        // mesh_b: hosts b, c  (b overlaps with mesh_a)
+        let mesh_b = HostMeshRef::from_hosts(
+            Name::new("mesh_b").unwrap(),
+            vec![addr_b.clone(), addr_c.clone()],
+        );
+
+        let result = aggregate_hosts(&[&mesh_a, &mesh_b], None);
+
+        // 3 unique hosts: a, b, c — b is deduplicated.
+        assert_eq!(result.len(), 3, "expected 3 hosts, got {:?}", result);
+
+        // First-seen order: a (mesh_a[0]), b (mesh_a[1]), c (mesh_b[1]).
+        let addrs: Vec<String> = result.iter().map(|(a, _)| a.clone()).collect();
+        assert_eq!(addrs[0], addr_a.to_string());
+        assert_eq!(addrs[1], addr_b.to_string());
+        assert_eq!(addrs[2], addr_c.to_string());
+    }
+
+    /// SA-6 / CH-1: client host entries are deduplicated against the
+    /// already-aggregated mesh host set.
+    #[test]
+    fn test_sa6_ch1_client_host_dedup() {
+        let addr_a: ChannelAddr = "tcp:127.0.0.1:1001".parse().unwrap();
+        let addr_b: ChannelAddr = "tcp:127.0.0.1:1002".parse().unwrap();
+
+        let mesh = HostMeshRef::from_hosts(
+            Name::new("mesh").unwrap(),
+            vec![addr_a.clone(), addr_b.clone()],
+        );
+
+        // Client host entry overlaps with addr_a.
+        let client_ref = HostRef(addr_a.clone()).mesh_agent();
+        let client_entries = vec![("client_addr".to_string(), client_ref)];
+
+        let result = aggregate_hosts(&[&mesh], Some(client_entries));
+
+        // addr_a already in mesh — client entry is deduplicated.
+        assert_eq!(result.len(), 2, "expected 2 hosts, got {:?}", result);
+        let addrs: Vec<String> = result.iter().map(|(a, _)| a.clone()).collect();
+        assert_eq!(addrs[0], addr_a.to_string());
+        assert_eq!(addrs[1], addr_b.to_string());
     }
 }

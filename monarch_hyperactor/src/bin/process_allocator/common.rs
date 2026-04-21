@@ -83,12 +83,10 @@ mod tests {
     use std::collections::HashSet;
 
     use clap::Parser;
-    use hyperactor::WorldId;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use hyperactor_mesh::alloc;
     use hyperactor_mesh::alloc::Alloc;
+    use hyperactor_mesh::alloc::AllocName;
     use hyperactor_mesh::alloc::remoteprocess;
     use ndslice::extent;
 
@@ -146,10 +144,10 @@ mod tests {
             }])
         });
 
-        let world_id = WorldId("__unused__".to_string());
+        let alloc_name = AllocName("__unused__".to_string());
 
         let mut alloc =
-            remoteprocess::RemoteProcessAlloc::new(spec.clone(), world_id, 0, initializer)
+            remoteprocess::RemoteProcessAlloc::new(spec.clone(), alloc_name, 0, initializer)
                 .await
                 .unwrap();
 
@@ -209,24 +207,28 @@ mod tests {
             }])
         });
 
-        let world_id = WorldId("__unused__".to_string());
+        let alloc_name = AllocName("__unused__".to_string());
 
         // Wait at least as long as the timeout before sending any messages.
-        RealClock.sleep(timeout * 2).await;
+        tokio::time::sleep(timeout * 2).await;
 
         // Attempt to allocate, it should fail because a timeout happens before
-        let mut alloc =
-            remoteprocess::RemoteProcessAlloc::new(spec.clone(), world_id.clone(), 0, initializer)
-                .await
-                .unwrap();
+        let mut alloc = remoteprocess::RemoteProcessAlloc::new(
+            spec.clone(),
+            alloc_name.clone(),
+            0,
+            initializer,
+        )
+        .await
+        .unwrap();
         let res = alloc.next().await.unwrap();
         // Should fail because the allocator timed out.
         if let alloc::ProcState::Failed {
-            world_id: msg_world_id,
+            alloc_name: msg_alloc_name,
             description,
         } = res
         {
-            assert_eq!(msg_world_id, world_id);
+            assert_eq!(msg_alloc_name, alloc_name);
             assert!(description.contains("no process has ever been allocated"));
         } else {
             panic!("Unexpected ProcState: {:?}", res);
@@ -267,38 +269,46 @@ mod tests {
             .expect_initialize_alloc()
             .return_once(move || Ok(vec![alloc_host_clone]));
 
-        let world_id = WorldId("__unused__".to_string());
+        let alloc_name = AllocName("__unused__".to_string());
 
         // Attempt to allocate, it should succeed because a timeout happens before
-        let mut alloc =
-            remoteprocess::RemoteProcessAlloc::new(spec.clone(), world_id.clone(), 0, initializer)
-                .await
-                .unwrap();
+        let mut alloc = remoteprocess::RemoteProcessAlloc::new(
+            spec.clone(),
+            alloc_name.clone(),
+            0,
+            initializer,
+        )
+        .await
+        .unwrap();
         // Ensure the process starts.
         alloc.next().await.unwrap();
         // Now stop the alloc and wait for a timeout to ensure the allocator exited.
         alloc.stop_and_wait().await.unwrap();
 
         // Wait at least as long as the timeout before sending any messages.
-        RealClock.sleep(timeout * 2).await;
+        tokio::time::sleep(timeout * 2).await;
 
         // Allocate again to see the error.
         let mut initializer = remoteprocess::MockRemoteProcessAllocInitializer::new();
         initializer
             .expect_initialize_alloc()
             .return_once(move || Ok(vec![alloc_host]));
-        let mut alloc =
-            remoteprocess::RemoteProcessAlloc::new(spec.clone(), world_id.clone(), 0, initializer)
-                .await
-                .unwrap();
+        let mut alloc = remoteprocess::RemoteProcessAlloc::new(
+            spec.clone(),
+            alloc_name.clone(),
+            0,
+            initializer,
+        )
+        .await
+        .unwrap();
         let res = alloc.next().await.unwrap();
         // Should fail because the allocator timed out.
         if let alloc::ProcState::Failed {
-            world_id: msg_world_id,
+            alloc_name: msg_alloc_name,
             description,
         } = res
         {
-            assert_eq!(msg_world_id, world_id);
+            assert_eq!(msg_alloc_name, alloc_name);
             assert!(description.contains("no process has ever been allocated"));
         } else {
             panic!("Unexpected ProcState: {:?}", res);
@@ -310,6 +320,7 @@ mod tests {
 
     /// Tests that an allocator with a timeout, that has a process running and
     /// receives no messages, will keep running as long as the processes do.
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn test_timeout_not_during_execution() -> Result<(), anyhow::Error> {
         hyperactor::initialize_with_current_runtime();
@@ -338,13 +349,17 @@ mod tests {
             .expect_initialize_alloc()
             .return_once(move || Ok(vec![alloc_host]));
 
-        let world_id = WorldId("__unused__".to_string());
+        let alloc_name = AllocName("__unused__".to_string());
 
         // Attempt to allocate, it should succeed because a timeout happens before
-        let mut alloc =
-            remoteprocess::RemoteProcessAlloc::new(spec.clone(), world_id.clone(), 0, initializer)
-                .await
-                .unwrap();
+        let mut alloc = remoteprocess::RemoteProcessAlloc::new(
+            spec.clone(),
+            alloc_name.clone(),
+            0,
+            initializer,
+        )
+        .await
+        .unwrap();
         // Ensure the process starts. Since the command is "sleep", it should
         // start without stopping.
         // make sure we accounted for `world_size` number of Created and Stopped proc states
@@ -365,7 +380,7 @@ mod tests {
         // Now that all procs have started, wait at least as long as the timeout
         // before sending any messages. This way we ensure the remote allocator
         // stays alive as long as the child processes stay alive.
-        RealClock.sleep(timeout * 2).await;
+        tokio::time::sleep(timeout * 2).await;
         // Now wait for more events and ensure they are ProcState::Stopped
         while !created.is_empty() {
             let proc_state = alloc.next().await.unwrap();

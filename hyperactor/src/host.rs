@@ -18,7 +18,7 @@
 //! ## Channel muxing
 //!
 //! A [`Host`] maintains a single frontend address, through which all procs are accessible
-//! through direct addressing: the id of each proc is the `ProcId::Direct(frontend_addr, proc_name)`.
+//! through direct addressing: the id of each proc is the `ProcId(frontend_addr, proc_name)`.
 //! In the following, the frontend address is denoted by `*`. The host listens on `*` and
 //! multiplexes messages based on the proc name. When spawning procs, the host maintains
 //! backend channels with separate addresses. In the diagram `#` is the backend address of
@@ -39,6 +39,14 @@
 //!                  └───▶  proc *,3  │
 //!                    #3└────────────┘
 //! ```
+//!
+//! ## Local proc invariant (LP-*)
+//!
+//! - **LP-1 (lazy activation):** The local proc always exists as a
+//!   `ProcId::Direct(addr, LOCAL_PROC_NAME)` and is forwarded
+//!   in-process by the host's mailbox muxer. However it starts with
+//!   zero actors. A `ProcAgent` and root client actor are added only
+//!   when `HostMeshAgent::handle(GetLocalProc)` is first called.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -59,11 +67,8 @@ use tokio::sync::Mutex;
 use crate as hyperactor;
 use crate::Actor;
 use crate::ActorHandle;
-use crate::ActorId;
-use crate::ActorRef;
 use crate::PortHandle;
 use crate::Proc;
-use crate::ProcId;
 use crate::actor::Binds;
 use crate::actor::Referable;
 use crate::channel;
@@ -73,8 +78,6 @@ use crate::channel::ChannelRx;
 use crate::channel::ChannelTransport;
 use crate::channel::Rx;
 use crate::channel::Tx;
-use crate::clock::Clock;
-use crate::clock::RealClock;
 use crate::context;
 use crate::mailbox::BoxableMailboxSender;
 use crate::mailbox::BoxedMailboxSender;
@@ -86,6 +89,21 @@ use crate::mailbox::MailboxServer;
 use crate::mailbox::MailboxServerHandle;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
+use crate::reference;
+
+/// Name of the system service proc on a host — hosts the admin actor
+/// layer (HostMeshAgent, MeshAdminAgent, bridge).
+pub const SERVICE_PROC_NAME: &str = "service";
+
+/// Name of the local client proc on a host.
+///
+/// See LP-1 (lazy activation) in module doc.
+///
+/// In pure-Rust programs (e.g. sieve, dining_philosophers)
+/// `GetLocalProc` is never sent, so the local proc remains empty
+/// throughout the program's lifetime. Code that inspects the local
+/// proc's actors must not assume they exist.
+pub const LOCAL_PROC_NAME: &str = "local";
 
 /// The type of error produced by host operations.
 #[derive(Debug, thiserror::Error)]
@@ -99,16 +117,16 @@ pub enum HostError {
     ProcExists(String),
 
     /// Failures occuring while spawning a subprocess.
-    #[error("proc '{0}' failed to spawn process: {1}")]
-    ProcessSpawnFailure(ProcId, #[source] std::io::Error),
+    #[error("proc '{0}' (command: {1}) failed to spawn process: {2}")]
+    ProcessSpawnFailure(reference::ProcId, String, #[source] std::io::Error),
 
     /// Failures occuring while configuring a subprocess.
     #[error("proc '{0}' failed to configure process: {1}")]
-    ProcessConfigurationFailure(ProcId, #[source] anyhow::Error),
+    ProcessConfigurationFailure(reference::ProcId, #[source] anyhow::Error),
 
     /// Failures occuring while spawning a management actor in a proc.
     #[error("failed to spawn agent on proc '{0}': {1}")]
-    AgentSpawnFailure(ProcId, #[source] anyhow::Error),
+    AgentSpawnFailure(reference::ProcId, #[source] anyhow::Error),
 
     /// An input parameter was missing.
     #[error("parameter '{0}' missing: {1}")]
@@ -163,11 +181,15 @@ impl<M: ProcManager> Host<M> {
         let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
 
         // Set up a system proc. This is often used to manage the host itself.
-        let service_proc_id = ProcId::Direct(frontend_addr.clone(), "service".to_string());
-        let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
+        // These use with_name (not unique) because their uniqueness is
+        // guaranteed by the ChannelAddr component, and the Name type's
+        // '-' delimiter must not collide with a hash suffix.
+        let service_proc_id =
+            reference::ProcId::with_name(frontend_addr.clone(), SERVICE_PROC_NAME);
+        let service_proc = Proc::configured(service_proc_id.clone(), router.boxed());
 
-        let local_proc_id = ProcId::Direct(frontend_addr.clone(), "local".to_string());
-        let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
+        let local_proc_id = reference::ProcId::with_name(frontend_addr.clone(), LOCAL_PROC_NAME);
+        let local_proc = Proc::configured(local_proc_id.clone(), router.boxed());
 
         tracing::info!(
             frontend_addr = frontend_addr.to_string(),
@@ -216,8 +238,10 @@ impl<M: ProcManager> Host<M> {
         &self.service_proc
     }
 
-    /// The local proc associated with this host.
-    /// This is the local proc used in processes that are also hosts.
+    /// The local proc associated with this host (`LOCAL_PROC_NAME`).
+    ///
+    /// Starts with zero actors; see invariant LP-1 on
+    /// [`LOCAL_PROC_NAME`] for activation semantics.
     pub fn local_proc(&self) -> &Proc {
         &self.local_proc
     }
@@ -225,17 +249,17 @@ impl<M: ProcManager> Host<M> {
     /// Spawn a new process with the given `name`. On success, the
     /// proc has been spawned, and is reachable through the returned,
     /// direct-addressed ProcId, which will be
-    /// `ProcId::Direct(self.addr(), name)`.
+    /// `ProcId(self.addr(), name)`.
     pub async fn spawn(
         &mut self,
         name: String,
         config: M::Config,
-    ) -> Result<(ProcId, ActorRef<ManagerAgent<M>>), HostError> {
+    ) -> Result<(reference::ProcId, reference::ActorRef<ManagerAgent<M>>), HostError> {
         if self.procs.contains(&name) {
             return Err(HostError::ProcExists(name));
         }
 
-        let proc_id = ProcId::Direct(self.frontend_addr.clone(), name.clone());
+        let proc_id = reference::ProcId::with_name(self.frontend_addr.clone(), &name);
         let handle = self
             .manager
             .spawn(proc_id.clone(), self.backend_addr.clone(), config)
@@ -246,7 +270,7 @@ impl<M: ProcManager> Host<M> {
         let ready = if to == Duration::from_secs(0) {
             ReadyProc::ensure(&handle).await
         } else {
-            match RealClock.timeout(to, ReadyProc::ensure(&handle)).await {
+            match tokio::time::timeout(to, ReadyProc::ensure(&handle)).await {
                 Ok(result) => result,
                 Err(_elapsed) => Err(ReadyProcError::Timeout),
             }
@@ -280,6 +304,7 @@ struct ProcOrDial {
     dialer: DialMailboxRouter,
 }
 
+#[async_trait]
 impl MailboxSender for ProcOrDial {
     fn post_unchecked(
         &self,
@@ -293,6 +318,19 @@ impl MailboxSender for ProcOrDial {
         } else {
             self.dialer.post_unchecked(envelope, return_handle)
         }
+    }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        let (r1, r2, r3) = futures::future::join3(
+            self.service_proc.flush(),
+            self.local_proc.flush(),
+            self.dialer.flush(),
+        )
+        .await;
+        r1?;
+        r2?;
+        r3?;
+        Ok(())
     }
 }
 
@@ -446,10 +484,10 @@ pub trait SingleTerminate: Send + Sync {
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
-        proc: &ProcId,
+        proc: &reference::ProcId,
         timeout: std::time::Duration,
         reason: &str,
-    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error>;
+    ) -> Result<(Vec<reference::ActorId>, Vec<reference::ActorId>), anyhow::Error>;
 }
 
 /// Trait for managers that can terminate many child **units** in
@@ -511,15 +549,23 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
     /// A [`TerminateSummary`] with counts of attempted/ok/failed
     /// terminations.
     pub async fn terminate_children(
-        &self,
+        &mut self,
         cx: &impl context::Actor,
         timeout: Duration,
         max_in_flight: usize,
         reason: &str,
     ) -> TerminateSummary {
-        self.manager
+        let summary = self
+            .manager
             .terminate_all(cx, timeout, max_in_flight, reason)
-            .await
+            .await;
+        // Unbind procs from the router so if new procs are made with the same
+        // names, they can use the same slot.
+        for name in self.procs.drain() {
+            let proc_id = reference::ProcId::with_name(self.frontend_addr.clone(), &name);
+            self.router.unbind(&proc_id.into());
+        }
+        summary
     }
 }
 
@@ -528,10 +574,10 @@ impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
-        proc: &ProcId,
+        proc: &reference::ProcId,
         timeout: Duration,
         reason: &str,
-    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+    ) -> Result<(Vec<reference::ActorId>, Vec<reference::ActorId>), anyhow::Error> {
         self.manager.terminate_proc(cx, proc, timeout, reason).await
     }
 }
@@ -546,7 +592,7 @@ impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
 pub struct ReadyProc<'a, H: ProcHandle> {
     handle: &'a H,
     addr: ChannelAddr,
-    agent_ref: ActorRef<H::Agent>,
+    agent_ref: reference::ActorRef<H::Agent>,
 }
 
 impl<'a, H: ProcHandle> ReadyProc<'a, H> {
@@ -571,7 +617,7 @@ impl<'a, H: ProcHandle> ReadyProc<'a, H> {
     }
 
     /// The proc's logical identity.
-    pub fn proc_id(&self) -> &ProcId {
+    pub fn proc_id(&self) -> &reference::ProcId {
         self.handle.proc_id()
     }
 
@@ -581,7 +627,7 @@ impl<'a, H: ProcHandle> ReadyProc<'a, H> {
     }
 
     /// The agent actor reference (guaranteed available after ready).
-    pub fn agent_ref(&self) -> &ActorRef<H::Agent> {
+    pub fn agent_ref(&self) -> &reference::ActorRef<H::Agent> {
         &self.agent_ref
     }
 }
@@ -638,7 +684,7 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     type TerminalStatus: std::fmt::Debug + Clone + Send + Sync + 'static;
 
     /// The proc's logical identity on this host.
-    fn proc_id(&self) -> &ProcId;
+    fn proc_id(&self) -> &reference::ProcId;
 
     /// The proc's address (the one callers bind into the host
     /// router). May return `None` before `ready()` completes.
@@ -654,7 +700,7 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     ///
     /// **Prefer [`ready_proc()`]** for type-safe access that
     /// guarantees availability at compile time.
-    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>>;
+    fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>>;
 
     /// Resolves when the proc becomes Ready. Multi-waiter,
     /// non-consuming.
@@ -719,7 +765,7 @@ pub trait ProcManager {
     /// ref is returned.
     async fn spawn(
         &self,
-        proc_id: ProcId,
+        proc_id: reference::ProcId,
         forwarder_addr: ChannelAddr,
         config: Self::Config,
     ) -> Result<Self::Handle, HostError>;
@@ -764,8 +810,8 @@ pub enum LocalProcStatus {
 ///
 ///   No OS signals are sent or required.
 pub struct LocalProcManager<S> {
-    procs: Arc<Mutex<HashMap<ProcId, Proc>>>,
-    stopping: Arc<Mutex<HashMap<ProcId, LocalProcStatus>>>,
+    procs: Arc<Mutex<HashMap<reference::ProcId, Proc>>>,
+    stopping: Arc<Mutex<HashMap<reference::ProcId, tokio::sync::watch::Sender<LocalProcStatus>>>>,
     spawn: S,
 }
 
@@ -784,9 +830,9 @@ impl<S> LocalProcManager<S> {
     /// that tears it down.
     ///
     /// Status transitions through `Stopping` -> `Stopped` and is
-    /// observable via [`local_proc_status`]. Idempotent: no-ops if
-    /// the proc is already stopping or stopped.
-    pub async fn request_stop(&self, proc: &ProcId, timeout: Duration, reason: &str) {
+    /// observable via [`local_proc_status`] and [`watch`]. Idempotent:
+    /// no-ops if the proc is already stopping or stopped.
+    pub async fn request_stop(&self, proc: &reference::ProcId, timeout: Duration, reason: &str) {
         {
             let guard = self.stopping.lock().await;
             if guard.contains_key(proc) {
@@ -803,10 +849,8 @@ impl<S> LocalProcManager<S> {
         };
 
         let proc_id = proc_handle.proc_id().clone();
-        self.stopping
-            .lock()
-            .await
-            .insert(proc_id.clone(), LocalProcStatus::Stopping);
+        let (tx, _) = tokio::sync::watch::channel(LocalProcStatus::Stopping);
+        self.stopping.lock().await.insert(proc_id.clone(), tx);
 
         let stopping = Arc::clone(&self.stopping);
         let reason = reason.to_string();
@@ -817,10 +861,9 @@ impl<S> LocalProcManager<S> {
             {
                 tracing::warn!(error = %e, "request_stop(local): destroy_and_wait failed");
             }
-            stopping
-                .lock()
-                .await
-                .insert(proc_id, LocalProcStatus::Stopped);
+            if let Some(tx) = stopping.lock().await.get(&proc_id) {
+                let _ = tx.send(LocalProcStatus::Stopped);
+            }
         });
     }
 
@@ -828,8 +871,23 @@ impl<S> LocalProcManager<S> {
     /// [`request_stop`].
     ///
     /// Returns `None` if the proc was never stopped through this path.
-    pub async fn local_proc_status(&self, proc: &ProcId) -> Option<LocalProcStatus> {
-        self.stopping.lock().await.get(proc).copied()
+    pub async fn local_proc_status(&self, proc: &reference::ProcId) -> Option<LocalProcStatus> {
+        self.stopping.lock().await.get(proc).map(|tx| *tx.borrow())
+    }
+
+    /// Subscribe to lifecycle status changes for a proc that was
+    /// stopped via [`request_stop`].
+    ///
+    /// Returns `None` if the proc was never stopped through this path.
+    pub async fn watch(
+        &self,
+        proc: &reference::ProcId,
+    ) -> Option<tokio::sync::watch::Receiver<LocalProcStatus>> {
+        self.stopping
+            .lock()
+            .await
+            .get(proc)
+            .map(|tx| tx.subscribe())
     }
 }
 
@@ -845,10 +903,11 @@ where
         max_in_flight: usize,
         reason: &str,
     ) -> TerminateSummary {
-        // Snapshot procs so we don't hold the lock across awaits.
+        // Drain procs so we don't hold the lock across awaits and subsequent
+        // calls to terminate_all don't try to re-terminate.
         let procs: Vec<Proc> = {
-            let guard = self.procs.lock().await;
-            guard.values().cloned().collect()
+            let mut guard = self.procs.lock().await;
+            guard.drain().map(|(_, v)| v).collect()
         };
 
         let attempted = procs.len();
@@ -885,10 +944,10 @@ where
     async fn terminate_proc(
         &self,
         _cx: &impl context::Actor,
-        proc: &ProcId,
+        proc: &reference::ProcId,
         timeout: std::time::Duration,
         reason: &str,
-    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+    ) -> Result<(Vec<reference::ActorId>, Vec<reference::ActorId>), anyhow::Error> {
         // Snapshot procs so we don't hold the lock across awaits.
         let procs: Option<Proc> = {
             let mut guard = self.procs.lock().await;
@@ -920,10 +979,10 @@ where
 /// **Type parameter:** `A` is constrained by the `ProcHandle::Agent`
 /// bound (`Actor + Referable`).
 pub struct LocalHandle<A: Actor + Referable> {
-    proc_id: ProcId,
+    proc_id: reference::ProcId,
     addr: ChannelAddr,
-    agent_ref: ActorRef<A>,
-    procs: Arc<Mutex<HashMap<ProcId, Proc>>>,
+    agent_ref: reference::ActorRef<A>,
+    procs: Arc<Mutex<HashMap<reference::ProcId, Proc>>>,
 }
 
 // Manual `Clone` to avoid requiring `A: Clone`.
@@ -945,7 +1004,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
     type Agent = A;
     type TerminalStatus = ();
 
-    fn proc_id(&self) -> &ProcId {
+    fn proc_id(&self) -> &reference::ProcId {
         &self.proc_id
     }
 
@@ -953,7 +1012,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         Some(self.addr.clone())
     }
 
-    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
+    fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>> {
         Some(self.agent_ref.clone())
     }
 
@@ -1047,12 +1106,12 @@ where
     #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
-        proc_id: ProcId,
+        proc_id: reference::ProcId,
         forwarder_addr: ChannelAddr,
         _config: (),
     ) -> Result<Self::Handle, HostError> {
         let transport = forwarder_addr.transport();
-        let proc = Proc::new(
+        let proc = Proc::configured(
             proc_id.clone(),
             MailboxClient::dial(forwarder_addr)?.into_boxed(),
         );
@@ -1100,7 +1159,7 @@ where
 /// protocol.
 pub struct ProcessProcManager<A> {
     program: std::path::PathBuf,
-    children: Arc<Mutex<HashMap<ProcId, Child>>>,
+    children: Arc<Mutex<HashMap<reference::ProcId, Child>>>,
     _phantom: PhantomData<A>,
 }
 
@@ -1151,9 +1210,9 @@ impl<A> Drop for ProcessProcManager<A> {
 /// typed remote reference).
 #[derive(Debug)]
 pub struct ProcessHandle<A: Actor + Referable> {
-    proc_id: ProcId,
+    proc_id: reference::ProcId,
     addr: ChannelAddr,
-    agent_ref: ActorRef<A>,
+    agent_ref: reference::ActorRef<A>,
 }
 
 // Manual `Clone` to avoid requiring `A: Clone`.
@@ -1174,7 +1233,7 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
     type Agent = A;
     type TerminalStatus = ();
 
-    fn proc_id(&self) -> &ProcId {
+    fn proc_id(&self) -> &reference::ProcId {
         &self.proc_id
     }
 
@@ -1182,7 +1241,7 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
         Some(self.addr.clone())
     }
 
-    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
+    fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>> {
         Some(self.agent_ref.clone())
     }
 
@@ -1228,7 +1287,7 @@ where
     #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
-        proc_id: ProcId,
+        proc_id: reference::ProcId,
         forwarder_addr: ChannelAddr,
         _config: (),
     ) -> Result<Self::Handle, HostError> {
@@ -1252,9 +1311,9 @@ where
         // Kill the child when its handle is dropped.
         cmd.kill_on_drop(true);
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| HostError::ProcessSpawnFailure(proc_id.clone(), e))?;
+        let child = cmd.spawn().map_err(|e| {
+            HostError::ProcessSpawnFailure(proc_id.clone(), self.program.display().to_string(), e)
+        })?;
 
         // Retain the handle so it lives for the life of the
         // manager/host.
@@ -1297,7 +1356,7 @@ where
         S: FnOnce(Proc) -> F,
         F: Future<Output = Result<ActorHandle<A>, anyhow::Error>>,
     {
-        let proc_id: ProcId = Self::parse_env("HYPERACTOR_HOST_PROC_ID")?;
+        let proc_id: reference::ProcId = Self::parse_env("HYPERACTOR_HOST_PROC_ID")?;
         let backend_addr: ChannelAddr = Self::parse_env("HYPERACTOR_HOST_BACKEND_ADDR")?;
         let callback_addr: ChannelAddr = Self::parse_env("HYPERACTOR_HOST_CALLBACK_ADDR")?;
         spawn_proc(proc_id, backend_addr, callback_addr, spawn).await
@@ -1321,7 +1380,7 @@ where
 /// the provided `callback_addr`.
 #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string(), callback_addr=callback_addr.to_string()))]
 pub async fn spawn_proc<A, S, F>(
-    proc_id: ProcId,
+    proc_id: reference::ProcId,
     backend_addr: ChannelAddr,
     callback_addr: ChannelAddr,
     spawn: S,
@@ -1334,7 +1393,7 @@ where
     F: Future<Output = Result<ActorHandle<A>, anyhow::Error>>,
 {
     let backend_transport = backend_addr.transport();
-    let proc = Proc::new(
+    let proc = Proc::configured(
         proc_id.clone(),
         MailboxClient::dial(backend_addr)?.into_boxed(),
     );
@@ -1362,25 +1421,24 @@ pub mod testing {
 
     use crate as hyperactor;
     use crate::Actor;
-    use crate::ActorId;
     use crate::Context;
     use crate::Handler;
-    use crate::OncePortRef;
+    use crate::reference;
 
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
     #[derive(Debug, Default)]
-    #[hyperactor::export(handlers = [OncePortRef<ActorId>])]
+    #[hyperactor::export(handlers = [reference::OncePortRef<reference::ActorId>])]
     pub struct EchoActor;
 
     impl Actor for EchoActor {}
 
     #[async_trait]
-    impl Handler<OncePortRef<ActorId>> for EchoActor {
+    impl Handler<reference::OncePortRef<reference::ActorId>> for EchoActor {
         async fn handle(
             &mut self,
             cx: &Context<Self>,
-            reply: OncePortRef<ActorId>,
+            reply: reference::OncePortRef<reference::ActorId>,
         ) -> Result<(), anyhow::Error> {
             reply.send(cx, cx.self_id().clone())?;
             Ok(())
@@ -1396,14 +1454,12 @@ mod tests {
     use super::testing::EchoActor;
     use super::*;
     use crate::channel::ChannelTransport;
-    use crate::clock::Clock;
-    use crate::clock::RealClock;
     use crate::context::Mailbox;
 
     #[tokio::test]
     async fn test_basic() {
         let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("agent", ()) });
+            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
         let procs = Arc::clone(&proc_manager.procs);
         let mut host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Local))
             .await
@@ -1412,7 +1468,7 @@ mod tests {
         let (proc_id1, _ref) = host.spawn("proc1".to_string(), ()).await.unwrap();
         assert_eq!(
             proc_id1,
-            ProcId::Direct(host.addr().clone(), "proc1".to_string())
+            reference::ProcId::with_name(host.addr().clone(), "proc1")
         );
         assert!(procs.lock().await.contains_key(&proc_id1));
 
@@ -1467,9 +1523,9 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: ReadFailed { manifest_path: "/meta-pytorch/monarch/target/debug/deps/hyperactor-0e1fe83af739d976.resources.json", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_process_proc_manager() {
-        hyperactor_telemetry::initialize_logging(crate::clock::ClockKind::default());
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
-        // EchoActor is "agent" used to test connectivity.
+        // EchoActor is "host_agent" used to test connectivity.
         let process_manager = ProcessProcManager::<EchoActor>::new(
             buck_resources::get("monarch/hyperactor/bootstrap").unwrap(),
         );
@@ -1506,8 +1562,7 @@ mod tests {
         let (client_inst, _h) = client.instance("test").unwrap();
         let (port, rx) = client_inst.mailbox().open_once_port();
         echo1.send(&client_inst, port.bind()).unwrap();
-        let id = RealClock
-            .timeout(Duration::from_secs(5), rx.recv())
+        let id = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .unwrap()
             .unwrap();
@@ -1522,8 +1577,7 @@ mod tests {
         // external client under the same host.
         let (port2, rx2) = client_inst.mailbox().open_once_port();
         echo2.send(&client_inst, port2.bind()).unwrap();
-        let id2 = RealClock
-            .timeout(Duration::from_secs(5), rx2.recv())
+        let id2 = tokio::time::timeout(Duration::from_secs(5), rx2.recv())
             .await
             .unwrap()
             .unwrap();
@@ -1542,8 +1596,7 @@ mod tests {
         // Send from system -> child via a message that ultimately
         // replies to client's port
         echo1.send(&sys_inst, port3.bind()).unwrap();
-        let id3 = RealClock
-            .timeout(Duration::from_secs(5), rx3.recv())
+        let id3 = tokio::time::timeout(Duration::from_secs(5), rx3.recv())
             .await
             .unwrap()
             .unwrap();
@@ -1554,8 +1607,8 @@ mod tests {
     async fn local_ready_and_wait_are_immediate() {
         // Build a LocalHandle directly.
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = ProcId::Direct(addr.clone(), "p".into());
-        let agent_ref = ActorRef::<()>::attest(proc_id.actor_id("agent", 0));
+        let proc_id = reference::ProcId::with_name(addr.clone(), "p");
+        let agent_ref = reference::ActorRef::<()>::attest(proc_id.actor_id("host_agent", 0));
         let h = LocalHandle::<()> {
             proc_id,
             addr,
@@ -1586,9 +1639,9 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct TestHandle {
-        id: ProcId,
+        id: reference::ProcId,
         addr: ChannelAddr,
-        agent: ActorRef<()>,
+        agent: reference::ActorRef<()>,
         mode: ReadyMode,
         omit_addr: bool,
         omit_agent: bool,
@@ -1599,7 +1652,7 @@ mod tests {
         type Agent = ();
         type TerminalStatus = ();
 
-        fn proc_id(&self) -> &ProcId {
+        fn proc_id(&self) -> &reference::ProcId {
             &self.id
         }
 
@@ -1611,7 +1664,7 @@ mod tests {
             }
         }
 
-        fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
+        fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>> {
             if self.omit_agent {
                 None
             } else {
@@ -1623,7 +1676,7 @@ mod tests {
             match self.mode {
                 ReadyMode::OkAfter(d) => {
                     if !d.is_zero() {
-                        RealClock.sleep(d).await;
+                        tokio::time::sleep(d).await;
                     }
                     Ok(())
                 }
@@ -1681,11 +1734,11 @@ mod tests {
 
         async fn spawn(
             &self,
-            proc_id: ProcId,
+            proc_id: reference::ProcId,
             forwarder_addr: ChannelAddr,
             _config: (),
         ) -> Result<Self::Handle, HostError> {
-            let agent = ActorRef::<()>::attest(proc_id.actor_id("agent", 0));
+            let agent = reference::ActorRef::<()>::attest(proc_id.actor_id("host_agent", 0));
             Ok(TestHandle {
                 id: proc_id,
                 addr: forwarder_addr,

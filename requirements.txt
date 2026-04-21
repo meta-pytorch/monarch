@@ -9,3 +9,4 @@ lark
 tabulate
 opentelemetry-api
 clusterscope
+flask>=2.0

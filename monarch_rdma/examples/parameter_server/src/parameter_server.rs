@@ -58,17 +58,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortRef;
-use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox as _;
+use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
@@ -76,13 +74,13 @@ use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostMeshRef;
 use hyperactor_mesh::Name;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use monarch_rdma::IbvConfig;
-use monarch_rdma::RawLocalMemory;
-use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
+use monarch_rdma::local_memory::RdmaLocalMemory;
+use monarch_rdma::local_memory::UnsafeLocalMemory;
 use ndslice::extent;
 use ndslice::view::Ranked;
 use serde::Deserialize;
@@ -108,7 +106,7 @@ pub struct ParameterServerActor {
     grad_buffer_data: Box<[Box<[u8]>]>,
     weights_handle: Option<RdmaRemoteBuffer>,
     grad_buffer_handles: HashMap<usize, RdmaRemoteBuffer>,
-    owner_ref: ActorRef<RdmaManagerActor>,
+    owner_ref: reference::ActorRef<RdmaManagerActor>,
 }
 
 #[async_trait]
@@ -116,9 +114,12 @@ impl Actor for ParameterServerActor {
     async fn handle_supervision_event(
         &mut self,
         _cx: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
+        event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        tracing::error!("parameterServerActor supervision event: {:?}", _event);
+        if !event.is_error() {
+            return Ok(true);
+        }
+        tracing::error!("parameterServerActor supervision event: {:?}", event);
         tracing::error!(
             "parameterServerActor error occurred, stop the worker process, exit code: 1"
         );
@@ -128,7 +129,7 @@ impl Actor for ParameterServerActor {
 
 #[async_trait]
 impl RemoteSpawn for ParameterServerActor {
-    type Params = (ActorRef<RdmaManagerActor>, usize);
+    type Params = (reference::ActorRef<RdmaManagerActor>, usize);
 
     async fn new(_params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         let (owner_ref, worker_world_size) = _params;
@@ -149,17 +150,17 @@ impl RemoteSpawn for ParameterServerActor {
 }
 
 // Message to get handles to the parameter server's weights and gradient buffers.
-// - OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>: OncePortRef to the parameter server's weights and gradient buffers.
+// - reference::OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>: OncePortRef to the parameter server's weights and gradient buffers.
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct PsGetBuffers(
     pub usize,
-    pub OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>,
+    pub reference::OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>,
 );
 
 // Message to update the parameter server's weights with its current gradient buffer.
-// - OncePortRef<bool>: OncePortRef used primarily for workload synchronization.
+// - reference::OncePortRef<bool>: OncePortRef used primarily for workload synchronization.
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-struct PsUpdate(pub OncePortRef<bool>);
+struct PsUpdate(pub reference::OncePortRef<bool>);
 
 // Message to log actors' weights and gradients.
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
@@ -176,7 +177,8 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
         if self.weights_handle.is_none() {
             let addr = self.weights_data.as_ptr() as usize;
             let size = self.weights_data.len();
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(addr, size));
+            let local_memory: Arc<dyn RdmaLocalMemory> =
+                Arc::new(UnsafeLocalMemory::new(addr, size));
             let handle = self
                 .owner_ref
                 .downcast_handle(cx)
@@ -196,7 +198,7 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
                 let addr = self.grad_buffer_data[rank].as_ptr() as usize;
                 let size = self.grad_buffer_data[rank].len();
                 let local_memory: Arc<dyn RdmaLocalMemory> =
-                    Arc::new(RawLocalMemory::new(addr, size));
+                    Arc::new(UnsafeLocalMemory::new(addr, size));
                 let handle = self
                     .owner_ref
                     .downcast_handle(cx)
@@ -267,9 +269,12 @@ impl Actor for WorkerActor {
     async fn handle_supervision_event(
         &mut self,
         _cx: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
+        event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        tracing::error!("workerActor supervision event: {:?}", _event);
+        if !event.is_error() {
+            return Ok(true);
+        }
+        tracing::error!("workerActor supervision event: {:?}", event);
         tracing::error!("workerActor error occurred, stop the worker process, exit code: 1");
         std::process::exit(1);
     }
@@ -295,21 +300,21 @@ impl RemoteSpawn for WorkerActor {
 // This message is sent to workers to establish their connection with the parameter server
 // and obtain handles to the shared weights and gradient buffers.
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerInit(pub ActorRef<ParameterServerActor>);
+pub struct WorkerInit(pub reference::ActorRef<ParameterServerActor>);
 
 // Message to signal the worker to update its gradients and transmit them to the server.
-// The PortRef<bool> is used to notify the main process when the operation completes.
+// The reference::PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers compute local gradients (weights + 1)
 // - Workers write these gradients to their assigned buffer on the parameter server using RDMA
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerStep(#[binding(include)] PortRef<bool>);
+pub struct WorkerStep(#[binding(include)] reference::PortRef<bool>);
 
 // Message to signal the worker to pull updated weights from the parameter server.
-// The PortRef<bool> is used to notify the main process when the operation completes.
+// The reference::PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers read the updated weights from the parameter server using RDMA
 // - This happens after the parameter server has applied all gradients to update the weights
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerUpdate(#[binding(include)] PortRef<bool>);
+pub struct WorkerUpdate(#[binding(include)] reference::PortRef<bool>);
 
 #[async_trait]
 impl Handler<WorkerInit> for WorkerActor {
@@ -362,7 +367,7 @@ impl Handler<WorkerStep> for WorkerActor {
             .ps_grad_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(
+        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(UnsafeLocalMemory::new(
             self.local_gradients.as_ptr() as usize,
             self.local_gradients.len(),
         ));
@@ -395,7 +400,7 @@ impl Handler<WorkerUpdate> for WorkerActor {
             .ps_weights_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(
+        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(UnsafeLocalMemory::new(
             self.weights_data.as_ptr() as usize,
             self.weights_data.len(),
         ));
@@ -460,7 +465,8 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // As normal, create a proc mesh for the parameter server.
     tracing::info!("creating parameter server proc mesh...");
 
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     let mut command = Command::new(
         buck_resources::get("monarch/monarch_rdma/examples/parameter_server/bootstrap").unwrap(),
@@ -477,7 +483,9 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     let _child = command.spawn().unwrap();
 
     let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), vec![host_addr]);
-    let ps_proc_mesh = host_mesh.spawn(instance, "ps", extent!(gpu = 1)).await?;
+    let ps_proc_mesh = host_mesh
+        .spawn(instance, "ps", extent!(gpu = 1), None)
+        .await?;
 
     tracing::info!(
         "creating parameter server's RDMA manager with config: {}",
@@ -496,7 +504,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // Create a proc mesh for workers, where each worker is assigned to its own GPU.
     tracing::info!("creating worker proc mesh ({} workers)...", num_workers);
     let worker_proc_mesh = host_mesh
-        .spawn(instance, "workers", extent!(gpu = num_workers))
+        .spawn(instance, "workers", extent!(gpu = num_workers), None)
         .await?;
 
     tracing::info!(

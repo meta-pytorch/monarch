@@ -103,7 +103,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 
-use rand::Rng;
+use rand::RngExt as _;
 use serde::Deserialize;
 use serde::Serialize;
 

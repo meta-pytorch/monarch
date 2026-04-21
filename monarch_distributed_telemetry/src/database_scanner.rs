@@ -11,27 +11,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
-use datafusion::arrow::array::Float64Array;
-use datafusion::arrow::array::Int32Array;
-use datafusion::arrow::array::StringArray;
-use datafusion::arrow::array::TimestampMicrosecondArray;
-use datafusion::arrow::datatypes::DataType;
-use datafusion::arrow::datatypes::Field;
-use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::datatypes::TimeUnit;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use hyperactor::Instance;
-use hyperactor::PortId;
-use hyperactor::PortRef;
+use hyperactor::reference;
 use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::mailbox::PyPortId;
 use monarch_hyperactor::runtime::get_tokio_runtime;
+use monarch_record_batch::RecordBatchBuffer;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -41,56 +35,179 @@ use serde_multipart::Part;
 use crate::EntityDispatcher;
 use crate::QueryResponse;
 use crate::RecordBatchSink;
+use crate::pyspy_table::PySpyDumpBuffer;
+use crate::pyspy_table::PySpyFrameBuffer;
+use crate::pyspy_table::PySpyLocalVariableBuffer;
+use crate::pyspy_table::PySpyStackTraceBuffer;
 use crate::serialize_batch;
 use crate::serialize_schema;
+use crate::timestamp_to_micros;
 
 /// Wraps a table's data so we can dynamically push new batches.
 /// The MemTable is created on initialization and shared with queries.
 pub struct LiveTableData {
     /// The MemTable that queries use
     mem_table: Arc<MemTable>,
-    /// Maximum number of batches to keep (0 = unlimited)
-    max_batches: usize,
 }
 
 impl LiveTableData {
-    fn new(schema: SchemaRef, max_batches: usize) -> Self {
-        // Create MemTable with one empty partition
-        // try_new requires at least one partition, but the partition can be empty
+    fn new(schema: SchemaRef) -> Self {
         let mem_table = MemTable::try_new(schema, vec![vec![]])
             .expect("failed to create MemTable with empty partition");
         Self {
             mem_table: Arc::new(mem_table),
-            max_batches,
         }
     }
 
-    /// Push a new batch to the table. If max_batches is reached, removes the oldest.
-    /// Empty batches are ignored (no-op).
+    /// Push a new batch to the table.
     pub async fn push(&self, batch: RecordBatch) {
-        // Ignore empty batches
         if batch.num_rows() == 0 {
             return;
         }
-        // The MemTable has a single partition, push to it
+
         let partition = &self.mem_table.batches[0];
         let mut guard = partition.write().await;
-        if self.max_batches > 0 && guard.len() >= self.max_batches {
-            guard.remove(0);
-        }
         guard.push(batch);
     }
 
-    /// Get the schema
+    /// Filter the table's data, keeping only rows that match the WHERE clause.
+    ///
+    /// Holds the write lock for the entire operation to prevent data loss
+    /// from concurrent `push()` calls.
+    pub async fn apply_retention(
+        &self,
+        table_name: &str,
+        where_clause: &str,
+    ) -> anyhow::Result<()> {
+        use futures::TryStreamExt;
+
+        let partition = &self.mem_table.batches[0];
+        let mut guard = partition.write().await;
+
+        // Drain current batches into a temporary MemTable for querying.
+        let current_batches: Vec<RecordBatch> = guard.drain(..).collect();
+        let tmp = MemTable::try_new(self.mem_table.schema(), vec![current_batches])?;
+
+        let ctx = SessionContext::new();
+        ctx.register_table(table_name, Arc::new(tmp))?;
+
+        let query = format!("SELECT * FROM {table_name} WHERE {where_clause}");
+        let df = ctx.sql(&query).await?;
+        let filtered: Vec<RecordBatch> = df.execute_stream().await?.try_collect().await?;
+
+        for batch in filtered {
+            if batch.num_rows() > 0 {
+                guard.push(batch);
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the schema.
     pub fn schema(&self) -> SchemaRef {
         self.mem_table.schema()
     }
 
-    /// Get the MemTable for registering with a SessionContext
+    /// Get the MemTable for registering with a SessionContext.
     pub fn mem_table(&self) -> Arc<MemTable> {
         self.mem_table.clone()
     }
 }
+
+/// Opaque handle to the shared table storage.
+///
+/// External crates receive this capability via
+/// [`DatabaseScanner::table_store()`]. The raw storage map is not
+/// part of the public API.
+///
+/// # Table-store invariants (TS-*)
+///
+/// - **TS-1 (opaque capability):** External crates do not receive
+///   the raw `Arc<StdMutex<HashMap<...>>>`.
+/// - **TS-2 (behavior parity):** [`TableStore::ingest_batch`]
+///   preserves existing ingestion semantics (ID-1 through ID-6).
+/// - **TS-3 (read capability minimality):** [`table_names`](Self::table_names)
+///   and [`table_provider`](Self::table_provider) expose only what
+///   downstream query setup needs. Callers receive
+///   `Arc<dyn TableProvider>`, not the backing `MemTable`.
+/// - **TS-4 (ownership preserved):** Storage ownership remains in
+///   `monarch_distributed_telemetry`. `TableStore` is a handle, not
+///   an independent store.
+#[derive(Clone)]
+pub struct TableStore {
+    inner: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+}
+
+impl TableStore {
+    /// Create an empty standalone table store.
+    ///
+    /// Useful for testing or standalone ingestion scenarios where
+    /// the full [`DatabaseScanner`] lifecycle is not needed.
+    pub fn new_empty() -> Self {
+        Self {
+            inner: Arc::new(StdMutex::new(HashMap::new())),
+        }
+    }
+
+    /// Ingest a `RecordBatch` into a named table (TS-2).
+    ///
+    /// Async so callers in async contexts can await directly without
+    /// hitting the `block_in_place` bridge in `push_batch_to_tables`.
+    ///
+    /// See the ID-* invariants on
+    /// `DatabaseScanner::push_batch_to_tables` for behavioral
+    /// guarantees (this method preserves the same semantics).
+    pub async fn ingest_batch(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
+        let table = {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+            guard
+                .entry(table_name.to_string())
+                .or_insert_with(|| Arc::new(LiveTableData::new(batch.schema())))
+                .clone()
+        };
+        table.push(batch).await;
+        Ok(())
+    }
+
+    /// Return sorted table names currently in storage (TS-3).
+    pub fn table_names(&self) -> anyhow::Result<Vec<String>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+        let mut names: Vec<String> = guard.keys().cloned().collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// Return a [`TableProvider`] for a named table, or `None` if
+    /// the table does not exist (TS-3).
+    ///
+    /// The returned provider can be registered directly with a
+    /// DataFusion `SessionContext`. Callers do not see the backing
+    /// storage type.
+    pub fn table_provider(
+        &self,
+        table_name: &str,
+    ) -> anyhow::Result<Option<Arc<dyn TableProvider>>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+        Ok(guard
+            .get(table_name)
+            .map(|t| t.mem_table() as Arc<dyn TableProvider>))
+    }
+}
+
+/// Default retention duration: 10 minutes in seconds.
+const DEFAULT_RETENTION_SECS: u64 = 10 * 60;
+
+/// Tables that keep only recent data; all others have unlimited retention.
+const RETENTION_TABLES: &[&str] = &["sent_messages", "messages", "message_status_events"];
 
 #[pyclass(
     name = "DatabaseScanner",
@@ -100,172 +217,68 @@ pub struct DatabaseScanner {
     /// Tables stored by name - each holds the schema and shared PartitionData
     table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
     rank: usize,
-    max_batches: usize,
+    /// Retention window in microseconds.
+    retention_us: i64,
     /// Handle to flush the RecordBatchSink for trace events (spans, events)
     sink: Option<RecordBatchSink>,
     /// Handle to flush the EntityDispatcher for entity events (actors, meshes)
     dispatcher: Option<EntityDispatcher>,
 }
 
-fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
-    use rand::Rng;
-
-    let mut rng = rand::rng();
-
-    // Create hosts table schema
-    let hosts_schema = Arc::new(Schema::new(vec![
-        Field::new("host_id", DataType::Int32, false),
-        Field::new("hostname", DataType::Utf8, false),
-        Field::new("datacenter", DataType::Utf8, false),
-        Field::new("os", DataType::Utf8, false),
-        Field::new("cpu_cores", DataType::Int32, false),
-        Field::new("memory_gb", DataType::Int32, false),
-    ]));
-
-    // Use random base to avoid duplicate host_ids across actors
-    let host_start = rng.random_range(0..10000) * 10;
-    let host_end = host_start + 10;
-    let datacenters = ["us-east-1", "us-west-2", "eu-west-1", "ap-south-1"];
-    let os_types = ["ubuntu-22.04", "debian-12", "rhel-9", "amazon-linux-2"];
-    let cpu_options = [4, 8, 16, 32, 64];
-    let memory_options = [16, 32, 64, 128, 256];
-
-    // Generate hosts data
-    let mut host_ids = Vec::new();
-    let mut hostnames = Vec::new();
-    let mut dcs = Vec::new();
-    let mut oses = Vec::new();
-    let mut cpus = Vec::new();
-    let mut mems = Vec::new();
-
-    for host_id in host_start..host_end {
-        host_ids.push(host_id);
-        hostnames.push(format!("server-{:05}", host_id));
-        dcs.push(datacenters[rng.random_range(0..datacenters.len())].to_string());
-        oses.push(os_types[rng.random_range(0..os_types.len())].to_string());
-        cpus.push(cpu_options[rng.random_range(0..cpu_options.len())]);
-        mems.push(memory_options[rng.random_range(0..memory_options.len())]);
-    }
-
-    let hosts_batch = RecordBatch::try_new(
-        hosts_schema.clone(),
-        vec![
-            Arc::new(Int32Array::from(host_ids.clone())),
-            Arc::new(StringArray::from(hostnames)),
-            Arc::new(StringArray::from(dcs)),
-            Arc::new(StringArray::from(oses)),
-            Arc::new(Int32Array::from(cpus)),
-            Arc::new(Int32Array::from(mems)),
-        ],
-    )?;
-    scanner.push_batch_internal("hosts", hosts_batch)?;
-
-    // Create metrics table schema
-    let metrics_schema = Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Microsecond, None),
-            false,
-        ),
-        Field::new("host_id", DataType::Int32, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("value", DataType::Float64, false),
-    ]));
-
-    // Generate metrics data
-    let metric_names = [
-        "cpu_usage",
-        "memory_usage",
-        "disk_io",
-        "network_rx",
-        "network_tx",
-    ];
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_micros() as i64;
-
-    let mut timestamps = Vec::new();
-    let mut metric_host_ids = Vec::new();
-    let mut metric_names_col = Vec::new();
-    let mut values = Vec::new();
-
-    for i in 0..960 {
-        let timestamp_micros = now - (i * 90 * 1_000_000);
-        timestamps.push(timestamp_micros);
-
-        let host_id = rng.random_range(host_start..host_end);
-        metric_host_ids.push(host_id as i32);
-
-        let metric_name = metric_names[rng.random_range(0..metric_names.len())];
-        metric_names_col.push(metric_name.to_string());
-
-        let value = match metric_name {
-            "cpu_usage" | "memory_usage" => rng.random_range(0.0..100.0),
-            "disk_io" => rng.random_range(0.0..1000.0),
-            _ => rng.random_range(0.0..10000.0),
-        };
-        values.push(value);
-    }
-
-    let metrics_batch = RecordBatch::try_new(
-        metrics_schema.clone(),
-        vec![
-            Arc::new(TimestampMicrosecondArray::from(timestamps)),
-            Arc::new(Int32Array::from(metric_host_ids)),
-            Arc::new(StringArray::from(metric_names_col)),
-            Arc::new(Float64Array::from(values)),
-        ],
-    )?;
-    scanner.push_batch_internal("metrics", metrics_batch)?;
-
-    tracing::info!(
-        "Worker {}: initialized with hosts {}-{}",
-        scanner.rank,
-        host_start,
-        host_end - 1
-    );
-    Ok(())
-}
-
 #[pymethods]
 impl DatabaseScanner {
     #[new]
-    #[pyo3(signature = (rank, use_fake_data=true, max_batches=100, batch_size=1000))]
-    fn new(
-        rank: usize,
-        use_fake_data: bool,
-        max_batches: usize,
-        batch_size: usize,
-    ) -> PyResult<Self> {
+    #[pyo3(signature = (rank, batch_size=1000, retention_secs=DEFAULT_RETENTION_SECS))]
+    fn new(rank: usize, batch_size: usize, retention_secs: u64) -> PyResult<Self> {
         let mut scanner = Self {
             table_data: Arc::new(StdMutex::new(HashMap::new())),
             rank,
-            max_batches,
+            retention_us: retention_secs as i64 * 1_000_000,
             sink: None,
             dispatcher: None,
         };
 
-        if use_fake_data {
-            fill_fake_batches(&scanner)
-                .map_err(|e| PyException::new_err(format!("failed to create fake data: {}", e)))?;
-        } else {
-            // Create and register a RecordBatchSink for trace events (spans, events)
-            let sink = scanner.create_record_batch_sink(batch_size);
-            scanner.sink = Some(sink.clone());
-            hyperactor_telemetry::register_sink(Box::new(sink));
+        // Create and register a RecordBatchSink for trace events (spans, events)
+        let sink = scanner.create_record_batch_sink(batch_size);
+        scanner.sink = Some(sink.clone());
+        hyperactor_telemetry::register_sink(Box::new(sink));
 
-            // Create and register an EntityDispatcher for entity events (actors, meshes)
-            let dispatcher = scanner.create_entity_dispatcher(batch_size);
-            scanner.dispatcher = Some(dispatcher.clone());
-            hyperactor_telemetry::set_entity_dispatcher(Box::new(dispatcher));
+        // Create and register an EntityDispatcher for entity events (actors, meshes)
+        let dispatcher = scanner.create_entity_dispatcher(batch_size);
+        scanner.dispatcher = Some(dispatcher.clone());
+        hyperactor_telemetry::set_entity_dispatcher(Box::new(dispatcher));
+
+        // Pre-register py-spy tables so QueryEngine discovers them at setup time
+        for (name, batch) in [
+            (
+                "pyspy_dumps",
+                PySpyDumpBuffer::default().drain_to_record_batch().unwrap(),
+            ),
+            (
+                "pyspy_stack_traces",
+                PySpyStackTraceBuffer::default()
+                    .drain_to_record_batch()
+                    .unwrap(),
+            ),
+            (
+                "pyspy_frames",
+                PySpyFrameBuffer::default().drain_to_record_batch().unwrap(),
+            ),
+            (
+                "pyspy_local_variables",
+                PySpyLocalVariableBuffer::default()
+                    .drain_to_record_batch()
+                    .unwrap(),
+            ),
+        ] {
+            Self::push_batch_to_tables(&scanner.table_data, name, batch).unwrap();
         }
 
         Ok(scanner)
     }
 
-    /// Flush any pending trace events and entity events to the tables.
+    /// Flush any pending trace events and entity events to the tables,
+    /// then apply time-based retention policies.
     fn flush(&self) -> PyResult<()> {
         if let Some(ref sink) = self.sink {
             sink.flush()
@@ -276,7 +289,31 @@ impl DatabaseScanner {
                 .flush()
                 .map_err(|e| PyException::new_err(format!("failed to flush dispatcher: {}", e)))?;
         }
+        self.apply_retention_policies()?;
         Ok(())
+    }
+
+    /// Filter a single table, keeping only rows that match the WHERE clause.
+    fn apply_retention(&self, table_name: &str, where_clause: &str) -> PyResult<()> {
+        let table = {
+            let guard = self
+                .table_data
+                .lock()
+                .map_err(|_| PyException::new_err("lock poisoned"))?;
+            match guard.get(table_name) {
+                Some(t) => t.clone(),
+                None => return Ok(()),
+            }
+        };
+
+        let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(table.apply_retention(table_name, where_clause))
+            })
+        } else {
+            get_tokio_runtime().block_on(table.apply_retention(table_name, where_clause))
+        };
+        result.map_err(|e| PyException::new_err(e.to_string()))
     }
 
     /// Get list of table names.
@@ -302,6 +339,17 @@ impl DatabaseScanner {
         let schema = table_data.schema();
         let bytes = serialize_schema(&schema).map_err(|e| PyException::new_err(e.to_string()))?;
         Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Store a py-spy dump result into the pyspy_stacks table.
+    fn store_pyspy_dump_py(
+        &self,
+        dump_id: &str,
+        proc_ref: &str,
+        pyspy_result_json: &str,
+    ) -> PyResult<()> {
+        self.store_pyspy_dump(dump_id, proc_ref, pyspy_result_json)
+            .map_err(|e| PyException::new_err(e.to_string()))
     }
 
     /// Perform a scan, sending results directly to the dest port.
@@ -338,8 +386,8 @@ impl DatabaseScanner {
         let instance: Instance<PythonActor> = py_instance.clone_for_py();
 
         // Build destination PortRef once
-        let dest_port_id: PortId = dest.clone().into();
-        let dest_ref: PortRef<QueryResponse> = PortRef::attest(dest_port_id);
+        let dest_port_id: reference::PortId = dest.clone().into();
+        let dest_ref: reference::PortRef<QueryResponse> = reference::PortRef::attest(dest_port_id);
 
         // Execute scan, streaming batches directly to destination
         self.execute_scan_streaming(
@@ -354,33 +402,32 @@ impl DatabaseScanner {
 }
 
 impl DatabaseScanner {
-    /// Internal method to push a RecordBatch to a table.
+    /// Push a batch into the named table in `table_data`.
     ///
-    /// Creates the table if it doesn't exist, using the batch's schema.
-    /// If the batch is empty, creates the table with the schema but doesn't append.
-    /// This method is used both by the Python push_batch and by the Rust RecordBatchSink.
-    pub fn push_batch_internal(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
-        Self::push_batch_to_tables(&self.table_data, self.max_batches, table_name, batch)
-    }
-
-    /// Static method to push a batch to the table_data map.
-    /// This can be used from closures that capture the Arc.
+    /// # Ingestion invariants (ID-*)
     ///
-    /// If the batch is empty, creates the table with the schema but doesn't append data.
+    /// - **ID-1 (create on first batch):** If `table_name` is absent,
+    ///   a new `LiveTableData` is created from `batch.schema()`.
+    /// - **ID-2 (empty batch registers schema):** An empty batch
+    ///   creates the table entry and preserves the schema —
+    ///   `LiveTableData::push` is a no-op for zero rows, but the
+    ///   `entry().or_insert_with()` runs unconditionally.
+    /// - **ID-3 (append on existing table):** A non-empty batch for
+    ///   an existing table appends rows.
+    /// - **ID-4 (error surface):** Lock poisoning propagates as
+    ///   `Err`. `push()` itself is infallible.
     fn push_batch_to_tables(
         table_data: &Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
-        max_batches: usize,
         table_name: &str,
         batch: RecordBatch,
     ) -> anyhow::Result<()> {
-        // Get or create the table
         let table = {
             let mut guard = table_data
                 .lock()
                 .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
             guard
                 .entry(table_name.to_string())
-                .or_insert_with(|| Arc::new(LiveTableData::new(batch.schema(), max_batches)))
+                .or_insert_with(|| Arc::new(LiveTableData::new(batch.schema())))
                 .clone()
         };
 
@@ -402,14 +449,11 @@ impl DatabaseScanner {
     /// to receive trace events and store them as queryable tables.
     pub fn create_record_batch_sink(&self, batch_size: usize) -> RecordBatchSink {
         let table_data = self.table_data.clone();
-        let max_batches = self.max_batches;
 
         RecordBatchSink::new(
             batch_size,
             Box::new(move |table_name, batch| {
-                if let Err(e) =
-                    Self::push_batch_to_tables(&table_data, max_batches, table_name, batch)
-                {
+                if let Err(e) = Self::push_batch_to_tables(&table_data, table_name, batch) {
                     tracing::error!("Failed to push batch to table {}: {}", table_name, e);
                 }
             }),
@@ -422,23 +466,217 @@ impl DatabaseScanner {
     /// to receive entity events (actors, meshes) and store them as queryable tables.
     pub fn create_entity_dispatcher(&self, batch_size: usize) -> EntityDispatcher {
         let table_data = self.table_data.clone();
-        let max_batches = self.max_batches;
 
         EntityDispatcher::new(
             batch_size,
             Box::new(move |table_name, batch| {
-                if let Err(e) =
-                    Self::push_batch_to_tables(&table_data, max_batches, table_name, batch)
-                {
+                if let Err(e) = Self::push_batch_to_tables(&table_data, table_name, batch) {
                     tracing::error!("Failed to push batch to table {}: {}", table_name, e);
                 }
             }),
         )
     }
 
-    /// Get a clone of the table_data Arc for sharing with sinks.
-    pub fn table_data(&self) -> Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>> {
-        self.table_data.clone()
+    /// Parse a py-spy result JSON and store data in normalized py-spy tables.
+    ///
+    /// Populates four tables matching the `hyperactor_mesh::pyspy` structs:
+    /// - `pyspy_dumps`: one row per dump
+    /// - `pyspy_stack_traces`: one row per thread (matches `PySpyStackTrace`)
+    /// - `pyspy_frames`: one row per frame (matches `PySpyFrame`)
+    /// - `pyspy_local_variables`: one row per local variable (matches `PySpyLocalVariable`)
+    ///
+    /// Design notes:
+    /// - Non-Ok results (`BinaryNotFound`, `Failed`) are silently dropped.
+    ///   We intentionally do not record them as structured telemetry today;
+    ///   the caller can log or count those cases if needed.
+    /// - `dump_id` is caller-provided; uniqueness is the caller's responsibility.
+    /// - `timestamp_us` records ingestion time, not py-spy capture time (the
+    ///   py-spy JSON carries no capture timestamp).
+    /// - We parse via `serde_json::Value` rather than importing the typed
+    ///   `PySpyResult` to avoid a crate dependency on `hyperactor_mesh`. The
+    ///   tradeoff is that schema drift in the py-spy structs will not be caught
+    ///   at compile time.
+    pub fn store_pyspy_dump(
+        &self,
+        dump_id: &str,
+        proc_ref: &str,
+        pyspy_result_json: &str,
+    ) -> anyhow::Result<()> {
+        use monarch_record_batch::RecordBatchBuffer;
+
+        use crate::pyspy_table::PySpyDump;
+        use crate::pyspy_table::PySpyDumpBuffer;
+        use crate::pyspy_table::PySpyFrame;
+        use crate::pyspy_table::PySpyFrameBuffer;
+        use crate::pyspy_table::PySpyLocalVariable;
+        use crate::pyspy_table::PySpyLocalVariableBuffer;
+        use crate::pyspy_table::PySpyStackTrace;
+        use crate::pyspy_table::PySpyStackTraceBuffer;
+
+        let value: serde_json::Value = serde_json::from_str(pyspy_result_json)?;
+        let ok = match value.get("Ok") {
+            Some(ok) => ok,
+            None => return Ok(()),
+        };
+
+        let pid = ok.get("pid").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let binary = ok
+            .get("binary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let traces = ok.get("stack_traces").and_then(|v| v.as_array());
+
+        let now_us = timestamp_to_micros(&SystemTime::now());
+
+        // Insert dump row
+        let mut dump_buf = PySpyDumpBuffer::default();
+        dump_buf.insert(PySpyDump {
+            dump_id: dump_id.to_string(),
+            timestamp_us: now_us,
+            pid,
+            binary,
+            proc_ref: proc_ref.to_string(),
+        });
+        Self::push_batch_to_tables(
+            &self.table_data,
+            "pyspy_dumps",
+            dump_buf.drain_to_record_batch()?,
+        )?;
+
+        // Insert stack trace, frame, and local variable rows
+        let mut trace_buf = PySpyStackTraceBuffer::default();
+        let mut frame_buf = PySpyFrameBuffer::default();
+        let mut local_buf = PySpyLocalVariableBuffer::default();
+
+        if let Some(traces) = traces {
+            for trace in traces {
+                let thread_id = trace.get("thread_id").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                trace_buf.insert(PySpyStackTrace {
+                    dump_id: dump_id.to_string(),
+                    pid: trace
+                        .get("pid")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(pid as i64) as i32,
+                    thread_id,
+                    thread_name: trace
+                        .get("thread_name")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    os_thread_id: trace.get("os_thread_id").and_then(|v| v.as_u64()),
+                    active: trace
+                        .get("active")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    owns_gil: trace
+                        .get("owns_gil")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                });
+
+                if let Some(frames) = trace.get("frames").and_then(|v| v.as_array()) {
+                    for (depth, frame) in frames.iter().enumerate() {
+                        frame_buf.insert(PySpyFrame {
+                            dump_id: dump_id.to_string(),
+                            thread_id,
+                            frame_depth: depth as i32,
+                            name: frame
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            filename: frame
+                                .get("filename")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            module: frame
+                                .get("module")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            short_filename: frame
+                                .get("short_filename")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            line: frame.get("line").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            is_entry: frame
+                                .get("is_entry")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                        });
+
+                        if let Some(locals) = frame.get("locals").and_then(|v| v.as_array()) {
+                            for local in locals {
+                                local_buf.insert(PySpyLocalVariable {
+                                    dump_id: dump_id.to_string(),
+                                    thread_id,
+                                    frame_depth: depth as i32,
+                                    name: local
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    addr: local.get("addr").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    arg: local
+                                        .get("arg")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false),
+                                    repr: local
+                                        .get("repr")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Self::push_batch_to_tables(
+            &self.table_data,
+            "pyspy_stack_traces",
+            trace_buf.drain_to_record_batch()?,
+        )?;
+        Self::push_batch_to_tables(
+            &self.table_data,
+            "pyspy_frames",
+            frame_buf.drain_to_record_batch()?,
+        )?;
+        Self::push_batch_to_tables(
+            &self.table_data,
+            "pyspy_local_variables",
+            local_buf.drain_to_record_batch()?,
+        )?;
+        Ok(())
+    }
+
+    /// Apply retention policies for all configured tables.
+    /// Skipped when retention_us is 0 (unlimited).
+    fn apply_retention_policies(&self) -> PyResult<()> {
+        if self.retention_us == 0 {
+            return Ok(());
+        }
+
+        let now_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_micros() as i64;
+        let cutoff = now_us - self.retention_us;
+        let where_clause = format!("timestamp_us > {cutoff}");
+
+        for &table_name in RETENTION_TABLES {
+            self.apply_retention(table_name, &where_clause)?;
+        }
+        Ok(())
+    }
+
+    /// Return an opaque [`TableStore`] handle for external callers.
+    pub fn table_store(&self) -> TableStore {
+        TableStore {
+            inner: self.table_data.clone(),
+        }
     }
 
     fn execute_scan_streaming(
@@ -448,7 +686,7 @@ impl DatabaseScanner {
         where_clause: Option<String>,
         limit: Option<usize>,
         instance: &Instance<PythonActor>,
-        dest_ref: &PortRef<QueryResponse>,
+        dest_ref: &reference::PortRef<QueryResponse>,
     ) -> PyResult<usize> {
         let rank = self.rank;
 
@@ -552,4 +790,647 @@ impl DatabaseScanner {
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<DatabaseScanner>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use datafusion::arrow::array::Array;
+    use datafusion::arrow::array::BooleanArray;
+    use datafusion::arrow::array::Int32Array;
+    use datafusion::arrow::array::Int64Array;
+    use datafusion::arrow::array::StringArray;
+    use datafusion::arrow::array::UInt64Array;
+    use datafusion::arrow::datatypes::DataType;
+    use datafusion::arrow::datatypes::Field;
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::arrow::record_batch::RecordBatch;
+
+    use super::*;
+
+    fn make_batch(values: &[i64]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
+        let col = Int64Array::from(values.to_vec());
+        RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap()
+    }
+
+    async fn row_count(table: &LiveTableData) -> usize {
+        table.mem_table.batches[0]
+            .read()
+            .await
+            .iter()
+            .map(|b| b.num_rows())
+            .sum()
+    }
+
+    #[tokio::test]
+    async fn test_empty_batch_ignored() {
+        let table = LiveTableData::new(make_batch(&[]).schema());
+
+        table.push(make_batch(&[])).await;
+        assert_eq!(row_count(&table).await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_apply_retention_filters_rows() {
+        // Push rows with x values 1..=5, then keep only x >= 3.
+        let table = LiveTableData::new(make_batch(&[]).schema());
+        table.push(make_batch(&[1, 2, 3, 4, 5])).await;
+
+        table.apply_retention("t", "x >= 3").await.unwrap();
+
+        // 3 rows should remain (3, 4, 5).
+        assert_eq!(row_count(&table).await, 3);
+    }
+
+    #[tokio::test]
+    async fn test_apply_retention_keeps_all() {
+        let table = LiveTableData::new(make_batch(&[]).schema());
+        table.push(make_batch(&[1, 2, 3])).await;
+
+        table.apply_retention("t", "1=1").await.unwrap();
+
+        assert_eq!(row_count(&table).await, 3);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_push_during_retention() {
+        // Verify that a push() concurrent with apply_retention() is not lost.
+        let table = Arc::new(LiveTableData::new(make_batch(&[]).schema()));
+        table.push(make_batch(&[1, 2, 3, 4, 5])).await;
+
+        let table_clone = table.clone();
+        let push_handle = tokio::spawn(async move {
+            // This push races with apply_retention. The write lock ensures
+            // it either completes before or after retention, never lost.
+            table_clone.push(make_batch(&[10, 11])).await;
+        });
+
+        // Retain only x >= 3 from the original batch.
+        table.apply_retention("t", "x >= 3").await.unwrap();
+        push_handle.await.unwrap();
+
+        // The pushed batch (10, 11) must survive regardless of ordering.
+        // If push ran first: 1,2,3,4,5,10,11 -> retain x>=3 -> 3,4,5,10,11 = 5 rows
+        // If push ran after: 1,2,3,4,5 -> retain x>=3 -> 3,4,5 -> push 10,11 = 5 rows
+        assert_eq!(row_count(&table).await, 5);
+    }
+
+    fn table_row_count(scanner: &DatabaseScanner, table_name: &str) -> usize {
+        let guard = scanner.table_data.lock().unwrap();
+        match guard.get(table_name) {
+            Some(table) => get_tokio_runtime().block_on(async {
+                table.mem_table().batches[0]
+                    .read()
+                    .await
+                    .iter()
+                    .map(|b| b.num_rows())
+                    .sum::<usize>()
+            }),
+            None => 0,
+        }
+    }
+
+    fn table_batches(scanner: &DatabaseScanner, table_name: &str) -> Vec<RecordBatch> {
+        let guard = scanner.table_data.lock().unwrap();
+        match guard.get(table_name) {
+            Some(table) => get_tokio_runtime()
+                .block_on(async { table.mem_table().batches[0].read().await.clone() }),
+            None => vec![],
+        }
+    }
+
+    #[test]
+    fn test_store_pyspy_dump_creates_normalized_rows() {
+        let scanner = DatabaseScanner {
+            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            rank: 0,
+            retention_us: 0,
+            sink: None,
+            dispatcher: None,
+        };
+
+        let json = r#"{
+            "Ok": {
+                "pid": 1234, "binary": "python3",
+                "stack_traces": [{
+                    "pid": 1234, "thread_id": 100,
+                    "thread_name": "MainThread", "os_thread_id": 5678,
+                    "active": true, "owns_gil": true,
+                    "frames": [
+                        {"name": "inner", "filename": "a.py", "module": "a",
+                         "short_filename": "a.py", "line": 10, "locals": [
+                            {"name": "x", "addr": 100, "arg": true, "repr": "42"},
+                            {"name": "y", "addr": 200, "arg": false, "repr": null}
+                         ], "is_entry": false},
+                        {"name": "outer", "filename": "a.py", "module": "a",
+                         "short_filename": "a.py", "line": 5, "locals": [
+                            {"name": "z", "addr": 300, "arg": true, "repr": "'hello'"}
+                         ], "is_entry": true}
+                    ]
+                }],
+                "warnings": []
+            }
+        }"#;
+
+        scanner.store_pyspy_dump("dump-1", "proc[0]", json).unwrap();
+
+        assert_eq!(table_row_count(&scanner, "pyspy_dumps"), 1);
+        assert_eq!(table_row_count(&scanner, "pyspy_stack_traces"), 1);
+        assert_eq!(table_row_count(&scanner, "pyspy_frames"), 2);
+        assert_eq!(table_row_count(&scanner, "pyspy_local_variables"), 3);
+
+        // Verify pyspy_dumps content
+        let batches = table_batches(&scanner, "pyspy_dumps");
+        let batch = &batches[0];
+        let dump_ids = batch
+            .column_by_name("dump_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let pids = batch
+            .column_by_name("pid")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let binaries = batch
+            .column_by_name("binary")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let proc_refs = batch
+            .column_by_name("proc_ref")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(dump_ids.value(0), "dump-1");
+        assert_eq!(pids.value(0), 1234);
+        assert_eq!(binaries.value(0), "python3");
+        assert_eq!(proc_refs.value(0), "proc[0]");
+
+        // Verify pyspy_stack_traces content
+        let batches = table_batches(&scanner, "pyspy_stack_traces");
+        let batch = &batches[0];
+        let dump_ids = batch
+            .column_by_name("dump_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let thread_ids = batch
+            .column_by_name("thread_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let thread_names = batch
+            .column_by_name("thread_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let os_thread_ids = batch
+            .column_by_name("os_thread_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let actives = batch
+            .column_by_name("active")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        let owns_gils = batch
+            .column_by_name("owns_gil")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert_eq!(dump_ids.value(0), "dump-1");
+        assert_eq!(thread_ids.value(0), 100);
+        assert_eq!(thread_names.value(0), "MainThread");
+        assert_eq!(os_thread_ids.value(0), 5678);
+        assert!(actives.value(0), "thread should be active");
+        assert!(owns_gils.value(0), "thread should own GIL");
+
+        // Verify pyspy_frames content (2 rows: inner at depth 0, outer at depth 1)
+        let batches = table_batches(&scanner, "pyspy_frames");
+        let batch = &batches[0];
+        let names = batch
+            .column_by_name("name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let filenames = batch
+            .column_by_name("filename")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let depths = batch
+            .column_by_name("frame_depth")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let lines = batch
+            .column_by_name("line")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let is_entries = batch
+            .column_by_name("is_entry")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert_eq!(names.value(0), "inner");
+        assert_eq!(filenames.value(0), "a.py");
+        assert_eq!(depths.value(0), 0);
+        assert_eq!(lines.value(0), 10);
+        assert!(!is_entries.value(0), "inner frame is not entry");
+        assert_eq!(names.value(1), "outer");
+        assert_eq!(filenames.value(1), "a.py");
+        assert_eq!(depths.value(1), 1);
+        assert_eq!(lines.value(1), 5);
+        assert!(is_entries.value(1), "outer frame is entry");
+
+        // Verify pyspy_local_variables content (3 rows)
+        let batches = table_batches(&scanner, "pyspy_local_variables");
+        let batch = &batches[0];
+        let dump_ids = batch
+            .column_by_name("dump_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let thread_ids = batch
+            .column_by_name("thread_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let depths = batch
+            .column_by_name("frame_depth")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let var_names = batch
+            .column_by_name("name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let addrs = batch
+            .column_by_name("addr")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let args = batch
+            .column_by_name("arg")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        let reprs = batch
+            .column_by_name("repr")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        // Row 0: x, addr=100, arg=true, repr=Some("42")
+        assert_eq!(dump_ids.value(0), "dump-1");
+        assert_eq!(thread_ids.value(0), 100);
+        assert_eq!(depths.value(0), 0);
+        assert_eq!(var_names.value(0), "x");
+        assert_eq!(addrs.value(0), 100);
+        assert!(args.value(0), "x is an argument");
+        assert_eq!(reprs.value(0), "42");
+        assert!(!reprs.is_null(0), "x repr should be Some");
+        // Row 1: y, addr=200, arg=false, repr=None
+        assert_eq!(dump_ids.value(1), "dump-1");
+        assert_eq!(thread_ids.value(1), 100);
+        assert_eq!(depths.value(1), 0);
+        assert_eq!(var_names.value(1), "y");
+        assert_eq!(addrs.value(1), 200);
+        assert!(!args.value(1), "y is not an argument");
+        assert!(reprs.is_null(1), "y repr should be None");
+        // Row 2: z, addr=300, arg=true, repr=Some("'hello'")
+        assert_eq!(dump_ids.value(2), "dump-1");
+        assert_eq!(thread_ids.value(2), 100);
+        assert_eq!(depths.value(2), 1);
+        assert_eq!(var_names.value(2), "z");
+        assert_eq!(addrs.value(2), 300);
+        assert!(args.value(2), "z is an argument");
+        assert_eq!(reprs.value(2), "'hello'");
+        assert!(!reprs.is_null(2), "z repr should be Some");
+    }
+
+    #[test]
+    fn test_store_pyspy_dump_failed_result_no_rows() {
+        let scanner = DatabaseScanner {
+            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            rank: 0,
+            retention_us: 0,
+            sink: None,
+            dispatcher: None,
+        };
+
+        let json =
+            r#"{"Failed": {"pid": 1, "binary": "py-spy", "exit_code": 1, "stderr": "error"}}"#;
+        scanner.store_pyspy_dump("dump-2", "proc[0]", json).unwrap();
+
+        assert_eq!(table_row_count(&scanner, "pyspy_dumps"), 0);
+        assert_eq!(table_row_count(&scanner, "pyspy_stack_traces"), 0);
+        assert_eq!(table_row_count(&scanner, "pyspy_frames"), 0);
+    }
+
+    #[test]
+    fn test_store_pyspy_dump_invalid_json_errors() {
+        let scanner = DatabaseScanner {
+            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            rank: 0,
+            retention_us: 0,
+            sink: None,
+            dispatcher: None,
+        };
+        assert!(scanner.store_pyspy_dump("x", "p", "not json").is_err());
+    }
+
+    #[test]
+    fn test_store_pyspy_dump_multiple_threads() {
+        let scanner = DatabaseScanner {
+            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            rank: 0,
+            retention_us: 0,
+            sink: None,
+            dispatcher: None,
+        };
+
+        let json = r#"{
+            "Ok": {
+                "pid": 1, "binary": "python3",
+                "stack_traces": [
+                    {"pid": 1, "thread_id": 1, "thread_name": "Main", "os_thread_id": 10,
+                     "active": true, "owns_gil": true,
+                     "frames": [{"name": "f1", "filename": "a.py", "line": 1, "is_entry": false}]},
+                    {"pid": 1, "thread_id": 2, "thread_name": "Worker", "os_thread_id": 11,
+                     "active": false, "owns_gil": false,
+                     "frames": [{"name": "f2", "filename": "b.py", "line": 2, "is_entry": false}]}
+                ],
+                "warnings": []
+            }
+        }"#;
+
+        scanner.store_pyspy_dump("dump-3", "proc[0]", json).unwrap();
+
+        assert_eq!(table_row_count(&scanner, "pyspy_dumps"), 1);
+        assert_eq!(table_row_count(&scanner, "pyspy_stack_traces"), 2);
+        assert_eq!(table_row_count(&scanner, "pyspy_frames"), 2);
+
+        // Verify pyspy_stack_traces content: two threads
+        let batches = table_batches(&scanner, "pyspy_stack_traces");
+        let batch = &batches[0];
+        let thread_ids = batch
+            .column_by_name("thread_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let thread_names = batch
+            .column_by_name("thread_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let actives = batch
+            .column_by_name("active")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        let owns_gils = batch
+            .column_by_name("owns_gil")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        // Thread 1: Main, active, owns GIL
+        assert_eq!(thread_ids.value(0), 1);
+        assert_eq!(thread_names.value(0), "Main");
+        assert!(actives.value(0), "Main thread should be active");
+        assert!(owns_gils.value(0), "Main thread should own GIL");
+        // Thread 2: Worker, not active, no GIL
+        assert_eq!(thread_ids.value(1), 2);
+        assert_eq!(thread_names.value(1), "Worker");
+        assert!(!actives.value(1), "Worker thread should not be active");
+        assert!(!owns_gils.value(1), "Worker thread should not own GIL");
+
+        // Verify pyspy_frames content: f1 on thread 1, f2 on thread 2
+        let batches = table_batches(&scanner, "pyspy_frames");
+        let batch = &batches[0];
+        let names = batch
+            .column_by_name("name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let frame_thread_ids = batch
+            .column_by_name("thread_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let filenames = batch
+            .column_by_name("filename")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(names.value(0), "f1");
+        assert_eq!(frame_thread_ids.value(0), 1);
+        assert_eq!(filenames.value(0), "a.py");
+        assert_eq!(names.value(1), "f2");
+        assert_eq!(frame_thread_ids.value(1), 2);
+        assert_eq!(filenames.value(1), "b.py");
+    }
+
+    // --- ingest_batch tests ---
+    // These reference the ID-* invariants defined on ingest_batch.
+
+    // ID-1, ID-2: empty batch creates the table with schema but 0
+    // rows.
+    #[tokio::test]
+    async fn test_ingest_batch_creates_table_for_empty_batch() {
+        let store = TableStore::new_empty();
+        let empty = make_batch(&[]);
+
+        store.ingest_batch("t", empty.clone()).await.unwrap();
+
+        let names = store.table_names().unwrap();
+        assert!(names.contains(&"t".to_owned()), "ID-1: table should exist");
+        assert_eq!(
+            query_row_count("t", store.table_provider("t").unwrap().unwrap()).await,
+            0,
+            "ID-2: 0 rows"
+        );
+    }
+
+    // ID-1, ID-3: non-empty batch creates table and appends rows.
+    #[tokio::test]
+    async fn test_ingest_batch_appends_non_empty_batch() {
+        let store = TableStore::new_empty();
+
+        store
+            .ingest_batch("t", make_batch(&[1, 2, 3]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            query_row_count("t", store.table_provider("t").unwrap().unwrap()).await,
+            3
+        );
+    }
+
+    // ID-3: two batches to the same table accumulate rows.
+    #[tokio::test]
+    async fn test_ingest_batch_reuses_existing_table() {
+        let store = TableStore::new_empty();
+
+        store.ingest_batch("t", make_batch(&[1, 2])).await.unwrap();
+        store
+            .ingest_batch("t", make_batch(&[3, 4, 5]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.table_names().unwrap().len(),
+            1,
+            "ID-3: still one table"
+        );
+        assert_eq!(
+            query_row_count("t", store.table_provider("t").unwrap().unwrap()).await,
+            5
+        );
+    }
+
+    // ID-2, ID-3: empty batch registers schema, then non-empty batch
+    // appends rows using the same schema.
+    #[tokio::test]
+    async fn test_ingest_batch_empty_then_non_empty() {
+        let store = TableStore::new_empty();
+
+        // Register schema with empty batch.
+        store.ingest_batch("t", make_batch(&[])).await.unwrap();
+        assert_eq!(
+            query_row_count("t", store.table_provider("t").unwrap().unwrap()).await,
+            0
+        );
+
+        // Append rows.
+        store
+            .ingest_batch("t", make_batch(&[10, 20]))
+            .await
+            .unwrap();
+        assert_eq!(
+            query_row_count("t", store.table_provider("t").unwrap().unwrap()).await,
+            2
+        );
+    }
+
+    // --- TableStore tests ---
+    // These reference the TS-* invariants defined on TableStore.
+
+    /// Register a provider in a fresh SessionContext and return the
+    /// row count from `SELECT * FROM {table_name}`.
+    async fn query_row_count(table_name: &str, provider: Arc<dyn TableProvider>) -> usize {
+        let ctx = SessionContext::new();
+        ctx.register_table(table_name, provider).unwrap();
+        let df = ctx
+            .sql(&format!("SELECT * FROM {table_name}"))
+            .await
+            .unwrap();
+        df.collect()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum()
+    }
+
+    // TS-2, TS-3: ingest via TableStore, register the returned
+    // table_provider in a SessionContext, and query it. Proves the
+    // opaque handle is sufficient for downstream query setup.
+    #[tokio::test]
+    async fn test_table_store_ingest_and_query() {
+        let store = TableStore::new_empty();
+
+        store
+            .ingest_batch("t", make_batch(&[10, 20, 30]))
+            .await
+            .unwrap();
+
+        let provider = store
+            .table_provider("t")
+            .unwrap()
+            .expect("TS-3: table_provider should return Some");
+
+        assert_eq!(
+            query_row_count("t", provider).await,
+            3,
+            "TS-3: query should return ingested rows"
+        );
+    }
+
+    // TS-3: table_names returns all ingested table names, sorted.
+    #[tokio::test]
+    async fn test_table_store_table_names() {
+        let store = TableStore::new_empty();
+
+        store.ingest_batch("beta", make_batch(&[1])).await.unwrap();
+        store.ingest_batch("alpha", make_batch(&[2])).await.unwrap();
+
+        let names = store.table_names().unwrap();
+        assert_eq!(names, vec!["alpha", "beta"], "TS-3: names should be sorted");
+    }
+
+    // TS-2 (ID-2 passthrough): empty batch registers schema via
+    // TableStore. Proves the table is visible through table_names
+    // and table_provider without re-proving row-count internals.
+    #[tokio::test]
+    async fn test_table_store_empty_batch_registers() {
+        let store = TableStore::new_empty();
+
+        store.ingest_batch("t", make_batch(&[])).await.unwrap();
+
+        assert!(
+            store.table_names().unwrap().contains(&"t".to_owned()),
+            "TS-2: empty batch should register table name"
+        );
+        assert!(
+            store.table_provider("t").unwrap().is_some(),
+            "TS-2: empty batch should make table_provider available"
+        );
+    }
+
+    // TS-3: table_provider for unknown table returns None.
+    #[test]
+    fn test_table_store_missing_table() {
+        let store = TableStore::new_empty();
+
+        assert!(
+            store.table_provider("missing").unwrap().is_none(),
+            "TS-3: unknown table should return None"
+        );
+    }
 }
