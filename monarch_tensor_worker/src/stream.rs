@@ -494,11 +494,13 @@ impl Actor for StreamActor {
         });
         PROC.with(|proc| proc.set(cx.proc().clone()).ok());
         ROOT_ACTOR_ID.with(|root_actor_id| {
+            let root_label = cx
+                .self_id()
+                .label()
+                .cloned()
+                .unwrap_or_else(|| Label::new("stream").unwrap());
             root_actor_id
-                .set(reference::ActorId::root(
-                    cx.self_id().proc_id().clone(),
-                    cx.self_id().name().to_string(),
-                ))
+                .set(reference::ActorId::root(cx.self_id().proc_id(), root_label))
                 .ok()
         });
         // Set the current stream for this actor thread.
