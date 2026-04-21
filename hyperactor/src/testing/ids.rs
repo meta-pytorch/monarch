@@ -17,7 +17,7 @@ use crate::reference;
 
 /// Create a test `ProcId` with a local channel address and name `"test_{name}"`.
 pub fn test_proc_id(name: &str) -> reference::ProcId {
-    reference::ProcId::with_name(
+    reference::ProcId::from_resource_name(
         ChannelAddr::any(ChannelTransport::Local),
         format!("test_{name}"),
     )
@@ -25,7 +25,7 @@ pub fn test_proc_id(name: &str) -> reference::ProcId {
 
 /// Create a test `ProcId` with a custom address and name `"test_{name}"`.
 pub fn test_proc_id_with_addr(addr: ChannelAddr, name: &str) -> reference::ProcId {
-    reference::ProcId::with_name(addr, format!("test_{name}"))
+    reference::ProcId::from_resource_name(addr, format!("test_{name}"))
 }
 
 /// Create a test `ActorId` with pid 0.
