@@ -596,6 +596,16 @@ class ProcMesh(MeshTrait):
             self,
         )
 
+        # Pass the qualified Python class name through as
+        # `actor_class` so the direct actor-handled supervision path
+        # can populate `ActorSupervisionEvent.attribution.actor_class`
+        # without a regex round-trip through
+        # `supervision_display_name`. This is the structured
+        # attribution carrier; `supervision_display_name` is the
+        # rendered-presentation carrier. They are deliberately
+        # separate.
+        actor_class = f"{Class.__module__}.{Class.__name__}"
+
         actor_mesh = HyProcMesh.spawn_async(
             pm,
             instance._as_rust(),
@@ -604,6 +614,7 @@ class ProcMesh(MeshTrait):
             init_message,
             emulated=False,
             supervision_display_name=supervision_display_name,
+            actor_class=actor_class,
         )
 
         mesh = ActorMesh(Class, name, actor_mesh, self._region.as_shape(), self)

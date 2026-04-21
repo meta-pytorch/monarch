@@ -16,6 +16,63 @@
 //!   for structured failure attribution. In particular, if a
 //!   failed parent wraps a stopped child event, the stopped child
 //!   remains the root cause.
+//!
+//! ## Failure-attribution invariants (FA-*)
+//!
+//! These invariants govern the supervision-path rendering contract at
+//! the hyperactor substrate level. They describe how
+//! `ActorSupervisionEvent` and its renderer must behave, and what
+//! higher-level crates (for example, crates that add friendly
+//! attribution fields such as a mesh name or a language-binding class
+//! name) must do when they plug data into this substrate. Hyperactor
+//! itself does not define mesh-level or binding-level concepts; those
+//! interpretations live alongside the types that introduce them (for
+//! mesh-specific interpretation, see
+//! `hyperactor_mesh/src/supervision.rs`; for Python-binding
+//! interpretation, see the spawn path in
+//! `monarch_hyperactor/src/actor.rs`).
+//!
+//! - **FA-1 (no lookup at construction).** When a higher-level crate
+//!   attaches friendly-attribution data to an `ActorSupervisionEvent`
+//!   — or to a wrapper that carries one — the value must come from
+//!   structured context already in scope at the construction site.
+//!   Construction sites do not perform a lookup to obtain
+//!   attribution. If the value is not locally available, `None` is
+//!   correct; lookups are not a permitted workaround.
+//!
+//! - **FA-2 (`display_name` is presentation-only).**
+//!   `ActorSupervisionEvent.display_name` is a rendered-presentation
+//!   string carried for display. Downstream code MUST NOT parse it to
+//!   recover structured attribution. If a consumer needs a
+//!   programmatic attribution field, that field travels on its own
+//!   structured carrier — never on `display_name`.
+//!
+//! - **FA-3 (rendering preference order, with stable-id fallback).**
+//!   `ActorSupervisionEvent::Display` and the helpers it uses
+//!   (notably `actor_name()`) render, at a given actor mention,
+//!   the first of the following that is `Some`:
+//!     1. `attribution.actor_display_name`
+//!     2. `attribution.actor_class`
+//!     3. `display_name`
+//!     4. `actor_id.to_string()` (stable-id fallback)
+//!
+//!   A given actor mention renders exactly one of those tiers — the
+//!   friendly name and the stable id are not shown together at that
+//!   mention. Ensuring both appear at every mention is follow-on
+//!   work outside the scope of this invariant. FA-3 is independent
+//!   of the specific text format used by `ActorId::Display` — it
+//!   describes the render-chain preference contract, not the id
+//!   format.
+//!
+//! - **FA-4 (no rendered-output parsing back into attribution).**
+//!   Structured attribution must not be recovered at runtime by
+//!   parsing formatted `display_name` strings, identifier text, or
+//!   other rendered output from this path. Higher-level crates that
+//!   add supervision-path attribution do so via structured carriers,
+//!   not by inversion of rendered text. Consumers that sit outside
+//!   this path (for example, generic telemetry that happens to read a
+//!   rendered string) are outside this invariant's scope; their own
+//!   contracts govern what they do.
 
 use std::fmt;
 use std::fmt::Debug;
@@ -32,13 +89,38 @@ use crate::actor::ActorErrorKind;
 use crate::actor::ActorStatus;
 use crate::reference;
 
+/// Structured attribution carrier for supervision events. Distinct
+/// from `display_name`, which remains presentation-only. Consumers
+/// that need programmatic attribution read this directly rather than
+/// parsing rendered output.
+///
+/// Producers MUST maintain the invariant that when
+/// `ActorSupervisionEvent.attribution` is `Some` and
+/// `attribution.actor_display_name` is `Some`, the legacy
+/// `ActorSupervisionEvent.display_name` field is either `None` or
+/// equal to `attribution.actor_display_name`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Attribution {
+    /// Friendly container/context name, when available.
+    pub mesh_name: Option<String>,
+    /// Structured actor-class/type token, when available.
+    pub actor_class: Option<String>,
+    /// Free-form rendered actor display name, when available.
+    pub actor_display_name: Option<String>,
+    /// Per-rank rank, when available.
+    pub rank: Option<usize>,
+}
+
 /// This is the local actor supervision event. Child actor will propagate this event to its parent.
 #[derive(Clone, Debug, Derivative, Serialize, Deserialize, typeuri::Named)]
 #[derivative(PartialEq, Eq)]
 pub struct ActorSupervisionEvent {
     /// The actor id of the child actor where the event is triggered.
     pub actor_id: reference::ActorId,
-    /// Friendly display name, if the actor class customized it.
+    /// Friendly rendered display name, if customized by the actor.
+    /// Presentation-only per FA-2. When
+    /// `attribution.actor_display_name` is `Some`, this field must be
+    /// `None` or equal to it.
     pub display_name: Option<String>,
     /// The time when the event is triggered.
     #[derivative(PartialEq = "ignore")]
@@ -48,27 +130,66 @@ pub struct ActorSupervisionEvent {
     /// If this event is associated with a message, the message headers.
     #[derivative(PartialEq = "ignore")]
     pub message_headers: Option<Flattrs>,
+    /// Structured programmatic attribution for this supervision
+    /// event. Downstream code reads this carrier directly instead of
+    /// parsing `display_name` or rendered output. May be `None` at
+    /// construction sites that do not have structured attribution
+    /// locally in scope — lookups are not used as a workaround
+    /// (FA-1).
+    pub attribution: Option<Attribution>,
 }
 wirevalue::register_type!(ActorSupervisionEvent);
 
 impl ActorSupervisionEvent {
-    /// Create a new supervision event. Timestamp is set to the current time.
+    /// Create a new supervision event. Timestamp is set to the
+    /// current time.
+    ///
+    /// Preserves the FA-2 single-source-of-truth invariant: when
+    /// `attribution` carries a `Some(actor_display_name)` value,
+    /// the `display_name` parameter must either be `None` or equal
+    /// to that value. Enforced by a debug assertion.
     pub fn new(
         actor_id: reference::ActorId,
         display_name: Option<String>,
         actor_status: ActorStatus,
         message_headers: Option<Flattrs>,
+        attribution: Option<Attribution>,
     ) -> Self {
+        debug_assert!(
+            match (
+                &display_name,
+                attribution
+                    .as_ref()
+                    .and_then(|a| a.actor_display_name.as_ref()),
+            ) {
+                (Some(d), Some(a)) => d == a,
+                _ => true,
+            },
+            "ActorSupervisionEvent.display_name and attribution.actor_display_name must not diverge"
+        );
         Self {
             actor_id,
             display_name,
             occurred_at: std::time::SystemTime::now(),
             actor_status,
             message_headers,
+            attribution,
         }
     }
 
+    /// Render the human-facing name for this actor mention.
+    /// Preference order (FA-3):
+    /// `attribution.actor_display_name` → `attribution.actor_class`
+    /// → `display_name` → stable `actor_id.to_string()` fallback.
     fn actor_name(&self) -> String {
+        if let Some(a) = &self.attribution {
+            if let Some(n) = &a.actor_display_name {
+                return n.clone();
+            }
+            if let Some(c) = &a.actor_class {
+                return c.clone();
+            }
+        }
         self.display_name
             .clone()
             .unwrap_or_else(|| self.actor_id.to_string())
@@ -226,6 +347,7 @@ mod tests {
             Some(name.to_string()),
             status,
             None,
+            None,
         )
     }
 
@@ -235,7 +357,7 @@ mod tests {
         status: ActorStatus,
     ) -> ActorSupervisionEvent {
         let proc_id = reference::ProcId::with_name(addr, "test_proc");
-        ActorSupervisionEvent::new(proc_id.actor_id(name, 0), None, status, None)
+        ActorSupervisionEvent::new(proc_id.actor_id(name, 0), None, status, None, None)
     }
 
     fn generic(name: &str, msg: &str) -> ActorSupervisionEvent {
@@ -557,6 +679,7 @@ mod tests {
             Some("proc_agent".into()),
             ActorStatus::Stopped("host died".into()),
             None,
+            None,
         );
         let parent_event = ActorSupervisionEvent::new(
             parent_id,
@@ -564,6 +687,7 @@ mod tests {
             ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(
                 child_event,
             ))),
+            None,
             None,
         );
 
@@ -576,6 +700,80 @@ mod tests {
             matches!(root.actor_status, ActorStatus::Stopped(_)),
             "root cause should be the stopped child, got: {:?}",
             root.actor_status,
+        );
+    }
+
+    /// FA-3: `ActorSupervisionEvent::actor_name()` renders with
+    /// preference order
+    /// `attribution.actor_display_name` →
+    /// `attribution.actor_class` →
+    /// `display_name` →
+    /// `actor_id.to_string()`.
+    ///
+    /// This locks the rendering contract so any future regression
+    /// (e.g. swapping the order or skipping a tier) surfaces as a
+    /// unit-test failure.
+    #[test]
+    fn test_fa3_actor_name_preference_order() {
+        let proc_id = reference::ProcId::with_name(ChannelAddr::Local(0), "p");
+        let actor_id = proc_id.actor_id("a", 0);
+
+        // Build events that differ only in which tiers are populated.
+        let mk = |display_name: Option<String>, attribution: Option<Attribution>| {
+            ActorSupervisionEvent::new(
+                actor_id.clone(),
+                display_name,
+                ActorStatus::Failed(ActorErrorKind::Generic("boom".into())),
+                None,
+                attribution,
+            )
+        };
+        let raw_id = actor_id.to_string();
+
+        // Tier 4 — all carriers absent: fall back to stable id.
+        assert_eq!(mk(None, None).actor_name(), raw_id);
+
+        // Tier 3 — display_name present, attribution absent.
+        assert_eq!(mk(Some("dn".into()), None).actor_name(), "dn",);
+
+        // Tier 2 — attribution.actor_class present, no display_name.
+        let attr_class_only = Attribution {
+            mesh_name: None,
+            actor_class: Some("CLS".into()),
+            actor_display_name: None,
+            rank: None,
+        };
+        assert_eq!(mk(None, Some(attr_class_only)).actor_name(), "CLS",);
+
+        // Tier 1 — attribution.actor_display_name wins over
+        // everything below it. FA-2 invariant requires
+        // display_name to be None or equal; use equal here.
+        let attr_display = Attribution {
+            mesh_name: Some("m".into()),
+            actor_class: Some("CLS".into()),
+            actor_display_name: Some("DN".into()),
+            rank: Some(7),
+        };
+        assert_eq!(
+            mk(Some("DN".into()), Some(attr_display.clone())).actor_name(),
+            "DN",
+        );
+
+        // Tier 1 also wins when display_name is None.
+        assert_eq!(mk(None, Some(attr_display)).actor_name(), "DN",);
+
+        // Tier 2 beats Tier 3: attribution.actor_class wins even
+        // when display_name is also set, because attribution is
+        // authoritative when present.
+        let attr_class_with_dn = Attribution {
+            mesh_name: None,
+            actor_class: Some("CLS".into()),
+            actor_display_name: None,
+            rank: None,
+        };
+        assert_eq!(
+            mk(Some("dn".into()), Some(attr_class_with_dn)).actor_name(),
+            "CLS",
         );
     }
 }

@@ -269,7 +269,7 @@ impl ProcMesh {
             // spawned and safely referenced via ActorRef<CommActor>.
             // It is a system actor that should not have a controller managing it.
             let comm_actor_mesh: ActorMesh<CommActor> = proc_mesh
-                .spawn_with_name(cx, comm_actor_name, &Default::default(), None, true)
+                .spawn_with_name(cx, comm_actor_name, &Default::default(), None, None, true)
                 .await?;
             let address_book: HashMap<_, _> = comm_actor_mesh
                 .iter()
@@ -894,6 +894,7 @@ impl ProcMeshRef {
                                         name,
                                     )),
                                     None,
+                                    None,
                                 )],
                             }),
                         },
@@ -956,7 +957,7 @@ impl ProcMeshRef {
         C::A: Handler<MeshFailure>,
     {
         // Spawning from a string is never a system actor.
-        self.spawn_with_name(cx, Name::new(name)?, params, None, false)
+        self.spawn_with_name(cx, Name::new(name)?, params, None, None, false)
             .await
     }
 
@@ -977,7 +978,7 @@ impl ProcMeshRef {
         A::Params: RemoteMessage,
         C::A: Handler<MeshFailure>,
     {
-        self.spawn_with_name(cx, Name::new_reserved(name)?, params, None, false)
+        self.spawn_with_name(cx, Name::new_reserved(name)?, params, None, None, false)
             .await
     }
 
@@ -1005,6 +1006,13 @@ impl ProcMeshRef {
         name: Name,
         params: &A::Params,
         supervision_display_name: Option<String>,
+        // Structured actor-class token (Python class name or
+        // equivalent) used for the mesh-creation telemetry event
+        // and for attribution on the direct actor-handled
+        // supervision path. Distinct from
+        // `supervision_display_name`, which is a rendered
+        // presentation string.
+        actor_class: Option<String>,
         is_system_actor: bool,
     ) -> crate::Result<ActorMesh<A>>
     where
@@ -1017,7 +1025,14 @@ impl ProcMeshRef {
         );
         tracing::info!(name = "ActorMeshStatus", status = "Spawn::Attempt");
         let result = self
-            .spawn_with_name_inner(cx, name, params, supervision_display_name, is_system_actor)
+            .spawn_with_name_inner(
+                cx,
+                name,
+                params,
+                supervision_display_name,
+                actor_class,
+                is_system_actor,
+            )
             .await;
         match &result {
             Ok(_) => {
@@ -1041,6 +1056,7 @@ impl ProcMeshRef {
         name: Name,
         params: &A::Params,
         supervision_display_name: Option<String>,
+        actor_class: Option<String>,
         is_system_actor: bool,
     ) -> crate::Result<ActorMesh<A>>
     where
@@ -1192,10 +1208,12 @@ impl ProcMeshRef {
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
                 timestamp: std::time::SystemTime::now(),
-                class: supervision_display_name
-                    .as_deref()
-                    .and_then(python_class_from_supervision_name)
-                    .unwrap_or(actor_type),
+                // Read the structured class token directly from
+                // the caller-supplied `actor_class` rather than
+                // reverse-parsing `supervision_display_name` with
+                // a regex. If no structured class was supplied,
+                // fall back to the Rust `actor_type` name.
+                class: actor_class.clone().unwrap_or_else(|| actor_type.clone()),
                 given_name: mesh.name().name().to_string(),
                 full_name: name_str,
                 shape_json: serde_json::to_string(&self.region().extent()).unwrap_or_default(),
@@ -1383,17 +1401,6 @@ impl view::RankedSliceable for ProcMeshRef {
     }
 }
 
-/// Extract a Python class display name from a supervision display name.
-///
-/// The supervision display name format is `{instance}.<{module}.{ClassName} {mesh_name}>`.
-/// Returns `"Python<ClassName>"` if the format matches, `None` otherwise.
-fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
-    let inner = sdn.rsplit_once('<')?.1.strip_suffix('>')?;
-    let qualified = inner.split_whitespace().next()?;
-    let class_name = qualified.rsplit_once('.')?.1;
-    Some(format!("Python<{class_name}>"))
-}
-
 #[cfg(test)]
 mod tests {
     use hyperactor::Instance;
@@ -1472,28 +1479,5 @@ mod tests {
         );
 
         let _ = hm.shutdown(instance).await;
-    }
-
-    #[test]
-    fn test_python_class_from_supervision_name() {
-        use super::python_class_from_supervision_name;
-
-        assert_eq!(
-            python_class_from_supervision_name("instance0.<my_module.MyWorker test_mesh>"),
-            Some("Python<MyWorker>".to_string()),
-        );
-        assert_eq!(
-            python_class_from_supervision_name(
-                "instance0.<package.submodule.TrainingActor mesh_0>"
-            ),
-            Some("Python<TrainingActor>".to_string()),
-        );
-        // No angle brackets — not a Python supervision name.
-        assert_eq!(python_class_from_supervision_name("plain_name"), None,);
-        // Malformed: missing dot-qualified class name.
-        assert_eq!(
-            python_class_from_supervision_name("instance0.<NoModule mesh>"),
-            None,
-        );
     }
 }

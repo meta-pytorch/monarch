@@ -1010,6 +1010,7 @@ impl Handler<MeshFailure> for MeshControllerActor {
                 message.event.clone(),
             ))),
             None,
+            None,
         )));
         Err(anyhow::Error::new(err))
     }

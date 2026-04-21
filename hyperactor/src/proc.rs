@@ -1844,11 +1844,23 @@ impl<A: Actor> Instance<A> {
             Ok(stop_reason) => {
                 let status = ActorStatus::Stopped(stop_reason);
                 self.mailbox().close(status.clone());
+                // If the actor supplies structured `Attribution`
+                // whose `actor_display_name` is populated, reuse it
+                // as the event's `display_name` rather than calling
+                // `actor.display_name()` a second time (FA-2: the
+                // two carriers must not diverge, so a single source
+                // also avoids the extra call on the failure path).
+                let attribution = actor.supervision_attribution();
+                let display_name = attribution
+                    .as_ref()
+                    .and_then(|a| a.actor_display_name.clone())
+                    .or_else(|| actor.display_name());
                 let event = ActorSupervisionEvent::new(
                     self.inner.cell.actor_id().clone(),
-                    actor.display_name(),
+                    display_name,
                     status.clone(),
                     None,
+                    attribution,
                 );
                 // FI-1: store supervision_event BEFORE change_status.
                 *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event.clone());
@@ -1871,11 +1883,21 @@ impl<A: Actor> Instance<A> {
                         let error_kind = ActorErrorKind::Generic(err.kind.to_string());
                         let status = ActorStatus::Failed(error_kind);
                         self.mailbox().close(status.clone());
+                        // Same pattern as the Ok branch: prefer
+                        // `actor_display_name` from the structured
+                        // attribution when present, fall back to
+                        // `actor.display_name()` otherwise.
+                        let attribution = actor.supervision_attribution();
+                        let display_name = attribution
+                            .as_ref()
+                            .and_then(|a| a.actor_display_name.clone())
+                            .or_else(|| actor.display_name());
                         let event = ActorSupervisionEvent::new(
                             self.inner.cell.actor_id().clone(),
-                            actor.display_name(),
+                            display_name,
                             status.clone(),
                             None,
+                            attribution,
                         );
                         // FI-1: store supervision_event BEFORE change_status.
                         *self.inner.cell.inner.supervision_event.lock().unwrap() =

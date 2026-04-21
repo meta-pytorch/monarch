@@ -106,6 +106,7 @@ impl TestRootClient {
                         Some("testclient".into()),
                         status,
                         None,
+                        None,
                     )
                 }
             };

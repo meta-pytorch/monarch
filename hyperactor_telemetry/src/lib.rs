@@ -356,7 +356,12 @@ pub struct MeshEvent {
     pub id: u64,
     /// Timestamp when the mesh was created
     pub timestamp: SystemTime,
-    /// Mesh class (e.g., "Proc", "Host", "Python<SomeUserDefinedActor>")
+    /// Mesh class. For user-level actor meshes this is the
+    /// structured actor-class token supplied at spawn time (for
+    /// Python actors, the qualified class name, e.g.
+    /// `"monarch_examples.dining.Philosopher"`). When the caller
+    /// supplies no structured class, this falls back to the Rust
+    /// actor type name (e.g. `"Proc"`, `"Host"`).
     pub class: String,
     /// User-provided name for this mesh
     pub given_name: String,

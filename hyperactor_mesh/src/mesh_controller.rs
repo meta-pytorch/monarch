@@ -523,6 +523,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
             None,
             ActorStatus::Stopped("ActorMeshController received explicit stop request".to_string()),
             None,
+            None,
         );
         let failure_message = MeshFailure {
             actor_mesh_name: Some(mesh_name.to_string()),
@@ -703,6 +704,7 @@ fn actor_state_to_supervision_events(
                         .to_string(),
                     ),
                     None,
+                    None,
                 )]
             }
         }
@@ -854,6 +856,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                         e
                     )),
                     None,
+                    None,
                 ),
                 mesh.name(),
                 false,
@@ -884,6 +887,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                         Some(display_name),
                         actor_status,
                         None,
+                        None,
                     ),
                     mesh.name(),
                     true,
@@ -913,6 +917,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                         "unable to query for actor states: {:?}",
                         e
                     )),
+                    None,
                     None,
                 ),
                 mesh.name(),
@@ -1114,7 +1119,7 @@ mod tests {
         // control keepalive messages directly without the controller
         // interfering.
         let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn_with_name(instance, actor_name.clone(), &(), None, true)
+            .spawn_with_name(instance, actor_name.clone(), &(), None, None, true)
             .await
             .unwrap();
         assert!(

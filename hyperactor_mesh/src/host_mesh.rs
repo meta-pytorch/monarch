@@ -549,6 +549,7 @@ impl HostMesh {
                 trampoline_name,
                 &(transport, mesh_agents.bind(), bootstrap_params, is_local),
                 None,
+                None,
                 // The trampoline is a system actor and does not need a controller.
                 true,
             )

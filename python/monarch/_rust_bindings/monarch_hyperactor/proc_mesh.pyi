@@ -27,6 +27,12 @@ class ProcMesh:
         init_message: PendingMessage,
         emulated: bool,
         supervision_display_name: str | None = None,
+        # Qualified Python class name for the actor being spawned,
+        # used as the structured class carrier on the supervision
+        # and telemetry paths. Distinct from
+        # `supervision_display_name`, which is rendered-presentation
+        # text.
+        actor_class: str | None = None,
     ) -> PythonActorMesh: ...
     @property
     def region(self) -> Region:

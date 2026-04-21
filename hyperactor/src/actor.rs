@@ -155,6 +155,33 @@ pub trait Actor: Sized + Send + 'static {
     fn display_name(&self) -> Option<String> {
         None
     }
+
+    /// Structured attribution for supervision events synthesized on
+    /// behalf of this actor. Substrate-local hook: when an
+    /// event-synthesis site in `hyperactor` (for example, the
+    /// worker-actor failure path in `proc.rs`) constructs an
+    /// `ActorSupervisionEvent`, it calls this and stores the result
+    /// in the event's `attribution` field.
+    ///
+    /// Default is `None`. Language-binding or mesh-integration actors
+    /// override this to return their in-scope structured attribution
+    /// (mesh name, actor class, display name, rank) so that consumers
+    /// reading the event's `attribution` field see real data without
+    /// a lookup at observation time.
+    ///
+    /// Named narrowly (`supervision_attribution`) rather than a
+    /// broader `attribution()` because this hook exists solely for
+    /// supervision-event synthesis; it should not be repurposed as a
+    /// general-purpose attribution surface.
+    ///
+    /// FA-2 invariant: when this returns `Some(a)` and
+    /// `a.actor_display_name` is `Some`, it must equal this actor's
+    /// `display_name()` output. Implementations that want both
+    /// populated should source them from the same underlying value to
+    /// avoid divergence.
+    fn supervision_attribution(&self) -> Option<crate::supervision::Attribution> {
+        None
+    }
 }
 
 /// Default implementation of [`Actor::handle_undeliverable_message`]. Defined

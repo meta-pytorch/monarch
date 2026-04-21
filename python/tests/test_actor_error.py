@@ -691,6 +691,81 @@ async def test_actor_mesh_supervision_handling() -> None:
     await proc.stop()
 
 
+@pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
+async def test_supervision_error_structured_attributes() -> None:
+    """
+    Covers the direct actor-handled supervision path only:
+
+    An endpoint raises `ActorFailureError`, and the worker's actor
+    runtime in `hyperactor/src/proc.rs` synthesizes the supervision
+    event — populating `attribution` via the
+    `Actor::supervision_attribution` hook that `PythonActor`
+    overrides — before the caller receives a `SupervisionError`. The
+    structured attribution fields are sourced from `PythonActor`
+    state at event-synthesis time and surface on the raised error;
+    this test proves they are visible from Python.
+
+    Scope: direct actor-handled path, one rank. No root-client
+    undeliverable, no comm forwarding, no controller-unreachable.
+    """
+    # Keep the client process from crashing when the supervision
+    # failure lands.
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+
+    mesh_name = "error"
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    e = proc.spawn(mesh_name, ErrorActor)
+
+    try:
+        await e.fail_with_supervision_error.call_one()
+        raise AssertionError(
+            "expected fail_with_supervision_error to raise SupervisionError"
+        )
+    except SupervisionError as err:
+        # Mesh name: the `name` argument passed to
+        # `proc.spawn(...)` is plumbed through to
+        # `ActorSupervisionEvent.attribution.mesh_name` on the direct
+        # actor-handled path.
+        assert err.mesh_name == mesh_name, (
+            f"expected mesh_name={mesh_name!r}, got {err.mesh_name!r}"
+        )
+
+        # Actor class: the qualified
+        # `f"{Class.__module__}.{Class.__name__}"` is passed through
+        # the spawn path to `attribution.actor_class`. The module
+        # part depends on how the test module is imported and is not
+        # stable across test harnesses, so we assert on the class
+        # suffix only.
+        assert err.actor_class is not None, "actor_class should be populated"
+        assert err.actor_class.endswith(".ErrorActor"), (
+            f"expected actor_class to end with '.ErrorActor', got {err.actor_class!r}"
+        )
+
+        # Display name: `PythonActor::display_name()` returns
+        # `str(PyInstance)`. That string's exact format is
+        # presentation-only (FA-2) and not a contract, so we only
+        # assert that it is populated. A substring match on the
+        # actor class suffix is a light sanity check that the
+        # display name relates to this actor.
+        assert err.actor_display_name is not None, (
+            "actor_display_name should be populated on the direct actor-handled path"
+        )
+        assert "ErrorActor" in err.actor_display_name, (
+            f"expected actor_display_name to mention ErrorActor, "
+            f"got {err.actor_display_name!r}"
+        )
+
+        # Rank is None on the direct actor-handled path — per-
+        # instance rank is not in scope at the synthesis site.
+        # Rank propagation on other supervision paths is out of
+        # scope for this test.
+        assert err.rank is None, f"expected rank=None, got {err.rank!r}"
+
+    await proc.stop()
+
+
 class HealthyActor(Actor):
     @endpoint
     async def check(self):

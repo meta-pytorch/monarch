@@ -13,11 +13,28 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import Shared
 
 @final
 class SupervisionError(RuntimeError):
-    """
-    Custom exception for supervision-related errors in monarch_hyperactor.
+    """Custom exception for supervision-related errors in
+    monarch_hyperactor.
+
+    Structured attribution fields (``mesh_name``, ``actor_class``,
+    ``actor_display_name``, ``rank``) are populated from
+    ``ActorSupervisionEvent.attribution`` upstream. Consumers should
+    read these attributes directly instead of parsing the rendered
+    message or ``__str__``. These fields are populated only on the
+    supervision paths that have been wired to carry attribution; on
+    other paths they may be ``None``.
     """
 
     endpoint: str | None  # Settable attribute
+
+    @property
+    def mesh_name(self) -> str | None: ...
+    @property
+    def actor_class(self) -> str | None: ...
+    @property
+    def actor_display_name(self) -> str | None: ...
+    @property
+    def rank(self) -> int | None: ...
 
 # TODO: Make this an exception subclass
 @final

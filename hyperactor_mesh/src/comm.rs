@@ -1350,7 +1350,7 @@ mod tests {
         // This test is verifying the whole comm tree, so we want fewer actors
         // involved.
         let actor_mesh = proc_mesh
-            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .spawn_with_name(&instance, actor_name, &params, None, None, true)
             .await
             .unwrap();
         let actor_mesh_ref: crate::ActorMeshRef<TestActor> = actor_mesh.deref().clone();
@@ -1530,7 +1530,7 @@ mod tests {
         let actor_name = crate::Name::new("test").expect("valid test name");
         // Make this actor a "system" actor to avoid spawning a controller actor.
         let actor_mesh: crate::ActorMesh<TestActor> = proc_mesh
-            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .spawn_with_name(&instance, actor_name, &params, None, None, true)
             .await
             .unwrap();
         let actor_mesh_ref = actor_mesh.deref().clone();
@@ -1639,7 +1639,7 @@ mod tests {
         };
         let actor_name = Name::new("test").expect("valid test name");
         let actor_mesh: ActorMesh<TestActor> = proc_mesh
-            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .spawn_with_name(&instance, actor_name, &params, None, None, true)
             .await
             .unwrap();
         let (reply_port_handle, mut reply_rx) = open_port::<u64>(instance);

@@ -223,6 +223,7 @@ impl GlobalClientActor {
                         Some("testclient".into()),
                         status,
                         None,
+                        None,
                     )
                 }
             };
@@ -278,6 +279,7 @@ impl Actor for GlobalClientActor {
             None,
             ActorStatus::generic_failure(format!("message not delivered: {}", env)),
             Some(headers),
+            None,
         );
 
         match get_global_supervision_sink() {

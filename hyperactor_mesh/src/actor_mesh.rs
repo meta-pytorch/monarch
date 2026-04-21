@@ -210,6 +210,7 @@ impl<A: Referable> ActorMesh<A> {
                     None,
                     ActorStatus::Stopped("mesh stopped".to_string()),
                     None,
+                    None,
                 ),
                 crashed_ranks: vec![],
             }));
@@ -782,6 +783,7 @@ impl<A: Referable> ActorMeshRef<A> {
                                 controller.actor_id(),
                                 self.name()
                             )),
+                            None,
                             None,
                         ),
                         crashed_ranks: vec![],

@@ -68,8 +68,22 @@ impl PyProcMesh {
 
 #[pymethods]
 impl PyProcMesh {
+    /// Spawn a Python actor mesh asynchronously.
+    ///
+    /// `name` is the user-provided mesh base name.
+    /// `supervision_display_name` is the rendered display string for
+    /// the spawned actor on the supervision path, i.e. the string
+    /// that may appear in `ActorSupervisionEvent.display_name` and in
+    /// supervision failure rendering.
+    /// `actor_class` is the qualified Python class name used as the
+    /// structured class-attribution carrier on the direct
+    /// actor-handled supervision path.
+    ///
+    /// These are intentionally separate carriers: mesh-name data,
+    /// rendered presentation, and structured class attribution are
+    /// not interchangeable.
     #[staticmethod]
-    #[pyo3(signature = (proc_mesh, instance, name, actor, init_message, emulated, supervision_display_name = None))]
+    #[pyo3(signature = (proc_mesh, instance, name, actor, init_message, emulated, supervision_display_name = None, actor_class = None))]
     fn spawn_async(
         proc_mesh: &mut PyShared,
         instance: &PyInstance,
@@ -78,6 +92,7 @@ impl PyProcMesh {
         init_message: &mut PendingMessage,
         emulated: bool,
         supervision_display_name: Option<String>,
+        actor_class: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         let init_message = init_message.take()?;
         let task = proc_mesh.task()?.take_task()?;
@@ -93,7 +108,12 @@ impl PyProcMesh {
                 let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
                 Ok((
                     slf.mesh_ref()?.clone(),
-                    PythonActorParams::new(pickled_type, Some(init_message)),
+                    PythonActorParams::new(
+                        pickled_type,
+                        Some(init_message),
+                        Some(name.clone()),
+                        actor_class.clone(),
+                    ),
                 ))
             })
             .await?;
@@ -105,6 +125,7 @@ impl PyProcMesh {
                     full_name,
                     &params,
                     supervision_display_name,
+                    actor_class,
                     false,
                 )
                 .await
