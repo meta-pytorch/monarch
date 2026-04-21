@@ -1043,9 +1043,11 @@ impl Proc {
             .collect();
         let mut aborted_actors = futures::future::join_all(aborted_actors).await;
 
-        // Phase 2: now that all other actors have stopped, stop the
-        // supervision coordinator so it had a chance to receive all
-        // supervision events.
+        // Phase 2: now that all other actors have stopped, request the
+        // supervision coordinator to stop. Their terminal supervision
+        // events have already been enqueued by this point, and the
+        // coordinator's DrainAndStop path drains queued supervision
+        // events before exiting.
         if let Some(ref coord_id) = coordinator_id
             && this_actor_id != Some(coord_id)
         {
@@ -1845,53 +1847,53 @@ impl<A: Actor> Instance<A> {
             .await;
 
         assert!(self.is_stopping());
-        let event = match result {
+        // Compute the terminal status and supervision event, but defer
+        // change_status until AFTER the event is delivered. If we flip
+        // the status to terminal first, a concurrent destroy_and_wait
+        // observer can release Phase 1 and stop the coordinator before
+        // the event lands in its mailbox — dropping the event.
+        let (terminal_status, event) = match result {
             Ok(stop_reason) => {
                 let status = ActorStatus::Stopped(stop_reason);
-                self.mailbox().close(status.clone());
                 let event = ActorSupervisionEvent::new(
                     self.inner.cell.actor_id().clone(),
                     actor.display_name(),
                     status.clone(),
                     None,
                 );
-                // FI-1: store supervision_event BEFORE change_status.
-                *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event.clone());
-                self.change_status(status);
-                Some(event)
+                (status, Some(event))
             }
-            Err(err) => {
-                match *err.kind {
-                    ActorErrorKind::UnhandledSupervisionEvent(box event) => {
-                        // We use the event's actor_status as this actor's terminal status.
-                        assert!(event.actor_status.is_terminal());
-                        self.mailbox().close(event.actor_status.clone());
-                        // FI-1: store supervision_event BEFORE change_status.
-                        *self.inner.cell.inner.supervision_event.lock().unwrap() =
-                            Some(event.clone());
-                        self.change_status(event.actor_status.clone());
-                        Some(event)
-                    }
-                    _ => {
-                        let error_kind = ActorErrorKind::Generic(err.kind.to_string());
-                        let status = ActorStatus::Failed(error_kind);
-                        self.mailbox().close(status.clone());
-                        let event = ActorSupervisionEvent::new(
-                            self.inner.cell.actor_id().clone(),
-                            actor.display_name(),
-                            status.clone(),
-                            None,
-                        );
-                        // FI-1: store supervision_event BEFORE change_status.
-                        *self.inner.cell.inner.supervision_event.lock().unwrap() =
-                            Some(event.clone());
-                        self.change_status(status);
-                        Some(event)
-                    }
+            Err(err) => match *err.kind {
+                ActorErrorKind::UnhandledSupervisionEvent(box event) => {
+                    // We use the event's actor_status as this actor's terminal status.
+                    assert!(event.actor_status.is_terminal());
+                    let status = event.actor_status.clone();
+                    (status, Some(event))
                 }
-            }
+                _ => {
+                    let error_kind = ActorErrorKind::Generic(err.kind.to_string());
+                    let status = ActorStatus::Failed(error_kind);
+                    let event = ActorSupervisionEvent::new(
+                        self.inner.cell.actor_id().clone(),
+                        actor.display_name(),
+                        status.clone(),
+                        None,
+                    );
+                    (status, Some(event))
+                }
+            },
         };
 
+        self.mailbox().close(terminal_status.clone());
+        // FI-1: store supervision_event BEFORE change_status.
+        if let Some(event) = &event {
+            *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event.clone());
+        }
+
+        // Deliver the supervision event to the parent/proc BEFORE
+        // change_status so that any observer waiting for this actor's
+        // terminal state can only see it once the event has been
+        // enqueued at its destination.
         if let Some(parent) = self.inner.cell.maybe_unlink_parent() {
             if let Some(event) = event {
                 // Parent exists, failure should be propagated to the parent.
@@ -1919,6 +1921,8 @@ impl<A: Actor> Instance<A> {
                     .handle_unhandled_supervision_event(&self, event);
             }
         }
+
+        self.change_status(terminal_status);
     }
 
     /// Runs the actor, and manages its supervision tree. When the function returns,
@@ -2110,6 +2114,13 @@ impl<A: Actor> Instance<A> {
         }
 
         if need_drain {
+            let mut supervision_events_drained = 0;
+            for supervision_event in supervision_event_receiver.drain() {
+                self.handle_supervision_event(actor, supervision_event)
+                    .await?;
+                supervision_events_drained += 1;
+            }
+
             let mut n = 0;
             while let Ok(work) = work_rx.try_recv() {
                 // PD-5c: drained work items must also be accounted.
@@ -2124,9 +2135,23 @@ impl<A: Actor> Instance<A> {
                         ActorErrorKind::processing(err),
                     ));
                 }
+                for supervision_event in supervision_event_receiver.drain() {
+                    self.handle_supervision_event(actor, supervision_event)
+                        .await?;
+                    supervision_events_drained += 1;
+                }
                 n += 1;
             }
-            tracing::debug!("drained {} messages", n);
+            for supervision_event in supervision_event_receiver.drain() {
+                self.handle_supervision_event(actor, supervision_event)
+                    .await?;
+                supervision_events_drained += 1;
+            }
+            tracing::debug!(
+                "drained {} messages and {} supervision events",
+                n,
+                supervision_events_drained
+            );
         }
         tracing::debug!(
             actor_id = %self.self_id(),
