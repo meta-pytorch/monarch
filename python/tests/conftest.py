@@ -62,6 +62,25 @@ if not _HAS_TENSOR_ENGINE:
         ]
     )
 
+# The simulator tests and a handful of others exercise paths that unconditionally
+# construct CUDA tensors. They are collectable with a CPU-only tensor_engine
+# build but cannot run without a CUDA device, so skip them when CUDA is absent.
+try:
+    import torch as _torch
+
+    _HAS_CUDA = _torch.cuda.is_available()
+except Exception:
+    _HAS_CUDA = False
+
+if _HAS_TENSOR_ENGINE and not _HAS_CUDA:
+    collect_ignore.extend(
+        str(_THIS_DIR / name)
+        for name in [
+            "simulator/test_simulator.py",
+            "simulator/test_worker.py",
+        ]
+    )
+
 # Propagate sys.path to PYTHONPATH so that worker subprocesses spawned by
 # monarch (e.g. distributed_proc_mesh) see the same import paths as the
 # pytest parent process. pytest's default "prepend" import mode modifies
@@ -85,6 +104,8 @@ _MACOS_ARM64_SKIP_NODEIDS = frozenset(
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_proc_mesh_with_dictionary_env",
         "python/tests/test_cuda.py::TestEnvBeforeCuda::test_proc_mesh_with_lambda_env",
         "python/tests/test_debugger.py::test_debug_with_pickle_by_value",
+        "python/tests/test_host_mesh.py::test_host_mesh_context_manager",
+        "python/tests/test_host_mesh.py::test_spawn_procs_with_taskset_bind",
         "python/tests/test_host_mesh.py::test_stop_and_reconnect",
     }
 )

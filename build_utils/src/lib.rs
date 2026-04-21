@@ -493,7 +493,9 @@ pub fn set_python_rpath() {
         if let Some(lib_dir) = &python_config.lib_dir {
             let lib_dir = Path::new(lib_dir);
             if cfg!(target_os = "macos") {
-                // Python.framework uses the framework root as the install-name base.
+                // Python.framework advertises libpython with an install name like
+                // @rpath/Versions/X.Y/lib/libpythonX.Y.dylib, so binaries need the
+                // framework root on their rpath rather than the inner lib dir.
                 if let Some(framework_root) = lib_dir.ancestors().find(|path| {
                     path.file_name()
                         .and_then(|name| name.to_str())
