@@ -76,7 +76,7 @@ pub enum RefParseError {
 }
 
 /// A process identifier paired with a network location.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct ProcRef {
     id: ProcId,
     location: Location,
@@ -247,10 +247,24 @@ impl FromStr for ProcRef {
 }
 
 /// An actor identifier paired with a network location.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct ActorRef {
     id: ActorId,
     location: Location,
+}
+
+hyperactor_config::impl_attrvalue!(ActorRef);
+
+impl PartialEq<crate::reference::ActorId> for ActorRef {
+    fn eq(&self, other: &crate::reference::ActorId) -> bool {
+        self == other.actor_ref()
+    }
+}
+
+impl PartialEq<ActorRef> for crate::reference::ActorId {
+    fn eq(&self, other: &ActorRef) -> bool {
+        self.actor_ref() == other
+    }
 }
 
 impl ActorRef {
@@ -404,7 +418,7 @@ impl FromStr for ActorRef {
 }
 
 /// A port identifier paired with a network location.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct PortRef {
     id: PortId,
     location: Location,
@@ -429,6 +443,16 @@ impl PortRef {
     /// Returns the actor id (delegates to port id).
     pub fn actor_id(&self) -> &ActorId {
         self.id.actor_id()
+    }
+
+    /// Whether this is a handler (actor-level) port.
+    pub(crate) fn is_actor_port(&self) -> bool {
+        self.id.port().is_handler()
+    }
+
+    /// The port index.
+    pub fn index(&self) -> u64 {
+        self.id.port().as_u64()
     }
 
     /// Reconstruct the parent ActorRef (with location preserved).
