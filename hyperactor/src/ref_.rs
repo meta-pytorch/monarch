@@ -390,7 +390,7 @@ mod tests {
         );
         let loc: Location = ChannelAddr::Local(42).into();
         let pref = ProcRef::new(pid, loc);
-        assert_eq!(pref.to_string(), "0000000000abc123@inproc://42");
+        assert_eq!(pref.to_string(), "my-proc-0000000000abc123@inproc://42");
     }
 
     #[test]
@@ -403,7 +403,7 @@ mod tests {
         let pref = ProcRef::new(pid, loc);
         assert_eq!(
             format!("{:?}", pref),
-            "<'my-proc' 0000000000abc123@inproc://42>"
+            "<'my-proc' my-proc-0000000000abc123@inproc://42>"
         );
     }
 
