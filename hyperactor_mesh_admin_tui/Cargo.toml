@@ -29,7 +29,7 @@ ratatui = { version = "0.30", features = ["termion", "termwiz", "unstable-render
 reqwest = { version = "0.13.2", features = ["blocking", "charset", "cookies", "gzip", "http2", "json", "multipart", "rustls", "socks", "stream", "system-proxy"], default-features = false }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.52.1", features = ["full", "test-util", "tracing"] }
 urlencoding = "2.1.0"
 
 [lints]
