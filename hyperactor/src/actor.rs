@@ -455,8 +455,8 @@ pub enum Signal {
     /// Stop the actor immediately.
     Stop(String),
 
-    /// The direct child with the given PID was stopped.
-    ChildStopped(reference::Index),
+    /// The direct child with the given uid was stopped.
+    ChildStopped(crate::id::Uid),
 
     /// Abort the actor. This will exit the actor loop with an error,
     /// causing a supervision event to propagate up the supervision
@@ -470,7 +470,7 @@ impl fmt::Display for Signal {
         match self {
             Signal::DrainAndStop(reason) => write!(f, "DrainAndStop({})", reason),
             Signal::Stop(reason) => write!(f, "Stop({})", reason),
-            Signal::ChildStopped(index) => write!(f, "ChildStopped({})", index),
+            Signal::ChildStopped(uid) => write!(f, "ChildStopped({})", uid),
             Signal::Abort(reason) => write!(f, "Abort({})", reason),
         }
     }
@@ -1768,8 +1768,7 @@ mod tests {
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
 
-        let child_ref =
-            reference::Reference::Actor(test_proc_id("nonexistent").actor_id("child", 0));
+        let child_ref = reference::Reference::Actor(test_proc_id("nonexistent").actor_id("child"));
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
         reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
@@ -1784,9 +1783,7 @@ mod tests {
 
         assert_eq!(
             payload.identity,
-            crate::introspect::IntrospectRef::Actor(
-                test_proc_id("nonexistent").actor_id("child", 0)
-            )
+            crate::introspect::IntrospectRef::Actor(test_proc_id("nonexistent").actor_id("child"))
         );
         assert_error_code(&payload, "not_found");
 
@@ -2104,7 +2101,7 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
 
         // Before registering, query_child returns None.
-        let test_ref = reference::Reference::Actor(test_proc_id("test").actor_id("child", 0));
+        let test_ref = reference::Reference::Actor(test_proc_id("test").actor_id("child"));
         assert!(handle.cell().query_child(&test_ref).is_none());
 
         // Register a callback.
@@ -2135,7 +2132,7 @@ mod tests {
             .expect("callback should produce a payload");
         assert_eq!(
             payload.identity,
-            crate::introspect::IntrospectRef::Actor(test_proc_id("test").actor_id("child", 0))
+            crate::introspect::IntrospectRef::Actor(test_proc_id("test").actor_id("child"))
         );
         let attrs: serde_json::Value =
             serde_json::from_str(&payload.attrs).expect("attrs must be valid JSON");
