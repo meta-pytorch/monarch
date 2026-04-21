@@ -103,9 +103,10 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
     });
 
     PyPythonTask::new(async move {
-        host(addr, command, None, true, listener)
+        let (_agent_handle, shutdown) = host(addr, command, None, true, listener)
             .await
             .map_pyerr()?;
+        shutdown.join().await;
         halt::<()>().await;
         Ok(())
     })
