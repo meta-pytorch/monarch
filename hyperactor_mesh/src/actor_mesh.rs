@@ -286,6 +286,30 @@ struct HealthState {
     crashed_ranks: HashMap<usize, ActorSupervisionEvent>,
 }
 
+impl HealthState {
+    fn failure_for_region(&self, region: &Region) -> Option<MeshFailure> {
+        let unhealthy = self.unhealthy_event.as_ref()?;
+        let mut failure = match unhealthy {
+            Unhealthy::StreamClosed(failure) | Unhealthy::Crashed(failure) => failure.clone(),
+        };
+        if failure.crashed_ranks.is_empty() {
+            return Some(failure);
+        }
+        let mut crashed_ranks = self
+            .crashed_ranks
+            .keys()
+            .copied()
+            .filter(|rank| region.slice().contains(*rank))
+            .collect::<Vec<_>>();
+        crashed_ranks.sort_unstable();
+        if crashed_ranks.is_empty() {
+            return None;
+        }
+        failure.crashed_ranks = crashed_ranks;
+        Some(failure)
+    }
+}
+
 impl std::fmt::Debug for HealthState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HealthState")
@@ -406,6 +430,13 @@ pub struct ActorMeshRef<A: Referable> {
 }
 
 impl<A: Referable> ActorMeshRef<A> {
+    fn cached_failure(&self, cx: &impl context::Actor) -> Option<MeshFailure> {
+        let health_state = self.health_state.entry(cx).or_default();
+        health_state
+            .get()
+            .failure_for_region(ndslice::view::Ranked::region(self))
+    }
+
     /// Cast a message to all the actors in this mesh
     #[allow(clippy::result_large_err)]
     pub fn cast<M>(&self, cx: &impl context::Actor, message: M) -> crate::Result<()>
@@ -447,22 +478,13 @@ impl<A: Referable> ActorMeshRef<A> {
     {
         // First check if the mesh is already dead before sending out any messages
         // to a possibly undeliverable actor.
-        {
-            let health_state = self.health_state.entry(cx).or_default();
-            let health_state = health_state.get();
-            match &health_state.unhealthy_event {
-                Some(Unhealthy::StreamClosed(failure)) => {
-                    return Err(crate::Error::Supervision(Box::new(failure.clone())));
-                }
-                Some(Unhealthy::Crashed(failure)) => {
-                    return Err(crate::Error::Supervision(Box::new(failure.clone())));
-                }
-                None => {
-                    // If crashed ranks has any entries, then unhealthy_event should be set.
-                    // This is because all slices get a distinct health state.
-                    assert!(health_state.crashed_ranks.is_empty());
-                }
-            }
+        if let Some(failure) = self.cached_failure(cx) {
+            tracing::debug!(
+                actor_mesh = %self.name,
+                crashed_ranks = ?failure.crashed_ranks,
+                "rejecting cast due to cached supervision failure"
+            );
+            return Err(crate::Error::Supervision(Box::new(failure)));
         }
 
         hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
@@ -691,18 +713,20 @@ impl<A: Referable> ActorMeshRef<A> {
         &self,
         cx: &impl context::Actor,
     ) -> Result<MeshFailure, anyhow::Error> {
+        if let Some(failure) = self.cached_failure(cx) {
+            tracing::debug!(
+                actor_mesh = %self.name,
+                crashed_ranks = ?failure.crashed_ranks,
+                "returning cached supervision failure"
+            );
+            return Ok(failure);
+        }
         let controller = if let Some(c) = self.controller() {
             c
         } else {
-            let health_state = self.health_state.entry(cx).or_default();
-            let health_state = health_state.get();
-            return match &health_state.unhealthy_event {
-                Some(Unhealthy::StreamClosed(f)) => Ok(f.clone()),
-                Some(Unhealthy::Crashed(f)) => Ok(f.clone()),
-                None => Err(anyhow::anyhow!(
-                    "unexpected healthy state while controller is gone"
-                )),
-            };
+            return Err(anyhow::anyhow!(
+                "unexpected healthy state while controller is gone"
+            ));
         };
         let rx = {
             // Make sure to create only one PortReceiver per context.
@@ -917,16 +941,21 @@ impl<A: Referable> view::Ranked for ActorMeshRef<A> {
 
 impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
     fn sliced(&self, region: Region) -> Self {
-        // The sliced ref will not share the same health state or receiver.
-        // TODO: share to reduce open ports and tasks?
+        // Slices inherit cached failures that were already observed on the parent
+        // mesh ref so new sub-slices do not race the controller replay path.
+        // The supervision receiver stays independent because each slice applies
+        // its own region filter to future updates.
         debug_assert!(region.is_subset(view::Ranked::region(self)));
         let proc_mesh = self.proc_mesh.subset(region).unwrap();
-        Self::with_page_size(
-            self.name.clone(),
+        Self {
             proc_mesh,
-            self.page_size,
-            self.controller.clone(),
-        )
+            name: self.name.clone(),
+            controller: self.controller.clone(),
+            health_state: self.health_state.clone(),
+            receiver: ActorLocal::new(),
+            pages: OnceCell::new(),
+            page_size: self.page_size,
+        }
     }
 }
 
