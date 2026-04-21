@@ -35,7 +35,7 @@ async fn forward_to_tracing_captures_via_extract_recording_span() -> Result<()> 
     monarch_with_gil_blocking(|py| py.run(c_str!("import monarch._rust_bindings"), None, None))?;
 
     let recording = hyperactor_telemetry::recorder().record(64);
-    let span = recording.span();
+    let span = recording.span("test");
 
     monarch_with_gil_blocking(|py| -> PyResult<()> {
         // Build a PyContext carrying our recording span.
