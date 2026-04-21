@@ -533,14 +533,20 @@ impl Listener for NetListener {
     }
 }
 
-/// Bind a listener for the given channel address. Returns the listener
-/// and the canonical address callers should advertise (which encodes
-/// the transport — e.g. `ChannelAddr::Tls` for TLS).
-pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
+/// Bind a listener for the given channel address, optionally using a pre-opened TCP listener.
+/// Returns the listener and the canonical address callers should advertise.
+/// When `prebound` is `Some`, it is used for TCP/TLS transports instead of binding a new socket.
+pub(crate) fn listen_with_prebound(
+    addr: ChannelAddr,
+    prebound: Option<std::net::TcpListener>,
+) -> Result<(NetListener, ChannelAddr), ServerError> {
     match addr {
         ChannelAddr::Tcp(socket_addr) => {
-            let std_listener = std::net::TcpListener::bind(socket_addr)
-                .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(socket_addr), err))?;
+            let std_listener = match prebound {
+                Some(l) => l,
+                None => std::net::TcpListener::bind(socket_addr)
+                    .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(socket_addr), err))?,
+            };
             std_listener
                 .set_nonblocking(true)
                 .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(socket_addr), e))?;
@@ -611,8 +617,11 @@ pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), Se
             }
 
             let channel_addr = make_channel_addr(&hostname, port);
-            let std_listener = std::net::TcpListener::bind(&addrs[..])
-                .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?;
+            let std_listener = match prebound {
+                Some(l) => l,
+                None => std::net::TcpListener::bind(&addrs[..])
+                    .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?,
+            };
             std_listener
                 .set_nonblocking(true)
                 .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
@@ -635,6 +644,13 @@ pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), Se
             std::io::Error::other(format!("unsupported transport: {}", other)),
         )),
     }
+}
+
+/// Bind a listener for the given channel address. Returns the listener
+/// and the canonical address callers should advertise (which encodes
+/// the transport — e.g. `ChannelAddr::Tls` for TLS).
+pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
+    listen_with_prebound(addr, None)
 }
 
 /// Frames are the messages sent between clients and servers over sessions.
@@ -1662,7 +1678,7 @@ u19txmtkiMEH+aNmekk=
             let addr = TlsAddr::new("localhost", 0);
 
             let (local_addr, mut rx) =
-                server::serve::<u64>(ChannelAddr::Tls(addr)).expect("failed to serve");
+                server::serve::<u64>(ChannelAddr::Tls(addr), None).expect("failed to serve");
 
             // Dial the server
             let tx: super::NetTx<u64> = super::spawn(
@@ -1697,7 +1713,7 @@ u19txmtkiMEH+aNmekk=
             let addr = TlsAddr::new("localhost", 0);
 
             let (local_addr, mut rx) =
-                server::serve::<String>(ChannelAddr::Tls(addr)).expect("failed to serve");
+                server::serve::<String>(ChannelAddr::Tls(addr), None).expect("failed to serve");
             let tx: super::NetTx<String> = super::spawn(
                 link(match &local_addr {
                     ChannelAddr::Tls(addr) => addr.clone(),
@@ -1951,9 +1967,10 @@ mod tests {
             .as_nanos();
         let unique_address = format!("test_unix_basic_{}", timestamp);
 
-        let (addr, mut rx) = server::serve::<u64>(ChannelAddr::Unix(
-            unix::SocketAddr::from_abstract_name(&unique_address)?,
-        ))
+        let (addr, mut rx) = server::serve::<u64>(
+            ChannelAddr::Unix(unix::SocketAddr::from_abstract_name(&unique_address)?),
+            None,
+        )
         .unwrap();
 
         // It is important to keep Tx alive until all expected messages are
@@ -2016,7 +2033,7 @@ mod tests {
         let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
         tx.post(123);
 
-        let (_, mut rx) = server::serve::<u64>(ChannelAddr::Unix(socket_addr)).unwrap();
+        let (_, mut rx) = server::serve::<u64>(ChannelAddr::Unix(socket_addr), None).unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         tx.post(321);
@@ -2036,7 +2053,7 @@ mod tests {
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_basic() {
         let (addr, mut rx) =
-            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         {
             let tx = channel::dial::<u64>(addr.clone()).unwrap();
             tx.post(123);
@@ -2083,7 +2100,7 @@ mod tests {
         let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, default_size_in_bytes);
 
         let (addr, mut rx) =
-            server::serve::<String>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+            server::serve::<String>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
 
         let tx = channel::dial::<String>(addr.clone()).unwrap();
         // Default size is okay
@@ -2116,7 +2133,7 @@ mod tests {
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(5));
 
         let (addr, mut net_rx) =
-            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         let net_tx = channel::dial::<u64>(addr.clone()).unwrap();
         let (tx, rx) = oneshot::channel();
         net_tx.try_post(1, tx);
@@ -2138,7 +2155,8 @@ mod tests {
             ChannelAddr::MetaTls(meta_addr) => meta_addr,
             _ => panic!("expected MetaTls address"),
         };
-        let (local_addr, mut rx) = server::serve::<u64>(ChannelAddr::MetaTls(meta_addr)).unwrap();
+        let (local_addr, mut rx) =
+            server::serve::<u64>(ChannelAddr::MetaTls(meta_addr), None).unwrap();
         {
             let tx = channel::dial::<u64>(local_addr.clone()).unwrap();
             tx.post(123);
@@ -3357,7 +3375,8 @@ mod tests {
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
 
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
-        let (local_addr, mut rx) = server::serve::<String>(ChannelAddr::Tcp(socket_addr)).unwrap();
+        let (local_addr, mut rx) =
+            server::serve::<String>(ChannelAddr::Tcp(socket_addr), None).unwrap();
 
         // Test with 10 connections (senders), each sends 500K messages, 5M messages in total.
         let total_num_msgs = 500000;
@@ -3465,7 +3484,7 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
         let (addr, mut rx) =
-            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         let socket_addr = match addr {
             ChannelAddr::Tcp(a) => a,
             _ => panic!("unexpected channel type"),

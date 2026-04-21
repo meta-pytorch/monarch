@@ -412,7 +412,7 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let recording = hyperactor_telemetry::recorder().record(64);
-        let span = recording.span();
+        let span = recording.span("test");
 
         Python::attach(|py| {
             let record = make_log_record(py, "recorder marker");
