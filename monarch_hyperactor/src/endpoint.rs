@@ -18,6 +18,7 @@ use hyperactor::accum::ReducerFactory;
 use hyperactor::accum::ReducerSpec;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor::reference::ActorId;
 use hyperactor_mesh::sel;
 use hyperactor_mesh::value_mesh::ValueOverlay;
 use hyperactor_mesh::value_mesh::rle;
@@ -545,9 +546,10 @@ pub(crate) trait Endpoint {
     /// Open an OTEL-style span for an endpoint invocation. Each impl attaches
     /// the fields the perfetto sink needs to synthesize the display name
     /// (`{mesh}.{method}.{adverb}` for ActorEndpoint, `{call_name}.{adverb}`
-    /// for Remote). The adverb is the span name, so no formatting happens at
-    /// the call site — the sink formats only when it renders the slice.
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb) -> SpanGuard;
+    /// for Remote) and route the slice to an actor-specific track. The adverb is the span name,
+    /// so no formatting happens at the call site and the sink formats only when
+    /// it renders the slice.
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorId) -> SpanGuard;
 
     fn get_current_instance(&self, py: Python<'_>) -> PyResult<Instance<PythonActor>> {
         let context = get_context(py).call0()?;
@@ -580,12 +582,11 @@ pub(crate) trait Endpoint {
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::Call);
+        let instance = self.get_current_instance(py)?;
+        let span_guard = self.enter_endpoint_span(EndpointAdverb::Call, instance.self_id());
 
         let extent = self.get_extent(py)?;
         let method_name = self.get_method_name().to_string();
-
-        let instance = self.get_current_instance(py)?;
         let (port_ref, receiver) = self.open_reduce_response_port(&instance);
 
         let supervision_monitor = self.get_supervision_monitor();
@@ -625,9 +626,8 @@ pub(crate) trait Endpoint {
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::Choose);
-
         let instance = self.get_current_instance(py)?;
+        let span_guard = self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_id());
         let (port_ref, receiver) = self.open_response_port(&instance);
 
         self.send_message(
@@ -659,8 +659,6 @@ pub(crate) trait Endpoint {
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::CallOne);
-
         let extent = self.get_extent(py)?;
 
         if extent.num_ranks() != 1 {
@@ -671,6 +669,7 @@ pub(crate) trait Endpoint {
         }
 
         let instance = self.get_current_instance(py)?;
+        let span_guard = self.enter_endpoint_span(EndpointAdverb::CallOne, instance.self_id());
         let (port_ref, receiver) = self.open_response_port(&instance);
 
         self.send_message(
@@ -845,7 +844,7 @@ impl Endpoint for ActorEndpoint {
         Some(format!("{}.{}()", self.mesh_name, self.method.name()))
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb) -> SpanGuard {
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorId) -> SpanGuard {
         let mesh = self.mesh_name.as_str();
         let method = self.method.name();
         let span = match adverb {
@@ -854,24 +853,28 @@ impl Endpoint for ActorEndpoint {
                 "call",
                 mesh = mesh,
                 method = method,
+                actor_id = %actor_id,
             ),
             EndpointAdverb::CallOne => tracing::info_span!(
                 target: "monarch_hyperactor::telemetry::endpoint",
                 "call_one",
                 mesh = mesh,
                 method = method,
+                actor_id = %actor_id,
             ),
             EndpointAdverb::Choose => tracing::info_span!(
                 target: "monarch_hyperactor::telemetry::endpoint",
                 "choose",
                 mesh = mesh,
                 method = method,
+                actor_id = %actor_id,
             ),
             EndpointAdverb::Stream => tracing::info_span!(
                 target: "monarch_hyperactor::telemetry::endpoint",
                 "stream",
                 mesh = mesh,
                 method = method,
+                actor_id = %actor_id,
             ),
         };
         SpanGuard::enter(span)
@@ -1136,7 +1139,7 @@ impl Endpoint for Remote {
         None // Remote endpoints don't have qualified names
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb) -> SpanGuard {
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorId) -> SpanGuard {
         let call_name = Python::attach(|py| {
             self.inner
                 .call_method0(py, "_call_name")
@@ -1149,21 +1152,25 @@ impl Endpoint for Remote {
                 target: "monarch_hyperactor::telemetry::endpoint",
                 "call",
                 call_name = call_name,
+                actor_id = %actor_id,
             ),
             EndpointAdverb::CallOne => tracing::info_span!(
                 target: "monarch_hyperactor::telemetry::endpoint",
                 "call_one",
                 call_name = call_name,
+                actor_id = %actor_id,
             ),
             EndpointAdverb::Choose => tracing::info_span!(
                 target: "monarch_hyperactor::telemetry::endpoint",
                 "choose",
                 call_name = call_name,
+                actor_id = %actor_id,
             ),
             EndpointAdverb::Stream => tracing::info_span!(
                 target: "monarch_hyperactor::telemetry::endpoint",
                 "stream",
                 call_name = call_name,
+                actor_id = %actor_id,
             ),
         };
         SpanGuard::enter(span)

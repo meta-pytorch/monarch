@@ -86,6 +86,7 @@ pub const USER_TELEMETRY_PREFIX: &str = "monarch_hyperactor::telemetry";
 /// display name synthesized as `{method}.{span_name}`, where `span_name`
 /// is the adverb (e.g., "call", "call_one", "choose").
 pub const ENDPOINT_TELEMETRY_TARGET: &str = "monarch_hyperactor::telemetry::endpoint";
+const ACTOR_ID_FIELD: &str = "actor_id";
 
 /// Controls what events are captured in Perfetto traces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -183,6 +184,7 @@ struct SpanInfo {
     fields: TraceFields,
     file: Option<&'static str>,
     line: Option<u32>,
+    prefer_actor_track: bool,
 }
 
 /// String interning for Perfetto trace compression.
@@ -224,8 +226,8 @@ pub struct PerfettoFileSink {
     event_names: InternedStrings,
     annotation_names: InternedStrings,
     span_info: HashMap<u64, SpanInfo>,
-    /// Maps thread names to track ids
-    thread_tracks: HashMap<String, u64>,
+    /// Maps logical track names (thread names or actor ids) to track ids.
+    named_tracks: HashMap<String, u64>,
     /// Maps span id to the track it entered on, so that certain Exit/Close events
     /// are emitted on the same track even when they fire from a different thread.
     span_tracks: HashMap<u64, u64>,
@@ -282,7 +284,7 @@ impl PerfettoFileSink {
             event_names: InternedStrings::default(),
             annotation_names: InternedStrings::default(),
             span_info: HashMap::new(),
-            thread_tracks: HashMap::new(),
+            named_tracks: HashMap::new(),
             span_tracks: HashMap::new(),
             process_track: 0,
             pid,
@@ -347,23 +349,23 @@ impl PerfettoFileSink {
         track_id
     }
 
-    fn get_or_create_thread_track(&mut self, thread_name: &str) -> u64 {
-        if let Some(&track) = self.thread_tracks.get(thread_name) {
+    fn get_or_create_named_track(&mut self, track_name: &str) -> u64 {
+        if let Some(&track) = self.named_tracks.get(track_name) {
             return track;
         }
 
         let track_id = self.next_track_id();
-        let tid = self.thread_tracks.len() as i32 + 1;
+        let tid = self.named_tracks.len() as i32 + 1;
 
         let packet = TracePacket {
             data: Some(Data::TrackDescriptor(TrackDescriptor {
                 uuid: Some(track_id),
                 parent_uuid: Some(self.process_track),
-                static_or_dynamic_name: Some(StaticOrDynamicName::Name(thread_name.to_string())),
+                static_or_dynamic_name: Some(StaticOrDynamicName::Name(track_name.to_string())),
                 thread: Some(ThreadDescriptor {
                     pid: Some(self.pid),
                     tid: Some(tid),
-                    thread_name: Some(thread_name.to_string()),
+                    thread_name: Some(track_name.to_string()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -375,9 +377,39 @@ impl PerfettoFileSink {
         };
         self.write_packet(&packet);
 
-        self.thread_tracks.insert(thread_name.to_string(), track_id);
+        self.named_tracks.insert(track_name.to_string(), track_id);
 
         track_id
+    }
+
+    fn actor_track_name<'a>(fields: &'a TraceFields) -> Option<&'a str> {
+        match get_field(fields, ACTOR_ID_FIELD) {
+            Some(FieldValue::Str(actor_id) | FieldValue::Debug(actor_id))
+                if !actor_id.is_empty() =>
+            {
+                Some(Self::short_actor_track_name(actor_id))
+            }
+            _ => None,
+        }
+    }
+
+    fn short_actor_track_name(actor_id: &str) -> &str {
+        actor_id
+            .rsplit_once(',')
+            .map(|(_, actor_name_and_pid)| actor_name_and_pid)
+            .unwrap_or(actor_id)
+    }
+
+    fn preferred_track_name<'a>(
+        prefer_actor_track: bool,
+        fields: &'a TraceFields,
+        thread_name: &'a str,
+    ) -> &'a str {
+        if prefer_actor_track {
+            Self::actor_track_name(fields).unwrap_or(thread_name)
+        } else {
+            thread_name
+        }
     }
 
     fn write_packet(&mut self, packet: &TracePacket) {
@@ -611,6 +643,7 @@ impl TraceEventSink for PerfettoFileSink {
                         fields: fields.clone(),
                         file: *file,
                         line: *line,
+                        prefer_actor_track: target.starts_with(USER_TELEMETRY_PREFIX),
                     },
                 );
             }
@@ -625,7 +658,11 @@ impl TraceEventSink for PerfettoFileSink {
                     let fields = info.fields.clone();
                     let file = info.file;
                     let line = info.line;
-                    let track = self.get_or_create_thread_track(thread_name);
+                    let prefer_actor_track = info.prefer_actor_track;
+                    let track_name =
+                        Self::preferred_track_name(prefer_actor_track, &fields, thread_name)
+                            .to_string();
+                    let track = self.get_or_create_named_track(&track_name);
                     self.span_tracks.insert(*id, track);
                     self.write_slice_begin(track, *timestamp, &fq_name, &fields, file, line);
                 }
@@ -636,11 +673,16 @@ impl TraceEventSink for PerfettoFileSink {
                 timestamp,
                 thread_name,
             } => {
-                if self.span_info.contains_key(id) {
+                if let Some(info) = self.span_info.get(id) {
+                    let fields = info.fields.clone();
+                    let prefer_actor_track = info.prefer_actor_track;
+                    let track_name =
+                        Self::preferred_track_name(prefer_actor_track, &fields, thread_name)
+                            .to_string();
                     let track = self
                         .span_tracks
                         .remove(id)
-                        .unwrap_or_else(|| self.get_or_create_thread_track(thread_name));
+                        .unwrap_or_else(|| self.get_or_create_named_track(&track_name));
                     self.write_slice_end(track, *timestamp);
                 }
             }
@@ -674,7 +716,11 @@ impl TraceEventSink for PerfettoFileSink {
                     format!("{}::{}", target, name)
                 };
 
-                let track = self.get_or_create_thread_track(thread_name);
+                let track = self.get_or_create_named_track(Self::preferred_track_name(
+                    target.starts_with(USER_TELEMETRY_PREFIX),
+                    fields,
+                    thread_name,
+                ));
                 self.write_instant(track, *timestamp, &display_name, fields);
             }
         }
