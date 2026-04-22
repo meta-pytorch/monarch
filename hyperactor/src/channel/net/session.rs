@@ -323,12 +323,23 @@ impl<R: AsyncRead + Unpin + Send, W> Mux<R, W> {
     }
 }
 
+/// A message queued for dispatch to a writer but not yet serialized.
+/// Used in the multi-stream sender to shift serialization cost off the
+/// single dispatcher task and onto the per-stream writer tasks, which
+/// can serialize in parallel.
+pub(super) struct PendingMessage<M: RemoteMessage> {
+    pub(super) seq: u64,
+    pub(super) message: M,
+    pub(super) received_at: Instant,
+    pub(super) return_channel: oneshot::Sender<SendError<M>>,
+}
+
 pub(super) struct QueuedMessage<M: RemoteMessage> {
-    seq: u64,
-    message: serde_multipart::Message,
-    received_at: Instant,
-    sent_at: Option<Instant>,
-    return_channel: oneshot::Sender<SendError<M>>,
+    pub(super) seq: u64,
+    pub(super) message: serde_multipart::Message,
+    pub(super) received_at: Instant,
+    pub(super) sent_at: Option<tokio::time::Instant>,
+    pub(super) return_channel: oneshot::Sender<SendError<M>>,
 }
 
 impl<M: RemoteMessage> fmt::Display for QueuedMessage<M> {
