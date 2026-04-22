@@ -192,7 +192,7 @@ mod tests {
                 &Proc::local(),
                 "hyperactor::actor::remote::tests::MyActor",
                 "actor",
-                bincode::serialize(&true).unwrap(),
+                bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
                 Flattrs::default(),
             )
             .await
@@ -203,7 +203,7 @@ mod tests {
                 &Proc::local(),
                 "hyperactor::actor::remote::tests::MyActor",
                 "actor",
-                bincode::serialize(&false).unwrap(),
+                bincode::serde::encode_to_vec(false, bincode::config::legacy()).unwrap(),
                 Flattrs::default(),
             )
             .await

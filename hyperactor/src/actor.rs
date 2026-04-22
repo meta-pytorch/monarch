@@ -292,7 +292,9 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         let proc = proc.clone();
         let name = name.to_string();
         Box::pin(async move {
-            let params = bincode::deserialize(&serialized_params)?;
+            let params =
+                bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
+                    .map(|(v, _)| v)?;
             let actor = Self::new(params, environment).await?;
             let handle = proc.spawn(&name, actor)?;
             // We return only the ActorId, not a typed ActorRef.

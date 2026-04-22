@@ -653,12 +653,16 @@ pub(super) enum NetRxResponse {
     Closed,
 }
 
-pub(super) fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> {
-    bincode::serialize(&response).map(|bytes| bytes.into())
+pub(super) fn serialize_response(
+    response: NetRxResponse,
+) -> Result<Bytes, bincode::error::EncodeError> {
+    bincode::serde::encode_to_vec(&response, bincode::config::legacy()).map(|bytes| bytes.into())
 }
 
-pub(super) fn deserialize_response(data: Bytes) -> Result<NetRxResponse, bincode::Error> {
-    bincode::deserialize(&data)
+pub(super) fn deserialize_response(
+    data: Bytes,
+) -> Result<NetRxResponse, bincode::error::DecodeError> {
+    bincode::serde::decode_from_slice(&data, bincode::config::legacy()).map(|(v, _)| v)
 }
 
 /// A Tx implemented on top of a Link. The Tx manages the link state,
@@ -757,7 +761,7 @@ pub enum ClientError {
     #[error("io: {0} {1}")]
     Io(ChannelAddr, std::io::Error),
     #[error("send {0}: serialize: {1}")]
-    Serialize(ChannelAddr, bincode::ErrorKind),
+    Serialize(ChannelAddr, bincode::error::EncodeError),
     #[error("invalid address: {0}")]
     InvalidAddress(String),
 }
@@ -2401,7 +2405,7 @@ mod tests {
                             let is_sampled = debug_log_sampling_rate.is_some_and(|sample_rate| send_count % sample_rate == 1);
                             if is_sampled {
                                 if is_from_client {
-                                    if let Ok(Frame::Message(_seq, _msg)) = bincode::deserialize::<Frame<M>>(&data) {
+                                    if let Ok((Frame::Message(_seq, _msg), _)) = bincode::serde::decode_from_slice::<Frame<M>, _>(&data, bincode::config::legacy()) {
                                         tracing::debug!("MockLink relays a msg from client. msg type: {}", std::any::type_name::<M>());
                                     }
                                 } else {

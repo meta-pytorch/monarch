@@ -224,7 +224,9 @@ pub enum Error {
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
     #[error(transparent)]
-    BincodeError(#[from] Box<bincode::Error>),
+    BincodeEncodeError(#[from] Box<bincode::error::EncodeError>),
+    #[error(transparent)]
+    BincodeDecodeError(#[from] Box<bincode::error::DecodeError>),
     #[error(transparent)]
     JsonError(#[from] Box<serde_json::Error>),
     #[error(transparent)]
@@ -233,8 +235,14 @@ pub enum CodecError {
     Utf8Error(#[from] Box<std::str::Utf8Error>),
 }
 
-impl From<bincode::Error> for Error {
-    fn from(e: bincode::Error) -> Self {
+impl From<bincode::error::EncodeError> for Error {
+    fn from(e: bincode::error::EncodeError) -> Self {
+        Error::CodecError(Box::new(e).into())
+    }
+}
+
+impl From<bincode::error::DecodeError> for Error {
+    fn from(e: bincode::error::DecodeError) -> Self {
         Error::CodecError(Box::new(e).into())
     }
 }

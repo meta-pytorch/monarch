@@ -40,7 +40,7 @@ anyhow = "1.0.102"
 async-trait = "0.1.86"
 axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
 base64 = { version = "0.22.1", features = ["alloc"] }
-bincode = "1.3.3"
+bincode = { version = "2", features = ["serde"] }
 bitmaps = "3.2.1"
 buck-resources = "1"
 chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }

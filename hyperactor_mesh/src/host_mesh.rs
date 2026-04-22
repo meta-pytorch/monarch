@@ -2273,7 +2273,10 @@ mod tests {
         actor_mesh
             .cast(
                 instance,
-                SetConfigAttrs(bincode::serialize(&attrs_override).unwrap()),
+                SetConfigAttrs(
+                    bincode::serde::encode_to_vec(&attrs_override, bincode::config::legacy())
+                        .unwrap(),
+                ),
             )
             .unwrap();
 
@@ -2282,7 +2285,10 @@ mod tests {
             .cast(instance, GetConfigAttrs(tx.bind()))
             .unwrap();
         let actual_attrs = rx.recv().await.unwrap();
-        let actual_attrs = bincode::deserialize::<Attrs>(&actual_attrs).unwrap();
+        let actual_attrs =
+            bincode::serde::decode_from_slice::<Attrs, _>(&actual_attrs, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
 
         assert_eq!(
             *actual_attrs

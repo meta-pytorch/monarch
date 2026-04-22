@@ -72,9 +72,13 @@ pub enum ChannelError {
     #[error(transparent)]
     Server(#[from] net::ServerError),
 
-    /// A bincode serialization or deserialization error occurred.
+    /// A bincode encoding error occurred.
     #[error(transparent)]
-    Bincode(#[from] Box<bincode::ErrorKind>),
+    BincodeEncode(#[from] bincode::error::EncodeError),
+
+    /// A bincode decoding error occurred.
+    #[error(transparent)]
+    BincodeDecode(#[from] bincode::error::DecodeError),
 
     /// Data encoding errors.
     #[error(transparent)]

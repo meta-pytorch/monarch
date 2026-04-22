@@ -211,7 +211,10 @@ pub enum CastError {
     SliceError(#[from] SliceError),
 
     #[error(transparent)]
-    SerializationError(#[from] bincode::Error),
+    SerializationEncodeError(#[from] bincode::error::EncodeError),
+
+    #[error(transparent)]
+    SerializationDecodeError(#[from] bincode::error::DecodeError),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),

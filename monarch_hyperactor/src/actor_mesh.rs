@@ -613,7 +613,8 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let bytes = bincode::serialize(self).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let bytes = bincode::serde::encode_to_vec(self, bincode::config::legacy())
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
         let module = py
             .import("monarch._rust_bindings.monarch_hyperactor.actor_mesh")
@@ -646,7 +647,9 @@ impl PythonActorMeshImpl {
 #[pyfunction]
 fn py_actor_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PythonActorMesh> {
     let r: PyResult<ActorMeshRef<PythonActor>> =
-        bincode::deserialize(bytes.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()));
+        bincode::serde::decode_from_slice(bytes.as_bytes(), bincode::config::legacy())
+            .map(|(v, _)| v)
+            .map_err(|e| PyValueError::new_err(e.to_string()));
     r.map(|r| AsyncActorMesh::from_impl(Arc::new(PythonActorMeshImpl::new_ref(r))))
         .map(|r| PythonActorMesh::from_impl(Arc::from(r)))
 }

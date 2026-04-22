@@ -1977,7 +1977,8 @@ mod tests {
             .name_of::<ExtraActor>()
             .unwrap()
             .to_string();
-        let actor_params = bincode::serialize(&ExtraActor).unwrap();
+        let actor_params =
+            bincode::serde::encode_to_vec(&ExtraActor, bincode::config::legacy()).unwrap();
         let actor_name = Name::Reserved("test_actor".to_string());
 
         // 1. Spawn an actor via CreateOrUpdate.

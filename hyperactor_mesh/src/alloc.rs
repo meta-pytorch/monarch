@@ -802,7 +802,7 @@ pub(crate) mod testing {
                 cx,
                 actor_type,
                 "Stuck".to_string(),
-                bincode::serialize(params).unwrap(),
+                bincode::serde::encode_to_vec(params, bincode::config::legacy()).unwrap(),
                 completed_handle.bind(),
             )
             .await

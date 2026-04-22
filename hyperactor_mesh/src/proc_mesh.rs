@@ -1055,7 +1055,7 @@ impl ProcMeshRef {
             .ok_or(Error::ActorTypeNotRegistered(type_name::<A>().to_string()))?
             .to_string();
 
-        let serialized_params = bincode::serialize(params)?;
+        let serialized_params = bincode::serde::encode_to_vec(params, bincode::config::legacy())?;
         let agent_mesh = self.agent_mesh();
 
         agent_mesh.cast(
