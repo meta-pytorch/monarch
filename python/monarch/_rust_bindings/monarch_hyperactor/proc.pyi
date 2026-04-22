@@ -93,7 +93,7 @@ class ActorId:
 
     @property
     def proc_id(self) -> str:
-        """String representation of the ProcId."""
+        """String representation of the ProcId in Rust-compatible `id@location` form."""
         ...
 
     @property

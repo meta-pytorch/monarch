@@ -390,7 +390,7 @@ mod tests {
         );
         let loc: Location = ChannelAddr::Local(42).into();
         let pref = ProcRef::new(pid, loc);
-        assert_eq!(pref.to_string(), "0000000000abc123@inproc://42");
+        assert_eq!(pref.to_string(), "my-proc-0000000000abc123@inproc://42");
     }
 
     #[test]
@@ -403,7 +403,7 @@ mod tests {
         let pref = ProcRef::new(pid, loc);
         assert_eq!(
             format!("{:?}", pref),
-            "<'my-proc' 0000000000abc123@inproc://42>"
+            "<'my-proc' my-proc-0000000000abc123@inproc://42>"
         );
     }
 
@@ -458,7 +458,7 @@ mod tests {
         let aref = ActorRef::new(aid, loc);
         assert_eq!(
             aref.to_string(),
-            "0000000000abc123.0000000000def456@inproc://42"
+            "my-actor-0000000000abc123.my-proc-0000000000def456@inproc://42"
         );
     }
 
@@ -543,6 +543,11 @@ mod tests {
         let s = aref.to_string();
         let parsed: ActorRef = s.parse().unwrap();
         assert_eq!(aref, parsed);
+        assert_eq!(parsed.id.label().map(|l| l.as_str()), Some("my-actor"));
+        assert_eq!(
+            parsed.id.proc_id().label().map(|l| l.as_str()),
+            Some("my-proc")
+        );
     }
 
     #[test]
@@ -701,7 +706,7 @@ mod tests {
         let pref = PortRef::new(port_id, loc);
         assert_eq!(
             pref.to_string(),
-            "0000000000abc123.0000000000def456:42@inproc://7"
+            "my-actor-0000000000abc123.my-proc-0000000000def456:42@inproc://7"
         );
     }
 
@@ -791,6 +796,14 @@ mod tests {
         let s = pref.to_string();
         let parsed: PortRef = s.parse().unwrap();
         assert_eq!(pref, parsed);
+        assert_eq!(
+            parsed.id.actor_id().label().map(|l| l.as_str()),
+            Some("my-actor")
+        );
+        assert_eq!(
+            parsed.id.actor_id().proc_id().label().map(|l| l.as_str()),
+            Some("my-proc")
+        );
     }
 
     #[test]

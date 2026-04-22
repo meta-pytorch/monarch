@@ -75,10 +75,10 @@ pub(crate) async fn check(s: &DiningScenario) {
     );
 
     // --- MIT-30: unreachable socket ref ---
-    let bogus_socket = "unix:@nonexistent_bogus_socket_xyz,bogus-ffffffffffffffff";
+    let bogus_socket = crate::harness::unreachable_proc_ref();
     let resp = s
         .fixture
-        .get(&format!("/v1/{}", enc(bogus_socket)))
+        .get(&format!("/v1/{}", enc(&bogus_socket)))
         .await
         .unwrap();
     assert!(

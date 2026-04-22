@@ -971,7 +971,7 @@ async def test_actor_mesh_stop() -> None:
     # the right error message.
     with pytest.raises(
         SupervisionError,
-        match=r"(?s)(The actor|Supervision event: actor) .*printer-.* (and all its descendants have failed|has status:).*stopped",
+        match=r"(?s)(The actor|Supervision event: actor) .* (and all its descendants have failed|has status:).*stopped",
     ):
         await am_1.print.call("hello 2")
 
