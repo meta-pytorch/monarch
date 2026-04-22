@@ -6,37 +6,44 @@
 
 # pyre-strict
 
-
 import logging
 import warnings
 from typing import Optional, Sequence
 
 import opentelemetry.metrics as metrics  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
 import opentelemetry.trace as trace  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.telemetry import (  # @manual=//monarch/monarch_extension:monarch_extension
     forward_to_tracing,
     PyCounter,
     PyHistogram,
+    PySpan,
     PyUpDownCounter,
 )
-from monarch._src.actor.telemetry.rust_span_tracing import RustTracerProvider
 from opentelemetry.context import Context
 from opentelemetry.metrics import CallbackT
 from opentelemetry.util.types import Attributes
+
+
+def _current_actor_id() -> ActorId | None:
+    from monarch._src.actor.actor_mesh import _context
+
+    ctx = _context.get(None)
+    return None if ctx is None else ctx.actor_instance.actor_id
+
+
+def span(name: str) -> PySpan:
+    return PySpan(name, _current_actor_id())
 
 
 class TracingForwarder(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         # Try to add actor_id from the current context to the logging record
         try:
-            from monarch._src.actor.actor_mesh import _context, context
-
-            # Don't initialize the context if it hasn't been initialized yet.
-            if _context.get(None) is not None:
-                ctx = context()
-                if ctx and ctx.actor_instance and ctx.actor_instance.actor_id:
-                    # Add actor_id as an attribute to the logging record
-                    setattr(record, "actor_id", str(ctx.actor_instance.actor_id))
+            actor_id = _current_actor_id()
+            if actor_id is not None:
+                # Add actor_id as an attribute to the logging record
+                record.actor_id = str(actor_id)  # type: ignore[attr-defined]
         except Exception:
             # If we can't get the context or actor_id for any reason, just continue
             # without adding the actor_id field
@@ -179,25 +186,21 @@ class MeterProvider(metrics.MeterProvider):
         return Meter(name, version, schema_url)
 
 
+_TRACER: trace.Tracer = trace.NoOpTracer()
+
+
 def get_monarch_tracer() -> trace.Tracer:
     """
-    Creates and returns a Monarch python tracer that logs to the Rust telemetry system.
-
-    Returns:
-        Tracer: A configured OpenTelemetry tracer for Monarch.
-
-    Usage:
-        tracer = get_monarch_tracer()
-        with tracer.start_as_current_span("span_name") as span:
-            # code here
+    Return a no-op OTEL tracer for compatibility with older call sites.
+    Prefer `span()` for new code.
     """
-    install()
-    return trace.get_tracer("monarch.python.tracer")
+
+    return _TRACER
 
 
 _INSTALLED = False
 
-METER: metrics.Meter = metrics.get_meter("monarch")
+METER: metrics.Meter = Meter("monarch")
 
 
 def install() -> None:
@@ -205,8 +208,6 @@ def install() -> None:
     if _INSTALLED:
         return
 
-    provider = RustTracerProvider()
-    trace.set_tracer_provider(provider)
     metrics.set_meter_provider(MeterProvider())
 
     global METER

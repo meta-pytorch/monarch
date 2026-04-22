@@ -89,10 +89,9 @@ from monarch._src.actor.mpsc import (  # noqa: F401 - import runs @rust_struct p
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
-from monarch._src.actor.telemetry import METER
+from monarch._src.actor.telemetry import METER, span
 from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message_kind
 from opentelemetry.metrics import Counter
-from opentelemetry.trace import Tracer
 from typing_extensions import Self
 
 if TYPE_CHECKING:
@@ -113,11 +112,7 @@ if TYPE_CHECKING:
         _assert_implements_endpoint(ep)
 
 
-from monarch._src.actor.telemetry import get_monarch_tracer
-
 logger: logging.Logger = logging.getLogger(__name__)
-
-TRACER: Tracer = get_monarch_tracer()
 
 Allocator = ProcessAllocator | LocalAllocator
 
@@ -1269,13 +1264,7 @@ class _Actor:
 
             if is_coro:
                 if should_instrument:
-                    # TODO(T12345): Replace with a lower-overhead tracing solution.
-                    # Using TRACER context manager for now to avoid thread-safety
-                    # issues with PySpan across async/await boundaries.
-                    with TRACER.start_as_current_span(
-                        method_name,
-                        attributes={"actor_id": str(ctx.actor_instance.actor_id)},
-                    ):
+                    with span(method_name):
                         result = await the_method(*args, **kwargs)
                 else:
                     result = await the_method(*args, **kwargs)
@@ -1283,13 +1272,7 @@ class _Actor:
             else:
                 with fake_sync_state():
                     if should_instrument:
-                        # TODO(T12345): Replace with a lower-overhead tracing solution.
-                        # Using TRACER context manager for now to avoid thread-safety
-                        # issues with PySpan across async/await boundaries.
-                        with TRACER.start_as_current_span(
-                            method_name,
-                            attributes={"actor_id": str(ctx.actor_instance.actor_id)},
-                        ):
+                        with span(method_name):
                             result = the_method(*args, **kwargs)
                     else:
                         result = the_method(*args, **kwargs)
