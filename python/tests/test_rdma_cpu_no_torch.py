@@ -7,62 +7,80 @@
 # pyre-unsafe
 import sys
 import time
+from typing import Any
 
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch.actor import Actor, endpoint, this_host
-from monarch.config import configured
-from monarch.rdma import is_ibverbs_available, RDMABuffer
 
 # TODO(slurye): Enable these tests in OSS once the shutdown hang issue is fixed.
 pytestmark = pytest.mark.oss_skip
 
-RDMA_BACKENDS = []
-if is_ibverbs_available():
-    RDMA_BACKENDS.append("ibverbs")
-RDMA_BACKENDS.append("tcp")
+
+def _rdma_backends() -> list[str]:
+    from monarch.rdma import is_ibverbs_available
+
+    backends = ["tcp"]
+    if is_ibverbs_available():
+        backends.insert(0, "ibverbs")
+    return backends
 
 
-class CpuActor(Actor):
-    def __init__(self) -> None:
-        self.data = bytearray(range(256))
-        self.buf = None
+def _cpu_actor_type() -> Any:
+    from monarch.actor import Actor, endpoint
+    from monarch.rdma import RDMABuffer
 
-    @endpoint
-    async def ping(self) -> str:
-        return "pong"
+    class CpuActor(Actor):
+        def __init__(self) -> None:
+            self.data = bytearray(range(256))
+            self.buf = None
 
-    @endpoint
-    async def create_buffer(self) -> RDMABuffer:
-        import time as _time
+        @endpoint
+        async def ping(self) -> str:
+            return "pong"
 
-        t0 = _time.perf_counter()
-        self.buf = RDMABuffer(memoryview(self.data))
-        t1 = _time.perf_counter()
-        print(
-            f"[ACTOR TIMING] RDMABuffer() total: {(t1 - t0) * 1000:.1f}ms", flush=True
-        )
-        return self.buf
+        @endpoint
+        async def create_buffer(self) -> RDMABuffer:
+            import time as _time
 
-    @endpoint
-    async def read_buffer(self, buf: RDMABuffer) -> bytes:
-        import time as _time
+            t0 = _time.perf_counter()
+            self.buf = RDMABuffer(memoryview(self.data))
+            t1 = _time.perf_counter()
+            print(
+                f"[ACTOR TIMING] RDMABuffer() total: {(t1 - t0) * 1000:.1f}ms",
+                flush=True,
+            )
+            return self.buf
 
-        t0 = _time.perf_counter()
-        dst = bytearray(len(self.data))
-        await buf.read_into(memoryview(dst))
-        t1 = _time.perf_counter()
-        print(
-            f"[ACTOR TIMING] read_buffer: buf.read_into(): {(t1 - t0) * 1000:.1f}ms",
-            flush=True,
-        )
-        return bytes(dst)
+        @endpoint
+        async def read_buffer(self, buf: RDMABuffer) -> bytes:
+            import time as _time
+
+            t0 = _time.perf_counter()
+            dst = bytearray(len(self.data))
+            await buf.read_into(memoryview(dst))
+            t1 = _time.perf_counter()
+            print(
+                f"[ACTOR TIMING] read_buffer: buf.read_into(): {(t1 - t0) * 1000:.1f}ms",
+                flush=True,
+            )
+            return bytes(dst)
+
+    return CpuActor
 
 
-@pytest.mark.parametrize("rdma_backend", RDMA_BACKENDS)
+@pytest.mark.parametrize("rdma_backend", ["ibverbs", "tcp"])
 @isolate_in_subprocess
 async def test_rdma_buffer_cpu_memoryview(rdma_backend):
     """RDMABuffer works with bytearray/memoryview CPU buffers without importing torch."""
+    from monarch.actor import this_host
+    from monarch.config import configured
+    from monarch.rdma import is_ibverbs_available
+
+    if rdma_backend == "ibverbs" and not is_ibverbs_available():
+        pytest.skip("ibverbs backend is unavailable")
+
+    cpu_actor = _cpu_actor_type()
+
     if rdma_backend == "tcp":
         cm = configured(rdma_disable_ibverbs=True)
     else:
@@ -75,14 +93,15 @@ async def test_rdma_buffer_cpu_memoryview(rdma_backend):
         t1 = time.perf_counter()
         print(f"\n[TIMING] spawn_procs: {(t1 - t0) * 1000:.1f}ms")
 
-        sender = proc1.spawn("sender", CpuActor)
-        receiver = proc2.spawn("receiver", CpuActor)
+        sender = proc1.spawn("sender", cpu_actor)
+        receiver = proc2.spawn("receiver", cpu_actor)
         t2 = time.perf_counter()
         print(f"[TIMING] spawn actors: {(t2 - t1) * 1000:.1f}ms")
 
         pong = await sender.ping.call_one()
         t_ping = time.perf_counter()
         print(f"[TIMING] first ping (process startup): {(t_ping - t2) * 1000:.1f}ms")
+        assert pong == "pong"
 
         buf = await sender.create_buffer.call_one()
         t3 = time.perf_counter()
