@@ -28,6 +28,7 @@ use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
 use hyperactor::handle;
+use hyperactor::id::Label;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
@@ -494,11 +495,13 @@ impl Actor for StreamActor {
         });
         PROC.with(|proc| proc.set(cx.proc().clone()).ok());
         ROOT_ACTOR_ID.with(|root_actor_id| {
+            let root_label = cx
+                .self_id()
+                .label()
+                .cloned()
+                .unwrap_or_else(|| Label::new("stream").unwrap());
             root_actor_id
-                .set(reference::ActorId::root(
-                    cx.self_id().proc_id().clone(),
-                    cx.self_id().name().to_string(),
-                ))
+                .set(reference::ActorId::root(cx.self_id().proc_id(), root_label))
                 .ok()
         });
         // Set the current stream for this actor thread.
