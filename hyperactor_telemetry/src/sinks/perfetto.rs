@@ -82,6 +82,11 @@ use crate::trace_dispatcher::get_field;
 /// The target prefix for user-facing telemetry spans.
 pub const USER_TELEMETRY_PREFIX: &str = "monarch_hyperactor::telemetry";
 
+/// Dedicated target for endpoint spans. Spans with this target get their
+/// display name synthesized as `{method}.{span_name}`, where `span_name`
+/// is the adverb (e.g., "call", "call_one", "choose").
+pub const ENDPOINT_TELEMETRY_TARGET: &str = "monarch_hyperactor::telemetry::endpoint";
+
 /// Controls what events are captured in Perfetto traces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum PerfettoTraceMode {
@@ -221,6 +226,9 @@ pub struct PerfettoFileSink {
     span_info: HashMap<u64, SpanInfo>,
     /// Maps thread names to track ids
     thread_tracks: HashMap<String, u64>,
+    /// Maps span id to the track it entered on, so that certain Exit/Close events
+    /// are emitted on the same track even when they fire from a different thread.
+    span_tracks: HashMap<u64, u64>,
     /// track_id of this process
     process_track: u64,
     pid: i32,
@@ -275,6 +283,7 @@ impl PerfettoFileSink {
             annotation_names: InternedStrings::default(),
             span_info: HashMap::new(),
             thread_tracks: HashMap::new(),
+            span_tracks: HashMap::new(),
             process_track: 0,
             pid,
             process_name: process_name.to_string(),
@@ -563,13 +572,33 @@ impl TraceEventSink for PerfettoFileSink {
                     return Ok(());
                 }
 
-                // In user mode, prefer the "name" field if present for display
-                // In dev mode, use the fully qualified name
-                let display_name = if *target == USER_TELEMETRY_PREFIX {
-                    if let Some(FieldValue::Str(n)) = get_field(fields, "name") {
-                        n.clone()
-                    } else {
-                        name.to_string()
+                // In user mode, synthesize a friendly display name.
+                // - endpoint target (ActorEndpoint): "{mesh}.{method}.{span_name}"
+                // - endpoint target (Remote):       "{call_name}.{span_name}"
+                // - generic telemetry target: "name" field, else static span name
+                // In dev mode, use the fully qualified name.
+                let display_name = if *target == ENDPOINT_TELEMETRY_TARGET {
+                    let mesh = match get_field(fields, "mesh") {
+                        Some(FieldValue::Str(m)) => Some(m.as_str()),
+                        _ => None,
+                    };
+                    let method = match get_field(fields, "method") {
+                        Some(FieldValue::Str(m)) => Some(m.as_str()),
+                        _ => None,
+                    };
+                    let call_name = match get_field(fields, "call_name") {
+                        Some(FieldValue::Str(c)) if !c.is_empty() => Some(c.as_str()),
+                        _ => None,
+                    };
+                    match (mesh, method, call_name) {
+                        (Some(mesh), Some(method), _) => format!("{}.{}.{}()", mesh, method, name),
+                        (_, _, Some(call_name)) => format!("{}.{}()", call_name, name),
+                        _ => name.to_string(),
+                    }
+                } else if *target == USER_TELEMETRY_PREFIX {
+                    match get_field(fields, "name") {
+                        Some(FieldValue::Str(n)) => n.clone(),
+                        _ => name.to_string(),
                     }
                 } else {
                     format!("{}::{}", target, name)
@@ -597,6 +626,7 @@ impl TraceEventSink for PerfettoFileSink {
                     let file = info.file;
                     let line = info.line;
                     let track = self.get_or_create_thread_track(thread_name);
+                    self.span_tracks.insert(*id, track);
                     self.write_slice_begin(track, *timestamp, &fq_name, &fields, file, line);
                 }
             }
@@ -607,13 +637,17 @@ impl TraceEventSink for PerfettoFileSink {
                 thread_name,
             } => {
                 if self.span_info.contains_key(id) {
-                    let track = self.get_or_create_thread_track(thread_name);
+                    let track = self
+                        .span_tracks
+                        .remove(id)
+                        .unwrap_or_else(|| self.get_or_create_thread_track(thread_name));
                     self.write_slice_end(track, *timestamp);
                 }
             }
 
             TraceEvent::SpanClose { id, .. } => {
                 self.span_info.remove(id);
+                self.span_tracks.remove(id);
             }
 
             TraceEvent::Event {
