@@ -190,7 +190,7 @@ mod tests {
     // Test fixtures
 
     fn test_proc_id() -> ProcId {
-        ProcId::with_name(ChannelAddr::Local(0), "worker")
+        ProcId::from_resource_name(ChannelAddr::Local(0), "worker")
     }
 
     fn test_actor_id(name: &str, idx: usize) -> hyperactor::reference::ActorId {

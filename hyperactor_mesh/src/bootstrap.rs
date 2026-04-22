@@ -563,9 +563,12 @@ impl Bootstrap {
                     eprintln!("(bootstrap) PDEATHSIG disabled via config");
                 }
 
-                let (local_addr, name) = (proc_id.addr().clone(), proc_id.name());
+                let local_addr = proc_id.addr().clone();
                 // TODO provide a direct way to construct these
-                let serve_addr = format!("unix:{}", socket_dir_path.join(name).display());
+                let serve_addr = format!(
+                    "unix:{}",
+                    socket_dir_path.join(proc_id.id().to_string()).display()
+                );
                 let serve_addr = serve_addr.parse().unwrap();
 
                 // The following is a modified host::spawn_proc to support direct
