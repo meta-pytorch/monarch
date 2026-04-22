@@ -1760,7 +1760,7 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
             " JOIN snapshots s ON s.snapshot_id = a.snapshot_id"
             " WHERE a.node_id LIKE '%snap_worker%'"
             " AND a.node_id NOT LIKE '%actor_mesh_controller_%'"
-            " AND pn.proc_name LIKE 'snap_procs_%'"
+            " AND pn.proc_name LIKE 'snap_procs%'"
             " ORDER BY s.snapshot_ts DESC"
             " LIMIT 1"
         )
@@ -1776,7 +1776,7 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
         )
         actor_node_id = actor_ids[0]
         snapshot_id = rows["snapshot_id"][0]
-        assert rows["proc_name"][0].startswith("snap_procs_")
+        assert rows["proc_name"][0].startswith("snap_procs")
 
         # --- Ancestry coherence: actor → proc → host → root ---
         #
