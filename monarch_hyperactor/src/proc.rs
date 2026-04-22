@@ -161,8 +161,8 @@ impl From<PyActorId> for reference::ActorId {
 #[pymethods]
 impl PyActorId {
     #[new]
-    #[pyo3(signature = (*, addr, proc_name, actor_name, pid = 0))]
-    fn new(addr: &str, proc_name: &str, actor_name: &str, pid: reference::Index) -> PyResult<Self> {
+    #[pyo3(signature = (*, addr, proc_name, actor_name))]
+    fn new(addr: &str, proc_name: &str, actor_name: &str) -> PyResult<Self> {
         let addr: ChannelAddr = addr.parse().map_err(|e| {
             PyValueError::new_err(format!("Failed to parse channel address '{}': {}", addr, e))
         })?;
@@ -170,7 +170,6 @@ impl PyActorId {
             inner: reference::ActorId::new(
                 reference::ProcId::from_resource_name(addr, proc_name),
                 actor_name,
-                pid,
             ),
         })
     }
@@ -203,17 +202,40 @@ impl PyActorId {
 
     #[getter]
     fn actor_name(&self) -> String {
-        self.inner.name().to_string()
+        self.inner
+            .label()
+            .map(|l| l.as_str().to_string())
+            .unwrap_or_else(|| self.inner.uid().to_string())
     }
 
     #[getter]
-    fn pid(&self) -> reference::Index {
-        self.inner.pid()
+    fn label(&self) -> Option<String> {
+        self.inner.label().map(|l| l.as_str().to_string())
+    }
+
+    #[getter]
+    fn proc_label(&self) -> Option<String> {
+        self.inner.proc_id().label().map(|l| l.as_str().to_string())
+    }
+
+    #[getter]
+    fn uid(&self) -> String {
+        self.inner.uid().to_string()
+    }
+
+    #[getter]
+    fn pid(&self) -> String {
+        self.uid()
     }
 
     #[getter]
     fn proc_id(&self) -> String {
         self.inner.proc_id().to_string()
+    }
+
+    #[getter]
+    fn is_root(&self) -> bool {
+        self.inner.is_root()
     }
 
     fn __str__(&self) -> String {

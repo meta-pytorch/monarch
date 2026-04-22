@@ -113,40 +113,21 @@ pub async fn run_query_telemetry_tables() {
     fixture.shutdown().await;
 }
 
-/// MIT-67: End-to-end: discover a proc via SQL, dump its py-spy stacks via
-/// `/v1/pyspy_dump`, then verify the dump exists via SQL query.
+/// MIT-67: End-to-end: discover a worker proc from the live topology, dump its
+/// py-spy stacks via `/v1/pyspy_dump`, then verify the dump exists via SQL
+/// query.
 pub async fn run_pyspy_dump_and_query() {
     let fixture = start_with_dashboard().await;
 
-    // Wait for topology to settle so actors table is populated.
-    fixture
+    // Wait for topology to settle and use the classified worker proc directly.
+    let proc_ref = fixture
         .classify_procs()
         .await
-        .expect("procs should be classifiable");
-
-    // 1. Use SQL to discover a worker proc_ref from ProcAgent actors.
-    //    ProcAgent full_name = "{proc_id},proc_agent[0]"
-    let resp: QueryResponse = fixture
-        .post_json_with_retry(
-            "/v1/query",
-            &QueryRequest {
-                sql: "SELECT full_name FROM actors WHERE full_name LIKE '%,proc_agent[0]'"
-                    .to_string(),
-            },
-        )
-        .await
-        .expect("proc_agent query should succeed");
-    let rows = resp.rows.as_array().expect("rows should be an array");
-    assert!(!rows.is_empty(), "expected at least one proc_agent actor");
-    let full_name = rows[0]["full_name"]
-        .as_str()
-        .expect("full_name should be a string");
-    let proc_ref = full_name
-        .strip_suffix(",proc_agent[0]")
-        .expect("full_name should end with ,proc_agent[0]");
+        .expect("procs should be classifiable")
+        .worker;
 
     // 2. Trigger py-spy dump via /v1/pyspy_dump/{proc_ref}.
-    let encoded = urlencoding::encode(proc_ref);
+    let encoded = urlencoding::encode(&proc_ref);
     let pyspy_path = format!("/v1/pyspy_dump/{encoded}");
 
     let mut dump_id = String::new();

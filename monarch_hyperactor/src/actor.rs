@@ -1377,10 +1377,10 @@ impl Handler<MeshFailure> for PythonActor {
                                 message
                                     .actor_mesh_name
                                     .as_deref()
-                                    .unwrap_or_else(|| message.event.actor_id.name()),
+                                    .unwrap_or_else(|| message.event.actor_id.log_name()),
                                 "SupervisionError::Unhandled",
                             ),
-                            (cx.self_id().name(), "UnhandledSupervisionEvent"),
+                            (cx.self_id().log_name(), "UnhandledSupervisionEvent"),
                         ] {
                             tracing::info!(
                                 name = "ActorMeshStatus",
@@ -1426,10 +1426,10 @@ impl Handler<MeshFailure> for PythonActor {
                             message
                                 .actor_mesh_name
                                 .as_deref()
-                                .unwrap_or_else(|| message.event.actor_id.name()),
+                                .unwrap_or_else(|| message.event.actor_id.log_name()),
                             "SupervisionError::__supervise__::exception",
                         ),
-                        (cx.self_id().name(), "UnhandledSupervisionEvent"),
+                        (cx.self_id().log_name(), "UnhandledSupervisionEvent"),
                     ] {
                         tracing::info!(
                             name = "ActorMeshStatus",
