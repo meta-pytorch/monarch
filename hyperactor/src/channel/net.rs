@@ -110,40 +110,49 @@ pub(crate) const ACCEPTOR_TO_INITIATOR: u8 = 1;
 /// This is written/read directly on the wire (not framed), before
 /// any session framing begins.
 ///
-/// Wire format (12 bytes, big-endian):
+/// Wire format (13 bytes, big-endian):
 /// ```text
-/// [magic: 4B "LNK\0"] [session_id: 8B u64 BE]
+/// [magic: 4B "LNK\0"] [session_id: 8B u64 BE] [stream_id: 1B u8]
 /// ```
 const LINK_INIT_MAGIC: [u8; 4] = *b"LNK\0";
-const LINK_INIT_SIZE: usize = 4 + 8;
+const LINK_INIT_SIZE: usize = 4 + 8 + 1;
+
+/// Parsed LinkInit header.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LinkInit {
+    pub session_id: SessionId,
+    pub stream_id: u8,
+}
 
 /// Write a LinkInit header to the stream.
 async fn write_link_init<S: AsyncWrite + Unpin>(
     stream: &mut S,
     session_id: SessionId,
+    stream_id: u8,
 ) -> Result<(), std::io::Error> {
     let mut buf = [0u8; LINK_INIT_SIZE];
     buf[0..4].copy_from_slice(&LINK_INIT_MAGIC);
     buf[4..12].copy_from_slice(&session_id.0.to_be_bytes());
+    buf[12] = stream_id;
     stream.write_all(&buf).await
 }
 
 /// Read a LinkInit header from the stream.
-async fn read_link_init<S: AsyncRead + Unpin>(stream: &mut S) -> Result<SessionId, std::io::Error> {
+async fn read_link_init<S: AsyncRead + Unpin>(stream: &mut S) -> Result<LinkInit, std::io::Error> {
     let mut buf = [0u8; LINK_INIT_SIZE];
     stream.read_exact(&mut buf).await?;
     if buf[0..4] != LINK_INIT_MAGIC {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!(
-                "invalid LinkInit magic: expected {:?}, got {:?}",
-                LINK_INIT_MAGIC,
-                &buf[0..4]
-            ),
+            format!("invalid LinkInit magic: expected LNK, got {:?}", &buf[0..4]),
         ));
     }
     let session_id = SessionId(u64::from_be_bytes(buf[4..12].try_into().unwrap()));
-    Ok(session_id)
+    let stream_id = buf[12];
+    Ok(LinkInit {
+        session_id,
+        stream_id,
+    })
 }
 
 /// Link represents a network link through which connections may be
@@ -827,7 +836,7 @@ pub(crate) mod unix {
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         let mut stream = UnixStream::from_std(std_stream)
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
-                        write_link_init(&mut stream, session_id)
+                        write_link_init(&mut stream, session_id, 0)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         return Ok(stream);
@@ -1116,7 +1125,7 @@ pub(crate) mod tcp {
                                 "cannot disable Nagle algorithm".to_string(),
                             )
                         })?;
-                        write_link_init(&mut stream, session_id)
+                        write_link_init(&mut stream, session_id, 0)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         return Ok(stream);
@@ -1520,7 +1529,7 @@ pub(crate) mod tls {
                                     format!("cannot establish TLS connection to {:?}", server_name),
                                 )
                             })?;
-                        write_link_init(&mut tls_stream, session_id)
+                        write_link_init(&mut tls_stream, session_id, 0)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         return Ok(tls_stream);
@@ -2436,7 +2445,7 @@ mod tests {
             // Write LinkInit on server_relay so it's readable from `server`.
             // This simulates the client sending LinkInit over the wire before
             // the frame-level relay begins.
-            write_link_init(&mut server_relay, session_id)
+            write_link_init(&mut server_relay, session_id, 0)
                 .await
                 .map_err(|err| ClientError::Io(self.dest(), err))?;
 
@@ -2786,7 +2795,7 @@ mod tests {
     ) -> (FrameReader<ReadHalf<DuplexStream>>, WriteHalf<DuplexStream>) {
         let mut receiver = receiver_storage.take().await;
         // Read and discard the LinkInit header that MockLink::connect() writes.
-        let _session_id = read_link_init(&mut receiver).await.expect("read LinkInit");
+        let _link_init = read_link_init(&mut receiver).await.expect("read LinkInit");
         let (r, writer) = tokio::io::split(receiver);
         let reader = FrameReader::new(
             r,
