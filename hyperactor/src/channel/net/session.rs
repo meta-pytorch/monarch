@@ -842,6 +842,87 @@ pub(super) async fn recv_connected<
     }
 }
 
+/// Multi-stream receive protocol loop: read frames, deliver them
+/// out-of-order to `deliver_tx`, record seqs into the shared
+/// [`AckWatermark`], and emit acks when the watermark's policy says
+/// so. Runs on a single physical connection; one instance per stream
+/// of a multi-stream session, all sharing the same `ack_watermark`.
+///
+/// Cancel-safe — caller wraps in a `select!` with the cancel branch.
+pub(super) async fn multi_stream_recv_connected<
+    M: RemoteMessage,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+>(
+    stream: &TaggedStream<R, W>,
+    ack_watermark: &tokio::sync::Mutex<AckWatermark>,
+    deliver_tx: &mpsc::Sender<M>,
+) -> Result<(), RecvLoopError> {
+    let mut pending_ack: Option<Completion<W, Bytes>> = None;
+
+    loop {
+        // Consolidated watermark access: decide whether to emit an ack
+        // and how long to sleep until the next timer tick.
+        let (maybe_ack, sleep_interval) = {
+            let mut w = ack_watermark.lock().await;
+            let ack = if pending_ack.is_none() {
+                w.poll()
+            } else {
+                None
+            };
+            (ack, w.interval())
+        };
+
+        if let Some(ack_val) = maybe_ack {
+            let ack = serialize_response(NetRxResponse::Ack(ack_val))
+                .map_err(|e| RecvLoopError::Io(e.into()))?;
+            pending_ack = Some(stream.write(ack));
+        }
+
+        tokio::select! {
+            biased;
+
+            // Drive ack write to completion.
+            result = async { pending_ack.as_mut().unwrap().drive().await },
+                if pending_ack.is_some() => {
+                match result {
+                    Ok(()) => pending_ack = None,
+                    Err(e) => return Err(RecvLoopError::Io(e.into())),
+                }
+            }
+
+            // Ack timer tick: loop back so we can re-poll the watermark.
+            // Guarded on `pending_ack.is_none()` to avoid spinning while
+            // a write is mid-drive.
+            _ = tokio::time::sleep(sleep_interval), if pending_ack.is_none() => {}
+
+            bytes_result = stream.next() => {
+                let bytes = match bytes_result {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => return Ok(()),
+                    Err(e) => return Err(RecvLoopError::Io(e.into())),
+                };
+
+                let message = serde_multipart::Message::from_framed(bytes)
+                    .map_err(|e| RecvLoopError::Io(e.into()))?;
+                match serde_multipart::deserialize_bincode::<Frame<M>>(message) {
+                    Ok(Frame::Message(seq, msg)) => {
+                        ack_watermark.lock().await.record(seq);
+                        deliver_tx.send(msg).await.map_err(|_| {
+                            RecvLoopError::Io(anyhow::anyhow!("deliver channel closed"))
+                        })?;
+                    }
+                    Err(e) => {
+                        return Err(RecvLoopError::Io(
+                            anyhow::Error::from(e).context("deserialize multi-stream message"),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Error from the send protocol loop. An `Ok(())` from
 /// [`send_connected`] indicates normal connection close (EOF).
 pub(super) enum SendLoopError {
