@@ -75,9 +75,9 @@ def test_actor_id() -> None:
     assert actor_id.pid == actor_id.uid
     assert actor_id.label == "actor"
     assert actor_id.proc_label == "test"
-    assert actor_id.proc_id == "local:0,_test"
+    assert actor_id.proc_id == "_test@inproc://0"
     assert actor_id.is_root is True
-    assert str(actor_id) == "local:0,_test,_actor"
+    assert str(actor_id) == "_actor._test@inproc://0"
     assert ActorId.from_string(str(actor_id)) == actor_id
 
 

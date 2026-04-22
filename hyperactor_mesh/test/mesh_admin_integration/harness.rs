@@ -303,6 +303,18 @@ pub(crate) fn pyspy_workload_binary() -> PathBuf {
         .to_path_buf()
 }
 
+/// Build a canonical proc reference that is syntactically valid but
+/// points at an unreachable abstract unix socket.
+pub(crate) fn unreachable_proc_ref() -> String {
+    hyperactor::reference::ProcId::from_resource_name(
+        "unix:@nonexistent_bogus_socket_xyz"
+            .parse::<hyperactor::channel::ChannelAddr>()
+            .unwrap(),
+        "bogus-ffffffffffffffff",
+    )
+    .to_string()
+}
+
 /// Resolve the Rust sieve binary via Buck resources.
 pub(crate) fn sieve_rust_binary() -> PathBuf {
     buck_resources::get("monarch/hyperactor_mesh/sieve_rs")

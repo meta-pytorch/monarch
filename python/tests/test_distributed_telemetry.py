@@ -351,7 +351,7 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
                       m.class AS mesh_class
                FROM actors a
                INNER JOIN meshes m ON a.mesh_id = m.id
-               WHERE a.full_name LIKE '%join_test_worker%'
+               WHERE m.given_name = 'join_test_worker'
                ORDER BY a.rank"""
         )
         result_dict = result.to_pydict()
@@ -367,6 +367,10 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
         mesh_names = result_dict.get("mesh_name", [])
         assert all("join_test_worker" in name for name in mesh_names), (
             f"Expected all joined rows to reference 'join_test_worker', got: {mesh_names}"
+        )
+        actor_names = result_dict.get("actor_name", [])
+        assert all(actor_names), (
+            f"Expected canonical actor names to be populated, got: {actor_names}"
         )
 
         # With 2 workers, we should see 2 joined rows
