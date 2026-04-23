@@ -26,7 +26,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
-from monarch._src.actor.actor_mesh import ActorMesh, context
+from monarch._src.actor.actor_mesh import ActorMesh, context, current_rank
 from monarch._src.actor.host_mesh import this_host
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch.actor import (
@@ -583,8 +583,13 @@ class SyncErrorActor(Actor):
 
 
 class ErrorActor(Actor):
+    def __init__(self) -> None:
+        self._root_gpu_rank = current_rank()["gpus"]
+
     @endpoint
-    async def fail_with_supervision_error(self) -> None:
+    async def fail_with_supervision_error(self, rank: int | None = None) -> None:
+        if rank is not None and self._root_gpu_rank != rank:
+            return
         raise ActorFailureError("Simulated actor failure for supervision testing")
 
     @endpoint
@@ -1122,12 +1127,14 @@ async def test_mesh_slices_inherit_parent_errors() -> None:
     error_mesh = pm.spawn("error", ErrorActor)
     slice_1 = error_mesh.slice(gpus=slice(2, 4))
 
-    # Trigger supervision error on gpus=2, 3, 4
+    # Trigger supervision error on root gpu=3 via the parent slice.
+    # We induce the failure on rank=3 alone because this ensures that are no
+    # races between the various failures and the subsequent call to the sliced mesh.
     with pytest.raises(SupervisionError):
-        await slice_1.fail_with_supervision_error.call()
+        await slice_1.fail_with_supervision_error.call(rank=3)
 
-    # Newly created slice containing gpu=3 is unhealthy
-    slice_2 = error_mesh.slice(gpus=3)
+    # Newly created child slice containing root gpu=3 is unhealthy.
+    slice_2 = slice_1.slice(gpus=1)
     with pytest.raises(SupervisionError):
         await slice_2.check.call()
 

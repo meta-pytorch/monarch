@@ -35,7 +35,7 @@ _DISABLED_TESTS_FILE = Path("disabled_tests.txt")
 _NEXTEST_FILTER_FILE = Path(".config/nextest-filter.txt")
 
 
-def fetch_disabled_test_names() -> list[str]:
+def fetch_disabled_test_names_with_status() -> tuple[list[str], bool]:
     url = f"https://api.github.com/repos/{_REPO}/issues?state=open&per_page=100"
     headers = {"Accept": "application/vnd.github+json"}
     token = os.environ.get("GITHUB_TOKEN")
@@ -48,15 +48,23 @@ def fetch_disabled_test_names() -> list[str]:
             issues: list[dict[str, object]] = json.loads(resp.read().decode())
     except urllib.error.URLError as e:
         print(f"Warning: could not fetch GitHub issues: {e}", file=sys.stderr)
-        return []
+        return [], False
 
-    return [
-        issue["title"][len("DISABLED ") :].strip()  # type: ignore[index]
-        for issue in issues
-        if isinstance(issue.get("title"), str)
-        and str(issue["title"]).startswith("DISABLED ")
-        and "pull_request" not in issue
-    ]
+    return (
+        [
+            issue["title"][len("DISABLED ") :].strip()  # type: ignore[index]
+            for issue in issues
+            if isinstance(issue.get("title"), str)
+            and str(issue["title"]).startswith("DISABLED ")
+            and "pull_request" not in issue
+        ],
+        True,
+    )
+
+
+def fetch_disabled_test_names() -> list[str]:
+    names, _ = fetch_disabled_test_names_with_status()
+    return names
 
 
 def write_disabled_tests(names: list[str], *, force: bool = False) -> None:
@@ -124,7 +132,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    names = fetch_disabled_test_names()
+    names, _ = fetch_disabled_test_names_with_status()
     if names:
         print(f"Found {len(names)} disabled test(s) from GitHub issues:")
         for name in names:

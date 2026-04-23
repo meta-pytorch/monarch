@@ -893,7 +893,7 @@ mod tests {
             .spawn::<PythonActor, _>(
                 instance,
                 "test_actors",
-                &PythonActorParams::new(pickled_type, None),
+                &PythonActorParams::new(pickled_type, None, None),
             )
             .await
             .unwrap();
