@@ -37,6 +37,7 @@ pub mod mesh;
 pub mod mesh_admin;
 pub mod mesh_admin_client;
 pub mod mesh_controller;
+pub mod mesh_id;
 pub mod mesh_selection;
 mod metrics;
 pub mod proc_agent;

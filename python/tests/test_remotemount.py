@@ -18,23 +18,68 @@ import stat
 import tempfile
 import time
 from collections.abc import Generator
+from typing import Any, TYPE_CHECKING
 
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._rust_bindings.monarch_extension.chunked_fuse import (
-    FuseMountHandle,
-    mount_chunked_fuse,
-)
-from monarch._rust_bindings.monarch_extension.fast_pack import (
-    load_file_and_hash,
-    pack_files_with_offsets,
-)
-from monarch.remotemount.fast_pack import (
-    block_hashes,
-    HASH_BLOCK_SIZE,
-    pack_directory_chunked,
-)
-from monarch.remotemount.remotemount import classify_workers
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_extension.chunked_fuse import FuseMountHandle
+
+block_hashes: Any = None
+classify_workers: Any = None
+load_file_and_hash: Any = None
+mount_chunked_fuse: Any = None
+pack_directory_chunked: Any = None
+pack_files_with_offsets: Any = None
+HASH_BLOCK_SIZE = 64 * 1024 * 1024
+_RUNTIME_IMPORTS_LOADED = False
+
+
+def _ensure_runtime_imports() -> None:
+    global _RUNTIME_IMPORTS_LOADED
+    global block_hashes
+    global classify_workers
+    global load_file_and_hash
+    global mount_chunked_fuse
+    global pack_directory_chunked
+    global pack_files_with_offsets
+    global HASH_BLOCK_SIZE
+
+    if _RUNTIME_IMPORTS_LOADED:
+        return
+
+    # Keep native Monarch imports out of pytest collection so --list-only does
+    # not load the extensions just to enumerate tests.
+    from monarch._rust_bindings.monarch_extension.chunked_fuse import (
+        mount_chunked_fuse as runtime_mount_chunked_fuse,
+    )
+    from monarch._rust_bindings.monarch_extension.fast_pack import (
+        load_file_and_hash as runtime_load_file_and_hash,
+        pack_files_with_offsets as runtime_pack_files_with_offsets,
+    )
+    from monarch.remotemount.fast_pack import (
+        block_hashes as runtime_block_hashes,
+        HASH_BLOCK_SIZE as runtime_hash_block_size,
+        pack_directory_chunked as runtime_pack_directory_chunked,
+    )
+    from monarch.remotemount.remotemount import (
+        classify_workers as runtime_classify_workers,
+    )
+
+    block_hashes = runtime_block_hashes
+    classify_workers = runtime_classify_workers
+    load_file_and_hash = runtime_load_file_and_hash
+    mount_chunked_fuse = runtime_mount_chunked_fuse
+    pack_directory_chunked = runtime_pack_directory_chunked
+    pack_files_with_offsets = runtime_pack_files_with_offsets
+    HASH_BLOCK_SIZE = runtime_hash_block_size
+    _RUNTIME_IMPORTS_LOADED = True
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _load_runtime_imports() -> None:
+    _ensure_runtime_imports()
 
 
 class TestPackDirectoryChunked:
