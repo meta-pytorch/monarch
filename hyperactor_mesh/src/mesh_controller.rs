@@ -1274,6 +1274,7 @@ mod tests {
         let status = proc_status_to_actor_status(Some(ProcStatus::Stopped {
             exit_code: 0,
             stderr_tail: vec![],
+            command: String::new(),
         }));
         assert!(
             matches!(status, ActorStatus::Stopped(ref msg) if msg.contains("cleanly")),
@@ -1287,6 +1288,7 @@ mod tests {
         let status = proc_status_to_actor_status(Some(ProcStatus::Stopped {
             exit_code: 1,
             stderr_tail: vec![],
+            command: String::new(),
         }));
         assert!(
             matches!(status, ActorStatus::Failed(_)),
@@ -1322,6 +1324,7 @@ mod tests {
         let status = proc_status_to_actor_status(Some(ProcStatus::Killed {
             signal: 9,
             core_dumped: false,
+            command: String::new(),
         }));
         assert!(
             matches!(status, ActorStatus::Failed(_)),
