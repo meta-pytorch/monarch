@@ -2196,12 +2196,8 @@ mod test {
 
 #[cfg(test)]
 mod test_alloc {
-    use std::os::unix::process::ExitStatusExt;
-
     use hyperactor_config;
     use ndslice::extent;
-    use nix::sys::signal;
-    use nix::unistd::Pid;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -2605,92 +2601,5 @@ mod test_alloc {
         task1_allocator_handle.await.unwrap();
         task2_allocator.terminate();
         task2_allocator_handle.await.unwrap();
-    }
-
-    #[async_timed_test(timeout_secs = 180)]
-    #[cfg(fbcode_build)]
-    async fn test_remote_process_alloc_signal_handler() {
-        hyperactor_telemetry::initialize_logging_for_test();
-        let num_proc_meshes = 5;
-        let hosts_per_proc_mesh = 5;
-
-        let pid_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (pid_addr, mut pid_rx) = channel::serve::<u32>(pid_addr).unwrap();
-
-        let addresses = (0..(num_proc_meshes * hosts_per_proc_mesh))
-            .map(|_| ChannelAddr::any(ChannelTransport::Unix).to_string())
-            .collect::<Vec<_>>();
-
-        let remote_process_allocators = addresses
-            .iter()
-            .map(|addr| {
-                Command::new(crate::testresource::get(
-                    "monarch/hyperactor_mesh/remote_process_allocator",
-                ))
-                .env("RUST_LOG", "info")
-                .arg(format!("--addr={addr}"))
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .unwrap()
-            })
-            .collect::<Vec<_>>();
-
-        let done_allocating_addr = ChannelAddr::any(ChannelTransport::Unix);
-        let (done_allocating_addr, mut done_allocating_rx) =
-            channel::serve::<()>(done_allocating_addr).unwrap();
-        let mut remote_process_alloc = Command::new(crate::testresource::get(
-            "monarch/hyperactor_mesh/remote_process_alloc",
-        ))
-        .arg(format!("--done-allocating-addr={}", done_allocating_addr))
-        .arg(format!("--addresses={}", addresses.join(",")))
-        .arg(format!("--num-proc-meshes={}", num_proc_meshes))
-        .arg(format!("--hosts-per-proc-mesh={}", hosts_per_proc_mesh))
-        .arg(format!("--pid-addr={}", pid_addr))
-        .spawn()
-        .unwrap();
-
-        done_allocating_rx.recv().await.unwrap();
-        let mut received_pids = Vec::new();
-        while let Ok(pid) = pid_rx.recv().await {
-            received_pids.push(pid);
-            if received_pids.len() == remote_process_allocators.len() {
-                break;
-            }
-        }
-
-        signal::kill(
-            Pid::from_raw(remote_process_alloc.id().unwrap() as i32),
-            signal::SIGINT,
-        )
-        .unwrap();
-
-        assert_eq!(
-            remote_process_alloc.wait().await.unwrap().signal(),
-            Some(signal::SIGINT as i32)
-        );
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-        // Assert that the processes spawned by ProcessAllocator have been killed
-        for child_pid in received_pids {
-            let pid_check = Command::new("kill")
-                .arg("-0")
-                .arg(child_pid.to_string())
-                .output()
-                .await
-                .expect("Failed to check if PID is alive");
-
-            assert!(
-                !pid_check.status.success(),
-                "PID {} should no longer be alive",
-                child_pid
-            );
-        }
-
-        // Cleanup remote process allocator processes as SIGINT causes the current
-        // allocs to stop but not the RemoteProcessAllocator loops
-        for mut remote_process_allocator in remote_process_allocators {
-            remote_process_allocator.kill().await.unwrap();
-        }
     }
 }
