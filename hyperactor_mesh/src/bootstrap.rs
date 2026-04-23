@@ -282,7 +282,7 @@ macro_rules! ok {
     };
 }
 
-async fn halt<R>() -> R {
+pub async fn halt<R>() -> R {
     future::pending::<()>().await;
     unreachable!()
 }
@@ -327,11 +327,14 @@ impl HostShutdownHandle {
 /// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`];
 /// - `config`: optional runtime config overlay.
 /// - `exit_on_shutdown`: if true, [`HostShutdownHandle::join`] will call `process::exit` after draining.
+/// - `listener`: when `Some`, it is used as the frontend listening socket
+///   instead of binding a new one.
 pub async fn host(
     addr: ChannelAddr,
     command: Option<BootstrapCommand>,
     config: Option<Attrs>,
     exit_on_shutdown: bool,
+    listener: Option<std::net::TcpListener>,
 ) -> anyhow::Result<(ActorHandle<HostAgent>, HostShutdownHandle)> {
     if let Some(attrs) = config {
         hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
@@ -346,7 +349,7 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    let host = Host::new(manager, addr).await?;
+    let host = Host::new_with_default(manager, addr, None, listener).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will call host.serve() inside
@@ -613,7 +616,7 @@ impl Bootstrap {
                 exit_on_shutdown,
             } => {
                 let (_agent_handle, shutdown) =
-                    host(addr, command, config, exit_on_shutdown).await?;
+                    host(addr, command, config, exit_on_shutdown, None).await?;
                 shutdown.join().await;
                 halt().await
             }
@@ -3650,6 +3653,7 @@ mod tests {
             Some(BootstrapCommand::test()),
             None,
             false,
+            None,
         )
         .await
         .unwrap();
