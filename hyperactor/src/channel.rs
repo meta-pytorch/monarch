@@ -143,7 +143,7 @@ pub trait Tx<M: RemoteMessage> {
     }
 
     /// Enqueue a message to be sent on the channel.
-    #[hyperactor::instrument_infallible]
+    #[hyperactor::instrument]
     fn post(&self, message: M) {
         self.do_post(message, None);
     }

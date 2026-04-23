@@ -21,7 +21,6 @@ use hyperactor::Handler;
 use hyperactor::RefClient;
 use hyperactor::handle;
 use hyperactor::instrument;
-use hyperactor::instrument_infallible;
 use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
@@ -125,7 +124,7 @@ async fn yolo() -> Result<i32, i32> {
     Ok(10)
 }
 
-#[instrument_infallible(fields(crow = "black"))]
+#[instrument(fields(crow = "black"))]
 async fn yeet() -> String {
     String::from("cawwww")
 }

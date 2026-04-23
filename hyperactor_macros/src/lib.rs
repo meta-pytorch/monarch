@@ -1178,16 +1178,24 @@ pub fn handle(attr: TokenStream, item: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Use this macro in place of tracing::instrument to prevent spamming our tracing table.
-/// We set a default level of INFO while always setting ERROR if the function returns Result::Err giving us
-/// consistent and high quality structured logs. Because this wraps around tracing::instrument, all parameters
-/// mentioned in https://fburl.com/9jlkb5q4 should be valid. For functions that don't return a [`Result`] type, use
-/// [`instrument_infallible`]
+/// Use this macro in place of `tracing::instrument` to prevent spamming our tracing table.
+/// We set a default level of INFO while always setting ERROR if the function returns
+/// `Result::Err`, giving us consistent and high-quality structured logs. Because this wraps
+/// around `tracing::instrument`, all parameters mentioned in https://fburl.com/9jlkb5q4
+/// should be valid.
+///
+/// This macro auto-detects whether the function returns a `Result` type and, if so, adds the
+/// `err` flag to `tracing::instrument` so that errors are logged automatically.
 ///
 /// ```
 /// #[telemetry::instrument]
-/// async fn yolo() -> anyhow::Result<i32> {
+/// async fn fallible() -> anyhow::Result<i32> {
 ///     Ok(420)
+/// }
+///
+/// #[telemetry::instrument]
+/// async fn infallible() -> i32 {
+///     420
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -1195,36 +1203,38 @@ pub fn instrument(args: TokenStream, input: TokenStream) -> TokenStream {
     let args =
         parse_macro_input!(args with Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated);
     let input = parse_macro_input!(input as ItemFn);
-    let output = quote! {
-        #[hyperactor::internal_macro_support::tracing::instrument(err, skip_all, #args)]
-        #input
+
+    let output = if returns_result(&input) {
+        quote! {
+            #[hyperactor::internal_macro_support::tracing::instrument(err, skip_all, #args)]
+            #input
+        }
+    } else {
+        quote! {
+            #[hyperactor::internal_macro_support::tracing::instrument(skip_all, #args)]
+            #input
+        }
     };
 
     TokenStream::from(output)
 }
 
-/// Use this macro in place of tracing::instrument to prevent spamming our tracing table.
-/// Because this wraps around tracing::instrument, all parameters mentioned in
-/// https://fburl.com/9jlkb5q4 should be valid.
-///
-/// ```
-/// #[telemetry::instrument]
-/// async fn yolo() -> i32 {
-///     420
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn instrument_infallible(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args =
-        parse_macro_input!(args with Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated);
-    let input = parse_macro_input!(input as ItemFn);
+fn returns_result(func: &ItemFn) -> bool {
+    if let syn::ReturnType::Type(_, ty) = &func.sig.output {
+        return type_is_result(ty);
+    }
+    false
+}
 
-    let output = quote! {
-        #[hyperactor::internal_macro_support::tracing::instrument(skip_all, #args)]
-        #input
-    };
-
-    TokenStream::from(output)
+fn type_is_result(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(type_path) => type_path
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == "Result"),
+        _ => false,
+    }
 }
 
 struct HandlerSpec {

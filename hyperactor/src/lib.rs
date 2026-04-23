@@ -130,8 +130,6 @@ pub use hyperactor_macros::export;
 pub use hyperactor_macros::handle;
 #[doc(inline)]
 pub use hyperactor_macros::instrument;
-#[doc(inline)]
-pub use hyperactor_macros::instrument_infallible;
 pub use hyperactor_macros::observe_async;
 pub use hyperactor_macros::observe_result;
 #[doc(inline)]

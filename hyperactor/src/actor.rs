@@ -120,7 +120,7 @@ pub trait Actor: Sized + Send + 'static {
     /// This method is used by the runtime to spawn the actor server. It can be
     /// used by actors that require customized runtime setups
     /// (e.g., dedicated actor threads), or want to use a custom tokio runtime.
-    #[hyperactor::instrument_infallible]
+    #[hyperactor::instrument]
     fn spawn_server_task<F>(future: F) -> JoinHandle<F::Output>
     where
         F: Future + Send + 'static,

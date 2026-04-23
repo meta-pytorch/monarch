@@ -304,7 +304,7 @@ impl Child {
         }
     }
 
-    #[hyperactor::instrument_infallible]
+    #[hyperactor::instrument]
     fn stop(&self, reason: ProcStopReason) {
         let _ = self.stop_reason.set(reason); // first stop wins
         self.group.fail();
@@ -354,7 +354,7 @@ impl Child {
         });
     }
 
-    #[hyperactor::instrument_infallible]
+    #[hyperactor::instrument]
     fn post(&mut self, message: Allocator2Process) {
         if let ChannelState::Connected(channel) = &mut self.channel {
             channel.post(message);
@@ -395,7 +395,7 @@ impl ProcessAlloc {
     // Currently procs and processes are 1:1, so this just fully exits
     // the process.
 
-    #[hyperactor::instrument_infallible]
+    #[hyperactor::instrument]
     fn stop(
         &mut self,
         proc_id: &hyperactor_reference::ProcId,
@@ -449,7 +449,7 @@ impl ProcessAlloc {
             .map_err(|e| anyhow::anyhow!("failed to parse index from proc name '{}': {}", name, e))
     }
 
-    #[hyperactor::instrument_infallible]
+    #[hyperactor::instrument]
     async fn maybe_spawn(&mut self) -> Option<ProcState> {
         if self.active.len() >= self.spec.extent.num_ranks() {
             return None;
@@ -576,7 +576,7 @@ impl ProcessAlloc {
 
 #[async_trait]
 impl Alloc for ProcessAlloc {
-    #[hyperactor::instrument_infallible]
+    #[hyperactor::instrument]
     async fn next(&mut self) -> Option<ProcState> {
         if !self.running && self.active.is_empty() {
             return None;
