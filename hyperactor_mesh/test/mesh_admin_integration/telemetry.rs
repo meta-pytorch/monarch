@@ -174,8 +174,8 @@ pub async fn run_pyspy_dump_and_query() {
 pub async fn run_pyspy_dump_bogus_ref() {
     let fixture = start_with_dashboard().await;
 
-    let bogus = "unix:@nonexistent_bogus_socket_xyz,bogus-ffffffffffffffff";
-    let encoded = urlencoding::encode(bogus);
+    let bogus = crate::harness::unreachable_proc_ref();
+    let encoded = urlencoding::encode(&bogus);
     let resp = fixture
         .post(
             &format!("/v1/pyspy_dump/{encoded}"),

@@ -27,7 +27,7 @@ Fields are private; use named constructors:
 use hyperactor::reference::{ActorId, ProcId};
 
 let addr = "tcp:127.0.0.1:8080".parse()?;
-let proc = ProcId::with_name(addr, "myproc");
+let proc = ProcId::from_resource_name(addr, "myproc");
 let actor = ActorId::new(proc.clone(), "worker");
 ```
 

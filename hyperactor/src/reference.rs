@@ -40,9 +40,7 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
-use typeuri::ACTOR_PORT_BIT;
 use typeuri::Named;
-use wirevalue::TypeInfo;
 
 use crate::Actor;
 use crate::ActorHandle;
@@ -69,11 +67,8 @@ pub mod lex;
 pub mod name;
 mod parse;
 
-use parse::Lexer;
 use parse::ParseError;
-use parse::Token;
 pub use parse::is_valid_ident;
-use parse::parse;
 
 /// The kinds of references.
 #[derive(strum::Display)]
@@ -91,9 +86,9 @@ pub enum ReferenceKind {
 /// References implement a concrete syntax which can be parsed via
 /// [`FromStr`]. They are of the form:
 ///
-/// - `addr,proc_name`,
-/// - `addr,proc_name,actor_name[pid]`,
-/// - `addr,proc_name,actor_name[pid][port]`
+/// - `proc@location`,
+/// - `actor.proc@location`,
+/// - `actor.proc:port@location`
 ///
 /// Reference also implements a total ordering, so that references are
 /// ordered lexicographically with the hierarchy implied by proc,
@@ -234,46 +229,22 @@ pub enum ReferenceParsingError {
 impl FromStr for Reference {
     type Err = ReferenceParsingError;
 
-    fn from_str(addr: &str) -> Result<Self, Self::Err> {
-        // References are parsed in the "direct" format:
-        // The reference must contain a comma (anywhere), indicating a proc/actor/port reference.
-
-        match addr.split_once(",") {
-            Some((channel_addr, rest)) => {
-                let channel_addr = channel_addr.parse().map_err(|err| {
-                    ReferenceParsingError::InvalidChannelAddress(channel_addr.to_string(), err)
-                })?;
-
-                Ok(parse! {
-                    Lexer::new(rest);
-
-                    // channeladdr,proc_name
-                    Token::Elem(proc_name) =>
-                    Self::Proc(ProcId::from_resource_name(channel_addr, proc_name)),
-
-                    // channeladdr,proc_name,actor_name
-                    Token::Elem(proc_name) Token::Comma Token::Elem(actor_name) =>
-                    Self::Actor(ActorId::new(ProcId::from_resource_name(channel_addr, proc_name), actor_name)),
-
-                    // channeladdr,proc_name,actor_name[port]
-                    Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
-                        Token::LeftBracket Token::Uint(port) Token::RightBracket =>
-                        Self::Port(PortId::new(ActorId::new(ProcId::from_resource_name(channel_addr, proc_name), actor_name), port as u64)),
-
-                    // channeladdr,proc_name,actor_name[port<type>]
-                    Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
-                        Token::LeftBracket Token::Uint(port)
-                            Token::LessThan Token::Elem(_type) Token::GreaterThan
-                        Token::RightBracket =>
-                        Self::Port(PortId::new(ActorId::new(ProcId::from_resource_name(channel_addr, proc_name), actor_name), port as u64)),
-                }?)
-            }
-
-            None => Err(ReferenceParsingError::Unexpected(format!(
-                "expected a comma-separated reference, got: {}",
-                addr
-            ))),
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // References use the ref_:: format: "id@location".
+        // Try most specific first: Port (has `:` in id), Actor (has `.`), Proc.
+        if let Ok(port_ref) = s.parse::<ref_::PortRef>() {
+            return Ok(Self::Port(PortId(port_ref)));
         }
+        if let Ok(actor_ref) = s.parse::<ref_::ActorRef>() {
+            return Ok(Self::Actor(ActorId(actor_ref)));
+        }
+        if let Ok(proc_ref) = s.parse::<ref_::ProcRef>() {
+            return Ok(Self::Proc(ProcId(proc_ref)));
+        }
+        Err(ReferenceParsingError::Unexpected(format!(
+            "could not parse reference: {}",
+            s
+        )))
     }
 }
 
@@ -446,29 +417,18 @@ impl ProcId {
 
 impl fmt::Display for ProcId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Compat format: "addr,resource_name" where resource_name is the
-        // ResourceId text form: _label | label-hex16 | hex16.
-        let id = self.0.id();
-        match (id.uid(), id.label()) {
-            (Uid::Singleton(label), _) => write!(f, "{},_{}", self.0.location().addr(), label),
-            (Uid::Instance(uid), Some(label)) => {
-                write!(f, "{},{}-{:016x}", self.0.location().addr(), label, uid)
-            }
-            (Uid::Instance(uid), None) => {
-                write!(f, "{},{:016x}", self.0.location().addr(), uid)
-            }
-        }
+        fmt::Display::fmt(&self.0, f)
     }
 }
 
 impl FromStr for ProcId {
     type Err = ReferenceParsingError;
 
-    fn from_str(addr: &str) -> Result<Self, Self::Err> {
-        match addr.parse()? {
-            Reference::Proc(proc_id) => Ok(proc_id),
-            _ => Err(ReferenceParsingError::WrongType("proc".into())),
-        }
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let proc_ref: ref_::ProcRef = s
+            .parse()
+            .map_err(|e| ReferenceParsingError::Unexpected(format!("{}", e)))?;
+        Ok(Self(proc_ref))
     }
 }
 
@@ -551,7 +511,10 @@ impl ActorId {
 
     /// The actor's label.
     pub fn label(&self) -> Option<&Label> {
-        self.0.id().label()
+        self.0.id().label().or_else(|| match self.0.id().uid() {
+            Uid::Singleton(label) => Some(label),
+            _ => None,
+        })
     }
 
     /// The actor's network address (same as proc's).
@@ -566,24 +529,13 @@ impl ActorId {
 
     /// A human-readable name for logging, derived from the label or uid.
     pub fn log_name(&self) -> &str {
-        self.0.id().label().map(|l| l.as_str()).unwrap_or("?")
+        self.label().map(|l| l.as_str()).unwrap_or("?")
     }
 }
 
 impl fmt::Display for ActorId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Compat format: "proc_display,actor_resource_name"
-        let id = self.0.id();
-        let proc_id = self.proc_id();
-        match (id.uid(), id.label()) {
-            (Uid::Singleton(label), _) => write!(f, "{},_{}", proc_id, label),
-            (Uid::Instance(uid), Some(label)) => {
-                write!(f, "{},{}-{:016x}", proc_id, label, uid)
-            }
-            (Uid::Instance(uid), None) => {
-                write!(f, "{},{:016x}", proc_id, uid)
-            }
-        }
+        fmt::Display::fmt(&self.0, f)
     }
 }
 impl<A: Referable> From<ActorRef<A>> for ActorId {
@@ -601,11 +553,11 @@ impl<'a, A: Referable> From<&'a ActorRef<A>> for &'a ActorId {
 impl FromStr for ActorId {
     type Err = ReferenceParsingError;
 
-    fn from_str(addr: &str) -> Result<Self, Self::Err> {
-        match addr.parse()? {
-            Reference::Actor(actor_id) => Ok(actor_id),
-            _ => Err(ReferenceParsingError::WrongType("actor".into())),
-        }
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let actor_ref: ref_::ActorRef = s
+            .parse()
+            .map_err(|e| ReferenceParsingError::Unexpected(format!("{}", e)))?;
+        Ok(Self(actor_ref))
     }
 }
 
@@ -863,25 +815,17 @@ impl PortId {
 impl FromStr for PortId {
     type Err = ReferenceParsingError;
 
-    fn from_str(addr: &str) -> Result<Self, Self::Err> {
-        match addr.parse()? {
-            Reference::Port(port_id) => Ok(port_id),
-            _ => Err(ReferenceParsingError::WrongType("port".into())),
-        }
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let port_ref: ref_::PortRef = s
+            .parse()
+            .map_err(|e| ReferenceParsingError::Unexpected(format!("{}", e)))?;
+        Ok(Self(port_ref))
     }
 }
 
 impl fmt::Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let actor_id = self.actor_id();
-        let port = self.index();
-        if self.is_actor_port() {
-            let type_info = TypeInfo::get(port).or_else(|| TypeInfo::get(port & !ACTOR_PORT_BIT));
-            let typename = type_info.map_or("unknown", TypeInfo::typename);
-            write!(f, "{}[{}<{}>]", actor_id, port, typename)
-        } else {
-            write!(f, "{}[{}]", actor_id, port)
-        }
+        fmt::Display::fmt(&self.0, f)
     }
 }
 
@@ -1306,63 +1250,70 @@ mod tests {
 
     #[test]
     fn test_reference_parse() {
-        let cases: Vec<(&str, Reference)> = vec![
-            (
-                "tcp:[::1]:1234,test",
-                ProcId::from_resource_name(
-                    "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(),
-                    "test",
-                )
-                .into(),
-            ),
-            (
-                "tcp:[::1]:1234,test,testactor",
-                ActorId::new(
-                    ProcId::from_resource_name(
-                        "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(),
-                        "test",
-                    ),
-                    "testactor",
-                )
-                .into(),
-            ),
-            (
-                // instance actor (label-hex16 format)
-                "tcp:[::1]:1234,test,myactor-00000000deadbeef",
-                ActorId::new(
-                    ProcId::from_resource_name(
-                        "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(),
-                        "test",
-                    ),
-                    "myactor-00000000deadbeef",
-                )
-                .into(),
-            ),
-            (
-                // one bracket group = port (type annotations ignored)
-                "tcp:[::1]:1234,test,testactor[123<my::type>]",
-                PortId::new(
-                    ActorId::new(
-                        ProcId::from_resource_name(
-                            "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(),
-                            "test",
-                        ),
-                        "testactor",
-                    ),
-                    123,
-                )
-                .into(),
-            ),
-        ];
+        // New format: "uid@location" for Proc, "actor.proc@loc" for Actor,
+        // "actor.proc:port@loc" for Port.
+        let addr: ChannelAddr = "tcp:[::1]:1234".parse().unwrap();
+        let loc = "tcp://[::1]:1234".to_string();
 
-        for (s, expected) in cases {
-            assert_eq!(s.parse::<Reference>().unwrap(), expected, "for {}", s);
-        }
+        let proc_id = ProcId::from_resource_name(addr.clone(), "test");
+        let proc_str = proc_id.to_string();
+        assert_eq!(
+            proc_str.parse::<Reference>().unwrap(),
+            Reference::Proc(proc_id.clone())
+        );
+
+        let actor_id = ActorId::new(proc_id.clone(), "testactor");
+        let actor_str = actor_id.to_string();
+        assert_eq!(
+            actor_str.parse::<Reference>().unwrap(),
+            Reference::Actor(actor_id.clone())
+        );
+
+        let port_id = PortId::new(actor_id.clone(), 123);
+        let port_str = port_id.to_string();
+        assert_eq!(
+            port_str.parse::<Reference>().unwrap(),
+            Reference::Port(port_id)
+        );
+    }
+
+    #[test]
+    fn test_reference_display_roundtrip() {
+        let addr: ChannelAddr = "tcp:[::1]:1234".parse().unwrap();
+
+        let proc_id = ProcId::from_resource_name(addr.clone(), "test");
+        let proc_str = proc_id.to_string();
+        assert_eq!(proc_str.parse::<ProcId>().unwrap(), proc_id);
+
+        let actor_id = ActorId::new(proc_id.clone(), "myactor");
+        let actor_str = actor_id.to_string();
+        assert_eq!(actor_str.parse::<ActorId>().unwrap(), actor_id);
+
+        let port_id = PortId::new(actor_id.clone(), 42);
+        let port_str = port_id.to_string();
+        assert_eq!(port_str.parse::<PortId>().unwrap(), port_id);
+    }
+
+    #[test]
+    fn test_actor_label_roundtrip_preserves_singleton_names() {
+        let addr: ChannelAddr = "tcp:[::1]:1234".parse().unwrap();
+        let proc_id = ProcId::from_resource_name(addr, "service");
+        let actor_id = ActorId::new(proc_id, "host_agent");
+
+        let parsed: ActorId = actor_id.to_string().parse().unwrap();
+        assert_eq!(
+            parsed.label().map(|label| label.as_str()),
+            Some("host_agent")
+        );
+        assert_eq!(
+            parsed.proc_id().label().map(|label| label.as_str()),
+            Some("service")
+        );
     }
 
     #[test]
     fn test_reference_parse_error() {
-        let cases: Vec<&str> = vec!["(blah)", "world(1, 2, 3)", "test"];
+        let cases: Vec<&str> = vec!["(blah)", "world(1, 2, 3)", "no-at-sign"];
 
         for s in cases {
             let result: Result<Reference, ReferenceParsingError> = s.parse();
@@ -1372,14 +1323,11 @@ mod tests {
 
     #[test]
     fn test_reference_ord() {
-        let expected: Vec<Reference> = [
-            "tcp:[::1]:1234,first",
-            "tcp:[::1]:1234,second",
-            "tcp:[::1]:1234,third",
-        ]
-        .into_iter()
-        .map(|s| s.parse().unwrap())
-        .collect();
+        let addr: ChannelAddr = "tcp:[::1]:1234".parse().unwrap();
+        let expected: Vec<Reference> = ["first", "second", "third"]
+            .into_iter()
+            .map(|name| Reference::Proc(ProcId::from_resource_name(addr.clone(), name)))
+            .collect();
 
         let mut sorted = expected.to_vec();
         sorted.shuffle(&mut rand::rng());
@@ -1389,31 +1337,16 @@ mod tests {
     }
 
     #[test]
-    fn test_port_type_annotation() {
-        #[derive(typeuri::Named, Serialize, Deserialize)]
-        struct MyType;
-        wirevalue::register_type!(MyType);
+    fn test_port_display() {
+        let addr: ChannelAddr = "tcp:[::1]:1234".parse().unwrap();
         let port_id = PortId::new(
-            ActorId::new(
-                ProcId::from_resource_name(
-                    "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(),
-                    "test",
-                ),
-                "testactor",
-            ),
-            MyType::port(),
+            ActorId::new(ProcId::from_resource_name(addr, "test"), "testactor"),
+            42,
         );
         let s = port_id.to_string();
-        assert!(
-            s.starts_with("tcp:[::1]:1234,_test,_testactor["),
-            "unexpected format: {}",
-            s
-        );
-        assert!(
-            s.contains("<hyperactor::reference::tests::MyType>"),
-            "missing type annotation: {}",
-            s
-        );
+        // Format: "actor_uid.proc_uid:port@location"
+        assert!(s.contains("@tcp://"), "expected @ separator: {}", s);
+        assert!(s.contains(":42@"), "expected port 42: {}", s);
     }
 
     #[tokio::test]
