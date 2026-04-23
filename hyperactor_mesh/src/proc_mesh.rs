@@ -33,6 +33,7 @@ use hyperactor::context;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::reference as hyperactor_reference;
+use hyperactor::subject::AsSubject as _;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -332,8 +333,7 @@ impl ProcMesh {
         Self::allocate_inner(cx, alloc, Name::new(name)?, caller).await
     }
 
-    // Use allocate_inner to set field mesh_name in span
-    #[hyperactor::instrument(fields(proc_mesh=name.to_string()))]
+    #[hyperactor::instrument]
     async fn allocate_inner<C: context::Actor>(
         cx: &C,
         mut alloc: Box<dyn Alloc + Send + Sync + 'static>,
@@ -372,7 +372,8 @@ impl ProcMesh {
         // First make sure we can serve the proc:
         let proc_channel_addr = {
             let _guard =
-                tracing::info_span!("allocate_serve_proc", proc_id = %proc.proc_id()).entered();
+                tracing::info_span!("allocate_serve_proc", subject = %proc.proc_id().subject())
+                    .entered();
             let (addr, rx) = channel::serve(ChannelAddr::any(alloc.transport()))?;
             proc.clone().serve(rx);
             tracing::info!(
@@ -997,11 +998,7 @@ impl ProcMeshRef {
     ///   the actor must accept messages of type `MeshFailure`. This
     ///   is delivered when the actors spawned in the mesh have a failure that
     ///   isn't handled.
-    #[hyperactor::instrument(fields(
-        host_mesh=self.host_mesh_name().map(|n| n.to_string()),
-        proc_mesh=self.name.to_string(),
-        actor_name=name.to_string(),
-    ))]
+    #[hyperactor::instrument]
     pub async fn spawn_with_name<A: RemoteSpawn, C: context::Actor>(
         &self,
         cx: &C,
@@ -1390,6 +1387,17 @@ impl view::RankedSliceable for ProcMeshRef {
 ///
 /// The supervision display name format is `{instance}.<{module}.{ClassName} {mesh_name}>`.
 /// Returns `"Python<ClassName>"` if the format matches, `None` otherwise.
+///
+/// Scope note: this function is used only by telemetry
+/// (`MeshEvent.class`), which needs the Python class as a
+/// structured string and has no structured carrier today. It is
+/// not on the supervision rendering path.
+///
+/// TODO: retained only because the telemetry path needs a
+/// structured Python-class string and this is the only available
+/// source. A follow-up should add a structured carrier (e.g. an
+/// `actor_class` field on `ActorSupervisionEvent`, or a dedicated
+/// telemetry-side field) and delete this function.
 fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
     let inner = sdn.rsplit_once('<')?.1.strip_suffix('>')?;
     let qualified = inner.split_whitespace().next()?;

@@ -72,7 +72,7 @@ serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw
 strum = { version = "0.27.1", features = ["derive"] }
 tempfile = "3.27.0"
 thiserror = "2.0.18"
-tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.52.1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26.4", features = ["logging", "ring", "tls12"], default-features = false }
 tokio-stream = { version = "0.1.18", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.18", features = ["full"] }
