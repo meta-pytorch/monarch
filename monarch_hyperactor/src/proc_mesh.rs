@@ -69,11 +69,11 @@ impl PyProcMesh {
 #[pymethods]
 impl PyProcMesh {
     #[staticmethod]
-    #[pyo3(signature = (proc_mesh, instance, name, actor, init_message, emulated, supervision_display_name = None))]
+    #[pyo3(signature = (proc_mesh, instance, mesh_base_name, actor, init_message, emulated, supervision_display_name = None))]
     fn spawn_async(
         proc_mesh: &mut PyShared,
         instance: &PyInstance,
-        name: String,
+        mesh_base_name: String,
         actor: Py<PyType>,
         init_message: &mut PendingMessage,
         emulated: bool,
@@ -93,16 +93,26 @@ impl PyProcMesh {
                 let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
                 Ok((
                     slf.mesh_ref()?.clone(),
-                    PythonActorParams::new(pickled_type, Some(init_message)),
+                    // Plumb `mesh_base_name` into the actor so the
+                    // direct actor-handled supervision path can
+                    // populate `MeshFailure.actor_mesh_name` without
+                    // a lookup. Kept separate from
+                    // `supervision_display_name` below (rendered
+                    // supervision display string).
+                    PythonActorParams::new(
+                        pickled_type,
+                        Some(init_message),
+                        Some(mesh_base_name.clone()),
+                    ),
                 ))
             })
             .await?;
 
-            let full_name = hyperactor_mesh::Name::new(name).unwrap();
+            let mesh_name = hyperactor_mesh::Name::new(mesh_base_name).unwrap();
             let actor_mesh = proc_mesh
                 .spawn_with_name(
                     instance.deref(),
-                    full_name,
+                    mesh_name,
                     &params,
                     supervision_display_name,
                     false,
