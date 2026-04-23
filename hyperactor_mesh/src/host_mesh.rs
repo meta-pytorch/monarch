@@ -48,21 +48,17 @@ use typeuri::Named;
 use crate::Bootstrap;
 use crate::Name;
 use crate::ProcMesh;
-use crate::ProcMeshRef;
 use crate::ValueMesh;
-use crate::alloc::Alloc;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
 use crate::bootstrap::ProcBind;
 use crate::host_mesh::host_agent::DrainHostClient;
 pub use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
-use crate::host_mesh::host_agent::HostMeshAgentProcMeshTrampoline;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::host_agent::SetClientConfigClient;
 use crate::host_mesh::host_agent::ShutdownHostClient;
-use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
 use crate::proc_agent::ProcAgent;
 use crate::proc_mesh::ProcRef;
@@ -74,9 +70,6 @@ use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::resource::WaitRankStatusClient;
 use crate::transport::DEFAULT_TRANSPORT;
-
-/// Actor name for `HostMeshController` when spawned as a named child.
-pub const HOST_MESH_CONTROLLER_NAME: &str = "host_mesh_controller";
 
 /// Actor name for `ProcMeshController` when spawned as a named child.
 pub const PROC_MESH_CONTROLLER_NAME: &str = "proc_mesh_controller";
@@ -225,48 +218,10 @@ impl FromStr for HostRef {
 pub struct HostMesh {
     name: Name,
     extent: Extent,
-    allocation: HostMeshAllocation,
+    /// The hosts this `HostMesh` owns and is responsible for tearing
+    /// down on shutdown or drop.
+    owned_hosts: Vec<HostRef>,
     current_ref: HostMeshRef,
-}
-
-/// Allocation backing for an owned [`HostMesh`].
-///
-/// This enum records how the underlying hosts were provisioned, which
-/// in turn determines how their lifecycle is managed:
-///
-/// - `ProcMesh`: Hosts were allocated intrinsically via a
-///   [`ProcMesh`]. The `HostMesh` owns the proc mesh and its service
-///   procs, and dropping the mesh ensures that all spawned child procs
-///   are terminated.
-/// - `Owned`: Hosts were constructed externally and "taken" under
-///   ownership. The `HostMesh` assumes responsibility for their
-///   lifecycle from this point forward, ensuring consistent cleanup on
-///   drop.
-///
-/// Additional variants may be added for other provisioning sources,
-/// but in all cases `HostMesh` is an owned resource that guarantees
-/// no leaked child processes.
-#[allow(dead_code)]
-enum HostMeshAllocation {
-    /// Hosts were allocated intrinsically via a [`ProcMesh`].
-    ///
-    /// In this mode, the `HostMesh` owns both the `ProcMesh` itself
-    /// and the service procs that implement each host. Dropping the
-    /// `HostMesh` also drops the embedded `ProcMesh`, ensuring that
-    /// all spawned child procs are terminated cleanly.
-    ProcMesh {
-        proc_mesh: ProcMesh,
-        proc_mesh_ref: ProcMeshRef,
-        hosts: Vec<HostRef>,
-    },
-    /// Hosts were constructed externally and explicitly transferred
-    /// under ownership by this `HostMesh`.
-    ///
-    /// In this mode, the `HostMesh` assumes responsibility for the
-    /// provided hosts going forward. Dropping the mesh guarantees
-    /// teardown of all associated state and signals to prevent any
-    /// leaked processes.
-    Owned { hosts: Vec<HostRef> },
 }
 
 impl HostMesh {
@@ -465,149 +420,6 @@ impl HostMesh {
         Ok(HostMesh::take(host_mesh_ref))
     }
 
-    /// Allocate a host mesh from an [`Alloc`]. This creates a HostMesh with the same extent
-    /// as the provided alloc. Allocs generate procs, and thus we define and run a Host for each
-    /// proc allocated by it.
-    ///
-    /// ## Allocation strategy
-    ///
-    /// Because HostMeshes use direct-addressed procs, and must fully control the procs they are
-    /// managing, `HostMesh::allocate` uses a trampoline actor to launch the host, which in turn
-    /// runs a [`crate::host_mesh::host_agent::HostAgent`] actor to manage the host itself.
-    /// The host (and thus all of its procs) are exposed directly through a separate listening
-    /// channel, established by the host.
-    ///
-    /// ```text
-    ///                        ┌ ─ ─┌────────────────────┐
-    ///                             │allocated Proc:     │
-    ///                        │    │ ┌─────────────────┐│
-    ///                             │ │TrampolineActor  ││
-    ///                        │    │ │ ┌──────────────┐││
-    ///                             │ │ │Host          │││
-    ///               ┌────┬ ─ ┘    │ │ │ ┌──────────┐ │││
-    ///            ┌─▶│Proc│        │ │ │ │HostAgent │ │││
-    ///            │  └────┴ ─ ┐    │ │ │ └──────────┘ │││
-    ///            │  ┌────┐        │ │ │             ██████
-    /// ┌────────┐ ├─▶│Proc│   │    │ │ └──────────────┘││ ▲
-    /// │ Client │─┤  └────┘        │ └─────────────────┘│ listening channel
-    /// └────────┘ │  ┌────┐   └ ─ ─└────────────────────┘
-    ///            ├─▶│Proc│
-    ///            │  └────┘
-    ///            │  ┌────┐
-    ///            └─▶│Proc│
-    ///               └────┘
-    ///                 ▲
-    ///
-    ///          `Alloc`-provided
-    ///                procs
-    /// ```
-    ///
-    /// ## Lifecycle
-    ///
-    /// The returned `HostMesh` **owns** the underlying hosts. Call
-    /// [`shutdown`](Self::shutdown) to deterministically tear them
-    /// down. If you skip shutdown, `Drop` will attempt best-effort
-    /// cleanup only. Do not rely on `Drop` for correctness.
-    pub async fn allocate<C: context::Actor>(
-        cx: &C,
-        alloc: Box<dyn Alloc + Send + Sync>,
-        name: &str,
-        bootstrap_params: Option<BootstrapCommand>,
-    ) -> crate::Result<Self>
-    where
-        C::A: Handler<MeshFailure>,
-    {
-        Self::allocate_inner(cx, alloc, Name::new(name)?, bootstrap_params).await
-    }
-
-    // Use allocate_inner to set field mesh_name in span
-    #[hyperactor::instrument(fields(host_mesh=name.to_string()))]
-    async fn allocate_inner<C: context::Actor>(
-        cx: &C,
-        alloc: Box<dyn Alloc + Send + Sync>,
-        name: Name,
-        bootstrap_params: Option<BootstrapCommand>,
-    ) -> crate::Result<Self>
-    where
-        C::A: Handler<MeshFailure>,
-    {
-        tracing::info!(name = "HostMeshStatus", status = "Allocate::Attempt");
-        let transport = alloc.transport();
-        let extent = alloc.extent().clone();
-        let is_local = alloc.is_local();
-        let proc_mesh = ProcMesh::allocate(cx, alloc, name.name()).await?;
-
-        // TODO: figure out how to deal with MAST allocs. It requires an extra dimension,
-        // into which it launches multiple procs, so we need to always specify an additional
-        // sub-host dimension of size 1.
-
-        let (mesh_agents, mut mesh_agents_rx) = cx.mailbox().open_port();
-        let trampoline_name = Name::new("host_mesh_trampoline").unwrap();
-        let _trampoline_actor_mesh = proc_mesh
-            .spawn_with_name::<HostMeshAgentProcMeshTrampoline, C>(
-                cx,
-                trampoline_name,
-                &(transport, mesh_agents.bind(), bootstrap_params, is_local),
-                None,
-                // The trampoline is a system actor and does not need a controller.
-                true,
-            )
-            .await?;
-
-        // TODO: don't re-rank the hosts
-        let mut hosts = Vec::new();
-        for _rank in 0..extent.num_ranks() {
-            let mesh_agent = mesh_agents_rx.recv().await?;
-
-            let addr = mesh_agent.actor_id().proc_id().addr().clone();
-
-            let host_ref = HostRef(addr);
-            if host_ref.mesh_agent() != mesh_agent {
-                return Err(crate::Error::HostMeshAgentConfigurationError(
-                    mesh_agent.actor_id().clone(),
-                    format!(
-                        "expected mesh agent actor id to be {}",
-                        host_ref.mesh_agent().actor_id()
-                    ),
-                ));
-            }
-            hosts.push(host_ref);
-        }
-
-        let proc_mesh_ref = proc_mesh.clone();
-        let mesh = Self {
-            name: name.clone(),
-            extent: extent.clone(),
-            allocation: HostMeshAllocation::ProcMesh {
-                proc_mesh,
-                proc_mesh_ref,
-                hosts: hosts.clone(),
-            },
-            current_ref: HostMeshRef::new(name, extent.into(), hosts).unwrap(),
-        };
-
-        // Spawn a unique mesh controller for each proc mesh, so the type of the
-        // mesh can be preserved.
-        let controller = HostMeshController::new(mesh.deref().clone());
-        // hyperactor::proc AI-3: controller name must include mesh
-        // identity for proc-wide ActorId uniqueness.
-        let controller_name = format!("{}_{}", HOST_MESH_CONTROLLER_NAME, mesh.name());
-        let controller_handle = controller
-            .spawn_with_name(cx, &controller_name)
-            .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
-        // Bind the actor's well-known ports (Signal, IntrospectMessage,
-        // Undeliverable). Without this, the controller's mailbox has no
-        // port entries and messages (including introspection queries)
-        // are returned as undeliverable.
-        let _: hyperactor::reference::ActorRef<HostMeshController> = controller_handle.bind();
-
-        tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
-
-        mesh.notify_created();
-
-        Ok(mesh)
-    }
-
     /// Take ownership of an existing host mesh reference.
     ///
     /// Consumes the `HostMeshRef`, captures its region/hosts, and
@@ -624,7 +436,7 @@ impl HostMesh {
         let result = Self {
             name: mesh.name,
             extent: region.extent().clone(),
-            allocation: HostMeshAllocation::Owned { hosts },
+            owned_hosts: hosts,
             current_ref,
         };
         result.notify_created();
@@ -729,12 +541,6 @@ impl HostMesh {
             );
         }
 
-        match &mut self.allocation {
-            HostMeshAllocation::ProcMesh { proc_mesh, .. } => {
-                proc_mesh.stop(cx, "host mesh shutdown".to_string()).await?;
-            }
-            HostMeshAllocation::Owned { .. } => {}
-        }
         Ok(())
     }
 
@@ -787,9 +593,8 @@ impl HostMesh {
         }
 
         // Defuse the Drop impl so it doesn't send ShutdownHost to hosts
-        // we intentionally kept alive. Replace the allocation with an
-        // empty Owned variant so Drop has no hosts to iterate.
-        self.allocation = HostMeshAllocation::Owned { hosts: vec![] };
+        // we intentionally kept alive.
+        self.owned_hosts.clear();
 
         Ok(())
     }
@@ -867,26 +672,16 @@ impl Drop for HostMeshShutdownGuard {
             status = "Dropping",
         );
         // Snapshot the owned hosts we're responsible for.
-        let hosts: Vec<HostRef> = match &self.0.allocation {
-            HostMeshAllocation::ProcMesh { hosts, .. } | HostMeshAllocation::Owned { hosts } => {
-                hosts.clone()
-            }
-        };
+        let hosts: Vec<HostRef> = self.0.owned_hosts.clone();
 
         // Best-effort only when a Tokio runtime is available.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let mesh_name = self.0.name.clone();
-            let allocation_label = match &self.0.allocation {
-                HostMeshAllocation::ProcMesh { .. } => "proc_mesh",
-                HostMeshAllocation::Owned { .. } => "owned",
-            }
-            .to_string();
 
             handle.spawn(async move {
                 let span = tracing::info_span!(
                     "hostmesh_drop_cleanup",
                     host_mesh = %mesh_name,
-                    allocation = %allocation_label,
                     hosts = hosts.len(),
                 );
                 let _g = span.enter();
@@ -1890,16 +1685,11 @@ impl FromStr for HostMeshRef {
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;
-    use std::collections::HashSet;
-    use std::collections::VecDeque;
 
     use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
-    use hyperactor::context::Mailbox as _;
     use hyperactor_config::attrs::Attrs;
-    use itertools::Itertools;
     use ndslice::ViewExt;
     use ndslice::extent;
-    use timed_test::async_timed_test;
     use tokio::process::Command;
 
     use super::*;
@@ -1942,138 +1732,6 @@ mod tests {
             host_mesh_ref.to_string().parse::<HostMeshRef>().unwrap(),
             host_mesh_ref
         );
-    }
-
-    #[cfg(fbcode_build)]
-    async fn execute_allocate(config: &hyperactor_config::global::ConfigLock) {
-        let poll = Duration::from_secs(3);
-        let get_actor = Duration::from_mins(1);
-        let get_proc = Duration::from_mins(1);
-        // 3m watchdog total: 3m - (poll + get_actor + get_proc) = 180s - 123s = 57s
-        let slack = Duration::from_secs(57);
-
-        let _pdeath_sig =
-            config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
-        let _poll = config.override_key(crate::mesh_controller::SUPERVISION_POLL_FREQUENCY, poll);
-        let _get_actor = config.override_key(crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE, get_actor);
-        let _get_proc = config.override_key(crate::host_mesh::GET_PROC_STATE_MAX_IDLE, get_proc);
-
-        // Must be >= poll + get_actor + get_proc (+ slack).
-        let _watchdog = config.override_key(
-            crate::actor_mesh::SUPERVISION_WATCHDOG_TIMEOUT,
-            poll + get_actor + get_proc + slack,
-        );
-
-        let instance = testing::instance();
-
-        for alloc in testing::allocs(extent!(replicas = 4)).await {
-            let mut host_mesh = HostMesh::allocate(instance, alloc, "test", None)
-                .await
-                .unwrap();
-
-            let proc_mesh1 = host_mesh
-                .spawn(instance, "test_1", Extent::unity(), None)
-                .await
-                .unwrap();
-
-            let actor_mesh1: ActorMesh<testactor::TestActor> =
-                proc_mesh1.spawn(instance, "test", &()).await.unwrap();
-
-            let proc_mesh2 = host_mesh
-                .spawn(instance, "test_2", extent!(gpus = 3, extra = 2), None)
-                .await
-                .unwrap();
-            assert_eq!(
-                proc_mesh2.extent(),
-                extent!(replicas = 4, gpus = 3, extra = 2)
-            );
-            assert_eq!(proc_mesh2.values().count(), 24);
-
-            let actor_mesh2: ActorMesh<testactor::TestActor> =
-                proc_mesh2.spawn(instance, "test", &()).await.unwrap();
-            assert_eq!(
-                actor_mesh2.extent(),
-                extent!(replicas = 4, gpus = 3, extra = 2)
-            );
-            assert_eq!(actor_mesh2.values().count(), 24);
-
-            // Host meshes can be dereferenced to produce a concrete ref.
-            let host_mesh_ref: HostMeshRef = host_mesh.clone();
-            // Here, the underlying host mesh does not change:
-            assert_eq!(
-                host_mesh_ref.iter().collect::<Vec<_>>(),
-                host_mesh.iter().collect::<Vec<_>>(),
-            );
-
-            // Validate we can cast:
-            for actor_mesh in [&actor_mesh1, &actor_mesh2] {
-                let (port, mut rx) = instance.mailbox().open_port();
-                actor_mesh
-                    .cast(instance, testactor::GetActorId(port.bind()))
-                    .unwrap();
-
-                let mut expected_actor_ids: HashSet<_> = actor_mesh
-                    .values()
-                    .map(|actor_ref| actor_ref.actor_id().clone())
-                    .collect();
-
-                while !expected_actor_ids.is_empty() {
-                    let (actor_id, _seq) = rx.recv().await.unwrap();
-                    assert!(
-                        expected_actor_ids.remove(&actor_id),
-                        "got {actor_id}, expect {expected_actor_ids:?}"
-                    );
-                }
-            }
-
-            // Now forward a message through all directed edges across the two meshes.
-            // This tests the full connectivity of all the hosts, procs, and actors
-            // involved in these two meshes.
-            let mut to_visit: VecDeque<_> = actor_mesh1
-                .values()
-                .chain(actor_mesh2.values())
-                .map(|actor_ref| actor_ref.port())
-                // Each ordered pair of ports
-                .permutations(2)
-                // Flatten them to create a path:
-                .flatten()
-                .collect();
-
-            let expect_visited: Vec<_> = to_visit.clone().into();
-
-            // We are going to send to the first, and then set up a port to receive the last.
-            let (last, mut last_rx) = instance.mailbox().open_port();
-            to_visit.push_back(last.bind());
-
-            let forward = testactor::Forward {
-                to_visit,
-                visited: Vec::new(),
-            };
-            let first = forward.to_visit.front().unwrap().clone();
-            first.send(instance, forward).unwrap();
-
-            let forward = last_rx.recv().await.unwrap();
-            assert_eq!(forward.visited, expect_visited);
-
-            let _ = host_mesh.shutdown(&instance).await;
-        }
-    }
-
-    #[async_timed_test(timeout_secs = 600)]
-    #[cfg(fbcode_build)]
-    async fn test_allocate_dest_reorder_buffer_off() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
-        execute_allocate(&config).await;
-    }
-
-    #[async_timed_test(timeout_secs = 600)]
-    #[cfg(fbcode_build)]
-    async fn test_allocate_dest_reorder_buffer_on() {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
-        let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
-        execute_allocate(&config).await;
     }
 
     /// Allocate a new port on localhost. This drops the listener, releasing the socket,

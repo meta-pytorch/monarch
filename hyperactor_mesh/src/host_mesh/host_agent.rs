@@ -31,7 +31,6 @@ use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::Proc;
 use hyperactor::RefClient;
-use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
@@ -41,7 +40,6 @@ use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::host::SingleTerminate;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::reference as hyperactor_reference;
-use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -1365,93 +1363,6 @@ impl Handler<ConfigDump> for HostAgent {
         if let Err(e) = message.result.send(cx, ConfigDumpResult { entries }) {
             tracing::warn!("HostAgent: ConfigDump reply undeliverable (caller timed out): {e}",);
         }
-        Ok(())
-    }
-}
-
-/// A trampoline actor that spawns a [`Host`], and sends a reference to the
-/// corresponding [`HostAgent`] to the provided reply port.
-///
-/// This is used to bootstrap host meshes from proc meshes.
-#[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers=[GetHostMeshAgent]
-)]
-pub(crate) struct HostMeshAgentProcMeshTrampoline {
-    host_mesh_agent: ActorHandle<HostAgent>,
-    reply_port: hyperactor_reference::PortRef<hyperactor_reference::ActorRef<HostAgent>>,
-}
-
-#[async_trait]
-impl Actor for HostMeshAgentProcMeshTrampoline {
-    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-        self.reply_port.send(this, self.host_mesh_agent.bind())?;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
-    type Params = (
-        ChannelTransport,
-        hyperactor_reference::PortRef<hyperactor_reference::ActorRef<HostAgent>>,
-        Option<BootstrapCommand>,
-        bool, /* local? */
-    );
-
-    async fn new(
-        (transport, reply_port, command, local): Self::Params,
-        _environment: Flattrs,
-    ) -> anyhow::Result<Self> {
-        let host = if local {
-            let spawn: ProcManagerSpawnFn =
-                Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
-            let manager = LocalProcManager::new(spawn);
-            let host = Host::new(manager, transport.any()).await?;
-            HostAgentMode::Local(host)
-        } else {
-            let command = match command {
-                Some(command) => command,
-                None => BootstrapCommand::current()?,
-            };
-            tracing::info!("booting host with proc command {:?}", command);
-            let manager = BootstrapProcManager::new(command).unwrap();
-            let host = Host::new(manager, transport.any()).await?;
-            HostAgentMode::Process {
-                host,
-                shutdown_tx: None,
-            }
-        };
-
-        let system_proc = host.system_proc().clone();
-        let host_mesh_agent =
-            system_proc.spawn(HOST_MESH_AGENT_ACTOR_NAME, HostAgent::new(host))?;
-
-        Ok(Self {
-            host_mesh_agent,
-            reply_port,
-        })
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient)]
-pub struct GetHostMeshAgent {
-    #[reply]
-    pub host_mesh_agent: hyperactor_reference::PortRef<hyperactor_reference::ActorRef<HostAgent>>,
-}
-wirevalue::register_type!(GetHostMeshAgent);
-
-#[async_trait]
-impl Handler<GetHostMeshAgent> for HostMeshAgentProcMeshTrampoline {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        get_host_mesh_agent: GetHostMeshAgent,
-    ) -> anyhow::Result<()> {
-        get_host_mesh_agent
-            .host_mesh_agent
-            .send(cx, self.host_mesh_agent.bind())?;
         Ok(())
     }
 }
