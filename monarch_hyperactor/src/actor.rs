@@ -545,6 +545,15 @@ pub struct PythonActor {
     spawn_point: OnceLock<Option<Point>>,
     /// Initial message to process during PythonActor::init.
     init_message: Option<PythonMessage>,
+    /// User-provided mesh base-name string plumbed from
+    /// `PythonActorParams`. This is the base name the caller
+    /// supplied when the mesh was spawned, narrowly used to populate
+    /// `MeshFailure.actor_mesh_name` on the direct actor-handled
+    /// supervision path without a lookup. It is not actor display
+    /// text (`display_name` handles that) and it is not a general
+    /// side channel; downstream code must not consume this field for
+    /// any other purpose.
+    mesh_base_name: Option<String>,
 }
 
 impl PythonActor {
@@ -552,6 +561,7 @@ impl PythonActor {
         actor_type: PickledPyObject,
         init_message: Option<PythonMessage>,
         spawn_point: Option<Point>,
+        mesh_base_name: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         let use_queue_dispatch = hyperactor_config::global::get(ACTOR_QUEUE_DISPATCH);
 
@@ -585,6 +595,7 @@ impl PythonActor {
                     dispatch_mode,
                     spawn_point: OnceLock::from(spawn_point),
                     init_message,
+                    mesh_base_name,
                 })
             },
         )?)
@@ -648,6 +659,7 @@ impl PythonActor {
             actor_type,
             Some(init_message),
             Some(extent!().point_of_rank(0).unwrap()),
+            None, // root client actor has no user-facing mesh name
         )
         .expect("create client PythonActor");
 
@@ -1070,7 +1082,10 @@ impl Actor for PythonActor {
         self.handle(
             &cx,
             MeshFailure {
-                actor_mesh_name: None,
+                // Populate the mesh name from the base-name string
+                // plumbed through PythonActorParams at spawn time —
+                // no lookup.
+                actor_mesh_name: self.mesh_base_name.clone(),
                 event: event.clone(),
                 crashed_ranks: vec![],
             },
@@ -1086,13 +1101,29 @@ pub struct PythonActorParams {
     actor_type: PickledPyObject,
     // Python message to process as part of the actor initialization.
     init_message: Option<PythonMessage>,
+    // User-provided mesh base-name string under which this actor
+    // was spawned. The base name the caller passed when the mesh
+    // was spawned, plumbed through `PythonActor` narrowly to
+    // populate `MeshFailure.actor_mesh_name` on the direct
+    // actor-handled supervision path without a lookup. It is not
+    // actor display text (`display_name` handles that) and it is
+    // not a general side channel; downstream code must not consume
+    // this field for any other purpose. Kept separate from
+    // `supervision_display_name`, which is a rendered supervision
+    // display string passed through `spawn_with_name(...)`.
+    mesh_base_name: Option<String>,
 }
 
 impl PythonActorParams {
-    pub(crate) fn new(actor_type: PickledPyObject, init_message: Option<PythonMessage>) -> Self {
+    pub(crate) fn new(
+        actor_type: PickledPyObject,
+        init_message: Option<PythonMessage>,
+        mesh_base_name: Option<String>,
+    ) -> Self {
         Self {
             actor_type,
             init_message,
+            mesh_base_name,
         }
     }
 }
@@ -1105,11 +1136,12 @@ impl RemoteSpawn for PythonActor {
         PythonActorParams {
             actor_type,
             init_message,
+            mesh_base_name,
         }: PythonActorParams,
         environment: Flattrs,
     ) -> Result<Self, anyhow::Error> {
         let spawn_point = environment.get(CAST_POINT);
-        Self::new(actor_type, init_message, spawn_point)
+        Self::new(actor_type, init_message, spawn_point, mesh_base_name)
     }
 }
 

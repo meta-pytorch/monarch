@@ -16,6 +16,23 @@
 //!   for structured failure attribution. In particular, if a
 //!   failed parent wraps a stopped child event, the stopped child
 //!   remains the root cause.
+//!
+//! ## Supervision rendering invariants (SR-*)
+//!
+//! - **SR-1 (`display_name` is presentation-only).**
+//!   `ActorSupervisionEvent.display_name` is rendered display text.
+//!   Downstream code must not parse it to recover structured data.
+//!
+//! - **SR-2 (rendering falls back to stable ids).**
+//!   `ActorSupervisionEvent::Display` and its helpers render
+//!   `display_name` when present and otherwise fall back to
+//!   `actor_id.to_string()`. A given actor mention renders one or
+//!   the other, not both.
+//!
+//! - **SR-3 (no rendered-output parsing back into structure).**
+//!   Structured data must not be reconstructed by parsing formatted
+//!   `display_name`, identifier text, or other rendered output from
+//!   this path.
 
 use std::fmt;
 use std::fmt::Debug;
