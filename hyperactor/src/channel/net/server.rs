@@ -220,8 +220,8 @@ where
     S: Stream,
     L: super::Listener,
     F: Fn(L::Stream, ChannelAddr) -> Fut + Clone + Send + 'static,
-    Fut: Future<Output = Result<(SessionId, S), anyhow::Error>> + Send + 'static,
-    D: Fn(SessionId, S) -> DFut + Clone + Send + 'static,
+    Fut: Future<Output = Result<(super::LinkInit, S), anyhow::Error>> + Send + 'static,
+    D: Fn(super::LinkInit, S) -> DFut + Clone + Send + 'static,
     DFut: Future<Output = ()> + Send + 'static,
 {
     let mut connections: JoinSet<Result<(), anyhow::Error>> = JoinSet::new();
@@ -250,8 +250,8 @@ where
                         let prepare = prepare.clone();
                         let dispatch = dispatch.clone();
                         connections.spawn(async move {
-                            let (session_id, stream) = prepare(stream, source).await?;
-                            dispatch(session_id, stream).await;
+                            let (link_init, stream) = prepare(stream, source).await?;
+                            dispatch(link_init, stream).await;
                             Ok(())
                         });
                     }
@@ -403,16 +403,16 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
                     _ => meta::tls_acceptor(true)?,
                 };
                 let mut tls_stream = tls_acceptor.accept(stream).await?;
-                let session_id = read_link_init(&mut tls_stream)
+                let link_init = read_link_init(&mut tls_stream)
                     .await
                     .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                Ok((session_id, Box::new(tls_stream) as Box<dyn Stream>))
+                Ok((link_init, Box::new(tls_stream) as Box<dyn Stream>))
             } else {
                 let mut stream = stream;
-                let session_id = read_link_init(&mut stream)
+                let link_init = read_link_init(&mut stream)
                     .await
                     .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                Ok((session_id, stream))
+                Ok((link_init, stream))
             }
         }
     };
@@ -425,13 +425,13 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
         let tx = tx.clone();
         let child_cancel = child_cancel.clone();
         let dest = dispatch_dest;
-        move |session_id: SessionId, stream: Box<dyn Stream>| {
+        move |link_init: super::LinkInit, stream: Box<dyn Stream>| {
             let sessions = Arc::clone(&sessions);
             let tx = tx.clone();
             let cancel = child_cancel.child_token();
             let dest = dest.clone();
             async move {
-                dispatch_stream(session_id, stream, &sessions, dest, tx, cancel).await;
+                dispatch_stream(link_init.session_id, stream, &sessions, dest, tx, cancel).await;
             }
         }
     };
@@ -472,10 +472,10 @@ where
     let child_token = cancel_token.child_token();
 
     let prepare = |mut stream: L::Stream, source: ChannelAddr| async move {
-        let session_id = read_link_init(&mut stream)
+        let link_init = read_link_init(&mut stream)
             .await
             .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-        Ok((session_id, stream))
+        Ok((link_init, stream))
     };
 
     let sessions: Arc<DashMap<SessionId, MVar<L::Stream>>> = Arc::new(DashMap::new());
@@ -485,13 +485,13 @@ where
         let tx = tx.clone();
         let child_cancel = child_cancel.clone();
         let dest = channel_addr.clone();
-        move |session_id: SessionId, stream: L::Stream| {
+        move |link_init: super::LinkInit, stream: L::Stream| {
             let sessions = Arc::clone(&sessions);
             let tx = tx.clone();
             let cancel = child_cancel.child_token();
             let dest = dest.clone();
             async move {
-                dispatch_stream(session_id, stream, &sessions, dest, tx, cancel).await;
+                dispatch_stream(link_init.session_id, stream, &sessions, dest, tx, cancel).await;
             }
         }
     };
