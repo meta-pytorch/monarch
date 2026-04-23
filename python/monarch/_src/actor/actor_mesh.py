@@ -73,7 +73,6 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import (
     SupervisionError,
 )
 from monarch._src.actor import config
-from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.debugger.pdb_wrapper import PdbWrapper
 from monarch._src.actor.endpoint import (
     Endpoint,
@@ -118,8 +117,6 @@ from monarch._src.actor.telemetry import get_monarch_tracer
 logger: logging.Logger = logging.getLogger(__name__)
 
 TRACER: Tracer = get_monarch_tracer()
-
-Allocator = ProcessAllocator | LocalAllocator
 
 try:
     from __manifest__ import fbmake  # noqa

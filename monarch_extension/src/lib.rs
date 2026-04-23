@@ -190,10 +190,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.config",
     )?)?;
 
-    monarch_hyperactor::alloc::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.alloc",
-    )?)?;
     monarch_hyperactor::channel::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.channel",
@@ -289,13 +285,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         )?)?;
     }
 
-    #[cfg(all(fbcode_build, target_os = "linux"))]
-    {
-        monarch_hyperactor::meta::alloc::register_python_bindings(&get_or_add_new_module(
-            module,
-            "monarch_hyperactor.meta.alloc",
-        )?)?;
-    }
     // Add feature detection function
     module.add_function(wrap_pyfunction!(has_tensor_engine, module)?)?;
 
