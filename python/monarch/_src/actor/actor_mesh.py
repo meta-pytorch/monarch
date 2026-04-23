@@ -1365,7 +1365,14 @@ class _Actor:
         else:
             return False
 
-    def __supervise__(self, cx: Context, *args: Any, **kwargs: Any) -> object:
+    async def __supervise__(self, cx: Context, *args: Any, **kwargs: Any) -> object:
+        """Dispatch the user's ``__supervise__``.
+
+        Mirrors ``__cleanup__``: both sync and async user methods are
+        supported. An ``async def`` user method is awaited on the actor's
+        asyncio event loop; a sync one runs under :func:`fake_sync_state` so
+        it cannot observe a running loop.
+        """
         _set_context(cx)
         instance = self.instance
         if instance is None:
@@ -1387,15 +1394,18 @@ class _Actor:
                 )
             raise AssertionError(error_message)
 
-        # Forward a call to supervise on this actor to the user-provided instance.
-        if hasattr(instance, "__supervise__"):
-            # pyre-fixme[16]: Caller needs to handle the case where instance is None.
-            return instance.__supervise__(*args, **kwargs)
-        else:
+        supervise = getattr(instance, "__supervise__", None)
+        if supervise is None:
             # If there is no __supervise__ method, the default would be to return
             # None. That means the supervision error is not handled and will be
             # propagated to the next owner.
             return None
+
+        if inspect.iscoroutinefunction(supervise):
+            return await supervise(*args, **kwargs)
+        else:
+            with fake_sync_state():
+                return supervise(*args, **kwargs)
 
     async def __cleanup__(self, cx: Context, exc: str | Exception | None) -> None:
         """Cleans up any resources owned by this Actor before stopping. Automatically
@@ -1520,6 +1530,15 @@ class Actor(MeshTrait):
         propagate any further. If a falsey value is returned, the failure will be
         further sent to the owner of this Actor.
         Note that this is *not* called for errors within this Actor.
+
+        Overrides may be declared with either ``def`` or ``async def``. An
+        ``async def`` override is awaited on the actor's asyncio event loop --
+        the same loop that runs endpoint coroutines -- so it can ``await``
+        other endpoints or I/O. A sync override runs under ``fake_sync_state``
+        and cannot call ``asyncio.get_running_loop``. If the override raises,
+        the exception is treated as a new supervision event chained to the
+        one being handled, matching the ``__exit__`` convention of context
+        managers.
         """
         return False
 
