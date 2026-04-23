@@ -538,7 +538,7 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
 pub fn dial<Out: RemoteMessage, In: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<(DuplexTx<Out>, DuplexRx<In>), ClientError> {
-    Ok(spawn(super::link(addr)?))
+    Ok(spawn(super::link(addr, super::SessionId::random(), 0)?))
 }
 
 #[cfg(test)]
