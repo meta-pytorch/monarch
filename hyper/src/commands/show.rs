@@ -25,13 +25,13 @@ impl ShowCommand {
         match self.reference {
             reference::Reference::Proc(proc_id) => {
                 let host = proc_id.addr().clone();
-                let proc = proc_id.name().to_string();
+                let proc = proc_id.id().to_string();
                 let cx = context().await;
                 let client = cx.actor_instance;
 
                 // Codify obtaining a proc's agent in `hyperactor_mesh` somewhere.
                 let agent: reference::ActorRef<HostAgent> = reference::ActorRef::attest(
-                    reference::ProcId::with_name(host, SERVICE_PROC_NAME)
+                    reference::ProcId::from_resource_name(host, SERVICE_PROC_NAME)
                         .actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0),
                 );
 

@@ -463,7 +463,7 @@ mod tests {
     // Test fixtures
 
     fn test_proc_id() -> hyperactor::reference::ProcId {
-        hyperactor::reference::ProcId::with_name(
+        hyperactor::reference::ProcId::from_resource_name(
             hyperactor::channel::ChannelAddr::Local(0),
             "worker",
         )
