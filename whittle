@@ -17,13 +17,15 @@ Commands:
 
     whittle add [--include-flaky] <target> [<target>...]
         Register buck test targets. Queries TestX for known flaky tests and
-        pre-marks them (use --include-flaky to skip this). Tests are
-        discovered by running buck, not by pre-enumeration.
+        pre-marks them (use --include-flaky to skip this). Also fetches
+        GitHub-disabled tests and marks them disabled. Tests are discovered
+        by running buck, not by pre-enumeration.
 
     whittle sync [-k | --keep-going]
         Run all targets via buck2 test, excluding tests already in a
-        non-fail state. New tests are discovered automatically. Stops on
-        first failure by default; -k runs everything.
+        non-fail state. Refreshes GitHub-disabled tests before each run.
+        New tests are discovered automatically. Stops on first failure by
+        default; -k runs everything.
         Exits 0 when no tests are in 'fail' state.
 
     whittle mark <state> <test_name>
@@ -55,6 +57,7 @@ Test states:
     fail     Re-executed by sync. This is the only "active" state.
     pass     Excluded from sync. Test passed.
     flaky    Excluded from sync. Test is flaky (not your problem).
+    disabled Excluded from sync. Test is disabled via GitHub issue.
     skip     Excluded from sync. Paused for later.
     <any>    Excluded from sync. Any slug is valid.
 
@@ -84,6 +87,7 @@ Composing:
 """
 
 import json
+import importlib.util
 import os
 import platform
 import re
@@ -96,6 +100,8 @@ import threading
 import time
 
 STATE_FILE = ".whittle.json"
+GITHUB_DISABLED_STATE_KEY = "github_disabled"
+_TESTX_SCOPE_CACHE = {}
 
 AGENT_SKILL = """
 # Whittle: test-driven fix workflow
@@ -189,11 +195,49 @@ def comment(msg):
     print(f"# {msg}")
 
 
+def comment_command(cmd):
+    """Print a shell-style command line as a comment."""
+    comment(f"$ {shlex.join(cmd)}")
+
+
+def _load_json_object(output):
+    """Parse a JSON object from command output.
+
+    Some wrappers print extra lines before or after the JSON payload.
+    """
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        start = output.find("{")
+        end = output.rfind("}")
+        if start == -1 or end == -1 or end < start:
+            raise
+        return json.loads(output[start : end + 1])
+
+
+def _with_overridden_env(overrides, fn):
+    """Run `fn` with temporary environment overrides."""
+    previous = {key: os.environ.get(key) for key in overrides}
+    try:
+        for key, value in overrides.items():
+            os.environ[key] = value
+        return fn()
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 # ---------------------------------------------------------------------------
 # State
 #
 # {
 #   "targets": ["hyperactor", ...],
+#   "github_disabled": [
+#     "monarch/hyperactor:hyperactor-unittest - test_bar"
+#   ],
 #   "tests": {
 #     "monarch/hyperactor:hyperactor-unittest - test_foo": {
 #       "state": "pass",
@@ -204,7 +248,7 @@ def comment(msg):
 # ---------------------------------------------------------------------------
 
 def empty_state():
-    return {"targets": [], "tests": {}}
+    return {"targets": [], GITHUB_DISABLED_STATE_KEY: [], "tests": {}}
 
 
 def load_state():
@@ -212,7 +256,11 @@ def load_state():
         comment(f"{STATE_FILE} not found. Run: whittle init")
         sys.exit(1)
     with open(STATE_FILE) as f:
-        return json.load(f)
+        state = json.load(f)
+    state.setdefault("targets", [])
+    state.setdefault(GITHUB_DISABLED_STATE_KEY, [])
+    state.setdefault("tests", {})
+    return state
 
 
 def save_state(state):
@@ -273,30 +321,53 @@ def normalize_target(target):
     if target.startswith("fbcode//"):
         return target
     if target.startswith("//"):
-        return "fbcode:" + target
+        return "fbcode" + target
     return "fbcode//monarch/" + target
 
 
-def query_flaky_tests(target):
-    """Query testx for flaky tests in a target.
-    Returns list of {name, id} dicts."""
+def _testx_query_scope(target):
+    """Build a TestX starts-with prefix that covers a target's package scope."""
     is_wildcard = target.endswith("/...")
     search_prefix = normalize_target(target)
     if is_wildcard:
         search_prefix = search_prefix.removesuffix("/...")
-    elif ":" not in search_prefix:
-        search_prefix = search_prefix.rstrip("/") + ":"
-    wildcard_dir = search_prefix.removeprefix("fbcode//") if is_wildcard else None
+    else:
+        target_path, _, _ = search_prefix.partition(":")
+        search_prefix = target_path.rstrip("/") + ":"
+    return search_prefix
+
+
+def test_matches_target(name, target):
+    """Return whether a discovered test belongs to a tracked target."""
+    test_target = name.split(" - ", 1)[0]
+    normalized = normalize_target(target).removeprefix("fbcode//")
+    if target.endswith("/..."):
+        prefix = normalized.removesuffix("/...")
+        return (
+            test_target.startswith(prefix + "/")
+            or test_target.startswith(prefix + ":")
+        )
+    if ":" in normalized:
+        return test_target == normalized
+    return test_target == normalized or test_target.startswith(normalized + ":")
+
+
+def _load_tests_for_scope(search_prefix):
+    """Load one TestX package scope once per invocation."""
+    cached = _TESTX_SCOPE_CACHE.get(search_prefix)
+    if cached is not None:
+        return cached
+
+    cmd = [
+        "testx", "--as-json", "tests", "search",
+        "--starts-with", search_prefix,
+        "--limit", "5000",
+    ]
     results = []
     try:
-        out = subprocess.check_output(
-            ["testx", "--as-json", "tests", "search",
-             "--starts-with", search_prefix,
-             "--status", "flaky", "--limit", "5000"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-        data = json.loads(out)
+        comment_command(cmd)
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
+        data = _load_json_object(out)
         seen = set()
         for t in data.get("tests", []):
             name = t["name"].removeprefix("fbcode//")
@@ -310,18 +381,233 @@ def query_flaky_tests(target):
             target_part = parts[0]
             if target_part.endswith(("-type-checking", "-library")):
                 continue
-            if wildcard_dir and not (
-                target_part.startswith(wildcard_dir + "/")
-                or target_part.startswith(wildcard_dir + ":")
-            ):
-                continue
             seen.add(name)
             tid = t["test_id"].removeprefix("testinfra-test-")
-            results.append({"name": name, "id": int(tid)})
+            results.append(
+                {
+                    "name": name,
+                    "id": int(tid),
+                    "status": t.get("status"),
+                    "trunk_state": t.get("trunk_state"),
+                }
+            )
     except (subprocess.CalledProcessError, json.JSONDecodeError,
             KeyError, ValueError):
-        pass
+        results = []
+
+    _TESTX_SCOPE_CACHE[search_prefix] = results
     return results
+
+
+def query_tests(target):
+    """Filter the cached TestX package scope to one target.
+
+    Returns a list of {"name": str, "id": int, "status": str | None} entries.
+    """
+    search_prefix = _testx_query_scope(target)
+    return [
+        test for test in _load_tests_for_scope(search_prefix)
+        if test_matches_target(test["name"], target)
+    ]
+
+
+def query_flaky_tests(target):
+    """Query TestX for flaky tests in a target."""
+    return [
+        test for test in query_tests(target)
+        if test["status"] == "FLAKY"
+        or test.get("trunk_state") in ("FLAKY", "DISABLED_FLAKY")
+    ]
+
+
+def _load_disabled_tests_module():
+    script_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "scripts",
+        "fetch_disabled_tests.py",
+    )
+    spec = importlib.util.spec_from_file_location(
+        "fetch_disabled_tests",
+        script_path,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _fetch_disabled_tests_via_proxy(module):
+    """Fetch GitHub-disabled tests with the internal proxy configuration."""
+    proxy_env = {
+        "HTTPS_PROXY": "http://fwdproxy:8080",
+        "HTTP_PROXY": "http://fwdproxy:8080",
+        "FTP_PROXY": "http://fwdproxy:8080",
+        "https_proxy": "http://fwdproxy:8080",
+        "http_proxy": "http://fwdproxy:8080",
+        "ftp_proxy": "http://fwdproxy:8080",
+        "no_proxy": "*.facebook.com|*.tfbnw.net|*.fb.com",
+    }
+    return _with_overridden_env(
+        proxy_env,
+        module.fetch_disabled_test_names_with_status,
+    )
+
+
+def fetch_disabled_tests():
+    """Fetch disabled tests from GitHub issues.
+
+    Returns `(ok, names)`. On fetch failure, `ok` is false and the
+    previously known disabled state is left unchanged.
+    """
+    try:
+        module = _load_disabled_tests_module()
+        names, ok = _fetch_disabled_tests_via_proxy(module)
+    except (AttributeError, ImportError, OSError):
+        return False, []
+    return ok, [name.removeprefix("fbcode//") for name in names]
+
+
+def _normalize_issue_test_name(name):
+    """Normalize issue-provided test names for fuzzy matching."""
+    return " ".join(name.split())
+
+
+def _matches_python_disabled_name(disabled_name, test_name):
+    if not disabled_name.startswith("python/"):
+        return False
+    return test_name == disabled_name.rsplit("/", 1)[-1]
+
+
+def _matches_rust_disabled_name(disabled_name, target_name, test_name):
+    parts = disabled_name.split(" ", 1)
+    if len(parts) != 2 or "::" not in parts[1]:
+        return False
+    binary_name, disabled_test_name = parts
+    if test_name != disabled_test_name:
+        return False
+
+    target_path, _, target_label = target_name.partition(":")
+    package_name = target_path.rsplit("/", 1)[-1]
+    if binary_name == package_name:
+        return True
+    return binary_name == target_label.removesuffix("-unittest")
+
+
+def disabled_name_matches_test(disabled_name, discovered_name):
+    """Return whether a raw GitHub-disabled name matches a TestX test."""
+    disabled_name = _normalize_issue_test_name(disabled_name)
+    if disabled_name == discovered_name:
+        return True
+
+    parts = discovered_name.split(" - ", 1)
+    if len(parts) != 2:
+        return False
+    target_name, test_name = parts
+
+    if disabled_name == test_name:
+        return True
+    if _matches_python_disabled_name(disabled_name, test_name):
+        return True
+    if _matches_rust_disabled_name(disabled_name, target_name, test_name):
+        return True
+    return test_name.endswith(f"::{disabled_name}")
+
+
+def _candidate_targets_for_disabled_name(disabled_name, targets):
+    """Return tracked targets that could own a raw disabled-test name.
+
+    Returns `(candidates, warn_if_unresolved)`.
+    """
+    disabled_name = _normalize_issue_test_name(disabled_name)
+    if disabled_name.startswith("python/"):
+        file_name = disabled_name.split("::", 1)[0].rsplit("/", 1)[-1]
+        target_label = file_name.removesuffix(".py")
+        candidates = [
+            target for target in targets
+            if normalize_target(target).endswith(f":{target_label}")
+        ]
+        return candidates, bool(candidates)
+
+    parts = disabled_name.split(" ", 1)
+    if len(parts) == 2 and "::" in parts[1]:
+        binary_name = parts[0]
+        candidates = []
+        for target in targets:
+            normalized = normalize_target(target).removeprefix("fbcode//")
+            target_path, _, target_label = normalized.partition(":")
+            package_name = target_path.rsplit("/", 1)[-1]
+            if binary_name == package_name:
+                candidates.append(target)
+                continue
+            if binary_name == target_label.removesuffix("-unittest"):
+                candidates.append(target)
+        if candidates:
+            return candidates, True
+        # Fallback to all tracked targets. This tolerates formatting drift in
+        # issue titles while still resolving by full test name below.
+        return list(targets), True
+
+    return list(targets), False
+
+
+def resolve_disabled_tests(targets, disabled_names):
+    """Resolve raw GitHub-disabled names to TestX test names and IDs."""
+    resolved = {}
+    unresolved = []
+    tests_by_target = {}
+
+    for disabled_name in disabled_names:
+        candidate_targets, warn_if_unresolved = _candidate_targets_for_disabled_name(
+            disabled_name,
+            targets,
+        )
+        matched = False
+        for target in candidate_targets:
+            tests = tests_by_target.get(target)
+            if tests is None:
+                tests = query_tests(target)
+                tests_by_target[target] = tests
+            for test in tests:
+                if not disabled_name_matches_test(disabled_name, test["name"]):
+                    continue
+                resolved[test["name"]] = test["id"]
+                matched = True
+                break
+            if matched:
+                break
+        if not matched and warn_if_unresolved:
+            unresolved.append(disabled_name)
+
+    return resolved, sorted(unresolved)
+
+
+def refresh_disabled_tests(state):
+    """Refresh GitHub-disabled tests for the tracked target set."""
+    comment("fetching disabled tests from GitHub")
+    ok, fetched = fetch_disabled_tests()
+    if not ok:
+        comment("skipping disabled-test refresh after GitHub fetch failure")
+        return
+    disabled, unresolved = resolve_disabled_tests(state["targets"], fetched)
+    previous = set(state.get(GITHUB_DISABLED_STATE_KEY, []))
+
+    for name in previous - set(disabled):
+        if test_state(state, name) == "disabled":
+            state["tests"].pop(name, None)
+
+    for name in sorted(disabled):
+        set_test(state, name, "disabled", disabled[name])
+
+    state[GITHUB_DISABLED_STATE_KEY] = sorted(disabled)
+    comment(f"tracked {len(disabled)} GitHub-disabled test(s)")
+    if unresolved:
+        preview = ", ".join(unresolved[:5])
+        more = "" if len(unresolved) <= 5 else ", ..."
+        comment(
+            f"could not resolve {len(unresolved)} disabled test(s): "
+            f"{preview}{more}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +699,7 @@ def run_tests(buck_args, targets, exclude_ids, event_log_path,
         tpx_args += ["--exclude-test-ids"] + [str(tid) for tid in exclude_ids]
     cmd += ["--"] + tpx_args
 
-    print(f"$ {shlex.join(cmd)}")
+    comment_command(cmd)
     sys.stdout.flush()
 
     interrupted = False
@@ -498,8 +784,10 @@ SMOKE_TARGETS = [
 
 
 def cmd_init(smoke=False):
+    comment("resetting state")
     save_state(empty_state())
     if smoke:
+        comment(f"adding {len(SMOKE_TARGETS)} smoke target(s)")
         cmd_add(SMOKE_TARGETS)
     else:
         comment("initialized .whittle.json")
@@ -517,9 +805,12 @@ def cmd_add(targets, include_flaky=False):
         save_state(state)
         return
 
+    comment(f"registering {len(new_targets)} target(s)")
+
     total_flaky = 0
     if not include_flaky:
         for target in new_targets:
+            comment(f"querying flaky tests for {target}")
             flaky = query_flaky_tests(target)
             for f in flaky:
                 name = f["name"]
@@ -527,6 +818,8 @@ def cmd_add(targets, include_flaky=False):
                     set_test(state, name, "flaky", f["id"])
                     total_flaky += 1
 
+    comment("refreshing GitHub-disabled tests")
+    refresh_disabled_tests(state)
     save_state(state)
     for t in new_targets:
         print(f"{t}")
@@ -543,6 +836,8 @@ def cmd_sync(keep_going=False):
         sys.exit(1)
 
     buck_args = get_buck_args()
+    refresh_disabled_tests(state)
+    save_state(state)
 
     # Collect IDs to exclude: all tests NOT in 'fail' state
     exclude_ids = []
@@ -608,6 +903,7 @@ def cmd_sync(keep_going=False):
 def cmd_reset():
     state = load_state()
     state["tests"] = {}
+    state[GITHUB_DISABLED_STATE_KEY] = []
     save_state(state)
     comment("cleared all test states")
 

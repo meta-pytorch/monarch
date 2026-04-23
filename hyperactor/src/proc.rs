@@ -35,6 +35,21 @@
 //!   under different parents get distinct pids but the same name
 //!   prefix.
 //!
+//! ## Flight recorder span invariants (FR-*)
+//!
+//! - **FR-1 (recording-span route equivalence):**
+//!   `Instance::recording_span()` returns a span bound to the same
+//!   actor-local `Recording` consumed by handler instrumentation and
+//!   introspection. Events emitted under that span land in the same
+//!   flight-recorder ring buffer returned by `introspect_payload()`.
+//! - **FR-2 (recording-span rootness):** Every span returned by
+//!   `Instance::recording_span()` is a fresh root span (`parent:
+//!   None`). Ambient tracing context does not cause events emitted
+//!   under that span to route into a parent actor's flight recorder.
+//! - **FR-3 (fresh-handle, stable-destination):** Repeated calls to
+//!   `Instance::recording_span()` return distinct span handles, but
+//!   all target the same underlying actor recording.
+//!
 //! ## Queue depth accounting invariants (PD-5*)
 //!
 //! - **PD-5a:** Per-actor queue depth counts work items enqueued for
@@ -161,6 +176,7 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+use crate::subject::AsSubject as _;
 
 /// Returns current epoch-millis from wall clock. Used by
 /// `ProcQueueStats` for timestamp recording. In tests, override
@@ -290,6 +306,24 @@ fn account_dequeue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_i
         hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
     );
 }
+
+/// Roll back an accounted enqueue when the underlying send fails.
+///
+/// Must be paired with a prior `account_enqueue` that has not yet
+/// been balanced by `account_dequeue`. Decrements per-actor
+/// `queue_depth`, proc-level `running_total`, and OTel
+/// `ACTOR_MESSAGE_QUEUE_SIZE` symmetrically. Leaves
+/// `high_water_mark` alone (monotonic by design) and does not
+/// touch `last_nonzero_epoch_ms` (best-effort observational
+/// timestamp; brief overcount on failed sends is acceptable).
+fn account_cancel_enqueue(queue_depth: &AtomicU64, proc_stats: &ProcQueueStats, actor_id: &str) {
+    queue_depth.fetch_sub(1, Ordering::Relaxed);
+    proc_stats.running_total.fetch_sub(1, Ordering::Relaxed);
+    ACTOR_MESSAGE_QUEUE_SIZE.add(
+        -1,
+        hyperactor_telemetry::kv_pairs!("actor_id" => actor_id.to_owned()),
+    );
+}
 use crate::ordering::OrderedSender;
 use crate::ordering::OrderedSenderError;
 use crate::ordering::SEQ_INFO;
@@ -376,7 +410,7 @@ impl Drop for ProcState {
         // rather than Proc is dropped. This is because we need to wait for
         // Proc::inner's ref count becomes 0.
         tracing::info!(
-            proc_id = %self.proc_id,
+            subject = %self.proc_id.subject(),
             name = "ProcStatus",
             status = "Dropped"
         );
@@ -404,7 +438,7 @@ impl Proc {
     /// Create a pre-configured proc with the given proc id and forwarder.
     pub fn configured(proc_id: reference::ProcId, forwarder: BoxedMailboxSender) -> Self {
         tracing::info!(
-            proc_id = %proc_id,
+            subject = %proc_id.subject(),
             name = "ProcStatus",
             status = "Created"
         );
@@ -482,16 +516,16 @@ impl Proc {
                 // Normal lifecycle events that fail to send (e.g. coordinator
                 // mailbox already closed during shutdown) are silently dropped.
                 tracing::debug!(
-                    "proc {}: dropping non-error supervision event {}: {:?}",
-                    self.proc_id(),
+                    subject = %self.proc_id().subject(),
+                    "dropping non-error supervision event {}: {:?}",
                     event,
                     err
                 );
                 return;
             }
             tracing::error!(
-                "proc {}: could not propagate supervision event {} due to error: {:?}: crashing",
-                self.proc_id(),
+                subject = %self.proc_id().subject(),
+                "could not propagate supervision event {} due to error: {:?}: crashing",
                 event,
                 err
             );
@@ -581,8 +615,7 @@ impl Proc {
     }
 
     /// Common spawn logic for both root and child actors.
-    /// Creates a tracing span with the correct actor_id before starting the actor.
-    #[hyperactor::instrument(fields(actor_id = actor_id.to_string(), actor_name = actor_id.name(), actor_type = std::any::type_name::<A>()))]
+    #[hyperactor::instrument(fields(subject = actor_id.subject().to_string()))]
     fn spawn_inner<A: Actor>(
         &self,
         actor_id: reference::ActorId,
@@ -642,9 +675,7 @@ impl Proc {
         let actor_id = self.allocate_root_id(name)?;
         let span = tracing::debug_span!(
             "actor_instance",
-            actor_name = name,
-            actor_type = std::any::type_name::<A>(),
-            actor_id = actor_id.to_string(),
+            subject = %actor_id.subject(),
         );
         let _guard = span.enter();
         let (instance, receivers) = Instance::new(self.clone(), actor_id.clone(), false, None);
@@ -797,9 +828,7 @@ impl Proc {
         let actor_id = self.allocate_child_id(parent.actor_id())?;
         let _ = tracing::debug_span!(
             "child_actor_instance",
-            parent_actor_id = %parent.actor_id(),
-            actor_type = std::any::type_name::<()>(),
-            actor_id = %actor_id,
+            subject = %actor_id.subject(),
         );
 
         let (instance, _receivers) = Instance::new(self.clone(), actor_id, false, Some(parent));
@@ -893,8 +922,7 @@ impl Proc {
                     tracing::info!("sending stop signal to {}", cell.actor_id());
                     if let Err(err) = cell.signal(Signal::DrainAndStop(reason)) {
                         tracing::error!(
-                            "{}: failed to send stop signal to pid {}: {:?}",
-                            self.proc_id(),
+                            "failed to send stop signal to pid {}: {:?}",
                             cell.pid(),
                             err
                         );
@@ -905,7 +933,7 @@ impl Proc {
                 }
             }
         } else {
-            tracing::error!("no actor {} found in {}", actor_id, self.proc_id());
+            tracing::error!(subject = %self.proc_id().subject(), "no actor {} found", actor_id);
             None
         }
     }
@@ -936,7 +964,7 @@ impl Proc {
     /// its task.
     /// If except_current is true, don't stop the actor represented by "cx" at
     /// all.
-    #[hyperactor::instrument]
+    #[hyperactor::instrument(fields(subject = self.proc_id().subject().to_string()))]
     pub async fn destroy_and_wait_except_current<A: Actor>(
         &mut self,
         timeout: Duration,
@@ -944,7 +972,7 @@ impl Proc {
         except_current: bool,
         reason: &str,
     ) -> Result<(Vec<reference::ActorId>, Vec<reference::ActorId>), anyhow::Error> {
-        tracing::debug!("{}: proc stopping", self.proc_id());
+        tracing::debug!("proc stopping");
 
         let (this_handle, this_actor_id) = cx.map_or((None, None), |cx| {
             (
@@ -973,7 +1001,7 @@ impl Proc {
                 statuses.insert(actor_id, status);
             }
         }
-        tracing::debug!("{}: non-coordinator actors stopped", self.proc_id());
+        tracing::debug!("non-coordinator actors stopped");
 
         let waits: Vec<_> = statuses
             .iter_mut()
@@ -1015,9 +1043,11 @@ impl Proc {
             .collect();
         let mut aborted_actors = futures::future::join_all(aborted_actors).await;
 
-        // Phase 2: now that all other actors have stopped, stop the
-        // supervision coordinator so it had a chance to receive all
-        // supervision events.
+        // Phase 2: now that all other actors have stopped, request the
+        // supervision coordinator to stop. Their terminal supervision
+        // events have already been enqueued by this point, and the
+        // coordinator's DrainAndStop path drains queued supervision
+        // events before exiting.
         if let Some(ref coord_id) = coordinator_id
             && this_actor_id != Some(coord_id)
         {
@@ -1048,17 +1078,10 @@ impl Proc {
         let flush_timeout = hyperactor_config::global::get(crate::config::FORWARDER_FLUSH_TIMEOUT);
         match tokio::time::timeout(flush_timeout, self.state().forwarder.flush()).await {
             Ok(Err(err)) => {
-                tracing::warn!(
-                    "{}: forwarder flush failed during proc exit: {:?}",
-                    self.proc_id(),
-                    err
-                );
+                tracing::warn!("forwarder flush failed during proc exit: {:?}", err);
             }
             Err(_elapsed) => {
-                tracing::warn!(
-                    "{}: forwarder flush timed out during proc exit",
-                    self.proc_id(),
-                );
+                tracing::warn!("forwarder flush timed out during proc exit");
             }
             Ok(Ok(())) => {}
         }
@@ -1133,7 +1156,7 @@ impl Proc {
     }
 
     /// Create a child allocation in the proc.
-    #[hyperactor::instrument(fields(actor_name=parent_id.name()))]
+    #[hyperactor::instrument]
     pub(crate) fn allocate_child_id(
         &self,
         parent_id: &reference::ActorId,
@@ -1581,6 +1604,17 @@ impl<A: Actor> Instance<A> {
         crate::introspect::live_actor_payload(&self.inner.cell)
     }
 
+    /// Return a fresh tracing span bound to this actor's flight
+    /// recorder, with this actor as the subject. See FR-1, FR-2, FR-3
+    /// in module doc.
+    pub fn recording_span(&self) -> tracing::Span {
+        use crate::subject::AsSubject;
+        self.inner
+            .cell
+            .recording()
+            .span(&self.self_id().subject().to_string())
+    }
+
     /// Publish domain-specific properties for introspection.
     ///
     /// Publish a complete Attrs bag for introspection. Replaces any
@@ -1813,53 +1847,53 @@ impl<A: Actor> Instance<A> {
             .await;
 
         assert!(self.is_stopping());
-        let event = match result {
+        // Compute the terminal status and supervision event, but defer
+        // change_status until AFTER the event is delivered. If we flip
+        // the status to terminal first, a concurrent destroy_and_wait
+        // observer can release Phase 1 and stop the coordinator before
+        // the event lands in its mailbox — dropping the event.
+        let (terminal_status, event) = match result {
             Ok(stop_reason) => {
                 let status = ActorStatus::Stopped(stop_reason);
-                self.mailbox().close(status.clone());
                 let event = ActorSupervisionEvent::new(
                     self.inner.cell.actor_id().clone(),
                     actor.display_name(),
                     status.clone(),
                     None,
                 );
-                // FI-1: store supervision_event BEFORE change_status.
-                *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event.clone());
-                self.change_status(status);
-                Some(event)
+                (status, Some(event))
             }
-            Err(err) => {
-                match *err.kind {
-                    ActorErrorKind::UnhandledSupervisionEvent(box event) => {
-                        // We use the event's actor_status as this actor's terminal status.
-                        assert!(event.actor_status.is_terminal());
-                        self.mailbox().close(event.actor_status.clone());
-                        // FI-1: store supervision_event BEFORE change_status.
-                        *self.inner.cell.inner.supervision_event.lock().unwrap() =
-                            Some(event.clone());
-                        self.change_status(event.actor_status.clone());
-                        Some(event)
-                    }
-                    _ => {
-                        let error_kind = ActorErrorKind::Generic(err.kind.to_string());
-                        let status = ActorStatus::Failed(error_kind);
-                        self.mailbox().close(status.clone());
-                        let event = ActorSupervisionEvent::new(
-                            self.inner.cell.actor_id().clone(),
-                            actor.display_name(),
-                            status.clone(),
-                            None,
-                        );
-                        // FI-1: store supervision_event BEFORE change_status.
-                        *self.inner.cell.inner.supervision_event.lock().unwrap() =
-                            Some(event.clone());
-                        self.change_status(status);
-                        Some(event)
-                    }
+            Err(err) => match *err.kind {
+                ActorErrorKind::UnhandledSupervisionEvent(box event) => {
+                    // We use the event's actor_status as this actor's terminal status.
+                    assert!(event.actor_status.is_terminal());
+                    let status = event.actor_status.clone();
+                    (status, Some(event))
                 }
-            }
+                _ => {
+                    let error_kind = ActorErrorKind::Generic(err.kind.to_string());
+                    let status = ActorStatus::Failed(error_kind);
+                    let event = ActorSupervisionEvent::new(
+                        self.inner.cell.actor_id().clone(),
+                        actor.display_name(),
+                        status.clone(),
+                        None,
+                    );
+                    (status, Some(event))
+                }
+            },
         };
 
+        self.mailbox().close(terminal_status.clone());
+        // FI-1: store supervision_event BEFORE change_status.
+        if let Some(event) = &event {
+            *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event.clone());
+        }
+
+        // Deliver the supervision event to the parent/proc BEFORE
+        // change_status so that any observer waiting for this actor's
+        // terminal state can only see it once the event has been
+        // enqueued at its destination.
         if let Some(parent) = self.inner.cell.maybe_unlink_parent() {
             if let Some(event) = event {
                 // Parent exists, failure should be propagated to the parent.
@@ -1887,6 +1921,8 @@ impl<A: Actor> Instance<A> {
                     .handle_unhandled_supervision_event(&self, event);
             }
         }
+
+        self.change_status(terminal_status);
     }
 
     /// Runs the actor, and manages its supervision tree. When the function returns,
@@ -2078,6 +2114,13 @@ impl<A: Actor> Instance<A> {
         }
 
         if need_drain {
+            let mut supervision_events_drained = 0;
+            for supervision_event in supervision_event_receiver.drain() {
+                self.handle_supervision_event(actor, supervision_event)
+                    .await?;
+                supervision_events_drained += 1;
+            }
+
             let mut n = 0;
             while let Ok(work) = work_rx.try_recv() {
                 // PD-5c: drained work items must also be accounted.
@@ -2092,9 +2135,23 @@ impl<A: Actor> Instance<A> {
                         ActorErrorKind::processing(err),
                     ));
                 }
+                for supervision_event in supervision_event_receiver.drain() {
+                    self.handle_supervision_event(actor, supervision_event)
+                        .await?;
+                    supervision_events_drained += 1;
+                }
                 n += 1;
             }
-            tracing::debug!("drained {} messages", n);
+            for supervision_event in supervision_event_receiver.drain() {
+                self.handle_supervision_event(actor, supervision_event)
+                    .await?;
+                supervision_events_drained += 1;
+            }
+            tracing::debug!(
+                "drained {} messages and {} supervision events",
+                n,
+                supervision_events_drained
+            );
         }
         tracing::debug!(
             actor_id = %self.self_id(),
@@ -2168,8 +2225,7 @@ impl<A: Actor> Instance<A> {
             .await
     }
 
-    // Skip serializing all fields except HandlerInfo which includes the typename.
-    #[tracing::instrument(level = "debug", name = "handle_message", skip_all, fields(actor_id = %self.self_id(), message_type = %handler_info))]
+    #[tracing::instrument(level = "debug", name = "handle_message", skip_all, fields(message_type = %handler_info))]
     async fn handle_message_with_handler_info<M: Message>(
         &self,
         actor: &mut A,
@@ -2223,9 +2279,10 @@ impl<A: Actor> Instance<A> {
         // coercion allows the `this` argument to be treated exactly like
         // &Instance<A>.
         let start = Instant::now();
+        let subject_str = self.self_id().subject().to_string();
         let result = actor
             .handle(&context, message)
-            .instrument(self.inner.cell.inner.recording.span())
+            .instrument(self.inner.cell.inner.recording.span(&subject_str))
             .await;
         let elapsed_us = start.elapsed().as_micros() as u64;
         self.inner
@@ -3100,10 +3157,13 @@ impl<A: Actor> Ports<A> {
                             }
                         })
                     });
-                    // PD-5b: account enqueue only after the work item
-                    // is successfully accepted by the work queue. This
-                    // prevents queue_depth from drifting on send failure
-                    // (channel closed, invalid seq, etc.).
+                    // PD-5b: account the enqueue BEFORE handing the work
+                    // to the queue. Otherwise the consumer can race and
+                    // call `account_dequeue` before this thread accounts
+                    // the enqueue, underflowing `running_total`. On send
+                    // failure, `account_cancel_enqueue` rolls back the
+                    // counters so `queue_depth` does not drift.
+                    account_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
                     let result = if workq.enable_buffering {
                         match seq_info {
                             Some(SeqInfo::Session { session_id, seq }) => {
@@ -3133,14 +3193,14 @@ impl<A: Actor> Ports<A> {
                                     std::any::type_name::<M>(),
                                     );
                                 tracing::error!(error_msg);
-                                anyhow::bail!(error_msg);
+                                Err(anyhow::anyhow!(error_msg))
                             }
                         }
                     } else {
                         workq.direct_send(work).map_err(anyhow::Error::from)
                     };
-                    if result.is_ok() {
-                        account_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
+                    if result.is_err() {
+                        account_cancel_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
                     }
                     result
                 });
@@ -4869,5 +4929,40 @@ mod tests {
 
         // Watermark retained.
         assert_eq!(stats.high_water_mark(), 2);
+    }
+
+    // account_cancel_enqueue must symmetrically reverse
+    // account_enqueue on queue_depth and running_total so that a
+    // send failure after accounting cannot leave the proc-wide
+    // counter at u64::MAX (which would panic the next enqueue via
+    // the `fetch_add(1) + 1` path).
+    #[test]
+    fn test_account_cancel_enqueue_restores_counters() {
+        let stats = ProcQueueStats::new();
+        let depth = Arc::new(AtomicU64::new(0));
+
+        account_enqueue(&depth, &stats, "a");
+        assert_eq!(stats.running_total(), 1);
+        assert_eq!(depth.load(Ordering::Relaxed), 1);
+
+        account_cancel_enqueue(&depth, &stats, "a");
+        assert_eq!(
+            stats.running_total(),
+            0,
+            "cancel must restore running_total"
+        );
+        assert_eq!(
+            depth.load(Ordering::Relaxed),
+            0,
+            "cancel must restore queue_depth"
+        );
+
+        // high_water_mark is monotonic by design; cancel does not reset it.
+        assert_eq!(stats.high_water_mark(), 1);
+
+        // A subsequent enqueue must not observe underflow: fetch_add(1) + 1
+        // would panic in debug builds if running_total had wrapped to u64::MAX.
+        account_enqueue(&depth, &stats, "a");
+        assert_eq!(stats.running_total(), 1);
     }
 }

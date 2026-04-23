@@ -368,11 +368,14 @@ impl Future for ServerHandle {
     }
 }
 
-/// Serve new connections on the given address.
+/// Serve new connections on the given address, optionally using a pre-opened TCP listener.
+/// When `prebound_listener` is `Some`, it is used instead of binding a new socket.
+/// This is only supported for TCP-based transports (Tcp, Tls, MetaTls).
 pub(in crate::channel) fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
+    prebound_listener: Option<std::net::TcpListener>,
 ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-    let (mut listener, channel_addr) = super::listen(addr)?;
+    let (mut listener, channel_addr) = super::listen_with_prebound(addr, prebound_listener)?;
 
     metrics::CHANNEL_CONNECTIONS.add(
         1,

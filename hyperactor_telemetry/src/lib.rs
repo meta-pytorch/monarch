@@ -26,6 +26,11 @@ const SPAN_FIELD_RECORDING: &str = "recording";
 #[allow(dead_code)]
 const SPAN_FIELD_RECORDER: &str = "recorder";
 
+/// Well-known tracing field name for the log subject.
+/// Spans carrying this field identify the entity (actor, proc, etc.)
+/// that log events within the span pertain to.
+pub const SUBJECT_KEY: &str = "subject";
+
 // Environment value constants
 const ENV_VALUE_LOCAL: &str = "local";
 const ENV_VALUE_MAST_EMULATOR: &str = "mast_emulator";
