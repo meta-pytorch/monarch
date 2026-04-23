@@ -8,6 +8,7 @@
 
 //! Server (receive) side of simplex channels.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -84,16 +85,82 @@ impl<S: Stream> Link for AcceptorLink<S> {
     }
 }
 
-/// Dispatch a stream to the appropriate session, creating one if this
-/// is the first connection for the given session ID.
+/// Shared state for multi-stream sessions. Each additional stream
+/// (stream_id > 0) gets its own MVar for connection handoff. The
+/// [`AckWatermark`] is shared across all streams so cumulative acks
+/// reflect the global sequence space.
+pub(super) struct StreamState<S: Stream> {
+    /// Per-stream MVars for connection handoff. Keyed by stream_id.
+    /// Accessed concurrently from multiple accept-loop dispatch tasks
+    /// (one per incoming connection for the same session), but only
+    /// for a brief `entry().or_insert_with()` — a plain std Mutex is
+    /// cheaper than DashMap here.
+    streams: std::sync::Mutex<HashMap<u8, MVar<S>>>,
+    /// Shared ack tracker: each stream records its received seqs here.
+    ack_watermark: tokio::sync::Mutex<session::AckWatermark>,
+}
+
+impl<S: Stream> StreamState<S> {
+    pub(super) fn new() -> Self {
+        let ack_msg_interval: u64 =
+            hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
+        let ack_time_interval = hyperactor_config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
+        Self {
+            streams: std::sync::Mutex::new(HashMap::new()),
+            ack_watermark: tokio::sync::Mutex::new(session::AckWatermark::new(
+                ack_msg_interval,
+                ack_time_interval,
+            )),
+        }
+    }
+}
+
+/// If `link_init` is for a multi-stream connection (`stream_id > 0`),
+/// resolve (or create) the shared per-session state and return
+/// `Some((stream_id, state))`. Otherwise return `None`.
+fn resolve_stream<S: Stream>(
+    stream_state: &std::sync::Mutex<HashMap<SessionId, Arc<StreamState<S>>>>,
+    link_init: &super::LinkInit,
+) -> Option<(u8, Arc<StreamState<S>>)> {
+    if link_init.stream_id == 0 {
+        return None;
+    }
+    let state = stream_state
+        .lock()
+        .unwrap()
+        .entry(link_init.session_id)
+        .or_insert_with(|| Arc::new(StreamState::new()))
+        .clone();
+    Some((link_init.stream_id, state))
+}
+
+/// Dispatch a newly accepted connection to the right session.
+///
+/// When `streams` is `None`, this is a single-stream (strictly
+/// in-order) session, and the MVar to hand the connection to is
+/// looked up in `sessions` (creating a fresh session reader on first
+/// use).
+///
+/// When `streams` is `Some((stream_id, state))`, this is the
+/// `stream_id`-th stream of a multi-stream session sharing `state`
+/// (the caller resolves the per-session state from its own map). The
+/// connection is handed to a per-`stream_id` MVar inside `state`.
 pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
     session_id: SessionId,
+    streams: Option<(u8, Arc<StreamState<S>>)>,
     conn: S,
     sessions: &DashMap<SessionId, MVar<S>>,
     dest: ChannelAddr,
     tx: mpsc::Sender<M>,
     cancel: CancellationToken,
 ) {
+    if let Some((stream_id, state)) = streams {
+        // Multi-stream: route to a per-stream reader task.
+        dispatch_multi_stream::<M, S>(session_id, stream_id, conn, state, dest, tx, cancel).await;
+        return;
+    }
+
+    // Single-stream: existing logic.
     let stream = {
         let entry = sessions.entry(session_id);
         match entry {
@@ -204,6 +271,106 @@ pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
     };
 
     stream.put(conn).await;
+}
+
+/// Handle a multi-stream connection (stream_id > 0). Spawns a per-stream
+/// reader task that reads frames, deserializes, delivers to the shared
+/// mpsc, and sends acks. Uses an AckWatermark shared across all streams
+/// of the same session for cumulative out-of-order acking.
+async fn dispatch_multi_stream<M: RemoteMessage, S: Stream>(
+    session_id: SessionId,
+    stream_id: u8,
+    conn: S,
+    state: Arc<StreamState<S>>,
+    dest: ChannelAddr,
+    tx: mpsc::Sender<M>,
+    cancel: CancellationToken,
+) {
+    tracing::info!(
+        %dest, %session_id, stream_id,
+        "dispatch_multi_stream: new connection"
+    );
+
+    // Get or create an MVar for this stream_id.
+    let stream_mvar = {
+        use std::collections::hash_map::Entry;
+        let mut streams = state.streams.lock().unwrap();
+        match streams.entry(stream_id) {
+            Entry::Occupied(e) => e.get().clone(),
+            Entry::Vacant(e) => {
+                let mvar: MVar<S> = MVar::empty();
+                let link = AcceptorLink {
+                    dest: dest.clone(),
+                    session_id,
+                    stream: mvar.clone(),
+                    cancel: cancel.clone(),
+                };
+                let deliver_tx = tx;
+                let ct = cancel.clone();
+                let shared_state = state.clone();
+
+                // Spawn a reader task for this stream.
+                tokio::spawn(async move {
+                    let mut session = Session::new(link);
+
+                    loop {
+                        let connected = match session.connect().await {
+                            Ok(s) => s,
+                            Err(_) => break,
+                        };
+
+                        let result = {
+                            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            tokio::select! {
+                                r = session::multi_stream_recv_connected::<M, _, _>(
+                                    &conn,
+                                    &shared_state.ack_watermark,
+                                    &deliver_tx,
+                                ) => r,
+                                _ = ct.cancelled() => Err(session::RecvLoopError::Cancelled),
+                            }
+                        };
+
+                        let recoverable =
+                            matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));
+
+                        match &result {
+                            Ok(()) => {
+                                tracing::info!(
+                                    %dest,
+                                    %session_id,
+                                    stream_id,
+                                    "multi-stream recv EOF, awaiting reconnect"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::info!(
+                                    %dest,
+                                    %session_id,
+                                    stream_id,
+                                    error = %e,
+                                    recoverable,
+                                    "multi-stream recv error"
+                                );
+                            }
+                        }
+
+                        session = connected.release();
+
+                        if recoverable {
+                            continue;
+                        }
+                        break;
+                    }
+                });
+
+                e.insert(mvar.clone());
+                mvar
+            }
+        }
+    };
+
+    stream_mvar.put(conn).await;
 }
 
 /// Generic accept loop. Accepts connections from `listener`, transforms
@@ -418,20 +585,34 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
     };
 
     let sessions: Arc<DashMap<SessionId, MVar<Box<dyn Stream>>>> = Arc::new(DashMap::new());
+    let stream_state: Arc<std::sync::Mutex<HashMap<SessionId, Arc<StreamState<Box<dyn Stream>>>>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
     let child_cancel = CancellationToken::new();
     let dispatch_dest = channel_addr.clone();
     let dispatch = {
         let sessions = Arc::clone(&sessions);
+        let stream_state = Arc::clone(&stream_state);
         let tx = tx.clone();
         let child_cancel = child_cancel.clone();
         let dest = dispatch_dest;
         move |link_init: super::LinkInit, stream: Box<dyn Stream>| {
             let sessions = Arc::clone(&sessions);
+            let stream_state = Arc::clone(&stream_state);
             let tx = tx.clone();
             let cancel = child_cancel.child_token();
             let dest = dest.clone();
             async move {
-                dispatch_stream(link_init.session_id, stream, &sessions, dest, tx, cancel).await;
+                let streams = resolve_stream(&stream_state, &link_init);
+                dispatch_stream(
+                    link_init.session_id,
+                    streams,
+                    stream,
+                    &sessions,
+                    dest,
+                    tx,
+                    cancel,
+                )
+                .await;
             }
         }
     };
@@ -479,19 +660,33 @@ where
     };
 
     let sessions: Arc<DashMap<SessionId, MVar<L::Stream>>> = Arc::new(DashMap::new());
+    let stream_state: Arc<std::sync::Mutex<HashMap<SessionId, Arc<StreamState<L::Stream>>>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
     let child_cancel = CancellationToken::new();
     let dispatch = {
         let sessions = Arc::clone(&sessions);
+        let stream_state = Arc::clone(&stream_state);
         let tx = tx.clone();
         let child_cancel = child_cancel.clone();
         let dest = channel_addr.clone();
         move |link_init: super::LinkInit, stream: L::Stream| {
             let sessions = Arc::clone(&sessions);
+            let stream_state = Arc::clone(&stream_state);
             let tx = tx.clone();
             let cancel = child_cancel.child_token();
             let dest = dest.clone();
             async move {
-                dispatch_stream(link_init.session_id, stream, &sessions, dest, tx, cancel).await;
+                let streams = resolve_stream(&stream_state, &link_init);
+                dispatch_stream(
+                    link_init.session_id,
+                    streams,
+                    stream,
+                    &sessions,
+                    dest,
+                    tx,
+                    cancel,
+                )
+                .await;
             }
         }
     };
