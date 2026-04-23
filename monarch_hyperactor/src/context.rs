@@ -79,7 +79,8 @@ impl PyInstance {
 
     #[getter]
     pub fn actor_id(&self) -> PyActorId {
-        self.inner.self_id().clone().into()
+        let actor_id: hyperactor::reference::ActorId = self.inner.self_id().clone().into();
+        actor_id.into()
     }
 
     #[pyo3(signature = (reason = None))]
