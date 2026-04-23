@@ -69,6 +69,13 @@ fn get_or_add_new_module<'py>(
 #[pyo3(name = "_rust_bindings")]
 pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_telemetry::trace::get_or_create_trace_id();
+
+    let py = module.py();
+    py.import("os")?.getattr("environ")?.set_item(
+        hyperactor_telemetry::env::HYPERACTOR_EXECUTION_ID_ENV,
+        hyperactor_telemetry::env::execution_id(),
+    )?;
+
     monarch_hyperactor::runtime::initialize(module.py())?;
     let runtime = monarch_hyperactor::runtime::get_tokio_runtime();
     ::hyperactor::initialize_with_log_prefix(
