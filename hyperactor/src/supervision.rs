@@ -210,7 +210,10 @@ impl fmt::Display for ActorSupervisionEvent {
                 write!(indented(f).with_str("  "), "{}", child)
             }
             ActorStatus::Stopped(_)
-                if self.actor_id.name() == "host_agent" || self.actor_id.name() == "proc_agent" =>
+                if self
+                    .actor_id
+                    .label()
+                    .is_some_and(|l| l.as_str() == "host_agent" || l.as_str() == "proc_agent") =>
             {
                 let addr = self.actor_id.proc_id().addr().to_string();
                 write!(
@@ -238,12 +241,7 @@ mod tests {
 
     fn test_event(name: &str, status: ActorStatus) -> ActorSupervisionEvent {
         let proc_id = reference::ProcId::from_resource_name(ChannelAddr::Local(0), "test_proc");
-        ActorSupervisionEvent::new(
-            proc_id.actor_id(name, 0),
-            Some(name.to_string()),
-            status,
-            None,
-        )
+        ActorSupervisionEvent::new(proc_id.actor_id(name), Some(name.to_string()), status, None)
     }
 
     fn test_event_with_addr(
@@ -252,7 +250,7 @@ mod tests {
         status: ActorStatus,
     ) -> ActorSupervisionEvent {
         let proc_id = reference::ProcId::from_resource_name(addr, "test_proc");
-        ActorSupervisionEvent::new(proc_id.actor_id(name, 0), None, status, None)
+        ActorSupervisionEvent::new(proc_id.actor_id(name), None, status, None)
     }
 
     fn generic(name: &str, msg: &str) -> ActorSupervisionEvent {
@@ -566,8 +564,8 @@ mod tests {
     #[test]
     fn test_sv1_actually_failing_actor_returns_stopped_child() {
         let proc_id = reference::ProcId::from_resource_name(ChannelAddr::Local(0), "test_proc");
-        let child_id = proc_id.actor_id("proc_agent", 0);
-        let parent_id = proc_id.actor_id("controller", 0);
+        let child_id = proc_id.actor_id("proc_agent");
+        let parent_id = proc_id.actor_id("controller");
 
         let child_event = ActorSupervisionEvent::new(
             child_id.clone(),

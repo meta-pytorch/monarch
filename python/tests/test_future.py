@@ -69,7 +69,7 @@ class TestFuture:
             None,
             [],
             [],
-            ActorId.from_string("local:0,unknown,unknown[0]"),
+            ActorId(addr="local:0", proc_name="unknown", actor_name="unknown"),
         )
 
         the_messages = [(1, lambda: None), (2, lambda: f._set_result(re))]
