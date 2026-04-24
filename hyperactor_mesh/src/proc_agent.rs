@@ -707,8 +707,6 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
                 "could not propagate supervision event, crashing",
             );
 
-            // We should have a custom "crash" function here, so that this works
-            // in testing of the LocalAllocator, etc.
             std::process::exit(1);
         }
         Ok(())

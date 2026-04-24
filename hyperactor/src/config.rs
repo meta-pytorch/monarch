@@ -124,7 +124,7 @@ declare_attrs! {
     ))
     pub attr TERMINATED_SNAPSHOT_RETENTION: usize = 100;
 
-    /// Timeout used by allocator for stopping a proc.
+    /// Timeout to stop a proc.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_PROCESS_EXIT_TIMEOUT".to_string()),
         Some("process_exit_timeout".to_string()),
