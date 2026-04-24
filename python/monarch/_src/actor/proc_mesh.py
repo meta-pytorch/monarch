@@ -604,6 +604,11 @@ class ProcMesh(MeshTrait):
             init_message,
             emulated=False,
             supervision_display_name=supervision_display_name,
+            # Pass the user-facing actor class token explicitly. The
+            # `actor` argument above is Monarch's internal `_Actor`
+            # wrapper, so Rust cannot recover the user's class by
+            # introspecting it under the GIL.
+            actor_class=f"{Class.__module__}.{Class.__qualname__}",
         )
 
         mesh = ActorMesh(Class, name, actor_mesh, self._region.as_shape(), self)

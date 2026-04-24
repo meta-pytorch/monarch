@@ -27,6 +27,7 @@ class ProcMesh:
         init_message: PendingMessage,
         emulated: bool,
         supervision_display_name: str | None = None,
+        actor_class: str | None = None,
     ) -> PythonActorMesh: ...
     @property
     def region(self) -> Region:

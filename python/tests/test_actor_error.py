@@ -696,6 +696,37 @@ async def test_actor_mesh_supervision_handling() -> None:
     await proc.stop()
 
 
+@pytest.mark.oss_skip
+@pytest.mark.timeout(30)
+@isolate_in_subprocess
+async def test_supervision_error_exposes_actor_class() -> None:
+    # Guard against the client process crashing during this test — the
+    # test intentionally triggers a supervision failure.
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    e = proc.spawn("error", ErrorActor)
+
+    with pytest.raises(SupervisionError) as exc_info:
+        await e.fail_with_supervision_error.call_one()
+
+    err = exc_info.value
+    # `actor_class` is populated from the fully-qualified Python class
+    # token (`module.qualname`) derived under the GIL at spawn time and
+    # projected into `Attribution.actor_class` by
+    # `PythonActor::supervision_attribution()`. Test-module prefix
+    # varies across OSS vs. internal paths, so assert the qualname
+    # suffix instead of hardcoding the full path.
+    assert err.actor_class is not None, "actor_class must be populated"
+    assert err.actor_class.endswith(".ErrorActor"), (
+        f"expected actor_class to end with '.ErrorActor', got {err.actor_class!r}"
+    )
+    assert err.mesh_name == "error", (
+        f"expected mesh_name == 'error', got {err.mesh_name!r}"
+    )
+
+    await proc.stop()
+
+
 class HealthyActor(Actor):
     @endpoint
     async def check(self):

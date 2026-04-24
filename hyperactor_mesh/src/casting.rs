@@ -21,6 +21,7 @@ use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference as hyperactor_reference;
+use hyperactor_config::Attrs;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::Selection;
@@ -44,6 +45,7 @@ use crate::comm::multicast::Uslice;
 use crate::config::MAX_CAST_DIMENSION_SIZE;
 use crate::metrics;
 use crate::reference::ActorMeshId;
+use crate::supervision::stamp_attribution_into;
 
 declare_attrs! {
     /// Which mesh this message was cast to. Used for undeliverable message
@@ -71,7 +73,11 @@ pub fn update_undeliverable_envelope_for_casting(
 }
 
 /// Common implementation for `ActorMesh`s and `ActorMeshRef`s to cast
-/// an `M`-typed message
+/// an `M`-typed message.
+///
+/// `attribution` carries the destination attribution keys from the
+/// calling `ActorMeshRef` and is stamped onto the outbound envelope
+/// `Flattrs` (AT-1) and the TEMPORARY v0 outer headers (see below).
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
 #[tracing::instrument(level = "debug", skip_all)]
 pub(crate) fn actor_mesh_cast<A, M>(
@@ -82,6 +88,7 @@ pub(crate) fn actor_mesh_cast<A, M>(
     root_mesh_shape: &Shape,
     cast_mesh_shape: &Shape,
     message: M,
+    attribution: &Attrs,
 ) -> Result<(), CastError>
 where
     A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
@@ -96,6 +103,9 @@ where
     mailbox::headers::set_send_timestamp(&mut headers);
     mailbox::headers::set_rust_message_type::<M>(&mut headers);
     headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
+    // AT-1: stamp destination attribution from the caller's
+    // ActorMeshRef onto the inner CastMessageEnvelope headers.
+    stamp_attribution_into(&mut headers, attribution);
     let message = CastMessageEnvelope::new::<A, M>(
         actor_mesh_id.clone(),
         cx.mailbox().actor_id().clone(),
@@ -138,9 +148,12 @@ where
         message,
     };
 
-    // TEMPORARY: remove with v0 support
+    // TEMPORARY: remove with v0 support. AT-1: also stamp
+    // destination attribution on this outer headers buffer so the
+    // v0 path carries the same keys as the inner envelope.
     let mut headers = Flattrs::new();
     headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
+    stamp_attribution_into(&mut headers, attribution);
 
     comm_actor_ref
         .port()
@@ -158,6 +171,7 @@ pub(crate) fn cast_to_sliced_mesh<A, M>(
     message: M,
     sliced_shape: &Shape,
     root_mesh_shape: &Shape,
+    attribution: &Attrs,
 ) -> Result<(), CastError>
 where
     A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
@@ -186,6 +200,7 @@ where
         root_mesh_shape,
         sliced_shape,
         message,
+        attribution,
     )
 }
 

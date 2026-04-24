@@ -547,13 +547,22 @@ pub struct PythonActor {
     init_message: Option<PythonMessage>,
     /// User-provided mesh base-name string plumbed from
     /// `PythonActorParams`. This is the base name the caller
-    /// supplied when the mesh was spawned, narrowly used to populate
+    /// supplied when the mesh was spawned. It is used to populate
     /// `MeshFailure.actor_mesh_name` on the direct actor-handled
-    /// supervision path without a lookup. It is not actor display
-    /// text (`display_name` handles that) and it is not a general
-    /// side channel; downstream code must not consume this field for
-    /// any other purpose.
+    /// supervision path, and as the `mesh_name` field on the
+    /// structured `Attribution` carrier produced by
+    /// `supervision_attribution()`. It is not actor display text
+    /// (`display_name` handles that).
     mesh_base_name: Option<String>,
+    /// Fully-qualified Python class token (`module.qualname`)
+    /// derived at spawn time under the GIL from the actor's
+    /// `PyType`. Plumbed from `PythonActorParams`. Populates the
+    /// `actor_class` field on the structured `Attribution` carrier
+    /// produced by `supervision_attribution()`; symmetric with the
+    /// transport-backed `DEST_ACTOR_CLASS` on the mesh-destination
+    /// attribution path. `None` when `__module__`/`__qualname__`
+    /// could not be read (e.g. dynamically built types).
+    actor_class: Option<String>,
 }
 
 impl PythonActor {
@@ -562,6 +571,7 @@ impl PythonActor {
         init_message: Option<PythonMessage>,
         spawn_point: Option<Point>,
         mesh_base_name: Option<String>,
+        actor_class: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         let use_queue_dispatch = hyperactor_config::global::get(ACTOR_QUEUE_DISPATCH);
 
@@ -596,6 +606,7 @@ impl PythonActor {
                     spawn_point: OnceLock::from(spawn_point),
                     init_message,
                     mesh_base_name,
+                    actor_class,
                 })
             },
         )?)
@@ -660,6 +671,7 @@ impl PythonActor {
             Some(init_message),
             Some(extent!().point_of_rank(0).unwrap()),
             None, // root client actor has no user-facing mesh name
+            None, // root client actor has no structured class token
         )
         .expect("create client PythonActor");
 
@@ -844,7 +856,7 @@ fn actor_error_to_event(
                 instance.self_id().clone(),
                 actor.display_name(),
                 status,
-                None,
+                actor.supervision_attribution(),
             )
         }
     }
@@ -1000,6 +1012,26 @@ impl Actor for PythonActor {
         })
     }
 
+    /// Populate structured attribution for supervision events
+    /// synthesized for this `PythonActor` from locally available
+    /// state: the spawn-time mesh base name, the fully-qualified
+    /// Python class token, and the Python `str(PyInstance)` display
+    /// name.
+    fn supervision_attribution(&self) -> Option<hyperactor::supervision::Attribution> {
+        let mesh_name = self.mesh_base_name.clone();
+        let actor_class = self.actor_class.clone();
+        let actor_display_name = self.display_name();
+        if mesh_name.is_none() && actor_class.is_none() && actor_display_name.is_none() {
+            return None;
+        }
+        Some(hyperactor::supervision::Attribution {
+            mesh_name,
+            actor_class,
+            actor_display_name,
+            rank: None,
+        })
+    }
+
     async fn handle_undeliverable_message(
         &mut self,
         ins: &Instance<Self>,
@@ -1102,16 +1134,20 @@ pub struct PythonActorParams {
     // Python message to process as part of the actor initialization.
     init_message: Option<PythonMessage>,
     // User-provided mesh base-name string under which this actor
-    // was spawned. The base name the caller passed when the mesh
-    // was spawned, plumbed through `PythonActor` narrowly to
-    // populate `MeshFailure.actor_mesh_name` on the direct
-    // actor-handled supervision path without a lookup. It is not
-    // actor display text (`display_name` handles that) and it is
-    // not a general side channel; downstream code must not consume
-    // this field for any other purpose. Kept separate from
+    // was spawned. Plumbed through `PythonActor` to populate
+    // `MeshFailure.actor_mesh_name` on the direct actor-handled
+    // supervision path, and to populate the `mesh_name` field on
+    // the structured `Attribution` carrier produced by
+    // `PythonActor::supervision_attribution()`. Kept separate from
     // `supervision_display_name`, which is a rendered supervision
     // display string passed through `spawn_with_name(...)`.
     mesh_base_name: Option<String>,
+    // Fully-qualified Python class token (`module.qualname`)
+    // derived under the GIL at spawn time. Plumbed through
+    // `PythonActor` to populate `Attribution.actor_class` on the
+    // actor-local supervision synthesis path. Symmetric with
+    // `DEST_ACTOR_CLASS` on the mesh-destination attribution path.
+    actor_class: Option<String>,
 }
 
 impl PythonActorParams {
@@ -1119,11 +1155,13 @@ impl PythonActorParams {
         actor_type: PickledPyObject,
         init_message: Option<PythonMessage>,
         mesh_base_name: Option<String>,
+        actor_class: Option<String>,
     ) -> Self {
         Self {
             actor_type,
             init_message,
             mesh_base_name,
+            actor_class,
         }
     }
 }
@@ -1137,11 +1175,18 @@ impl RemoteSpawn for PythonActor {
             actor_type,
             init_message,
             mesh_base_name,
+            actor_class,
         }: PythonActorParams,
         environment: Flattrs,
     ) -> Result<Self, anyhow::Error> {
         let spawn_point = environment.get(CAST_POINT);
-        Self::new(actor_type, init_message, spawn_point, mesh_base_name)
+        Self::new(
+            actor_type,
+            init_message,
+            spawn_point,
+            mesh_base_name,
+            actor_class,
+        )
     }
 }
 
@@ -1841,6 +1886,82 @@ mod tests {
             assert!(py_msg.contains("\"status\":{\"Failed\":\"boom\"}"));
             // 3) Starts with the expected prefix
             assert!(py_msg.starts_with(&expected_prefix));
+        });
+    }
+
+    /// Build a `PythonActor` by hand with only the supervision-
+    /// attribution-relevant fields populated. Used by the
+    /// `supervision_attribution` unit tests below; bypasses
+    /// `PythonActor::new` because we do not need the pickled type,
+    /// task locals, or dispatch machinery to exercise the hook.
+    fn make_test_actor(
+        py: Python<'_>,
+        mesh_base_name: Option<String>,
+        actor_class: Option<String>,
+    ) -> PythonActor {
+        PythonActor {
+            actor: py.None(),
+            task_locals: None,
+            instance: None,
+            dispatch_mode: PythonActorDispatchMode::Direct,
+            spawn_point: OnceLock::from(None),
+            init_message: None,
+            mesh_base_name,
+            actor_class,
+        }
+    }
+
+    #[test]
+    fn test_supervision_attribution_populates_actor_class() {
+        pyo3::Python::initialize();
+        monarch_with_gil_blocking(|py| {
+            let actor = make_test_actor(
+                py,
+                Some("training".to_string()),
+                Some("monarch_examples.dining.Philosopher".to_string()),
+            );
+            let attribution = actor
+                .supervision_attribution()
+                .expect("at least one field populated -> Some");
+            assert_eq!(attribution.mesh_name.as_deref(), Some("training"));
+            assert_eq!(
+                attribution.actor_class.as_deref(),
+                Some("monarch_examples.dining.Philosopher"),
+            );
+            // display_name() returns None when `instance` is None;
+            // rank is not populated on the actor-local producer path.
+            assert!(attribution.actor_display_name.is_none());
+            assert!(attribution.rank.is_none());
+        });
+    }
+
+    #[test]
+    fn test_supervision_attribution_none_when_all_absent() {
+        pyo3::Python::initialize();
+        monarch_with_gil_blocking(|py| {
+            let actor = make_test_actor(py, None, None);
+            assert!(actor.supervision_attribution().is_none());
+        });
+    }
+
+    #[test]
+    fn test_supervision_attribution_actor_class_only() {
+        pyo3::Python::initialize();
+        monarch_with_gil_blocking(|py| {
+            let actor = make_test_actor(
+                py,
+                None,
+                Some("monarch_examples.dining.Philosopher".to_string()),
+            );
+            let attribution = actor
+                .supervision_attribution()
+                .expect("actor_class alone -> Some");
+            assert!(attribution.mesh_name.is_none());
+            assert_eq!(
+                attribution.actor_class.as_deref(),
+                Some("monarch_examples.dining.Philosopher"),
+            );
+            assert!(attribution.actor_display_name.is_none());
         });
     }
 }

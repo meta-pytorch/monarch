@@ -114,13 +114,30 @@ impl Flattrs {
         let key_hash = key.key_hash();
         let serialized = bincode::serde::encode_to_vec(&value, bincode::config::legacy())
             .expect("serialization failed");
+        self.set_serialized(key_hash, &serialized);
+    }
 
-        // If key exists, either overwrite in place or compact + append
+    /// Set an entry by its `(key_hash, serialized_value)` pair,
+    /// replacing any existing entry under the same `key_hash`.
+    /// Collision semantics match [`set`]: in-place overwrite when
+    /// the new value is the same size, otherwise compact-and-append.
+    /// A later write under the same key hash is the value returned
+    /// by [`get`].
+    ///
+    /// This is the lower-level companion to the typed [`set`] API,
+    /// intended for callers that already have a key hash and
+    /// pre-serialized bytes in hand — for example, copying
+    /// entries across `Flattrs` buffers without re-deserializing,
+    /// or stamping typed `Attrs` entries through a crate boundary
+    /// where the concrete `Key<T>` is out of scope. Most callers
+    /// should prefer [`set`].
+    pub fn set_serialized(&mut self, key_hash: u64, serialized: &[u8]) {
+        // If key exists, either overwrite in place or compact + append.
         if let Some((offset, old_len)) = self.find_entry_location(key_hash) {
             if serialized.len() == old_len {
                 // Same size - overwrite value in place
                 let value_start = offset + ENTRY_HEADER_SIZE;
-                self.buffer[value_start..value_start + old_len].copy_from_slice(&serialized);
+                self.buffer[value_start..value_start + old_len].copy_from_slice(serialized);
                 return;
             }
 
@@ -138,7 +155,7 @@ impl Flattrs {
             self.buffer[0..2].copy_from_slice(&((count - 1) as u16).to_le_bytes());
         }
 
-        self.append_entry(key_hash, &serialized);
+        self.append_entry(key_hash, serialized);
     }
 
     /// Get a value, deserializing from the buffer.
@@ -183,6 +200,22 @@ impl Flattrs {
             flattrs.append_entry(key_hash, &serialized);
         }
         flattrs
+    }
+
+    /// Iterate over all entries as `(key_hash, value_bytes)` pairs.
+    ///
+    /// The byte slice is borrowed from the buffer — the caller must
+    /// not hold the returned slice across a mutation of this
+    /// `Flattrs`. Intended for generic copy paths that need to
+    /// transfer entries without knowing their typed schema (e.g.
+    /// filter-and-copy helpers keyed by meta marker). Callers that
+    /// need typed access should use the typed [`get`] API.
+    pub fn iter(&self) -> FlattrsIter<'_> {
+        FlattrsIter {
+            buffer: &self.buffer,
+            remaining: self.len(),
+            offset: HEADER_SIZE,
+        }
     }
 
     /// Find the value bytes for a given key_hash by scanning entries.
@@ -266,6 +299,47 @@ impl Flattrs {
         self.buffer
             .extend_from_slice(&(value.len() as u32).to_le_bytes());
         self.buffer.extend_from_slice(value);
+    }
+}
+
+/// Iterator over `Flattrs` entries as `(key_hash, value_bytes)`.
+///
+/// Produced by [`Flattrs::iter`].
+pub struct FlattrsIter<'a> {
+    buffer: &'a [u8],
+    remaining: usize,
+    offset: usize,
+}
+
+impl<'a> Iterator for FlattrsIter<'a> {
+    type Item = (u64, &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        if self.offset + ENTRY_HEADER_SIZE > self.buffer.len() {
+            return None;
+        }
+        let key_hash = u64::from_le_bytes(
+            self.buffer[self.offset..self.offset + 8]
+                .try_into()
+                .unwrap_or([0; 8]),
+        );
+        let entry_len = u32::from_le_bytes(
+            self.buffer[self.offset + 8..self.offset + 12]
+                .try_into()
+                .unwrap_or([0; 4]),
+        ) as usize;
+        let value_start = self.offset + ENTRY_HEADER_SIZE;
+        let value_end = value_start + entry_len;
+        if value_end > self.buffer.len() {
+            return None;
+        }
+        let value = &self.buffer[value_start..value_end];
+        self.offset = value_end;
+        self.remaining -= 1;
+        Some((key_hash, value))
     }
 }
 
@@ -387,6 +461,92 @@ mod tests {
             Some("a much longer string".to_string())
         );
         assert_eq!(attrs.len(), 1);
+    }
+
+    // Same-key re-set, same serialized size: later value wins,
+    // entry count stays at 1.
+    #[test]
+    fn test_set_serialized_overwrites_existing_same_size() {
+        let mut attrs = Flattrs::new();
+        let key_hash = TEST_U64.key_hash();
+        let first = bincode::serde::encode_to_vec(&42u64, bincode::config::legacy()).unwrap();
+        attrs.set_serialized(key_hash, &first);
+        assert_eq!(attrs.get(TEST_U64), Some(42u64));
+        assert_eq!(attrs.len(), 1);
+
+        let second = bincode::serde::encode_to_vec(&100u64, bincode::config::legacy()).unwrap();
+        assert_eq!(first.len(), second.len(), "same-size precondition");
+        attrs.set_serialized(key_hash, &second);
+
+        assert_eq!(attrs.get(TEST_U64), Some(100u64));
+        assert_eq!(attrs.len(), 1);
+    }
+
+    // Same-key re-set, different serialized size: later value
+    // wins, entry count stays at 1.
+    #[test]
+    fn test_set_serialized_overwrites_existing_different_size() {
+        let mut attrs = Flattrs::new();
+        let key_hash = TEST_STRING.key_hash();
+        let short =
+            bincode::serde::encode_to_vec(&"short".to_string(), bincode::config::legacy()).unwrap();
+        attrs.set_serialized(key_hash, &short);
+        assert_eq!(attrs.get(TEST_STRING), Some("short".to_string()));
+        assert_eq!(attrs.len(), 1);
+
+        let long = bincode::serde::encode_to_vec(
+            &"a much longer string".to_string(),
+            bincode::config::legacy(),
+        )
+        .unwrap();
+        assert_ne!(short.len(), long.len(), "different-size precondition");
+        attrs.set_serialized(key_hash, &long);
+
+        assert_eq!(
+            attrs.get(TEST_STRING),
+            Some("a much longer string".to_string())
+        );
+        assert_eq!(attrs.len(), 1);
+    }
+
+    // `set<T>` and `set_serialized` observe each other's writes
+    // under the same key hash.
+    #[test]
+    fn test_set_serialized_interops_with_typed_set() {
+        let mut attrs = Flattrs::new();
+        attrs.set(TEST_U64, 1u64);
+        attrs.set_serialized(
+            TEST_U64.key_hash(),
+            &bincode::serde::encode_to_vec(&2u64, bincode::config::legacy()).unwrap(),
+        );
+        assert_eq!(attrs.get(TEST_U64), Some(2u64));
+        assert_eq!(attrs.len(), 1);
+
+        let mut attrs = Flattrs::new();
+        attrs.set_serialized(
+            TEST_U64.key_hash(),
+            &bincode::serde::encode_to_vec(&1u64, bincode::config::legacy()).unwrap(),
+        );
+        attrs.set(TEST_U64, 2u64);
+        assert_eq!(attrs.get(TEST_U64), Some(2u64));
+        assert_eq!(attrs.len(), 1);
+    }
+
+    // `set_serialized` on a novel key appends a new entry.
+    #[test]
+    fn test_set_serialized_new_key_appends() {
+        let mut attrs = Flattrs::new();
+        attrs.set_serialized(
+            TEST_U64.key_hash(),
+            &bincode::serde::encode_to_vec(&7u64, bincode::config::legacy()).unwrap(),
+        );
+        attrs.set_serialized(
+            TEST_STRING.key_hash(),
+            &bincode::serde::encode_to_vec(&"x".to_string(), bincode::config::legacy()).unwrap(),
+        );
+        assert_eq!(attrs.get(TEST_U64), Some(7u64));
+        assert_eq!(attrs.get(TEST_STRING), Some("x".to_string()));
+        assert_eq!(attrs.len(), 2);
     }
 
     #[test]
