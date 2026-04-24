@@ -19,7 +19,6 @@ use std::mem::take;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
-use std::sync::RwLockReadGuard;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -1445,28 +1444,6 @@ impl std::fmt::Debug for ReconfigurableMailboxSender {
     }
 }
 
-/// A capability wrapper granting access to the configured mailbox
-/// sender.
-///
-/// This type exists to tie the lifetime of any `&BoxedMailboxSender`
-/// reference to a lock guard, so the underlying state cannot be
-/// reconfigured while the reference is in use.
-///
-/// A **read** guard is sufficient because we only need to *observe*
-/// and borrow the configured sender, not mutate state. While a
-/// `RwLockReadGuard` is held, `configure()` cannot acquire the write
-/// lock, so the state cannot transition from `Configured(..)` to any
-/// other variant during the guard’s lifetime.
-pub(crate) struct ReconfigurableMailboxSenderInner<'a> {
-    guard: RwLockReadGuard<'a, ReconfigurableMailboxSenderState>,
-}
-
-impl<'a> ReconfigurableMailboxSenderInner<'a> {
-    pub(crate) fn as_configured(&self) -> Option<&BoxedMailboxSender> {
-        self.guard.as_configured()
-    }
-}
-
 type Post = (MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>);
 
 #[derive(EnumAsInner, Debug)]
@@ -1510,17 +1487,6 @@ impl ReconfigurableMailboxSender {
         }
 
         true
-    }
-
-    pub(crate) fn as_inner<'a>(
-        &'a self,
-    ) -> Result<ReconfigurableMailboxSenderInner<'a>, anyhow::Error> {
-        let state = self.state.read().unwrap();
-        if state.is_configured() {
-            Ok(ReconfigurableMailboxSenderInner { guard: state })
-        } else {
-            Err(anyhow::anyhow!("cannot get inner sender: not configured"))
-        }
     }
 }
 
