@@ -547,12 +547,12 @@ pub struct PythonActor {
     init_message: Option<PythonMessage>,
     /// User-provided mesh base-name string plumbed from
     /// `PythonActorParams`. This is the base name the caller
-    /// supplied when the mesh was spawned, narrowly used to populate
+    /// supplied when the mesh was spawned. It is used to populate
     /// `MeshFailure.actor_mesh_name` on the direct actor-handled
-    /// supervision path without a lookup. It is not actor display
-    /// text (`display_name` handles that) and it is not a general
-    /// side channel; downstream code must not consume this field for
-    /// any other purpose.
+    /// supervision path, and as the `mesh_name` field on the
+    /// structured `Attribution` carrier produced by
+    /// `supervision_attribution()`. It is not actor display text
+    /// (`display_name` handles that).
     mesh_base_name: Option<String>,
 }
 
@@ -844,7 +844,7 @@ fn actor_error_to_event(
                 instance.self_id().clone(),
                 actor.display_name(),
                 status,
-                None,
+                actor.supervision_attribution(),
             )
         }
     }
@@ -1000,6 +1000,29 @@ impl Actor for PythonActor {
         })
     }
 
+    /// Populate structured attribution for supervision events
+    /// synthesized for this `PythonActor` from locally available
+    /// state: the spawn-time mesh base name and the Python
+    /// `str(PyInstance)` display name.
+    fn supervision_attribution(&self) -> Option<hyperactor::supervision::Attribution> {
+        let mesh_name = self.mesh_base_name.clone();
+        let actor_display_name = self.display_name();
+        if mesh_name.is_none() && actor_display_name.is_none() {
+            return None;
+        }
+        Some(hyperactor::supervision::Attribution {
+            mesh_name,
+            // TODO: plumb `actor_class` through `PythonActorParams`
+            // onto `PythonActor` and populate it here, so the
+            // actor-local producer fills the same dimension the
+            // transport-backed destination path already carries via
+            // `DEST_ACTOR_CLASS` at spawn time.
+            actor_class: None,
+            actor_display_name,
+            rank: None,
+        })
+    }
+
     async fn handle_undeliverable_message(
         &mut self,
         ins: &Instance<Self>,
@@ -1102,13 +1125,11 @@ pub struct PythonActorParams {
     // Python message to process as part of the actor initialization.
     init_message: Option<PythonMessage>,
     // User-provided mesh base-name string under which this actor
-    // was spawned. The base name the caller passed when the mesh
-    // was spawned, plumbed through `PythonActor` narrowly to
-    // populate `MeshFailure.actor_mesh_name` on the direct
-    // actor-handled supervision path without a lookup. It is not
-    // actor display text (`display_name` handles that) and it is
-    // not a general side channel; downstream code must not consume
-    // this field for any other purpose. Kept separate from
+    // was spawned. Plumbed through `PythonActor` to populate
+    // `MeshFailure.actor_mesh_name` on the direct actor-handled
+    // supervision path, and to populate the `mesh_name` field on
+    // the structured `Attribution` carrier produced by
+    // `PythonActor::supervision_attribution()`. Kept separate from
     // `supervision_display_name`, which is a rendered supervision
     // display string passed through `spawn_with_name(...)`.
     mesh_base_name: Option<String>,

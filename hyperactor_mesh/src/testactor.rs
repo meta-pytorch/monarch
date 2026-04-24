@@ -373,7 +373,7 @@ impl Actor for WrapperActor {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         self.mesh = Some(
             self.proc_mesh
-                .spawn_with_name(this, self.test_name.clone(), &(), None, false)
+                .spawn_with_name(this, self.test_name.clone(), &(), None, None, false)
                 .await?,
         );
         Ok(())

@@ -1078,7 +1078,7 @@ mod tests {
         // control keepalive messages directly without the controller
         // interfering.
         let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn_with_name(instance, actor_name.clone(), &(), None, true)
+            .spawn_with_name(instance, actor_name.clone(), &(), None, None, true)
             .await
             .unwrap();
         assert!(

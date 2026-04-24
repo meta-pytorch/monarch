@@ -203,6 +203,15 @@ impl Actor for CommActor {
             // original sender of the cast message.
             message_envelope.set_header(CAST_ORIGINATING_SENDER, sender.clone());
 
+            // Hoist destination-attribution keys from the inner
+            // CastMessageEnvelope.headers onto the outer envelope's
+            // headers so the root-client synthesis site sees the same
+            // keys that the envelope-passthrough branch delivers.
+            crate::supervision::hoist_attribution_onto_envelope(
+                &mut message_envelope,
+                message.headers(),
+            );
+
             return_port
                 .send(cx, Undeliverable(message_envelope.clone()))
                 .map_err(|err| {
@@ -265,10 +274,15 @@ impl CommActor {
         CommActor: hyperactor::RemoteHandles<M>,
     {
         let child = config.peer_for_rank(rank)?;
-        // TEMPORARY: until dropping v0 support
+        // TEMPORARY: until dropping v0 support. AT-1: carry the
+        // inbound envelope's declared destination-attribution keys
+        // forward onto the outbound outer headers so downstream
+        // hops and the root-client synthesis site see the same
+        // keys the original cast stamped.
         if let Some(cast_actor_mesh_id) = cx.headers().get(CAST_ACTOR_MESH_ID) {
             let mut headers = Flattrs::new();
             headers.set(CAST_ACTOR_MESH_ID, cast_actor_mesh_id);
+            crate::supervision::stamp_attribution_from_headers(cx.headers(), &mut headers);
             child.send_with_headers(cx, headers, message)?;
         } else {
             child.send(cx, message)?;
@@ -1350,7 +1364,7 @@ mod tests {
         // This test is verifying the whole comm tree, so we want fewer actors
         // involved.
         let actor_mesh = proc_mesh
-            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .spawn_with_name(&instance, actor_name, &params, None, None, true)
             .await
             .unwrap();
         let actor_mesh_ref: crate::ActorMeshRef<TestActor> = actor_mesh.deref().clone();
@@ -1530,7 +1544,7 @@ mod tests {
         let actor_name = crate::Name::new("test").expect("valid test name");
         // Make this actor a "system" actor to avoid spawning a controller actor.
         let actor_mesh: crate::ActorMesh<TestActor> = proc_mesh
-            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .spawn_with_name(&instance, actor_name, &params, None, None, true)
             .await
             .unwrap();
         let actor_mesh_ref = actor_mesh.deref().clone();
@@ -1639,7 +1653,7 @@ mod tests {
         };
         let actor_name = Name::new("test").expect("valid test name");
         let actor_mesh: ActorMesh<TestActor> = proc_mesh
-            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .spawn_with_name(&instance, actor_name, &params, None, None, true)
             .await
             .unwrap();
         let (reply_port_handle, mut reply_rx) = open_port::<u64>(instance);

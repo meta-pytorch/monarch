@@ -459,6 +459,16 @@ impl MessageEnvelope {
     pub fn set_header<T: Serialize>(&mut self, key: hyperactor_config::attrs::Key<T>, value: T) {
         self.headers.set(key, value);
     }
+
+    /// Mutable access to this envelope's headers.
+    ///
+    /// Intended for generic category-filter copy paths (see e.g.
+    /// `hyperactor_config::attrs::copy_marked_flattrs`) that need
+    /// to copy pre-serialized entries from a source `Flattrs`
+    /// without going through typed `set_header<T>`.
+    pub fn headers_mut(&mut self) -> &mut Flattrs {
+        &mut self.headers
+    }
 }
 
 impl fmt::Display for MessageEnvelope {

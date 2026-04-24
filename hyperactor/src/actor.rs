@@ -155,6 +155,16 @@ pub trait Actor: Sized + Send + 'static {
     fn display_name(&self) -> Option<String> {
         None
     }
+
+    /// Optional producer hook: return structured attribution for
+    /// supervision events synthesized for this actor. The default
+    /// returns `None`. Populating this hook does not, by itself,
+    /// change rendering or identity semantics — it only supplies
+    /// the `attribution` carrier on
+    /// `crate::supervision::ActorSupervisionEvent`.
+    fn supervision_attribution(&self) -> Option<crate::supervision::Attribution> {
+        None
+    }
 }
 
 /// Default implementation of [`Actor::handle_undeliverable_message`]. Defined
