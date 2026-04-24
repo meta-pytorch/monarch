@@ -14,7 +14,7 @@ a 5-minute window. The topology follows the real Monarch hierarchy:
     meshes table (all mesh types differentiated by class):
       Host meshes   (class="Host", parent_mesh_id=NULL)
         -> Proc meshes  (class="Proc", parent_mesh_id=host_mesh.id)
-          -> Actor meshes (class="Python<Trainer>" etc., parent_mesh_id=proc_mesh.id)
+          -> Actor meshes (class="monarch_examples.training.Trainer" etc., parent_mesh_id=proc_mesh.id)
 
     actors table (all actors including system agents):
       HostAgent  (mesh_id -> host mesh)
@@ -104,10 +104,15 @@ MESSAGE_STATUSES = ["queued", "active", "complete"]
 # Hierarchy naming pools
 # ---------------------------------------------------------------------------
 
+# Fully-qualified `module.qualname` tokens matching what the real
+# Python actor-mesh producer emits (`PythonActorParams.actor_class`
+# derived under the GIL at spawn time); see
+# `fbcode/monarch/monarch_hyperactor/src/proc_mesh.rs` and
+# `fbcode/monarch/python/monarch/_src/actor/proc_mesh.py`.
 _ACTOR_MESH_CLASSES = [
-    "Python<Trainer>",
-    "Python<DataLoader>",
-    "Python<Aggregator>",
+    "monarch_examples.training.Trainer",
+    "monarch_examples.training.DataLoader",
+    "monarch_examples.training.Aggregator",
 ]
 
 # ---------------------------------------------------------------------------
@@ -346,7 +351,11 @@ def _generate_hierarchy() -> tuple[
 
                 # Regular actors in this actor mesh (deterministic: 1 per mesh).
                 n_actors = 1
-                actor_type = am_class.replace("Python<", "PythonActor<")
+                # Extract the final `qualname` segment of the
+                # fully-qualified class token for use in actor full
+                # names (e.g. "monarch_examples.training.Trainer"
+                # -> "PythonActor<Trainer>").
+                actor_type = f"PythonActor<{am_class.rsplit('.', 1)[-1]}>"
                 for rank in range(n_actors):
                     aid = actor_seq()
                     actor_full = f"{am_full}/{actor_type}[{rank}]"

@@ -210,8 +210,11 @@ class HierarchyTest(unittest.TestCase):
         }
         self.assertTrue(am_parents.issubset(proc_ids))
 
-    def test_actor_mesh_classes_are_python(self):
-        """Actor mesh classes should start with 'Python<'."""
+    def test_actor_mesh_classes_are_fully_qualified(self):
+        """Actor mesh classes are fully-qualified ``module.qualname``
+        tokens, matching what the real Python producer emits via
+        ``PythonActorParams.actor_class`` (derived under the GIL
+        from ``__module__``/``__qualname__`` at spawn time)."""
         classes = {
             r["class"]
             for r in self.conn.execute(
@@ -219,8 +222,19 @@ class HierarchyTest(unittest.TestCase):
                 "WHERE class != 'Host' AND class != 'Proc'"
             ).fetchall()
         }
+        self.assertTrue(classes, "expected at least one actor-mesh class")
         for c in classes:
-            self.assertTrue(c.startswith("Python<"), f"unexpected class: {c}")
+            # Must be at least `module.qualname`: one dot, both
+            # segments non-empty, no leftover "Python<...>" shape.
+            self.assertFalse(
+                c.startswith("Python<"),
+                f"class still uses legacy 'Python<...>' shape: {c}",
+            )
+            parts = c.split(".")
+            self.assertGreaterEqual(
+                len(parts), 2, f"expected dotted class token, got: {c}"
+            )
+            self.assertTrue(all(parts), f"empty segment in class token: {c}")
 
     def test_two_proc_meshes_per_host(self):
         """Each host mesh should have exactly 2 proc mesh children."""

@@ -6,12 +6,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Python-facing supervision boundary. `SupervisionError`'s
-//! pyclass shape is unchanged by the mesh-name plumbing in this
-//! diff; any rendered improvement users see in the Python
-//! exception comes from the upstream `Display` chain once mesh
-//! name and Python-class `display_name` are populated by their
-//! producer sites.
+//! Python-facing supervision boundary. `SupervisionError` is the
+//! Python-visible exception raised when supervision propagates a
+//! failure across an actor mesh. It extends `RuntimeError` and
+//! exposes the structured `Attribution` carrier from the source
+//! `ActorSupervisionEvent` as read-only properties (`mesh_name`,
+//! `actor_class`, `actor_display_name`, `rank`) for callers that
+//! want to inspect failure context without parsing rendered text.
 
 use async_trait::async_trait;
 use hyperactor::Instance;
@@ -45,14 +46,49 @@ pub struct SupervisionError {
     #[pyo3(set)]
     pub endpoint: Option<String>,
     pub message: String,
+    /// Structured attribution carried on the source
+    /// `ActorSupervisionEvent` (see
+    /// `hyperactor::supervision::Attribution`). Populated when the
+    /// error was constructed from a `MeshFailure`; `None` on
+    /// constructors that do not carry event context (raw
+    /// `new_err`, direct Python `SupervisionError("msg")`).
+    #[pyo3(get)]
+    pub mesh_name: Option<String>,
+    #[pyo3(get)]
+    pub actor_class: Option<String>,
+    #[pyo3(get)]
+    pub actor_display_name: Option<String>,
+    #[pyo3(get)]
+    pub rank: Option<usize>,
 }
 
 #[pymethods]
 impl SupervisionError {
     #[new]
-    #[pyo3(signature = (message, endpoint=None))]
-    fn new(message: String, endpoint: Option<String>) -> Self {
-        SupervisionError { endpoint, message }
+    #[pyo3(signature = (
+        message,
+        endpoint=None,
+        mesh_name=None,
+        actor_class=None,
+        actor_display_name=None,
+        rank=None,
+    ))]
+    fn new(
+        message: String,
+        endpoint: Option<String>,
+        mesh_name: Option<String>,
+        actor_class: Option<String>,
+        actor_display_name: Option<String>,
+        rank: Option<usize>,
+    ) -> Self {
+        SupervisionError {
+            endpoint,
+            message,
+            mesh_name,
+            actor_class,
+            actor_display_name,
+            rank,
+        }
     }
 
     #[staticmethod]
@@ -90,15 +126,33 @@ impl SupervisionError {
         let message = event
             .failure_report()
             .unwrap_or_else(|| format!("{}", event));
-        Self::new_err(message)
+        let attribution = event.attribution.unwrap_or_default();
+        PyErr::new::<Self, _>((
+            message,
+            None::<String>,
+            attribution.mesh_name,
+            attribution.actor_class,
+            attribution.actor_display_name,
+            attribution.rank,
+        ))
     }
     /// Set the endpoint on a PyErr containing a SupervisionError.
     ///
-    /// If the error is a SupervisionError, sets its endpoint field and returns a new
-    /// error with the endpoint prefix. If not a SupervisionError, returns the original error.
+    /// If the error is a SupervisionError, returns a new error with
+    /// the endpoint attached while preserving the structured
+    /// attribution fields (`mesh_name`, `actor_class`,
+    /// `actor_display_name`, `rank`) of the original. If not a
+    /// SupervisionError, returns the original error.
     pub fn set_endpoint_on_err(py: Python<'_>, err: PyErr, endpoint: String) -> PyErr {
         if let Ok(supervision_err) = err.value(py).extract::<SupervisionError>() {
-            Self::new_err_from_endpoint(supervision_err.message, endpoint)
+            PyErr::new::<Self, _>((
+                supervision_err.message,
+                Some(endpoint),
+                supervision_err.mesh_name,
+                supervision_err.actor_class,
+                supervision_err.actor_display_name,
+                supervision_err.rank,
+            ))
         } else {
             err
         }

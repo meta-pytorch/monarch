@@ -26,6 +26,7 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::context;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::Attrs;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -56,6 +57,9 @@ use crate::proc_agent::ProcAgent;
 use crate::resource;
 use crate::resource::GetRankStatus;
 use crate::resource::Status;
+use crate::supervision::DEST_ACTOR_CLASS;
+use crate::supervision::DEST_ACTOR_DISPLAY_NAME;
+use crate::supervision::DEST_MESH_NAME;
 use crate::supervision::MeshFailure;
 
 declare_attrs! {
@@ -116,6 +120,7 @@ impl ProcRef {
 
     /// Generic bound: `A: Referable` - required because we return
     /// an `ActorRef<A>`.
+    #[allow(dead_code)]
     pub(crate) fn attest<A: Referable>(&self, name: &Name) -> hyperactor_reference::ActorRef<A> {
         hyperactor_reference::ActorRef::attest(self.actor_id(name))
     }
@@ -232,7 +237,7 @@ impl ProcMesh {
             // spawned and safely referenced via ActorRef<CommActor>.
             // It is a system actor that should not have a controller managing it.
             let comm_actor_mesh: ActorMesh<CommActor> = proc_mesh
-                .spawn_with_name(cx, comm_actor_name, &Default::default(), None, true)
+                .spawn_with_name(cx, comm_actor_name, &Default::default(), None, None, true)
                 .await?;
             let address_book: HashMap<_, _> = comm_actor_mesh
                 .iter()
@@ -624,7 +629,7 @@ impl ProcMeshRef {
         C::A: Handler<MeshFailure>,
     {
         // Spawning from a string is never a system actor.
-        self.spawn_with_name(cx, Name::new(name)?, params, None, false)
+        self.spawn_with_name(cx, Name::new(name)?, params, None, None, false)
             .await
     }
 
@@ -645,7 +650,7 @@ impl ProcMeshRef {
         A::Params: RemoteMessage,
         C::A: Handler<MeshFailure>,
     {
-        self.spawn_with_name(cx, Name::new_reserved(name)?, params, None, false)
+        self.spawn_with_name(cx, Name::new_reserved(name)?, params, None, None, false)
             .await
     }
 
@@ -666,13 +671,24 @@ impl ProcMeshRef {
     ///   the actor must accept messages of type `MeshFailure`. This
     ///   is delivered when the actors spawned in the mesh have a failure that
     ///   isn't handled.
-    #[hyperactor::instrument]
+    #[hyperactor::instrument(fields(
+        host_mesh=self.host_mesh_name().map(|n| n.to_string()),
+        proc_mesh=self.name.to_string(),
+        actor_name=name.to_string(),
+    ))]
     pub async fn spawn_with_name<A: RemoteSpawn, C: context::Actor>(
         &self,
         cx: &C,
         name: Name,
         params: &A::Params,
         supervision_display_name: Option<String>,
+        // Structured actor-class token (Python class name or
+        // equivalent) used for the mesh-creation telemetry event
+        // and for attribution on the direct actor-handled
+        // supervision path. Distinct from
+        // `supervision_display_name`, which is a rendered
+        // presentation string.
+        actor_class: Option<String>,
         is_system_actor: bool,
     ) -> crate::Result<ActorMesh<A>>
     where
@@ -685,7 +701,14 @@ impl ProcMeshRef {
         );
         tracing::info!(name = "ActorMeshStatus", status = "Spawn::Attempt");
         let result = self
-            .spawn_with_name_inner(cx, name, params, supervision_display_name, is_system_actor)
+            .spawn_with_name_inner(
+                cx,
+                name,
+                params,
+                supervision_display_name,
+                actor_class,
+                is_system_actor,
+            )
             .await;
         match &result {
             Ok(_) => {
@@ -709,6 +732,7 @@ impl ProcMeshRef {
         name: Name,
         params: &A::Params,
         supervision_display_name: Option<String>,
+        actor_class: Option<String>,
         is_system_actor: bool,
     ) -> crate::Result<ActorMesh<A>>
     where
@@ -725,6 +749,26 @@ impl ProcMeshRef {
 
         let serialized_params = bincode::serde::encode_to_vec(params, bincode::config::legacy())?;
         let agent_mesh = self.agent_mesh();
+
+        // Build transport attribution for the produced mesh (AT-1,
+        // AT-3). The three sender-side-knowable keys come directly
+        // from the existing spawn arguments without inventing any
+        // new state:
+        //   - `DEST_MESH_NAME` from the user-facing mesh base name.
+        //   - `DEST_ACTOR_CLASS` from `actor_class` when present.
+        //   - `DEST_ACTOR_DISPLAY_NAME` from the spawn-time
+        //     `supervision_display_name`. This is a spawn-time value;
+        //     it is not recomputed at runtime from a live destination
+        //     actor instance.
+        // `DEST_RANK` is written later at per-rank materialization.
+        let mut mesh_attribution = Attrs::new();
+        mesh_attribution.set(DEST_MESH_NAME, name.name().to_string());
+        if let Some(ref klass) = actor_class {
+            mesh_attribution.set(DEST_ACTOR_CLASS, klass.clone());
+        }
+        if let Some(ref display) = supervision_display_name {
+            mesh_attribution.set(DEST_ACTOR_DISPLAY_NAME, display.clone());
+        }
 
         agent_mesh.cast(
             cx,
@@ -796,7 +840,15 @@ impl ProcMeshRef {
                 // `first_terminating().is_none()` semantics.
                 let has_terminating = statuses.values().any(|s| s.is_terminating());
                 if !has_terminating {
-                    Ok((statuses, ActorMesh::new(self.clone(), name.clone(), None)))
+                    Ok((
+                        statuses,
+                        ActorMesh::new_with_attribution(
+                            self.clone(),
+                            name.clone(),
+                            None,
+                            mesh_attribution,
+                        ),
+                    ))
                 } else {
                     let legacy = mesh_to_rankedvalues_with_default(
                         &statuses,
@@ -860,10 +912,12 @@ impl ProcMeshRef {
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
                 timestamp: std::time::SystemTime::now(),
-                class: supervision_display_name
-                    .as_deref()
-                    .and_then(python_class_from_supervision_name)
-                    .unwrap_or(actor_type),
+                // Read the structured `actor_class` token populated
+                // at spawn time (fully-qualified `module.qualname`
+                // for Python actors; `None` for non-Python callers).
+                // Fall back to the Rust `actor_type` name when no
+                // structured class was supplied.
+                class: actor_class.clone().unwrap_or_else(|| actor_type.clone()),
                 given_name: mesh.name().name().to_string(),
                 full_name: name_str,
                 shape_json: serde_json::to_string(&self.region().extent()).unwrap_or_default(),
@@ -1051,28 +1105,6 @@ impl view::RankedSliceable for ProcMeshRef {
     }
 }
 
-/// Extract a Python class display name from a supervision display name.
-///
-/// The supervision display name format is `{instance}.<{module}.{ClassName} {mesh_name}>`.
-/// Returns `"Python<ClassName>"` if the format matches, `None` otherwise.
-///
-/// Scope note: this function is used only by telemetry
-/// (`MeshEvent.class`), which needs the Python class as a
-/// structured string and has no structured carrier today. It is
-/// not on the supervision rendering path.
-///
-/// TODO: retained only because the telemetry path needs a
-/// structured Python-class string and this is the only available
-/// source. A follow-up should add a structured carrier (e.g. an
-/// `actor_class` field on `ActorSupervisionEvent`, or a dedicated
-/// telemetry-side field) and delete this function.
-fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
-    let inner = sdn.rsplit_once('<')?.1.strip_suffix('>')?;
-    let qualified = inner.split_whitespace().next()?;
-    let class_name = qualified.rsplit_once('.')?.1;
-    Some(format!("Python<{class_name}>"))
-}
-
 #[cfg(test)]
 mod tests {
     use hyperactor::Instance;
@@ -1129,28 +1161,5 @@ mod tests {
         );
 
         let _ = hm.shutdown(instance).await;
-    }
-
-    #[test]
-    fn test_python_class_from_supervision_name() {
-        use super::python_class_from_supervision_name;
-
-        assert_eq!(
-            python_class_from_supervision_name("instance0.<my_module.MyWorker test_mesh>"),
-            Some("Python<MyWorker>".to_string()),
-        );
-        assert_eq!(
-            python_class_from_supervision_name(
-                "instance0.<package.submodule.TrainingActor mesh_0>"
-            ),
-            Some("Python<TrainingActor>".to_string()),
-        );
-        // No angle brackets — not a Python supervision name.
-        assert_eq!(python_class_from_supervision_name("plain_name"), None,);
-        // Malformed: missing dot-qualified class name.
-        assert_eq!(
-            python_class_from_supervision_name("instance0.<NoModule mesh>"),
-            None,
-        );
     }
 }

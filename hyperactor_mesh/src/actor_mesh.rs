@@ -32,6 +32,7 @@ use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::Attrs;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -65,6 +66,7 @@ use crate::proc_agent::ActorState;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::reference::ActorMeshId;
 use crate::resource;
+use crate::supervision::DEST_RANK;
 use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
 
@@ -104,16 +106,18 @@ pub struct ActorMesh<A: Referable> {
 // `A: Referable` for the same reason as the struct: the mesh holds
 // `hyperactor_reference::ActorRef<A>`.
 impl<A: Referable> ActorMesh<A> {
-    pub(crate) fn new(
+    pub(crate) fn new_with_attribution(
         proc_mesh: ProcMeshRef,
         name: Name,
         controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+        attribution: Attrs,
     ) -> Self {
-        let current_ref = ActorMeshRef::with_page_size(
+        let current_ref = ActorMeshRef::with_page_size_and_attribution(
             name.clone(),
             proc_mesh.clone(),
             DEFAULT_PAGE,
             controller.clone(),
+            attribution,
         );
 
         Self {
@@ -388,6 +392,13 @@ fn into_watch<M: Send + Sync + Clone + Default + 'static>(
 }
 
 /// A reference to a stable snapshot of an [`ActorMesh`].
+///
+/// Carries transport-attribution state (`attribution: Attrs`) for
+/// the destination actors in this mesh. Populated at spawn time
+/// with `DEST_MESH_NAME` / `DEST_ACTOR_CLASS` / `DEST_ACTOR_DISPLAY_NAME`
+/// and copied onto per-rank `ActorRef`s (with `DEST_RANK` added) by
+/// `materialize`. Per AT-4, the attribution field does not
+/// participate in identity or equality.
 pub struct ActorMeshRef<A: Referable> {
     proc_mesh: ProcMeshRef,
     name: Name,
@@ -398,6 +409,11 @@ pub struct ActorMeshRef<A: Referable> {
     /// next_supervision_event function can be used to alert that the mesh has
     /// stopped.
     controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+    /// Structured transport attribution for destination actors in
+    /// this mesh. Stamped onto envelope `Flattrs` at cast and
+    /// direct-send sites, and copied onto per-rank `ActorRef`s via
+    /// `materialize`. See AT-1..AT-5 in `crate::supervision`.
+    attribution: Attrs,
 
     /// Recorded health issues with the mesh, to quickly consult before sending
     /// out any casted messages. This is a locally updated copy of the authoritative
@@ -557,6 +573,7 @@ impl<A: Referable> ActorMeshRef<A> {
                     message,
                     &cast_mesh_shape,
                     &root_mesh_shape,
+                    &self.attribution,
                 )
                 .map_err(|e| Error::CastingError(self.name.clone(), e.into()))
             }
@@ -568,6 +585,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 &cast_mesh_shape,
                 &cast_mesh_shape,
                 message,
+                &self.attribution,
             )
             .map_err(|e| Error::CastingError(self.name.clone(), e.into())),
         }
@@ -602,23 +620,37 @@ impl<A: Referable> ActorMeshRef<A> {
         proc_mesh: ProcMeshRef,
         controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
     ) -> Self {
-        Self::with_page_size(name, proc_mesh, DEFAULT_PAGE, controller)
+        Self::with_page_size_and_attribution(
+            name,
+            proc_mesh,
+            DEFAULT_PAGE,
+            controller,
+            Attrs::new(),
+        )
     }
 
     pub fn name(&self) -> &Name {
         &self.name
     }
 
-    pub(crate) fn with_page_size(
+    /// Access the transport-attribution carrier on this mesh ref.
+    /// Informational only; AT-4 (does not participate in identity).
+    pub fn attribution(&self) -> &Attrs {
+        &self.attribution
+    }
+
+    pub(crate) fn with_page_size_and_attribution(
         name: Name,
         proc_mesh: ProcMeshRef,
         page_size: usize,
         controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+        attribution: Attrs,
     ) -> Self {
         Self {
             proc_mesh,
             name,
             controller,
+            attribution,
             health_state: ActorLocal::new(),
             receiver: ActorLocal::new(),
             pages: OnceCell::new(),
@@ -684,7 +716,14 @@ impl<A: Referable> ActorMeshRef<A> {
             );
             let proc_ref =
                 ndslice::view::Ranked::get(&self.proc_mesh, rank).expect("rank in-bounds");
-            proc_ref.attest(&self.name)
+            // AT-1 / AT-3: clone the mesh's destination attribution
+            // onto the produced per-rank ref and add DEST_RANK. This
+            // is the single write point for rank on the direct-send
+            // path. Per AT-5, no lookup occurs here.
+            let actor_id = proc_ref.actor_id(&self.name);
+            let mut attribution = self.attribution.clone();
+            attribution.set(DEST_RANK, rank as u64);
+            hyperactor_reference::ActorRef::attest_with_attrs(actor_id, attribution)
         }))
     }
 
@@ -796,6 +835,11 @@ impl<A: Referable> ActorMeshRef<A> {
                 MessageOrFailure::Timeout => {
                     // Treat timeout from controller as a supervision failure,
                     // the controller is unreachable.
+                    //
+                    // Synthesis-site attachment: project the mesh's
+                    // transport attribution onto the synthesized event's
+                    // structured-attribution carrier.
+                    let attribution = crate::supervision::attribution_from_attrs(&self.attribution);
                     Ok(MeshFailure {
                         actor_mesh_name: Some(self.name().to_string()),
                         event: ActorSupervisionEvent::new(
@@ -806,7 +850,7 @@ impl<A: Referable> ActorMeshRef<A> {
                                 controller.actor_id(),
                                 self.name()
                             )),
-                            None,
+                            attribution,
                         ),
                         crashed_ranks: vec![],
                     })
@@ -839,6 +883,7 @@ impl<A: Referable> ActorMeshRef<A> {
             proc_mesh: self.proc_mesh.clone(),
             name: self.name.clone(),
             controller: self.controller.clone(),
+            attribution: self.attribution.clone(),
             health_state: self.health_state.clone(),
             receiver: self.receiver.clone(),
             // Cache does not support Clone at this time.
@@ -854,6 +899,7 @@ impl<A: Referable> Clone for ActorMeshRef<A> {
             proc_mesh: self.proc_mesh.clone(),
             name: self.name.clone(),
             controller: self.controller.clone(),
+            attribution: self.attribution.clone(),
             // Cloning should not use the same health state or receiver, because
             // it should make a new subscriber.
             health_state: ActorLocal::new(),
@@ -894,33 +940,45 @@ impl<A: Referable> fmt::Debug for ActorMeshRef<A> {
     }
 }
 
-// Implement Serialize manually, without requiring A: Serialize
+// Implement Serialize manually, without requiring A: Serialize.
+//
+// Wire format: `(proc_mesh, name, controller, attribution)`. Per
+// AT-1, the attribution carrier round-trips across the wire under
+// the same declared keys it carries in-memory.
 impl<A: Referable> Serialize for ActorMeshRef<A> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        // Serialize only the fields that don't depend on A
-        (&self.proc_mesh, &self.name, &self.controller).serialize(serializer)
+        (
+            &self.proc_mesh,
+            &self.name,
+            &self.controller,
+            &self.attribution,
+        )
+            .serialize(serializer)
     }
 }
 
-// Implement Deserialize manually, without requiring A: Deserialize
+// Implement Deserialize manually, without requiring A: Deserialize.
+// See `Serialize` above for the tuple wire format.
 impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let (proc_mesh, name, controller) = <(
+        let (proc_mesh, name, controller, attribution) = <(
             ProcMeshRef,
             Name,
             Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+            Attrs,
         )>::deserialize(deserializer)?;
-        Ok(ActorMeshRef::with_page_size(
+        Ok(ActorMeshRef::with_page_size_and_attribution(
             name,
             proc_mesh,
             DEFAULT_PAGE,
             controller,
+            attribution,
         ))
     }
 }
@@ -951,6 +1009,7 @@ impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
             proc_mesh,
             name: self.name.clone(),
             controller: self.controller.clone(),
+            attribution: self.attribution.clone(),
             health_state: self.health_state.clone(),
             receiver: ActorLocal::new(),
             pages: OnceCell::new(),
@@ -969,6 +1028,7 @@ mod tests {
     use hyperactor::actor::ActorStatus;
     use hyperactor::context::Mailbox as _;
     use hyperactor::mailbox;
+    use hyperactor_config::Attrs;
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
@@ -1010,8 +1070,13 @@ mod tests {
         // force multiple pages:
         // page 0: ranks [0,1], page 1: [2,3], page 2: [4,5]
         let page_size = 2;
-        let amr: ActorMeshRef<testactor::TestActor> =
-            ActorMeshRef::with_page_size(am.name.clone(), pm.clone(), page_size, None);
+        let amr: ActorMeshRef<testactor::TestActor> = ActorMeshRef::with_page_size_and_attribution(
+            am.name.clone(),
+            pm.clone(),
+            page_size,
+            None,
+            Attrs::new(),
+        );
         assert_eq!(amr.extent(), extent!(hosts = 3, gpus = 2));
         assert_eq!(amr.region().num_ranks(), 6);
 
@@ -1675,5 +1740,206 @@ mod tests {
         ));
 
         let _ = hm.shutdown(instance).await;
+    }
+
+    struct AttrTestActor;
+    impl hyperactor::actor::Referable for AttrTestActor {}
+    impl typeuri::Named for AttrTestActor {
+        fn typename() -> &'static str {
+            "hyperactor_mesh::actor_mesh::tests::AttrTestActor"
+        }
+    }
+
+    fn singleton_proc_mesh() -> crate::proc_mesh::ProcMeshRef {
+        use hyperactor::channel::ChannelAddr;
+        use hyperactor::reference as hyperactor_reference;
+        let proc_id =
+            hyperactor_reference::ProcId::with_name(ChannelAddr::Local(0), "attr_test_proc");
+        let agent_id = proc_id.actor_id("proc_agent", 0);
+        let agent: hyperactor_reference::ActorRef<crate::proc_agent::ProcAgent> =
+            hyperactor_reference::ActorRef::attest(agent_id);
+        let proc_ref = crate::proc_mesh::ProcRef::new(proc_id, 0, agent);
+        crate::proc_mesh::ProcMeshRef::new_singleton(
+            Name::new("attr_test_mesh").expect("valid name"),
+            proc_ref,
+        )
+    }
+
+    // Neutral tokens: these tests are preservation/round-trip
+    // tests, not rendering tests, so the values only need to be
+    // unique and observable round-trip.
+    const MESH_NAME_TOKEN: &str = "MESH_NAME";
+    const ACTOR_CLASS_TOKEN: &str = "ACTOR_CLASS";
+    const ACTOR_DISPLAY_NAME_TOKEN: &str = "DISPLAY_NAME";
+
+    fn populated_attribution() -> hyperactor_config::Attrs {
+        use crate::supervision::DEST_ACTOR_CLASS;
+        use crate::supervision::DEST_ACTOR_DISPLAY_NAME;
+        use crate::supervision::DEST_MESH_NAME;
+        let mut attrs = hyperactor_config::Attrs::new();
+        attrs.set(DEST_MESH_NAME, MESH_NAME_TOKEN.to_string());
+        attrs.set(DEST_ACTOR_CLASS, ACTOR_CLASS_TOKEN.to_string());
+        attrs.set(
+            DEST_ACTOR_DISPLAY_NAME,
+            ACTOR_DISPLAY_NAME_TOKEN.to_string(),
+        );
+        attrs
+    }
+
+    // AT-1: `ActorMeshRef::get(rank)` is the sole write point for
+    // per-rank `DEST_RANK` on the direct-send path. Mesh-level
+    // attribution keys copy through to the produced `ActorRef`
+    // verbatim. AT-5: no lookup occurs at materialization.
+    #[test]
+    fn mesh_get_rank_sets_dest_rank_and_preserves_mesh_attrs() {
+        use crate::supervision::DEST_ACTOR_CLASS;
+        use crate::supervision::DEST_ACTOR_DISPLAY_NAME;
+        use crate::supervision::DEST_MESH_NAME;
+        use crate::supervision::DEST_RANK;
+        let mesh_ref: ActorMeshRef<AttrTestActor> = ActorMeshRef::with_page_size_and_attribution(
+            Name::new("test_actor").unwrap(),
+            singleton_proc_mesh(),
+            super::DEFAULT_PAGE,
+            None,
+            populated_attribution(),
+        );
+
+        let rank_ref = Ranked::get(&mesh_ref, 0).expect("rank 0 exists");
+
+        assert_eq!(rank_ref.attribution().get(DEST_RANK), Some(&0u64));
+        assert_eq!(
+            rank_ref.attribution().get(DEST_MESH_NAME),
+            Some(&MESH_NAME_TOKEN.to_string()),
+        );
+        assert_eq!(
+            rank_ref.attribution().get(DEST_ACTOR_CLASS),
+            Some(&ACTOR_CLASS_TOKEN.to_string()),
+        );
+        assert_eq!(
+            rank_ref.attribution().get(DEST_ACTOR_DISPLAY_NAME),
+            Some(&ACTOR_DISPLAY_NAME_TOKEN.to_string()),
+        );
+    }
+
+    // AT-3: `DEST_RANK` describes the produced per-rank ref, not
+    // the mesh; materialization must not write it back onto the
+    // mesh's own attribution carrier.
+    #[test]
+    fn mesh_get_rank_does_not_mutate_mesh_attribution() {
+        use crate::supervision::DEST_RANK;
+        let mesh_ref: ActorMeshRef<AttrTestActor> = ActorMeshRef::with_page_size_and_attribution(
+            Name::new("test_actor").unwrap(),
+            singleton_proc_mesh(),
+            super::DEFAULT_PAGE,
+            None,
+            populated_attribution(),
+        );
+        assert_eq!(mesh_ref.attribution().get(DEST_RANK), None);
+        let _ = Ranked::get(&mesh_ref, 0).expect("rank 0 exists");
+        assert_eq!(mesh_ref.attribution().get(DEST_RANK), None);
+    }
+
+    // AT-1: `Clone` on `ActorMeshRef` carries the attribution
+    // carrier forward unchanged, so slices / clone-with-receiver
+    // produce refs that stamp the same keys.
+    #[test]
+    fn mesh_ref_clone_preserves_attribution() {
+        use crate::supervision::DEST_ACTOR_CLASS;
+        use crate::supervision::DEST_MESH_NAME;
+        let mesh_ref: ActorMeshRef<AttrTestActor> = ActorMeshRef::with_page_size_and_attribution(
+            Name::new("test_actor").unwrap(),
+            singleton_proc_mesh(),
+            super::DEFAULT_PAGE,
+            None,
+            populated_attribution(),
+        );
+        let cloned = mesh_ref.clone();
+        assert_eq!(
+            cloned.attribution().get(DEST_MESH_NAME),
+            Some(&MESH_NAME_TOKEN.to_string()),
+        );
+        assert_eq!(
+            cloned.attribution().get(DEST_ACTOR_CLASS),
+            Some(&ACTOR_CLASS_TOKEN.to_string()),
+        );
+    }
+
+    // AT-1: the attribution carrier survives bincode round-trip,
+    // and (composed with the rank-materialize write) the restored
+    // mesh still produces per-rank refs with `DEST_RANK` and the
+    // mesh-level keys populated.
+    #[test]
+    fn mesh_ref_wire_round_trip_preserves_attribution() {
+        use crate::supervision::DEST_ACTOR_CLASS;
+        use crate::supervision::DEST_ACTOR_DISPLAY_NAME;
+        use crate::supervision::DEST_MESH_NAME;
+        use crate::supervision::DEST_RANK;
+        let original: ActorMeshRef<AttrTestActor> = ActorMeshRef::with_page_size_and_attribution(
+            Name::new("test_actor").unwrap(),
+            singleton_proc_mesh(),
+            super::DEFAULT_PAGE,
+            None,
+            populated_attribution(),
+        );
+
+        let bytes = bincode::serde::encode_to_vec(&original, bincode::config::legacy())
+            .expect("serialize ActorMeshRef");
+        let restored: ActorMeshRef<AttrTestActor> =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .expect("deserialize ActorMeshRef");
+
+        assert_eq!(
+            restored.attribution().get(DEST_MESH_NAME),
+            Some(&MESH_NAME_TOKEN.to_string()),
+        );
+        assert_eq!(
+            restored.attribution().get(DEST_ACTOR_CLASS),
+            Some(&ACTOR_CLASS_TOKEN.to_string()),
+        );
+        assert_eq!(
+            restored.attribution().get(DEST_ACTOR_DISPLAY_NAME),
+            Some(&ACTOR_DISPLAY_NAME_TOKEN.to_string()),
+        );
+        let r0 = Ranked::get(&restored, 0).expect("rank 0");
+        assert_eq!(r0.attribution().get(DEST_RANK), Some(&0u64));
+        assert_eq!(
+            r0.attribution().get(DEST_MESH_NAME),
+            Some(&MESH_NAME_TOKEN.to_string()),
+        );
+    }
+
+    // AT-4: attribution is informational carrier state, not ref
+    // identity. Two meshes with the same (name, proc_mesh) but
+    // different attribution compare equal and hash equal.
+    #[test]
+    fn mesh_ref_identity_ignores_attribution() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hash as _;
+        use std::hash::Hasher as _;
+
+        let proc_mesh = singleton_proc_mesh();
+        let name = Name::new("test_actor").unwrap();
+        let bare: ActorMeshRef<AttrTestActor> = ActorMeshRef::with_page_size_and_attribution(
+            name.clone(),
+            proc_mesh.clone(),
+            super::DEFAULT_PAGE,
+            None,
+            hyperactor_config::Attrs::new(),
+        );
+        let decorated: ActorMeshRef<AttrTestActor> = ActorMeshRef::with_page_size_and_attribution(
+            name,
+            proc_mesh,
+            super::DEFAULT_PAGE,
+            None,
+            populated_attribution(),
+        );
+
+        assert_eq!(bare, decorated);
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        bare.hash(&mut h1);
+        decorated.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish());
     }
 }

@@ -149,8 +149,12 @@ def _build_hierarchy() -> dict:
                 }
             )
 
-            # 1 user actor per actor mesh.
-            actor_type = am_class.replace("Python<", "PythonActor<")
+            # 1 user actor per actor mesh. Extract the final
+            # `qualname` segment of the fully-qualified class token
+            # for use in actor full names (e.g.
+            # "monarch_examples.training.Trainer" ->
+            # "PythonActor<Trainer>").
+            actor_type = f"PythonActor<{am_class.rsplit('.', 1)[-1]}>"
             aid = actor_seq()
             actors.append(
                 {

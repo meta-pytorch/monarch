@@ -53,7 +53,11 @@ pub struct Mesh {
     pub id: u64,
     /// Timestamp in microseconds since Unix epoch
     pub timestamp_us: i64,
-    /// mesh class (e.g., "Proc", "Host", "Python<SomeUserDefinedActor>")
+    /// Mesh class token emitted by the producing mesh. Current
+    /// producers use fixed tokens such as `"Proc"` and `"Host"` for
+    /// system meshes, and producer-specific actor-mesh tokens
+    /// elsewhere (for Python-spawned actor meshes this is typically
+    /// the fully-qualified `module.qualname`).
     pub class: String,
     /// User-provided name for this mesh
     pub given_name: String,

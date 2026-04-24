@@ -69,7 +69,16 @@ impl PyProcMesh {
 #[pymethods]
 impl PyProcMesh {
     #[staticmethod]
-    #[pyo3(signature = (proc_mesh, instance, mesh_base_name, actor, init_message, emulated, supervision_display_name = None))]
+    #[pyo3(signature = (
+        proc_mesh,
+        instance,
+        mesh_base_name,
+        actor,
+        init_message,
+        emulated,
+        supervision_display_name = None,
+        actor_class = None,
+    ))]
     fn spawn_async(
         proc_mesh: &mut PyShared,
         instance: &PyInstance,
@@ -78,6 +87,16 @@ impl PyProcMesh {
         init_message: &mut PendingMessage,
         emulated: bool,
         supervision_display_name: Option<String>,
+        // Caller-supplied fully-qualified Python class token of the
+        // user-facing actor. The `actor` param above is Monarch's
+        // internal `_Actor` wrapper — deriving `__module__`/
+        // `__qualname__` from it would yield the wrapper class, not
+        // the user's class. Python spawn paths that know the user's
+        // class pass it here (e.g.
+        // `f"{Class.__module__}.{Class.__qualname__}"`); callers that
+        // do not know pass `None` and the actor-local supervision
+        // attribution leaves `actor_class` unpopulated.
+        actor_class: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         let init_message = init_message.take()?;
         let task = proc_mesh.task()?.take_task()?;
@@ -103,6 +122,7 @@ impl PyProcMesh {
                         pickled_type,
                         Some(init_message),
                         Some(mesh_base_name.clone()),
+                        actor_class.clone(),
                     ),
                 ))
             })
@@ -115,6 +135,7 @@ impl PyProcMesh {
                     mesh_name,
                     &params,
                     supervision_display_name,
+                    actor_class,
                     false,
                 )
                 .await

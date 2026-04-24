@@ -272,12 +272,15 @@ impl Actor for GlobalClientActor {
             "message returned to global root client".to_string(),
         ));
         let actor_id = env.dest().actor_id().clone();
-        let headers = env.headers().clone();
+        // Synthesis-site attachment: project attribution headers
+        // carried on the bounced envelope into the event's
+        // structured-attribution carrier.
+        let attribution = crate::supervision::attribution_from_headers(env.headers());
         let event = ActorSupervisionEvent::new(
             actor_id.clone(),
             None,
             ActorStatus::generic_failure(format!("message not delivered: {}", env)),
-            Some(headers),
+            attribution,
         );
 
         match get_global_supervision_sink() {
@@ -531,13 +534,23 @@ mod tests {
         client: &'static Instance<GlobalClientActor>,
         dest_actor: hyperactor::reference::ActorId,
     ) {
+        inject_undeliverable_with_headers(client, dest_actor, Flattrs::new());
+    }
+
+    /// Same as `inject_undeliverable` but with caller-supplied
+    /// envelope headers. Used to drive the `DEST_*` attribution
+    /// projection on the root-client undeliverable path.
+    fn inject_undeliverable_with_headers(
+        client: &'static Instance<GlobalClientActor>,
+        dest_actor: hyperactor::reference::ActorId,
+        headers: Flattrs,
+    ) {
         let env = MessageEnvelope::new(
             client.self_id().clone(),
             hyperactor_reference::PortId::new(dest_actor, 0),
             wirevalue::Any::serialize(&0u64).unwrap(),
-            Flattrs::new(),
+            headers,
         );
-        // Target the global root client's well-known Undeliverable port.
         let undeliverable_port =
             hyperactor_reference::PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(
                 client.self_id(),
@@ -678,5 +691,63 @@ mod tests {
         .await
         .expect("timed out: global client crashed or stopped processing");
         assert_eq!(event.actor_id, marker);
+    }
+
+    /// Proves the root-client undeliverable projection populates
+    /// `event.attribution` from `DEST_*` keys stamped on the bounced
+    /// envelope's headers, even though the raw `message_headers`
+    /// field no longer exists on `ActorSupervisionEvent`.
+    #[tokio::test]
+    async fn test_undeliverable_projects_dest_headers_into_attribution() {
+        use crate::supervision::DEST_ACTOR_CLASS;
+        use crate::supervision::DEST_ACTOR_DISPLAY_NAME;
+        use crate::supervision::DEST_MESH_NAME;
+        use crate::supervision::DEST_RANK;
+
+        let cx = context().await;
+        let client = cx.actor_instance;
+
+        let (sink_handle, mut sink_rx) = client.open_port::<ActorSupervisionEvent>();
+        set_global_supervision_sink(sink_handle.bind());
+
+        let mut headers = Flattrs::new();
+        headers.set(DEST_MESH_NAME, "training".to_string());
+        headers.set(
+            DEST_ACTOR_CLASS,
+            "monarch_examples.dining.Philosopher".to_string(),
+        );
+        headers.set(
+            DEST_ACTOR_DISPLAY_NAME,
+            "instance7.<Philosopher training>".to_string(),
+        );
+        headers.set(DEST_RANK, 7u64);
+
+        let marker = test_actor_id("dest_proj", "marker_actor");
+        inject_undeliverable_with_headers(client, marker.clone(), headers);
+
+        let event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let ev = sink_rx.recv().await.expect("sink channel closed");
+                if ev.actor_id == marker {
+                    return ev;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for supervision event");
+
+        let attribution = event
+            .attribution
+            .expect("attribution populated from DEST_*");
+        assert_eq!(attribution.mesh_name.as_deref(), Some("training"));
+        assert_eq!(
+            attribution.actor_class.as_deref(),
+            Some("monarch_examples.dining.Philosopher")
+        );
+        assert_eq!(
+            attribution.actor_display_name.as_deref(),
+            Some("instance7.<Philosopher training>")
+        );
+        assert_eq!(attribution.rank, Some(7));
     }
 }

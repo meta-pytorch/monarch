@@ -35,6 +35,7 @@ use std::str::FromStr;
 
 use derivative::Derivative;
 use enum_as_inner::EnumAsInner;
+use hyperactor_config::Attrs;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -71,6 +72,35 @@ use parse::ParseError;
 use parse::Token;
 pub use parse::is_valid_ident;
 use parse::parse;
+
+/// Stamp attribution-header entries carried on a ref's in-memory
+/// `Attrs` onto an outbound envelope's `Flattrs` headers,
+/// **overwriting** any pre-existing entry under the same key.
+///
+/// Thin wrapper around the shared marker-driven stamping mechanism
+/// (`hyperactor_config::attrs::stamp_marked_attrs_into_flattrs`)
+/// parameterized with the `ATTRIBUTION_HEADER` marker: only entries
+/// whose declared attr key carries `@meta(ATTRIBUTION_HEADER = true)`
+/// are copied. The substrate does not need to know the specific set
+/// of declared attribution keys (they live in `hyperactor_mesh`),
+/// only to pass the shared marker. AT-1 ("declared-key-only
+/// transport") is enforced mechanically by the shared mechanism; this
+/// call site is one of several that use it.
+///
+/// **Overwrite semantics matter.** `Flattrs::get` returns the first
+/// match for a given key hash, so a naive append-based stamp would be
+/// silently shadowed if an upstream layer had already written the
+/// same key to `headers`. The ref's attribution is the authoritative
+/// destination carrier for the ref's own send path (AT-3), and the
+/// shared mechanism uses `set_serialized` — which replaces any
+/// colliding entry rather than appending after it.
+fn stamp_ref_attribution_onto(headers: &mut Flattrs, attrs: &Attrs) {
+    hyperactor_config::attrs::stamp_marked_attrs_into_flattrs(
+        headers,
+        attrs,
+        hyperactor_config::attrs::ATTRIBUTION_HEADER,
+    );
+}
 
 /// The kinds of references.
 #[derive(strum::Display)]
@@ -487,9 +517,24 @@ impl FromStr for ActorId {
 }
 
 /// ActorRefs are typed references to actors.
+///
+/// In addition to the typed `actor_id`, an `ActorRef` may carry
+/// structured transport attribution for the destination actor in an
+/// `attribution: Attrs` field. Per AT-1 / AT-4 in
+/// `hyperactor_mesh/src/supervision.rs`, the attribution participates
+/// in neither ref identity nor hashing — it is informational
+/// transport state that is copied through `port()` / `into_once()`
+/// onto downstream refs and stamped onto envelope headers by the
+/// shared marker-driven stamping mechanism at transport call sites
+/// (cast, direct-send).
 #[derive(typeuri::Named)]
 pub struct ActorRef<A: Referable> {
     pub(crate) actor_id: ActorId,
+    /// Structured transport attribution for the destination actor.
+    /// Populated via `attest_with_attrs` on mesh-derived producer
+    /// sites; `attest` defaults to an empty `Attrs`. See AT-1..AT-5
+    /// in `hyperactor_mesh/src/supervision.rs`.
+    pub(crate) attribution: Attrs,
     // fn() -> A so that the struct remains Send
     phantom: PhantomData<fn() -> A>,
 }
@@ -500,7 +545,15 @@ impl<A: Referable> ActorRef<A> {
     where
         A: RemoteHandles<M>,
     {
-        PortRef::attest(self.actor_id.port_id(<M as Named>::port()))
+        // AT-1: carry the destination attribution from the ref onto
+        // the produced PortRef unchanged, so downstream sends (e.g.
+        // `PortRef::send_serialized`) stamp the same
+        // attribution-header entries onto the envelope via the shared
+        // marker-driven mechanism.
+        PortRef::attest_with_attrs(
+            self.actor_id.port_id(<M as Named>::port()),
+            self.attribution.clone(),
+        )
     }
 
     /// Send an [`M`]-typed message to the referenced actor.
@@ -533,11 +586,35 @@ impl<A: Referable> ActorRef<A> {
     /// typed reference.  This is usually invoked to provide a guarantee
     /// that an externally-provided actor ID (e.g., through a command
     /// line argument) is a valid reference.
+    ///
+    /// This constructor produces a ref with empty transport
+    /// attribution. Mesh-derived producer sites that have attribution
+    /// in scope should prefer `attest_with_attrs`.
     pub fn attest(actor_id: ActorId) -> Self {
         Self {
             actor_id,
+            attribution: Attrs::new(),
             phantom: PhantomData,
         }
+    }
+
+    /// Like `attest`, but also attaches transport attribution to the
+    /// produced ref. Used by mesh-derived producer sites (e.g.,
+    /// `ActorMeshRef::get(rank)`) that have the destination
+    /// attribution in scope at construction time. See AT-1..AT-5 in
+    /// `hyperactor_mesh/src/supervision.rs` for the carrier contract.
+    pub fn attest_with_attrs(actor_id: ActorId, attribution: Attrs) -> Self {
+        Self {
+            actor_id,
+            attribution,
+            phantom: PhantomData,
+        }
+    }
+
+    /// Access the transport-attribution carrier on this ref.
+    /// Informational only; does not participate in identity (AT-4).
+    pub fn attribution(&self) -> &Attrs {
+        &self.attribution
     }
 
     /// The actor ID corresponding with this reference.
@@ -561,26 +638,32 @@ impl<A: Referable> ActorRef<A> {
     }
 }
 
-// Implement Serialize manually, without requiring A: Serialize
+// Implement Serialize manually, without requiring A: Serialize.
+//
+// Wire format: `ActorRef` serializes as the tuple
+// `(actor_id, attribution)`. The attribution carrier is part of the
+// ref on the wire; callers that need the bare id should use
+// `actor_id()`.
 impl<A: Referable> Serialize for ActorRef<A> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        // Serialize only the fields that don't depend on A
-        self.actor_id().serialize(serializer)
+        (&self.actor_id, &self.attribution).serialize(serializer)
     }
 }
 
-// Implement Deserialize manually, without requiring A: Deserialize
+// Implement Deserialize manually, without requiring A: Deserialize.
+// See `Serialize` above for the tuple wire format.
 impl<'de, A: Referable> Deserialize<'de> for ActorRef<A> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let actor_id = <ActorId>::deserialize(deserializer)?;
+        let (actor_id, attribution) = <(ActorId, Attrs)>::deserialize(deserializer)?;
         Ok(ActorRef {
             actor_id,
+            attribution,
             phantom: PhantomData,
         })
     }
@@ -608,6 +691,7 @@ impl<A: Referable> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
             actor_id: self.actor_id.clone(),
+            attribution: self.attribution.clone(),
             phantom: PhantomData,
         }
     }
@@ -758,8 +842,14 @@ impl fmt::Display for PortId {
     }
 }
 
-/// A reference to a remote port. All messages passed through
-/// PortRefs will be serialized. PortRefs are always streaming.
+/// A reference to a remote port. All messages passed through PortRefs
+/// will be serialized. PortRefs are always streaming.
+///
+/// Carries structured transport attribution for the destination
+/// actor; see `ActorRef`'s doc for the carrier contract (AT-1..AT-5
+/// in `hyperactor_mesh/src/supervision.rs`). AT-4: the attribution
+/// field does not participate in identity, equality, ordering, or
+/// hashing.
 #[derive(Debug, Serialize, Deserialize, Derivative, typeuri::Named)]
 #[derivative(PartialEq, Eq, PartialOrd, Hash, Ord)]
 pub struct PortRef<M> {
@@ -787,11 +877,24 @@ pub struct PortRef<M> {
         Hash = "ignore"
     )]
     unsplit: bool,
+    /// Structured transport attribution for the destination actor.
+    /// Populated by `ActorRef::port()` (copy-through) or
+    /// `PortRef::attest_with_attrs`. Informational only; AT-4.
+    #[derivative(
+        PartialEq = "ignore",
+        PartialOrd = "ignore",
+        Ord = "ignore",
+        Hash = "ignore"
+    )]
+    attribution: Attrs,
 }
 
 impl<M: RemoteMessage> PortRef<M> {
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed port reference.
+    ///
+    /// Produces a ref with empty transport attribution. Call sites
+    /// with attribution in scope should use `attest_with_attrs`.
     pub fn attest(port_id: PortId) -> Self {
         Self {
             port_id,
@@ -800,7 +903,30 @@ impl<M: RemoteMessage> PortRef<M> {
             phantom: PhantomData,
             return_undeliverable: true,
             unsplit: false,
+            attribution: Attrs::new(),
         }
+    }
+
+    /// Like `attest`, but also attaches transport attribution to the
+    /// produced ref. Used by `ActorRef::port()` copy-through and
+    /// other mesh-derived producer sites. See AT-1..AT-5 in
+    /// `hyperactor_mesh/src/supervision.rs`.
+    pub fn attest_with_attrs(port_id: PortId, attribution: Attrs) -> Self {
+        Self {
+            port_id,
+            reducer_spec: None,
+            streaming_opts: StreamingReducerOpts::default(),
+            phantom: PhantomData,
+            return_undeliverable: true,
+            unsplit: false,
+            attribution,
+        }
+    }
+
+    /// Access the transport-attribution carrier on this ref.
+    /// Informational only; AT-4.
+    pub fn attribution(&self) -> &Attrs {
+        &self.attribution
     }
 
     /// The caller attests that the provided PortId can be
@@ -817,6 +943,7 @@ impl<M: RemoteMessage> PortRef<M> {
             phantom: PhantomData,
             return_undeliverable: true,
             unsplit: false,
+            attribution: Attrs::new(),
         }
     }
 
@@ -853,7 +980,10 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn into_once(self) -> OncePortRef<M> {
         let return_undeliverable = self.return_undeliverable;
         let unsplit = self.unsplit;
-        let mut once = OncePortRef::attest(self.into_port_id());
+        let attribution = self.attribution.clone();
+        // AT-1: attribution copies through into the OncePortRef so the
+        // same declared keys will reach the envelope headers on send.
+        let mut once = OncePortRef::attest_with_attrs(self.into_port_id(), attribution);
         once.return_undeliverable = return_undeliverable;
         once.unsplit = unsplit;
         once
@@ -894,6 +1024,10 @@ impl<M: RemoteMessage> PortRef<M> {
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
+        // AT-1: stamp the ref's transport attribution onto the
+        // outbound envelope headers. See `stamp_ref_attribution_onto`
+        // at the top of this module for the crate-boundary reasoning.
+        stamp_ref_attribution_onto(&mut headers, &self.attribution);
         cx.post(
             self.port_id.clone(),
             headers,
@@ -930,6 +1064,7 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
             phantom: PhantomData,
             return_undeliverable: self.return_undeliverable,
             unsplit: self.unsplit,
+            attribution: self.attribution.clone(),
         }
     }
 }
@@ -1006,13 +1141,24 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
 /// A remote reference to a [`OncePort`]. References are serializable
 /// and may be passed to remote actors, which can then use it to send
 /// a message to this port.
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+///
+/// Carries structured transport attribution for the destination
+/// actor; see `ActorRef`'s doc for the carrier contract (AT-1..AT-5
+/// in `hyperactor_mesh/src/supervision.rs`). AT-4: the attribution
+/// field does not participate in identity or equality.
+#[derive(Debug, Serialize, Deserialize, Derivative)]
+#[derivative(PartialEq)]
 pub struct OncePortRef<M> {
     port_id: PortId,
     reducer_spec: Option<ReducerSpec>,
     return_undeliverable: bool,
     unsplit: bool,
     phantom: PhantomData<M>,
+    /// Structured transport attribution for the destination actor.
+    /// Populated by `PortRef::into_once()` (copy-through) or
+    /// `OncePortRef::attest_with_attrs`. Informational only; AT-4.
+    #[derivative(PartialEq = "ignore")]
+    attribution: Attrs,
 }
 
 impl<M: RemoteMessage> OncePortRef<M> {
@@ -1023,7 +1169,28 @@ impl<M: RemoteMessage> OncePortRef<M> {
             return_undeliverable: true,
             unsplit: false,
             phantom: PhantomData,
+            attribution: Attrs::new(),
         }
+    }
+
+    /// Like `attest`, but also attaches transport attribution to the
+    /// produced ref. Used by `PortRef::into_once()` copy-through.
+    /// See AT-1..AT-5 in `hyperactor_mesh/src/supervision.rs`.
+    pub(crate) fn attest_with_attrs(port_id: PortId, attribution: Attrs) -> Self {
+        Self {
+            port_id,
+            reducer_spec: None,
+            return_undeliverable: true,
+            unsplit: false,
+            phantom: PhantomData,
+            attribution,
+        }
+    }
+
+    /// Access the transport-attribution carrier on this ref.
+    /// Informational only; AT-4.
+    pub fn attribution(&self) -> &Attrs {
+        &self.attribution
     }
 
     /// The caller attests that the provided PortId can be
@@ -1035,6 +1202,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
             return_undeliverable: true,
             unsplit: false,
             phantom: PhantomData,
+            attribution: Attrs::new(),
         }
     }
 
@@ -1074,6 +1242,10 @@ impl<M: RemoteMessage> OncePortRef<M> {
         message: M,
     ) -> Result<(), MailboxSenderError> {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
+        // AT-1: stamp the ref's transport attribution onto the
+        // outbound envelope headers. See `stamp_ref_attribution_onto`
+        // at the top of this module for the crate-boundary reasoning.
+        stamp_ref_attribution_onto(&mut headers, &self.attribution);
         let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 self.port_id.clone(),
@@ -1111,6 +1283,7 @@ impl<M: RemoteMessage> Clone for OncePortRef<M> {
             return_undeliverable: self.return_undeliverable,
             unsplit: self.unsplit,
             phantom: PhantomData,
+            attribution: self.attribution.clone(),
         }
     }
 }
@@ -1392,5 +1565,299 @@ mod tests {
             panic!("expected Session variant");
         };
         assert_eq!(seq3, 3);
+    }
+
+    // Attribution-transport tests for the ref types defined in this
+    // module. The `AT-*` invariants these tests reference live in
+    // `hyperactor_mesh::supervision`.
+
+    use hyperactor_config::attrs::ATTRIBUTION_HEADER;
+    use hyperactor_config::attrs::declare_attrs;
+
+    declare_attrs! {
+        /// Declared as an attribution-header key
+        /// (`@meta(ATTRIBUTION_HEADER = true)`), so the existing AT-1
+        /// copy-through and overwrite tests below continue to flow
+        /// values through the shared marker-driven stamping mechanism
+        /// onto outbound headers.
+        @meta(ATTRIBUTION_HEADER = true)
+        pub attr REF_ATTR_TEST_STRING: String;
+
+        /// Declared as an attribution-header key; same reason as
+        /// `REF_ATTR_TEST_STRING`.
+        @meta(ATTRIBUTION_HEADER = true)
+        pub attr REF_ATTR_TEST_U64: u64;
+
+        /// NOT declared as an attribution-header key. Used by
+        /// `ref_attr_stamp_filters_unmarked_entries` to pin AT-1:
+        /// entries whose declared key lacks `@meta(ATTRIBUTION_HEADER
+        /// = true)` must not be stamped onto outbound headers by the
+        /// shared marker-driven mechanism, even if they are present
+        /// on a ref's attribution.
+        pub attr REF_ATTR_TEST_UNMARKED: String;
+    }
+
+    fn test_actor_id(name: &str) -> ActorId {
+        ProcId::with_name(ChannelAddr::Local(0), "ref_attr_test_proc").actor_id(name, 0)
+    }
+
+    /// Minimal concrete type satisfying `Referable` so the tests
+    /// below can construct `ActorRef<A>` without dragging in a
+    /// heavier actor fixture.
+    struct RefAttrTestActor;
+    impl crate::actor::Referable for RefAttrTestActor {}
+    impl typeuri::Named for RefAttrTestActor {
+        fn typename() -> &'static str {
+            "hyperactor::reference::tests::RefAttrTestActor"
+        }
+    }
+
+    // AT-1 (copy-through): `ActorRef::port()` carries the ref's
+    // attribution carrier onto the produced `PortRef` unchanged, so
+    // downstream sends can stamp the same attribution-header entries
+    // onto envelope headers via the shared marker-driven mechanism.
+    #[test]
+    fn ref_attr_port_copy_through() {
+        let mut attrs = Attrs::new();
+        attrs.set(REF_ATTR_TEST_STRING, "mesh_value".to_string());
+        attrs.set(REF_ATTR_TEST_U64, 7u64);
+        let actor_ref: ActorRef<RefAttrTestActor> =
+            ActorRef::attest_with_attrs(test_actor_id("a"), attrs);
+
+        // Plain Actor::port requires a RemoteHandles<M> bound; go
+        // through the actor_id port_id + attest_with_attrs path
+        // directly to exercise the copy-through step without needing
+        // a `RemoteMessage` fixture.
+        let port_ref: PortRef<()> = PortRef::attest_with_attrs(
+            actor_ref.actor_id().port_id(<() as Named>::port()),
+            actor_ref.attribution().clone(),
+        );
+        assert_eq!(
+            port_ref.attribution().get(REF_ATTR_TEST_STRING),
+            Some(&"mesh_value".to_string()),
+        );
+        assert_eq!(port_ref.attribution().get(REF_ATTR_TEST_U64), Some(&7u64),);
+    }
+
+    // AT-1 (copy-through): `PortRef::into_once()` carries attribution
+    // onto the produced `OncePortRef`.
+    #[test]
+    fn ref_attr_into_once_copy_through() {
+        let mut attrs = Attrs::new();
+        attrs.set(REF_ATTR_TEST_STRING, "mesh_value".to_string());
+        attrs.set(REF_ATTR_TEST_U64, 3u64);
+        let port_id = PortId::new(test_actor_id("a"), 42);
+        let port_ref: PortRef<()> = PortRef::attest_with_attrs(port_id, attrs);
+        let once_ref: OncePortRef<()> = port_ref.into_once();
+        assert_eq!(
+            once_ref.attribution().get(REF_ATTR_TEST_STRING),
+            Some(&"mesh_value".to_string()),
+        );
+        assert_eq!(once_ref.attribution().get(REF_ATTR_TEST_U64), Some(&3u64),);
+    }
+
+    // AT-4 (identity independence): two refs with identical identity
+    // fields but different attribution compare equal, order equal,
+    // and hash equal.
+    #[test]
+    fn ref_attr_identity_ignores_attribution() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher as _;
+
+        let actor_id = test_actor_id("a");
+        let bare: ActorRef<RefAttrTestActor> = ActorRef::attest(actor_id.clone());
+        let mut attrs = Attrs::new();
+        attrs.set(REF_ATTR_TEST_STRING, "anything".to_string());
+        let decorated: ActorRef<RefAttrTestActor> =
+            ActorRef::attest_with_attrs(actor_id.clone(), attrs);
+
+        assert_eq!(bare, decorated, "PartialEq must ignore attribution");
+        assert_eq!(
+            bare.cmp(&decorated),
+            std::cmp::Ordering::Equal,
+            "Ord must ignore attribution",
+        );
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        bare.hash(&mut h1);
+        decorated.hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish(), "Hash must ignore attribution");
+
+        // Same check for PortRef (which uses `derivative` ignore).
+        let port_id = PortId::new(actor_id, 1);
+        let bare_port: PortRef<()> = PortRef::attest(port_id.clone());
+        let mut attrs2 = Attrs::new();
+        attrs2.set(REF_ATTR_TEST_U64, 99u64);
+        let decorated_port: PortRef<()> = PortRef::attest_with_attrs(port_id, attrs2);
+        assert_eq!(bare_port, decorated_port);
+    }
+
+    // AT-1: `ActorRef` wire format includes the attribution carrier,
+    // so the transport-attribution keys survive serde round-trip
+    // alongside the actor id.
+    #[test]
+    fn ref_attr_wire_round_trip_actor_ref() {
+        let mut attrs = Attrs::new();
+        attrs.set(REF_ATTR_TEST_STRING, "mesh_value".to_string());
+        attrs.set(REF_ATTR_TEST_U64, 11u64);
+        let original: ActorRef<RefAttrTestActor> =
+            ActorRef::attest_with_attrs(test_actor_id("a"), attrs);
+
+        let bytes = bincode::serde::encode_to_vec(&original, bincode::config::legacy())
+            .expect("serialize ActorRef");
+        let restored: ActorRef<RefAttrTestActor> =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .expect("deserialize ActorRef");
+
+        assert_eq!(restored.actor_id(), original.actor_id());
+        assert_eq!(
+            restored.attribution().get(REF_ATTR_TEST_STRING),
+            Some(&"mesh_value".to_string()),
+        );
+        assert_eq!(restored.attribution().get(REF_ATTR_TEST_U64), Some(&11u64),);
+    }
+
+    // AT-1: same for `PortRef` (derived serde picks up the
+    // attribution field; `#[derivative(... = "ignore")]` only affects
+    // equality/hash/order, not serialization).
+    #[test]
+    fn ref_attr_wire_round_trip_port_ref() {
+        let mut attrs = Attrs::new();
+        attrs.set(REF_ATTR_TEST_STRING, "mesh_value".to_string());
+        let original: PortRef<()> =
+            PortRef::attest_with_attrs(PortId::new(test_actor_id("a"), 7), attrs);
+        let bytes = bincode::serde::encode_to_vec(&original, bincode::config::legacy())
+            .expect("serialize PortRef");
+        let restored: PortRef<()> =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .expect("deserialize PortRef");
+        assert_eq!(restored.port_id(), original.port_id());
+        assert_eq!(
+            restored.attribution().get(REF_ATTR_TEST_STRING),
+            Some(&"mesh_value".to_string()),
+        );
+    }
+
+    // AT-1: same for `OncePortRef`.
+    #[test]
+    fn ref_attr_wire_round_trip_once_port_ref() {
+        let mut attrs = Attrs::new();
+        attrs.set(REF_ATTR_TEST_U64, 5u64);
+        let original: OncePortRef<()> =
+            OncePortRef::attest_with_attrs(PortId::new(test_actor_id("a"), 7), attrs);
+        let bytes = bincode::serde::encode_to_vec(&original, bincode::config::legacy())
+            .expect("serialize OncePortRef");
+        let restored: OncePortRef<()> =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .expect("deserialize OncePortRef");
+        assert_eq!(restored.attribution().get(REF_ATTR_TEST_U64), Some(&5u64),);
+    }
+
+    // AT-1 (overwrite on stamp): the ref's attribution is the
+    // authoritative destination carrier for the ref's own send
+    // path, so the shared marker-driven stamping mechanism must
+    // overwrite any colliding pre-existing attribution-header
+    // value on the outbound `Flattrs` rather than append.
+    // Append-then-`Flattrs::get` (first match) would silently
+    // return a stale upstream value.
+    //
+    // Exercises the private `stamp_ref_attribution_onto` wrapper
+    // that `PortRef::send_serialized` and
+    // `OncePortRef::send_with_headers` both call — one of the
+    // transport call sites that use the shared mechanism.
+    #[test]
+    fn ref_attr_stamp_overwrites_preexisting_headers() {
+        // Start with headers that already carry a colliding entry
+        // under the test key.
+        let mut headers = Flattrs::new();
+        headers.set(REF_ATTR_TEST_STRING, "stale_upstream_value".to_string());
+        headers.set(REF_ATTR_TEST_U64, 1u64);
+
+        // Ref attribution carries different values under the same
+        // keys plus an additional key.
+        let mut ref_attrs = Attrs::new();
+        ref_attrs.set(REF_ATTR_TEST_STRING, "ref_wins".to_string());
+        ref_attrs.set(REF_ATTR_TEST_U64, 99u64);
+
+        // Private helper: scope-local call; asserts the ref-side
+        // write path overwrites (not appends).
+        stamp_ref_attribution_onto(&mut headers, &ref_attrs);
+
+        // Both collisions now show the ref value, not the stale one.
+        assert_eq!(
+            headers.get(REF_ATTR_TEST_STRING),
+            Some("ref_wins".to_string()),
+        );
+        assert_eq!(headers.get(REF_ATTR_TEST_U64), Some(99u64));
+    }
+
+    // AT-1 (overwrite on stamp), different-size path. The
+    // pre-existing and replacement values differ in serialized
+    // length, exercising the compact-and-append branch of
+    // `Flattrs::set_serialized` (distinct from the in-place
+    // overwrite branch the previous test covers).
+    #[test]
+    fn ref_attr_stamp_overwrites_different_size() {
+        let mut headers = Flattrs::new();
+        headers.set(REF_ATTR_TEST_STRING, "x".to_string());
+
+        let mut ref_attrs = Attrs::new();
+        ref_attrs.set(
+            REF_ATTR_TEST_STRING,
+            "a considerably longer ref value".to_string(),
+        );
+
+        stamp_ref_attribution_onto(&mut headers, &ref_attrs);
+
+        assert_eq!(
+            headers.get(REF_ATTR_TEST_STRING),
+            Some("a considerably longer ref value".to_string()),
+        );
+    }
+
+    // AT-1 (declared-key-only transport), mechanical enforcement
+    // by the shared marker-driven stamping mechanism. Ref
+    // attribution carrying both a declared-with-`ATTRIBUTION_HEADER`
+    // attr and a declared-without-marker attr yields outbound
+    // headers with **only** the marked entry. The unmarked entry is
+    // silently dropped — no opt-out producer discipline required
+    // anywhere the mechanism is used.
+    #[test]
+    fn ref_attr_stamp_filters_unmarked_entries() {
+        // Sanity: the declarations above carry / lack the marker
+        // as the test expects.
+        assert!(
+            REF_ATTR_TEST_STRING
+                .attrs()
+                .get(ATTRIBUTION_HEADER)
+                .is_some()
+        );
+        assert!(
+            REF_ATTR_TEST_UNMARKED
+                .attrs()
+                .get(ATTRIBUTION_HEADER)
+                .is_none()
+        );
+
+        let mut ref_attrs = Attrs::new();
+        ref_attrs.set(REF_ATTR_TEST_STRING, "marked_value".to_string());
+        ref_attrs.set(REF_ATTR_TEST_UNMARKED, "unmarked_value".to_string());
+
+        let mut headers = Flattrs::new();
+        stamp_ref_attribution_onto(&mut headers, &ref_attrs);
+
+        assert_eq!(
+            headers.get(REF_ATTR_TEST_STRING),
+            Some("marked_value".to_string()),
+            "marked transport key must be stamped onto outbound headers",
+        );
+        assert_eq!(
+            headers.get::<String>(REF_ATTR_TEST_UNMARKED),
+            None,
+            "unmarked key must be silently filtered out by the shared marker-driven stamping mechanism",
+        );
     }
 }

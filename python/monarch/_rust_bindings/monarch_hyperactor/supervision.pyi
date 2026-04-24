@@ -18,6 +18,30 @@ class SupervisionError(RuntimeError):
     """
 
     endpoint: str | None  # Settable attribute
+    @property
+    def mesh_name(self) -> str | None:
+        """The user-facing mesh base name, if the source supervision
+        event carried structured attribution."""
+        ...
+
+    @property
+    def actor_class(self) -> str | None:
+        """Structured actor-class token of the failing actor, if the
+        source supervision event carried structured attribution. For
+        Python-spawned actors this is typically ``module.qualname``."""
+        ...
+
+    @property
+    def actor_display_name(self) -> str | None:
+        """Rendered display name of the failing actor, if the source
+        supervision event carried structured attribution."""
+        ...
+
+    @property
+    def rank(self) -> int | None:
+        """Mesh rank of the failing actor, if the source supervision
+        event carried structured attribution."""
+        ...
 
 # TODO: Make this an exception subclass
 @final
