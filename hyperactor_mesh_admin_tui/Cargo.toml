@@ -16,7 +16,7 @@ path = "bin/admin_tui.rs"
 algebra = { version = "0.0.0", path = "../algebra" }
 chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
 clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
-crossterm = { version = "0.28", features = ["event-stream", "serde"] }
+crossterm = { version = "0.29", features = ["event-stream", "serde"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
@@ -29,7 +29,7 @@ ratatui = { version = "0.30", features = ["termion", "termwiz", "unstable-render
 reqwest = { version = "0.13.2", features = ["blocking", "charset", "cookies", "gzip", "http2", "json", "multipart", "rustls", "socks", "stream", "system-proxy"], default-features = false }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.52.1", features = ["full", "test-util", "tracing"] }
 urlencoding = "2.1.0"
 
 [lints]

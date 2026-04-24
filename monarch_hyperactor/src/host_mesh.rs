@@ -38,11 +38,9 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use pyo3::types::PyType;
 
 use crate::actor::PythonActor;
 use crate::actor::to_py_error;
-use crate::alloc::PyAlloc;
 use crate::context::PyInstance;
 use crate::proc_mesh::PyProcMesh;
 use crate::pytokio::PyPythonTask;
@@ -139,33 +137,6 @@ impl PyHostMesh {
 
 #[pymethods]
 impl PyHostMesh {
-    #[classmethod]
-    fn allocate_nonblocking(
-        _cls: &Bound<'_, PyType>,
-        instance: &PyInstance,
-        alloc: &mut PyAlloc,
-        name: String,
-        bootstrap_params: Option<PyBootstrapCommand>,
-    ) -> PyResult<PyPythonTask> {
-        let bootstrap_params =
-            bootstrap_params.map_or_else(|| alloc.bootstrap_command.clone(), |b| Some(b.to_rust()));
-        let alloc = match alloc.take() {
-            Some(alloc) => alloc,
-            None => {
-                return Err(PyException::new_err(
-                    "Alloc object already used".to_string(),
-                ));
-            }
-        };
-        let instance = instance.clone();
-        PyPythonTask::new(async move {
-            let mesh = HostMesh::allocate(instance.deref(), alloc, &name, bootstrap_params)
-                .await
-                .map_err(|err| PyException::new_err(err.to_string()))?;
-            Ok(Self::new_owned(mesh))
-        })
-    }
-
     #[pyo3(signature = (instance, name, per_host, proc_bind = None))]
     fn spawn_nonblocking(
         &self,
@@ -216,7 +187,7 @@ impl PyHostMesh {
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let bytes = bincode::serialize(&self.mesh_ref()?)
+        let bytes = bincode::serde::encode_to_vec(&self.mesh_ref()?, bincode::config::legacy())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
         let from_bytes =
@@ -341,6 +312,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             Some(bootstrap_cmd),
             None,
             false,
+            None,
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
@@ -472,8 +444,10 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
 
 #[pyfunction]
 fn py_host_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PyHostMesh> {
-    let r: PyResult<HostMeshRef> = bincode::deserialize(bytes.as_bytes())
-        .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()));
+    let r: PyResult<HostMeshRef> =
+        bincode::serde::decode_from_slice(bytes.as_bytes(), bincode::config::legacy())
+            .map(|(v, _)| v)
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()));
     r.map(PyHostMesh::new_ref)
 }
 

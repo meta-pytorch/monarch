@@ -47,6 +47,7 @@
 //!   when EOF occurs exactly on a frame boundary. If EOF happens
 //!   mid-frame, it returns `Err(io::ErrorKind::UnexpectedEof)`.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::fmt::Debug;
 use std::net::ToSocketAddrs;
@@ -110,40 +111,49 @@ pub(crate) const ACCEPTOR_TO_INITIATOR: u8 = 1;
 /// This is written/read directly on the wire (not framed), before
 /// any session framing begins.
 ///
-/// Wire format (12 bytes, big-endian):
+/// Wire format (13 bytes, big-endian):
 /// ```text
-/// [magic: 4B "LNK\0"] [session_id: 8B u64 BE]
+/// [magic: 4B "LNK\0"] [session_id: 8B u64 BE] [stream_id: 1B u8]
 /// ```
 const LINK_INIT_MAGIC: [u8; 4] = *b"LNK\0";
-const LINK_INIT_SIZE: usize = 4 + 8;
+const LINK_INIT_SIZE: usize = 4 + 8 + 1;
+
+/// Parsed LinkInit header.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LinkInit {
+    pub session_id: SessionId,
+    pub stream_id: u8,
+}
 
 /// Write a LinkInit header to the stream.
 async fn write_link_init<S: AsyncWrite + Unpin>(
     stream: &mut S,
     session_id: SessionId,
+    stream_id: u8,
 ) -> Result<(), std::io::Error> {
     let mut buf = [0u8; LINK_INIT_SIZE];
     buf[0..4].copy_from_slice(&LINK_INIT_MAGIC);
     buf[4..12].copy_from_slice(&session_id.0.to_be_bytes());
+    buf[12] = stream_id;
     stream.write_all(&buf).await
 }
 
 /// Read a LinkInit header from the stream.
-async fn read_link_init<S: AsyncRead + Unpin>(stream: &mut S) -> Result<SessionId, std::io::Error> {
+async fn read_link_init<S: AsyncRead + Unpin>(stream: &mut S) -> Result<LinkInit, std::io::Error> {
     let mut buf = [0u8; LINK_INIT_SIZE];
     stream.read_exact(&mut buf).await?;
     if buf[0..4] != LINK_INIT_MAGIC {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!(
-                "invalid LinkInit magic: expected {:?}, got {:?}",
-                LINK_INIT_MAGIC,
-                &buf[0..4]
-            ),
+            format!("invalid LinkInit magic: expected LNK, got {:?}", &buf[0..4]),
         ));
     }
     let session_id = SessionId(u64::from_be_bytes(buf[4..12].try_into().unwrap()));
-    Ok(session_id)
+    let stream_id = buf[12];
+    Ok(LinkInit {
+        session_id,
+        stream_id,
+    })
 }
 
 /// Link represents a network link through which connections may be
@@ -269,6 +279,236 @@ fn log_send_error(
 
 /// Establish a simplex (send-only) session over the given link. Returns a send handle.
 pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
+    spawn_inner(link)
+}
+
+/// Establish a multi-stream (unordered) simplex session over N
+/// links sharing the same `SessionId`. Returns a single send handle
+/// that distributes frames across streams.
+pub(crate) fn spawn_unordered<M: RemoteMessage>(links: Vec<impl Link + 'static>) -> NetTx<M> {
+    assert!(!links.is_empty());
+    if links.len() == 1 {
+        return spawn(links.into_iter().next().unwrap());
+    }
+
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let dest = links[0].dest();
+    let session_id = links[0].link_id();
+    let (notify, status) = watch::channel(TxStatus::Active);
+    let tx = NetTx {
+        sender,
+        dest: dest.clone(),
+        status,
+    };
+
+    let num_streams = links.len();
+
+    crate::init::get_runtime().spawn(async move {
+        // Shared MPMC work queue. The dispatcher enqueues *unserialized*
+        // messages; each writer serializes its own pulls before writing.
+        // This spreads serialization cost across all N writer tasks
+        // instead of bottlenecking on the dispatcher.
+        let (queue_tx, queue_rx) =
+            async_channel::bounded::<session::PendingMessage<M>>(num_streams * 8);
+
+        // Shared unacked buffer: any writer's ack reader can prune it.
+        // BTreeMap keyed by seq — writers insert out of order
+        // (multiple streams, interleaved), so not a VecDeque.
+        let unacked: Arc<
+            tokio::sync::Mutex<std::collections::BTreeMap<u64, session::QueuedMessage<M>>>,
+        > = Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new()));
+
+        let mut writer_handles: Vec<tokio::task::JoinHandle<()>> = Vec::with_capacity(num_streams);
+        let log_id = format!("session {}.{:016x}", dest, session_id.0);
+
+        for (i, link) in links.into_iter().enumerate() {
+            let dest = dest.clone();
+            let unacked = unacked.clone();
+            let queue_rx = queue_rx.clone();
+            let log_id = log_id.clone();
+
+            writer_handles.push(tokio::spawn(async move {
+                let mut session = Session::new(link);
+                let mut reconnect_backoff = ExponentialBackoffBuilder::new()
+                    .with_initial_interval(Duration::from_millis(10))
+                    .with_multiplier(2.0)
+                    .with_randomization_factor(0.1)
+                    .with_max_interval(Duration::from_secs(5))
+                    .with_max_elapsed_time(None)
+                    .build();
+
+                loop {
+                    let connected = match session.connect().await {
+                        Ok(s) => s,
+                        Err(_) => {
+                            tracing::info!(
+                                dest = %dest, stream = i,
+                                "multi-stream writer {} connect failed", i
+                            );
+                            break;
+                        }
+                    };
+                    tracing::info!(
+                        dest = %dest, stream = i, "multi-stream writer {} connected", i
+                    );
+
+                    let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
+                    let connected_at = tokio::time::Instant::now();
+
+                    // Pull from the shared queue; serialize locally; write; interleave ack reads.
+                    let result: Result<(), session::SendLoopError> = async {
+                        loop {
+                            tokio::select! {
+                                biased;
+
+                                ack_result = stream.next() => {
+                                    match ack_result {
+                                        Ok(Some(buffer)) => {
+                                            let response = deserialize_response(buffer)
+                                                .map_err(|e| session::SendLoopError::Io(e.into()))?;
+                                            match response {
+                                                NetRxResponse::Ack(ack) => {
+                                                    let mut guard = unacked.lock().await;
+                                                    // Remove all entries with seq <= ack.
+                                                    let retain: std::collections::BTreeMap<u64, session::QueuedMessage<M>> = guard.split_off(&(ack + 1));
+                                                    drop(std::mem::replace(&mut *guard, retain));
+                                                }
+                                                NetRxResponse::Reject(reason) => {
+                                                    return Err(session::SendLoopError::Rejected(reason));
+                                                }
+                                                NetRxResponse::Closed => {
+                                                    return Err(session::SendLoopError::ServerClosed);
+                                                }
+                                            }
+                                        }
+                                        Ok(None) => return Ok(()),
+                                        Err(e) => return Err(session::SendLoopError::Io(e.into())),
+                                    }
+                                }
+
+                                msg = queue_rx.recv() => {
+                                    let pending = match msg {
+                                        Ok(m) => m,
+                                        // Dispatcher closed the queue: clean shutdown.
+                                        Err(_) => return Ok(()),
+                                    };
+                                    let session::PendingMessage {
+                                        seq,
+                                        message,
+                                        received_at,
+                                        return_channel,
+                                    } = pending;
+                                    let frame = Frame::Message(seq, message);
+                                    let serialized = match serde_multipart::serialize_bincode(&frame) {
+                                        Ok(m) => m,
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "{log_id}: serialization error: {e}"
+                                            );
+                                            // Drops return_channel; sender perceives success
+                                            // (preserving prior behavior of the dispatcher-side
+                                            // serialize path).
+                                            continue;
+                                        }
+                                    };
+                                    let mut queued = session::QueuedMessage {
+                                        seq,
+                                        message: serialized,
+                                        received_at,
+                                        sent_at: None,
+                                        return_channel,
+                                    };
+                                    let framed = queued.message.clone().framed();
+                                    stream.write(framed).drive().await.map_err(|e| {
+                                        session::SendLoopError::Io(e.into())
+                                    })?;
+                                    queued.sent_at = Some(tokio::time::Instant::now());
+                                    unacked.lock().await.insert(queued.seq, queued);
+                                }
+                            }
+                        }
+                    }
+                    .await;
+
+                    session = connected.release();
+
+                    if connected_at.elapsed() > Duration::from_secs(1) {
+                        reconnect_backoff.reset();
+                    }
+
+                    match result {
+                        Ok(()) => {
+                            if queue_rx.is_closed() {
+                                // Dispatcher is gone and queue is drained.
+                                break;
+                            }
+                            if let Some(delay) = reconnect_backoff.next_backoff() {
+                                tokio::time::sleep(delay).await;
+                            }
+                        }
+                        Err(ref e) => {
+                            if log_send_error(e, &dest, session_id.0, "multi-stream", &LinkStatus::NeverConnected) {
+                                break;
+                            }
+                            if let Some(delay) = reconnect_backoff.next_backoff() {
+                                tokio::time::sleep(delay).await;
+                            }
+                        }
+                    }
+                }
+
+                tracing::info!(
+                    dest = %dest,
+                    stream = i,
+                    "multi-stream writer {} shutting down",
+                    i,
+                );
+            }));
+        }
+
+        // Drop our local receiver clone so the queue closes once the
+        // dispatcher's sender (queue_tx) is dropped at shutdown.
+        drop(queue_rx);
+
+        // Dispatcher: receive from app and enqueue for writers — no
+        // serialization here; the writer that pulls the item serializes
+        // it before writing.
+        let mut next_seq = 0u64;
+
+        tracing::info!(
+            %dest, session = %log_id, num_streams,
+            "multi-stream dispatcher started"
+        );
+
+        while let Some((message, return_channel, received_at)) = receiver.recv().await {
+            let pending = session::PendingMessage {
+                seq: next_seq,
+                message,
+                received_at,
+                return_channel,
+            };
+            next_seq += 1;
+
+            if queue_tx.send(pending).await.is_err() {
+                // All writers are gone.
+                break;
+            }
+        }
+
+        // Shutdown: close the shared queue and wait for writers to drain.
+        drop(queue_tx);
+        for handle in writer_handles {
+            let _ = handle.await;
+        }
+
+        let reason = format!("{log_id}: dispatcher closed");
+        let _ = notify.send(TxStatus::Closed(reason.into()));
+    });
+
+    tx
+}
+
+fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     let dest = link.dest();
     let session_id = link.link_id();
@@ -448,13 +688,25 @@ pub(crate) enum NetLink {
     Tls(tls::TlsLink),
 }
 
-/// Create a link for the given channel address.
-pub(crate) fn link(addr: ChannelAddr) -> Result<NetLink, ClientError> {
+/// Create a link for the given channel address with the given
+/// `session_id` and `stream_id`. Single-stream callers pass a fresh
+/// `SessionId::random()` and `stream_id = 0`.
+pub(crate) fn link(
+    addr: ChannelAddr,
+    session_id: SessionId,
+    stream_id: u8,
+) -> Result<NetLink, ClientError> {
     match addr {
-        ChannelAddr::Tcp(socket_addr) => Ok(NetLink::Tcp(tcp::link(socket_addr))),
-        ChannelAddr::Unix(unix_addr) => Ok(NetLink::Unix(unix::link(unix_addr))),
-        ChannelAddr::Tls(tls_addr) => Ok(NetLink::Tls(tls::link(tls_addr)?)),
-        ChannelAddr::MetaTls(meta_addr) => Ok(NetLink::Tls(meta::link(meta_addr)?)),
+        ChannelAddr::Tcp(socket_addr) => {
+            Ok(NetLink::Tcp(tcp::link(socket_addr, session_id, stream_id)))
+        }
+        ChannelAddr::Unix(unix_addr) => {
+            Ok(NetLink::Unix(unix::link(unix_addr, session_id, stream_id)))
+        }
+        ChannelAddr::Tls(tls_addr) => Ok(NetLink::Tls(tls::link(tls_addr, session_id, stream_id)?)),
+        ChannelAddr::MetaTls(meta_addr) => {
+            Ok(NetLink::Tls(meta::link(meta_addr, session_id, stream_id)?))
+        }
         other => Err(ClientError::Connect(
             other,
             std::io::Error::other("unsupported transport"),
@@ -533,14 +785,20 @@ impl Listener for NetListener {
     }
 }
 
-/// Bind a listener for the given channel address. Returns the listener
-/// and the canonical address callers should advertise (which encodes
-/// the transport — e.g. `ChannelAddr::Tls` for TLS).
-pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
+/// Bind a listener for the given channel address, optionally using a pre-opened TCP listener.
+/// Returns the listener and the canonical address callers should advertise.
+/// When `prebound` is `Some`, it is used for TCP/TLS transports instead of binding a new socket.
+pub(crate) fn listen_with_prebound(
+    addr: ChannelAddr,
+    prebound: Option<std::net::TcpListener>,
+) -> Result<(NetListener, ChannelAddr), ServerError> {
     match addr {
         ChannelAddr::Tcp(socket_addr) => {
-            let std_listener = std::net::TcpListener::bind(socket_addr)
-                .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(socket_addr), err))?;
+            let std_listener = match prebound {
+                Some(l) => l,
+                None => std::net::TcpListener::bind(socket_addr)
+                    .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(socket_addr), err))?,
+            };
             std_listener
                 .set_nonblocking(true)
                 .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(socket_addr), e))?;
@@ -611,8 +869,11 @@ pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), Se
             }
 
             let channel_addr = make_channel_addr(&hostname, port);
-            let std_listener = std::net::TcpListener::bind(&addrs[..])
-                .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?;
+            let std_listener = match prebound {
+                Some(l) => l,
+                None => std::net::TcpListener::bind(&addrs[..])
+                    .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?,
+            };
             std_listener
                 .set_nonblocking(true)
                 .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
@@ -637,6 +898,13 @@ pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), Se
     }
 }
 
+/// Bind a listener for the given channel address. Returns the listener
+/// and the canonical address callers should advertise (which encodes
+/// the transport — e.g. `ChannelAddr::Tls` for TLS).
+pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
+    listen_with_prebound(addr, None)
+}
+
 /// Frames are the messages sent between clients and servers over sessions.
 #[derive(Debug, Serialize, Deserialize, EnumAsInner, PartialEq)]
 pub(super) enum Frame<M> {
@@ -653,12 +921,16 @@ pub(super) enum NetRxResponse {
     Closed,
 }
 
-pub(super) fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> {
-    bincode::serialize(&response).map(|bytes| bytes.into())
+pub(super) fn serialize_response(
+    response: NetRxResponse,
+) -> Result<Bytes, bincode::error::EncodeError> {
+    bincode::serde::encode_to_vec(&response, bincode::config::legacy()).map(|bytes| bytes.into())
 }
 
-pub(super) fn deserialize_response(data: Bytes) -> Result<NetRxResponse, bincode::Error> {
-    bincode::deserialize(&data)
+pub(super) fn deserialize_response(
+    data: Bytes,
+) -> Result<NetRxResponse, bincode::error::DecodeError> {
+    bincode::serde::decode_from_slice(&data, bincode::config::legacy()).map(|(v, _)| v)
 }
 
 /// A Tx implemented on top of a Link. The Tx manages the link state,
@@ -757,7 +1029,7 @@ pub enum ClientError {
     #[error("io: {0} {1}")]
     Io(ChannelAddr, std::io::Error),
     #[error("send {0}: serialize: {1}")]
-    Serialize(ChannelAddr, bincode::ErrorKind),
+    Serialize(ChannelAddr, bincode::error::EncodeError),
     #[error("invalid address: {0}")]
     InvalidAddress(String),
 }
@@ -792,6 +1064,7 @@ pub(crate) mod unix {
     pub(crate) struct UnixLink {
         pub(super) addr: SocketAddr,
         pub(super) session_id: SessionId,
+        pub(super) stream_id: u8,
     }
 
     #[async_trait]
@@ -827,7 +1100,7 @@ pub(crate) mod unix {
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         let mut stream = UnixStream::from_std(std_stream)
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
-                        write_link_init(&mut stream, session_id)
+                        write_link_init(&mut stream, session_id, self.stream_id)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         return Ok(stream);
@@ -867,10 +1140,11 @@ pub(crate) mod unix {
     }
 
     /// Create a unix link to the given socket address.
-    pub(crate) fn link(addr: SocketAddr) -> UnixLink {
+    pub(crate) fn link(addr: SocketAddr, session_id: SessionId, stream_id: u8) -> UnixLink {
         UnixLink {
             addr,
-            session_id: SessionId::random(),
+            session_id,
+            stream_id,
         }
     }
 
@@ -1083,6 +1357,7 @@ pub(crate) mod tcp {
     pub(crate) struct TcpLink {
         pub(super) addr: SocketAddr,
         pub(super) session_id: SessionId,
+        pub(super) stream_id: u8,
     }
 
     #[async_trait]
@@ -1116,7 +1391,7 @@ pub(crate) mod tcp {
                                 "cannot disable Nagle algorithm".to_string(),
                             )
                         })?;
-                        write_link_init(&mut stream, session_id)
+                        write_link_init(&mut stream, session_id, self.stream_id)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         return Ok(stream);
@@ -1157,10 +1432,11 @@ pub(crate) mod tcp {
     }
 
     /// Create a TCP link to the given socket address.
-    pub(crate) fn link(addr: SocketAddr) -> TcpLink {
+    pub(crate) fn link(addr: SocketAddr, session_id: SessionId, stream_id: u8) -> TcpLink {
         TcpLink {
             addr,
-            session_id: SessionId::random(),
+            session_id,
+            stream_id,
         }
     }
 }
@@ -1274,7 +1550,11 @@ pub(crate) mod meta {
     }
 
     /// Create a MetaTLS link to the given address.
-    pub fn link(addr: TlsAddr) -> Result<tls::TlsLink, ClientError> {
+    pub fn link(
+        addr: TlsAddr,
+        session_id: SessionId,
+        stream_id: u8,
+    ) -> Result<tls::TlsLink, ClientError> {
         let connector = tls_connector().map_err(|e| {
             ClientError::Connect(
                 ChannelAddr::MetaTls(addr.clone()),
@@ -1288,7 +1568,8 @@ pub(crate) mod meta {
             port,
             connector,
             addr_type: tls::TlsAddrType::MetaTls,
-            session_id: SessionId::random(),
+            session_id,
+            stream_id,
         })
     }
 }
@@ -1446,6 +1727,7 @@ pub(crate) mod tls {
         pub(crate) connector: TlsConnector,
         pub(crate) addr_type: TlsAddrType,
         pub(crate) session_id: SessionId,
+        pub(crate) stream_id: u8,
     }
 
     impl std::fmt::Debug for TlsLink {
@@ -1520,7 +1802,7 @@ pub(crate) mod tls {
                                     format!("cannot establish TLS connection to {:?}", server_name),
                                 )
                             })?;
-                        write_link_init(&mut tls_stream, session_id)
+                        write_link_init(&mut tls_stream, session_id, self.stream_id)
                             .await
                             .map_err(|err| ClientError::Io(self.dest(), err))?;
                         return Ok(tls_stream);
@@ -1537,7 +1819,11 @@ pub(crate) mod tls {
     }
 
     /// Create a TLS link to the given address.
-    pub fn link(addr: TlsAddr) -> Result<TlsLink, ClientError> {
+    pub fn link(
+        addr: TlsAddr,
+        session_id: SessionId,
+        stream_id: u8,
+    ) -> Result<TlsLink, ClientError> {
         let connector = tls_connector().map_err(|e| {
             ClientError::Connect(
                 ChannelAddr::Tls(addr.clone()),
@@ -1551,7 +1837,8 @@ pub(crate) mod tls {
             port,
             connector,
             addr_type: TlsAddrType::Tls,
-            session_id: SessionId::random(),
+            session_id,
+            stream_id,
         })
     }
 
@@ -1662,14 +1949,18 @@ u19txmtkiMEH+aNmekk=
             let addr = TlsAddr::new("localhost", 0);
 
             let (local_addr, mut rx) =
-                server::serve::<u64>(ChannelAddr::Tls(addr)).expect("failed to serve");
+                server::serve::<u64>(ChannelAddr::Tls(addr), None).expect("failed to serve");
 
             // Dial the server
             let tx: super::NetTx<u64> = super::spawn(
-                link(match &local_addr {
-                    ChannelAddr::Tls(addr) => addr.clone(),
-                    _ => panic!("unexpected address type"),
-                })
+                link(
+                    match &local_addr {
+                        ChannelAddr::Tls(addr) => addr.clone(),
+                        _ => panic!("unexpected address type"),
+                    },
+                    SessionId::random(),
+                    0,
+                )
                 .expect("failed to create link"),
             );
 
@@ -1697,12 +1988,16 @@ u19txmtkiMEH+aNmekk=
             let addr = TlsAddr::new("localhost", 0);
 
             let (local_addr, mut rx) =
-                server::serve::<String>(ChannelAddr::Tls(addr)).expect("failed to serve");
+                server::serve::<String>(ChannelAddr::Tls(addr), None).expect("failed to serve");
             let tx: super::NetTx<String> = super::spawn(
-                link(match &local_addr {
-                    ChannelAddr::Tls(addr) => addr.clone(),
-                    _ => panic!("unexpected address type"),
-                })
+                link(
+                    match &local_addr {
+                        ChannelAddr::Tls(addr) => addr.clone(),
+                        _ => panic!("unexpected address type"),
+                    },
+                    SessionId::random(),
+                    0,
+                )
                 .expect("failed to create link"),
             );
 
@@ -1951,9 +2246,10 @@ mod tests {
             .as_nanos();
         let unique_address = format!("test_unix_basic_{}", timestamp);
 
-        let (addr, mut rx) = server::serve::<u64>(ChannelAddr::Unix(
-            unix::SocketAddr::from_abstract_name(&unique_address)?,
-        ))
+        let (addr, mut rx) = server::serve::<u64>(
+            ChannelAddr::Unix(unix::SocketAddr::from_abstract_name(&unique_address)?),
+            None,
+        )
         .unwrap();
 
         // It is important to keep Tx alive until all expected messages are
@@ -2016,7 +2312,7 @@ mod tests {
         let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
         tx.post(123);
 
-        let (_, mut rx) = server::serve::<u64>(ChannelAddr::Unix(socket_addr)).unwrap();
+        let (_, mut rx) = server::serve::<u64>(ChannelAddr::Unix(socket_addr), None).unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         tx.post(321);
@@ -2036,7 +2332,7 @@ mod tests {
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_basic() {
         let (addr, mut rx) =
-            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         {
             let tx = channel::dial::<u64>(addr.clone()).unwrap();
             tx.post(123);
@@ -2083,7 +2379,7 @@ mod tests {
         let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, default_size_in_bytes);
 
         let (addr, mut rx) =
-            server::serve::<String>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+            server::serve::<String>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
 
         let tx = channel::dial::<String>(addr.clone()).unwrap();
         // Default size is okay
@@ -2116,7 +2412,7 @@ mod tests {
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(5));
 
         let (addr, mut net_rx) =
-            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         let net_tx = channel::dial::<u64>(addr.clone()).unwrap();
         let (tx, rx) = oneshot::channel();
         net_tx.try_post(1, tx);
@@ -2138,7 +2434,8 @@ mod tests {
             ChannelAddr::MetaTls(meta_addr) => meta_addr,
             _ => panic!("expected MetaTls address"),
         };
-        let (local_addr, mut rx) = server::serve::<u64>(ChannelAddr::MetaTls(meta_addr)).unwrap();
+        let (local_addr, mut rx) =
+            server::serve::<u64>(ChannelAddr::MetaTls(meta_addr), None).unwrap();
         {
             let tx = channel::dial::<u64>(local_addr.clone()).unwrap();
             tx.post(123);
@@ -2401,7 +2698,7 @@ mod tests {
                             let is_sampled = debug_log_sampling_rate.is_some_and(|sample_rate| send_count % sample_rate == 1);
                             if is_sampled {
                                 if is_from_client {
-                                    if let Ok(Frame::Message(_seq, _msg)) = bincode::deserialize::<Frame<M>>(&data) {
+                                    if let Ok((Frame::Message(_seq, _msg), _)) = bincode::serde::decode_from_slice::<Frame<M>, _>(&data, bincode::config::legacy()) {
                                         tracing::debug!("MockLink relays a msg from client. msg type: {}", std::any::type_name::<M>());
                                     }
                                 } else {
@@ -2436,7 +2733,7 @@ mod tests {
             // Write LinkInit on server_relay so it's readable from `server`.
             // This simulates the client sending LinkInit over the wire before
             // the frame-level relay begins.
-            write_link_init(&mut server_relay, session_id)
+            write_link_init(&mut server_relay, session_id, 0)
                 .await
                 .map_err(|err| ClientError::Io(self.dest(), err))?;
 
@@ -2786,7 +3083,7 @@ mod tests {
     ) -> (FrameReader<ReadHalf<DuplexStream>>, WriteHalf<DuplexStream>) {
         let mut receiver = receiver_storage.take().await;
         // Read and discard the LinkInit header that MockLink::connect() writes.
-        let _session_id = read_link_init(&mut receiver).await.expect("read LinkInit");
+        let _link_init = read_link_init(&mut receiver).await.expect("read LinkInit");
         let (r, writer) = tokio::io::split(receiver);
         let reader = FrameReader::new(
             r,
@@ -3357,7 +3654,8 @@ mod tests {
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
 
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
-        let (local_addr, mut rx) = server::serve::<String>(ChannelAddr::Tcp(socket_addr)).unwrap();
+        let (local_addr, mut rx) =
+            server::serve::<String>(ChannelAddr::Tcp(socket_addr), None).unwrap();
 
         // Test with 10 connections (senders), each sends 500K messages, 5M messages in total.
         let total_num_msgs = 500000;
@@ -3465,12 +3763,12 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
         let (addr, mut rx) =
-            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         let socket_addr = match addr {
             ChannelAddr::Tcp(a) => a,
             _ => panic!("unexpected channel type"),
         };
-        let tx: NetTx<u64> = spawn(tcp::link(socket_addr));
+        let tx: NetTx<u64> = spawn(tcp::link(socket_addr, SessionId::random(), 0));
         // NetTx will not establish a connection until it sends the 1st message.
         // Without a live connection, NetTx cannot received the Closed message
         // from NetRx. Therefore, we need to send a message to establish the
