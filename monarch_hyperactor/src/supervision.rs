@@ -6,6 +6,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! Python-facing supervision boundary. `SupervisionError`'s
+//! pyclass shape is unchanged by the mesh-name plumbing in this
+//! diff; any rendered improvement users see in the Python
+//! exception comes from the upstream `Display` chain once mesh
+//! name and Python-class `display_name` are populated by their
+//! producer sites.
+
 use async_trait::async_trait;
 use hyperactor::Instance;
 use hyperactor_mesh::supervision::MeshFailure;

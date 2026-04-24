@@ -21,7 +21,6 @@
 #![allow(unused_assignments)]
 
 pub mod actor_mesh;
-pub mod alloc;
 mod assign;
 pub mod bootstrap;
 pub mod casting;
@@ -130,9 +129,6 @@ pub enum Error {
     HostMeshRefParseError(#[from] HostMeshRefParseError),
 
     #[error(transparent)]
-    AllocatorError(#[from] Box<crate::alloc::AllocatorError>),
-
-    #[error(transparent)]
     ChannelError(#[from] Box<hyperactor::channel::ChannelError>),
 
     #[error(transparent)]
@@ -224,7 +220,9 @@ pub enum Error {
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
     #[error(transparent)]
-    BincodeError(#[from] Box<bincode::Error>),
+    BincodeEncodeError(#[from] Box<bincode::error::EncodeError>),
+    #[error(transparent)]
+    BincodeDecodeError(#[from] Box<bincode::error::DecodeError>),
     #[error(transparent)]
     JsonError(#[from] Box<serde_json::Error>),
     #[error(transparent)]
@@ -233,8 +231,14 @@ pub enum CodecError {
     Utf8Error(#[from] Box<std::str::Utf8Error>),
 }
 
-impl From<bincode::Error> for Error {
-    fn from(e: bincode::Error) -> Self {
+impl From<bincode::error::EncodeError> for Error {
+    fn from(e: bincode::error::EncodeError) -> Self {
+        Error::CodecError(Box::new(e).into())
+    }
+}
+
+impl From<bincode::error::DecodeError> for Error {
+    fn from(e: bincode::error::DecodeError) -> Self {
         Error::CodecError(Box::new(e).into())
     }
 }
@@ -254,12 +258,6 @@ impl From<base64::DecodeError> for Error {
 impl From<std::str::Utf8Error> for Error {
     fn from(e: std::str::Utf8Error) -> Self {
         Error::CodecError(Box::new(e).into())
-    }
-}
-
-impl From<crate::alloc::AllocatorError> for Error {
-    fn from(e: crate::alloc::AllocatorError) -> Self {
-        Error::AllocatorError(Box::new(e))
     }
 }
 
