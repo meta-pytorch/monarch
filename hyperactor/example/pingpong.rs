@@ -281,7 +281,7 @@ async fn run_local_duplex(
 ) -> anyhow::Result<()> {
     println!("Running duplex benchmark (in-process, {transport})...");
 
-    let mut server = duplex::serve::<Message, Message>(ChannelAddr::any(transport))?;
+    let mut server = duplex::serve::<Message, Message>(ChannelAddr::any(transport), None)?;
     let server_addr = server.addr().clone();
 
     // Server task: accept one link, echo back.
@@ -362,7 +362,7 @@ async fn bench_ping_pong_duplex(
     num_iterations: usize,
     message_size: usize,
 ) -> anyhow::Result<Duration> {
-    let mut server = duplex::serve::<Message, Message>(ChannelAddr::any(transport))?;
+    let mut server = duplex::serve::<Message, Message>(ChannelAddr::any(transport), None)?;
     let server_addr = server.addr().clone();
 
     let server_handle = tokio::spawn(async move {
