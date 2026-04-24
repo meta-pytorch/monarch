@@ -293,7 +293,6 @@ impl TcpManagerActor {
 
         for conn in conns.clone() {
             let mem = local_memory.clone();
-            let transfer_id = transfer_id;
             let chunk_index = chunk_index.clone();
             let error_port = error_port.clone();
             let proc = proc.clone();
