@@ -33,7 +33,6 @@ use ndslice::Extent;
 use ndslice::ViewExt as _;
 use ndslice::view;
 use ndslice::view::CollectMeshExt;
-use ndslice::view::MapIntoExt;
 use ndslice::view::Ranked;
 use ndslice::view::Region;
 use serde::Deserialize;
@@ -53,7 +52,6 @@ use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshController;
 use crate::proc_agent;
 use crate::proc_agent::ActorState;
-use crate::proc_agent::MeshAgentMessageClient;
 use crate::proc_agent::ProcAgent;
 use crate::resource;
 use crate::resource::GetRankStatus;
@@ -105,25 +103,6 @@ impl ProcRef {
             proc_id,
             create_rank,
             agent,
-        }
-    }
-
-    /// Pings the proc, returning whether it is alive. This will be replaced by a
-    /// finer-grained lifecycle status in the near future.
-    pub(crate) async fn status(&self, cx: &impl context::Actor) -> crate::Result<bool> {
-        let (port, mut rx) = cx.mailbox().open_port();
-        self.agent
-            .status(cx, port.bind())
-            .await
-            .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e))?;
-        loop {
-            let (rank, status) = rx
-                .recv()
-                .await
-                .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e.into()))?;
-            if rank == self.create_rank {
-                break Ok(status);
-            }
         }
     }
 
@@ -468,15 +447,6 @@ impl ProcMeshRef {
     /// Returns None if this ProcMeshRef is backed by an Alloc instead of a host mesh.
     pub fn hosts(&self) -> Option<&HostMeshRef> {
         self.host_mesh.as_ref()
-    }
-
-    /// The current statuses of procs in this mesh.
-    pub async fn status(&self, cx: &impl context::Actor) -> crate::Result<ValueMesh<bool>> {
-        let vm: ValueMesh<_> = self.map_into(|proc_ref| {
-            let proc_ref = proc_ref.clone();
-            async move { proc_ref.status(cx).await }
-        });
-        vm.join().await.transpose()
     }
 
     pub(crate) fn agent_mesh(&self) -> ActorMeshRef<ProcAgent> {

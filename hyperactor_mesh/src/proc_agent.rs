@@ -15,7 +15,6 @@
 #![allow(unused_assignments)]
 
 use std::collections::HashMap;
-use std::mem::take;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -28,20 +27,13 @@ use hyperactor::ActorHandle;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Data;
-use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
-use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
-use hyperactor::channel;
-use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::BoxedMailboxSender;
-use hyperactor::mailbox::DialMailboxRouter;
-use hyperactor::mailbox::IntoBoxedMailboxSender;
-use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
@@ -132,55 +124,6 @@ fn collect_live_children(
         }
     }
     (children, system_children)
-}
-
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    Handler,
-    HandleClient,
-    RefClient,
-    Named
-)]
-pub(crate) enum MeshAgentMessage {
-    /// Configure the proc in the mesh.
-    Configure {
-        /// The rank of this proc in the mesh.
-        rank: usize,
-        /// The forwarder to send messages to unknown destinations.
-        forwarder: ChannelAddr,
-        /// The supervisor port to which the agent should report supervision events.
-        supervisor: Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>,
-        /// An address book to use for direct dialing.
-        address_book: HashMap<hyperactor_reference::ProcId, ChannelAddr>,
-        /// The agent should write its rank to this port when it successfully
-        /// configured.
-        configured: hyperactor_reference::PortRef<usize>,
-        /// If true, and supervisor is None, record supervision events to be reported
-        record_supervision_events: bool,
-    },
-
-    Status {
-        /// The status of the proc.
-        /// To be replaced with fine-grained lifecycle status,
-        /// and to use aggregation.
-        status: hyperactor_reference::PortRef<(usize, bool)>,
-    },
-
-    /// Spawn an actor on the proc to the provided name.
-    Gspawn {
-        /// registered actor type
-        actor_type: String,
-        /// spawned actor name
-        actor_name: String,
-        /// serialized parameters
-        params_data: Data,
-        /// reply port; the proc should send its rank to indicated a spawned actor
-        status_port: hyperactor_reference::PortRef<GspawnResult>,
-    },
 }
 
 /// Internal configuration state of the mesh agent.
@@ -369,7 +312,6 @@ struct SelfCheck {}
 /// See GC-1 in `global_context` module doc.
 #[hyperactor::export(
     handlers=[
-        MeshAgentMessage,
         ActorSupervisionEvent,
         resource::CreateOrUpdate<ActorSpec> { cast = true },
         resource::Stop { cast = true },
@@ -777,119 +719,6 @@ impl Actor for ProcAgent {
             Ok(())
         } else {
             handle_undeliverable_message(cx, envelope)
-        }
-    }
-}
-
-#[async_trait]
-#[hyperactor::handle(MeshAgentMessage)]
-impl MeshAgentMessageHandler for ProcAgent {
-    async fn configure(
-        &mut self,
-        cx: &Context<Self>,
-        rank: usize,
-        forwarder: ChannelAddr,
-        supervisor: Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>,
-        address_book: HashMap<hyperactor_reference::ProcId, ChannelAddr>,
-        configured: hyperactor_reference::PortRef<usize>,
-        record_supervision_events: bool,
-    ) -> Result<(), anyhow::Error> {
-        anyhow::ensure!(
-            self.state.is_unconfigured_v0(),
-            "mesh agent cannot be (re-)configured"
-        );
-        self.record_supervision_events = record_supervision_events;
-
-        let client = MailboxClient::new(channel::dial(forwarder)?);
-        let router =
-            DialMailboxRouter::new_with_default_direct_addressed_remote_only(client.into_boxed());
-
-        for (proc_id, addr) in address_book {
-            router.bind(proc_id.into(), addr);
-        }
-
-        let sender = take(&mut self.state).into_unconfigured_v0().unwrap();
-        assert!(sender.configure(router.into_boxed()));
-
-        // This is a bit suboptimal: ideally we'd set the supervisor first, to correctly report
-        // any errors that occur during configuration. However, these should anyway be correctly
-        // caught on process exit.
-        self.state = State::ConfiguredV0 {
-            sender,
-            rank,
-            supervisor,
-        };
-        configured.send(cx, rank)?;
-
-        Ok(())
-    }
-
-    async fn gspawn(
-        &mut self,
-        cx: &Context<Self>,
-        actor_type: String,
-        actor_name: String,
-        params_data: Data,
-        status_port: hyperactor_reference::PortRef<GspawnResult>,
-    ) -> Result<(), anyhow::Error> {
-        anyhow::ensure!(
-            self.state.is_configured_v0(),
-            "mesh agent is not v0 configured"
-        );
-        let actor_id = match self
-            .remote
-            .gspawn(
-                &self.proc,
-                &actor_type,
-                &actor_name,
-                params_data,
-                cx.headers().clone(),
-            )
-            .await
-        {
-            Ok(id) => id,
-            Err(err) => {
-                status_port.send(cx, GspawnResult::Error(format!("gspawn failed: {}", err)))?;
-                return Err(anyhow::anyhow!("gspawn failed"));
-            }
-        };
-        status_port.send(
-            cx,
-            GspawnResult::Success {
-                rank: self.state.rank().unwrap(),
-                actor_id,
-            },
-        )?;
-        self.publish_introspect_properties(cx);
-        Ok(())
-    }
-
-    async fn status(
-        &mut self,
-        cx: &Context<Self>,
-        status_port: hyperactor_reference::PortRef<(usize, bool)>,
-    ) -> Result<(), anyhow::Error> {
-        match &self.state {
-            State::ConfiguredV0 { rank, .. } => {
-                // v0 path: configured with a concrete rank
-                status_port.send(cx, (*rank, true))?;
-                Ok(())
-            }
-            State::UnconfiguredV0 { .. } => {
-                // v0 path but not configured yet
-                Err(anyhow::anyhow!(
-                    "status unavailable: v0 agent not configured (waiting for Configure)"
-                ))
-            }
-            State::V1 => {
-                // v1/owned path does not support status (no rank semantics)
-                Err(anyhow::anyhow!(
-                    "status unsupported in v1/owned path (no rank)"
-                ))
-            }
-            State::Invalid => Err(anyhow::anyhow!(
-                "status unavailable: agent in invalid state"
-            )),
         }
     }
 }
