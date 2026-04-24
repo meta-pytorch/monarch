@@ -36,9 +36,20 @@ _SYSTEM_NAME_PATTERNS = re.compile(
     r"(telemetry|setup[-_]|SetupActor|comm[-_]|CommActor|"
     r"logger[-_]|LoggerActor|log_client|MeshAdminAgent|HostAgent|ProcAgent|"
     r"host_agent|proc_agent|mesh_admin|controller_controller|"
-    r"proc_mesh_controller|actor_mesh_controller|client\[)",
+    r"proc_mesh_controller|actor_mesh_controller)",
     re.IGNORECASE,
 )
+
+
+def _is_client_actor(ref: str) -> bool:
+    """The root client actor (client[0]) is the user's entrypoint.
+
+    It is marked ``is_system`` by the admin API and listed in
+    ``system_children``, but it sends all user-visible messages
+    (e.g. accumulate_gradients, get_status) to user actors. Keeping
+    it in the DAG preserves message edge visibility.
+    """
+    return ref.endswith(",client[0]")
 
 
 def _get_admin_url() -> Optional[str]:
@@ -266,8 +277,10 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
             continue
 
         # Filter system actors — both API flag and name heuristic.
+        # The root client actor is exempt: it is the user's entrypoint
+        # and the source of all user-visible messages.
         label = _derive_label(payload)
-        if hide_system:
+        if hide_system and not _is_client_actor(ref):
             if _extract_is_system(props):
                 continue
             if ntype == "actor" and _is_system_by_name(label):
@@ -314,7 +327,11 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
 
         if depth < _MAX_TREE_DEPTH:
             for child_ref in children_refs:
-                if hide_system and child_ref in system_children:
+                if (
+                    hide_system
+                    and child_ref in system_children
+                    and not _is_client_actor(child_ref)
+                ):
                     continue
                 queue.append((child_ref, ref, depth + 1))
 
