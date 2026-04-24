@@ -65,14 +65,15 @@ impl From<PyWorkspaceLocation> for WorkspaceLocation {
 impl PyWorkspaceLocation {
     #[staticmethod]
     fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
-        bincode::deserialize(bytes.as_bytes())
+        bincode::serde::decode_from_slice(bytes.as_bytes(), bincode::config::legacy())
+            .map(|(v, _)| v)
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))
     }
 
     fn __reduce__<'py>(
         slf: &Bound<'py, Self>,
     ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
-        let bytes = bincode::serialize(&*slf.borrow())
+        let bytes = bincode::serde::encode_to_vec(&*slf.borrow(), bincode::config::legacy())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = PyBytes::new(slf.py(), &bytes);
         Ok((slf.as_any().getattr("from_bytes")?, (py_bytes,)))
@@ -179,14 +180,15 @@ impl From<PyCodeSyncMethod> for CodeSyncMethod {
 impl PyCodeSyncMethod {
     #[staticmethod]
     fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
-        bincode::deserialize(bytes.as_bytes())
+        bincode::serde::decode_from_slice(bytes.as_bytes(), bincode::config::legacy())
+            .map(|(v, _)| v)
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))
     }
 
     fn __reduce__<'py>(
         slf: &Bound<'py, Self>,
     ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
-        let bytes = bincode::serialize(&*slf.borrow())
+        let bytes = bincode::serde::encode_to_vec(&*slf.borrow(), bincode::config::legacy())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = PyBytes::new(slf.py(), &bytes);
         Ok((slf.as_any().getattr("from_bytes")?, (py_bytes,)))

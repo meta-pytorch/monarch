@@ -2605,7 +2605,9 @@ impl MailboxRouter {
         w.insert(dest, Arc::new(sender));
     }
 
-    /// Remove the binding for the given reference.
+    /// Remove the binding for the given reference. Only the exact
+    /// point is removed; other bindings under the same prefix are
+    /// unaffected.
     pub fn unbind(&self, dest: &reference::Reference) {
         let mut w = self.entries.write().unwrap();
         w.remove(dest);

@@ -16,28 +16,20 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
-from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    AllocConstraints,
-    AllocSpec,
-)
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PendingMessage,
     pickle as monarch_pickle,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Slice
-from monarch._src.actor.allocator import ProcessAllocator
 from monarch._src.actor.host_mesh import this_host
-from monarch._src.actor.proc_mesh import _get_bootstrap_args
+from monarch._src.job.process import ProcessJob
+from scoped_state import scoped_state
 
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PortProtocol
 
-from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
-    BootstrapCommand,
-    HostMesh,
-)
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiver
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
@@ -250,62 +242,52 @@ async def test_cast_ref() -> None:
 @pytest.mark.oss_skip
 @pytest.mark.timeout(120)
 async def test_host_mesh() -> None:
-    @run_on_tokio
-    async def run() -> None:
-        cmd, args, bootstrap_env = _get_bootstrap_args()
-        allocator = ProcessAllocator(cmd, args, bootstrap_env)
-        spec: AllocSpec = AllocSpec(AllocConstraints(), hosts=2)
-        alloc = allocator.allocate(spec)
+    with scoped_state(ProcessJob({"host_mesh": 2}), cached_path=None) as state:
+        py_host_mesh = state.host_mesh
 
-        host_mesh = await HostMesh.allocate_nonblocking(
-            context().actor_instance._as_rust(),
-            await alloc._hy_alloc,
-            "host_mesh",
-            BootstrapCommand(
-                cmd,
-                None,
-                args if args else [],
-                bootstrap_env,
-            ),
-        ).spawn()
+        @run_on_tokio
+        async def run() -> None:
+            host_mesh = await py_host_mesh._hy_host_mesh
 
-        assert host_mesh.region.labels == ["hosts"]
-        assert host_mesh.region.slice() == Slice(offset=0, sizes=[2], strides=[1])
+            assert host_mesh.region.labels == ["hosts"]
+            assert host_mesh.region.slice() == Slice(offset=0, sizes=[2], strides=[1])
 
-        # Create spawned proc_mesh task
-        async def proc_mesh_task() -> ProcMesh:
-            return await host_mesh.spawn_nonblocking(
-                context().actor_instance._as_rust(),
-                "proc_mesh",
-                Extent(["gpus", "replicas"], [2, 4]),
-            ).spawn()
+            async def proc_mesh_task() -> ProcMesh:
+                return await host_mesh.spawn_nonblocking(
+                    context().actor_instance._as_rust(),
+                    "proc_mesh",
+                    Extent(["gpus", "replicas"], [2, 4]),
+                )
 
-        proc_mesh_shared = PythonTask.from_coroutine(proc_mesh_task()).spawn()
-        actor_mesh = spawn_actor_mesh(proc_mesh_shared)
+            proc_mesh_shared = PythonTask.from_coroutine(proc_mesh_task()).spawn()
+            actor_mesh = spawn_actor_mesh(proc_mesh_shared)
 
-        await verify_cast_to_call(actor_mesh, context().actor_instance, list(range(16)))
-
-        sliced_hm = host_mesh.sliced(
-            Region(
-                labels=["hosts"],
-                slice=Slice(offset=1, sizes=[1], strides=[1]),
-            )
-        )
-
-        assert sliced_hm.region.labels == ["hosts"]
-        assert sliced_hm.region.slice() == Slice(offset=1, sizes=[1], strides=[1])
-
-        # Create spawned sliced_pm task
-        async def sliced_pm_task() -> ProcMesh:
-            return await sliced_hm.spawn_nonblocking(
-                context().actor_instance._as_rust(),
-                "sliced_pm",
-                Extent(["gpus", "replicas"], [2, 3]),
+            await verify_cast_to_call(
+                actor_mesh, context().actor_instance, list(range(16))
             )
 
-        sliced_pm_shared = PythonTask.from_coroutine(sliced_pm_task()).spawn()
-        sliced_am = spawn_actor_mesh(sliced_pm_shared)
+            sliced_hm = host_mesh.sliced(
+                Region(
+                    labels=["hosts"],
+                    slice=Slice(offset=1, sizes=[1], strides=[1]),
+                )
+            )
 
-        await verify_cast_to_call(sliced_am, context().actor_instance, list(range(6)))
+            assert sliced_hm.region.labels == ["hosts"]
+            assert sliced_hm.region.slice() == Slice(offset=1, sizes=[1], strides=[1])
 
-    run()
+            async def sliced_pm_task() -> ProcMesh:
+                return await sliced_hm.spawn_nonblocking(
+                    context().actor_instance._as_rust(),
+                    "sliced_pm",
+                    Extent(["gpus", "replicas"], [2, 3]),
+                )
+
+            sliced_pm_shared = PythonTask.from_coroutine(sliced_pm_task()).spawn()
+            sliced_am = spawn_actor_mesh(sliced_pm_shared)
+
+            await verify_cast_to_call(
+                sliced_am, context().actor_instance, list(range(6))
+            )
+
+        run()

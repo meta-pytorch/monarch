@@ -112,7 +112,8 @@ impl Flattrs {
     /// - Different size: remove old entry and append new one
     pub fn set<T: Serialize>(&mut self, key: Key<T>, value: T) {
         let key_hash = key.key_hash();
-        let serialized = bincode::serialize(&value).expect("serialization failed");
+        let serialized = bincode::serde::encode_to_vec(&value, bincode::config::legacy())
+            .expect("serialization failed");
 
         // If key exists, either overwrite in place or compact + append
         if let Some((offset, old_len)) = self.find_entry_location(key_hash) {
@@ -147,7 +148,9 @@ impl Flattrs {
     pub fn get<T: AttrValue + DeserializeOwned>(&self, key: Key<T>) -> Option<T> {
         let key_hash = key.key_hash();
         let value_bytes = self.find_value(key_hash)?;
-        bincode::deserialize(value_bytes).ok()
+        bincode::serde::decode_from_slice(value_bytes, bincode::config::legacy())
+            .map(|(v, _)| v)
+            .ok()
     }
 
     /// Check if a key exists.
@@ -401,8 +404,12 @@ mod tests {
         attrs.set(TEST_U64, 42u64);
         attrs.set(TEST_STRING, "hello".to_string());
 
-        let serialized = bincode::serialize(&attrs).expect("serialize");
-        let deserialized: Flattrs = bincode::deserialize(&serialized).expect("deserialize");
+        let serialized =
+            bincode::serde::encode_to_vec(&attrs, bincode::config::legacy()).expect("serialize");
+        let deserialized: Flattrs =
+            bincode::serde::decode_from_slice(&serialized, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .expect("deserialize");
 
         assert_eq!(deserialized.get(TEST_U64), Some(42u64));
         assert_eq!(deserialized.get(TEST_STRING), Some("hello".to_string()));
