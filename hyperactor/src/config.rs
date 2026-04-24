@@ -181,15 +181,6 @@ declare_attrs! {
     ))
     pub attr CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 
-    /// Heartbeat interval for remote allocator. We do not rely on this heartbeat
-    /// anymore in v1, and it should be removed after we finishing the v0
-    /// deprecation.
-    @meta(CONFIG = ConfigAttr::new(
-        Some("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL".to_string()),
-        Some("remote_allocator_heartbeat_interval".to_string()),
-    ))
-    pub attr REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_mins(5);
-
     /// How often to check for full MPSC channel on NetRx.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL".to_string()),
@@ -301,10 +292,6 @@ mod tests {
         );
         assert_eq!(config[MESSAGE_ACK_EVERY_N_MESSAGES], 1000);
         assert_eq!(config[SPLIT_MAX_BUFFER_SIZE], 5);
-        assert_eq!(
-            config[REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL],
-            Duration::from_mins(5)
-        );
     }
 
     #[tracing_test::traced_test]
@@ -330,7 +317,6 @@ mod tests {
         let expected_lines: HashSet<&str> = indoc! {"
             # export HYPERACTOR_MESSAGE_LATENCY_SAMPLING_RATE=0.01
             # export HYPERACTOR_CHANNEL_NET_RX_BUFFER_FULL_CHECK_INTERVAL=5s
-            # export HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL=5m
             # export HYPERACTOR_STOP_ACTOR_TIMEOUT=10s
             # export HYPERACTOR_SPLIT_MAX_BUFFER_SIZE=5
             # export HYPERACTOR_MESSAGE_TTL_DEFAULT=64

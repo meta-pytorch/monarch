@@ -58,7 +58,6 @@ if TYPE_CHECKING:
             split_max_buffer_age: NotRequired[str]
             stop_actor_timeout: NotRequired[str]
             cleanup_timeout: NotRequired[str]
-            remote_allocator_heartbeat_interval: NotRequired[str]
             default_encoding: NotRequired[Encoding]
             channel_net_rx_buffer_full_check_interval: NotRequired[str]
             message_latency_sampling_rate: NotRequired[float]
@@ -129,7 +128,6 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
             split_max_buffer_age: Maximum age for split message buffers (humantime).
             stop_actor_timeout: Timeout for stopping actors (humantime).
             cleanup_timeout: Timeout for cleanup operations (humantime).
-            remote_allocator_heartbeat_interval: Heartbeat interval for remote allocator (humantime).
             default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart).
             channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime).
             message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0).
