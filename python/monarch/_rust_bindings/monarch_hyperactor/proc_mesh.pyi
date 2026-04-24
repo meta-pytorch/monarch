@@ -22,7 +22,7 @@ class ProcMesh:
     def spawn_async(
         proc_mesh: Shared["ProcMesh"],
         instance: Instance,
-        name: str,
+        mesh_base_name: str,
         actor: Type["Actor"],
         init_message: PendingMessage,
         emulated: bool,

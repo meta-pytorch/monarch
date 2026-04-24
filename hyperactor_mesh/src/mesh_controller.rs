@@ -48,7 +48,6 @@ use crate::actor_mesh::ActorMeshRef;
 use crate::bootstrap::ProcStatus;
 use crate::casting::CAST_ACTOR_MESH_ID;
 use crate::casting::update_undeliverable_envelope_for_casting;
-use crate::host_mesh::HostMeshRef;
 use crate::proc_agent::ActorState;
 use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
 use crate::proc_mesh::ProcMeshRef;
@@ -1030,41 +1029,6 @@ impl Actor for ProcMeshController {
         } else {
             Ok(())
         }
-    }
-}
-
-#[derive(Debug)]
-#[hyperactor::export]
-pub(crate) struct HostMeshController {
-    mesh: HostMeshRef,
-}
-
-impl HostMeshController {
-    /// Create a new host controller based on the provided reference.
-    pub(crate) fn new(mesh: HostMeshRef) -> Self {
-        Self { mesh }
-    }
-}
-
-#[async_trait]
-impl Actor for HostMeshController {
-    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        this.set_system();
-        Ok(())
-    }
-
-    async fn cleanup(
-        &mut self,
-        this: &Instance<Self>,
-        _err: Option<&ActorError>,
-    ) -> Result<(), anyhow::Error> {
-        // Cannot use "HostMesh::shutdown" as it's only defined on HostMesh, not HostMeshRef.
-        for host in self.mesh.values() {
-            if let Err(e) = host.shutdown(this).await {
-                tracing::warn!(host = %host, error = %e, "host shutdown failed");
-            }
-        }
-        Ok(())
     }
 }
 
