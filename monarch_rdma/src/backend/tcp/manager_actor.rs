@@ -42,7 +42,7 @@ use hyperactor::context;
 use hyperactor::context::Actor as _;
 use hyperactor::reference;
 use hyperactor::reference::OncePortRef;
-use hyperactor_mesh::transport::default_transport;
+use hyperactor_mesh::transport::default_bind_spec;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
@@ -385,7 +385,10 @@ impl Actor for TcpManagerActor {
         let parallelism =
             hyperactor_config::global::get(crate::config::RDMA_TCP_FALLBACK_PARALLELISM);
         if parallelism > 1 {
-            let addr = ChannelAddr::any(default_transport());
+            let addr = match default_bind_spec() {
+                channel::BindSpec::Any(transport) => ChannelAddr::any(transport),
+                channel::BindSpec::Addr(addr) => addr,
+            };
             let (bound_addr, mut rx) = channel::serve::<TcpDataChunk>(addr)?;
             self.channel_addr = Some(bound_addr);
 
