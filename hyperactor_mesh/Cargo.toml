@@ -34,9 +34,7 @@ hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 libc = "0.2.183"
-mockall = "0.13.1"
 ndslice = { version = "0.0.0", path = "../ndslice" }
-nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 opentelemetry = "0.31"
 pin-project = "1.1.11"
 preempt_rwlock = { version = "0.0.0", path = "../preempt_rwlock" }

@@ -21,7 +21,6 @@
 #![allow(unused_assignments)]
 
 pub mod actor_mesh;
-pub mod alloc;
 mod assign;
 pub mod bootstrap;
 pub mod casting;
@@ -128,9 +127,6 @@ pub enum Error {
 
     #[error(transparent)]
     HostMeshRefParseError(#[from] HostMeshRefParseError),
-
-    #[error(transparent)]
-    AllocatorError(#[from] Box<crate::alloc::AllocatorError>),
 
     #[error(transparent)]
     ChannelError(#[from] Box<hyperactor::channel::ChannelError>),
@@ -262,12 +258,6 @@ impl From<base64::DecodeError> for Error {
 impl From<std::str::Utf8Error> for Error {
     fn from(e: std::str::Utf8Error) -> Self {
         Error::CodecError(Box::new(e).into())
-    }
-}
-
-impl From<crate::alloc::AllocatorError> for Error {
-    fn from(e: crate::alloc::AllocatorError) -> Self {
-        Error::AllocatorError(Box::new(e))
     }
 }
 

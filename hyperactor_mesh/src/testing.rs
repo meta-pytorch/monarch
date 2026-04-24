@@ -26,22 +26,15 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
-use ndslice::Extent;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::Bootstrap;
 use crate::HostMeshRef;
-use crate::alloc::Alloc;
-use crate::alloc::AllocSpec;
-use crate::alloc::Allocator;
-use crate::alloc::LocalAllocator;
-use crate::alloc::ProcessAllocator;
 use crate::host_mesh::HostMesh;
 use crate::host_mesh::HostMeshShutdownGuard;
 use crate::supervision::MeshFailure;
-use crate::transport::default_transport;
 
 #[derive(Debug)]
 pub struct TestRootClient {
@@ -135,30 +128,6 @@ pub fn fresh_instance() -> &'static Instance<TestRootClient> {
 pub fn instance() -> &'static Instance<TestRootClient> {
     static INSTANCE: OnceLock<&'static Instance<TestRootClient>> = OnceLock::new();
     INSTANCE.get_or_init(fresh_instance)
-}
-
-/// Return different alloc implementations with the provided extent.
-#[cfg(fbcode_build)]
-pub async fn allocs(extent: Extent) -> Vec<Box<dyn Alloc + Send + Sync>> {
-    let spec = AllocSpec {
-        extent: extent.clone(),
-        constraints: Default::default(),
-        proc_name: None,
-        transport: default_transport(),
-        proc_allocation_mode: Default::default(),
-    };
-
-    vec![
-        Box::new(LocalAllocator.allocate(spec.clone()).await.unwrap()),
-        Box::new(
-            ProcessAllocator::new(Command::new(crate::testresource::get(
-                "monarch/hyperactor_mesh/bootstrap",
-            )))
-            .allocate(spec.clone())
-            .await
-            .unwrap(),
-        ),
-    ]
 }
 
 /// Create a host mesh using multiple processes running on the test machine.
