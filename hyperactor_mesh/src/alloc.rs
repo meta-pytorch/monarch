@@ -17,7 +17,6 @@
 
 pub mod local;
 pub mod process;
-pub mod remoteprocess;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -26,7 +25,6 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::channel::TlsAddr;
 use hyperactor::reference as hyperactor_reference;
 pub use local::LocalAlloc;
 pub use local::LocalAllocator;
@@ -491,24 +489,6 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
         // We collect all the ranks at this point of completion, so that we can
         // avoid holding Rcs across awaits.
         Ok(running.into_iter().map(Option::unwrap).collect())
-    }
-}
-
-/// If addr is Tcp or Metatls, use its IP address or hostname to create
-/// a new addr with port unspecified.
-///
-/// for other types of addr, return "any" address.
-pub(crate) fn with_unspecified_port_or_any(addr: &ChannelAddr) -> ChannelAddr {
-    match addr {
-        ChannelAddr::Tcp(socket) => {
-            let mut new_socket = socket.clone();
-            new_socket.set_port(0);
-            ChannelAddr::Tcp(new_socket)
-        }
-        ChannelAddr::MetaTls(TlsAddr { hostname, .. }) => {
-            ChannelAddr::MetaTls(TlsAddr::new(hostname.clone(), 0))
-        }
-        _ => addr.transport().any(),
     }
 }
 

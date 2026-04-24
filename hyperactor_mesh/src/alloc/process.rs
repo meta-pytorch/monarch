@@ -129,8 +129,8 @@ impl Allocator for ProcessAllocator {
     }
 }
 
-// Client Context is saved in ProcessAlloc, and is also passed in
-// the RemoteProcessAllocator's Allocate method
+// Client Context is saved in ProcessAlloc and plumbed through to child
+// procs so their logs can be correlated with the caller's trace id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientContext {
     /// Trace ID for correlating logs across client and worker processes
