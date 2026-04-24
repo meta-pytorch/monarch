@@ -12,7 +12,6 @@
 
 pub mod actor;
 pub mod actor_mesh;
-pub mod alloc;
 pub mod bootstrap;
 pub mod buffers;
 pub mod channel;
@@ -43,9 +42,6 @@ pub mod telemetry;
 pub mod testing;
 mod testresource;
 pub mod value_mesh;
-
-#[cfg(all(fbcode_build, target_os = "linux"))]
-pub mod meta;
 
 // Register types from dependent crates that don't have wirevalue as a dependency
 wirevalue::register_type!(monarch_types::PickledPyObject);

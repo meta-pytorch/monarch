@@ -7,6 +7,7 @@ Examples
 - :doc:`Interactive SPMD Job </generated/examples/ddp/spmd_job>`: Shows how to use ``serve()`` and ``run_spmd()`` for interactive SPMD training with job caching and debugging
 - :doc:`kubernetes_ddp.py </generated/examples/ddp/kubernetes_ddp>`: Extends the DDP example to run on Kubernetes using MonarchMesh CRD and operator
 - :doc:`grpo_actor.py </generated/examples/grpo_actor>`: Implements a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework
+- :doc:`grpo_yield.py </generated/examples/grpo_yield>`: Same GRPO task as ``grpo_actor.py``, wired with direct port messaging instead of queue actors and ``RDMABuffer``; each actor's ``run`` endpoint is structured like a Python generator that yields values to, and receives values from, the next actor in the ring
 - :doc:`distributed_tensors.py </generated/examples/distributed_tensors>`: Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs
 - :doc:`debugging.py </generated/examples/debugging>`: Shows how to use the Monarch debugger to debug a distributed program
 - :doc:`otel_collector.py </generated/examples/otel_collector>`: Exports Monarch metrics and logs to an OpenTelemetry Collector deployed on Kubernetes, with Grafana for visualization
@@ -22,6 +23,7 @@ Examples
    /generated/examples/ddp/spmd_job
    /generated/examples/ddp/kubernetes_ddp
    /generated/examples/grpo_actor
+   /generated/examples/grpo_yield
    /generated/examples/distributed_tensors
    /generated/examples/debugging
    /generated/examples/otel_collector
