@@ -161,18 +161,9 @@ So this:
 - spawns one proc on it,
 - that proc mesh is stored as `context().actor_instance.proc_mesh`. Later, when you call `this_proc()` (which reads `context().actor_instance.proc`), you're really just getting a slice of that stored `proc_mesh`.
 
-2.  `_this_host_for_fake_in_process_host: _Lazy["HostMesh"] = _Lazy(_init_this_host_for_fake_in_process_host)`
-Defined as:
-```python
-def _init_this_host_for_fake_in_process_host() -> "HostMesh":
-    from monarch._src.actor.host_mesh import create_local_host_mesh
-    return create_local_host_mesh()
-```
+2.  `_this_host_for_fake_in_process_host: _Lazy["HostMesh"] = _Lazy(...)`
 
-This is the lazy "make me a host mesh" step. It just calls `create_local_host_mesh(...)` from the v1 Python bindings.
-
-We get into what that does in detail in **"Python `create_local_host_mesh` and Rust bootstrap"** (§ below), so here we just say:
-this line is what actually spins up the local v1 host mesh using the same Rust path as the canonical bootstrap.
+This is the lazy "make me a host mesh" step. It spins up the local v1 host mesh using the same Rust path as the canonical bootstrap.
 
 3. `_get_controller_controller()[1]`
 And we stash the control-plane actor into `c.actor_instance._controller_controller` so later spawns have somewhere to go. We aren't going to unpack that here.
@@ -193,80 +184,3 @@ works because:
 1. `this_host()` → got a `HostMesh` that Python created during `context()` bootstrap
 2. `spawn_procs(...)` → asks that host mesh (which is powered by the Rust v1 host mesh) to create procs
 3. `mesh.spawn(...)` → now that you have a `ProcMesh`, you can put actors on it
-
-# Python `create_local_host_mesh` and Rust bootstrap
-
-This note shows that calling `create_local_host_mesh(...)` in Python ends up driving the same Rust v1 host/agent/bootstrap path we described for the canonical Rust example.
-
-## 1. Python entry point
-
-```python
-def create_local_host_mesh(
-    extent: Optional[Extent] = None, env: Optional[Dict[str, str]] = None
-) -> "HostMesh":
-    cmd, args, bootstrap_env = _get_bootstrap_args()
-    if env is not None:
-        bootstrap_env.update(env)
-
-    return HostMesh._allocate_nonblocking(
-        "local_host",
-        extent if extent is not None else Extent([], []),
-        ProcessAllocator(cmd, args, bootstrap_env),
-        bootstrap_cmd=_bootstrap_cmd(),
-    )
-```
-
-- `_get_bootstrap_args()` = "what command/env do we use to start a hyperactor proc?"
-- we wrap that in a `ProcessAllocator(...)`
-- we tell the Rust side to `_allocate_nonblocking(...)` a v1 HostMesh using that allocator.
-
-## 2. Hand-off to Rust
-
-The Python classmethod does:
-
-```python
-await HyHostMesh.allocate_nonblocking(
-    context().actor_instance._as_rust(),
-    await alloc._hy_alloc,
-    name,
-    bootstrap_cmd,
-)
-```
-
-It passes the allocation and (optionally) the bootstrap command straight to the Rust v1 `HostMesh::allocate(...)`, via the `PyHostMesh::allocate_nonblocking(...)` binding. That's the same Rust entry point the canonical bootstrap uses — just exposed to Python.
-
-```rust
-#[pymethods]
-impl PyHostMesh {
-    #[classmethod]
-    fn allocate_nonblocking(
-        _cls: &Bound<'_, PyType>,
-        instance: &PyInstance,
-        alloc: &mut PyAlloc,
-        name: String,
-        bootstrap_params: Option<PyBootstrapCommand>,
-    ) -> PyResult<PyPythonTask> {
-        let bootstrap_params =
-            bootstrap_params.map_or_else(|| alloc.bootstrap_command.clone(), |b| Some(b.to_rust()));
-        let alloc = match alloc.take() {
-            Some(alloc) => alloc,
-            None => {
-                return Err(PyException::new_err(
-                    "Alloc object already used".to_string(),
-                ));
-            }
-        };
-        let instance = instance.clone();
-        PyPythonTask::new(async move {
-            let mesh = instance_dispatch!(instance, async move |cx_instance| {
-                HostMesh::allocate(cx_instance, alloc, &name, bootstrap_params).await
-            })
-            .map_err(|err| PyException::new_err(err.to_string()))?;
-            Ok(Self::new_owned(mesh))
-        })
-    }
-}
-```
-(This returns a Python task because all v1 Python bindings wrap Rust async in a small bridge. See Appendix: **Python async bridge (pytokio)**.)
-
-`HostMesh::allocate(...)` is the entry point that stands up the host, creates its system proc, spawns the `HostAgent`, and makes it reachable — it's the same path we used in the Rust canonical example.

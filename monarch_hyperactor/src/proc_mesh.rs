@@ -69,11 +69,11 @@ impl PyProcMesh {
 #[pymethods]
 impl PyProcMesh {
     #[staticmethod]
-    #[pyo3(signature = (proc_mesh, instance, name, actor, init_message, emulated, supervision_display_name = None))]
+    #[pyo3(signature = (proc_mesh, instance, mesh_base_name, actor, init_message, emulated, supervision_display_name = None))]
     fn spawn_async(
         proc_mesh: &mut PyShared,
         instance: &PyInstance,
-        name: String,
+        mesh_base_name: String,
         actor: Py<PyType>,
         init_message: &mut PendingMessage,
         emulated: bool,
@@ -93,16 +93,26 @@ impl PyProcMesh {
                 let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
                 Ok((
                     slf.mesh_ref()?.clone(),
-                    PythonActorParams::new(pickled_type, Some(init_message)),
+                    // Plumb `mesh_base_name` into the actor so the
+                    // direct actor-handled supervision path can
+                    // populate `MeshFailure.actor_mesh_name` without
+                    // a lookup. Kept separate from
+                    // `supervision_display_name` below (rendered
+                    // supervision display string).
+                    PythonActorParams::new(
+                        pickled_type,
+                        Some(init_message),
+                        Some(mesh_base_name.clone()),
+                    ),
                 ))
             })
             .await?;
 
-            let full_name = hyperactor_mesh::Name::new(name).unwrap();
+            let mesh_name = hyperactor_mesh::Name::new(mesh_base_name).unwrap();
             let actor_mesh = proc_mesh
                 .spawn_with_name(
                     instance.deref(),
-                    full_name,
+                    mesh_name,
                     &params,
                     supervision_display_name,
                     false,
@@ -136,7 +146,7 @@ impl PyProcMesh {
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let bytes = bincode::serialize(&self.mesh_ref()?)
+        let bytes = bincode::serde::encode_to_vec(&self.mesh_ref()?, bincode::config::legacy())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
         let from_bytes =
@@ -220,8 +230,10 @@ impl PyProcMeshRefImpl {
 
 #[pyfunction]
 fn py_proc_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PyProcMesh> {
-    let r: PyResult<ProcMeshRef> = bincode::deserialize(bytes.as_bytes())
-        .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()));
+    let r: PyResult<ProcMeshRef> =
+        bincode::serde::decode_from_slice(bytes.as_bytes(), bincode::config::legacy())
+            .map(|(v, _)| v)
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()));
     r.map(PyProcMesh::new_ref)
 }
 

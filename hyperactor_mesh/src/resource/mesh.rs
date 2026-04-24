@@ -137,8 +137,12 @@ mod test {
             statuses: ValueMesh::new(region, vec![Status::Running; num_ranks]).unwrap(),
             state: 0,
         };
-        let encoded = bincode::serialize(&data).expect("serialization failed");
-        let decoded: State<i32> = bincode::deserialize(&encoded).expect("deserialization failed");
+        let encoded = bincode::serde::encode_to_vec(&data, bincode::config::legacy())
+            .expect("serialization failed");
+        let decoded: State<i32> =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .expect("deserialization failed");
         assert_eq!(decoded.state, data.state);
         assert_eq!(decoded.statuses, data.statuses);
     }

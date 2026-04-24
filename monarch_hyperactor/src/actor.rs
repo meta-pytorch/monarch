@@ -545,6 +545,15 @@ pub struct PythonActor {
     spawn_point: OnceLock<Option<Point>>,
     /// Initial message to process during PythonActor::init.
     init_message: Option<PythonMessage>,
+    /// User-provided mesh base-name string plumbed from
+    /// `PythonActorParams`. This is the base name the caller
+    /// supplied when the mesh was spawned, narrowly used to populate
+    /// `MeshFailure.actor_mesh_name` on the direct actor-handled
+    /// supervision path without a lookup. It is not actor display
+    /// text (`display_name` handles that) and it is not a general
+    /// side channel; downstream code must not consume this field for
+    /// any other purpose.
+    mesh_base_name: Option<String>,
 }
 
 impl PythonActor {
@@ -552,6 +561,7 @@ impl PythonActor {
         actor_type: PickledPyObject,
         init_message: Option<PythonMessage>,
         spawn_point: Option<Point>,
+        mesh_base_name: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         let use_queue_dispatch = hyperactor_config::global::get(ACTOR_QUEUE_DISPATCH);
 
@@ -585,6 +595,7 @@ impl PythonActor {
                     dispatch_mode,
                     spawn_point: OnceLock::from(spawn_point),
                     init_message,
+                    mesh_base_name,
                 })
             },
         )?)
@@ -648,6 +659,7 @@ impl PythonActor {
             actor_type,
             Some(init_message),
             Some(extent!().point_of_rank(0).unwrap()),
+            None, // root client actor has no user-facing mesh name
         )
         .expect("create client PythonActor");
 
@@ -1070,7 +1082,10 @@ impl Actor for PythonActor {
         self.handle(
             &cx,
             MeshFailure {
-                actor_mesh_name: None,
+                // Populate the mesh name from the base-name string
+                // plumbed through PythonActorParams at spawn time —
+                // no lookup.
+                actor_mesh_name: self.mesh_base_name.clone(),
                 event: event.clone(),
                 crashed_ranks: vec![],
             },
@@ -1086,13 +1101,29 @@ pub struct PythonActorParams {
     actor_type: PickledPyObject,
     // Python message to process as part of the actor initialization.
     init_message: Option<PythonMessage>,
+    // User-provided mesh base-name string under which this actor
+    // was spawned. The base name the caller passed when the mesh
+    // was spawned, plumbed through `PythonActor` narrowly to
+    // populate `MeshFailure.actor_mesh_name` on the direct
+    // actor-handled supervision path without a lookup. It is not
+    // actor display text (`display_name` handles that) and it is
+    // not a general side channel; downstream code must not consume
+    // this field for any other purpose. Kept separate from
+    // `supervision_display_name`, which is a rendered supervision
+    // display string passed through `spawn_with_name(...)`.
+    mesh_base_name: Option<String>,
 }
 
 impl PythonActorParams {
-    pub(crate) fn new(actor_type: PickledPyObject, init_message: Option<PythonMessage>) -> Self {
+    pub(crate) fn new(
+        actor_type: PickledPyObject,
+        init_message: Option<PythonMessage>,
+        mesh_base_name: Option<String>,
+    ) -> Self {
         Self {
             actor_type,
             init_message,
+            mesh_base_name,
         }
     }
 }
@@ -1105,11 +1136,12 @@ impl RemoteSpawn for PythonActor {
         PythonActorParams {
             actor_type,
             init_message,
+            mesh_base_name,
         }: PythonActorParams,
         environment: Flattrs,
     ) -> Result<Self, anyhow::Error> {
         let spawn_point = environment.get(CAST_POINT);
-        Self::new(actor_type, init_message, spawn_point)
+        Self::new(actor_type, init_message, spawn_point, mesh_base_name)
     }
 }
 
@@ -1322,7 +1354,12 @@ impl Handler<MeshFailure> for PythonActor {
         // TODO: Consider routing supervision messages through the queue for Queue mode.
         // For now, supervision is always handled directly since it requires immediate response.
 
-        monarch_with_gil(|py| {
+        // `_Actor.__supervise__` is `async def`, so calling it returns a
+        // coroutine, which we schedule on the actor's asyncio event loop --
+        // the same loop that runs endpoint coroutines. A sync user
+        // `__supervise__` is dispatched under `fake_sync_state` inside
+        // `_Actor.__supervise__`, mirroring `__cleanup__`.
+        let (display_name, fut) = monarch_with_gil(|py| {
             let inst = self.instance.get_or_insert_with(|| {
                 let inst: crate::context::PyInstance = cx.into();
                 inst.into_pyobject(py).unwrap().into()
@@ -1338,96 +1375,55 @@ impl Handler<MeshFailure> for PythonActor {
                     actor_bound
                 ));
             }
-            let result = actor_bound.call_method(
+            let awaitable = actor_bound.call_method(
                 "__supervise__",
                 (
                     crate::context::PyContext::new(cx, inst.clone_ref(py)),
                     PyMeshFailure::from(message.clone()),
                 ),
                 None,
-            );
-            match result {
-                Ok(s) => {
-                    if s.is_truthy()? {
-                        // If the return value is truthy, then the exception was handled
-                        // and doesn't need to be propagated.
-                        // TODO: We also don't want to deliver multiple supervision
-                        // events from the same mesh if an earlier one is handled.
-                        tracing::info!(
-                            name = "ActorMeshStatus",
-                            status = "SupervisionError::Handled",
-                            // only care about the event sender when the message is handled
-                            actor_name = message.actor_mesh_name,
-                            event = %message.event,
-                            "__supervise__ on {} handled a supervision event, not reporting any further",
-                            cx.self_id(),
-                        );
-                        Ok(())
-                    } else {
-                        // For a falsey return value, we propagate the supervision event
-                        // to the next owning actor. We do this by returning a new
-                        // error. This will not set the causal chain for ActorSupervisionEvent,
-                        // so make sure to include the original event in the error message
-                        // to provide context.
+            )?;
+            let fut =
+                pyo3_async_runtimes::into_future_with_locals(self.get_task_locals(py), awaitable)?;
+            anyhow::Ok((display_name, fut))
+        })
+        .await?;
 
-                        // False -- we propagate the event onward, but update it with the fact that
-                        // this actor is now the event creator.
-                        for (actor_name, status) in [
-                            (
-                                message
-                                    .actor_mesh_name
-                                    .as_deref()
-                                    .unwrap_or_else(|| message.event.actor_id.name()),
-                                "SupervisionError::Unhandled",
-                            ),
-                            (cx.self_id().name(), "UnhandledSupervisionEvent"),
-                        ] {
-                            tracing::info!(
-                                name = "ActorMeshStatus",
-                                status,
-                                actor_name,
-                                event = %message.event,
-                                "__supervise__ on {} did not handle a supervision event, reporting to the next next owner",
-                                cx.self_id(),
-                            );
-                        }
-                        let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
-                            ActorSupervisionEvent::new(
-                                cx.self_id().clone(),
-                                display_name.clone(),
-                                ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(
-                                    Box::new(message.event.clone()),
-                                )),
-                                None,
-                            ),
-                        ));
-                        Err(anyhow::Error::new(err))
-                    }
-                }
-                Err(err) => {
-                    // If __supervise__ raised UnhandledFaultHookException,
-                    // return the PyErr directly without wrapping in
-                    // ActorErrorKind. The custom run loop detects this by
-                    // downcasting the anyhow::Error to PyErr.
-                    if err.is_instance(
-                        py,
-                        &unhandled_fault_hook_exception(py),
-                    ) {
-                        return Err(err.into());
-                    }
+        let awaited = fut.await;
 
-                    // Any other exception will supersede in the propagation chain,
-                    // and will become its own supervision failure.
-                    // Include the event it was handling in the error message.
+        monarch_with_gil(|py| match awaited {
+            Ok(s) => {
+                if s.bind(py).is_truthy()? {
+                    // If the return value is truthy, then the exception was handled
+                    // and doesn't need to be propagated.
+                    // TODO: We also don't want to deliver multiple supervision
+                    // events from the same mesh if an earlier one is handled.
+                    tracing::info!(
+                        name = "ActorMeshStatus",
+                        status = "SupervisionError::Handled",
+                        // only care about the event sender when the message is handled
+                        actor_name = message.actor_mesh_name,
+                        event = %message.event,
+                        "__supervise__ on {} handled a supervision event, not reporting any further",
+                        cx.self_id(),
+                    );
+                    Ok(())
+                } else {
+                    // For a falsey return value, we propagate the supervision event
+                    // to the next owning actor. We do this by returning a new
+                    // error. This will not set the causal chain for ActorSupervisionEvent,
+                    // so make sure to include the original event in the error message
+                    // to provide context.
 
-                    // Add to caused_by chain.
+                    // False -- we propagate the event onward, but update it with the fact that
+                    // this actor is now the event creator.
                     for (actor_name, status) in [
                         (
                             message
                                 .actor_mesh_name
                                 .as_deref()
                                 .unwrap_or_else(|| message.event.actor_id.name()),
-                            "SupervisionError::__supervise__::exception",
+                            "SupervisionError::Unhandled",
                         ),
                         (cx.self_id().name(), "UnhandledSupervisionEvent"),
                     ] {
@@ -1436,16 +1432,15 @@ impl Handler<MeshFailure> for PythonActor {
                             status,
                             actor_name,
                             event = %message.event,
-                            "__supervise__ on {} threw an exception",
+                            "__supervise__ on {} did not handle a supervision event, reporting to the next next owner",
                             cx.self_id(),
                         );
                     }
                     let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
                         ActorSupervisionEvent::new(
                             cx.self_id().clone(),
-                            display_name,
-                            ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(
-                                err.to_string(),
+                            display_name.clone(),
+                            ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(
                                 Box::new(message.event.clone()),
                             )),
                             None,
@@ -1453,6 +1448,52 @@ impl Handler<MeshFailure> for PythonActor {
                     ));
                     Err(anyhow::Error::new(err))
                 }
+            }
+            Err(err) => {
+                // If __supervise__ raised UnhandledFaultHookException,
+                // return the PyErr directly without wrapping in
+                // ActorErrorKind. The custom run loop detects this by
+                // downcasting the anyhow::Error to PyErr.
+                if err.is_instance(py, &unhandled_fault_hook_exception(py)) {
+                    return Err(err.into());
+                }
+
+                // Any other exception will supersede in the propagation chain,
+                // and will become its own supervision failure.
+                // Include the event it was handling in the error message.
+
+                // Add to caused_by chain.
+                for (actor_name, status) in [
+                    (
+                        message
+                            .actor_mesh_name
+                            .as_deref()
+                            .unwrap_or_else(|| message.event.actor_id.name()),
+                        "SupervisionError::__supervise__::exception",
+                    ),
+                    (cx.self_id().name(), "UnhandledSupervisionEvent"),
+                ] {
+                    tracing::info!(
+                        name = "ActorMeshStatus",
+                        status,
+                        actor_name,
+                        event = %message.event,
+                        "__supervise__ on {} threw an exception",
+                        cx.self_id(),
+                    );
+                }
+                let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
+                    ActorSupervisionEvent::new(
+                        cx.self_id().clone(),
+                        display_name,
+                        ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(
+                            err.to_string(),
+                            Box::new(message.event.clone()),
+                        )),
+                        None,
+                    ),
+                ));
+                Err(anyhow::Error::new(err))
             }
         })
         .await

@@ -608,7 +608,10 @@ typedef struct {
   PyObject_HEAD GradientGenerator* obj;
 } PyGradientGenerator;
 
-static int convertNode(PyObject* obj, std::shared_ptr<Node>* node) {
+// shared_ptr<Node> in older PyTorch, intrusive_ptr<Node> in newer PyTorch
+using node_ptr_t = decltype(std::declval<THPCppFunction>().cdata);
+
+static int convertNode(PyObject* obj, node_ptr_t* node) {
   if (THPFunction_Check(obj)) {
     *node = ((THPFunction*)obj)->cdata.lock();
     return 1;
@@ -621,7 +624,7 @@ static int convertNode(PyObject* obj, std::shared_ptr<Node>* node) {
 }
 
 std::optional<Edge> parseEdge(PyObject* obj) {
-  std::shared_ptr<Node> node;
+  node_ptr_t node;
   int input_nr;
   if (THPVariable_Check(obj)) {
     auto tensor = THPVariable_Unpack(obj);

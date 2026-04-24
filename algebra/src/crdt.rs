@@ -226,8 +226,11 @@ mod tests {
     #[test]
     fn lww_serde_roundtrip() {
         let v = LWW::new(42, 12345, 99);
-        let encoded = bincode::serialize(&v).unwrap();
-        let decoded: LWW<i32> = bincode::deserialize(&encoded).unwrap();
+        let encoded = bincode::serde::encode_to_vec(v, bincode::config::legacy()).unwrap();
+        let decoded: LWW<i32> =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
         assert_eq!(decoded, v);
     }
 }
