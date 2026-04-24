@@ -1641,16 +1641,20 @@ mod tests {
         let proc_b = crate::Name::new("proc_b").unwrap();
 
         // Create proc_a belonging to mesh_a.
-        let mut spec_a = ProcSpec::default();
-        spec_a.host_mesh_name = Some(mesh_a.clone());
+        let spec_a = ProcSpec {
+            host_mesh_name: Some(mesh_a.clone()),
+            ..Default::default()
+        };
         host_agent
             .create_or_update(&client, proc_a.clone(), resource::Rank::new(0), spec_a)
             .await
             .unwrap();
 
         // Create proc_b belonging to mesh_b.
-        let mut spec_b = ProcSpec::default();
-        spec_b.host_mesh_name = Some(mesh_b.clone());
+        let spec_b = ProcSpec {
+            host_mesh_name: Some(mesh_b.clone()),
+            ..Default::default()
+        };
         host_agent
             .create_or_update(&client, proc_b.clone(), resource::Rank::new(1), spec_b)
             .await
@@ -1728,15 +1732,19 @@ mod tests {
         let proc_a = crate::Name::new("proc_a").unwrap();
         let proc_b = crate::Name::new("proc_b").unwrap();
 
-        let mut spec_a = ProcSpec::default();
-        spec_a.host_mesh_name = Some(mesh_a);
+        let spec_a = ProcSpec {
+            host_mesh_name: Some(mesh_a),
+            ..Default::default()
+        };
         host_agent
             .create_or_update(&client, proc_a.clone(), resource::Rank::new(0), spec_a)
             .await
             .unwrap();
 
-        let mut spec_b = ProcSpec::default();
-        spec_b.host_mesh_name = Some(mesh_b);
+        let spec_b = ProcSpec {
+            host_mesh_name: Some(mesh_b),
+            ..Default::default()
+        };
         host_agent
             .create_or_update(&client, proc_b.clone(), resource::Rank::new(1), spec_b)
             .await
