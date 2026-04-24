@@ -169,8 +169,9 @@ impl<M: RemoteMessage> std::fmt::Debug for DuplexTx<M> {
 /// Start a duplex server on the given address.
 pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
     addr: ChannelAddr,
+    listener: Option<std::net::TcpListener>,
 ) -> Result<DuplexServer<In, Out>, ServerError> {
-    let (mut listener, channel_addr) = super::listen(addr)?;
+    let (mut listener, channel_addr) = super::listen_with_prebound(addr, listener)?;
 
     let (accept_tx, accept_rx) = mpsc::channel(16);
     let cancel_token = CancellationToken::new();
@@ -190,16 +191,16 @@ pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
                     _ => meta::tls_acceptor(true)?,
                 };
                 let mut tls_stream = tls_acceptor.accept(stream).await?;
-                let session_id = read_link_init(&mut tls_stream)
+                let link_init = read_link_init(&mut tls_stream)
                     .await
                     .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                Ok((session_id, Box::new(tls_stream) as Box<dyn Stream>))
+                Ok((link_init, Box::new(tls_stream) as Box<dyn Stream>))
             } else {
                 let mut stream = stream;
-                let session_id = read_link_init(&mut stream)
+                let link_init = read_link_init(&mut stream)
                     .await
                     .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                Ok((session_id, stream))
+                Ok((link_init, stream))
             }
         }
     };
@@ -212,14 +213,19 @@ pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
         let accept_tx = accept_tx.clone();
         let child_cancel = child_cancel.clone();
         let dest = dispatch_dest;
-        move |session_id: SessionId, stream: Box<dyn Stream>| {
+        move |link_init: super::LinkInit, stream: Box<dyn Stream>| {
             let sessions = Arc::clone(&sessions);
             let accept_tx = accept_tx.clone();
             let cancel = child_cancel.child_token();
             let dest = dest.clone();
             async move {
                 dispatch_duplex_stream::<In, Out>(
-                    session_id, stream, &sessions, dest, &accept_tx, cancel,
+                    link_init.session_id,
+                    stream,
+                    &sessions,
+                    dest,
+                    &accept_tx,
+                    cancel,
                 )
                 .await;
             }
@@ -541,7 +547,7 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
 pub fn dial<Out: RemoteMessage, In: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<(DuplexTx<Out>, DuplexRx<In>), ClientError> {
-    Ok(spawn(super::link(addr)?))
+    Ok(spawn(super::link(addr, super::SessionId::random(), 0)?))
 }
 
 #[cfg(test)]
@@ -556,7 +562,7 @@ mod tests {
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_duplex_basic() {
         let mut server =
-            serve::<u64, String>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+            serve::<u64, String>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         let server_addr = server.addr().clone();
 
         // Client: sends u64, receives String.
@@ -588,7 +594,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_duplex_multiple_links() {
-        let mut server = serve::<u64, u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+        let mut server =
+            serve::<u64, u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         let server_addr = server.addr().clone();
 
         // Two independent clients.
@@ -617,7 +624,7 @@ mod tests {
         addr: ChannelAddr,
         iterations: usize,
     ) -> anyhow::Result<std::time::Duration> {
-        let mut server = serve::<u64, u64>(addr)?;
+        let mut server = serve::<u64, u64>(addr, None)?;
         let server_addr = server.addr().clone();
 
         let server_handle = tokio::spawn(async move {

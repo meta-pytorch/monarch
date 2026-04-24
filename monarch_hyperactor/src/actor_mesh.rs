@@ -613,7 +613,8 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let bytes = bincode::serialize(self).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let bytes = bincode::serde::encode_to_vec(self, bincode::config::legacy())
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
         let module = py
             .import("monarch._rust_bindings.monarch_hyperactor.actor_mesh")
@@ -646,7 +647,9 @@ impl PythonActorMeshImpl {
 #[pyfunction]
 fn py_actor_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PythonActorMesh> {
     let r: PyResult<ActorMeshRef<PythonActor>> =
-        bincode::deserialize(bytes.as_bytes()).map_err(|e| PyValueError::new_err(e.to_string()));
+        bincode::serde::decode_from_slice(bytes.as_bytes(), bincode::config::legacy())
+            .map(|(v, _)| v)
+            .map_err(|e| PyValueError::new_err(e.to_string()));
     r.map(|r| AsyncActorMesh::from_impl(Arc::new(PythonActorMeshImpl::new_ref(r))))
         .map(|r| PythonActorMesh::from_impl(Arc::from(r)))
 }
@@ -757,10 +760,7 @@ mod tests {
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::proc::WorkCell;
     use hyperactor::supervision::ActorSupervisionEvent;
-    use hyperactor_mesh::ProcMesh;
-    use hyperactor_mesh::alloc::AllocSpec;
-    use hyperactor_mesh::alloc::Allocator;
-    use hyperactor_mesh::alloc::LocalAllocator;
+    use hyperactor_mesh::host_mesh::HostMesh;
     use hyperactor_mesh::mesh_controller::GetSubscriberCount;
     use hyperactor_mesh::supervision::MeshFailure;
     use monarch_types::PickledPyObject;
@@ -855,24 +855,11 @@ mod tests {
 
         let instance = test_instance();
 
-        let proc_mesh = ProcMesh::allocate(
-            instance,
-            Box::new(
-                LocalAllocator
-                    .allocate(AllocSpec {
-                        extent: extent!(replicas = 2),
-                        constraints: Default::default(),
-                        proc_name: None,
-                        transport: ChannelTransport::Local,
-                        proc_allocation_mode: Default::default(),
-                    })
-                    .await
-                    .unwrap(),
-            ),
-            "test",
-        )
-        .await
-        .unwrap();
+        let mut host_mesh = HostMesh::local_in_process().await.unwrap();
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", extent!(replicas = 2), None)
+            .await
+            .unwrap();
 
         // Create a minimal Python class and pickle it so we can spawn
         // PythonActor instances (mirroring PyProcMesh::spawn_async).
@@ -893,7 +880,7 @@ mod tests {
             .spawn::<PythonActor, _>(
                 instance,
                 "test_actors",
-                &PythonActorParams::new(pickled_type, None),
+                &PythonActorParams::new(pickled_type, None, None),
             )
             .await
             .unwrap();
@@ -981,5 +968,7 @@ mod tests {
             final_count, 1,
             "subscriber count should still be 1 after repeated calls"
         );
+
+        let _ = host_mesh.shutdown(instance).await;
     }
 }

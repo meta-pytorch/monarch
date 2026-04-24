@@ -295,7 +295,8 @@ impl Handler<SetConfigAttrs> for TestActor {
         _cx: &Context<Self>,
         SetConfigAttrs(attrs): SetConfigAttrs,
     ) -> Result<(), anyhow::Error> {
-        let attrs = bincode::deserialize(&attrs)?;
+        let attrs =
+            bincode::serde::decode_from_slice(&attrs, bincode::config::legacy()).map(|(v, _)| v)?;
         hyperactor_config::global::set(Source::Runtime, attrs);
         Ok(())
     }
@@ -311,7 +312,10 @@ impl Handler<GetConfigAttrs> for TestActor {
         cx: &Context<Self>,
         GetConfigAttrs(reply): GetConfigAttrs,
     ) -> Result<(), anyhow::Error> {
-        let attrs = bincode::serialize(&hyperactor_config::global::attrs())?;
+        let attrs = bincode::serde::encode_to_vec(
+            hyperactor_config::global::attrs(),
+            bincode::config::legacy(),
+        )?;
         reply.send(cx, attrs)?;
         Ok(())
     }

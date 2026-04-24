@@ -768,28 +768,40 @@ mod tests {
     #[test]
     fn max_serde_roundtrip() {
         let original = Max(42i64);
-        let encoded = bincode::serialize(&original).unwrap();
-        let decoded: Max<i64> = bincode::deserialize(&encoded).unwrap();
+        let encoded = bincode::serde::encode_to_vec(original, bincode::config::legacy()).unwrap();
+        let decoded: Max<i64> =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
         assert_eq!(original, decoded);
 
         // Also test with bottom value
         let bottom = Max::<i64>::bottom();
-        let encoded = bincode::serialize(&bottom).unwrap();
-        let decoded: Max<i64> = bincode::deserialize(&encoded).unwrap();
+        let encoded = bincode::serde::encode_to_vec(bottom, bincode::config::legacy()).unwrap();
+        let decoded: Max<i64> =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
         assert_eq!(bottom, decoded);
     }
 
     #[test]
     fn min_serde_roundtrip() {
         let original = Min(42i64);
-        let encoded = bincode::serialize(&original).unwrap();
-        let decoded: Min<i64> = bincode::deserialize(&encoded).unwrap();
+        let encoded = bincode::serde::encode_to_vec(original, bincode::config::legacy()).unwrap();
+        let decoded: Min<i64> =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
         assert_eq!(original, decoded);
 
         // Also test with bottom value
         let bottom = Min::<i64>::bottom();
-        let encoded = bincode::serialize(&bottom).unwrap();
-        let decoded: Min<i64> = bincode::deserialize(&encoded).unwrap();
+        let encoded = bincode::serde::encode_to_vec(bottom, bincode::config::legacy()).unwrap();
+        let decoded: Min<i64> =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
         assert_eq!(bottom, decoded);
     }
 
@@ -797,15 +809,21 @@ mod tests {
     fn any_serde_roundtrip() {
         for value in [true, false] {
             let original = Any(value);
-            let encoded = bincode::serialize(&original).unwrap();
-            let decoded: Any = bincode::deserialize(&encoded).unwrap();
+            let encoded =
+                bincode::serde::encode_to_vec(original, bincode::config::legacy()).unwrap();
+            let decoded: Any =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                    .map(|(v, _)| v)
+                    .unwrap();
             assert_eq!(original, decoded);
         }
 
         // Also test bottom
         let bottom = Any::bottom();
-        let encoded = bincode::serialize(&bottom).unwrap();
-        let decoded: Any = bincode::deserialize(&encoded).unwrap();
+        let encoded = bincode::serde::encode_to_vec(bottom, bincode::config::legacy()).unwrap();
+        let decoded: Any = bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+            .map(|(v, _)| v)
+            .unwrap();
         assert_eq!(bottom, decoded);
     }
 
@@ -813,15 +831,21 @@ mod tests {
     fn all_serde_roundtrip() {
         for value in [true, false] {
             let original = All(value);
-            let encoded = bincode::serialize(&original).unwrap();
-            let decoded: All = bincode::deserialize(&encoded).unwrap();
+            let encoded =
+                bincode::serde::encode_to_vec(original, bincode::config::legacy()).unwrap();
+            let decoded: All =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                    .map(|(v, _)| v)
+                    .unwrap();
             assert_eq!(original, decoded);
         }
 
         // Also test bottom
         let bottom = All::bottom();
-        let encoded = bincode::serialize(&bottom).unwrap();
-        let decoded: All = bincode::deserialize(&encoded).unwrap();
+        let encoded = bincode::serde::encode_to_vec(bottom, bincode::config::legacy()).unwrap();
+        let decoded: All = bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+            .map(|(v, _)| v)
+            .unwrap();
         assert_eq!(bottom, decoded);
     }
 
@@ -932,8 +956,11 @@ mod tests {
         original.insert(1, Min(10));
         original.insert(2, Min(20));
 
-        let encoded = bincode::serialize(&original).unwrap();
-        let decoded: LatticeMap<u32, Min<i64>> = bincode::deserialize(&encoded).unwrap();
+        let encoded = bincode::serde::encode_to_vec(&original, bincode::config::legacy()).unwrap();
+        let decoded: LatticeMap<u32, Min<i64>> =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
 
         assert_eq!(original, decoded);
     }
