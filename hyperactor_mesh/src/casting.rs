@@ -42,8 +42,8 @@ use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::Uslice;
 use crate::config::MAX_CAST_DIMENSION_SIZE;
+use crate::mesh_id::ActorMeshId;
 use crate::metrics;
-use crate::reference::ActorMeshId;
 
 declare_attrs! {
     /// Which mesh this message was cast to. Used for undeliverable message
