@@ -1257,7 +1257,7 @@ mod tests {
         use hyperactor::channel::ChannelAddr;
         use hyperactor::reference::ProcId;
         NodeRef::Actor(
-            ProcId::with_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name, pid),
+            ProcId::from_resource_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name, pid),
         )
     }
 
@@ -1657,7 +1657,7 @@ mod tests {
         let compiled = jsonschema::JSONSchema::compile(&schema_value).expect("schema must compile");
 
         let epoch = std::time::UNIX_EPOCH;
-        let proc_id = ProcId::with_name(ChannelAddr::Local(0), "worker");
+        let proc_id = ProcId::from_resource_name(ChannelAddr::Local(0), "worker");
         let actor_id = proc_id.actor_id("actor", 0);
 
         let samples = [

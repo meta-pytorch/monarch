@@ -119,12 +119,12 @@ impl HostRef {
 
     /// The ProcId for the proc with name `name` on this host.
     fn named_proc(&self, id: &ResourceId) -> hyperactor_reference::ProcId {
-        hyperactor_reference::ProcId::with_name(self.0.clone(), id.to_string())
+        hyperactor_reference::ProcId::from_resource_name(self.0.clone(), id.to_string())
     }
 
     /// The service proc on this host.
     fn service_proc(&self) -> hyperactor_reference::ProcId {
-        hyperactor_reference::ProcId::with_name(self.0.clone(), SERVICE_PROC_NAME)
+        hyperactor_reference::ProcId::from_resource_name(self.0.clone(), SERVICE_PROC_NAME)
     }
 
     /// Request an orderly teardown of this host and all procs it
@@ -1306,11 +1306,11 @@ impl HostMeshRef {
             },
         );
         for proc_id in procs.into_iter() {
-            let (addr, proc_name) = (proc_id.addr().clone(), proc_id.name().to_string());
+            let addr = proc_id.addr().clone();
             // The name stored in HostAgent is not the same as the
             // one stored in the ProcMesh. We instead take each proc id
             // and map it to that particular agent.
-            let proc_resource_id: ResourceId = proc_name.parse()?;
+            let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
             proc_names.push(proc_resource_id.clone());
 
             // Note that we don't send 1 message per host agent, we send 1 message
@@ -1414,12 +1414,12 @@ impl HostMeshRef {
         let mut proc_names = Vec::new();
         for proc_id in procs.iter() {
             num_ranks += 1;
-            let (addr, proc_name) = (proc_id.addr().clone(), proc_id.name().to_string());
+            let addr = proc_id.addr().clone();
 
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
             let host = HostRef(addr);
-            let proc_resource_id: ResourceId = proc_name.parse()?;
+            let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
             proc_names.push(proc_resource_id.clone());
             let mut reply = tx.bind();
             // If this proc dies or some other issue renders the reply undeliverable,
