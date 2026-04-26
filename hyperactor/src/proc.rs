@@ -462,7 +462,7 @@ impl Proc {
     /// Create a new direct-addressed proc.
     pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
-        let proc_id = reference::ProcId::with_name(addr, name);
+        let proc_id = reference::ProcId::from_resource_name(addr, name);
         let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
         let handle = proc.clone().serve(rx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);

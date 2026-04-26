@@ -465,9 +465,12 @@ impl Bootstrap {
                     eprintln!("(bootstrap) PDEATHSIG disabled via config");
                 }
 
-                let (local_addr, name) = (proc_id.addr().clone(), proc_id.name());
+                let local_addr = proc_id.addr().clone();
                 // TODO provide a direct way to construct these
-                let serve_addr = format!("unix:{}", socket_dir_path.join(name).display());
+                let serve_addr = format!(
+                    "unix:{}",
+                    socket_dir_path.join(proc_id.id().to_string()).display()
+                );
                 let serve_addr = serve_addr.parse().unwrap();
 
                 // The following is a modified host::spawn_proc to support direct
@@ -2656,7 +2659,7 @@ mod tests {
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = proc_id.actor_id("proc_agent", 0);
+            let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
             let agent_ref: hyperactor_reference::ActorRef<ProcAgent> =
                 hyperactor_reference::ActorRef::attest(actor_id);
             // Ready -> Stopping -> Stopped should be legal.
@@ -2675,7 +2678,7 @@ mod tests {
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = proc_id.actor_id("proc_agent", 0);
+            let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
             let agent: hyperactor_reference::ActorRef<ProcAgent> =
                 hyperactor_reference::ActorRef::attest(actor_id);
             // Running -> Ready
@@ -2808,7 +2811,7 @@ mod tests {
         let started_at = std::time::SystemTime::now();
         assert!(handle.mark_running(started_at));
 
-        let actor_id = proc_id.actor_id("proc_agent", 0);
+        let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
         let agent_ref: hyperactor_reference::ActorRef<ProcAgent> =
             hyperactor_reference::ActorRef::attest(actor_id);
 
@@ -2921,7 +2924,9 @@ mod tests {
         // Synthesize Ready data
         let addr = ChannelAddr::any(ChannelTransport::Unix);
         let agent: hyperactor_reference::ActorRef<ProcAgent> =
-            hyperactor_reference::ActorRef::attest(proc_id.actor_id("proc_agent", 0));
+            hyperactor_reference::ActorRef::attest(
+                proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
+            );
         assert!(handle.mark_ready(addr, agent));
 
         // Call the trait method (not ready_inner).
