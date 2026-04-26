@@ -1437,7 +1437,7 @@ mod tests {
                 ..
             } if id == resource_id
               && proc_id == hyperactor_reference::ProcId::from_resource_name(host_addr.clone(), id.to_string())
-              && mesh_agent == hyperactor_reference::ActorRef::attest(hyperactor_reference::ProcId::from_resource_name(host_addr.clone(), id.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0)) && bootstrap_command == Some(BootstrapCommand::test())
+              && mesh_agent == hyperactor_reference::ActorRef::attest(hyperactor_reference::ProcId::from_resource_name(host_addr.clone(), id.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }
@@ -1832,9 +1832,7 @@ mod tests {
 
         // The host_agent has now processed messages on the service
         // proc. Query the service proc's introspection.
-        let agent_id = system_proc
-            .proc_id()
-            .actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0);
+        let agent_id = system_proc.proc_id().actor_id(HOST_MESH_AGENT_ACTOR_NAME);
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
