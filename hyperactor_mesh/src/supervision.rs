@@ -239,13 +239,13 @@ mod tests {
             crashed_ranks: vec![],
         };
         let expected_without = "failure with event: Supervision event: \
-                                actor local:0,_worker_proc,dead_actor failed:\n  \
+                                actor worker_proc@inproc://0,dead_actor failed:\n  \
                                 message not delivered: undeliverable message error: \
                                 ... error: broken link: message returned to global \
                                 root client";
         let expected_with = "failure on mesh \"training\" with event: \
                              Supervision event: actor \
-                             local:0,_worker_proc,dead_actor failed:\n  \
+                             worker_proc@inproc://0,dead_actor failed:\n  \
                              message not delivered: undeliverable message error: \
                              ... error: broken link: message returned to global \
                              root client";
@@ -344,7 +344,7 @@ mod tests {
         };
         let expected = "failure on mesh \"training\" with event: \
                         Supervision event: actor \
-                        local:0,_controller_proc,training_controller \
+                        controller_proc@inproc://0,training_controller \
                         failed:\n  \
                         timed out reaching controller ... Assuming \
                         controller's proc is dead";
