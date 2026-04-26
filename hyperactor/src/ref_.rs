@@ -37,10 +37,14 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::channel::ChannelAddr;
+use crate::id;
 use crate::id::ActorId;
 use crate::id::IdParseError;
+use crate::id::Label;
 use crate::id::PortId;
 use crate::id::ProcId;
+use crate::id::Uid;
+use crate::port::Port;
 
 /// A network location, wrapping a [`ChannelAddr`].
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -115,6 +119,92 @@ impl ProcRef {
     pub fn location(&self) -> &Location {
         &self.location
     }
+
+    /// The proc's channel address.
+    pub fn addr(&self) -> &ChannelAddr {
+        self.location.addr()
+    }
+
+    /// The proc's uid.
+    pub fn uid(&self) -> &Uid {
+        self.id.uid()
+    }
+
+    /// The proc's label: the explicit metadata label for instances,
+    /// or the singleton name for singletons.
+    pub fn label(&self) -> Option<&Label> {
+        self.id.label().or_else(|| match self.id.uid() {
+            Uid::Singleton(label) => Some(label),
+            _ => None,
+        })
+    }
+
+    /// Create a ProcRef with a unique (random) uid and the given label.
+    pub fn unique(addr: ChannelAddr, base_name: impl AsRef<str>) -> Self {
+        let label = Label::strip(base_name.as_ref());
+        Self::new(id::ProcId::instance(label), Location::from(addr))
+    }
+
+    /// Create a ProcRef by parsing a name string in ResourceId format.
+    ///
+    /// Recognizes: `label` (singleton), `label<uid58>` (labeled instance),
+    /// `<uid58>` (unlabeled instance). Falls back to singleton from stripped name.
+    pub fn from_resource_name(addr: ChannelAddr, name: impl AsRef<str>) -> Self {
+        let (uid, label) = parse_resource_name(name.as_ref());
+        Self::new(id::ProcId::new(uid, label), Location::from(addr))
+    }
+
+    /// Create an ActorRef with the provided name within this proc.
+    pub fn actor_ref(&self, name: impl AsRef<str>) -> ActorRef {
+        ActorRef::new_from_name(self.clone(), name)
+    }
+
+    /// A human-readable name for logging.
+    pub fn log_name(&self) -> &str {
+        self.label().map(|l| l.as_str()).unwrap_or("?")
+    }
+
+    /// The ResourceId text form: `label` (singleton), `label<uid58>`
+    /// (labeled instance), or `<uid58>` (unlabeled instance).
+    pub fn resource_name(&self) -> String {
+        match (self.id.uid(), self.id.label()) {
+            (Uid::Singleton(label), _) => label.to_string(),
+            (Uid::Instance(_), Some(label)) => format!("{label}{}", self.id.uid()),
+            (Uid::Instance(_), None) => self.id.uid().to_string(),
+        }
+    }
+}
+
+/// Parse a name in ResourceId format into a (Uid, Option<Label>) pair.
+///
+/// Formats: `label` (singleton), `label<uid58>` (labeled instance),
+/// `<uid58>` (unlabeled instance). Falls back to singleton from stripped name.
+pub(crate) fn parse_resource_name(s: &str) -> (Uid, Option<Label>) {
+    if let Some(inner) = s
+        .strip_prefix('<')
+        .and_then(|inner| inner.strip_suffix('>'))
+    {
+        if let Ok(uid) = Uid::from_str(&format!("<{inner}>")) {
+            return (uid, None);
+        }
+    }
+
+    if let Some(open) = s.find('<') {
+        if s.ends_with('>') {
+            let label_part = &s[..open];
+            let uid_part = &s[open..];
+            if let (Ok(uid), Ok(label)) = (Uid::from_str(uid_part), Label::new(label_part)) {
+                return (uid, Some(label));
+            }
+        }
+    }
+
+    if let Ok(label) = Label::new(s) {
+        return (Uid::Singleton(label.clone()), Some(label));
+    }
+
+    let label = Label::strip(s);
+    (Uid::Singleton(label.clone()), Some(label))
 }
 
 impl PartialEq for ProcRef {
@@ -187,6 +277,13 @@ impl ActorRef {
         Self { id, location }
     }
 
+    /// Create an ActorRef from a ProcRef and name string (parsed in ResourceId format).
+    pub fn new_from_name(proc_ref: ProcRef, name: impl AsRef<str>) -> Self {
+        let (uid, label) = parse_resource_name(name.as_ref());
+        let actor_id = id::ActorId::new(uid, proc_ref.id.clone(), label);
+        Self::new(actor_id, proc_ref.location)
+    }
+
     /// Returns the actor id.
     pub fn id(&self) -> &ActorId {
         &self.id
@@ -195,6 +292,61 @@ impl ActorRef {
     /// Returns the location.
     pub fn location(&self) -> &Location {
         &self.location
+    }
+
+    /// The actor's channel address.
+    pub fn addr(&self) -> &ChannelAddr {
+        self.location.addr()
+    }
+
+    /// The actor's uid.
+    pub fn uid(&self) -> &Uid {
+        self.id.uid()
+    }
+
+    /// The actor's label: explicit metadata label for instances,
+    /// or singleton name for singletons.
+    pub fn label(&self) -> Option<&Label> {
+        self.id.label().or_else(|| match self.id.uid() {
+            Uid::Singleton(label) => Some(label),
+            _ => None,
+        })
+    }
+
+    /// Reconstruct the parent ProcRef (with location preserved).
+    pub fn proc_ref(&self) -> ProcRef {
+        ProcRef::new(self.id.proc_id().clone(), self.location.clone())
+    }
+
+    /// Create a PortRef for a port on this actor.
+    pub fn port_ref(&self, port: Port) -> PortRef {
+        PortRef::new(
+            id::PortId::new(self.id.clone(), port),
+            self.location.clone(),
+        )
+    }
+
+    /// Create an ActorRef for a root actor on a proc.
+    pub fn root(proc_ref: ProcRef, label: impl Into<Label>) -> Self {
+        let label = label.into();
+        let actor_id = id::ActorId::singleton(label, proc_ref.id.clone());
+        Self::new(actor_id, proc_ref.location)
+    }
+
+    /// Create an ActorRef for a child actor with a random uid.
+    pub fn unique_child(&self) -> Self {
+        let child_id = id::ActorId::instance(self.id.proc_id().clone());
+        Self::new(child_id, self.location.clone())
+    }
+
+    /// Whether this is a root actor (singleton uid).
+    pub fn is_root(&self) -> bool {
+        matches!(self.id.uid(), Uid::Singleton(_))
+    }
+
+    /// A human-readable name for logging.
+    pub fn log_name(&self) -> &str {
+        self.label().map(|l| l.as_str()).unwrap_or("?")
     }
 }
 
@@ -296,6 +448,11 @@ impl PortRef {
     pub fn actor_id(&self) -> &ActorId {
         self.id.actor_id()
     }
+
+    /// Reconstruct the parent ActorRef (with location preserved).
+    pub fn actor_ref(&self) -> ActorRef {
+        ActorRef::new(self.id.actor_id().clone(), self.location.clone())
+    }
 }
 
 impl PartialEq for PortRef {
@@ -369,6 +526,133 @@ impl FromStr for PortRef {
             .parse()
             .map_err(RefParseError::InvalidLocation)?;
         Ok(Self { id, location })
+    }
+}
+
+/// A polymorphic reference: proc, actor, or port.
+///
+/// Used for prefix-based routing in [`MailboxRouter`] and
+/// [`DialMailboxRouter`]. Ordering is lexicographic by
+/// (proc, actor uid, port).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Reference {
+    /// A process reference.
+    Proc(ProcRef),
+    /// An actor reference.
+    Actor(ActorRef),
+    /// A port reference.
+    Port(PortRef),
+}
+
+impl Reference {
+    /// Whether `self` is a prefix of `other`.
+    ///
+    /// - Proc is a prefix of any Actor or Port on the same proc.
+    /// - Actor is a prefix of any Port on the same actor.
+    pub fn is_prefix_of(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Proc(p), Self::Actor(a)) => *p == a.proc_ref(),
+            (Self::Proc(p), Self::Port(pt)) => *p == pt.actor_ref().proc_ref(),
+            (Self::Actor(a), Self::Port(pt)) => *a == pt.actor_ref(),
+            (Self::Proc(p1), Self::Proc(p2)) => p1 == p2,
+            (Self::Actor(a1), Self::Actor(a2)) => a1 == a2,
+            (Self::Port(p1), Self::Port(p2)) => p1 == p2,
+            _ => false,
+        }
+    }
+
+    /// The proc ref of this reference.
+    pub fn proc_ref(&self) -> ProcRef {
+        match self {
+            Self::Proc(p) => p.clone(),
+            Self::Actor(a) => a.proc_ref(),
+            Self::Port(p) => p.actor_ref().proc_ref(),
+        }
+    }
+}
+
+impl PartialOrd for Reference {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Reference {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Order by: proc, then actor uid (None < Some), then port (None < Some).
+        let proc_ord = self.proc_ref().cmp(&other.proc_ref());
+        if proc_ord != std::cmp::Ordering::Equal {
+            return proc_ord;
+        }
+        let self_actor_uid = match self {
+            Self::Proc(_) => None,
+            Self::Actor(a) => Some(a.uid()),
+            Self::Port(p) => Some(p.actor_id().uid()),
+        };
+        let other_actor_uid = match other {
+            Self::Proc(_) => None,
+            Self::Actor(a) => Some(a.uid()),
+            Self::Port(p) => Some(p.actor_id().uid()),
+        };
+        let actor_ord = self_actor_uid.cmp(&other_actor_uid);
+        if actor_ord != std::cmp::Ordering::Equal {
+            return actor_ord;
+        }
+        let self_port = match self {
+            Self::Port(p) => Some(p.id().port()),
+            _ => None,
+        };
+        let other_port = match other {
+            Self::Port(p) => Some(p.id().port()),
+            _ => None,
+        };
+        self_port.cmp(&other_port)
+    }
+}
+
+impl fmt::Display for Reference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Proc(p) => fmt::Display::fmt(p, f),
+            Self::Actor(a) => fmt::Display::fmt(a, f),
+            Self::Port(p) => fmt::Display::fmt(p, f),
+        }
+    }
+}
+
+impl FromStr for Reference {
+    type Err = RefParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Try most specific first.
+        if let Ok(port_ref) = s.parse::<PortRef>() {
+            return Ok(Self::Port(port_ref));
+        }
+        if let Ok(actor_ref) = s.parse::<ActorRef>() {
+            return Ok(Self::Actor(actor_ref));
+        }
+        if let Ok(proc_ref) = s.parse::<ProcRef>() {
+            return Ok(Self::Proc(proc_ref));
+        }
+        Err(RefParseError::MissingSeparator)
+    }
+}
+
+impl From<ProcRef> for Reference {
+    fn from(p: ProcRef) -> Self {
+        Self::Proc(p)
+    }
+}
+
+impl From<ActorRef> for Reference {
+    fn from(a: ActorRef) -> Self {
+        Self::Actor(a)
+    }
+}
+
+impl From<PortRef> for Reference {
+    fn from(p: PortRef) -> Self {
+        Self::Port(p)
     }
 }
 
@@ -655,6 +939,45 @@ mod tests {
         assert_eq!(s, "my-proc@inproc://0");
         let parsed: ProcRef = s.parse().unwrap();
         assert_eq!(pref, parsed);
+    }
+
+    #[test]
+    fn test_parse_resource_name_formats() {
+        assert_eq!(
+            parse_resource_name("service"),
+            (
+                Uid::Singleton(Label::new("service").unwrap()),
+                Some(Label::new("service").unwrap())
+            )
+        );
+        assert_eq!(
+            parse_resource_name(&format!("worker{}", Uid::Instance(0xabc123))),
+            (Uid::Instance(0xabc123), Some(Label::new("worker").unwrap()))
+        );
+        assert_eq!(
+            parse_resource_name(&Uid::Instance(0xabc123).to_string()),
+            (Uid::Instance(0xabc123), None)
+        );
+        assert_eq!(
+            parse_resource_name("dead"),
+            (
+                Uid::Singleton(Label::new("dead").unwrap()),
+                Some(Label::new("dead").unwrap())
+            )
+        );
+    }
+
+    #[test]
+    fn test_reference_prefix_relationships() {
+        let proc_ref = ProcRef::from_resource_name(ChannelAddr::Local(42), "service");
+        let actor_ref = proc_ref.actor_ref("host_agent");
+        let port_ref = actor_ref.port_ref(Port::from(7u64));
+
+        assert!(
+            Reference::Proc(proc_ref.clone()).is_prefix_of(&Reference::Actor(actor_ref.clone()))
+        );
+        assert!(Reference::Proc(proc_ref.clone()).is_prefix_of(&Reference::Port(port_ref.clone())));
+        assert!(Reference::Actor(actor_ref.clone()).is_prefix_of(&Reference::Port(port_ref)));
     }
 
     #[test]
