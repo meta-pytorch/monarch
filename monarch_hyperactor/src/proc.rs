@@ -338,7 +338,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 
         let (_signal_port, signal_receiver) = instance.bind_actor_port::<Signal>();
 
-        let actor_id = instance.self_id().clone();
+        let actor_id = instance.self_id().clone().into();
 
         Ok(Self {
             instance,

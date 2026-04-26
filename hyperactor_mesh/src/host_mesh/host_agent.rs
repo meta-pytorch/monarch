@@ -39,6 +39,7 @@ use hyperactor::host::LocalProcManager;
 use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::host::SingleTerminate;
 use hyperactor::mailbox::MailboxServerHandle;
+use hyperactor::ref_;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
@@ -119,7 +120,7 @@ impl HostAgentMode {
     async fn request_stop(
         &self,
         cx: &impl context::Actor,
-        proc: &hyperactor_reference::ProcId,
+        proc: &ref_::ProcRef,
         timeout: Duration,
         reason: &str,
     ) {
@@ -139,7 +140,7 @@ impl HostAgentMode {
     /// that need process-level detail such as PIDs or exit codes.
     async fn proc_status(
         &self,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &ref_::ProcRef,
     ) -> (resource::Status, Option<bootstrap::ProcStatus>) {
         match self {
             HostAgentMode::Process { host, .. } => match host.manager().status(proc_id).await {
@@ -170,13 +171,8 @@ impl HostAgentMode {
 pub(crate) struct ProcCreationState {
     pub(crate) rank: usize,
     pub(crate) host_mesh_id: Option<HostMeshId>,
-    pub(crate) created: Result<
-        (
-            hyperactor_reference::ProcId,
-            hyperactor_reference::ActorRef<ProcAgent>,
-        ),
-        HostError,
-    >,
+    pub(crate) created:
+        Result<(ref_::ProcRef, hyperactor_reference::ActorRef<ProcAgent>), HostError>,
 }
 
 /// Actor name used when spawning the host mesh agent on the system proc.
@@ -452,16 +448,18 @@ impl HostAgent {
         // local appear as regular children; 's' in the TUI toggles
         // actor visibility, not proc visibility.
         children.push(hyperactor::introspect::IntrospectRef::Proc(
-            host.system_proc().proc_id().clone(),
+            host.system_proc().proc_id().clone().into(),
         ));
         children.push(hyperactor::introspect::IntrospectRef::Proc(
-            host.local_proc().proc_id().clone(),
+            host.local_proc().proc_id().clone().into(),
         ));
 
         // User procs.
         for state in self.created.values() {
             if let Ok((proc_id, _agent_ref)) = &state.created {
-                children.push(hyperactor::introspect::IntrospectRef::Proc(proc_id.clone()));
+                children.push(hyperactor::introspect::IntrospectRef::Proc(
+                    proc_id.clone().into(),
+                ));
             }
         }
 
@@ -521,10 +519,10 @@ impl Actor for HostAgent {
             use hyperactor::introspect::IntrospectResult;
 
             let proc = match child_ref {
-                hyperactor::reference::Reference::Proc(proc_id) => {
-                    if *proc_id == *system_proc.proc_id() {
+                hyperactor::ref_::Reference::Proc(proc_ref) => {
+                    if *proc_ref == *system_proc.proc_id() {
                         Some((&system_proc, SERVICE_PROC_NAME))
-                    } else if *proc_id == *local_proc.proc_id() {
+                    } else if *proc_ref == *local_proc.proc_id() {
                         Some((&local_proc, LOCAL_PROC_NAME))
                     } else {
                         None
@@ -554,9 +552,10 @@ impl Actor for HostAgent {
                     let mut system_actors: Vec<crate::introspect::NodeRef> = Vec::new();
                     for id in all_keys {
                         if proc.get_instance(&id).is_some_and(|cell| cell.is_system()) {
-                            system_actors.push(crate::introspect::NodeRef::Actor(id.clone()));
+                            system_actors
+                                .push(crate::introspect::NodeRef::Actor(id.clone().into()));
                         }
-                        actors.push(hyperactor::introspect::IntrospectRef::Actor(id));
+                        actors.push(hyperactor::introspect::IntrospectRef::Actor(id.into()));
                     }
                     let mut attrs = hyperactor_config::Attrs::new();
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
@@ -593,12 +592,12 @@ impl Actor for HostAgent {
 
                     IntrospectResult {
                         identity: hyperactor::introspect::IntrospectRef::Proc(
-                            proc.proc_id().clone(),
+                            proc.proc_id().clone().into(),
                         ),
                         attrs: attrs_json,
                         children: actors,
                         parent: Some(hyperactor::introspect::IntrospectRef::Actor(
-                            self_id.clone(),
+                            self_id.clone().into(),
                         )),
                         as_of: std::time::SystemTime::now(),
                     }
@@ -611,14 +610,14 @@ impl Actor for HostAgent {
                         format!("child {} not found", child_ref),
                     );
                     let identity = match child_ref {
-                        hyperactor::reference::Reference::Proc(id) => {
-                            hyperactor::introspect::IntrospectRef::Proc(id.clone())
+                        hyperactor::ref_::Reference::Proc(p) => {
+                            hyperactor::introspect::IntrospectRef::Proc(p.clone().into())
                         }
-                        hyperactor::reference::Reference::Actor(id) => {
-                            hyperactor::introspect::IntrospectRef::Actor(id.clone())
+                        hyperactor::ref_::Reference::Actor(a) => {
+                            hyperactor::introspect::IntrospectRef::Actor(a.clone().into())
                         }
-                        hyperactor::reference::Reference::Port(id) => {
-                            hyperactor::introspect::IntrospectRef::Actor(id.actor_id().clone())
+                        hyperactor::ref_::Reference::Port(p) => {
+                            hyperactor::introspect::IntrospectRef::Actor(p.actor_ref().into())
                         }
                     };
                     IntrospectResult {
@@ -674,7 +673,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         let created = match host {
             HostAgentMode::Process { host, .. } => {
                 host.spawn(
-                    create_or_update.id.to_string(),
+                    super::resource_proc_name(&create_or_update.id),
                     BootstrapProcConfig {
                         create_rank: create_or_update.rank.unwrap(),
                         client_config_override: create_or_update
@@ -687,7 +686,10 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                 )
                 .await
             }
-            HostAgentMode::Local(host) => host.spawn(create_or_update.id.to_string(), ()).await,
+            HostAgentMode::Local(host) => {
+                host.spawn(super::resource_proc_name(&create_or_update.id), ())
+                    .await
+            }
         };
 
         let rank = create_or_update.rank.unwrap();
@@ -967,11 +969,7 @@ impl HostAgent {
 
     /// Start a bridge task that watches a proc's status channel and sends
     /// `ProcStatusChanged` to self on each change. At most one bridge per proc.
-    async fn start_watch_bridge(
-        &mut self,
-        id: &ResourceId,
-        proc_id: &hyperactor_reference::ProcId,
-    ) {
+    async fn start_watch_bridge(&mut self, id: &ResourceId, proc_id: &ref_::ProcRef) {
         if self.watching.contains(id) {
             return;
         }
@@ -1152,7 +1150,7 @@ impl Handler<ShutdownHost> for HostAgent {
                 ..
             }) => {
                 tracing::info!(
-                    proc_id = %cx.self_id().proc_id(),
+                    proc_id = %cx.self_id().proc_ref(),
                     actor_id = %cx.self_id(),
                     "host is shut down, sending mailbox handle to bootstrap for draining"
                 );
@@ -1202,7 +1200,7 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
                     id: get_state.id.clone(),
                     status,
                     state: Some(ProcState {
-                        proc_id: proc_id.clone(),
+                        proc_id: proc_id.clone().into(),
                         create_rank: *rank,
                         mesh_agent: mesh_agent.clone(),
                         bootstrap_command,
@@ -1832,7 +1830,8 @@ mod tests {
 
         // The host_agent has now processed messages on the service
         // proc. Query the service proc's introspection.
-        let agent_id = system_proc.proc_id().actor_id(HOST_MESH_AGENT_ACTOR_NAME);
+        let agent_ref = system_proc.proc_id().actor_ref(HOST_MESH_AGENT_ACTOR_NAME);
+        let agent_id: hyperactor_reference::ActorId = agent_ref.into();
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
@@ -1844,7 +1843,9 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Reference::Proc(system_proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Reference::Proc(
+                        system_proc.proc_id().clone().into(),
+                    ),
                     reply: reply_port.bind(),
                 },
             )

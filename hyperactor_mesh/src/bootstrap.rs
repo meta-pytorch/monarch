@@ -53,6 +53,7 @@ use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
+use hyperactor::ref_;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -487,7 +488,7 @@ impl Bootstrap {
 
                 let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<i32>();
                 let agent_handle = ProcAgent::boot_v1(proc.clone(), Some(shutdown_tx))
-                    .map_err(|e| HostError::AgentSpawnFailure(proc_id, e))?;
+                    .map_err(|e| HostError::AgentSpawnFailure(proc_id.into(), e))?;
 
                 let span = entered.exit();
 
@@ -735,7 +736,7 @@ impl std::error::Error for ReadyError {}
 #[derive(Clone)]
 pub struct BootstrapProcHandle {
     /// Logical identity of the proc in the mesh.
-    proc_id: hyperactor_reference::ProcId,
+    proc_id: ref_::ProcRef,
 
     /// Live lifecycle snapshot (see [`ProcStatus`]). Kept in a mutex
     /// so [`BootstrapProcHandle::status`] can return a synchronous
@@ -803,10 +804,7 @@ impl BootstrapProcHandle {
     /// This is the canonical entry point used by
     /// `BootstrapProcManager` when it launches a proc into a new
     /// process.
-    pub(crate) fn new(
-        proc_id: hyperactor_reference::ProcId,
-        launcher: Weak<dyn ProcLauncher>,
-    ) -> Self {
+    pub(crate) fn new(proc_id: ref_::ProcRef, launcher: Weak<dyn ProcLauncher>) -> Self {
         let (tx, rx) = watch::channel(ProcStatus::Starting);
         Self {
             proc_id,
@@ -821,7 +819,7 @@ impl BootstrapProcHandle {
 
     /// Return the logical proc identity in the mesh.
     #[inline]
-    pub fn proc_id(&self) -> &hyperactor_reference::ProcId {
+    pub fn proc_id(&self) -> &ref_::ProcRef {
         &self.proc_id
     }
 
@@ -1176,13 +1174,14 @@ impl BootstrapProcHandle {
         let _ = self.mark_stopping();
 
         if let Some(launcher) = self.launcher.upgrade() {
-            if let Err(e) = launcher.terminate(&self.proc_id, timeout).await {
+            let ref_proc_id: hyperactor_reference::ProcId = self.proc_id.clone().into();
+            if let Err(e) = launcher.terminate(&ref_proc_id, timeout).await {
                 tracing::warn!(
                     proc_id = %self.proc_id,
                     error = %e,
                     "wait_or_brutally_kill: launcher terminate failed, trying kill"
                 );
-                let _ = launcher.kill(&self.proc_id).await;
+                let _ = launcher.kill(&ref_proc_id).await;
             }
         }
 
@@ -1229,7 +1228,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     type TerminalStatus = ProcStatus;
 
     #[inline]
-    fn proc_id(&self) -> &hyperactor_reference::ProcId {
+    fn proc_id(&self) -> &ref_::ProcRef {
         &self.proc_id
     }
 
@@ -1340,8 +1339,9 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
 
         // Delegate to launcher for SIGTERM/SIGKILL escalation.
         tracing::info!(proc_id = %self.proc_id, ?timeout, "terminate(): delegating to launcher");
+        let ref_proc_id: hyperactor_reference::ProcId = self.proc_id.clone().into();
         if let Some(launcher) = self.launcher.upgrade() {
-            if let Err(e) = launcher.terminate(&self.proc_id, timeout).await {
+            if let Err(e) = launcher.terminate(&ref_proc_id, timeout).await {
                 tracing::warn!(proc_id = %self.proc_id, error=%e, "terminate(): launcher termination failed");
                 return Err(hyperactor::host::TerminateError::Io(anyhow::anyhow!(
                     "launcher termination failed: {}",
@@ -1391,8 +1391,9 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
 
         // Delegate to launcher for kill.
         tracing::info!(proc_id = %self.proc_id, "kill(): delegating to launcher");
+        let ref_proc_id: hyperactor_reference::ProcId = self.proc_id.clone().into();
         if let Some(launcher) = self.launcher.upgrade() {
-            if let Err(e) = launcher.kill(&self.proc_id).await {
+            if let Err(e) = launcher.kill(&ref_proc_id).await {
                 tracing::warn!(proc_id = %self.proc_id, error=%e, "kill(): launcher kill failed");
                 return Err(hyperactor::host::TerminateError::Io(anyhow::anyhow!(
                     "launcher kill failed: {}",
@@ -1610,7 +1611,7 @@ pub struct BootstrapProcManager {
     /// Async registry of running children, keyed by [`ProcId`]. Holds
     /// [`BootstrapProcHandle`]s so callers can query or monitor
     /// status.
-    children: Arc<tokio::sync::Mutex<HashMap<hyperactor_reference::ProcId, BootstrapProcHandle>>>,
+    children: Arc<tokio::sync::Mutex<HashMap<ref_::ProcRef, BootstrapProcHandle>>>,
 
     /// FileMonitor that aggregates logs from all children. None if
     /// file monitor creation failed.
@@ -1708,7 +1709,7 @@ impl BootstrapProcManager {
     ///
     /// Returns `None` if the manager has no record of the proc (e.g.
     /// never spawned here, or entry already removed).
-    pub async fn status(&self, proc_id: &hyperactor_reference::ProcId) -> Option<ProcStatus> {
+    pub async fn status(&self, proc_id: &ref_::ProcRef) -> Option<ProcStatus> {
         self.children.lock().await.get(proc_id).map(|h| h.status())
     }
 
@@ -1716,7 +1717,7 @@ impl BootstrapProcManager {
     /// if the proc is known to this manager.
     pub async fn watch(
         &self,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &ref_::ProcRef,
     ) -> Option<tokio::sync::watch::Receiver<ProcStatus>> {
         self.children.lock().await.get(proc_id).map(|h| h.watch())
     }
@@ -1730,7 +1731,7 @@ impl BootstrapProcManager {
     pub(crate) async fn request_stop(
         &self,
         cx: &impl context::Actor,
-        proc: &hyperactor_reference::ProcId,
+        proc: &ref_::ProcRef,
         timeout: Duration,
         reason: &str,
     ) {
@@ -1765,7 +1766,7 @@ impl BootstrapProcManager {
 
     fn spawn_exit_monitor(
         &self,
-        proc_id: hyperactor_reference::ProcId,
+        proc_id: ref_::ProcRef,
         handle: BootstrapProcHandle,
         exit_rx: tokio::sync::oneshot::Receiver<ProcExitResult>,
     ) {
@@ -1918,7 +1919,7 @@ impl ProcManager for BootstrapProcManager {
     #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string()))]
     async fn spawn(
         &self,
-        proc_id: hyperactor_reference::ProcId,
+        proc_id: ref_::ProcRef,
         backend_addr: ChannelAddr,
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
@@ -1935,7 +1936,7 @@ impl ProcManager for BootstrapProcManager {
         let need_stdio = enable_forwarding || enable_file_capture || tail_size > 0;
 
         let mode = Bootstrap::Proc {
-            proc_id: proc_id.clone(),
+            proc_id: proc_id.clone().into(),
             backend_addr,
             callback_addr,
             socket_dir_path: self.socket_dir.path().to_owned(),
@@ -1949,7 +1950,7 @@ impl ProcManager for BootstrapProcManager {
 
         let opts = LaunchOptions {
             bootstrap_payload,
-            process_name: format_process_name(&proc_id),
+            process_name: format_process_name(&proc_id.clone().into()),
             command: config
                 .bootstrap_command
                 .as_ref()
@@ -1967,9 +1968,10 @@ impl ProcManager for BootstrapProcManager {
 
         // Launch via the configured launcher backend.
         tracing::info!(proc_id = %proc_id, "launching proc with opts={opts:?}");
+        let ref_proc_id: hyperactor_reference::ProcId = proc_id.clone().into();
         let launch_result = self
             .launcher()
-            .launch(&proc_id, opts.clone())
+            .launch(&ref_proc_id, opts.clone())
             .await
             .map_err(|e| {
                 let io_err = match e {
@@ -2007,7 +2009,7 @@ impl ProcManager for BootstrapProcManager {
                     OutputTarget::Stdout,
                     tail_size,
                     opts.log_channel.clone(),
-                    &proc_id,
+                    &ref_proc_id,
                     config.create_rank,
                 );
                 let err = StreamFwder::start(
@@ -2016,7 +2018,7 @@ impl ProcManager for BootstrapProcManager {
                     OutputTarget::Stderr,
                     tail_size,
                     opts.log_channel.clone(),
-                    &proc_id,
+                    &ref_proc_id,
                     config.create_rank,
                 );
                 (Some(out), Some(err))
@@ -2080,16 +2082,10 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
-        proc: &hyperactor_reference::ProcId,
+        proc: &ref_::ProcRef,
         timeout: Duration,
         reason: &str,
-    ) -> Result<
-        (
-            Vec<hyperactor_reference::ActorId>,
-            Vec<hyperactor_reference::ActorId>,
-        ),
-        anyhow::Error,
-    > {
+    ) -> Result<(Vec<ref_::ActorRef>, Vec<ref_::ActorRef>), anyhow::Error> {
         // Snapshot to avoid holding the lock across awaits.
         let proc_handle: Option<BootstrapProcHandle> = {
             let mut guard = self.children.lock().await;
@@ -2455,7 +2451,8 @@ mod tests {
             BoxedMailboxSender::new(router.clone()),
         );
         proc.clone().serve(proc_rx);
-        router.bind(test_proc_id("client_0").into(), proc_addr.clone());
+        let proc_ref: hyperactor::ref_::ProcRef = test_proc_id("client_0").into();
+        router.bind(proc_ref, proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 
         let (tap_tx, mut tap_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -2566,7 +2563,7 @@ mod tests {
         // ensuring tests only exercise status transitions and not
         // actual process lifecycle.
         fn handle_for_test() -> BootstrapProcHandle {
-            let proc_id = test_proc_id("0");
+            let proc_id: hyperactor::ref_::ProcRef = test_proc_id("0").into();
             let launcher: Arc<dyn ProcLauncher> = Arc::new(TestProcLauncher);
             BootstrapProcHandle::new(proc_id, Arc::downgrade(&launcher))
         }
@@ -2659,7 +2656,9 @@ mod tests {
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
+            let actor_id = proc_id
+                .actor_ref(crate::proc_agent::PROC_AGENT_ACTOR_NAME)
+                .into();
             let agent_ref: hyperactor_reference::ActorRef<ProcAgent> =
                 hyperactor_reference::ActorRef::attest(actor_id);
             // Ready -> Stopping -> Stopped should be legal.
@@ -2678,7 +2677,9 @@ mod tests {
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
+            let actor_id = proc_id
+                .actor_ref(crate::proc_agent::PROC_AGENT_ACTOR_NAME)
+                .into();
             let agent: hyperactor_reference::ActorRef<ProcAgent> =
                 hyperactor_reference::ActorRef::attest(actor_id);
             // Running -> Ready
@@ -2743,7 +2744,7 @@ mod tests {
     fn test_handle(proc_id: hyperactor_reference::ProcId) -> BootstrapProcHandle {
         let launcher: std::sync::Arc<dyn crate::proc_launcher::ProcLauncher> =
             std::sync::Arc::new(TestLauncher);
-        BootstrapProcHandle::new(proc_id, std::sync::Arc::downgrade(&launcher))
+        BootstrapProcHandle::new(proc_id.into(), std::sync::Arc::downgrade(&launcher))
     }
 
     #[tokio::test]
@@ -2811,7 +2812,9 @@ mod tests {
         let started_at = std::time::SystemTime::now();
         assert!(handle.mark_running(started_at));
 
-        let actor_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
+        let actor_id = proc_id
+            .actor_ref(crate::proc_agent::PROC_AGENT_ACTOR_NAME)
+            .into();
         let agent_ref: hyperactor_reference::ActorRef<ProcAgent> =
             hyperactor_reference::ActorRef::attest(actor_id);
 
@@ -2925,7 +2928,9 @@ mod tests {
         let addr = ChannelAddr::any(ChannelTransport::Unix);
         let agent: hyperactor_reference::ActorRef<ProcAgent> =
             hyperactor_reference::ActorRef::attest(
-                proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
+                proc_id
+                    .actor_ref(crate::proc_agent::PROC_AGENT_ACTOR_NAME)
+                    .into(),
             );
         assert!(handle.mark_ready(addr, agent));
 
@@ -3011,7 +3016,7 @@ mod tests {
         let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_term").await;
         let handle = mgr
             .spawn(
-                proc_id.clone(),
+                proc_id.clone().into(),
                 backend_addr.clone(),
                 BootstrapProcConfig {
                     create_rank: 0,
@@ -3082,7 +3087,7 @@ mod tests {
         // Launch the child bootstrap process.
         let handle = mgr
             .spawn(
-                proc_id.clone(),
+                proc_id.clone().into(),
                 backend_addr.clone(),
                 BootstrapProcConfig {
                     create_rank: 0,
