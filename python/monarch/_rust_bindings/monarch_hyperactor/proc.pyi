@@ -22,7 +22,7 @@ def init_proc(
     Helper function to bootstrap a new Proc.
 
     Arguments:
-    - `proc_id`: String representation of the ProcId eg. `"world_name[0]"`
+    - `proc_id`: String representation of the ProcId eg. `"worker<2MuAHeDjLCEd>@tcp://[::1]:2345"`
     - `bootstrap_addr`: String representation of the channel address of the system
         actor. eg. `"tcp![::1]:2345"`
     - `timeout`: Number of seconds to wait to successfully connect to the system.
@@ -93,7 +93,7 @@ class ActorId:
 
     @property
     def proc_id(self) -> str:
-        """String representation of the ProcId."""
+        """String representation of the ProcId in Rust-compatible `proc@location` form."""
         ...
 
     @property

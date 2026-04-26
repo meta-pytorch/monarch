@@ -2942,7 +2942,6 @@ mod tests {
 
     use std::assert_matches::assert_matches;
     use std::mem::drop;
-    use std::str::FromStr;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
@@ -2976,10 +2975,12 @@ mod tests {
             test_actor_id("myworld_2", "myactor"),
             MailboxErrorKind::Closed,
         );
+        // ActorId display is now "actor_uid.proc_uid@location"
         let err_str = format!("{err}");
         assert!(
             err_str.contains("mailbox closed"),
-            "unexpected format: {err_str}"
+            "expected error: {}",
+            err_str
         );
         assert!(
             err_str.contains("@"),
@@ -3235,8 +3236,13 @@ mod tests {
             "unix!@4".parse().unwrap(),
         );
         // Bind a direct address -- we should use its bound address!
+        // The actor must be on unix:@4 so that after unbinding, the prefix
+        // route for world1_1 (unix!@3) is the fallback, not world1_1/actor1 (unix!@4).
+        let direct_actor_id =
+            reference::ProcId::from_resource_name("unix:@4".parse().unwrap(), "my_proc")
+                .actor_id("my_actor");
         router.bind(
-            "unix:@4,my_proc,my_actor".parse().unwrap(),
+            reference::Reference::Actor(direct_actor_id.clone()),
             "unix:@5".parse().unwrap(),
         );
 
@@ -3248,10 +3254,7 @@ mod tests {
             .lookup_addr(&test_actor_id("world1_0", "actor"))
             .unwrap();
 
-        let actor_id = reference::Reference::from_str("unix:@4,my_proc,my_actor")
-            .unwrap()
-            .into_actor()
-            .unwrap();
+        let actor_id = direct_actor_id;
         assert_eq!(
             router.lookup_addr(&actor_id).unwrap(),
             "unix!@5".parse().unwrap(),

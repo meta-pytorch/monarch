@@ -21,28 +21,41 @@ import ssl
 import urllib.parse
 import urllib.request
 
-import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._src.actor.host_mesh import _spawn_admin, this_host
-from monarch.actor import Actor, endpoint
 from monarch.config import parametrize_config
 
 
-class ActorCrash(BaseException):
-    """BaseException subclass that triggers supervision (not caught by handler)."""
+def _actor_module():
+    import monarch.actor
 
-    pass
+    return monarch.actor
 
 
-class FailWorker(Actor):
-    @endpoint
-    async def work(self) -> None:
+def _host_helpers():
+    from monarch._src.actor.host_mesh import _spawn_admin, this_host
+
+    return _spawn_admin, this_host
+
+
+def _fail_worker_type():
+    from monarch.actor import Actor, endpoint
+
+    class ActorCrash(BaseException):
+        """BaseException subclass that triggers supervision."""
+
         pass
 
-    @endpoint
-    async def crash(self) -> None:
-        raise ActorCrash("GPU memory corruption")
+    class FailWorker(Actor):
+        @endpoint
+        async def work(self) -> None:
+            pass
+
+        @endpoint
+        async def crash(self) -> None:
+            raise ActorCrash("GPU memory corruption")
+
+    return FailWorker
 
 
 def _to_loopback(url: str) -> str:
@@ -88,16 +101,19 @@ def _encode(ref: str) -> str:
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_failed_actor_has_failure_info() -> None:
     """After an actor crashes, its introspection payload has failure_info."""
-    original_hook = monarch.actor.unhandled_fault_hook
+    actor_module = _actor_module()
+    spawn_admin, this_host = _host_helpers()
+    fail_worker = _fail_worker_type()
+    original_hook = actor_module.unhandled_fault_hook
     faulted = asyncio.Event()
-    monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
+    actor_module.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        admin_url, _admin_ref = await _spawn_admin([host], admin_addr="[::]:0")
+        admin_url, _admin_ref = await spawn_admin([host], admin_addr="[::]:0")
         base = _to_loopback(admin_url)
 
         procs = host.spawn_procs(per_host={"replica": 2})
-        workers = procs.spawn("worker", FailWorker)
+        workers = procs.spawn("worker", fail_worker)
 
         await workers.work.call()
 
@@ -115,6 +131,7 @@ async def test_failed_actor_has_failure_info() -> None:
         root = _fetch_json(f"{base}/v1/root")
         poisoned_proc = None
         failed_worker_ref = None
+        failed_worker_data = None
 
         for host_ref in root["children"]:
             host_data = _fetch_json(f"{base}/v1/{_encode(host_ref)}")
@@ -124,8 +141,16 @@ async def test_failed_actor_has_failure_info() -> None:
                 if props and props.get("is_poisoned"):
                     poisoned_proc = proc_data
                     for stopped in props.get("stopped_children", []):
-                        if "worker" in stopped:
+                        stopped_data = _fetch_json(f"{base}/v1/{_encode(stopped)}")
+                        actor_props = stopped_data.get("properties", {}).get("Actor")
+                        failure_info = (
+                            actor_props.get("failure_info") if actor_props else None
+                        )
+                        if failure_info and "GPU memory corruption" in failure_info.get(
+                            "error_message", ""
+                        ):
                             failed_worker_ref = stopped
+                            failed_worker_data = stopped_data
                             break
                     break
             if poisoned_proc:
@@ -140,8 +165,8 @@ async def test_failed_actor_has_failure_info() -> None:
 
         # --- Assert failed worker has failure_info ---
         assert failed_worker_ref is not None, "No failed worker in stopped_children"
-        worker_data = _fetch_json(f"{base}/v1/{_encode(failed_worker_ref)}")
-        actor_props = worker_data["properties"]["Actor"]
+        assert failed_worker_data is not None
+        actor_props = failed_worker_data["properties"]["Actor"]
 
         assert "failed" in actor_props["actor_status"].lower()
         fi = actor_props["failure_info"]
@@ -152,7 +177,7 @@ async def test_failed_actor_has_failure_info() -> None:
         assert fi["is_propagated"] is False
 
     finally:
-        monarch.actor.unhandled_fault_hook = original_hook
+        actor_module.unhandled_fault_hook = original_hook
         await procs.stop()
 
 
@@ -164,16 +189,19 @@ async def test_failed_actor_has_failure_info() -> None:
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_healthy_procs_not_poisoned() -> None:
     """Procs without failed actors should not be poisoned."""
-    original_hook = monarch.actor.unhandled_fault_hook
+    actor_module = _actor_module()
+    spawn_admin, this_host = _host_helpers()
+    fail_worker = _fail_worker_type()
+    original_hook = actor_module.unhandled_fault_hook
     faulted = asyncio.Event()
-    monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
+    actor_module.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        admin_url, _admin_ref = await _spawn_admin([host], admin_addr="[::]:0")
+        admin_url, _admin_ref = await spawn_admin([host], admin_addr="[::]:0")
         base = _to_loopback(admin_url)
 
         procs = host.spawn_procs(per_host={"replica": 3})
-        workers = procs.spawn("worker", FailWorker)
+        workers = procs.spawn("worker", fail_worker)
 
         await workers.work.call()
 
@@ -206,5 +234,5 @@ async def test_healthy_procs_not_poisoned() -> None:
         assert healthy_count >= 2, f"Expected >=2 healthy procs, got {healthy_count}"
 
     finally:
-        monarch.actor.unhandled_fault_hook = original_hook
+        actor_module.unhandled_fault_hook = original_hook
         await procs.stop()

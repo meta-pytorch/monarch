@@ -838,8 +838,11 @@ impl ChannelAddr {
         address: &str,
     ) -> Result<(Self, Option<std::net::TcpListener>), anyhow::Error> {
         // Check for Alias format: dial_to_url@bind_to_url
-        // The @ character separates two valid ZMQ URLs
-        if let Some(at_pos) = address.find('@') {
+        // The @ character separates two valid ZMQ URLs.
+        if let Some(at_pos) = address
+            .find('@')
+            .filter(|&pos| address[..pos].starts_with("tcp://"))
+        {
             let dial_to_str = &address[..at_pos];
             let bind_to_str = &address[at_pos + 1..];
 
@@ -1433,9 +1436,12 @@ mod tests {
             _ => panic!("Expected Alias"),
         }
 
-        // Test error: alias with non-tcp dial_to (not supported)
+        // Non-tcp left side: alias branch is skipped, parsed as regular address.
+        // metatls:// with garbage host is not an alias.
+        let non_alias = ChannelAddr::from_zmq_url("metatls://example.com:443@tcp://127.0.0.1:8080");
         assert!(
-            ChannelAddr::from_zmq_url("metatls://example.com:443@tcp://127.0.0.1:8080").is_err()
+            !matches!(non_alias, Ok(ChannelAddr::Alias { .. })),
+            "non-tcp left side must not produce Alias"
         );
 
         // Test error: alias with non-tcp bind_to (not supported)
@@ -1443,7 +1449,7 @@ mod tests {
             ChannelAddr::from_zmq_url("tcp://127.0.0.1:8080@metatls://example.com:443").is_err()
         );
 
-        // Test error: invalid dial_to URL in Alias
+        // Test error: invalid scheme falls through to scheme parsing, errors there
         assert!(ChannelAddr::from_zmq_url("invalid://scheme@tcp://127.0.0.1:8080").is_err());
 
         // Test error: invalid bind_to URL in Alias

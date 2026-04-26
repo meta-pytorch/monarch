@@ -7,6 +7,28 @@
  */
 
 //! References: identifiers paired with a network location.
+//!
+//! Concrete grammar:
+//!
+//! ```text
+//! location     := zmq URL understood by [`ChannelAddr::from_zmq_url`]
+//! proc-ref     := proc-id "@" location
+//! actor-ref    := actor-id "@" location
+//! port-ref     := port-id "@" location
+//!
+//! proc-id      := label | "<" uid58 ">" | label "<" uid58 ">"
+//! actor-id     := actor-part "." proc-id
+//! actor-part   := label | "<" uid58 ">" | label "<" uid58 ">"
+//! ```
+//!
+//! Examples:
+//!
+//! ```text
+//! local@inproc://0
+//! controller<2MuAHeDjLCEd>@tcp://[::1]:2345
+//! controller<2MuAHeDjLCEd>.local@inproc://0
+//! <2MuAHeDjLCEd>.<NRjEZGYjYibf>:42@tcp://[::1]:2345
+//! ```
 
 use std::fmt;
 use std::str::FromStr;
@@ -390,7 +412,7 @@ mod tests {
         );
         let loc: Location = ChannelAddr::Local(42).into();
         let pref = ProcRef::new(pid, loc);
-        assert_eq!(pref.to_string(), "0000000000abc123@inproc://42");
+        assert_eq!(pref.to_string(), format!("{}@inproc://42", pref.id()));
     }
 
     #[test]
@@ -403,7 +425,7 @@ mod tests {
         let pref = ProcRef::new(pid, loc);
         assert_eq!(
             format!("{:?}", pref),
-            "<'my-proc' 0000000000abc123@inproc://42>"
+            format!("<'my-proc' {}@inproc://42>", pref.id())
         );
     }
 
@@ -412,7 +434,10 @@ mod tests {
         let pid = ProcId::new(Uid::Instance(0xabc123), None);
         let loc: Location = ChannelAddr::Local(42).into();
         let pref = ProcRef::new(pid, loc);
-        assert_eq!(format!("{:?}", pref), "<0000000000abc123@inproc://42>");
+        assert_eq!(
+            format!("{:?}", pref),
+            format!("<{}@inproc://42>", pref.id())
+        );
     }
 
     #[test]
@@ -430,7 +455,12 @@ mod tests {
 
     #[test]
     fn test_proc_ref_fromstr_tcp() {
-        let parsed: ProcRef = "0000000000abc123@tcp://127.0.0.1:8080".parse().unwrap();
+        let parsed: ProcRef = format!(
+            "{}@tcp://127.0.0.1:8080",
+            ProcId::new(Uid::Instance(0xabc123), None)
+        )
+        .parse()
+        .unwrap();
         assert_eq!(*parsed.id().uid(), Uid::Instance(0xabc123));
         assert_eq!(
             *parsed.location().addr(),
@@ -440,7 +470,10 @@ mod tests {
 
     #[test]
     fn test_proc_ref_fromstr_missing_separator() {
-        let err = "0000000000abc123".parse::<ProcRef>().unwrap_err();
+        let err = ProcId::new(Uid::Instance(0xabc123), None)
+            .to_string()
+            .parse::<ProcRef>()
+            .unwrap_err();
         assert!(matches!(err, RefParseError::MissingSeparator));
     }
 
@@ -456,10 +489,7 @@ mod tests {
         );
         let loc: Location = ChannelAddr::Local(42).into();
         let aref = ActorRef::new(aid, loc);
-        assert_eq!(
-            aref.to_string(),
-            "0000000000abc123.0000000000def456@inproc://42"
-        );
+        assert_eq!(aref.to_string(), format!("{}@inproc://42", aref.id()));
     }
 
     #[test]
@@ -476,7 +506,7 @@ mod tests {
         let aref = ActorRef::new(aid, loc);
         assert_eq!(
             format!("{:?}", aref),
-            "<'my-actor.my-proc' 0000000000abc123.0000000000def456@inproc://42>"
+            format!("<'my-actor.my-proc' {}@inproc://42>", aref.id())
         );
     }
 
@@ -491,7 +521,7 @@ mod tests {
         let aref = ActorRef::new(aid, loc);
         assert_eq!(
             format!("{:?}", aref),
-            "<0000000000abc123.0000000000def456@inproc://42>"
+            format!("<{}@inproc://42>", aref.id())
         );
     }
 
@@ -506,7 +536,7 @@ mod tests {
         let aref = ActorRef::new(aid, loc);
         assert_eq!(
             format!("{:?}", aref),
-            "<'my-actor' 0000000000abc123.0000000000def456@inproc://42>"
+            format!("<'my-actor' {}@inproc://42>", aref.id())
         );
     }
 
@@ -524,7 +554,7 @@ mod tests {
         let aref = ActorRef::new(aid, loc);
         assert_eq!(
             format!("{:?}", aref),
-            "<'.my-proc' 0000000000abc123.0000000000def456@inproc://42>"
+            format!("<'.my-proc' {}@inproc://42>", aref.id())
         );
     }
 
@@ -543,13 +573,23 @@ mod tests {
         let s = aref.to_string();
         let parsed: ActorRef = s.parse().unwrap();
         assert_eq!(aref, parsed);
+        assert_eq!(parsed.id.label().map(|l| l.as_str()), Some("my-actor"));
+        assert_eq!(
+            parsed.id.proc_id().label().map(|l| l.as_str()),
+            Some("my-proc")
+        );
     }
 
     #[test]
     fn test_actor_ref_fromstr_missing_separator() {
-        let err = "0000000000abc123.0000000000def456"
-            .parse::<ActorRef>()
-            .unwrap_err();
+        let err = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(Uid::Instance(0xdef456), None),
+            None,
+        )
+        .to_string()
+        .parse::<ActorRef>()
+        .unwrap_err();
         assert!(matches!(err, RefParseError::MissingSeparator));
     }
 
@@ -612,7 +652,7 @@ mod tests {
         let loc: Location = ChannelAddr::Local(0).into();
         let pref = ProcRef::new(pid, loc);
         let s = pref.to_string();
-        assert_eq!(s, "_my-proc@inproc://0");
+        assert_eq!(s, "my-proc@inproc://0");
         let parsed: ProcRef = s.parse().unwrap();
         assert_eq!(pref, parsed);
     }
@@ -663,7 +703,7 @@ mod tests {
         let loc: Location = ChannelAddr::MetaTls(TlsAddr::new("example.com", 443)).into();
         let pref = ProcRef::new(pid, loc);
         let s = pref.to_string();
-        assert_eq!(s, "0000000000000042@metatls://example.com:443");
+        assert_eq!(s, format!("{}@metatls://example.com:443", pref.id()));
         let parsed: ProcRef = s.parse().unwrap();
         assert_eq!(pref, parsed);
     }
@@ -699,10 +739,7 @@ mod tests {
         let port_id = PortId::new(aid, Port::from(42));
         let loc: Location = ChannelAddr::Local(7).into();
         let pref = PortRef::new(port_id, loc);
-        assert_eq!(
-            pref.to_string(),
-            "0000000000abc123.0000000000def456:42@inproc://7"
-        );
+        assert_eq!(pref.to_string(), format!("{}@inproc://7", pref.id()));
     }
 
     #[test]
@@ -720,7 +757,7 @@ mod tests {
         let pref = PortRef::new(port_id, loc);
         assert_eq!(
             format!("{:?}", pref),
-            "<'my-actor.my-proc' 0000000000abc123.0000000000def456:42@inproc://7>"
+            format!("<'my-actor.my-proc' {}@inproc://7>", pref.id())
         );
     }
 
@@ -734,10 +771,7 @@ mod tests {
         let port_id = PortId::new(aid, Port::from(42));
         let loc: Location = ChannelAddr::Local(7).into();
         let pref = PortRef::new(port_id, loc);
-        assert_eq!(
-            format!("{:?}", pref),
-            "<0000000000abc123.0000000000def456:42@inproc://7>"
-        );
+        assert_eq!(format!("{:?}", pref), format!("<{}@inproc://7>", pref.id()));
     }
 
     #[test]
@@ -752,7 +786,7 @@ mod tests {
         let pref = PortRef::new(port_id, loc);
         assert_eq!(
             format!("{:?}", pref),
-            "<'my-actor' 0000000000abc123.0000000000def456:42@inproc://7>"
+            format!("<'my-actor' {}@inproc://7>", pref.id())
         );
     }
 
@@ -771,7 +805,7 @@ mod tests {
         let pref = PortRef::new(port_id, loc);
         assert_eq!(
             format!("{:?}", pref),
-            "<'.my-proc' 0000000000abc123.0000000000def456:42@inproc://7>"
+            format!("<'.my-proc' {}@inproc://7>", pref.id())
         );
     }
 
@@ -791,13 +825,29 @@ mod tests {
         let s = pref.to_string();
         let parsed: PortRef = s.parse().unwrap();
         assert_eq!(pref, parsed);
+        assert_eq!(
+            parsed.id.actor_id().label().map(|l| l.as_str()),
+            Some("my-actor")
+        );
+        assert_eq!(
+            parsed.id.actor_id().proc_id().label().map(|l| l.as_str()),
+            Some("my-proc")
+        );
     }
 
     #[test]
     fn test_port_ref_fromstr_missing_separator() {
-        let err = "0000000000abc123.0000000000def456:42"
-            .parse::<PortRef>()
-            .unwrap_err();
+        let err = PortId::new(
+            ActorId::new(
+                Uid::Instance(0xabc123),
+                ProcId::new(Uid::Instance(0xdef456), None),
+                None,
+            ),
+            Port::from(42),
+        )
+        .to_string()
+        .parse::<PortRef>()
+        .unwrap_err();
         assert!(matches!(err, RefParseError::MissingSeparator));
     }
 
