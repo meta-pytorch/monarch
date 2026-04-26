@@ -65,6 +65,7 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::host::Host;
 use hyperactor::host::LocalProcManager;
+use hyperactor::id::Label;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
@@ -77,12 +78,13 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::HostMeshRef;
-use crate::Name;
 use crate::host_mesh::host_agent::GetLocalProcClient;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
+use crate::mesh_id::HostMeshId;
+use crate::mesh_id::ProcMeshId;
 use crate::proc_agent::GetProcClient;
 use crate::proc_agent::ProcAgent;
 use crate::proc_mesh::ProcMeshRef;
@@ -363,9 +365,11 @@ async fn bootstrap_host() -> GlobalState {
         .expect("failed to spawn host agent");
 
     // 4. Build HostMeshRef.
-    let host_mesh =
-        HostMeshRef::from_host_agent(Name::new_reserved("local").unwrap(), host_agent.bind())
-            .expect("failed to create host mesh ref");
+    let host_mesh = HostMeshRef::from_host_agent(
+        HostMeshId::singleton(Label::new("local").unwrap()),
+        host_agent.bind(),
+    )
+    .expect("failed to create host mesh ref");
 
     // 5. Get local_proc via HostAgent (lazily boots ProcAgent).
     //
@@ -391,7 +395,7 @@ async fn bootstrap_host() -> GlobalState {
 
     // 7. Build ProcMeshRef.
     let proc_mesh = ProcMeshRef::new_singleton(
-        Name::new_reserved("local").unwrap(),
+        ProcMeshId::singleton(Label::new("local").unwrap()),
         ProcRef::new(
             local_proc_agent.actor_id().proc_id().clone(),
             0,

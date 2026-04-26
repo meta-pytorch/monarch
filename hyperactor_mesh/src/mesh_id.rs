@@ -28,8 +28,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use crate::Name;
-
 /// Errors that can occur when parsing a [`ResourceId`] from a string.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourceIdParseError {
@@ -80,9 +78,27 @@ impl ResourceId {
         &self.uid
     }
 
-    /// Returns the label.
+    /// Returns the explicit label metadata, if any.
     pub fn label(&self) -> Option<&Label> {
         self.label.as_ref()
+    }
+
+    /// Returns a human-readable label: the explicit label for instances,
+    /// or the singleton name for singletons.
+    pub fn display_label(&self) -> Option<&Label> {
+        self.label.as_ref().or(match &self.uid {
+            Uid::Singleton(label) => Some(label),
+            _ => None,
+        })
+    }
+
+    /// Returns the routing-safe actor name string in hyperactor resource syntax.
+    pub fn actor_name(&self) -> String {
+        match (&self.uid, &self.label) {
+            (Uid::Singleton(label), _) => label.to_string(),
+            (Uid::Instance(_), Some(label)) => format!("{label}{}", self.uid),
+            (Uid::Instance(_), None) => self.uid.to_string(),
+        }
     }
 }
 
@@ -137,8 +153,8 @@ fn fmt_id_component(f: &mut fmt::Formatter<'_>, uid: &Uid, label: Option<&Label>
     match uid {
         Uid::Singleton(singleton) => write!(f, "{singleton}"),
         Uid::Instance(uid) => match label {
-            Some(label) => write!(f, "{label}<{}>", fmt_instance_uid(*uid)),
-            None => write!(f, "<{}>", fmt_instance_uid(*uid)),
+            Some(label) => write!(f, "{label}-{}", fmt_instance_uid(*uid)),
+            None => write!(f, "{}", fmt_instance_uid(*uid)),
         },
     }
 }
@@ -154,25 +170,22 @@ impl fmt::Debug for ResourceId {
         match (&self.uid, &self.label) {
             (Uid::Singleton(label), _) => write!(f, "<{label}>"),
             (Uid::Instance(uid), Some(label)) => {
-                write!(f, "<'{label}' <{}>>", fmt_instance_uid(*uid))
+                write!(f, "<'{label}' {}>", fmt_instance_uid(*uid))
             }
-            (Uid::Instance(uid), None) => write!(f, "<<{}>>", fmt_instance_uid(*uid)),
+            (Uid::Instance(uid), None) => write!(f, "<{}>", fmt_instance_uid(*uid)),
         }
     }
 }
 
 fn parse_id_component(s: &str) -> Result<(Uid, Option<Label>), ResourceIdParseError> {
-    if let Some(inner) = s
-        .strip_prefix('<')
-        .and_then(|inner| inner.strip_suffix('>'))
-    {
-        return Ok((Uid::Instance(parse_instance_uid(inner)?), None));
+    if let Ok(uid) = parse_instance_uid(s) {
+        return Ok((Uid::Instance(uid), None));
     }
 
-    if let Some(open) = s.find('<') {
-        if s.ends_with('>') {
-            let label = Label::new(&s[..open])?;
-            let uid = parse_instance_uid(&s[open + 1..s.len() - 1])?;
+    if let Some(split) = s.rfind('-') {
+        let label_part = &s[..split];
+        let uid_part = &s[split + 1..];
+        if let (Ok(label), Ok(uid)) = (Label::new(label_part), parse_instance_uid(uid_part)) {
             return Ok((Uid::Instance(uid), Some(label)));
         }
     }
@@ -187,26 +200,6 @@ impl FromStr for ResourceId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (uid, label) = parse_id_component(s)?;
         Ok(Self { uid, label })
-    }
-}
-
-/// Converts a [`Name`] to a [`ResourceId`] for migration.
-///
-/// `Name::Suffixed` maps to an instance uid (preserving the `ShortUuid`'s
-/// inner u64) with a stripped label. `Name::Reserved` maps to a singleton
-/// uid with the name as the label.
-impl From<Name> for ResourceId {
-    fn from(name: Name) -> Self {
-        match name {
-            Name::Suffixed(s, uuid) => ResourceId {
-                uid: Uid::Instance(uuid.0),
-                label: Some(Label::strip(&s)),
-            },
-            Name::Reserved(s) => {
-                let label = Label::new(&s).unwrap_or_else(|_| Label::strip(&s));
-                ResourceId::singleton(label)
-            }
-        }
     }
 }
 
@@ -239,9 +232,20 @@ macro_rules! define_mesh_id {
                 self.0.uid()
             }
 
-            /// Returns the label.
+            /// Returns the explicit label metadata, if any.
             pub fn label(&self) -> Option<&Label> {
                 self.0.label()
+            }
+
+            /// Returns a human-readable label: the explicit label for
+            /// instances, or the singleton name for singletons.
+            pub fn display_label(&self) -> Option<&Label> {
+                self.0.display_label()
+            }
+
+            /// Returns the routing-safe actor name string.
+            pub fn actor_name(&self) -> String {
+                self.0.actor_name()
             }
 
             /// Returns the inner [`ResourceId`].
@@ -262,11 +266,6 @@ macro_rules! define_mesh_id {
             }
         }
 
-        impl From<Name> for $name {
-            fn from(name: Name) -> Self {
-                Self(ResourceId::from(name))
-            }
-        }
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -305,6 +304,16 @@ define_mesh_id!(
     ActorMeshId
 );
 
+impl hyperactor_config::AttrValue for ActorMeshId {
+    fn display(&self) -> String {
+        self.to_string()
+    }
+
+    fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        Ok(value.parse()?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::DefaultHasher;
@@ -329,7 +338,7 @@ mod tests {
     #[test]
     fn test_resource_id_unlabeled() {
         let id = ResourceId::new(Uid::Instance(0xabcdef), None);
-        assert_eq!(id.to_string(), format!("<{}>", fmt_instance_uid(0xabcdef)));
+        assert_eq!(id.to_string(), fmt_instance_uid(0xabcdef));
         assert_eq!(id.label(), None);
     }
 
@@ -383,17 +392,38 @@ mod tests {
         );
         assert_eq!(
             id.to_string(),
-            format!("workers<{}>", fmt_instance_uid(0xd5d54d7201103869))
+            format!("workers-{}", fmt_instance_uid(0xd5d54d7201103869))
         );
     }
 
     #[test]
     fn test_resource_id_display_unlabeled_instance() {
         let id = ResourceId::new(Uid::Instance(0xd5d54d7201103869), None);
-        assert_eq!(
-            id.to_string(),
-            format!("<{}>", fmt_instance_uid(0xd5d54d7201103869))
+        assert_eq!(id.to_string(), fmt_instance_uid(0xd5d54d7201103869));
+    }
+
+    #[test]
+    fn test_resource_id_actor_name_singleton() {
+        let id = ResourceId::singleton(Label::new("local").unwrap());
+        assert_eq!(id.actor_name(), "local");
+    }
+
+    #[test]
+    fn test_resource_id_actor_name_labeled_instance() {
+        let id = ResourceId::new(
+            Uid::Instance(0xd5d54d7201103869),
+            Some(Label::new("workers").unwrap()),
         );
+        assert_eq!(
+            id.actor_name(),
+            format!("workers{}", fmt_instance_uid(0xd5d54d7201103869))
+        );
+    }
+
+    #[test]
+    fn test_resource_id_actor_name_unlabeled_instance() {
+        let id = ResourceId::new(Uid::Instance(0xd5d54d7201103869), None);
+        assert_eq!(id.actor_name(), fmt_instance_uid(0xd5d54d7201103869));
     }
 
     #[test]
@@ -407,13 +437,13 @@ mod tests {
         );
         assert_eq!(
             format!("{:?}", labeled),
-            format!("<'workers' <{}>>", fmt_instance_uid(0xd5d54d7201103869))
+            format!("<'workers' {}>", fmt_instance_uid(0xd5d54d7201103869))
         );
 
         let unlabeled = ResourceId::new(Uid::Instance(0xd5d54d7201103869), None);
         assert_eq!(
             format!("{:?}", unlabeled),
-            format!("<<{}>>", fmt_instance_uid(0xd5d54d7201103869))
+            format!("<{}>", fmt_instance_uid(0xd5d54d7201103869))
         );
     }
 
@@ -426,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_resource_id_fromstr_labeled_instance() {
-        let parsed: ResourceId = format!("workers<{}>", fmt_instance_uid(0xd5d54d7201103869))
+        let parsed: ResourceId = format!("workers-{}", fmt_instance_uid(0xd5d54d7201103869))
             .parse()
             .unwrap();
         assert_eq!(*parsed.uid(), Uid::Instance(0xd5d54d7201103869));
@@ -435,16 +465,14 @@ mod tests {
 
     #[test]
     fn test_resource_id_fromstr_unlabeled_instance() {
-        let parsed: ResourceId = format!("<{}>", fmt_instance_uid(0xd5d54d7201103869))
-            .parse()
-            .unwrap();
+        let parsed: ResourceId = fmt_instance_uid(0xd5d54d7201103869).parse().unwrap();
         assert_eq!(*parsed.uid(), Uid::Instance(0xd5d54d7201103869));
         assert_eq!(parsed.label(), None);
     }
 
     #[test]
     fn test_resource_id_fromstr_labeled_with_hyphens() {
-        let parsed: ResourceId = format!("my-service<{}>", fmt_instance_uid(0xd5d54d7201103869))
+        let parsed: ResourceId = format!("my-service-{}", fmt_instance_uid(0xd5d54d7201103869))
             .parse()
             .unwrap();
         assert_eq!(*parsed.uid(), Uid::Instance(0xd5d54d7201103869));
@@ -493,30 +521,6 @@ mod tests {
                 parsed.label().map(|l| l.as_str())
             );
         }
-    }
-
-    #[test]
-    fn test_resource_id_from_name_suffixed() {
-        let name = Name::new("workers").unwrap();
-        let uuid_val = name.uuid().unwrap().0;
-        let id = ResourceId::from(name);
-        assert_eq!(*id.uid(), Uid::Instance(uuid_val));
-        assert_eq!(id.label().map(|l| l.as_str()), Some("workers"));
-    }
-
-    #[test]
-    fn test_resource_id_from_name_reserved() {
-        let name = Name::new_reserved("local").unwrap();
-        let id = ResourceId::from(name);
-        assert_eq!(*id.uid(), Uid::Singleton(Label::new("local").unwrap()));
-        assert_eq!(id.label(), None);
-    }
-
-    #[test]
-    fn test_resource_id_from_name_reserved_with_underscores() {
-        let name = Name::new_reserved("host_agent").unwrap();
-        let id = ResourceId::from(name);
-        assert_eq!(*id.uid(), Uid::Singleton(Label::new("host_agent").unwrap()));
     }
 
     #[test]
@@ -571,15 +575,6 @@ mod tests {
 
         let back: HostMeshId = resource_id.into();
         assert_eq!(host, back);
-    }
-
-    #[test]
-    fn test_mesh_id_from_name() {
-        let name = Name::new("workers").unwrap();
-        let uuid_val = name.uuid().unwrap().0;
-        let id = ActorMeshId::from(name);
-        assert_eq!(*id.uid(), Uid::Instance(uuid_val));
-        assert_eq!(id.label().map(|l| l.as_str()), Some("workers"));
     }
 
     #[test]
