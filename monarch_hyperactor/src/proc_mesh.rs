@@ -9,8 +9,10 @@
 use std::fmt::Debug;
 use std::ops::Deref;
 
+use hyperactor::id::Label;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::ProcMeshRef;
+use hyperactor_mesh::mesh_id::ActorMeshId;
 use hyperactor_mesh::shared_cell::SharedCell;
 use monarch_types::PickledPyObject;
 use monarch_types::py_module_add_function;
@@ -108,7 +110,7 @@ impl PyProcMesh {
             })
             .await?;
 
-            let mesh_name = hyperactor_mesh::Name::new(mesh_base_name).unwrap();
+            let mesh_name = ActorMeshId::unique(Label::strip(&mesh_base_name));
             let actor_mesh = proc_mesh
                 .spawn_with_name(
                     instance.deref(),
