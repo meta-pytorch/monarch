@@ -136,11 +136,7 @@ impl ResourceId {
     /// helper as the single mapping point from control-plane resource ids to
     /// actor-runtime names.
     pub fn actor_name(&self) -> String {
-        match (&self.uid, &self.label) {
-            (Uid::Singleton(label), _) => label.to_string(),
-            (Uid::Instance(_), Some(label)) => format!("{label}{}", self.uid),
-            (Uid::Instance(_), None) => self.uid.to_string(),
-        }
+        self.to_string()
     }
 }
 
@@ -473,7 +469,7 @@ mod tests {
         );
         assert_eq!(
             id.actor_name(),
-            format!("workers{}", fmt_instance_uid(0xd5d54d7201103869))
+            format!("workers-{}", fmt_instance_uid(0xd5d54d7201103869))
         );
     }
 

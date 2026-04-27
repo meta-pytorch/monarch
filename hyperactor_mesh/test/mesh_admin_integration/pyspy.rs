@@ -296,8 +296,8 @@ fn has_evidence(name: &str, evidence: &[&str]) -> bool {
 /// reported cleanly, not masked by a discovery failure.
 async fn check_preflight(s: &PyspyScenario) {
     // --- MIT-10, MIT-11: bogus proc error envelope (cheap, run first) ---
-    let bogus = "unix:@nonexistent_bogus_socket_xyz,bogus-ffffffffffffffff";
-    let encoded = urlencoding::encode(bogus);
+    let bogus = crate::harness::unreachable_proc_ref();
+    let encoded = urlencoding::encode(&bogus);
     let resp = s
         .fixture
         .get(&format!("/v1/pyspy/{encoded}"))
