@@ -296,7 +296,7 @@ mod tests {
     }
 
     fn host(name: &str) -> NodeRef {
-        let id_str = format!("unix:@test,world,{}[0]", name);
+        let id_str = format!("unix:@test,world,{}", name);
         NodeRef::Host(hyperactor::reference::ActorId::from_str(&id_str).unwrap())
     }
 
@@ -306,7 +306,7 @@ mod tests {
     }
 
     fn actor(name: &str) -> NodeRef {
-        let id_str = format!("unix:@test,world,{}[0]", name);
+        let id_str = format!("unix:@test,world,{}", name);
         NodeRef::Actor(hyperactor::reference::ActorId::from_str(&id_str).unwrap())
     }
 

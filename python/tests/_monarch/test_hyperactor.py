@@ -71,8 +71,14 @@ def test_import() -> None:
 
 def test_actor_id() -> None:
     actor_id = ActorId(addr="local:0", proc_name="test", actor_name="actor")
-    assert actor_id.pid == 0
-    assert str(actor_id) == "local:0,_test,actor[0]"
+    assert actor_id.uid == "_actor"
+    assert actor_id.pid == actor_id.uid
+    assert actor_id.label == "actor"
+    assert actor_id.proc_label == "test"
+    assert actor_id.proc_id == "local:0,_test"
+    assert actor_id.is_root is True
+    assert str(actor_id) == "local:0,_test,actor"
+    assert ActorId.from_string(str(actor_id)) == actor_id
 
 
 def test_no_hang_on_shutdown() -> None:

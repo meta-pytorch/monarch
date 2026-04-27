@@ -254,7 +254,7 @@ fn label_from_payload(
         NodeProperties::Proc { proc_name, .. } => proc_name.clone(),
         NodeProperties::Actor { .. } => match reference {
             NodeRef::Actor(actor_id) => {
-                format!("{}[{}]", actor_id.name(), actor_id.pid())
+                format!("{}[{}]", actor_id.log_name(), actor_id.uid())
             }
             other => other.to_string(),
         },
@@ -392,7 +392,9 @@ async fn walk(
                         r.label = format!("  {}", label_from_payload(actor_ref, p));
                     } else {
                         let short = match actor_ref {
-                            NodeRef::Actor(id) => format!("{}[{}]", id.name(), id.pid()),
+                            NodeRef::Actor(id) => {
+                                format!("{}[{}]", id.log_name(), id.uid())
+                            }
                             other => other.to_string(),
                         };
                         r.label = format!("  {}", short);
@@ -400,7 +402,7 @@ async fn walk(
                     // Classify actor role from the typed ref.
                     r.note = match actor_ref {
                         NodeRef::Actor(actor_id) => {
-                            let actor_name = actor_id.name();
+                            let actor_name = actor_id.log_name();
                             if actor_name.starts_with(MESH_ADMIN_BRIDGE_NAME) {
                                 Some(DiagNodeRole::RootClientBridge)
                             } else if actor_name.starts_with(MESH_ADMIN_ACTOR_NAME) {
@@ -453,7 +455,7 @@ async fn walk(
                 let actor_role = |nr: &NodeRef| -> Option<DiagNodeRole> {
                     match nr {
                         NodeRef::Actor(actor_id) => {
-                            let name = actor_id.name();
+                            let name = actor_id.log_name();
                             if name.starts_with(COMM_ACTOR_NAME) {
                                 Some(DiagNodeRole::CommActor)
                             } else if name.starts_with(PROC_AGENT_ACTOR_NAME) {
