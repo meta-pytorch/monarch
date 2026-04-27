@@ -158,11 +158,20 @@ impl<M: RemoteMessage> Clone for DuplexTx<M> {
     }
 }
 
+impl<M: RemoteMessage> std::fmt::Debug for DuplexTx<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DuplexTx")
+            .field("addr", &self.addr)
+            .finish()
+    }
+}
+
 /// Start a duplex server on the given address.
 pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
     addr: ChannelAddr,
+    listener: Option<std::net::TcpListener>,
 ) -> Result<DuplexServer<In, Out>, ServerError> {
-    let (mut listener, channel_addr) = super::listen(addr)?;
+    let (mut listener, channel_addr) = super::listen_with_prebound(addr, listener)?;
 
     let (accept_tx, accept_rx) = mpsc::channel(16);
     let cancel_token = CancellationToken::new();
@@ -358,6 +367,54 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
                                 true
                             }
                         };
+
+                        // Flush any pending recv ack so the peer's
+                        // unacked queue clears cleanly before this
+                        // connection goes away. Mirrors the simplex
+                        // server's drain logic (see
+                        // `dispatch_stream`); without it, peers
+                        // retry-loop until `MESSAGE_DELIVERY_TIMEOUT`.
+                        if recv_next.ack < recv_next.seq {
+                            let recv_stream = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            let ack = super::serialize_response(super::NetRxResponse::Ack(
+                                recv_next.seq - 1,
+                            ))
+                            .expect("serialize ack");
+                            let mut completion = recv_stream.write(ack);
+                            match completion.drive().await {
+                                Ok(()) => {
+                                    recv_next.ack = recv_next.seq;
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        session_id = session_id.0,
+                                        error = %e,
+                                        "duplex: failed to flush acks during cleanup"
+                                    );
+                                }
+                            }
+                        }
+
+                        // On terminal exit, tell the peer we're
+                        // closing so it stops trying to reconnect.
+                        let terminal_response = match &result {
+                            Err(Either::Recv(session::RecvLoopError::SequenceError(reason))) => {
+                                Some(super::NetRxResponse::Reject(reason.clone()))
+                            }
+                            Err(Either::Recv(session::RecvLoopError::Cancelled))
+                            | Err(Either::Send(session::SendLoopError::AppClosed)) => {
+                                Some(super::NetRxResponse::Closed)
+                            }
+                            _ => None,
+                        };
+                        if let Some(rsp) = terminal_response {
+                            let recv_stream = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            let data = super::serialize_response(rsp)
+                                .expect("serialize terminal response");
+                            let mut completion = recv_stream.write(data);
+                            let _ = completion.drive().await;
+                        }
+
                         session = connected.release();
                         if terminal {
                             break;
@@ -553,7 +610,7 @@ mod tests {
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_duplex_basic() {
         let mut server =
-            serve::<u64, String>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+            serve::<u64, String>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         let server_addr = server.addr().clone();
 
         // Client: sends u64, receives String.
@@ -585,7 +642,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_duplex_multiple_links() {
-        let mut server = serve::<u64, u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
+        let mut server =
+            serve::<u64, u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), None).unwrap();
         let server_addr = server.addr().clone();
 
         // Two independent clients.
@@ -614,7 +672,7 @@ mod tests {
         addr: ChannelAddr,
         iterations: usize,
     ) -> anyhow::Result<std::time::Duration> {
-        let mut server = serve::<u64, u64>(addr)?;
+        let mut server = serve::<u64, u64>(addr, None)?;
         let server_addr = server.addr().clone();
 
         let server_handle = tokio::spawn(async move {
