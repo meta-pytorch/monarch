@@ -292,7 +292,9 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         let proc = proc.clone();
         let name = name.to_string();
         Box::pin(async move {
-            let params = bincode::deserialize(&serialized_params)?;
+            let params =
+                bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
+                    .map(|(v, _)| v)?;
             let actor = Self::new(params, environment).await?;
             let handle = proc.spawn(&name, actor)?;
             // We return only the ActorId, not a typed ActorRef.
@@ -541,10 +543,6 @@ pub enum ActorStatus {
     /// The actor has been processing a message, beginning at the specified
     /// instant. The message handler info is included.
     Processing(SystemTime, Option<HandlerInfo>),
-    /// The actor has been saving its state.
-    Saving(SystemTime),
-    /// The actor has been loading its state.
-    Loading(SystemTime),
     /// The actor is stopping. It is draining messages.
     Stopping,
     /// The actor is stopped with a provided reason.
@@ -593,26 +591,6 @@ impl fmt::Display for ActorStatus {
                     f,
                     "{}: processing for {}ms",
                     handler_info,
-                    std::time::SystemTime::now()
-                        .duration_since(*instant)
-                        .unwrap_or_default()
-                        .as_millis()
-                )
-            }
-            Self::Saving(instant) => {
-                write!(
-                    f,
-                    "saving for {}ms",
-                    std::time::SystemTime::now()
-                        .duration_since(*instant)
-                        .unwrap_or_default()
-                        .as_millis()
-                )
-            }
-            Self::Loading(instant) => {
-                write!(
-                    f,
-                    "loading for {}ms",
                     std::time::SystemTime::now()
                         .duration_since(*instant)
                         .unwrap_or_default()

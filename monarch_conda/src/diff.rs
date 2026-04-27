@@ -63,7 +63,10 @@ impl PackMetaFingerprint {
         let contents = fs::read_to_string(pack_meta.join("offsets.jsonl")).await?;
         let offsets = Offsets::from_contents(&contents)?;
         for ent in offsets.entries {
-            let contents = bincode::serialize(&(ent.path, ent.mode, ent.offsets.len()))?;
+            let contents = bincode::serde::encode_to_vec(
+                &(ent.path, ent.mode, ent.offsets.len()),
+                bincode::config::legacy(),
+            )?;
             hasher.update(contents.len().to_le_bytes());
             hasher.update(&contents);
         }

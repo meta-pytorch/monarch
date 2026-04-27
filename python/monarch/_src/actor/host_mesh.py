@@ -10,11 +10,8 @@ import os
 import subprocess
 import sys
 import tempfile
-import warnings
-from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
-from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
     _spawn_admin as _hy_spawn_admin,
     BootstrapCommand,
@@ -25,7 +22,6 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyPr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
 from monarch._src.actor.actor_mesh import _Lazy, context
-from monarch._src.actor.allocator import AllocateMixin, AllocHandle, LocalAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
@@ -92,47 +88,6 @@ class HostMesh(MeshTrait):
         self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = code_sync_proc_mesh
         self._pending_spawns: list[Shared[HyProcMesh]] = []
         self._proc_meshes: list["ProcMesh"] = []
-
-    @classmethod
-    def _allocate_nonblocking(
-        cls,
-        name: str,
-        extent: Extent,
-        allocator: AllocateMixin,
-        alloc_constraints: Optional[AllocConstraints] = None,
-        bootstrap_cmd: Optional[BootstrapCommand] = None,
-    ) -> "HostMesh":
-        warnings.warn(
-            (
-                "DEPRECATION WARNING: this function is deprecated. "
-                "Use `attach_to_workers` instead, or if applicable, one of the "
-                "JobTrait classes directly."
-            ),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        spec = AllocSpec(alloc_constraints or AllocConstraints(), **extent)
-        alloc: AllocHandle = allocator.allocate(spec)
-
-        async def task() -> HyHostMesh:
-            return await HyHostMesh.allocate_nonblocking(
-                context().actor_instance._as_rust(),
-                await alloc._hy_alloc,
-                name,
-                bootstrap_cmd,
-            )
-
-        hm = cls(
-            PythonTask.from_coroutine(task()).spawn(),
-            extent.region,
-            alloc.stream_logs,
-            isinstance(allocator, LocalAllocator),
-            None,
-        )
-
-        hm._code_sync_proc_mesh = _Lazy(lambda: hm.spawn_procs(name="code_sync"))
-        return hm
 
     def spawn_procs(
         self,
