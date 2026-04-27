@@ -32,12 +32,6 @@ use hyperactor::PortHandle;
 use hyperactor::Proc;
 use hyperactor::RefClient;
 use hyperactor::context;
-use hyperactor::host::Host;
-use hyperactor::host::HostError;
-use hyperactor::host::LOCAL_PROC_NAME;
-use hyperactor::host::LocalProcManager;
-use hyperactor::host::SERVICE_PROC_NAME;
-use hyperactor::host::SingleTerminate;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::attrs::Attrs;
@@ -53,6 +47,12 @@ use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
+use crate::host::Host;
+use crate::host::HostError;
+use crate::host::LOCAL_PROC_NAME;
+use crate::host::LocalProcManager;
+use crate::host::SERVICE_PROC_NAME;
+use crate::host::SingleTerminate;
 use crate::proc_agent::ProcAgent;
 use crate::pyspy::PySpyDump;
 use crate::pyspy::PySpyProfile;
@@ -147,8 +147,8 @@ impl HostAgentMode {
             },
             HostAgentMode::Local(host) => {
                 let status = match host.manager().local_proc_status(proc_id).await {
-                    Some(hyperactor::host::LocalProcStatus::Stopping) => resource::Status::Stopping,
-                    Some(hyperactor::host::LocalProcStatus::Stopped) => resource::Status::Stopped,
+                    Some(crate::host::LocalProcStatus::Stopping) => resource::Status::Stopping,
+                    Some(crate::host::LocalProcStatus::Stopped) => resource::Status::Stopped,
                     None => resource::Status::Running,
                 };
                 (status, None)
@@ -302,7 +302,7 @@ pub struct HostAgent {
     proc_status_port: Option<PortHandle<ProcStatusChanged>>,
     /// Lazily initialized ProcAgent on the host's local proc.
     /// Boots on first [`GetLocalProc`] (LP-1 — see
-    /// `hyperactor::host::LOCAL_PROC_NAME`).
+    /// `crate::host::LOCAL_PROC_NAME`).
     local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
     /// Handle to the host's frontend mailbox server, set during `init` after
     /// `this.bind::<Self>()` ensures the actor port is registered before the
@@ -1298,7 +1298,7 @@ impl Handler<SetClientConfig> for HostAgent {
 /// `monarch_hyperactor::bootstrap_host` when setting up the Python
 /// `this_proc()` singleton.
 ///
-/// See also: `hyperactor::host::LOCAL_PROC_NAME`.
+/// See also: `crate::host::LOCAL_PROC_NAME`.
 #[derive(Debug, hyperactor::Handler, hyperactor::HandleClient)]
 pub struct GetLocalProc {
     #[reply]

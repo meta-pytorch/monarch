@@ -356,7 +356,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RefClient;
 use hyperactor::channel::try_tls_acceptor;
-use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::introspect::IntrospectMessage;
 use hyperactor::introspect::IntrospectResult;
 use hyperactor::introspect::IntrospectView;
@@ -371,6 +370,7 @@ use typeuri::Named;
 
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
+use crate::host::SERVICE_PROC_NAME;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::introspect::NodePayload;
@@ -3295,9 +3295,9 @@ mod tests {
     async fn test_resolve_reference_tree_walk() {
         use hyperactor::Proc;
         use hyperactor::channel::ChannelTransport;
-        use hyperactor::host::Host;
-        use hyperactor::host::LocalProcManager;
 
+        use crate::host::Host;
+        use crate::host::LocalProcManager;
         use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
@@ -3460,10 +3460,10 @@ mod tests {
 
         use hyperactor::Proc;
         use hyperactor::channel::ChannelTransport;
-        use hyperactor::host::Host;
-        use hyperactor::host::LocalProcManager;
 
         use crate::Name;
+        use crate::host::Host;
+        use crate::host::LocalProcManager;
         use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
@@ -3613,9 +3613,9 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_root_client_actor() {
         use hyperactor::channel::ChannelTransport;
-        use hyperactor::host::Host;
-        use hyperactor::host::LocalProcManager;
 
+        use crate::host::Host;
+        use crate::host::LocalProcManager;
         use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
@@ -3780,9 +3780,9 @@ mod tests {
     async fn test_navigation_identity_invariant() {
         use hyperactor::Proc;
         use hyperactor::channel::ChannelTransport;
-        use hyperactor::host::Host;
-        use hyperactor::host::LocalProcManager;
 
+        use crate::host::Host;
+        use crate::host::LocalProcManager;
         use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
@@ -3883,9 +3883,9 @@ mod tests {
     async fn test_system_proc_identity() {
         use hyperactor::Proc;
         use hyperactor::channel::ChannelTransport;
-        use hyperactor::host::Host;
-        use hyperactor::host::LocalProcManager;
 
+        use crate::host::Host;
+        use crate::host::LocalProcManager;
         use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
@@ -4197,10 +4197,10 @@ mod tests {
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
-        use hyperactor::host::Host;
-        use hyperactor::host::LocalProcManager;
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
 
+        use crate::host::Host;
+        use crate::host::LocalProcManager;
         use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
         use crate::host_mesh::host_agent::HostAgent;
         use crate::host_mesh::host_agent::HostAgentMode;

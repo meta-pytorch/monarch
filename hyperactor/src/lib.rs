@@ -65,7 +65,6 @@ pub mod actor_local;
 pub mod channel;
 pub mod config;
 pub mod context;
-pub mod host;
 pub mod id;
 mod init;
 pub mod introspect;

@@ -147,11 +147,11 @@ impl From<bootstrap::ProcStatus> for Status {
     }
 }
 
-impl From<hyperactor::host::LocalProcStatus> for Status {
-    fn from(status: hyperactor::host::LocalProcStatus) -> Self {
+impl From<crate::host::LocalProcStatus> for Status {
+    fn from(status: crate::host::LocalProcStatus) -> Self {
         match status {
-            hyperactor::host::LocalProcStatus::Stopping => Status::Stopping,
-            hyperactor::host::LocalProcStatus::Stopped => Status::Stopped,
+            crate::host::LocalProcStatus::Stopping => Status::Stopping,
+            crate::host::LocalProcStatus::Stopped => Status::Stopped,
         }
     }
 }

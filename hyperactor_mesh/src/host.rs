@@ -64,32 +64,31 @@ use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use crate as hyperactor;
-use crate::Actor;
-use crate::ActorHandle;
-use crate::PortHandle;
-use crate::Proc;
-use crate::actor::Binds;
-use crate::actor::Referable;
-use crate::channel;
-use crate::channel::ChannelAddr;
-use crate::channel::ChannelError;
-use crate::channel::ChannelRx;
-use crate::channel::ChannelTransport;
-use crate::channel::Rx;
-use crate::channel::Tx;
-use crate::context;
-use crate::mailbox::BoxableMailboxSender;
-use crate::mailbox::BoxedMailboxSender;
-use crate::mailbox::DialMailboxRouter;
-use crate::mailbox::IntoBoxedMailboxSender as _;
-use crate::mailbox::MailboxClient;
-use crate::mailbox::MailboxSender;
-use crate::mailbox::MailboxServer;
-use crate::mailbox::MailboxServerHandle;
-use crate::mailbox::MessageEnvelope;
-use crate::mailbox::Undeliverable;
-use crate::reference;
+use hyperactor::Actor;
+use hyperactor::ActorHandle;
+use hyperactor::PortHandle;
+use hyperactor::Proc;
+use hyperactor::actor::Binds;
+use hyperactor::actor::Referable;
+use hyperactor::channel;
+use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelError;
+use hyperactor::channel::ChannelRx;
+use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::Rx;
+use hyperactor::channel::Tx;
+use hyperactor::context;
+use hyperactor::mailbox::BoxableMailboxSender;
+use hyperactor::mailbox::BoxedMailboxSender;
+use hyperactor::mailbox::DialMailboxRouter;
+use hyperactor::mailbox::IntoBoxedMailboxSender as _;
+use hyperactor::mailbox::MailboxClient;
+use hyperactor::mailbox::MailboxSender;
+use hyperactor::mailbox::MailboxServer;
+use hyperactor::mailbox::MailboxServerHandle;
+use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::Undeliverable;
+use hyperactor::reference;
 
 /// Name of the system service proc on a host — hosts the admin actor
 /// layer (HostMeshAgent, MeshAdminAgent, bridge).
@@ -162,7 +161,7 @@ impl<M: ProcManager> Host<M> {
     /// Unknown destinations are forwarded to the default sender.
     /// When `listener` is `Some`, it is used as the frontend listening socket
     /// instead of binding a new one.
-    #[crate::instrument(fields(addr=addr.to_string()))]
+    #[hyperactor::instrument(fields(addr=addr.to_string()))]
     pub async fn new_with_default(
         manager: M,
         addr: ChannelAddr,
@@ -268,7 +267,8 @@ impl<M: ProcManager> Host<M> {
             .await?;
 
         // Await readiness (config-driven; 0s disables timeout).
-        let to: Duration = hyperactor_config::global::get(crate::config::HOST_SPAWN_READY_TIMEOUT);
+        let to: Duration =
+            hyperactor_config::global::get(hyperactor::config::HOST_SPAWN_READY_TIMEOUT);
         let ready = if to == Duration::from_secs(0) {
             ReadyProc::ensure(&handle).await
         } else {
@@ -1105,7 +1105,7 @@ where
         ChannelTransport::Local
     }
 
-    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
+    #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: reference::ProcId,
@@ -1286,7 +1286,7 @@ where
         ChannelTransport::Unix
     }
 
-    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
+    #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: reference::ProcId,
@@ -1380,7 +1380,7 @@ where
 /// forwarding messages to the provided `backend_addr`,
 /// and returning the proc's address and agent actor on
 /// the provided `callback_addr`.
-#[crate::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string(), callback_addr=callback_addr.to_string()))]
+#[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string(), callback_addr=callback_addr.to_string()))]
 pub async fn spawn_proc<A, S, F>(
     proc_id: reference::ProcId,
     backend_addr: ChannelAddr,
@@ -1421,11 +1421,10 @@ where
 pub mod testing {
     use async_trait::async_trait;
 
-    use crate as hyperactor;
-    use crate::Actor;
-    use crate::Context;
-    use crate::Handler;
-    use crate::reference;
+    use hyperactor::Actor;
+    use hyperactor::Context;
+    use hyperactor::Handler;
+    use hyperactor::reference;
 
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
@@ -1455,8 +1454,8 @@ mod tests {
 
     use super::testing::EchoActor;
     use super::*;
-    use crate::channel::ChannelTransport;
-    use crate::context::Mailbox;
+    use hyperactor::channel::ChannelTransport;
+    use hyperactor::context::Mailbox;
 
     #[tokio::test]
     async fn test_basic() {
@@ -1529,7 +1528,7 @@ mod tests {
 
         // EchoActor is "host_agent" used to test connectivity.
         let process_manager = ProcessProcManager::<EchoActor>::new(
-            buck_resources::get("monarch/hyperactor/bootstrap").unwrap(),
+            buck_resources::get("monarch/hyperactor_mesh/host_bootstrap").unwrap(),
         );
         let mut host = Host::new(process_manager, ChannelAddr::any(ChannelTransport::Unix))
             .await
@@ -1756,7 +1755,7 @@ mod tests {
     async fn host_spawn_times_out_when_configured() {
         let cfg = hyperactor_config::global::lock();
         let _g = cfg.override_key(
-            crate::config::HOST_SPAWN_READY_TIMEOUT,
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_millis(10),
         );
 
@@ -1775,7 +1774,7 @@ mod tests {
     async fn host_spawn_timeout_zero_disables_and_succeeds() {
         let cfg = hyperactor_config::global::lock();
         let _g = cfg.override_key(
-            crate::config::HOST_SPAWN_READY_TIMEOUT,
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(0),
         );
 

@@ -30,7 +30,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use hyperactor::host::LOCAL_PROC_NAME;
+use hyperactor_mesh::host::LOCAL_PROC_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use hyperactor_mesh::introspect::NodeProperties;
 use hyperactor_mesh::mesh_admin::MESH_ADMIN_ACTOR_NAME;
@@ -265,7 +265,7 @@ fn label_from_payload(
 /// Classify the operational role of a system proc by name.
 ///
 /// Uses naming convention as identity — consistent with
-/// `hyperactor::host` construction. See LP-1.
+/// `hyperactor_mesh::host` construction. See LP-1.
 fn proc_role(proc_name: &str) -> DiagNodeRole {
     if proc_name == LOCAL_PROC_NAME {
         DiagNodeRole::LocalClientProc
@@ -531,7 +531,7 @@ mod tests {
             .count()
     }
 
-    // Exercises LP-1 (see hyperactor::host module doc).
+    // Exercises LP-1 (see hyperactor_mesh::host module doc).
     #[test]
     fn test_proc_role_classification() {
         assert!(matches!(
@@ -539,7 +539,7 @@ mod tests {
             DiagNodeRole::LocalClientProc
         ));
         assert!(matches!(
-            proc_role(hyperactor::host::SERVICE_PROC_NAME),
+            proc_role(hyperactor_mesh::host::SERVICE_PROC_NAME),
             DiagNodeRole::AdminServiceProc
         ));
         assert!(matches!(
@@ -548,7 +548,7 @@ mod tests {
         ));
     }
 
-    // Exercises LP-1 (see hyperactor::host module doc).
+    // Exercises LP-1 (see hyperactor_mesh::host module doc).
     #[test]
     fn test_empty_local_proc_does_not_degrade_admin_health() {
         let results = vec![DiagResult {
