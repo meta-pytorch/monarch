@@ -8,8 +8,9 @@
 
 //! Universal identifier types for the actor system.
 //!
-//! [`Label`] is an RFC 1035 label: up to 63 lowercase alphanumeric characters
-//! plus hyphens, starting with a letter and ending with an alphanumeric.
+//! [`Label`] is an RFC 1035-style label: up to 63 lowercase alphanumeric
+//! characters plus hyphens and underscores, starting with a letter and ending
+//! with an alphanumeric.
 //!
 //! [`Uid`] is either a singleton (identified by label) or an instance
 //! (identified by a random `u64`).
