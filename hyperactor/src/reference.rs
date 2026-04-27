@@ -55,12 +55,15 @@ use crate::actor::Referable;
 use crate::channel::ChannelAddr;
 use crate::context;
 use crate::context::MailboxExt;
+use crate::id::Label;
+use crate::id::Uid;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
 use crate::mailbox::PortSink;
 use crate::message::Bind;
 use crate::message::Bindings;
 use crate::message::Unbind;
+use crate::ref_;
 
 pub mod lex;
 pub mod name;
@@ -255,22 +258,22 @@ impl FromStr for Reference {
 
                     // channeladdr,proc_name
                     Token::Elem(proc_name) =>
-                    Self::Proc(ProcId::with_name(channel_addr, proc_name)),
+                    Self::Proc(ProcId::from_resource_name(channel_addr, proc_name)),
 
                     // channeladdr,proc_name,actor_name
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name) =>
-                    Self::Actor(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, 0)),
+                    Self::Actor(ActorId::new(ProcId::from_resource_name(channel_addr, proc_name), actor_name, 0)),
 
                     // channeladdr,proc_name,actor_name[pid]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
                         Token::LeftBracket Token::Uint(pid) Token::RightBracket =>
-                        Self::Actor(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, pid)),
+                        Self::Actor(ActorId::new(ProcId::from_resource_name(channel_addr, proc_name), actor_name, pid)),
 
                     // channeladdr,proc_name,actor_name[pid][port]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
                         Token::LeftBracket Token::Uint(pid) Token::RightBracket
                         Token::LeftBracket Token::Uint(index) Token::RightBracket  =>
-                        Self::Port(PortId::new(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, pid), index as u64)),
+                        Self::Port(PortId::new(ActorId::new(ProcId::from_resource_name(channel_addr, proc_name), actor_name, pid), index as u64)),
 
                     // channeladdr,proc_name,actor_name[pid][port<type>]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
@@ -278,7 +281,7 @@ impl FromStr for Reference {
                         Token::LeftBracket Token::Uint(index)
                             Token::LessThan Token::Elem(_type) Token::GreaterThan
                         Token::RightBracket =>
-                        Self::Port(PortId::new(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, pid), index as u64)),
+                        Self::Port(PortId::new(ActorId::new(ProcId::from_resource_name(channel_addr, proc_name), actor_name, pid), index as u64)),
                 }?)
             }
 
@@ -312,9 +315,71 @@ impl From<PortId> for Reference {
 /// into a sequence.
 pub type Index = usize;
 
-/// Procs are identified by a direct channel address and local name.
-/// Each proc represents an actor runtime that can locally route to all of its
-/// constituent actors.
+/// Parse a proc resource name into a `(Uid, Option<Label>)` pair.
+///
+/// Accepts both the legacy compat forms used by `reference::ProcId::Display`
+/// (`_label`, `label-hex16`, `hex16`) and the newer labeled-id forms
+/// (`label`, `label<hex16>`, `<hex16>`). Falls back to a stripped singleton
+/// label for non-matching input.
+fn parse_resource_name(s: &str) -> (Uid, Option<Label>) {
+    if let Some(rest) = s.strip_prefix('_') {
+        if let Ok(label) = Label::new(rest) {
+            return (Uid::Singleton(label.clone()), Some(label));
+        }
+        let label = Label::strip(rest);
+        return (Uid::Singleton(label.clone()), Some(label));
+    }
+
+    if let Ok(Uid::Instance(uid)) = Uid::from_str(s) {
+        return (Uid::Instance(uid), None);
+    }
+
+    if let Some((label_part, uid_part)) = s.rsplit_once('-') {
+        if let (Ok(label), Ok(Uid::Instance(uid))) =
+            (Label::new(label_part), Uid::from_str(uid_part))
+        {
+            return (Uid::Instance(uid), Some(label));
+        }
+    }
+
+    if let Some(inner) = s
+        .strip_prefix('<')
+        .and_then(|inner| inner.strip_suffix('>'))
+    {
+        if let Ok(Uid::Instance(uid)) = Uid::from_str(inner) {
+            return (Uid::Instance(uid), None);
+        }
+    }
+
+    if let Some((label_part, uid_part)) =
+        s.strip_suffix('>').and_then(|inner| inner.split_once('<'))
+    {
+        if let (Ok(label), Ok(Uid::Instance(uid))) =
+            (Label::new(label_part), Uid::from_str(uid_part))
+        {
+            return (Uid::Instance(uid), Some(label));
+        }
+    }
+
+    if let Ok(label) = Label::new(s) {
+        return (Uid::Singleton(label.clone()), Some(label));
+    }
+
+    if let Some(label_part) = s
+        .strip_suffix('>')
+        .and_then(|inner| inner.split_once('<'))
+        .map(|(label_part, _)| label_part)
+    {
+        let label = Label::strip(label_part);
+        return (Uid::Singleton(label.clone()), Some(label));
+    }
+
+    let label = Label::strip(s);
+    (Uid::Singleton(label.clone()), Some(label))
+}
+
+/// Procs are identified by a process reference, which pairs a unique identity
+/// with a network location.
 #[derive(
     Debug,
     Serialize,
@@ -327,77 +392,106 @@ pub type Index = usize;
     Ord,
     typeuri::Named
 )]
-pub struct ProcId(ChannelAddr, String);
-
-/// Compute an 8-char hex hash suffix from a [`ChannelAddr`].
-fn addr_hash_suffix(addr: &ChannelAddr) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    let mut hasher = DefaultHasher::new();
-    addr.hash(&mut hasher);
-    format!("{:08x}", hasher.finish() as u32)
-}
+#[serde(transparent)]
+pub struct ProcId(ref_::ProcRef);
 
 impl ProcId {
-    /// Create a ProcId with a globally-unique name: `"{base_name}-{hash_of_addr}"`.
-    ///
-    /// Use this for well-known / fixed proc names (e.g. `"service"`, `"local"`)
-    /// that are not already unique across hosts.
-    pub fn unique(addr: ChannelAddr, base_name: impl Into<String>) -> Self {
-        let base = base_name.into();
-        let suffix = addr_hash_suffix(&addr);
-        Self(addr, format!("{}-{}", base, suffix))
+    /// Create a ProcId with a unique (random) uid and the given label.
+    pub fn unique(addr: ChannelAddr, base_name: impl AsRef<str>) -> Self {
+        let label = Label::strip(base_name.as_ref());
+        Self(ref_::ProcRef::new(
+            crate::id::ProcId::instance(label),
+            ref_::Location::from(addr),
+        ))
     }
 
-    /// Create a ProcId with an already-unique name (no suffix added).
+    /// Create a ProcId by parsing a name string in ResourceId format.
     ///
-    /// Use this for deserialization, test helpers, and names that already
-    /// contain a UUID or other uniquifying component.
-    pub fn with_name(addr: ChannelAddr, name: impl Into<String>) -> Self {
-        Self(addr, name.into())
+    /// Recognizes three formats:
+    /// - `label` → singleton uid
+    /// - `label<uid58>` → labeled instance uid
+    /// - `<uid58>` → unlabeled instance uid
+    ///
+    /// Falls back to `Uid::Singleton(Label::strip(name))` if none match.
+    pub fn from_resource_name(addr: ChannelAddr, name: impl AsRef<str>) -> Self {
+        let s = name.as_ref();
+        let (uid, label) = parse_resource_name(s);
+        Self(ref_::ProcRef::new(
+            crate::id::ProcId::new(uid, label),
+            ref_::Location::from(addr),
+        ))
     }
 
-    /// The base name before the `-{hash}` suffix, if present.
-    ///
-    /// If the name ends with `-XXXXXXXX` (8 hex chars), returns the part
-    /// before that suffix. Otherwise returns the full name.
-    pub fn base_name(&self) -> &str {
-        match self.1.rsplit_once('-') {
-            Some((base, suffix))
-                if suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_hexdigit()) =>
-            {
-                base
-            }
-            _ => &self.1,
-        }
+    /// Wrap an existing [`ref_::ProcRef`].
+    pub fn from_proc_ref(proc_ref: ref_::ProcRef) -> Self {
+        Self(proc_ref)
     }
 
-    /// Create an actor ID with the provided name, pid within this proc.
+    /// Create an actor ID with the provided name and pid within this proc.
     pub fn actor_id(&self, name: impl Into<String>, pid: Index) -> ActorId {
         ActorId(self.clone(), name.into(), pid)
     }
 
     /// The proc's channel address.
     pub fn addr(&self) -> &ChannelAddr {
+        self.0.location().addr()
+    }
+
+    /// The underlying process identity.
+    pub fn id(&self) -> &crate::id::ProcId {
+        self.0.id()
+    }
+
+    /// The underlying process reference.
+    pub fn proc_ref(&self) -> &ref_::ProcRef {
         &self.0
     }
 
-    /// The proc's name.
-    pub fn name(&self) -> &str {
-        &self.1
+    /// The proc's uid.
+    pub fn uid(&self) -> &Uid {
+        self.0.id().uid()
+    }
+
+    /// The proc's label: the explicit metadata label for instances,
+    /// or the singleton name for singletons.
+    pub fn label(&self) -> Option<&Label> {
+        self.0.id().label().or_else(|| match self.0.id().uid() {
+            Uid::Singleton(label) => Some(label),
+            _ => None,
+        })
     }
 }
 
 impl fmt::Display for ProcId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{},{}", self.0, self.1)
+        // Compat format: "addr,resource_name" where resource_name is the
+        // ResourceId text form: _label | label-hex16 | hex16.
+        let id = self.0.id();
+        match (id.uid(), id.label()) {
+            (Uid::Singleton(label), _) => write!(f, "{},_{}", self.0.location().addr(), label),
+            (Uid::Instance(uid), Some(label)) => {
+                write!(f, "{},{}-{:016x}", self.0.location().addr(), label, uid)
+            }
+            (Uid::Instance(uid), None) => {
+                write!(f, "{},{:016x}", self.0.location().addr(), uid)
+            }
+        }
     }
 }
 
 impl FromStr for ProcId {
     type Err = ReferenceParsingError;
 
-    fn from_str(addr: &str) -> Result<Self, Self::Err> {
-        match addr.parse()? {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((addr, proc_name)) = s.split_once(',')
+            && !proc_name.contains(',')
+        {
+            if let Ok(channel_addr) = addr.parse::<ChannelAddr>() {
+                return Ok(Self::from_resource_name(channel_addr, proc_name));
+            }
+        }
+
+        match s.parse()? {
             Reference::Proc(proc_id) => Ok(proc_id),
             _ => Err(ReferenceParsingError::WrongType("proc".into())),
         }
@@ -1173,21 +1267,32 @@ mod tests {
     // for macros
     use crate::Proc;
     use crate::context::Mailbox as _;
+    use crate::id::Label;
+    use crate::id::ProcId as RawProcId;
+    use crate::id::Uid;
     use crate::mailbox::PortLocation;
     use crate::ordering::SEQ_INFO;
     use crate::ordering::SeqInfo;
+    use crate::ref_;
 
     #[test]
     fn test_reference_parse() {
         let cases: Vec<(&str, Reference)> = vec![
             (
                 "tcp:[::1]:1234,test",
-                ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test").into(),
+                ProcId::from_resource_name(
+                    "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(),
+                    "test",
+                )
+                .into(),
             ),
             (
                 "tcp:[::1]:1234,test,testactor[123]",
                 ActorId::new(
-                    ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test"),
+                    ProcId::from_resource_name(
+                        "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(),
+                        "test",
+                    ),
                     "testactor",
                     123,
                 )
@@ -1198,7 +1303,10 @@ mod tests {
                 "tcp:[::1]:1234,test,testactor[0][123<my::type>]",
                 PortId::new(
                     ActorId::new(
-                        ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test"),
+                        ProcId::from_resource_name(
+                            "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(),
+                            "test",
+                        ),
                         "testactor",
                         0,
                     ),
@@ -1248,7 +1356,10 @@ mod tests {
         wirevalue::register_type!(MyType);
         let port_id = PortId::new(
             ActorId::new(
-                ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test"),
+                ProcId::from_resource_name(
+                    "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(),
+                    "test",
+                ),
                 "testactor",
                 1,
             ),
@@ -1256,8 +1367,41 @@ mod tests {
         );
         assert_eq!(
             port_id.to_string(),
-            "tcp:[::1]:1234,test,testactor[1][17867850292987402005<hyperactor::reference::tests::MyType>]"
+            "tcp:[::1]:1234,_test,testactor[1][17867850292987402005<hyperactor::reference::tests::MyType>]"
         );
+    }
+
+    #[test]
+    fn test_proc_id_display_roundtrip_singleton() {
+        let addr = "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap();
+        let proc_id = ProcId::from_resource_name(addr, "test");
+        let s = proc_id.to_string();
+        assert_eq!(s, "tcp:[::1]:1234,_test");
+        assert_eq!(s.parse::<ProcId>().unwrap(), proc_id);
+    }
+
+    #[test]
+    fn test_proc_id_display_roundtrip_labeled_instance() {
+        let addr = "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap();
+        let proc_id = ProcId::from_proc_ref(ref_::ProcRef::new(
+            RawProcId::new(Uid::Instance(0x123), Some(Label::new("worker").unwrap())),
+            ref_::Location::from(addr),
+        ));
+        let s = proc_id.to_string();
+        assert_eq!(s, "tcp:[::1]:1234,worker-0000000000000123");
+        assert_eq!(s.parse::<ProcId>().unwrap(), proc_id);
+    }
+
+    #[test]
+    fn test_proc_id_display_roundtrip_unlabeled_instance() {
+        let addr = "tcp:[::1]:1234".parse::<ChannelAddr>().unwrap();
+        let proc_id = ProcId::from_proc_ref(ref_::ProcRef::new(
+            RawProcId::new(Uid::Instance(0x123), None),
+            ref_::Location::from(addr),
+        ));
+        let s = proc_id.to_string();
+        assert_eq!(s, "tcp:[::1]:1234,0000000000000123");
+        assert_eq!(s.parse::<ProcId>().unwrap(), proc_id);
     }
 
     #[tokio::test]
