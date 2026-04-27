@@ -2412,8 +2412,9 @@ mod tests {
         use crate::channel::Tx;
         use crate::channel::TxStatus;
 
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<EchoActor>("host_agent", EchoActor) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            proc.spawn::<EchoActor>("host_agent", EchoActor)
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
@@ -2513,8 +2514,9 @@ mod tests {
     /// where `HostMeshShutdownGuard::drop` sends `ShutdownHost`.
     #[tokio::test]
     async fn test_simplex_clients_during_host_shutdown() {
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<EchoActor>("host_agent", EchoActor) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            proc.spawn::<EchoActor>("host_agent", EchoActor)
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
@@ -2545,31 +2547,22 @@ mod tests {
             let system_proc_id = system_proc_id.clone();
             client_tasks.push(tokio::spawn(async move {
                 let dial_router = DialMailboxRouter::new();
-                dial_router.bind(
-                    ref_::Reference::from(system_proc_id.clone()),
-                    host_addr,
-                );
+                dial_router.bind(ref_::Reference::from(system_proc_id.clone()), host_addr);
                 let client_addr = ChannelAddr::any(ChannelTransport::Unix);
-                let (client_listen_addr, client_rx) =
-                    channel::serve(client_addr).unwrap();
+                let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
                 let client_proc_id = reference::ProcId::from_resource_name(
                     client_listen_addr,
                     format!("client-{}", ci),
                 );
-                let client_proc =
-                    Proc::configured(client_proc_id, dial_router.into_boxed());
+                let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
                 let _client_handle = client_proc.clone().serve(client_rx);
 
-                let echo_ref =
-                    reference::ActorRef::<EchoActor>::attest(echo_actor_id);
+                let echo_ref = reference::ActorRef::<EchoActor>::attest(echo_actor_id);
 
                 for ri in 0..M_REQUESTS {
-                    let (client_inst, _h) = client_proc
-                        .instance(&format!("req-{}", ri))
-                        .unwrap();
-                    let (reply_port, reply_handle) = client_inst
-                        .mailbox()
-                        .open_once_port::<reference::ActorId>();
+                    let (client_inst, _h) = client_proc.instance(&format!("req-{}", ri)).unwrap();
+                    let (reply_port, reply_handle) =
+                        client_inst.mailbox().open_once_port::<reference::ActorId>();
                     let reply_port = reply_port.bind();
                     echo_ref
                         .port::<reference::OncePortRef<reference::ActorId>>()
@@ -2603,8 +2596,9 @@ mod tests {
     /// frontend should be able to round-trip a request + reply.
     #[tokio::test]
     async fn test_simplex_client_to_duplex_host() {
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<EchoActor>("host_agent", EchoActor) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            proc.spawn::<EchoActor>("host_agent", EchoActor)
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
