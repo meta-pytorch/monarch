@@ -73,7 +73,7 @@ pub struct LocalTx<M: RemoteMessage> {
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
     fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
-        let data: Data = match bincode::serialize(&message) {
+        let data: Data = match bincode::serde::encode_to_vec(&message, bincode::config::legacy()) {
             Ok(data) => data,
             Err(err) => {
                 if let Some(return_channel) = return_channel {
@@ -121,7 +121,9 @@ pub struct LocalRx<M: RemoteMessage> {
 impl<M: RemoteMessage> Rx<M> for LocalRx<M> {
     async fn recv(&mut self) -> Result<M, ChannelError> {
         let data = self.data_rx.recv().await.ok_or(ChannelError::Closed)?;
-        bincode::deserialize(&data).map_err(ChannelError::from)
+        bincode::serde::decode_from_slice(&data, bincode::config::legacy())
+            .map(|(v, _)| v)
+            .map_err(ChannelError::from)
     }
 
     fn addr(&self) -> ChannelAddr {

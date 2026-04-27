@@ -74,9 +74,13 @@ pub enum ChannelError {
     #[error(transparent)]
     Server(#[from] net::ServerError),
 
-    /// A bincode serialization or deserialization error occurred.
+    /// A bincode encoding error occurred.
     #[error(transparent)]
-    Bincode(#[from] Box<bincode::ErrorKind>),
+    BincodeEncode(#[from] bincode::error::EncodeError),
+
+    /// A bincode decoding error occurred.
+    #[error(transparent)]
+    BincodeDecode(#[from] bincode::error::DecodeError),
 
     /// Data encoding errors.
     #[error(transparent)]
@@ -1073,9 +1077,67 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
         ChannelAddr::Tcp(_)
         | ChannelAddr::Unix(_)
         | ChannelAddr::Tls(_)
-        | ChannelAddr::MetaTls(_) => ChannelTxKind::Net(net::spawn(net::link(addr)?)),
+        | ChannelAddr::MetaTls(_) => {
+            ChannelTxKind::Net(net::spawn(net::link(addr, net::SessionId::random(), 0)?))
+        }
         ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
     };
+    Ok(ChannelTx { inner })
+}
+
+/// Experimental: dial with out-of-order delivery and N parallel streams.
+///
+/// Opens N TCP connections sharing a single `SessionId` (distinct
+/// `stream_id` in `1..=num_streams` so the server routes them through
+/// the multi-stream receive path). Frames are load-balanced across
+/// streams via a shared MPMC work queue — idle writers pull next.
+/// API may change.
+///
+/// # Semantics (how this differs from [`dial`])
+///
+/// Multi-stream trades several of [`dial`]'s delivery guarantees for
+/// aggregate bandwidth. Use [`dial`] when any of these matter:
+///
+/// - **Ordering.** Messages are delivered to the receiver in *arrival
+///   order across streams*, not send order. Two messages posted back
+///   to back on the sender may reach the receiver out of order when
+///   they're carried on different TCP streams. [`dial`] is strictly
+///   in-order.
+///
+/// - **Retransmission on reconnect.** If a writer's TCP connection
+///   drops after the bytes of a message have been written but before
+///   the peer acks, that message is **not retransmitted** on the new
+///   connection. It may be silently lost. [`dial`] re-sends all
+///   unacked messages on reconnect.
+///
+/// - **Delivery timeouts.** No delivery timeout is enforced. On
+///   sustained peer outage, writers reconnect indefinitely (backoff
+///   capped at 5s); senders block in `send().await` with no bound.
+///   [`dial`] fails unacked sends after
+///   `MESSAGE_DELIVERY_TIMEOUT`.
+///
+/// - **`Tx::send` return semantics.** On session shutdown, messages
+///   still in the unacked buffer have their `return_channel` dropped.
+///   Per the [`Tx::send`] contract, this makes `send().await` return
+///   `Ok(())` for messages that may never have been delivered — i.e.
+///   a "success" return does not actually confirm delivery here.
+///   [`dial`] delivers a structured `SendError` instead.
+///
+/// # Ack semantics
+///
+/// Receivers ack a cumulative watermark: the highest `N` such that
+/// all of `0..=N` have been observed across all streams. Acks may
+/// stall behind a single missing seq on a slow stream.
+pub fn exp_dial_unordered<M: RemoteMessage>(
+    addr: ChannelAddr,
+    num_streams: usize,
+) -> Result<ChannelTx<M>, ChannelError> {
+    assert!(num_streams > 0);
+    let session_id = net::SessionId::random();
+    let links: Vec<net::NetLink> = (1..=num_streams)
+        .map(|i| net::link(addr.clone(), session_id, i as u8))
+        .collect::<Result<_, _>>()?;
+    let inner = ChannelTxKind::Net(net::spawn_unordered(links));
     Ok(ChannelTx { inner })
 }
 
