@@ -14,7 +14,7 @@ path = "test/snapshot_integration_test.rs"
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1.86"
-datafusion = "52.4.0"
+datafusion = "52.5.0"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 monarch_distributed_telemetry = { version = "0.0.0", path = "../monarch_distributed_telemetry" }

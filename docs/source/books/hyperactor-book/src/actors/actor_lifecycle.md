@@ -13,8 +13,6 @@ pub enum ActorStatus {
     Client,
     Idle,
     Processing(SystemTime, Option<(String, Option<String>)>),
-    Saving(SystemTime),
-    Loading(SystemTime),
     Stopping,
     Stopped,
     Failed(String),
@@ -28,8 +26,6 @@ pub enum ActorStatus {
 - `Client`: The actor is operating in “client” mode; its ports are being managed manually.
 - `Idle`: The actor is ready to process messages but is currently idle.
 - `Processing`: The actor is handling a message. Contains a timestamp and optionally the handler/arm label.
-- `Saving`: The actor is saving its state as part of a checkpoint. Includes the time the operation began.
-- `Loading`: The actor is loading a previously saved state.
 - `Stopping`: The actor is in shutdown mode and draining its mailbox.
 - `Stopped`: The actor has exited and will no longer process messages.
 - `Failed`: The actor terminated abnormally. Contains an `ActorErrorKind` describing the error.
@@ -55,7 +51,7 @@ Variants
 - `Stop(reason)`: Immediately halts the actor, even if messages remain in its mailbox.
 - `ChildStopped`: Internal signal sent when a direct child with the given index was stopped.
 
-These signals are routed like any other message, typically sent using `ActorHandle::send` or by the runtime during supervision and recovery procedures.
+These signals are routed like any other message, typically sent using `ActorHandle::send` or by the runtime during supervision procedures.
 
 ## `ActorError`
 
@@ -66,7 +62,7 @@ pub struct ActorError {
     pub kind: Box<ActorErrorKind>,
 }
 ```
-This error type is returned in various actor lifecycle operations such as initialization, message handling, checkpointing, and shutdown. It is structured and extensible, allowing the runtime to distinguish between different classes of failure.
+This error type is returned in various actor lifecycle operations such as initialization, message handling, and shutdown. It is structured and extensible, allowing the runtime to distinguish between different classes of failure.
 
 ### Associated Methods
 ```rust
@@ -98,6 +94,5 @@ The `ActorErrorKind` also provides several constructor methods:
 - `cleanup(err: anyhow::Error)`: Error during actor cleanup
 - `mailbox(err: MailboxError)`: A lower-level mailbox error occurred
 - `mailbox_sender(err: MailboxSenderError)`: A lower-level sender error occurred
-- `checkpoint(err: CheckpointError)`: Error during save/load of actor state
 - `message_log(err: MessageLogError)`: Failure in the underlying message log
 - `indeterminate_state()`: The actor reached an invalid or unknown internal state

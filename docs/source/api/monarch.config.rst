@@ -493,17 +493,6 @@ Mesh Attach
     a warning is logged and attach continues without blocking.
 
 
-Remote Allocation
------------------
-
-``remote_allocator_heartbeat_interval``
-    Heartbeat interval for remote allocator.
-
-    - **Type**: ``str`` (duration format)
-    - **Default**: ``"5m"``
-    - **Environment**: ``HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL``
-
-
 Validation and Error Handling
 -----------------------------
 

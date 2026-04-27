@@ -11,7 +11,6 @@
 import warnings
 from typing import Callable
 
-from monarch.tools.components import hyperactor
 from monarch.tools.config import Config
 from monarch.tools.config.workspace import Workspace
 from torchx import specs
@@ -26,7 +25,10 @@ from torchx.schedulers import (
 
 def component_fn(scheduler: str) -> Callable[..., specs.AppDef]:
     """The default TorchX component function for the scheduler"""
-    return hyperactor._host_mesh
+    raise NotImplementedError(
+        f"no default component_fn for scheduler {scheduler!r}; "
+        "pass `component_fn` explicitly to `get_or_create`/`create`"
+    )
 
 
 def scheduler_factories() -> dict[str, SchedulerFactory]:

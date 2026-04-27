@@ -60,15 +60,17 @@ impl PyExtent {
 
     #[staticmethod]
     fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
-        let extent: PyExtent = bincode::deserialize(bytes.as_bytes())
-            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let extent: PyExtent =
+            bincode::serde::decode_from_slice(bytes.as_bytes(), bincode::config::legacy())
+                .map(|(v, _)| v)
+                .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         Ok(extent)
     }
 
     fn __reduce__<'py>(
         slf: &Bound<'py, Self>,
     ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
-        let bytes = bincode::serialize(&*slf.borrow())
+        let bytes = bincode::serde::encode_to_vec(&*slf.borrow(), bincode::config::legacy())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = PyBytes::new(slf.py(), &bytes);
         Ok((slf.getattr("from_bytes")?, (py_bytes,)))
@@ -165,7 +167,7 @@ impl PyRegion {
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let bytes = bincode::serialize(&self.inner)
+        let bytes = bincode::serde::encode_to_vec(&self.inner, bincode::config::legacy())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
         let from_bytes = py
@@ -177,9 +179,13 @@ impl PyRegion {
 
     #[staticmethod]
     fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
-        Ok(bincode::deserialize::<Region>(bytes.as_bytes())
-            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?
-            .into())
+        Ok(bincode::serde::decode_from_slice::<Region, _>(
+            bytes.as_bytes(),
+            bincode::config::legacy(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?
+        .into())
     }
 
     fn point_of_base_rank(&self, rank: usize) -> PyResult<PyPoint> {
@@ -309,15 +315,17 @@ impl PyShape {
 
     #[staticmethod]
     fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
-        let shape: Shape = bincode::deserialize(bytes.as_bytes())
-            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let shape: Shape =
+            bincode::serde::decode_from_slice(bytes.as_bytes(), bincode::config::legacy())
+                .map(|(v, _)| v)
+                .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         Ok(PyShape::from(shape))
     }
 
     fn __reduce__<'py>(
         slf: &Bound<'py, Self>,
     ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
-        let bytes = bincode::serialize(&slf.borrow().inner)
+        let bytes = bincode::serde::encode_to_vec(&slf.borrow().inner, bincode::config::legacy())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = PyBytes::new(slf.py(), &bytes);
         Ok((slf.getattr("from_bytes")?, (py_bytes,)))
@@ -412,15 +420,17 @@ impl PyPoint {
 
     #[staticmethod]
     fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
-        let point: PyPoint = bincode::deserialize(bytes.as_bytes())
-            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let point: PyPoint =
+            bincode::serde::decode_from_slice(bytes.as_bytes(), bincode::config::legacy())
+                .map(|(v, _)| v)
+                .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         Ok(point)
     }
 
     fn __reduce__<'py>(
         slf: &Bound<'py, Self>,
     ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
-        let bytes = bincode::serialize(&*slf.borrow())
+        let bytes = bincode::serde::encode_to_vec(&*slf.borrow(), bincode::config::legacy())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = PyBytes::new(slf.py(), &bytes);
         Ok((slf.getattr("from_bytes")?, (py_bytes,)))
