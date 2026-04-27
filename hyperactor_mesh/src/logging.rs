@@ -1598,7 +1598,7 @@ mod tests {
             BoxedMailboxSender::new(router.clone()),
         );
         proc.clone().serve(client_rx);
-        let proc_ref: hyperactor::ref_::ProcRef = test_proc_id("client_0").into();
+        let proc_ref: hyperactor::addr::ProcAddr = test_proc_id("client_0").into();
         router.bind(proc_ref, proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 

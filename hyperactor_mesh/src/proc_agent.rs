@@ -253,7 +253,7 @@ struct SelfCheck {}
 /// events to the *currently active* mesh.
 ///
 /// Without exporting this handler, `ActorSupervisionEvent` cannot be
-/// addressed via `ActorRef`/`PortRef` across processes, and the
+/// addressed via `ActorAddr`/`PortAddr` across processes, and the
 /// global-root-client undeliverable → supervision pipeline would
 /// degrade to log-only behavior (events become undeliverable again or
 /// are dropped).
@@ -486,7 +486,7 @@ impl Actor for ProcAgent {
         this.set_query_child_handler(move |child_ref| {
             use hyperactor::introspect::IntrospectResult;
 
-            if let hyperactor::ref_::Reference::Actor(actor_ref) = child_ref {
+            if let hyperactor::addr::Address::Actor(actor_ref) = child_ref {
                 if let Some(snapshot) = proc.terminated_snapshot(actor_ref) {
                     return snapshot;
                 }
@@ -496,10 +496,10 @@ impl Actor for ProcAgent {
             // admin/TUI must be computed from live proc state at query
             // time, not solely from cached published_properties.
             // Therefore a direct proc.spawn() actor must appear on the
-            // next QueryChild(Reference::Proc) response without an
+            // next QueryChild(Address::Proc) response without an
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
-            if let hyperactor::ref_::Reference::Proc(proc_ref) = child_ref {
+            if let hyperactor::addr::Address::Proc(proc_ref) = child_ref {
                 if *proc_ref == *proc.proc_id() {
                     let (mut children, mut system_children) = collect_live_children(&proc);
 
@@ -613,13 +613,13 @@ impl Actor for ProcAgent {
                     format!("child {} not found", child_ref),
                 );
                 let identity = match child_ref {
-                    hyperactor::ref_::Reference::Proc(p) => {
+                    hyperactor::addr::Address::Proc(p) => {
                         hyperactor::introspect::IntrospectRef::Proc(p.clone().into())
                     }
-                    hyperactor::ref_::Reference::Actor(a) => {
+                    hyperactor::addr::Address::Actor(a) => {
                         hyperactor::introspect::IntrospectRef::Actor(a.clone().into())
                     }
-                    hyperactor::ref_::Reference::Port(p) => {
+                    hyperactor::addr::Address::Port(p) => {
                         hyperactor::introspect::IntrospectRef::Actor(p.actor_ref().into())
                     }
                 };
@@ -1205,7 +1205,7 @@ mod tests {
     struct ExtraActor;
     impl hyperactor::Actor for ExtraActor {}
     hyperactor::remote!(ExtraActor);
-    // Verifies that QueryChild(Reference::Proc) on a ProcAgent returns
+    // Verifies that QueryChild(Address::Proc) on a ProcAgent returns
     // a live IntrospectResult whose children reflect actors spawned
     // directly on the proc — i.e. via proc.spawn(), which bypasses the
     // gspawn message handler and therefore never triggers
@@ -1321,7 +1321,7 @@ mod tests {
 
     // Exercises S12 (see introspect module doc): introspection must
     // not impair actor liveness. Rapidly spawns and stops
-    // actors while concurrently querying QueryChild(Reference::Proc).
+    // actors while concurrently querying QueryChild(Address::Proc).
     // The spawn/stop loop must complete within the timeout and the
     // iteration count must match -- if DashMap convoy starvation
     // blocks the proc, the timeout fires and the test fails.

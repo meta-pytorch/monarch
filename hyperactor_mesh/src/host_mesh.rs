@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![allow(clippy::result_large_err)]
+
 use hyperactor::Actor;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
@@ -44,6 +46,7 @@ use ndslice::view::Ranked;
 use ndslice::view::RegionParseError;
 use serde::Deserialize;
 use serde::Serialize;
+use tracing::Instrument;
 use typeuri::Named;
 
 use crate::Bootstrap;
@@ -64,7 +67,6 @@ use crate::mesh_id::HostMeshId;
 use crate::mesh_id::ProcMeshId;
 use crate::mesh_id::ResourceId;
 use crate::proc_agent::ProcAgent;
-use crate::proc_mesh::ProcRef;
 use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
@@ -123,7 +125,7 @@ impl HostRef {
 
     /// The ProcId for the proc with name `name` on this host.
     fn named_proc(&self, id: &ResourceId) -> hyperactor_reference::ProcId {
-        hyperactor_reference::ProcId::from_proc_ref(hyperactor::ref_::ProcRef::new(
+        hyperactor_reference::ProcId::from_proc_ref(hyperactor::addr::ProcAddr::new(
             hyperactor::id::ProcId::new(id.uid().clone(), id.label().cloned()),
             self.0.clone().into(),
         ))
@@ -695,31 +697,28 @@ impl Drop for HostMeshShutdownGuard {
         // Best-effort only when a Tokio runtime is available.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let mesh_id = self.0.id.clone();
+            let span = tracing::info_span!(
+                "hostmesh_drop_cleanup",
+                host_mesh = %mesh_id,
+                hosts = hosts.len(),
+            );
 
-            handle.spawn(async move {
-                let span = tracing::info_span!(
-                    "hostmesh_drop_cleanup",
-                    host_mesh = %mesh_id,
-                    hosts = hosts.len(),
-                );
-                let _g = span.enter();
-
-                // Spin up a tiny ephemeral proc+instance to get an
-                // Actor context.
-                match hyperactor::Proc::direct(
-                    ChannelTransport::Unix.any(),
-                    "hostmesh-drop".to_string(),
-                )
-                {
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "failed to construct ephemeral Proc for drop-cleanup; \
-                             relying on PDEATHSIG/manager Drop"
-                        );
-                    }
-                    Ok(proc) => {
-                        match proc.instance("drop") {
+            handle.spawn(
+                async move {
+                    // Spin up a tiny ephemeral proc+instance to get an
+                    // Actor context.
+                    match hyperactor::Proc::direct(
+                        ChannelTransport::Unix.any(),
+                        "hostmesh-drop".to_string(),
+                    ) {
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "failed to construct ephemeral Proc for drop-cleanup; \
+                                 relying on PDEATHSIG/manager Drop"
+                            );
+                        }
+                        Ok(proc) => match proc.instance("drop") {
                             Err(e) => {
                                 tracing::warn!(
                                     error = %e,
@@ -752,10 +751,11 @@ impl Drop for HostMeshShutdownGuard {
                                     "hostmesh drop-cleanup summary"
                                 );
                             }
-                        }
+                        },
                     }
                 }
-            });
+                .instrument(span),
+            );
         } else {
             // No runtime here; PDEATHSIG and manager Drop remain the
             // last-resort safety net.
@@ -1154,7 +1154,7 @@ impl HostMeshRef {
                     %proc_id,
                     rank = create_rank,
                 );
-                procs.push(ProcRef::new(
+                procs.push(crate::proc_mesh::ProcRef::new(
                     proc_id,
                     create_rank,
                     // TODO: specify or retrieve from state instead, to avoid attestation.

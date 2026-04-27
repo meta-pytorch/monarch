@@ -62,6 +62,7 @@
 pub mod accum;
 pub mod actor;
 pub mod actor_local;
+pub mod addr;
 pub mod channel;
 pub mod config;
 pub mod context;
@@ -77,7 +78,6 @@ pub mod panic_handler;
 mod parse;
 pub mod port;
 pub mod proc;
-pub mod ref_;
 pub mod reference;
 pub mod remote;
 mod signal_handler;
@@ -113,6 +113,12 @@ pub use actor::HandlerInfo;
 pub use actor::RemoteHandles;
 pub use actor::RemoteSpawn;
 pub use actor_local::ActorLocal;
+pub use addr::ActorAddr;
+pub use addr::AddrParseError;
+pub use addr::Address;
+pub use addr::Location;
+pub use addr::PortAddr;
+pub use addr::ProcAddr;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]

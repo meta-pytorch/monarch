@@ -112,6 +112,7 @@ use crate::accum::StreamingReducerOpts;
 use crate::actor::ActorStatus;
 use crate::actor::Signal;
 use crate::actor::remote::USER_PORT_OFFSET;
+use crate::addr;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
@@ -123,7 +124,6 @@ use crate::metrics;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
 use crate::port::Port;
-use crate::ref_;
 use crate::reference;
 
 mod undeliverable;
@@ -194,10 +194,10 @@ pub enum DeliveryError {
 #[derive(Debug, Serialize, Deserialize, Clone, typeuri::Named)]
 pub struct MessageEnvelope {
     /// The sender of this message.
-    sender: ref_::ActorRef,
+    sender: addr::ActorAddr,
 
     /// The destination of the message.
-    dest: ref_::PortRef,
+    dest: addr::PortAddr,
 
     /// The serialized message.
     data: wirevalue::Any,
@@ -221,8 +221,8 @@ wirevalue::register_type!(MessageEnvelope);
 impl MessageEnvelope {
     /// Create a new envelope with the provided sender, destination, and message.
     pub fn new(
-        sender: impl Into<ref_::ActorRef>,
-        dest: impl Into<ref_::PortRef>,
+        sender: impl Into<addr::ActorAddr>,
+        dest: impl Into<addr::PortAddr>,
         data: wirevalue::Any,
         headers: Flattrs,
     ) -> Self {
@@ -241,19 +241,19 @@ impl MessageEnvelope {
     }
 
     /// Create a new envelope whose sender ID is unknown.
-    pub(crate) fn new_unknown(dest: impl Into<ref_::PortRef>, data: wirevalue::Any) -> Self {
+    pub(crate) fn new_unknown(dest: impl Into<addr::PortAddr>, data: wirevalue::Any) -> Self {
         // Create a synthetic "unknown" actor ID for messages with no known sender
         let unknown_addr = ChannelAddr::any(ChannelTransport::Local);
-        let unknown_proc_ref = ref_::ProcRef::unique(unknown_addr, "unknown");
+        let unknown_proc_ref = addr::ProcAddr::unique(unknown_addr, "unknown");
         let unknown_actor_ref =
-            ref_::ActorRef::root(unknown_proc_ref, crate::id::Label::strip("unknown"));
+            addr::ActorAddr::root(unknown_proc_ref, crate::id::Label::strip("unknown"));
         Self::new(unknown_actor_ref, dest, data, Flattrs::new())
     }
 
     /// Construct a new serialized value by serializing the provided T-typed value.
     pub fn serialize<T: Serialize + Named>(
-        source: impl Into<ref_::ActorRef>,
-        dest: impl Into<ref_::PortRef>,
+        source: impl Into<addr::ActorAddr>,
+        dest: impl Into<addr::PortAddr>,
         value: &T,
         headers: Flattrs,
     ) -> Result<Self, wirevalue::Error> {
@@ -319,12 +319,12 @@ impl MessageEnvelope {
     }
 
     /// The message sender.
-    pub fn sender(&self) -> &ref_::ActorRef {
+    pub fn sender(&self) -> &addr::ActorAddr {
         &self.sender
     }
 
     /// The destination of the message.
-    pub fn dest(&self) -> &ref_::PortRef {
+    pub fn dest(&self) -> &addr::PortAddr {
         &self.dest
     }
 
@@ -347,7 +347,7 @@ impl MessageEnvelope {
     /// Change the sender on the envelope in case it was set incorrectly. This
     /// should only be used by CommActor since it is forwarding from another
     /// sender.
-    pub fn update_sender(&mut self, sender: impl Into<ref_::ActorRef>) {
+    pub fn update_sender(&mut self, sender: impl Into<addr::ActorAddr>) {
         self.sender = sender.into();
     }
 
@@ -485,8 +485,8 @@ impl fmt::Display for MessageEnvelope {
 /// Metadata about a message sent via a MessageEnvelope.
 #[derive(Clone)]
 pub struct MessageMetadata {
-    sender: ref_::ActorRef,
-    dest: ref_::PortRef,
+    sender: addr::ActorAddr,
+    dest: addr::PortAddr,
     errors: Vec<DeliveryError>,
     headers: Flattrs,
     ttl: u8,
@@ -497,7 +497,7 @@ pub struct MessageMetadata {
 /// with the mailbox's actor id.
 #[derive(Debug)]
 pub struct MailboxError {
-    actor_id: ref_::ActorRef,
+    actor_id: addr::ActorAddr,
     kind: MailboxErrorKind,
 }
 
@@ -512,28 +512,28 @@ pub enum MailboxErrorKind {
 
     /// The port associated with an operation was invalid.
     #[error("invalid port: {0}")]
-    InvalidPort(ref_::PortRef),
+    InvalidPort(addr::PortAddr),
 
     /// There was no sender associated with the port.
     #[error("no sender for port: {0}")]
-    NoSenderForPort(ref_::PortRef),
+    NoSenderForPort(addr::PortAddr),
 
     /// There was no local sender associated with the port.
     /// Returned by operations that require a local port.
     #[error("no local sender for port: {0}")]
-    NoLocalSenderForPort(ref_::PortRef),
+    NoLocalSenderForPort(addr::PortAddr),
 
     /// The port was closed.
     #[error("{0}: port closed")]
-    PortClosed(ref_::PortRef),
+    PortClosed(addr::PortAddr),
 
     /// An error occured during a send operation.
     #[error("send {0}: {1}")]
-    Send(ref_::PortRef, #[source] anyhow::Error),
+    Send(addr::PortAddr, #[source] anyhow::Error),
 
     /// An error occured during a receive operation.
     #[error("recv {0}: {1}")]
-    Recv(ref_::PortRef, #[source] anyhow::Error),
+    Recv(addr::PortAddr, #[source] anyhow::Error),
 
     /// There was a serialization failure.
     #[error("serialize: {0}")]
@@ -555,7 +555,7 @@ pub enum MailboxErrorKind {
 impl MailboxError {
     /// Create a new mailbox error associated with the provided actor
     /// id and of the given kind.
-    pub fn new(actor_id: impl Into<ref_::ActorRef>, kind: MailboxErrorKind) -> Self {
+    pub fn new(actor_id: impl Into<addr::ActorAddr>, kind: MailboxErrorKind) -> Self {
         Self {
             actor_id: actor_id.into(),
             kind,
@@ -563,7 +563,7 @@ impl MailboxError {
     }
 
     /// The ID of the mailbox producing this error.
-    pub fn actor_id(&self) -> &ref_::ActorRef {
+    pub fn actor_id(&self) -> &addr::ActorAddr {
         &self.actor_id
     }
 
@@ -592,23 +592,23 @@ impl std::error::Error for MailboxError {
 #[derive(Debug, Clone)]
 pub enum PortLocation {
     /// The port was bound: the location is its underlying bound ID.
-    Bound(ref_::PortRef),
+    Bound(addr::PortAddr),
     /// The port was not bound: we provide the actor ID and the message type.
-    Unbound(ref_::ActorRef, &'static str),
+    Unbound(addr::ActorAddr, &'static str),
 }
 
 impl PortLocation {
-    fn new_unbound<M: Message>(actor_id: ref_::ActorRef) -> Self {
+    fn new_unbound<M: Message>(actor_id: addr::ActorAddr) -> Self {
         PortLocation::Unbound(actor_id, std::any::type_name::<M>())
     }
 
     #[allow(dead_code)]
-    fn new_unbound_type(actor_id: ref_::ActorRef, ty: &'static str) -> Self {
+    fn new_unbound_type(actor_id: addr::ActorAddr, ty: &'static str) -> Self {
         PortLocation::Unbound(actor_id, ty)
     }
 
     /// The actor id of the location.
-    pub fn actor_id(&self) -> ref_::ActorRef {
+    pub fn actor_id(&self) -> addr::ActorAddr {
         match self {
             PortLocation::Bound(port_ref) => port_ref.actor_ref(),
             PortLocation::Unbound(actor_ref, _) => actor_ref.clone(),
@@ -673,7 +673,7 @@ pub enum MailboxSenderErrorKind {
 impl MailboxSenderError {
     /// Create a new mailbox sender error to an unbound port.
     pub fn new_unbound<M>(
-        actor_id: impl Into<ref_::ActorRef>,
+        actor_id: impl Into<addr::ActorAddr>,
         kind: MailboxSenderErrorKind,
     ) -> Self {
         Self {
@@ -687,7 +687,7 @@ impl MailboxSenderError {
 
     /// Create a new mailbox sender, manually providing the type.
     pub fn new_unbound_type(
-        actor_id: impl Into<ref_::ActorRef>,
+        actor_id: impl Into<addr::ActorAddr>,
         kind: MailboxSenderErrorKind,
         ty: &'static str,
     ) -> Self {
@@ -698,7 +698,7 @@ impl MailboxSenderError {
     }
 
     /// Create a new mailbox sender error with the provided port ID and kind.
-    pub fn new_bound(port_id: impl Into<ref_::PortRef>, kind: MailboxSenderErrorKind) -> Self {
+    pub fn new_bound(port_id: impl Into<addr::PortAddr>, kind: MailboxSenderErrorKind) -> Self {
         Self {
             location: Box::new(PortLocation::Bound(port_id.into())),
             kind: Box::new(kind),
@@ -994,7 +994,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
             static NEXT_RANK: AtomicUsize = AtomicUsize::new(0);
             let rank = NEXT_RANK.fetch_add(1, Ordering::Relaxed);
             let addr = ChannelAddr::any(ChannelTransport::Local);
-            let proc_id = ref_::ProcRef::unique(addr, format!("mailbox_server_{}", rank));
+            let proc_id = addr::ProcAddr::unique(addr, format!("mailbox_server_{}", rank));
             // Use this mailbox server as the forwarder, so we can use it to
             // return message back to the sender.
             let proc = Proc::configured(proc_id, BoxedMailboxSender::new(server));
@@ -1265,7 +1265,7 @@ impl MailboxSender for MailboxClient {
     }
 }
 
-/// Wrapper to turn `PortRef` into a `Sink`.
+/// Wrapper to turn `PortAddr` into a `Sink`.
 pub struct PortSink<C: context::Actor, M: RemoteMessage> {
     cx: C,
     port: reference::PortRef<M>,
@@ -1308,14 +1308,14 @@ pub struct Mailbox {
 impl Mailbox {
     /// Create a new mailbox associated with the provided actor ID, using the provided
     /// forwarder for external destinations.
-    pub fn new(actor_id: impl Into<ref_::ActorRef>, forwarder: BoxedMailboxSender) -> Self {
+    pub fn new(actor_id: impl Into<addr::ActorAddr>, forwarder: BoxedMailboxSender) -> Self {
         Self {
             inner: Arc::new(State::new(actor_id.into(), forwarder)),
         }
     }
 
     /// Create a new detached mailbox associated with the provided actor ID.
-    pub fn new_detached(actor_id: impl Into<ref_::ActorRef>) -> Self {
+    pub fn new_detached(actor_id: impl Into<addr::ActorAddr>) -> Self {
         Self {
             inner: Arc::new(State::new(
                 actor_id.into(),
@@ -1325,7 +1325,7 @@ impl Mailbox {
     }
 
     /// The actor id associated with this mailbox.
-    pub fn actor_id(&self) -> &ref_::ActorRef {
+    pub fn actor_id(&self) -> &addr::ActorAddr {
         &self.inner.actor_id
     }
 
@@ -1584,7 +1584,7 @@ impl Mailbox {
         }
     }
 
-    pub(crate) fn bind_untyped(&self, port_id: &ref_::PortRef, sender: UntypedUnboundedSender) {
+    pub(crate) fn bind_untyped(&self, port_id: &addr::PortAddr, sender: UntypedUnboundedSender) {
         assert_eq!(
             port_id.actor_ref(),
             *self.actor_id(),
@@ -1793,13 +1793,13 @@ pub struct PortHandle<M: Message> {
     mailbox: Mailbox,
     port_index: u64,
     sender: UnboundedPortSender<M>,
-    // We would like this to be a Arc<RwLock<Option<PortRef<M>>>>, but we cannot
-    // write down the type PortRef<M> (M: Message), even though we cannot
+    // We would like this to be a Arc<RwLock<Option<PortAddr<M>>>>, but we cannot
+    // write down the type PortAddr<M> (M: Message), even though we cannot
     // legally construct such a value without M: RemoteMessage. We could consider
-    // making PortRef<M> valid for M: Message, but constructible only for
+    // making PortAddr<M> valid for M: Message, but constructible only for
     // M: RemoteMessage, but the guarantees offered by the impossibilty of even
     // writing down the type are appealing.
-    bound: Arc<RwLock<Option<ref_::PortRef>>>,
+    bound: Arc<RwLock<Option<addr::PortAddr>>>,
     // Typehash of an optional reducer. When it's defined, we include it in port
     /// references to optionally enable incremental accumulation.
     reducer_spec: Option<ReducerSpec>,
@@ -1851,7 +1851,7 @@ impl<M: Message> PortHandle<M> {
         let bound_guard = self.bound.read().unwrap();
         if let Some(bound_port) = bound_guard.as_ref() {
             let sequencer = cx.instance().sequencer();
-            let bound_ref: crate::ref_::PortRef = bound_port.clone();
+            let bound_ref: crate::addr::PortAddr = bound_port.clone();
             let seq_info = sequencer.assign_seq(&bound_ref);
             headers.set(SEQ_INFO, seq_info);
         } else {
@@ -1960,7 +1960,7 @@ impl<M: Message> fmt::Display for PortHandle<M> {
 pub struct OncePortHandle<M: Message> {
     mailbox: Mailbox,
     port_index: u64,
-    port_id: ref_::PortRef,
+    port_id: addr::PortAddr,
     sender: oneshot::Sender<M>,
     reducer_spec: Option<ReducerSpec>,
 }
@@ -1968,7 +1968,7 @@ pub struct OncePortHandle<M: Message> {
 impl<M: Message> OncePortHandle<M> {
     /// This port's ID.
     // TODO: make value
-    pub fn port_id(&self) -> &ref_::PortRef {
+    pub fn port_id(&self) -> &addr::PortAddr {
         &self.port_id
     }
 
@@ -2020,7 +2020,7 @@ impl<M: Message> fmt::Display for OncePortHandle<M> {
 #[derive(Debug)]
 pub struct PortReceiver<M> {
     receiver: mpsc::UnboundedReceiver<M>,
-    port_id: ref_::PortRef,
+    port_id: addr::PortAddr,
     /// When multiple messages are put in channel, only receive the latest one
     /// if coalesce is true. Other messages will be discarded.
     coalesce: bool,
@@ -2032,7 +2032,7 @@ pub struct PortReceiver<M> {
 impl<M> PortReceiver<M> {
     fn new(
         receiver: mpsc::UnboundedReceiver<M>,
-        port_id: ref_::PortRef,
+        port_id: addr::PortAddr,
         coalesce: bool,
         mailbox: Mailbox,
     ) -> Self {
@@ -2100,7 +2100,7 @@ impl<M> PortReceiver<M> {
         self.port_id.index()
     }
 
-    fn actor_id(&self) -> ref_::ActorRef {
+    fn actor_id(&self) -> addr::ActorAddr {
         self.port_id.actor_ref()
     }
 }
@@ -2125,7 +2125,7 @@ impl<M> Stream for PortReceiver<M> {
 /// A receiver of M-typed messages from [`OncePort`]s.
 pub struct OncePortReceiver<M> {
     receiver: Option<oneshot::Receiver<M>>,
-    port_id: ref_::PortRef,
+    port_id: addr::PortAddr,
 
     /// Mailbox is used to remove the port from service when the receiver
     /// is dropped.
@@ -2152,7 +2152,7 @@ impl<M> OncePortReceiver<M> {
         self.port_id.index()
     }
 
-    fn actor_id(&self) -> ref_::ActorRef {
+    fn actor_id(&self) -> addr::ActorAddr {
         self.port_id.actor_ref()
     }
 }
@@ -2244,13 +2244,13 @@ impl<M: Message> Debug for UnboundedPortSender<M> {
 
 struct UnboundedSender<M: Message> {
     sender: UnboundedPortSender<M>,
-    port_id: ref_::PortRef,
+    port_id: addr::PortAddr,
 }
 
 impl<M: Message> UnboundedSender<M> {
     /// Create a new UnboundedSender encapsulating the provided
     /// sender.
-    fn new(sender: UnboundedPortSender<M>, port_id: ref_::PortRef) -> Self {
+    fn new(sender: UnboundedPortSender<M>, port_id: addr::PortAddr) -> Self {
         Self { sender, port_id }
     }
 
@@ -2321,13 +2321,13 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
 #[derive(Debug)]
 struct OnceSender<M: Message> {
     sender: Arc<Mutex<Option<oneshot::Sender<M>>>>,
-    port_id: ref_::PortRef,
+    port_id: addr::PortAddr,
 }
 
 impl<M: Message> OnceSender<M> {
     /// Create a new OnceSender encapsulating the provided one-shot
     /// sender.
-    fn new(sender: oneshot::Sender<M>, port_id: ref_::PortRef) -> Self {
+    fn new(sender: oneshot::Sender<M>, port_id: addr::PortAddr) -> Self {
         Self {
             sender: Arc::new(Mutex::new(Some(sender))),
             port_id,
@@ -2402,7 +2402,7 @@ impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
 pub(crate) struct UntypedUnboundedSender {
     pub(crate) sender:
         Box<dyn Fn(wirevalue::Any) -> Result<bool, (wirevalue::Any, anyhow::Error)> + Send + Sync>,
-    pub(crate) port_id: ref_::PortRef,
+    pub(crate) port_id: addr::PortAddr,
 }
 
 impl SerializedSender for UntypedUnboundedSender {
@@ -2429,7 +2429,7 @@ impl SerializedSender for UntypedUnboundedSender {
 /// State is the internal state of the mailbox.
 struct State {
     /// The ID of the mailbox owner.
-    actor_id: ref_::ActorRef,
+    actor_id: addr::ActorAddr,
 
     // insert if it's serializable; otherwise don't.
     /// The set of active ports in the mailbox. All currently
@@ -2449,7 +2449,7 @@ struct State {
 
 impl State {
     /// Create a new state with the provided owning ActorId.
-    fn new(actor_id: ref_::ActorRef, forwarder: BoxedMailboxSender) -> Self {
+    fn new(actor_id: addr::ActorAddr, forwarder: BoxedMailboxSender) -> Self {
         Self {
             actor_id,
             ports: DashMap::new(),
@@ -2485,7 +2485,7 @@ impl fmt::Debug for State {
 /// different underlying senders.
 #[derive(Clone)]
 pub struct MailboxMuxer {
-    mailboxes: Arc<DashMap<ref_::ActorRef, Box<dyn MailboxSender + Send + Sync>>>,
+    mailboxes: Arc<DashMap<addr::ActorAddr, Box<dyn MailboxSender + Send + Sync>>>,
 }
 
 impl Default for MailboxMuxer {
@@ -2508,7 +2508,7 @@ impl MailboxMuxer {
     /// the caller must [`MailboxMuxer::unbind`] it first.
     pub fn bind(
         &self,
-        actor_id: impl Into<ref_::ActorRef>,
+        actor_id: impl Into<addr::ActorAddr>,
         sender: impl MailboxSender + 'static,
     ) -> bool {
         let actor_id = actor_id.into();
@@ -2530,12 +2530,12 @@ impl MailboxMuxer {
     /// unbinding, the muxer will no longer be able to send messages to
     /// that actor.
     #[allow(dead_code)]
-    pub(crate) fn unbind(&self, actor_id: &ref_::ActorRef) {
+    pub(crate) fn unbind(&self, actor_id: &addr::ActorAddr) {
         self.mailboxes.remove(actor_id);
     }
 
     /// Returns a list of all actors bound to this muxer. Useful in debugging.
-    pub fn bound_actors(&self) -> Vec<ref_::ActorRef> {
+    pub fn bound_actors(&self) -> Vec<addr::ActorAddr> {
         self.mailboxes.iter().map(|e| e.key().clone()).collect()
     }
 }
@@ -2579,7 +2579,7 @@ impl MailboxSender for MailboxMuxer {
 /// nearest prefix.
 #[derive(Clone)]
 pub struct MailboxRouter {
-    entries: Arc<RwLock<BTreeMap<ref_::Reference, Arc<dyn MailboxSender + Send + Sync>>>>,
+    entries: Arc<RwLock<BTreeMap<addr::Address, Arc<dyn MailboxSender + Send + Sync>>>>,
 }
 
 impl Default for MailboxRouter {
@@ -2614,14 +2614,14 @@ impl MailboxRouter {
     /// Bind the provided sender to the given reference. The destination
     /// is treated as a prefix to which messages can be routed, and
     /// messages are routed to their longest matching prefix.
-    pub fn bind(&self, dest: impl Into<ref_::Reference>, sender: impl MailboxSender + 'static) {
+    pub fn bind(&self, dest: impl Into<addr::Address>, sender: impl MailboxSender + 'static) {
         let dest = dest.into();
         let mut w = self.entries.write().unwrap();
         w.insert(dest, Arc::new(sender));
     }
 
-    fn sender(&self, actor_ref: &ref_::ActorRef) -> Option<Arc<dyn MailboxSender + Send + Sync>> {
-        let reference = ref_::Reference::from(actor_ref.clone());
+    fn sender(&self, actor_ref: &addr::ActorAddr) -> Option<Arc<dyn MailboxSender + Send + Sync>> {
+        let reference = addr::Address::from(actor_ref.clone());
         match self
             .entries
             .read()
@@ -2701,7 +2701,7 @@ impl MailboxSender for FallbackMailboxRouter {
 /// on a per-entry basis.
 #[derive(Debug, Clone)]
 pub struct WeakMailboxRouter(
-    Weak<RwLock<BTreeMap<ref_::Reference, Arc<dyn MailboxSender + Send + Sync>>>>,
+    Weak<RwLock<BTreeMap<addr::Address, Arc<dyn MailboxSender + Send + Sync>>>>,
 );
 
 impl WeakMailboxRouter {
@@ -2750,7 +2750,7 @@ impl MailboxSender for WeakMailboxRouter {
 /// sender, if present.
 #[derive(Clone)]
 pub struct DialMailboxRouter {
-    address_book: Arc<RwLock<BTreeMap<ref_::Reference, ChannelAddr>>>,
+    address_book: Arc<RwLock<BTreeMap<addr::Address, ChannelAddr>>>,
     sender_cache: Arc<DashMap<ChannelAddr, Arc<MailboxClient>>>,
 
     // The default sender, to which messages for unknown recipients
@@ -2800,12 +2800,12 @@ impl DialMailboxRouter {
         }
     }
 
-    /// Binds a [`Reference`] to a [`ChannelAddr`], replacing any
+    /// Binds a [`Address`] to a [`ChannelAddr`], replacing any
     /// existing binding.
     ///
     /// If the address changes, the old sender is evicted from the
     /// cache to ensure fresh routing on next use.
-    pub fn bind(&self, dest: impl Into<ref_::Reference>, addr: ChannelAddr) {
+    pub fn bind(&self, dest: impl Into<addr::Address>, addr: ChannelAddr) {
         let dest = dest.into();
         if let Ok(mut w) = self.address_book.write() {
             if let Some(old_addr) = w.insert(dest.clone(), addr.clone())
@@ -2824,9 +2824,9 @@ impl DialMailboxRouter {
     ///
     /// Also evicts any corresponding cached senders to prevent reuse
     /// of stale connections.
-    pub fn unbind(&self, dest: &ref_::Reference) {
+    pub fn unbind(&self, dest: &addr::Address) {
         if let Ok(mut w) = self.address_book.write() {
-            let to_remove: Vec<(ref_::Reference, ChannelAddr)> = w
+            let to_remove: Vec<(addr::Address, ChannelAddr)> = w
                 .range(dest..)
                 .take_while(|(key, _)| dest.is_prefix_of(key))
                 .map(|(key, addr)| (key.clone(), addr.clone()))
@@ -2843,13 +2843,13 @@ impl DialMailboxRouter {
     }
 
     /// Lookup an actor's channel in the router's address bok.
-    pub fn lookup_addr(&self, actor_ref: &ref_::ActorRef) -> Option<ChannelAddr> {
+    pub fn lookup_addr(&self, actor_ref: &addr::ActorAddr) -> Option<ChannelAddr> {
         let address_book = self.address_book.read().unwrap();
-        let reference = ref_::Reference::from(actor_ref.clone());
+        let reference = addr::Address::from(actor_ref.clone());
         let found = address_book.lower_bound(Excluded(&reference)).prev();
 
         // First try to look up the address in our address book; failing that,
-        // extract the address from the ProcRef (all procs are direct-addressed now).
+        // extract the address from the ProcAddr (all procs are direct-addressed now).
         if let Some((key, addr)) = found
             && key.is_prefix_of(&reference)
         {
@@ -2866,9 +2866,9 @@ impl DialMailboxRouter {
 
     /// Return all covering prefixes of this router. That is, all references that are not
     /// prefixed by another reference in the routing table
-    pub fn prefixes(&self) -> BTreeSet<ref_::Reference> {
+    pub fn prefixes(&self) -> BTreeSet<addr::Address> {
         let addrs = self.address_book.read().unwrap();
-        let mut prefixes: BTreeSet<ref_::Reference> = BTreeSet::new();
+        let mut prefixes: BTreeSet<addr::Address> = BTreeSet::new();
         for (reference, _) in addrs.iter() {
             match prefixes.lower_bound(Excluded(reference)).peek_prev() {
                 Some(candidate) if candidate.is_prefix_of(reference) => (),
@@ -2884,7 +2884,7 @@ impl DialMailboxRouter {
     fn dial(
         &self,
         addr: &ChannelAddr,
-        actor_ref: &ref_::ActorRef,
+        actor_ref: &addr::ActorAddr,
     ) -> Result<Arc<MailboxClient>, MailboxSenderError> {
         // Get the sender. Create it if needed. Do not send the
         // messages inside this block so we do not hold onto the
@@ -2983,12 +2983,12 @@ mod tests {
     use crate::testing::ids::test_port_id;
     use crate::testing::ids::test_proc_id;
 
-    fn test_proc_ref(name: &str) -> ref_::Reference {
-        ref_::Reference::Proc(test_proc_id(name).into())
+    fn test_proc_ref(name: &str) -> addr::Address {
+        addr::Address::Proc(test_proc_id(name).into())
     }
 
-    fn test_actor_ref(proc_name: &str, actor_name: &str) -> ref_::Reference {
-        ref_::Reference::Actor(test_actor_id(proc_name, actor_name).into())
+    fn test_actor_ref(proc_name: &str, actor_name: &str) -> addr::Address {
+        addr::Address::Actor(test_actor_id(proc_name, actor_name).into())
     }
 
     #[test]
@@ -3261,12 +3261,12 @@ mod tests {
         // Bind a direct address -- we should use its bound address!
         // The actor must be on unix:@4 so that after unbinding, the prefix
         // route for world1_1 (unix!@3) is the fallback, not world1_1/actor1 (unix!@4).
-        let direct_actor_ref: ref_::ActorRef =
+        let direct_actor_ref: addr::ActorAddr =
             reference::ProcId::from_resource_name("unix:@4".parse().unwrap(), "my_proc")
                 .actor_id("my_actor")
                 .into();
         router.bind(
-            ref_::Reference::Actor(direct_actor_ref.clone()),
+            addr::Address::Actor(direct_actor_ref.clone()),
             "unix:@5".parse().unwrap(),
         );
 
@@ -3352,9 +3352,9 @@ mod tests {
                 .label()
                 .is_some_and(|l| l.as_str().starts_with("world0"))
             {
-                world0_router.bind(ref_::Reference::from(mbox.actor_id().clone()), addr);
+                world0_router.bind(addr::Address::from(mbox.actor_id().clone()), addr);
             } else {
-                world1_router.bind(ref_::Reference::from(mbox.actor_id().clone()), addr);
+                world1_router.bind(addr::Address::from(mbox.actor_id().clone()), addr);
             }
         }
 
@@ -3526,7 +3526,7 @@ mod tests {
         fn create_receiver<M>(coalesce: bool) -> (mpsc::UnboundedSender<M>, PortReceiver<M>) {
             // Create dummy state and port_id to create PortReceiver. They are
             // not used in the test.
-            let dummy_actor_ref: ref_::ActorRef = test_actor_id("world_0", "actor").into();
+            let dummy_actor_ref: addr::ActorAddr = test_actor_id("world_0", "actor").into();
             let dummy_state = State::new(
                 dummy_actor_ref.clone(),
                 BOXED_PANICKING_MAILBOX_SENDER.clone(),
@@ -4012,7 +4012,7 @@ mod tests {
                 .expect("receiver should not be closed");
 
         // Verify the undeliverable message has the correct destination
-        let split_port_ref: ref_::PortRef = split_port_id.into();
+        let split_port_ref: addr::PortAddr = split_port_id.into();
         assert_eq!(undeliverable.0.dest(), &split_port_ref);
 
         // Verify no additional messages arrived at the original receiver
@@ -4030,7 +4030,7 @@ mod tests {
         let router = DialMailboxRouter::new();
         router.bind(test_proc_ref("world0"), "unix!@1".parse().unwrap());
 
-        let prefixes: Vec<ref_::Reference> = router.prefixes().into_iter().collect();
+        let prefixes: Vec<addr::Address> = router.prefixes().into_iter().collect();
         assert_eq!(prefixes.len(), 1);
         assert_eq!(prefixes[0], test_proc_ref("world0"));
     }
@@ -4042,7 +4042,7 @@ mod tests {
         router.bind(test_proc_ref("world1"), "unix!@2".parse().unwrap());
         router.bind(test_proc_ref("world2"), "unix!@3".parse().unwrap());
 
-        let mut prefixes: Vec<ref_::Reference> = router.prefixes().into_iter().collect();
+        let mut prefixes: Vec<addr::Address> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         let mut expected = vec![
@@ -4065,7 +4065,7 @@ mod tests {
         router.bind(test_proc_ref("world1"), "unix!@4".parse().unwrap());
         router.bind(test_proc_ref("world1_0"), "unix!@5".parse().unwrap());
 
-        let mut prefixes: Vec<ref_::Reference> = router.prefixes().into_iter().collect();
+        let mut prefixes: Vec<addr::Address> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         let mut expected = vec![
@@ -4097,7 +4097,7 @@ mod tests {
             "unix!@6".parse().unwrap(),
         );
 
-        let mut prefixes: Vec<ref_::Reference> = router.prefixes().into_iter().collect();
+        let mut prefixes: Vec<addr::Address> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         // Covering prefixes:
@@ -4125,7 +4125,7 @@ mod tests {
         router.bind(test_proc_ref("world0_1"), "unix!@2".parse().unwrap());
         router.bind(test_proc_ref("world0_2"), "unix!@3".parse().unwrap());
 
-        let mut prefixes: Vec<ref_::Reference> = router.prefixes().into_iter().collect();
+        let mut prefixes: Vec<addr::Address> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         // All should be covering prefixes since none is a prefix of another

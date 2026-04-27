@@ -32,6 +32,8 @@ use tokio::task::JoinHandle;
 use typeuri::Named;
 
 use crate as hyperactor; // for macros
+use crate::ActorAddr;
+use crate::ActorRef;
 use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
@@ -49,7 +51,6 @@ use crate::proc::Instance;
 use crate::proc::InstanceCell;
 use crate::proc::Ports;
 use crate::proc::Proc;
-use crate::ref_;
 use crate::reference;
 use crate::supervision::ActorSupervisionEvent;
 
@@ -334,8 +335,8 @@ impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
 /// with the ID of the actor being served.
 #[derive(Debug)]
 pub struct ActorError {
-    /// The ActorRef for the actor that generated this error.
-    pub actor_id: Box<ref_::ActorRef>,
+    /// The ActorAddr for the actor that generated this error.
+    pub actor_id: Box<ActorAddr>,
     /// The kind of error that occurred.
     pub kind: Box<ActorErrorKind>,
 }
@@ -405,7 +406,7 @@ impl ActorErrorKind {
 
 impl ActorError {
     /// Create a new actor server error with the provided id and kind.
-    pub(crate) fn new(actor_id: &ref_::ActorRef, kind: ActorErrorKind) -> Self {
+    pub(crate) fn new(actor_id: &ActorAddr, kind: ActorErrorKind) -> Self {
         Self {
             actor_id: Box::new(actor_id.clone()),
             kind: Box::new(kind),
@@ -611,7 +612,7 @@ impl fmt::Display for ActorStatus {
 /// detached from the underlying actor instance, and there is no longer
 /// any way to join it.
 ///
-/// Correspondingly, [`crate::ActorRef`]s refer to (possibly) remote
+/// Correspondingly, [`crate::ActorAddr`]s refer to (possibly) remote
 /// actors.
 pub struct ActorHandle<A: Actor> {
     cell: InstanceCell,
@@ -630,8 +631,8 @@ impl<A: Actor> ActorHandle<A> {
         &self.cell
     }
 
-    /// The [`ActorRef`] of the actor represented by this handle.
-    pub fn actor_id(&self) -> &ref_::ActorRef {
+    /// The [`ActorAddr`] of the actor represented by this handle.
+    pub fn actor_id(&self) -> &ActorAddr {
         self.cell.actor_id()
     }
 
@@ -2098,7 +2099,7 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
 
         // Before registering, query_child returns None.
-        let test_ref: ref_::Reference =
+        let test_ref: Address =
             reference::Reference::Actor(test_proc_id("test").actor_id("child")).into();
         assert!(handle.cell().query_child(&test_ref).is_none());
 
@@ -2106,9 +2107,9 @@ mod tests {
         handle.cell().set_query_child_handler(|child_ref| {
             use crate::introspect::IntrospectRef;
             let identity = match child_ref {
-                ref_::Reference::Proc(p) => IntrospectRef::Proc(p.clone().into()),
-                ref_::Reference::Actor(a) => IntrospectRef::Actor(a.clone().into()),
-                ref_::Reference::Port(p) => IntrospectRef::Actor(p.actor_ref().into()),
+                Address::Proc(p) => IntrospectRef::Proc(p.clone().into()),
+                Address::Actor(a) => IntrospectRef::Actor(a.clone().into()),
+                Address::Port(p) => IntrospectRef::Actor(p.actor_ref().into()),
             };
             IntrospectResult {
                 identity,

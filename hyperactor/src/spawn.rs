@@ -12,12 +12,12 @@ use async_trait::async_trait;
 
 use crate::actor::Actor;
 use crate::actor::ActorHandle;
+use crate::addr;
 use crate::mailbox::BoxedMailboxSender;
-use crate::ref_;
 
 #[derive(Debug)]
 struct LocalSpawnerState {
-    root: ref_::ActorRef,
+    root: addr::ActorAddr,
     sender: BoxedMailboxSender,
 }
 
@@ -25,7 +25,7 @@ struct LocalSpawnerState {
 pub(crate) struct LocalSpawner(Option<Arc<LocalSpawnerState>>);
 
 impl LocalSpawner {
-    pub(crate) fn new(root: ref_::ActorRef, sender: BoxedMailboxSender) -> Self {
+    pub(crate) fn new(root: addr::ActorAddr, sender: BoxedMailboxSender) -> Self {
         Self(Some(Arc::new(LocalSpawnerState { root, sender })))
     }
 
