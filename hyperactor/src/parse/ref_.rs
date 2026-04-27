@@ -22,7 +22,6 @@ use crate::parse::id::parse_actor_id_parts;
 use crate::parse::id::parse_id_component;
 use crate::parse::id::parse_port_id_parts;
 use crate::parse::id::parse_proc_id_parts;
-use crate::parse::lex::Span;
 use crate::parse::lex::TokenKind;
 
 /// A parsed proc ref.

@@ -45,6 +45,9 @@ use crate::id::PortId;
 use crate::id::ProcId;
 use crate::id::Uid;
 use crate::parse;
+use crate::parse::ref_::ActorRefParts;
+use crate::parse::ref_::PortRefParts;
+use crate::parse::ref_::ProcRefParts;
 use crate::port::Port;
 
 /// A network location, wrapping a [`ChannelAddr`].
@@ -281,13 +284,7 @@ impl FromStr for ProcRef {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = parse::ref_::parse_proc_ref(s).map_err(|_| legacy_parse_proc_ref(s))?;
-        let id_text = id_text_from_ref_input(s, parts.location);
-        let id: ProcId = id_text.parse()?;
-        let location: Location = parts
-            .location
-            .parse()
-            .map_err(RefParseError::InvalidLocation)?;
-        Ok(Self { id, location })
+        Self::try_from((s, parts))
     }
 }
 
@@ -454,13 +451,7 @@ impl FromStr for ActorRef {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = parse::ref_::parse_actor_ref(s).map_err(|_| legacy_parse_actor_ref(s))?;
-        let id_text = id_text_from_ref_input(s, parts.location);
-        let id: ActorId = id_text.parse()?;
-        let location: Location = parts
-            .location
-            .parse()
-            .map_err(RefParseError::InvalidLocation)?;
-        Ok(Self { id, location })
+        Self::try_from((s, parts))
     }
 }
 
@@ -574,13 +565,7 @@ impl FromStr for PortRef {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = parse::ref_::parse_port_ref(s).map_err(|_| legacy_parse_port_ref(s))?;
-        let id_text = id_text_from_ref_input(s, parts.location);
-        let id: PortId = id_text.parse()?;
-        let location: Location = parts
-            .location
-            .parse()
-            .map_err(RefParseError::InvalidLocation)?;
-        Ok(Self { id, location })
+        Self::try_from((s, parts))
     }
 }
 
@@ -689,6 +674,48 @@ impl FromStr for Reference {
 
 fn id_text_from_ref_input<'a>(input: &'a str, location: &str) -> &'a str {
     &input[..input.len() - location.len() - 1]
+}
+
+impl<'a> TryFrom<(&'a str, ProcRefParts<'a>)> for ProcRef {
+    type Error = RefParseError;
+
+    fn try_from((input, parts): (&'a str, ProcRefParts<'a>)) -> Result<Self, Self::Error> {
+        let id_text = id_text_from_ref_input(input, parts.location);
+        let id: ProcId = id_text.parse()?;
+        let location: Location = parts
+            .location
+            .parse()
+            .map_err(RefParseError::InvalidLocation)?;
+        Ok(Self { id, location })
+    }
+}
+
+impl<'a> TryFrom<(&'a str, ActorRefParts<'a>)> for ActorRef {
+    type Error = RefParseError;
+
+    fn try_from((input, parts): (&'a str, ActorRefParts<'a>)) -> Result<Self, Self::Error> {
+        let id_text = id_text_from_ref_input(input, parts.location);
+        let id: ActorId = id_text.parse()?;
+        let location: Location = parts
+            .location
+            .parse()
+            .map_err(RefParseError::InvalidLocation)?;
+        Ok(Self { id, location })
+    }
+}
+
+impl<'a> TryFrom<(&'a str, PortRefParts<'a>)> for PortRef {
+    type Error = RefParseError;
+
+    fn try_from((input, parts): (&'a str, PortRefParts<'a>)) -> Result<Self, Self::Error> {
+        let id_text = id_text_from_ref_input(input, parts.location);
+        let id: PortId = id_text.parse()?;
+        let location: Location = parts
+            .location
+            .parse()
+            .map_err(RefParseError::InvalidLocation)?;
+        Ok(Self { id, location })
+    }
 }
 
 fn split_ref_input(s: &str) -> Result<(&str, &str), RefParseError> {
