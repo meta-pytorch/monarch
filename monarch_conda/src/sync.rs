@@ -326,7 +326,7 @@ pub async fn sender(
             // Send conda env fingerprint
             let src_env = CondaFingerprint::from_env(src).await?;
             to_receiver
-                .send(bincode::serialize(&src_env)?.into())
+                .send(bincode::serde::encode_to_vec(&src_env, bincode::config::legacy())?.into())
                 .await
                 .context("sending src conda fingerprint")?;
             to_receiver.flush().await?;
@@ -334,12 +334,21 @@ pub async fn sender(
             // Send file lists.
             while let Some((path, metadata)) = ent_rx.recv().await {
                 to_receiver
-                    .send(bincode::serialize(&FileList::Entry(path, metadata))?.into())
+                    .send(
+                        bincode::serde::encode_to_vec(
+                            FileList::Entry(path, metadata),
+                            bincode::config::legacy(),
+                        )?
+                        .into(),
+                    )
                     .await
                     .context("sending file ent")?;
             }
             to_receiver
-                .send(bincode::serialize(&FileList::Done)?.into())
+                .send(
+                    bincode::serde::encode_to_vec(FileList::Done, bincode::config::legacy())?
+                        .into(),
+                )
                 .await
                 .context("sending file list end")?;
             to_receiver.flush().await?;
@@ -352,18 +361,24 @@ pub async fn sender(
     to_receiver.flush().await?;
     let mut to_receiver = to_receiver.into_inner();
 
-    let hdr: FileSectionHeader =
-        bincode::deserialize(&from_receiver.next().await.context("header")??)?;
+    let hdr: FileSectionHeader = bincode::serde::decode_from_slice(
+        &from_receiver.next().await.context("header")??,
+        bincode::config::legacy(),
+    )
+    .map(|(v, _)| v)?;
     for _ in 0..hdr.num {
-        let FileHeader { path, symlink } =
-            bincode::deserialize(&from_receiver.next().await.context("signature")??)?;
+        let FileHeader { path, symlink } = bincode::serde::decode_from_slice(
+            &from_receiver.next().await.context("signature")??,
+            bincode::config::legacy(),
+        )
+        .map(|(v, _)| v)?;
         let fpath = src.join(&path);
         if symlink {
             let header = FileContentsHeader {
                 path,
                 contents: FileContents::Symlink(fs::read_link(&fpath).await?),
             };
-            let header = bincode::serialize(&header)?;
+            let header = bincode::serde::encode_to_vec(&header, bincode::config::legacy())?;
             to_receiver.write_all(&header.len().to_le_bytes()).await?;
             to_receiver
                 .write_all(&header)
@@ -375,7 +390,7 @@ pub async fn sender(
                 path,
                 contents: FileContents::File(base.metadata().await?.len()),
             };
-            let header = bincode::serialize(&header)?;
+            let header = bincode::serde::encode_to_vec(&header, bincode::config::legacy())?;
             to_receiver.write_all(&header.len().to_le_bytes()).await?;
             to_receiver
                 .write_all(&header)
@@ -449,8 +464,11 @@ pub async fn receiver(
     // Get the conda env fingerprint for the src and dst, and use that to create a
     // comparator we can use to compare the mtimes between them.
     let dst_env = CondaFingerprint::from_env(dst).await?;
-    let src_env: CondaFingerprint =
-        bincode::deserialize(&from_sender.next().await.context("fingerprint")??)?;
+    let src_env: CondaFingerprint = bincode::serde::decode_from_slice(
+        &from_sender.next().await.context("fingerprint")??,
+        bincode::config::legacy(),
+    )
+    .map(|(v, _)| v)?;
     let comparator = CondaFingerprint::mtime_comparator(&src_env, &dst_env)?;
     let ignores = GlobSetBuilder::new()
         .add(Glob::new("**/*.pyc")?)
@@ -477,8 +495,11 @@ pub async fn receiver(
         },
         // Process file list sent from sender.
         async {
-            while let FileList::Entry(path, metadata) =
-                bincode::deserialize(&from_sender.next().await.context("file list")??)?
+            while let FileList::Entry(path, metadata) = bincode::serde::decode_from_slice(
+                &from_sender.next().await.context("file list")??,
+                bincode::config::legacy(),
+            )
+            .map(|(v, _): (FileList, _)| v)?
             {
                 actions_builder
                     .process_src(path.clone(), metadata)
@@ -565,7 +586,9 @@ pub async fn receiver(
                 let mut buf = vec![0u8; len as usize];
                 from_sender.read_exact(&mut buf).await?;
                 let FileContentsHeader { path, contents } =
-                    bincode::deserialize(&buf).context("delta header")?;
+                    bincode::serde::decode_from_slice(&buf, bincode::config::legacy())
+                        .map(|(v, _)| v)
+                        .context("delta header")?;
                 let fpath = dst.join(&path);
                 match (contents, files.get(&path).context("missing file")?) {
                     // Read file contents and write to a tempfile.
@@ -617,16 +640,25 @@ pub async fn receiver(
         },
         async {
             to_sender
-                .send(bincode::serialize(&FileSectionHeader { num: files.len() })?.into())
+                .send(
+                    bincode::serde::encode_to_vec(
+                        &FileSectionHeader { num: files.len() },
+                        bincode::config::legacy(),
+                    )?
+                    .into(),
+                )
                 .await
                 .context("sending sig section header")?;
             for (path, (_, recv)) in files.iter() {
                 to_sender
                     .send(
-                        bincode::serialize(&FileHeader {
-                            path: path.clone(),
-                            symlink: matches!(recv, Receive::Symlink),
-                        })?
+                        bincode::serde::encode_to_vec(
+                            &FileHeader {
+                                path: path.clone(),
+                                symlink: matches!(recv, Receive::Symlink),
+                            },
+                            bincode::config::legacy(),
+                        )?
                         .into(),
                     )
                     .await

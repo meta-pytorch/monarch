@@ -1445,18 +1445,6 @@ pub mod env {
         id
     }
 
-    /// Returns a URL for the execution trace, if available.
-    #[cfg(all(fbcode_build, target_os = "linux"))]
-    pub async fn execution_url() -> anyhow::Result<Option<String>> {
-        Ok(Some(
-            crate::meta::scuba_tracing::url::get_samples_shorturl(&execution_id()).await?,
-        ))
-    }
-    #[cfg(not(all(fbcode_build, target_os = "linux")))]
-    pub async fn execution_url() -> anyhow::Result<Option<String>> {
-        Ok(None)
-    }
-
     #[derive(PartialEq)]
     pub enum Env {
         Local,

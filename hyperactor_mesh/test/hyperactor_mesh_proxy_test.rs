@@ -19,22 +19,19 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
-use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox;
 use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::alloc::AllocSpec;
-use hyperactor_mesh::alloc::Allocator;
-use hyperactor_mesh::alloc::ProcessAllocator;
+use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::context;
+use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::supervision::MeshFailure;
 use ndslice::View;
 use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::process::Command;
 use typeuri::Named;
 
 pub fn initialize() {
@@ -100,6 +97,7 @@ impl Handler<Echo> for TestActor {
 )]
 pub struct ProxyActor {
     exe_path: String,
+    host_mesh: Option<HostMesh>,
     proc_mesh: Option<Arc<ProcMesh>>,
     actor_mesh: Option<ActorMesh<TestActor>>,
 }
@@ -107,6 +105,7 @@ pub struct ProxyActor {
 impl fmt::Debug for ProxyActor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProxyActor")
+            .field("host_mesh", &"...")
             .field("proc_mesh", &"...")
             .field("actor_mesh", &"...")
             .finish()
@@ -116,28 +115,31 @@ impl fmt::Debug for ProxyActor {
 #[async_trait]
 impl Actor for ProxyActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        let mut cmd = Command::new(PathBuf::from(&self.exe_path));
-        cmd.arg("--bootstrap");
+        // This proc was spawned with `HYPERACTOR_MESH_BOOTSTRAP_MODE` set, and
+        // that bootstrap is already in flight. Clear the variable so our own
+        // call to `HostMesh::process` below does not re-enter the bootstrap
+        // branch on behalf of the parent.
+        // SAFETY: no other threads read or write this variable concurrently.
+        unsafe {
+            std::env::remove_var("HYPERACTOR_MESH_BOOTSTRAP_MODE");
+        }
 
-        let mut allocator = ProcessAllocator::new(cmd);
+        let command = BootstrapCommand {
+            program: PathBuf::from(&self.exe_path),
+            arg0: None,
+            args: vec!["--bootstrap".to_string()],
+            env: std::env::vars().collect(),
+        };
 
-        let alloc = allocator
-            .allocate(AllocSpec {
-                extent: extent! { replica = 1 },
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Unix,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
+        let host_mesh = HostMesh::process(extent! { hosts = 1 }, command).await?;
         let proc_mesh = Arc::new(
-            ProcMesh::allocate(this, Box::new(alloc), "proxy")
-                .await
-                .unwrap(),
+            host_mesh
+                .spawn(this, "proxy", extent! { replica = 1 }, None)
+                .await?,
         );
-        self.actor_mesh = Some(proc_mesh.spawn(this, "echo", &()).await.unwrap());
+        self.actor_mesh = Some(proc_mesh.spawn(this, "echo", &()).await?);
         self.proc_mesh = Some(proc_mesh);
+        self.host_mesh = Some(host_mesh);
         Ok(())
     }
 }
@@ -152,6 +154,7 @@ impl RemoteSpawn for ProxyActor {
     ) -> anyhow::Result<Self, anyhow::Error> {
         Ok(Self {
             exe_path,
+            host_mesh: None,
             proc_mesh: None,
             actor_mesh: None,
         })
@@ -183,25 +186,20 @@ impl Handler<MeshFailure> for ProxyActor {
 }
 
 async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::Error> {
-    let mut cmd = Command::new(PathBuf::from(&exe_path));
-    cmd.arg("--bootstrap");
-
-    let mut allocator = ProcessAllocator::new(cmd);
-    let alloc = allocator
-        .allocate(AllocSpec {
-            extent: extent! { replica = 1 },
-            constraints: Default::default(),
-            proc_name: None,
-            transport: ChannelTransport::Unix,
-            proc_allocation_mode: Default::default(),
-        })
-        .await
-        .unwrap();
+    let command = BootstrapCommand {
+        program: exe_path.clone(),
+        arg0: None,
+        args: vec!["--bootstrap".to_string()],
+        env: std::env::vars().collect(),
+    };
 
     let cx = context().await;
     let instance = cx.actor_instance;
 
-    let mut proc_mesh = ProcMesh::allocate(instance, Box::new(alloc), "client").await?;
+    let mut host_mesh = HostMesh::process(extent! { hosts = 1 }, command).await?;
+    let proc_mesh = host_mesh
+        .spawn(instance, "client", extent! { replica = 1 }, None)
+        .await?;
     let actor_mesh: ActorMesh<ProxyActor> = proc_mesh
         .spawn(instance, "proxy", &exe_path.to_str().unwrap().to_string())
         .await?;
@@ -213,9 +211,7 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
     println!("{}", msg);
     assert_eq!(msg, "hello!");
 
-    proc_mesh
-        .stop(instance, "test complete".to_string())
-        .await?;
+    host_mesh.shutdown(instance).await?;
 
     if keep_alive {
         // Artificially keep the hierarchy alive. Use `ps -aef | grep

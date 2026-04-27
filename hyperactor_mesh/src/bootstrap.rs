@@ -63,7 +63,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use tempfile::TempDir;
 use tokio::process::Command;
-use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tracing::Instrument;
 use tracing::Level;
@@ -177,8 +176,6 @@ declare_attrs! {
     pub attr MESH_TERMINATE_TIMEOUT: Duration = Duration::from_secs(10);
 }
 
-pub const BOOTSTRAP_ADDR_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_ADDR";
-pub const BOOTSTRAP_INDEX_ENV: &str = "HYPERACTOR_MESH_INDEX";
 pub const CLIENT_TRACE_ID_ENV: &str = "MONARCH_CLIENT_TRACE_ID";
 
 /// A channel used by each process to receive its own stdout and stderr
@@ -188,89 +185,6 @@ pub(crate) const BOOTSTRAP_LOG_CHANNEL: &str = "BOOTSTRAP_LOG_CHANNEL";
 
 pub(crate) const BOOTSTRAP_MODE_ENV: &str = "HYPERACTOR_MESH_BOOTSTRAP_MODE";
 pub(crate) const PROCESS_NAME_ENV: &str = "HYPERACTOR_PROCESS_NAME";
-
-/// Messages sent from the process to the allocator. This is an envelope
-/// containing the index of the process (i.e., its "address" assigned by
-/// the allocator), along with the control message in question.
-#[derive(Debug, Clone, Serialize, Deserialize, Named)]
-pub(crate) struct Process2Allocator(pub usize, pub Process2AllocatorMessage);
-wirevalue::register_type!(Process2Allocator);
-
-/// Control messages sent from processes to the allocator.
-#[derive(Debug, Clone, Serialize, Deserialize, Named)]
-pub(crate) enum Process2AllocatorMessage {
-    /// Initialize a process2allocator session. The process is
-    /// listening on the provided channel address, to which
-    /// [`Allocator2Process`] messages are sent.
-    Hello(ChannelAddr),
-
-    /// A proc with the provided ID was started. Its mailbox is
-    /// served at the provided channel address. Procs are started
-    /// after instruction by the allocator through the corresponding
-    /// [`Allocator2Process`] message.
-    StartedProc(
-        hyperactor_reference::ProcId,
-        hyperactor_reference::ActorRef<ProcAgent>,
-        ChannelAddr,
-    ),
-
-    Heartbeat,
-}
-wirevalue::register_type!(Process2AllocatorMessage);
-
-/// Messages sent from the allocator to a process.
-#[derive(Debug, Clone, Serialize, Deserialize, Named)]
-pub(crate) enum Allocator2Process {
-    /// Request to start a new proc with the provided ID, listening
-    /// to an address on the indicated channel transport.
-    StartProc(hyperactor_reference::ProcId, ChannelTransport),
-
-    /// A request for the process to shut down its procs and exit the
-    /// process with the provided code.
-    StopAndExit(i32),
-
-    /// A request for the process to immediately exit with the provided
-    /// exit code
-    Exit(i32),
-}
-wirevalue::register_type!(Allocator2Process);
-
-async fn exit_if_missed_heartbeat(bootstrap_index: usize, bootstrap_addr: ChannelAddr) {
-    let tx = match channel::dial(bootstrap_addr.clone()) {
-        Ok(tx) => tx,
-
-        Err(err) => {
-            tracing::error!(
-                "Failed to establish heartbeat connection to allocator, exiting! (addr: {:?}): {}",
-                bootstrap_addr,
-                err
-            );
-            std::process::exit(1);
-        }
-    };
-    tracing::info!(
-        "Heartbeat connection established to allocator (idx: {bootstrap_index}, addr: {bootstrap_addr:?})",
-    );
-    loop {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-
-        let result = tx
-            .send(Process2Allocator(
-                bootstrap_index,
-                Process2AllocatorMessage::Heartbeat,
-            ))
-            .await;
-
-        if let Err(err) = result {
-            tracing::error!(
-                "Heartbeat failed to allocator, exiting! (addr: {:?}): {}",
-                bootstrap_addr,
-                err
-            );
-            std::process::exit(1);
-        }
-    }
-}
 
 #[macro_export]
 macro_rules! ok {
@@ -428,21 +342,6 @@ pub enum Bootstrap {
         /// If true, exit the process after handling a shutdown request.
         exit_on_shutdown: bool,
     },
-
-    /// Bootstrap as a legacy "v0" proc.
-    V0ProcMesh {
-        /// Optional config snapshot (`hyperactor_config::Attrs`)
-        /// captured by the parent. If present, the child installs it
-        /// as the `ClientOverride` layer so the parent's effective config
-        /// takes precedence over Env/Defaults.
-        config: Option<Attrs>,
-    },
-}
-
-impl Default for Bootstrap {
-    fn default() -> Self {
-        Bootstrap::V0ProcMesh { config: None }
-    }
 }
 
 impl Bootstrap {
@@ -620,7 +519,6 @@ impl Bootstrap {
                 shutdown.join().await;
                 halt().await
             }
-            Bootstrap::V0ProcMesh { config } => Err(bootstrap_v0_proc_mesh(config).await),
         }
     }
 
@@ -2285,157 +2183,12 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
 /// Else if the bootstrap returns Ok, the process has cleaned up successfully and
 /// should exit the "main" of the program.
 pub async fn bootstrap() -> anyhow::Result<i32> {
-    let boot = Bootstrap::get_from_env()?.unwrap_or_else(Bootstrap::default);
-    boot.bootstrap().await
-}
-
-/// Bootstrap a v0 proc mesh. This launches a control process that responds to
-/// Allocator2Process messages, conveying its own state in Process2Allocator messages.
-///
-/// The bootstrapping process is controlled by the
-/// following environment variables:
-///
-/// - `HYPERACTOR_MESH_BOOTSTRAP_ADDR`: the channel address to which Process2Allocator messages
-///   should be sent.
-/// - `HYPERACTOR_MESH_INDEX`: an index used to identify this process to the allocator.
-async fn bootstrap_v0_proc_mesh(config: Option<Attrs>) -> anyhow::Error {
-    // Apply config before entering the nested scope
-    if let Some(attrs) = config {
-        hyperactor_config::global::set(hyperactor_config::global::Source::ClientOverride, attrs);
-        tracing::debug!("bootstrap: installed ClientOverride config snapshot (V0ProcMesh)");
-    } else {
-        tracing::debug!("bootstrap: no config snapshot provided (V0ProcMesh)");
-    }
-    tracing::info!(
-        "bootstrap_v0_proc_mesh config:\n{}",
-        hyperactor_config::global::attrs()
-    );
-
-    pub async fn go() -> Result<(), anyhow::Error> {
-        let procs = Arc::new(tokio::sync::Mutex::new(Vec::<Proc>::new()));
-        let procs_for_cleanup = procs.clone();
-        let _cleanup_guard = hyperactor::register_signal_cleanup_scoped(Box::pin(async move {
-            for proc_to_stop in procs_for_cleanup.lock().await.iter_mut() {
-                if let Err(err) = proc_to_stop
-                    .destroy_and_wait::<()>(
-                        Duration::from_millis(10),
-                        None,
-                        "execute cleanup callback",
-                    )
-                    .await
-                {
-                    tracing::error!(
-                        "error while stopping proc {}: {}",
-                        proc_to_stop.proc_id(),
-                        err
-                    );
-                }
-            }
-        }));
-
-        let bootstrap_addr: ChannelAddr = std::env::var(BOOTSTRAP_ADDR_ENV)
-            .map_err(|err| anyhow::anyhow!("read `{}`: {}", BOOTSTRAP_ADDR_ENV, err))?
-            .parse()?;
-        let bootstrap_index: usize = std::env::var(BOOTSTRAP_INDEX_ENV)
-            .map_err(|err| anyhow::anyhow!("read `{}`: {}", BOOTSTRAP_INDEX_ENV, err))?
-            .parse()?;
-        let listen_addr = ChannelAddr::any(bootstrap_addr.transport());
-
-        let entered = tracing::span!(
-            Level::INFO,
-            "bootstrap_v0_proc_mesh",
-            %bootstrap_addr,
-            %bootstrap_index,
-            %listen_addr,
-        )
-        .entered();
-
-        let (serve_addr, mut rx) = channel::serve(listen_addr)?;
-        let tx = channel::dial(bootstrap_addr.clone())?;
-
-        let (rtx, mut return_channel) = oneshot::channel();
-        tx.try_post(
-            Process2Allocator(bootstrap_index, Process2AllocatorMessage::Hello(serve_addr)),
-            rtx,
+    let Some(boot) = Bootstrap::get_from_env()? else {
+        anyhow::bail!(
+            "bootstrap: no bootstrap mode configured (HYPERACTOR_MESH_BOOTSTRAP_MODE unset)"
         );
-        tokio::spawn(exit_if_missed_heartbeat(bootstrap_index, bootstrap_addr));
-
-        let _ = entered.exit();
-
-        let mut the_msg;
-
-        tokio::select! {
-            msg = rx.recv() => {
-                the_msg = msg;
-            }
-            returned_msg = &mut return_channel => {
-                match returned_msg {
-                    Ok(msg) => {
-                        return Err(anyhow::anyhow!("Hello message was not delivered:{:?}", msg));
-                    }
-                    Err(_) => {
-                        the_msg = rx.recv().await;
-                    }
-                }
-            }
-        }
-        loop {
-            match the_msg? {
-                Allocator2Process::StartProc(proc_id, listen_transport) => {
-                    let span = tracing::span!(Level::INFO, "Allocator2Process::StartProc", %proc_id, %listen_transport);
-                    let (proc, mesh_agent) = ProcAgent::bootstrap(proc_id.clone())
-                        .instrument(span.clone())
-                        .await?;
-                    let entered = span.entered();
-                    let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(listen_transport))?;
-                    let handle = proc.clone().serve(proc_rx);
-                    drop(handle); // linter appeasement; it is safe to drop this future
-                    let span = entered.exit();
-                    tx.send(Process2Allocator(
-                        bootstrap_index,
-                        Process2AllocatorMessage::StartedProc(
-                            proc_id.clone(),
-                            mesh_agent.bind(),
-                            proc_addr,
-                        ),
-                    ))
-                    .instrument(span)
-                    .await?;
-                    procs.lock().await.push(proc);
-                }
-                Allocator2Process::StopAndExit(code) => {
-                    tracing::info!("stopping procs with code {code}");
-                    {
-                        for proc_to_stop in procs.lock().await.iter_mut() {
-                            if let Err(err) = proc_to_stop
-                                .destroy_and_wait::<()>(
-                                    Duration::from_millis(10),
-                                    None,
-                                    "stop and exit",
-                                )
-                                .await
-                            {
-                                tracing::error!(
-                                    "error while stopping proc {}: {}",
-                                    proc_to_stop.proc_id(),
-                                    err
-                                );
-                            }
-                        }
-                    }
-                    tracing::info!("exiting with {code}");
-                    std::process::exit(code);
-                }
-                Allocator2Process::Exit(code) => {
-                    tracing::info!("exiting with {code}");
-                    std::process::exit(code);
-                }
-            }
-            the_msg = rx.recv().await;
-        }
-    }
-
-    go().await.unwrap_err()
+    };
+    boot.bootstrap().await
 }
 
 /// A variant of [`bootstrap`] that logs the error and exits the process
@@ -2562,57 +2315,36 @@ mod tests {
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::TcpMode;
-    use hyperactor::context::Mailbox as _;
     use hyperactor::host::ProcHandle;
     use hyperactor::reference as hyperactor_reference;
     use hyperactor::testing::ids::test_proc_id;
     use hyperactor::testing::ids::test_proc_id_with_addr;
     use hyperactor_config::Flattrs;
-    use ndslice::Extent;
-    use ndslice::ViewExt;
-    use ndslice::extent;
-    use tokio::process::Command;
 
     use super::*;
-    use crate::ActorMesh;
-    use crate::alloc::AllocSpec;
-    use crate::alloc::Allocator;
-    use crate::alloc::ProcessAllocator;
-    use crate::host_mesh::HostMesh;
-    use crate::testactor;
-    use crate::testing;
 
     #[test]
     fn test_bootstrap_mode_env_string_none_config_proc() {
-        let values = [
-            Bootstrap::default(),
-            Bootstrap::Proc {
-                proc_id: test_proc_id("foo_0"),
-                backend_addr: ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
-                callback_addr: ChannelAddr::any(ChannelTransport::Unix),
-                socket_dir_path: PathBuf::from("notexist"),
-                config: None,
-            },
-        ];
+        let value = Bootstrap::Proc {
+            proc_id: test_proc_id("foo_0"),
+            backend_addr: ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
+            callback_addr: ChannelAddr::any(ChannelTransport::Unix),
+            socket_dir_path: PathBuf::from("notexist"),
+            config: None,
+        };
 
-        for value in values {
-            let safe = value.to_env_safe_string().unwrap();
-            let round = Bootstrap::from_env_safe_string(&safe).unwrap();
+        let safe = value.to_env_safe_string().unwrap();
+        let round = Bootstrap::from_env_safe_string(&safe).unwrap();
 
-            // Re-encode and compare: deterministic round-trip of the
-            // wire format.
-            let safe2 = round.to_env_safe_string().unwrap();
-            assert_eq!(safe, safe2, "env-safe round-trip should be stable");
+        // Re-encode and compare: deterministic round-trip of the
+        // wire format.
+        let safe2 = round.to_env_safe_string().unwrap();
+        assert_eq!(safe, safe2, "env-safe round-trip should be stable");
 
-            // Sanity: the decoded variant is what we expect.
-            match (&value, &round) {
-                (Bootstrap::Proc { config: None, .. }, Bootstrap::Proc { config: None, .. }) => {}
-                (
-                    Bootstrap::V0ProcMesh { config: None },
-                    Bootstrap::V0ProcMesh { config: None },
-                ) => {}
-                _ => panic!("decoded variant mismatch: got {:?}", round),
-            }
+        // Sanity: the decoded variant is what we expect.
+        match round {
+            Bootstrap::Proc { config: None, .. } => {}
+            other => panic!("expected Proc with None config, got {:?}", other),
         }
     }
 
@@ -2687,23 +2419,6 @@ mod tests {
             let decoded = Bootstrap::from_env_safe_string(&env_str).expect("decode bootstrap");
             match &decoded {
                 Bootstrap::Host { config, .. } => {
-                    let cfg = config.as_ref().expect("expected Some(attrs)");
-                    assert_eq!(cfg[MESH_TAIL_LOG_LINES], 123);
-                    assert!(!cfg[MESH_BOOTSTRAP_ENABLE_PDEATHSIG]);
-                }
-                other => panic!("unexpected variant after roundtrip: {:?}", other),
-            }
-        }
-
-        // V0ProcMesh case
-        {
-            let original = Bootstrap::V0ProcMesh {
-                config: Some(attrs.clone()),
-            };
-            let env_str = original.to_env_safe_string().expect("encode bootstrap");
-            let decoded = Bootstrap::from_env_safe_string(&env_str).expect("decode bootstrap");
-            match &decoded {
-                Bootstrap::V0ProcMesh { config } => {
                     let cfg = config.as_ref().expect("expected Some(attrs)");
                     assert_eq!(cfg[MESH_TAIL_LOG_LINES], 123);
                     assert!(!cfg[MESH_BOOTSTRAP_ENABLE_PDEATHSIG]);
@@ -3395,246 +3110,6 @@ mod tests {
             }
             Ok(Err(e)) => panic!("kill() failed: {e:?}"),
         }
-    }
-
-    #[tokio::test]
-    #[cfg(fbcode_build)]
-    async fn bootstrap_canonical_simple() {
-        // SAFETY: unit-test scoped
-        unsafe {
-            std::env::set_var("HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG", "false");
-        }
-        // Create an actor instance we'll use to send and receive
-        // messages.
-        let instance = testing::instance();
-
-        // Configure a ProcessAllocator with the bootstrap binary.
-        let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
-            "monarch/hyperactor_mesh/bootstrap",
-        )));
-        // Request a new allocation of procs from the ProcessAllocator.
-        let alloc = allocator
-            .allocate(AllocSpec {
-                extent: extent!(replicas = 1),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Unix,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        // Build a HostMesh with explicit OS-process boundaries (per
-        // rank):
-        //
-        // (1) Allocator → bootstrap proc [OS process #1]
-        //     `ProcMesh::allocate(..)` starts one OS process per
-        //     rank; each runs our runtime and the trampoline actor.
-        //
-        // (2) Host::serve(..) sets up a Host in the same OS process
-        //     (no new process). It binds front/back channels, creates
-        //     an in-process service proc (`Proc::configured(..)`), and
-        //     stores the `BootstrapProcManager` for later spawns.
-        //
-        // (3) Install HostAgent (still no new OS process).
-        //     `host.system_proc().spawn::<HostAgent>("host_agent",
-        //     host).await?` creates the HostAgent actor in that
-        //     service proc.
-        //
-        // (4) Collect & assemble. The trampoline returns a
-        //     direct-addressed `ActorRef<HostAgent>`; we collect
-        //     one per rank and assemble a `HostMesh`.
-        //
-        // Note: When the Host is later asked to start a proc
-        // (`host.spawn(name)`), it calls `ProcManager::spawn` on the
-        // stored `BootstrapProcManager`, which does a
-        // `Command::spawn()` to launch a new OS child process for
-        // that proc.
-        let mut host_mesh = HostMesh::allocate(&instance, Box::new(alloc), "test", None)
-            .await
-            .unwrap();
-
-        // Spawn a ProcMesh named "p0" on the host mesh:
-        //
-        // (1) Each HostAgent (running inside its host's service
-        // proc) receives the request.
-        //
-        // (2) The Host calls into its `BootstrapProcManager::spawn`,
-        // which does `Command::spawn()` to launch a brand-new OS
-        // process for the proc.
-        //
-        // (3) Inside that new process, bootstrap runs and a
-        // `ProcAgent` is started to manage it.
-        //
-        // (4) We collect the per-host procs into a `ProcMesh` and
-        // return it.
-        let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity(), None)
-            .await
-            .unwrap();
-
-        // Note: There is no support for status() in v1.
-        // assert!(proc_mesh.status(&instance).await.is_err());
-        // let proc_ref = proc_mesh.values().next().expect("one proc");
-        // assert!(proc_ref.status(&instance).await.unwrap(), "proc should be alive");
-
-        // Spawn an `ActorMesh<TestActor>` named "a0" on the proc mesh:
-        //
-        // (1) For each proc (already running in its own OS process),
-        // the `ProcAgent` receives the request.
-        //
-        // (2) It spawns a `TestActor` inside that existing proc (no
-        // new OS process).
-        //
-        // (3) The per-proc actors are collected into an
-        // `ActorMesh<TestActor>` and returned.
-        let actor_mesh: ActorMesh<testactor::TestActor> =
-            proc_mesh.spawn(&instance, "a0", &()).await.unwrap();
-
-        // Open a fresh port on the client instance and send a
-        // GetActorId message to the actor mesh. Each TestActor will
-        // reply with its actor ID to the bound port. Receive one
-        // reply and assert it matches the ID of the (single) actor in
-        // the mesh.
-        let (port, mut rx) = instance.mailbox().open_port();
-        actor_mesh
-            .cast(&instance, testactor::GetActorId(port.bind()))
-            .unwrap();
-        let (got_id, _seq) = rx.recv().await.unwrap();
-        assert_eq!(
-            got_id,
-            actor_mesh.values().next().unwrap().actor_id().clone()
-        );
-
-        // **Important**: If we don't shutdown the hosts, the
-        // BootstrapProcManager's won't send SIGKILLs to their spawned
-        // children and there will be orphans left behind.
-        host_mesh.shutdown(&instance).await.expect("host shutdown");
-    }
-
-    /// Same as `bootstrap_canonical_simple` but using the systemd
-    /// launcher backend.
-    #[tokio::test]
-    #[cfg(all(fbcode_build, target_os = "linux"))]
-    async fn bootstrap_canonical_simple_systemd_launcher() {
-        // Create an actor instance we'll use to send and receive
-        // messages.
-        let instance = testing::instance();
-
-        // Set an absurdly high flush timeout to prove the flush
-        // completes naturally (host networking stays alive during
-        // worker teardown) and never relies on the timeout.
-        let config = hyperactor_config::global::lock();
-        let _flush_guard = config.override_key(
-            hyperactor::config::FORWARDER_FLUSH_TIMEOUT,
-            std::time::Duration::from_secs(600),
-        );
-
-        // Configure a ProcessAllocator with the bootstrap binary.
-        let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
-            "monarch/hyperactor_mesh/bootstrap",
-        )));
-        // Request a new allocation of procs from the
-        // ProcessAllocator.
-        let alloc = allocator
-            .allocate(AllocSpec {
-                extent: extent!(replicas = 1),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Unix,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        // Build a HostMesh (see bootstrap_canonical_simple for
-        // detailed comments).
-        let mut host_mesh = HostMesh::allocate(&instance, Box::new(alloc), "test", None)
-            .await
-            .unwrap();
-
-        // Spawn a ProcMesh named "p0" on the host mesh.
-        let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity(), None)
-            .await
-            .unwrap();
-
-        // Spawn an `ActorMesh<TestActor>` named "a0" on the proc
-        // mesh.
-        let actor_mesh: ActorMesh<testactor::TestActor> =
-            proc_mesh.spawn(&instance, "a0", &()).await.unwrap();
-
-        // Send a GetActorId message and verify we get a response.
-        let (port, mut rx) = instance.mailbox().open_port();
-        actor_mesh
-            .cast(&instance, testactor::GetActorId(port.bind()))
-            .unwrap();
-        let (got_id, _) = rx.recv().await.unwrap();
-        assert_eq!(
-            got_id,
-            actor_mesh.values().next().unwrap().actor_id().clone()
-        );
-
-        // Capture the proc_id and expected unit name before shutdown.
-        use crate::proc_launcher::SystemdProcLauncher;
-        use crate::systemd::SystemdManagerProxy;
-        use crate::systemd::SystemdUnitProxy;
-
-        let proc_id = proc_mesh.proc_ids().next().expect("one proc");
-        let expected_unit = SystemdProcLauncher::unit_name(&proc_id);
-
-        // Shutdown cleanly.
-        //
-        // Contract: after shutdown, procs are no longer running and
-        // the mesh is quiescent. We intentionally do NOT assert that
-        // the systemd transient unit disappears. With
-        // RemainAfterExit=true, systemd may keep the unit around for
-        // observation and GC it later according to its own policy;
-        // that persistence is not considered a leak.
-        host_mesh.shutdown(&instance).await.expect("host shutdown");
-
-        // Liveness check (best-effort): unit may persist, but should
-        // not remain running. With RemainAfterExit=true, systemd may
-        // keep the unit around in active/exited after the process has
-        // terminated. That is not a leak. We only require that the
-        // unit is not running after shutdown.
-        let conn = zbus::Connection::session().await.expect("D-Bus session");
-        let manager = SystemdManagerProxy::new(&conn)
-            .await
-            .expect("manager proxy");
-
-        let mut ok = false;
-        for _ in 0..100 {
-            match manager.get_unit(&expected_unit).await {
-                Err(_) => {
-                    // Unit already gone: fine.
-                    ok = true;
-                    break;
-                }
-                Ok(path) => {
-                    if let Ok(unit) = SystemdUnitProxy::builder(&conn)
-                        .path(path)
-                        .unwrap()
-                        .build()
-                        .await
-                    {
-                        let active = unit.active_state().await.unwrap_or_default();
-                        let sub = unit.sub_state().await.unwrap_or_default();
-                        // Fail only if still running; any other state
-                        // is acceptable.
-                        if !(active == "active" && sub == "running") && active != "activating" {
-                            ok = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        assert!(
-            ok,
-            "unit should be gone or quiescent (not running) after shutdown"
-        );
     }
 
     #[tokio::test]
