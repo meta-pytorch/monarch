@@ -356,6 +356,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RefClient;
 use hyperactor::channel::try_tls_acceptor;
+use hyperactor::id::Uid;
 use hyperactor::introspect::IntrospectMessage;
 use hyperactor::introspect::IntrospectResult;
 use hyperactor::introspect::IntrospectView;
@@ -928,7 +929,7 @@ impl Actor for MeshAdminAgent {
         // as soon as the admin is reachable.
         this.bind::<Self>();
         this.set_system();
-        self.self_actor_id = Some(this.self_id().clone());
+        self.self_actor_id = Some(this.self_id().clone().into());
 
         let bind_addr = match self.admin_addr_override {
             Some(addr) => addr,
@@ -995,7 +996,7 @@ impl Actor for MeshAdminAgent {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
         let bridge_state = Arc::new(BridgeState {
-            admin_ref: hyperactor_reference::ActorRef::attest(this.self_id().clone()),
+            admin_ref: hyperactor_reference::ActorRef::attest(this.self_id().clone().into()),
             bridge_cx,
             resolve_semaphore: tokio::sync::Semaphore::new(hyperactor_config::global::get(
                 crate::config::MESH_ADMIN_MAX_CONCURRENT_RESOLVES,
@@ -1005,7 +1006,7 @@ impl Actor for MeshAdminAgent {
             http_client: build_http_client(),
             admin_info: AdminInfo::new(
                 this.self_id().to_string(),
-                this.self_id().proc_id().to_string(),
+                this.self_id().proc_ref().to_string(),
                 admin_url,
             )?,
         });
@@ -1195,13 +1196,13 @@ impl MeshAdminAgent {
         proc_id: &hyperactor_reference::ProcId,
     ) -> Option<&hyperactor_reference::ActorId> {
         self.standalone_proc_actors()
-            .find(|actor_id| *actor_id.proc_id() == *proc_id)
+            .find(|actor_id| actor_id.proc_id() == *proc_id)
     }
 
     /// Returns true if `actor_id` lives on a standalone proc.
     fn is_standalone_proc_actor(&self, actor_id: &hyperactor_reference::ActorId) -> bool {
         self.standalone_proc_actors()
-            .any(|a| *a.proc_id() == *actor_id.proc_id())
+            .any(|a| a.proc_id() == actor_id.proc_id())
     }
 
     /// Construct the synthetic root node for the reference tree.
@@ -1309,7 +1310,7 @@ impl MeshAdminAgent {
         }
 
         // Fall back to querying the ProcAgent directly (user procs).
-        let mesh_agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let mesh_agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME);
         let result = query_child_introspect(
             cx,
             &mesh_agent_id,
@@ -1415,7 +1416,10 @@ impl MeshAdminAgent {
             (children, system_children)
         };
 
-        let proc_name = proc_id.name().to_string();
+        let proc_name = proc_id
+            .label()
+            .map(|l| l.as_str().to_string())
+            .unwrap_or_else(|| proc_id.id().to_string());
 
         let mut attrs = hyperactor_config::Attrs::new();
         attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
@@ -1470,7 +1474,7 @@ impl MeshAdminAgent {
         } else {
             // Check terminated snapshots first — fast, no ambiguity.
             let proc_id = actor_id.proc_id();
-            let mesh_agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0);
+            let mesh_agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME);
             let terminated = query_child_introspect(
                 cx,
                 &mesh_agent_id,
@@ -2257,14 +2261,15 @@ impl ResolvedProcHandler {
 /// the probe (CFG-4).
 fn route_proc_handler(raw_proc_reference: &str) -> Result<ResolvedProcHandler, ApiError> {
     let (_proc_reference, proc_id) = parse_proc_reference(raw_proc_reference)?;
-    let is_service = proc_id.base_name() == SERVICE_PROC_NAME;
+    let is_service =
+        matches!(proc_id.uid(), Uid::Singleton(label) if label.as_str() == SERVICE_PROC_NAME);
     if is_service {
-        let agent_id = proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0);
+        let agent_id = proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME);
         Ok(ResolvedProcHandler::Host(
             hyperactor_reference::ActorRef::attest(agent_id),
         ))
     } else {
-        let agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME);
         Ok(ResolvedProcHandler::Proc(
             hyperactor_reference::ActorRef::attest(agent_id),
         ))
@@ -2859,10 +2864,10 @@ async fn tree_dump(
 fn derive_tree_label(node_ref: &crate::introspect::NodeRef) -> String {
     match node_ref {
         crate::introspect::NodeRef::Root => "root".to_string(),
-        crate::introspect::NodeRef::Host(id) => id.proc_id().name().to_string(),
-        crate::introspect::NodeRef::Proc(id) => id.name().to_string(),
+        crate::introspect::NodeRef::Host(id) => id.proc_id().id().to_string(),
+        crate::introspect::NodeRef::Proc(id) => id.id().to_string(),
         crate::introspect::NodeRef::Actor(id) => {
-            format!("{}{}", id.name(), format_args!("[{}]", id.pid()))
+            format!("{}[{}]", id.log_name(), id.uid())
         }
     }
 }
@@ -2870,10 +2875,10 @@ fn derive_tree_label(node_ref: &crate::introspect::NodeRef) -> String {
 fn derive_actor_label(node_ref: &crate::introspect::NodeRef) -> String {
     match node_ref {
         crate::introspect::NodeRef::Root => "root".to_string(),
-        crate::introspect::NodeRef::Host(id) => id.name().to_string(),
-        crate::introspect::NodeRef::Proc(id) => id.name().to_string(),
+        crate::introspect::NodeRef::Host(id) => id.log_name().to_string(),
+        crate::introspect::NodeRef::Proc(id) => id.id().to_string(),
         crate::introspect::NodeRef::Actor(id) => {
-            format!("{}[{}]", id.name(), id.pid())
+            format!("{}[{}]", id.log_name(), id.uid())
         }
     }
 }
@@ -3201,6 +3206,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use hyperactor::channel::ChannelAddr;
+    use hyperactor::id::Label;
     use hyperactor::testing::ids::test_proc_id_with_addr;
 
     use super::*;
@@ -3232,8 +3238,8 @@ mod tests {
         let proc1 = test_proc_id_with_addr(ChannelAddr::Tcp(addr1), "host1");
         let proc2 = test_proc_id_with_addr(ChannelAddr::Tcp(addr2), "host2");
 
-        let actor_id1 = proc1.actor_id("mesh_agent", 0);
-        let actor_id2 = proc2.actor_id("mesh_agent", 0);
+        let actor_id1 = proc1.actor_id("mesh_agent");
+        let actor_id2 = proc2.actor_id("mesh_agent");
 
         let ref1: hyperactor_reference::ActorRef<HostAgent> =
             hyperactor_reference::ActorRef::attest(actor_id1.clone());
@@ -3460,12 +3466,13 @@ mod tests {
 
         use hyperactor::Proc;
         use hyperactor::channel::ChannelTransport;
-
+        use hyperactor::id::Label;
         use crate::Name;
         use crate::host::Host;
         use crate::host::LocalProcManager;
         use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
+        use crate::mesh_id::ResourceId;
         use crate::proc_agent::ProcAgent;
         use crate::resource;
         use crate::resource::ProcSpec;
@@ -3480,6 +3487,10 @@ mod tests {
                 .await
                 .unwrap();
         let host_addr = host.addr().clone();
+        let system_proc_id: hyperactor_reference::ProcId =
+            host.system_proc().proc_id().clone().into();
+        let local_proc_id: hyperactor_reference::ProcId =
+            host.local_proc().proc_id().clone().into();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
             .spawn(
@@ -3514,12 +3525,12 @@ mod tests {
         let (client, _handle) = client_proc.instance("client").unwrap();
 
         // Spawn a user proc via CreateOrUpdate<ProcSpec>.
-        let user_proc_name = Name::new("user_proc").unwrap();
+        let user_proc_name = ResourceId::unique(Label::new("user-proc").unwrap());
         host_agent_ref
             .send(
                 &client,
                 resource::CreateOrUpdate {
-                    name: user_proc_name.clone(),
+                    id: user_proc_name.clone(),
                     rank: Rank::new(0),
                     spec: ProcSpec::default(),
                 },
@@ -3544,7 +3555,6 @@ mod tests {
         );
 
         // Resolve each proc child and verify it has Proc properties.
-        let user_proc_name_str = user_proc_name.to_string();
         let mut found_system = false;
         let mut found_user = false;
         for child_ref in &host_node.children {
@@ -3553,8 +3563,12 @@ mod tests {
                 .await
                 .unwrap();
             let node = resp.0.unwrap();
-            if let NodeProperties::Proc { proc_name, .. } = &node.properties {
-                if proc_name.contains(&user_proc_name_str) {
+            if let NodeProperties::Proc { .. } = &node.properties {
+                if matches!(
+                    child_ref,
+                    crate::introspect::NodeRef::Proc(proc_id)
+                        if proc_id != &system_proc_id && proc_id != &local_proc_id
+                ) {
                     found_user = true;
                 } else {
                     found_system = true;
@@ -3577,14 +3591,16 @@ mod tests {
     #[test]
     fn test_build_root_payload_with_root_client() {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
-        let proc1 = hyperactor_reference::ProcId::with_name(ChannelAddr::Tcp(addr1), "host1");
-        let actor_id1 = hyperactor_reference::ActorId::root(proc1, "mesh_agent".to_string());
+        let proc1 =
+            hyperactor_reference::ProcId::from_resource_name(ChannelAddr::Tcp(addr1), "host1");
+        let actor_id1 =
+            hyperactor_reference::ActorId::root(proc1, Label::new("mesh_agent").unwrap());
         let ref1: hyperactor_reference::ActorRef<HostAgent> =
             hyperactor_reference::ActorRef::attest(actor_id1.clone());
 
         let client_proc_id =
-            hyperactor_reference::ProcId::with_name(ChannelAddr::Tcp(addr1), "local");
-        let client_actor_id = client_proc_id.actor_id("client", 0);
+            hyperactor_reference::ProcId::from_resource_name(ChannelAddr::Tcp(addr1), "local");
+        let client_actor_id = client_proc_id.actor_id("client");
 
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1)],
@@ -3695,7 +3711,7 @@ mod tests {
             .await
             .unwrap();
         let host_node = host_resp.0.unwrap();
-        let local_proc_node_ref = crate::introspect::NodeRef::Proc(local_proc_id.clone());
+        let local_proc_node_ref = crate::introspect::NodeRef::Proc(local_proc_id.clone().into());
         assert!(
             host_node.children.contains(&local_proc_node_ref),
             "host children {:?} should contain local proc {:?}",
@@ -3967,7 +3983,7 @@ mod tests {
         );
 
         // -- 6. Verify host children contain the system proc --
-        let expected_system_ref = crate::introspect::NodeRef::Proc(system_proc_id.clone());
+        let expected_system_ref = crate::introspect::NodeRef::Proc(system_proc_id.clone().into());
         assert!(
             host_node.children.contains(&expected_system_ref),
             "host children {:?} should contain the system proc ref {:?}",
@@ -4389,9 +4405,9 @@ mod tests {
     fn route_proc_handler_service_proc_yields_host() {
         use hyperactor::reference::ProcId;
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-        // Use ProcId::with_name directly — test_proc_id_with_addr
+        // Use ProcId::from_resource_name directly — test_proc_id_with_addr
         // prepends "test_" which would not match SERVICE_PROC_NAME.
-        let proc_id = ProcId::with_name(ChannelAddr::Tcp(addr), SERVICE_PROC_NAME);
+        let proc_id = ProcId::from_resource_name(ChannelAddr::Tcp(addr), SERVICE_PROC_NAME);
         let handler = route_proc_handler(&proc_id.to_string()).unwrap();
         assert!(
             matches!(handler, ResolvedProcHandler::Host(_)),
@@ -4408,6 +4424,20 @@ mod tests {
         assert!(
             matches!(handler, ResolvedProcHandler::Proc(_)),
             "non-service proc should resolve to Proc variant"
+        );
+    }
+
+    /// PS-12: a labeled instance named "service" is still a normal proc.
+    #[test]
+    fn route_proc_handler_service_instance_yields_proc() {
+        use hyperactor::reference::ProcId;
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let proc_id =
+            ProcId::from_resource_name(ChannelAddr::Tcp(addr), "service-deadbeefdeadbeef");
+        let handler = route_proc_handler(&proc_id.to_string()).unwrap();
+        assert!(
+            matches!(handler, ResolvedProcHandler::Proc(_)),
+            "service-labeled instance proc should resolve to Proc variant"
         );
     }
 }

@@ -54,7 +54,7 @@ static FLICKR_BASE_58_ORD: LazyLock<[Option<usize>; 256]> = LazyLock::new(|| {
     PartialOrd,
     Ord
 )]
-pub struct ShortUuid(u64);
+pub struct ShortUuid(pub(crate) u64);
 
 impl ShortUuid {
     /// Generate a new UUID.

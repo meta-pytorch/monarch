@@ -331,11 +331,11 @@ mod tests {
     const ACTOR_TYPE: &str = "test_actor";
 
     fn test_proc_id() -> ProcId {
-        ProcId::with_name(ChannelAddr::Local(0), PROC_NAME)
+        ProcId::from_resource_name(ChannelAddr::Local(0), PROC_NAME)
     }
 
     fn test_host_ref() -> NodeRef {
-        NodeRef::Host(test_proc_id().actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0))
+        NodeRef::Host(test_proc_id().actor_id(HOST_MESH_AGENT_ACTOR_NAME))
     }
 
     fn test_proc_ref() -> NodeRef {
@@ -343,7 +343,7 @@ mod tests {
     }
 
     fn test_actor_ref() -> NodeRef {
-        NodeRef::Actor(test_proc_id().actor_id(ACTOR_TYPE, 0))
+        NodeRef::Actor(test_proc_id().actor_id(ACTOR_TYPE))
     }
 
     fn minimal_snapshot(id: &str) -> SnapshotData {
