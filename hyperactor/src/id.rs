@@ -1016,6 +1016,57 @@ mod tests {
     }
 
     #[test]
+    fn test_proc_id_singleton() {
+        let label = Label::new("my-proc").unwrap();
+        let pid = ProcId::singleton(label.clone());
+        assert_eq!(*pid.uid(), Uid::Singleton(label.clone()));
+        assert_eq!(pid.label(), Some(&label));
+    }
+
+    #[test]
+    fn test_proc_id_instance() {
+        let label = Label::new("my-proc").unwrap();
+        let pid = ProcId::instance(label.clone());
+        assert!(matches!(pid.uid(), Uid::Instance(_)));
+        assert_eq!(pid.label(), Some(&label));
+        let pid2 = ProcId::instance(label);
+        assert_ne!(pid, pid2);
+    }
+
+    #[test]
+    fn test_actor_id_singleton() {
+        let label = Label::new("my-actor").unwrap();
+        let proc_id = ProcId::singleton(Label::new("my-proc").unwrap());
+        let aid = ActorId::singleton(label.clone(), proc_id.clone());
+        assert_eq!(*aid.uid(), Uid::Singleton(label.clone()));
+        assert_eq!(aid.proc_id(), &proc_id);
+        assert_eq!(aid.label(), Some(&label));
+    }
+
+    #[test]
+    fn test_actor_id_instance() {
+        let proc_id = ProcId::singleton(Label::new("my-proc").unwrap());
+        let aid = ActorId::instance(proc_id.clone());
+        assert!(matches!(aid.uid(), Uid::Instance(_)));
+        assert_eq!(aid.proc_id(), &proc_id);
+        assert_eq!(aid.label(), None);
+        let aid2 = ActorId::instance(proc_id);
+        assert_ne!(aid, aid2);
+    }
+
+    #[test]
+    fn test_actor_id_instance_labeled() {
+        let label = Label::new("my-actor").unwrap();
+        let proc_id = ProcId::singleton(Label::new("my-proc").unwrap());
+        let aid = ActorId::instance_labeled(label.clone(), proc_id.clone());
+        assert!(matches!(aid.uid(), Uid::Instance(_)));
+        assert_eq!(aid.proc_id(), &proc_id);
+        assert_eq!(aid.label(), Some(&label));
+        let aid2 = ActorId::instance_labeled(label, proc_id);
+        assert_ne!(aid, aid2);
+    }
+
+    #[test]
     fn test_actor_id_construction_and_accessors() {
         let actor_uid = Uid::Instance(0xabc);
         let proc_id = ProcId::new(Uid::Instance(0xdef), Some(Label::new("my-proc").unwrap()));
