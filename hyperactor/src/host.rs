@@ -68,6 +68,7 @@ use crate as hyperactor;
 use crate::Actor;
 use crate::ActorAddr;
 use crate::ActorHandle;
+use crate::ActorRef;
 use crate::PortHandle;
 use crate::Proc;
 use crate::ProcAddr;
@@ -260,7 +261,7 @@ impl<M: ProcManager> Host<M> {
         &mut self,
         name: String,
         config: M::Config,
-    ) -> Result<(addr::ProcAddr, reference::ActorRef<ManagerAgent<M>>), HostError> {
+    ) -> Result<(ProcAddr, ActorRef<ManagerAgent<M>>), HostError> {
         if self.procs.contains(&name) {
             return Err(HostError::ProcExists(name));
         }
@@ -599,7 +600,7 @@ impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
 pub struct ReadyProc<'a, H: ProcHandle> {
     handle: &'a H,
     addr: ChannelAddr,
-    agent_ref: reference::ActorRef<H::Agent>,
+    agent_ref: ActorRef<H::Agent>,
 }
 
 impl<'a, H: ProcHandle> ReadyProc<'a, H> {
@@ -634,7 +635,7 @@ impl<'a, H: ProcHandle> ReadyProc<'a, H> {
     }
 
     /// The agent actor reference (guaranteed available after ready).
-    pub fn agent_ref(&self) -> &reference::ActorRef<H::Agent> {
+    pub fn agent_ref(&self) -> &ActorRef<H::Agent> {
         &self.agent_ref
     }
 }
@@ -707,7 +708,7 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     ///
     /// **Prefer [`ready_proc()`]** for type-safe access that
     /// guarantees availability at compile time.
-    fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>>;
+    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>>;
 
     /// Resolves when the proc becomes Ready. Multi-waiter,
     /// non-consuming.
@@ -988,7 +989,7 @@ where
 pub struct LocalHandle<A: Actor + Referable> {
     proc_id: ProcAddr,
     addr: ChannelAddr,
-    agent_ref: reference::ActorRef<A>,
+    agent_ref: ActorRef<A>,
     procs: Arc<Mutex<HashMap<ProcAddr, Proc>>>,
 }
 
@@ -1019,7 +1020,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         Some(self.addr.clone())
     }
 
-    fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>> {
+    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
         Some(self.agent_ref.clone())
     }
 
@@ -1219,7 +1220,7 @@ impl<A> Drop for ProcessProcManager<A> {
 pub struct ProcessHandle<A: Actor + Referable> {
     proc_id: ProcAddr,
     addr: ChannelAddr,
-    agent_ref: reference::ActorRef<A>,
+    agent_ref: ActorRef<A>,
 }
 
 // Manual `Clone` to avoid requiring `A: Clone`.
@@ -1248,7 +1249,7 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
         Some(self.addr.clone())
     }
 
-    fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>> {
+    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
         Some(self.agent_ref.clone())
     }
 
@@ -1430,22 +1431,23 @@ pub mod testing {
     use crate::Actor;
     use crate::Context;
     use crate::Handler;
+    use crate::OncePortRef;
     use crate::reference;
 
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
     #[derive(Debug, Default)]
-    #[hyperactor::export(handlers = [reference::OncePortRef<reference::ActorId>])]
+    #[hyperactor::export(handlers = [OncePortRef<reference::ActorId>])]
     pub struct EchoActor;
 
     impl Actor for EchoActor {}
 
     #[async_trait]
-    impl Handler<reference::OncePortRef<reference::ActorId>> for EchoActor {
+    impl Handler<OncePortRef<reference::ActorId>> for EchoActor {
         async fn handle(
             &mut self,
             cx: &Context<Self>,
-            reply: reference::OncePortRef<reference::ActorId>,
+            reply: OncePortRef<reference::ActorId>,
         ) -> Result<(), anyhow::Error> {
             reply.send(cx, reference::ActorId::from(cx.self_id().clone()))?;
             Ok(())
@@ -1616,7 +1618,7 @@ mod tests {
         let addr = ChannelAddr::any(ChannelTransport::Local);
         let proc_ref = ProcAddr::from_resource_name(addr.clone(), "p");
         let actor_ref = proc_ref.actor_ref("host_agent");
-        let agent_ref = reference::ActorRef::<()>::attest(actor_ref.into());
+        let agent_ref = ActorRef::<()>::attest(actor_ref.into());
         let h = LocalHandle::<()> {
             proc_id: proc_ref,
             addr,
@@ -1649,7 +1651,7 @@ mod tests {
     struct TestHandle {
         id: ProcAddr,
         addr: ChannelAddr,
-        agent: reference::ActorRef<()>,
+        agent: ActorRef<()>,
         mode: ReadyMode,
         omit_addr: bool,
         omit_agent: bool,
@@ -1672,7 +1674,7 @@ mod tests {
             }
         }
 
-        fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>> {
+        fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
             if self.omit_agent {
                 None
             } else {
@@ -1746,7 +1748,7 @@ mod tests {
             forwarder_addr: ChannelAddr,
             _config: (),
         ) -> Result<Self::Handle, HostError> {
-            let agent = reference::ActorRef::<()>::attest(proc_id.actor_ref("host_agent").into());
+            let agent = ActorRef::<()>::attest(proc_id.actor_ref("host_agent").into());
             Ok(TestHandle {
                 id: proc_id,
                 addr: forwarder_addr,

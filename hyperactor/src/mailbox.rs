@@ -105,6 +105,8 @@ use tokio_util::sync::CancellationToken;
 use typeuri::Named;
 
 // for macros
+use crate::OncePortRef;
+use crate::PortRef;
 use crate::Proc;
 use crate::accum::Accumulator;
 use crate::accum::ReducerSpec;
@@ -769,7 +771,7 @@ pub trait PortSender: MailboxSender {
     /// Deliver a message to the provided port.
     fn serialize_and_send<M: RemoteMessage>(
         &self,
-        port: &reference::PortRef<M>,
+        port: &PortRef<M>,
         message: M,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) -> Result<(), MailboxSenderError> {
@@ -791,7 +793,7 @@ pub trait PortSender: MailboxSender {
     /// which is not reusable.
     fn serialize_and_send_once<M: RemoteMessage>(
         &self,
-        once_port: reference::OncePortRef<M>,
+        once_port: OncePortRef<M>,
         message: M,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) -> Result<(), MailboxSenderError> {
@@ -1012,9 +1014,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 ));
                 let sender_id: reference::ActorId = envelope.sender().clone().into();
                 let return_port =
-                    reference::PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(
-                        &sender_id,
-                    );
+                    PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(&sender_id);
                 return_port.send_serialized(
                     &client,
                     Flattrs::new(),
@@ -1268,12 +1268,12 @@ impl MailboxSender for MailboxClient {
 /// Wrapper to turn `PortAddr` into a `Sink`.
 pub struct PortSink<C: context::Actor, M: RemoteMessage> {
     cx: C,
-    port: reference::PortRef<M>,
+    port: PortRef<M>,
 }
 
 impl<C: context::Actor, M: RemoteMessage> PortSink<C, M> {
     /// Create new PortSink
-    pub fn new(cx: C, port: reference::PortRef<M>) -> Self {
+    pub fn new(cx: C, port: PortRef<M>) -> Self {
         Self { cx, port }
     }
 }
@@ -1531,7 +1531,7 @@ impl Mailbox {
         self.inner.allocate_port()
     }
 
-    fn bind<M: RemoteMessage>(&self, handle: &PortHandle<M>) -> reference::PortRef<M> {
+    fn bind<M: RemoteMessage>(&self, handle: &PortHandle<M>) -> PortRef<M> {
         assert_eq!(
             handle.mailbox.actor_id(),
             self.actor_id(),
@@ -1551,7 +1551,7 @@ impl Mailbox {
             Entry::Occupied(_entry) => {}
         }
 
-        reference::PortRef::attest(port_ref.into())
+        PortRef::attest(port_ref.into())
     }
 
     fn bind_to_actor_port<M: RemoteMessage>(&self, handle: &PortHandle<M>) {
@@ -1901,14 +1901,14 @@ impl<M: Message> PortHandle<M> {
 
 impl<M: RemoteMessage> PortHandle<M> {
     /// Bind this port, making it accessible to remote actors.
-    pub fn bind(&self) -> reference::PortRef<M> {
+    pub fn bind(&self) -> PortRef<M> {
         let port_ref = {
             let mut guard = self.bound.write().unwrap();
             guard
                 .get_or_insert_with(|| self.mailbox.bind(self).port_id().clone().into())
                 .clone()
         };
-        reference::PortRef::attest_reducible(
+        PortRef::attest_reducible(
             port_ref.into(),
             self.reducer_spec.clone(),
             self.streaming_opts.clone(),
@@ -2001,11 +2001,11 @@ impl<M: RemoteMessage> OncePortHandle<M> {
     /// a remote actor. The remote actor can then use the
     /// ref to send a message to the port. Creating a ref also
     /// binds the port, so that it is remotely writable.
-    pub fn bind(self) -> reference::OncePortRef<M> {
+    pub fn bind(self) -> OncePortRef<M> {
         let port_id: reference::PortId = self.port_id().clone().into();
         let reducer_spec = self.reducer_spec.clone();
         self.mailbox.clone().bind_once(self);
-        reference::OncePortRef::attest_reducible(port_id, reducer_spec)
+        OncePortRef::attest_reducible(port_id, reducer_spec)
     }
 }
 
@@ -3204,7 +3204,7 @@ mod tests {
         let mbox2 = Mailbox::new_detached(test_actor_id("world1_1", "actor0"));
         let mbox3 = Mailbox::new_detached(test_actor_id("world1_1", "actor1"));
 
-        let comms: Vec<(reference::OncePortRef<u64>, OncePortReceiver<u64>)> =
+        let comms: Vec<(OncePortRef<u64>, OncePortReceiver<u64>)> =
             [&mbox0, &mbox1, &mbox2, &mbox3]
                 .into_iter()
                 .map(|mbox| {

@@ -133,6 +133,7 @@ use wirevalue::TypeInfo;
 
 use crate as hyperactor;
 use crate::Actor;
+use crate::ActorRef;
 use crate::Handler;
 use crate::Message;
 use crate::RemoteMessage;
@@ -329,7 +330,6 @@ use crate::ordering::SeqInfo;
 use crate::ordering::Sequencer;
 use crate::ordering::ordered_channel;
 use crate::panic_handler;
-use crate::reference;
 use crate::supervision::ActorSupervisionEvent;
 
 /// This is used to mint new local ranks for [`Proc::local`].
@@ -594,14 +594,14 @@ impl Proc {
     pub fn attach_actor<R, M>(
         &self,
         name: &str,
-    ) -> Result<(Instance<()>, reference::ActorRef<R>, PortReceiver<M>), anyhow::Error>
+    ) -> Result<(Instance<()>, ActorRef<R>, PortReceiver<M>), anyhow::Error>
     where
         M: RemoteMessage,
         R: Referable + RemoteHandles<M>,
     {
         let (instance, _handle) = self.instance(name)?;
         let (_handle, rx) = instance.bind_actor_port::<M>();
-        let actor_ref = reference::ActorRef::attest(instance.self_id().clone().into());
+        let actor_ref = ActorRef::attest(instance.self_id().clone().into());
         Ok((instance, actor_ref, rx))
     }
 
@@ -1123,7 +1123,7 @@ impl Proc {
     ///   `ActorRef<R>`.
     pub fn resolve_actor_ref<R: Actor + Referable>(
         &self,
-        actor_ref: &reference::ActorRef<R>,
+        actor_ref: &ActorRef<R>,
     ) -> Option<ActorHandle<R>> {
         let cell = self.inner.instances.get(actor_ref.actor_id())?.upgrade()?;
         // An actor whose status is terminal has stopped processing
@@ -2333,7 +2333,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// The owning actor ref.
-    pub fn bind<R: Binds<A>>(&self) -> reference::ActorRef<R> {
+    pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
         self.inner.cell.bind(self.inner.ports.as_ref())
     }
 
@@ -2984,7 +2984,7 @@ impl InstanceCell {
 
     /// This is temporary so that we can share binding code between handle and instance.
     /// We should find some (better) way to consolidate the two.
-    pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &Ports<A>) -> reference::ActorRef<R> {
+    pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &Ports<A>) -> ActorRef<R> {
         <R as Binds<A>>::bind(ports);
         // Signal: pre-registered via open_message_port() in
         // Instance::new(), handled by the actor loop's select!.
@@ -3005,7 +3005,7 @@ impl InstanceCell {
                 .exported_named_ports
                 .insert(*entry.key(), entry.value());
         }
-        reference::ActorRef::attest(self.actor_id().clone().into())
+        ActorRef::attest(self.actor_id().clone().into())
     }
 
     /// Attempt to downcast this cell to a concrete actor handle.
@@ -3262,6 +3262,8 @@ mod tests {
     use crate as hyperactor;
     use crate::HandleClient;
     use crate::Handler;
+    use crate::OncePortRef;
+    use crate::PortRef;
     use crate::testing::proc_supervison::ProcSupervisionCoordinator;
     use crate::testing::process_assertion::assert_termination;
 
@@ -3435,10 +3437,7 @@ mod tests {
 
     #[derive(Handler, HandleClient, Debug)]
     enum LookupTestMessage {
-        ActorExists(
-            reference::ActorRef<TestActor>,
-            #[reply] reference::OncePortRef<bool>,
-        ),
+        ActorExists(ActorRef<TestActor>, #[reply] OncePortRef<bool>),
     }
 
     #[async_trait]
@@ -3447,7 +3446,7 @@ mod tests {
         async fn actor_exists(
             &mut self,
             cx: &crate::Context<Self>,
-            actor_ref: reference::ActorRef<TestActor>,
+            actor_ref: ActorRef<TestActor>,
         ) -> Result<bool, anyhow::Error> {
             Ok(actor_ref.downcast_handle(cx).is_some())
         }
@@ -3476,7 +3475,7 @@ mod tests {
             !lookup_actor
                 .actor_exists(
                     &client,
-                    reference::ActorRef::attest(target_actor.actor_id().unique_child().into())
+                    ActorRef::attest(target_actor.actor_id().unique_child().into())
                 )
                 .await
                 .unwrap()
@@ -3486,7 +3485,7 @@ mod tests {
             !lookup_actor
                 .actor_exists(
                     &client,
-                    reference::ActorRef::attest(lookup_actor.actor_id().clone().into())
+                    ActorRef::attest(lookup_actor.actor_id().clone().into())
                 )
                 .await
                 .unwrap()
@@ -3861,11 +3860,11 @@ mod tests {
         impl Actor for TestActor {}
 
         #[async_trait]
-        impl Handler<(String, reference::PortRef<String>)> for TestActor {
+        impl Handler<(String, PortRef<String>)> for TestActor {
             async fn handle(
                 &mut self,
                 cx: &crate::Context<Self>,
-                (message, port): (String, reference::PortRef<String>),
+                (message, port): (String, PortRef<String>),
             ) -> anyhow::Result<()> {
                 port.send(cx, message)?;
                 Ok(())
@@ -4379,7 +4378,7 @@ mod tests {
         let (_client, _client_handle) = proc.instance("client").unwrap();
 
         let handle = proc.spawn::<TestActor>("target", TestActor).unwrap();
-        let actor_ref: reference::ActorRef<TestActor> = handle.bind();
+        let actor_ref: ActorRef<TestActor> = handle.bind();
 
         // Actor is live — resolve should succeed.
         assert!(
@@ -4664,7 +4663,7 @@ mod tests {
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let handle = proc.spawn("qd_test", TestActor).unwrap();
-        let actor_ref: crate::reference::ActorRef<TestActor> = handle.bind();
+        let actor_ref: crate::ActorRef<TestActor> = handle.bind();
         let actor_id = actor_ref.actor_id().clone();
 
         // Before any message: queue depth should be 0.
