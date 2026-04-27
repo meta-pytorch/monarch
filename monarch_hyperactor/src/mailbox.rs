@@ -140,7 +140,7 @@ impl PyMailbox {
     #[getter]
     pub(super) fn actor_id(&self) -> PyActorId {
         PyActorId {
-            inner: self.inner.actor_id().clone(),
+            inner: self.inner.actor_id().clone().into(),
         }
     }
 
@@ -400,12 +400,13 @@ impl PythonUndeliverableMessageEnvelope {
 
     fn sender(&self) -> PyResult<PyActorId> {
         Ok(PyActorId {
-            inner: self.inner()?.0.sender().clone(),
+            inner: self.inner()?.0.sender().clone().into(),
         })
     }
 
     fn dest(&self) -> PyResult<PyPortId> {
-        Ok(self.inner()?.0.dest().clone().into())
+        let port_id: hyperactor::reference::PortId = self.inner()?.0.dest().clone().into();
+        Ok(port_id.into())
     }
 
     fn error_msg(&self) -> PyResult<String> {
