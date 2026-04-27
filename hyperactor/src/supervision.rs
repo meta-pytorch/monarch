@@ -71,13 +71,13 @@ wirevalue::register_type!(ActorSupervisionEvent);
 impl ActorSupervisionEvent {
     /// Create a new supervision event. Timestamp is set to the current time.
     pub fn new(
-        actor_id: reference::ActorId,
+        actor_id: impl Into<reference::ActorId>,
         display_name: Option<String>,
         actor_status: ActorStatus,
         message_headers: Option<Flattrs>,
     ) -> Self {
         Self {
-            actor_id,
+            actor_id: actor_id.into(),
             display_name,
             occurred_at: std::time::SystemTime::now(),
             actor_status,

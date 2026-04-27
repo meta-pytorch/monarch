@@ -59,14 +59,14 @@ impl MailboxSender for LocalProcDialer {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let proc_id = envelope.dest().actor_id().proc_id();
-        let addr = proc_id.addr();
+        let proc_ref = envelope.dest().actor_ref().proc_ref();
+        let addr = proc_ref.addr();
         if addr == &self.local_addr
             // ...and only non-system procs on that address; the rest are directly
             // reachable through the backend address.
-            && matches!(proc_id.uid(), Uid::Instance(_))
+            && matches!(proc_ref.uid(), Uid::Instance(_))
         {
-            let key = proc_id.resource_name();
+            let key = proc_ref.resource_name();
             let senders = self.local_senders.read().unwrap();
             let senders = if senders.contains_key(&key) {
                 senders

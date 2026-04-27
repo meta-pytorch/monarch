@@ -307,7 +307,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
                 // but the longer-term fix is to clarify whether that
                 // bind path should be idempotent and eliminate the
                 // need for attestation here.
-                subscriber: hyperactor_reference::PortRef::<resource::State<ActorState>>::attest_message_port(this.self_id()).unsplit(),
+                subscriber: hyperactor_reference::PortRef::<resource::State<ActorState>>::attest_message_port(&this.self_id().clone().into()).unsplit(),
             },
         )?;
 
@@ -348,7 +348,8 @@ impl<A: Referable> Actor for ActorMeshController<A> {
             // NOTE: The only part of the port that is used for equality checks is
             // the port id, so create a new one just for the comparison.
             let dest_port_id = envelope.0.dest().clone();
-            let port = hyperactor_reference::PortRef::<Option<MeshFailure>>::attest(dest_port_id);
+            let port =
+                hyperactor_reference::PortRef::<Option<MeshFailure>>::attest(dest_port_id.into());
             let did_exist = self.health_state.subscribers.remove(&port);
             if did_exist {
                 tracing::debug!(
