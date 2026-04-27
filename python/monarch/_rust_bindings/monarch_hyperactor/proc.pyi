@@ -49,13 +49,10 @@ class ActorId:
     Arguments:
     - `addr`: The channel address of the proc containing the actor.
     - `proc_name`: The name of the proc containing the actor.
-    - `actor_name`: Name of the actor.
-    - `pid`: The pid of the actor.
+    - `actor_name`: Resource name of the actor.
     """
 
-    def __init__(
-        self, *, addr: str, proc_name: str, actor_name: str, pid: int = 0
-    ) -> None: ...
+    def __init__(self, *, addr: str, proc_name: str, actor_name: str) -> None: ...
     def __str__(self) -> str: ...
     def __hash__(self) -> int: ...
     def __eq__(self, other: object) -> bool: ...
@@ -71,17 +68,37 @@ class ActorId:
 
     @property
     def actor_name(self) -> str:
-        """Name of the actor."""
+        """Compatibility alias for the actor label, or uid when unlabeled."""
         ...
 
     @property
-    def pid(self) -> int:
-        """The pid of the actor."""
+    def label(self) -> Optional[str]:
+        """The actor label, if present."""
+        ...
+
+    @property
+    def proc_label(self) -> Optional[str]:
+        """The proc label, if present."""
+        ...
+
+    @property
+    def uid(self) -> str:
+        """String representation of the actor uid."""
+        ...
+
+    @property
+    def pid(self) -> str:
+        """Compatibility alias for `uid`."""
         ...
 
     @property
     def proc_id(self) -> str:
         """String representation of the ProcId."""
+        ...
+
+    @property
+    def is_root(self) -> bool:
+        """Whether this actor id names a singleton root actor."""
         ...
 
     @staticmethod

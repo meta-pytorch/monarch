@@ -1152,7 +1152,15 @@ mod tests {
             .expect("no supervision event found on ref from wrapper actor");
         let check_failure = move |failure: MeshFailure| {
             assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
-            assert_eq!(failure.event.actor_id.name(), child_name.actor_name());
+            assert!(
+                failure
+                    .event
+                    .actor_id
+                    .label()
+                    .unwrap()
+                    .as_str()
+                    .starts_with(child_name.label().unwrap().as_str())
+            );
             if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
                 assert!(msg.contains("panic"), "{}", msg);
                 assert!(msg.contains("for testing"), "{}", msg);
@@ -1245,7 +1253,15 @@ mod tests {
 
         let check_failure = move |failure: MeshFailure| {
             assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
-            assert_eq!(failure.event.actor_id.name(), child_name.actor_name());
+            assert!(
+                failure
+                    .event
+                    .actor_id
+                    .label()
+                    .unwrap()
+                    .as_str()
+                    .starts_with(child_name.label().unwrap().as_str())
+            );
             if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
                 assert!(msg.contains("exited with non-zero code 1"), "{}", msg);
             } else {
@@ -1318,7 +1334,14 @@ mod tests {
                     .expect("timeout")
                     .unwrap();
             let event = supervision_message.event;
-            assert_eq!(event.actor_id.name(), child_name.actor_name());
+            assert!(
+                event
+                    .actor_id
+                    .label()
+                    .unwrap()
+                    .as_str()
+                    .starts_with(child_name.label().unwrap().as_str())
+            );
             if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &event.actor_status {
                 assert!(msg.contains("panic"));
                 assert!(msg.contains("for testing"));
