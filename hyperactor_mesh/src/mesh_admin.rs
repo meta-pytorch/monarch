@@ -3488,6 +3488,7 @@ mod tests {
                 .unwrap();
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
+        let local_proc = host.local_proc().clone();
         let host_agent_handle = system_proc
             .spawn(
                 crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
@@ -3551,7 +3552,6 @@ mod tests {
         );
 
         // Resolve each proc child and verify it has Proc properties.
-        let user_proc_name_str = user_proc_name.to_string();
         let mut found_system = false;
         let mut found_user = false;
         for child_ref in &host_node.children {
@@ -3560,8 +3560,12 @@ mod tests {
                 .await
                 .unwrap();
             let node = resp.0.unwrap();
-            if let NodeProperties::Proc { proc_name, .. } = &node.properties {
-                if user_proc_name_str.contains(proc_name.as_str()) {
+            if let NodeProperties::Proc { .. } = &node.properties {
+                if matches!(
+                    child_ref,
+                    crate::introspect::NodeRef::Proc(proc_id)
+                        if proc_id != system_proc.proc_id() && proc_id != local_proc.proc_id()
+                ) {
                     found_user = true;
                 } else {
                     found_system = true;

@@ -66,8 +66,8 @@ pub(crate) async fn check(s: &DiningScenario) {
     // serializes and posts without validating the destination, so the send
     // succeeds and the reply never arrives — gateway_timeout after the
     // bridge timeout (MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT, 5s).
-    let bogus = "unix:@nonexistent_bogus_socket_xyz,bogus-ffffffffffffffff";
-    let encoded = urlencoding::encode(bogus);
+    let bogus = crate::harness::unreachable_proc_ref();
+    let encoded = urlencoding::encode(&bogus);
     let resp = s
         .fixture
         .get(&format!("/v1/config/{encoded}"))
