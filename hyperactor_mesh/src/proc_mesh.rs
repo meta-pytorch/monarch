@@ -225,6 +225,7 @@ impl ProcMesh {
                     rank: rank.create_rank as u64,
                     full_name: actor_id.to_string(),
                     display_name: None,
+                    is_system: true,
                 });
             }
         }
@@ -916,6 +917,7 @@ impl ProcMeshRef {
                     rank: rank as u64,
                     full_name: actor_id.to_string(),
                     display_name,
+                    is_system: is_system_actor,
                 });
             }
         }

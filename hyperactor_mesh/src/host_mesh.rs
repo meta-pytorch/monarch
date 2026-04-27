@@ -268,6 +268,7 @@ impl HostMesh {
                 rank: rank as u64,
                 full_name: actor.actor_id().to_string(),
                 display_name: None,
+                is_system: true,
             });
         }
     }

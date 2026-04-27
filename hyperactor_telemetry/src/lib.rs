@@ -339,6 +339,9 @@ pub struct ActorEvent {
     pub full_name: String,
     /// User-facing name for this actor
     pub display_name: Option<String>,
+    /// Whether this is a system/infrastructure actor (hidden by default
+    /// in the dashboard and TUI).
+    pub is_system: bool,
 }
 
 /// Notify the registered dispatcher that an actor was created.
