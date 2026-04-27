@@ -3467,6 +3467,7 @@ mod tests {
         use hyperactor::Proc;
         use hyperactor::channel::ChannelTransport;
         use hyperactor::id::Label;
+
         use crate::Name;
         use crate::host::Host;
         use crate::host::LocalProcManager;

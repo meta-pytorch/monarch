@@ -77,7 +77,6 @@ uuid = { version = "1.23.0", features = ["rng-getrandom", "serde", "v4", "v5", "
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
-buck-resources = "1"
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 indoc = "2.0.2"
 maplit = "1.0"

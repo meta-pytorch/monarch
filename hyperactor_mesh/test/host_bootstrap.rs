@@ -16,12 +16,11 @@ use hyperactor_mesh::host::ProcessProcManager;
 async fn main() {
     hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
-    let proc =
-        ProcessProcManager::<hyperactor_mesh::host::testing::EchoActor>::boot_proc(
-            |proc| async move { proc.spawn("echo", hyperactor_mesh::host::testing::EchoActor) },
-        )
-        .await
-        .unwrap();
+    let proc = ProcessProcManager::<hyperactor_mesh::host::testing::EchoActor>::boot_proc(
+        |proc| async move { proc.spawn("echo", hyperactor_mesh::host::testing::EchoActor) },
+    )
+    .await
+    .unwrap();
 
     tracing::info!("booted proc {}", proc.proc_id());
 

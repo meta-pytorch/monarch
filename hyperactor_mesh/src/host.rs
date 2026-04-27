@@ -60,10 +60,6 @@ use async_trait::async_trait;
 use futures::Future;
 use futures::StreamExt;
 use futures::stream;
-use tokio::process::Child;
-use tokio::process::Command;
-use tokio::sync::Mutex;
-
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::PortHandle;
@@ -90,6 +86,9 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::ref_;
 use hyperactor::reference;
+use tokio::process::Child;
+use tokio::process::Command;
+use tokio::sync::Mutex;
 
 /// Name of the system service proc on a host — hosts the admin actor
 /// layer (HostMeshAgent, MeshAdminAgent, bridge).
@@ -1423,7 +1422,6 @@ where
 /// as it is needed by an external binary.
 pub mod testing {
     use async_trait::async_trait;
-
     use hyperactor::Actor;
     use hyperactor::Context;
     use hyperactor::Handler;
@@ -1455,10 +1453,11 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::testing::EchoActor;
-    use super::*;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::context::Mailbox;
+
+    use super::testing::EchoActor;
+    use super::*;
 
     #[tokio::test]
     async fn test_basic() {

@@ -76,7 +76,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::HostMeshRef;
-use crate::Name;
 use crate::host::Host;
 use crate::host::LocalProcManager;
 use crate::host_mesh::host_agent::GetLocalProcClient;
