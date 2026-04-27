@@ -44,12 +44,18 @@ pub(crate) enum ActiveJob {
     PySpy {
         /// `Some` while the HTTP fetch is in flight; `None` after the
         /// oneshot fires.
-        rx: Option<oneshot::Receiver<Vec<Line<'static>>>>,
+        rx: Option<oneshot::Receiver<PySpyJobResult>>,
         short: String,
         /// Populated when the oneshot result arrives.
         lines: Vec<Line<'static>>,
         /// Set to a formatted timestamp when the result arrives.
         completed_at: Option<String>,
+        /// Service proc reference used for managed py-spy
+        /// provisioning. Set only when the target itself is the
+        /// service proc.
+        service_proc_ref: Option<String>,
+        /// Operator-facing provisioning state for managed py-spy.
+        provision_state: ProvisionState,
     },
     /// A single config dump HTTP fetch.
     ///
@@ -82,6 +88,8 @@ impl ActiveJob {
                 short,
                 lines,
                 completed_at,
+                provision_state,
+                ..
             } => {
                 let scheme = &theme.scheme;
                 let labels = &theme.labels;
@@ -128,10 +136,13 @@ impl ActiveJob {
                     None
                 };
 
+                let mut overlay_lines = lines.clone();
+                append_provision_lines(&mut overlay_lines, provision_state, scheme);
+
                 Overlay {
                     title,
                     status_line,
-                    lines: lines.clone(),
+                    lines: overlay_lines,
                     loading,
                     scroll: Cell::new(0),
                     max_scroll: Cell::new(u16::MAX),
@@ -208,7 +219,16 @@ impl ActiveJob {
                 labels.footer_diag_running_help_text
             }
             Some(ActiveJob::Diagnostics { .. }) => labels.footer_diag_completed_help_text,
-            Some(ActiveJob::PySpy { .. }) => labels.footer_pyspy_help_text,
+            Some(ActiveJob::PySpy {
+                provision_state, ..
+            }) => match provision_state {
+                ProvisionState::CanProvision => labels.footer_pyspy_can_provision_help_text,
+                ProvisionState::Provisioning { .. } => labels.footer_pyspy_provisioning_help_text,
+                ProvisionState::Provisioned { .. } => labels.footer_pyspy_provisioned_help_text,
+                ProvisionState::Idle | ProvisionState::Failed { .. } => {
+                    labels.footer_pyspy_help_text
+                }
+            },
             Some(ActiveJob::Config { .. }) => labels.footer_config_help_text,
             None => labels.footer_help_text,
         }
@@ -240,19 +260,41 @@ impl ActiveJob {
                     debug_assert!(false, "DiagResult(None) delivered to non-Diagnostics job");
                 }
             }
-            ActiveJobEvent::PySpyResult(new_lines) => {
+            ActiveJobEvent::PySpyResult(result) => {
                 if let ActiveJob::PySpy {
                     rx,
                     lines,
                     completed_at,
+                    service_proc_ref,
+                    provision_state,
                     ..
                 } = self
                 {
                     *rx = None;
-                    *lines = new_lines;
+                    *lines = result.lines;
                     *completed_at = Some(Local::now().format("%H:%M:%S").to_string());
+                    if result.binary_not_found && service_proc_ref.is_some() {
+                        *provision_state = ProvisionState::CanProvision;
+                    } else {
+                        *provision_state = ProvisionState::Idle;
+                    }
                 } else {
                     debug_assert!(false, "PySpyResult delivered to non-PySpy job");
+                }
+            }
+            ActiveJobEvent::ProvisionResult(outcome) => {
+                if let ActiveJob::PySpy {
+                    provision_state, ..
+                } = self
+                {
+                    *provision_state = match outcome {
+                        ProvisionOutcome::Ok { executable } => {
+                            ProvisionState::Provisioned { executable }
+                        }
+                        ProvisionOutcome::Err(error) => ProvisionState::Failed { error },
+                    };
+                } else {
+                    debug_assert!(false, "ProvisionResult delivered to non-PySpy job");
                 }
             }
             ActiveJobEvent::ConfigResult(new_lines) => {
@@ -277,6 +319,105 @@ impl ActiveJob {
 /// Result of the active overlay-producing job completing one event.
 pub(crate) enum ActiveJobEvent {
     DiagResult(Option<DiagResult>),
-    PySpyResult(Vec<Line<'static>>),
+    PySpyResult(PySpyJobResult),
     ConfigResult(Vec<Line<'static>>),
+    ProvisionResult(ProvisionOutcome),
+}
+
+/// TUI-level py-spy fetch result.
+///
+/// This is a rendering envelope, not the backend `PySpyResult` wire
+/// type. It carries both display lines and the single semantic bit the
+/// TUI needs for PY-6/PY-7: whether the backend reported that py-spy
+/// was missing.
+pub(crate) struct PySpyJobResult {
+    /// Styled lines to render in the py-spy overlay.
+    pub(crate) lines: Vec<Line<'static>>,
+    /// True only for backend `BinaryNotFound` responses.
+    pub(crate) binary_not_found: bool,
+}
+
+/// Managed py-spy provisioning state attached to the py-spy overlay.
+pub(crate) enum ProvisionState {
+    /// No provisioning affordance is currently visible.
+    Idle,
+    /// The current service-proc py-spy result is eligible for
+    /// explicit operator-triggered provisioning (PY-6/PY-7).
+    CanProvision,
+    /// A provisioning POST is in flight. The receiver lives in the
+    /// active py-spy job so stale results are dropped if the overlay
+    /// is replaced (PY-5/PY-8).
+    Provisioning {
+        /// Completion channel for the async provisioning request.
+        rx: oneshot::Receiver<ProvisionOutcome>,
+    },
+    /// Provisioning succeeded and the resolved executable path is
+    /// available for display before the operator retries py-spy.
+    Provisioned {
+        /// Host-local executable path returned by the tool
+        /// provisioning actor.
+        executable: String,
+    },
+    /// Provisioning failed with an operator-readable error.
+    Failed {
+        /// Error text rendered in the existing py-spy overlay.
+        error: String,
+    },
+}
+
+/// Result of the async provisioning request.
+pub(crate) enum ProvisionOutcome {
+    /// The tool is available on the host.
+    Ok {
+        /// Host-local executable path returned by the backend.
+        executable: String,
+    },
+    /// Provisioning failed before an executable could be resolved.
+    Err(String),
+}
+
+fn append_provision_lines(
+    lines: &mut Vec<Line<'static>>,
+    provision_state: &ProvisionState,
+    scheme: &crate::theme::ColorScheme,
+) {
+    match provision_state {
+        ProvisionState::Idle => {}
+        ProvisionState::CanProvision => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "press P to provision managed py-spy on this host",
+                scheme.info,
+            )));
+        }
+        ProvisionState::Provisioning { .. } => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "provisioning py-spy 0.4.1...",
+                scheme.info,
+            )));
+        }
+        ProvisionState::Provisioned { executable } => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "managed py-spy provisioned",
+                scheme.detail_status_ok,
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("executable: ", scheme.detail_label),
+                Span::raw(executable.clone()),
+            ]));
+            lines.push(Line::from(Span::styled(
+                "press p to retry dump",
+                scheme.info,
+            )));
+        }
+        ProvisionState::Failed { error } => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("managed py-spy provision failed: {error}"),
+                scheme.error,
+            )));
+        }
+    }
 }

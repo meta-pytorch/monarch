@@ -37,6 +37,7 @@ members = [
     "timed_test",
     "torch-sys2",
     "torch-sys-cuda",
+    "tool_fetch",
     "wirevalue",
 ]
 default-members = [
@@ -66,5 +67,6 @@ default-members = [
     "struct_diff_patch_macros",
     "timed_test",
     "torch-sys2",
+    "tool_fetch",
     "wirevalue",
 ]

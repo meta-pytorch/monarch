@@ -58,8 +58,17 @@ use crate::pyspy::PySpyDump;
 use crate::pyspy::PySpyProfile;
 use crate::pyspy::PySpyProfileWorker;
 use crate::pyspy::PySpyWorker;
+use crate::pyspy::managed_pyspy_candidate;
 use crate::resource;
 use crate::resource::ProcSpec;
+use crate::tool_provision::ProvisionResult;
+use crate::tool_provision::ProvisionTool;
+use crate::tool_provision::QueryToolInventory;
+use crate::tool_provision::ResolveResult;
+use crate::tool_provision::ResolveTool;
+use crate::tool_provision::TOOL_PROVISION_ACTOR_NAME;
+use crate::tool_provision::ToolInventory;
+use crate::tool_provision::ToolProvisionActor;
 
 pub(crate) type ProcManagerSpawnFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcAgent>>> + Send>>;
@@ -280,6 +289,9 @@ impl fmt::Debug for DrainWorker {
         PySpyDump,
         PySpyProfile,
         ConfigDump,
+        ProvisionTool,
+        ResolveTool,
+        QueryToolInventory,
     ]
 )]
 pub struct HostAgent {
@@ -304,6 +316,8 @@ pub struct HostAgent {
     /// Boots on first [`GetLocalProc`] (LP-1 — see
     /// `hyperactor::host::LOCAL_PROC_NAME`).
     local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
+    /// Host-local diagnostic tool provisioner.
+    tool_provision: Option<ActorHandle<ToolProvisionActor>>,
     /// Handle to the host's frontend mailbox server, set during `init` after
     /// `this.bind::<Self>()` ensures the actor port is registered before the
     /// mailbox starts routing messages. Sent back to the bootstrap loop via
@@ -322,6 +336,7 @@ impl HostAgent {
             watching: HashSet::new(),
             proc_status_port: None,
             local_mesh_agent: OnceLock::new(),
+            tool_provision: None,
             mailbox_handle: None,
         }
     }
@@ -347,6 +362,44 @@ impl HostAgent {
         match &mut self.state {
             HostAgentState::Detached(h) | HostAgentState::Attached(h) => Some(h),
             _ => None,
+        }
+    }
+
+    async fn managed_pyspy_candidates(&self, cx: &Context<'_, Self>) -> Vec<(String, String)> {
+        let Some(tool_provision) = &self.tool_provision else {
+            return Vec::new();
+        };
+
+        let (reply_handle, reply_rx) = hyperactor::mailbox::open_once_port::<ResolveResult>(cx);
+        let mut reply = reply_handle.bind();
+        reply.return_undeliverable(false);
+        if let Err(err) = tool_provision.send(
+            cx,
+            ResolveTool {
+                tool: "py-spy".to_string(),
+                version: None,
+                reply,
+            },
+        ) {
+            tracing::debug!("HostAgent: managed py-spy resolve send failed: {err}");
+            return Vec::new();
+        }
+
+        match tokio::time::timeout(
+            hyperactor_config::global::get(crate::config::MESH_ADMIN_TOOL_RESOLVE_TIMEOUT),
+            reply_rx.recv(),
+        )
+        .await
+        {
+            Ok(Ok(result)) => managed_pyspy_candidate(result).into_iter().collect(),
+            Ok(Err(err)) => {
+                tracing::debug!("HostAgent: managed py-spy resolve receive failed: {err}");
+                Vec::new()
+            }
+            Err(_) => {
+                tracing::debug!("HostAgent: managed py-spy resolve timed out");
+                Vec::new()
+            }
         }
     }
 
@@ -508,6 +561,8 @@ impl Actor for HostAgent {
             }
         };
         this.set_system();
+        self.tool_provision =
+            Some(ToolProvisionActor::new().spawn_with_name(this, TOOL_PROVISION_ACTOR_NAME)?);
         self.publish_introspect_properties(this);
 
         // Register callback for QueryChild — resolves system procs
@@ -1335,7 +1390,8 @@ impl Handler<PySpyDump> for HostAgent {
         cx: &Context<Self>,
         message: PySpyDump,
     ) -> Result<(), anyhow::Error> {
-        PySpyWorker::spawn_and_forward(cx, message.opts, message.result)
+        let managed_candidates = self.managed_pyspy_candidates(cx).await;
+        PySpyWorker::spawn_and_forward(cx, message.opts, managed_candidates, message.result)
     }
 }
 
@@ -1346,7 +1402,13 @@ impl Handler<PySpyProfile> for HostAgent {
         cx: &Context<Self>,
         message: PySpyProfile,
     ) -> Result<(), anyhow::Error> {
-        PySpyProfileWorker::spawn_and_forward(cx, message.request, message.result)
+        let managed_candidates = self.managed_pyspy_candidates(cx).await;
+        PySpyProfileWorker::spawn_and_forward(
+            cx,
+            message.request,
+            managed_candidates,
+            message.result,
+        )
     }
 }
 
@@ -1362,6 +1424,86 @@ impl Handler<ConfigDump> for HostAgent {
         // the once-port.  That must not crash this actor.
         if let Err(e) = message.result.send(cx, ConfigDumpResult { entries }) {
             tracing::warn!("HostAgent: ConfigDump reply undeliverable (caller timed out): {e}",);
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ProvisionTool> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: ProvisionTool,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(tool_provision) = &self.tool_provision {
+            let fallback = ProvisionResult::Failed {
+                name: message.spec.name.clone(),
+                version: message.spec.version.clone(),
+                error: "tool provision actor unavailable".to_string(),
+            };
+            let reply = message.reply.clone();
+            if let Err(err) = tool_provision.send(cx, message) {
+                tracing::warn!("HostAgent: ProvisionTool forward failed: {err}");
+                let _ = reply.send(cx, fallback);
+            }
+        } else {
+            let reply = ProvisionResult::Failed {
+                name: message.spec.name,
+                version: message.spec.version,
+                error: "tool provision actor not initialized".to_string(),
+            };
+            let _ = message.reply.send(cx, reply);
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ResolveTool> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: ResolveTool,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(tool_provision) = &self.tool_provision {
+            let fallback = ResolveResult::Failed {
+                name: message.tool.clone(),
+                version: message.version.clone().unwrap_or_default(),
+                error: "tool provision actor unavailable".to_string(),
+            };
+            let reply = message.reply.clone();
+            if let Err(err) = tool_provision.send(cx, message) {
+                tracing::warn!("HostAgent: ResolveTool forward failed: {err}");
+                let _ = reply.send(cx, fallback);
+            }
+        } else {
+            let reply = ResolveResult::Failed {
+                name: message.tool,
+                version: message.version.unwrap_or_default(),
+                error: "tool provision actor not initialized".to_string(),
+            };
+            let _ = message.reply.send(cx, reply);
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<QueryToolInventory> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: QueryToolInventory,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(tool_provision) = &self.tool_provision {
+            let reply = message.reply.clone();
+            if let Err(err) = tool_provision.send(cx, message) {
+                tracing::warn!("HostAgent: QueryToolInventory forward failed: {err}");
+                let _ = reply.send(cx, ToolInventory { tools: Vec::new() });
+            }
+        } else {
+            let _ = message.reply.send(cx, ToolInventory { tools: Vec::new() });
         }
         Ok(())
     }

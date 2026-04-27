@@ -24,6 +24,8 @@ pub(crate) enum KeyResult {
     RunDiagnostics,
     /// Fetch a py-spy stack dump for the given proc.
     RunPySpy(ProcId),
+    /// Provision managed py-spy on the given service proc reference.
+    ProvisionPySpy(String),
     /// Fetch the config dump for the given proc.
     RunConfig(ProcId),
 }

@@ -23,6 +23,7 @@ use typeuri::Named;
 
 use crate::config::MESH_ADMIN_PYSPY_TIMEOUT;
 use crate::config::PYSPY_BIN;
+use crate::tool_provision::ResolveResult;
 
 /// Result of a py-spy stack dump request.
 ///
@@ -476,13 +477,18 @@ impl PySpyRunner {
     /// field, and this method hardcodes `std::process::id()`. There
     /// is no code path that could substitute a different PID.
     pub async fn dump_self(&self, opts: &PySpyOpts) -> PySpyResult {
+        self.dump_self_with_candidates(opts, Vec::new()).await
+    }
+
+    /// Dump Python stacks using managed candidates before legacy
+    /// environment/PATH resolution. See PS-3 and PS-14.
+    pub(crate) async fn dump_self_with_candidates(
+        &self,
+        opts: &PySpyOpts,
+        managed_candidates: Vec<(String, String)>,
+    ) -> PySpyResult {
         let pid = std::process::id();
-        let pyspy_bin: String = hyperactor_config::global::get_cloned(PYSPY_BIN);
-        let candidates = resolve_candidates(if pyspy_bin.is_empty() {
-            None
-        } else {
-            Some(pyspy_bin)
-        });
+        let candidates = resolve_candidates_with_managed(managed_candidates);
         let mut searched = vec![];
 
         for (binary, label) in &candidates {
@@ -502,19 +508,15 @@ impl PySpyRunner {
         PySpyResult::BinaryNotFound { searched }
     }
 
-    /// Profile Python stacks for this process over a duration.
-    /// See PP-3, PP-4.
-    pub(crate) async fn profile_self(
+    /// Profile Python stacks using managed candidates before legacy
+    /// environment/PATH resolution. See PP-4 and PS-14.
+    pub(crate) async fn profile_self_with_candidates(
         &self,
         request: &ValidatedProfileRequest,
+        managed_candidates: Vec<(String, String)>,
     ) -> ProfileExecOutcome {
         let pid = std::process::id();
-        let pyspy_bin: String = hyperactor_config::global::get_cloned(PYSPY_BIN);
-        let candidates = resolve_candidates(if pyspy_bin.is_empty() {
-            None
-        } else {
-            Some(pyspy_bin)
-        });
+        let candidates = resolve_candidates_with_managed(managed_candidates);
         let mut searched = vec![];
 
         for (binary, label) in &candidates {
@@ -534,6 +536,9 @@ impl PySpyRunner {
 #[derive(Debug, Serialize, Deserialize, Named)]
 pub struct RunPySpyDump {
     pub opts: PySpyOpts,
+    /// Managed tool candidates resolved by the parent actor before
+    /// the worker is spawned. Tried before PYSPY_BIN/PATH fallback.
+    pub managed_candidates: Vec<(String, String)>,
     /// The original caller's reply port, forwarded from PySpyDump.
     pub reply_port: hyperactor::reference::OncePortRef<PySpyResult>,
 }
@@ -555,6 +560,7 @@ impl PySpyWorker {
     pub(crate) fn spawn_and_forward(
         cx: &impl hyperactor::context::Actor,
         opts: PySpyOpts,
+        managed_candidates: Vec<(String, String)>,
         reply_port: hyperactor::reference::OncePortRef<PySpyResult>,
     ) -> Result<(), anyhow::Error> {
         let worker = match Self.spawn(cx) {
@@ -574,7 +580,14 @@ impl PySpyWorker {
         // MailboxSenderError does not carry the unsent message, so
         // on send failure the caller will observe a timeout rather
         // than an explicit Failed reply.
-        if let Err(e) = worker.send(cx, RunPySpyDump { opts, reply_port }) {
+        if let Err(e) = worker.send(
+            cx,
+            RunPySpyDump {
+                opts,
+                managed_candidates,
+                reply_port,
+            },
+        ) {
             tracing::error!("failed to send to pyspy worker: {}", e);
         }
         Ok(())
@@ -588,7 +601,9 @@ impl Handler<RunPySpyDump> for PySpyWorker {
         cx: &Context<Self>,
         message: RunPySpyDump,
     ) -> Result<(), anyhow::Error> {
-        let result = PySpyRunner.dump_self(&message.opts).await;
+        let result = PySpyRunner
+            .dump_self_with_candidates(&message.opts, message.managed_candidates)
+            .await;
         message.reply_port.send(cx, result)?;
         cx.stop("pyspy dump complete")?;
         Ok(())
@@ -600,6 +615,7 @@ impl Handler<RunPySpyDump> for PySpyWorker {
 #[derive(Debug, Serialize, Deserialize, Named)]
 pub struct RunPySpyProfile {
     pub request: ValidatedProfileRequest,
+    pub managed_candidates: Vec<(String, String)>,
     pub reply_port: hyperactor::reference::OncePortRef<PySpyProfileResult>,
 }
 wirevalue::register_type!(RunPySpyProfile);
@@ -617,6 +633,7 @@ impl PySpyProfileWorker {
     pub(crate) fn spawn_and_forward(
         cx: &impl hyperactor::context::Actor,
         request: ValidatedProfileRequest,
+        managed_candidates: Vec<(String, String)>,
         reply_port: hyperactor::reference::OncePortRef<PySpyProfileResult>,
     ) -> Result<(), anyhow::Error> {
         let worker = match Self.spawn(cx) {
@@ -637,6 +654,7 @@ impl PySpyProfileWorker {
             cx,
             RunPySpyProfile {
                 request,
+                managed_candidates,
                 reply_port,
             },
         ) {
@@ -653,7 +671,9 @@ impl Handler<RunPySpyProfile> for PySpyProfileWorker {
         cx: &Context<Self>,
         message: RunPySpyProfile,
     ) -> Result<(), anyhow::Error> {
-        let outcome = PySpyRunner.profile_self(&message.request).await;
+        let outcome = PySpyRunner
+            .profile_self_with_candidates(&message.request, message.managed_candidates)
+            .await;
         message
             .reply_port
             .send(cx, PySpyProfileResult::from(outcome))?;
@@ -674,6 +694,37 @@ fn resolve_candidates(pyspy_bin_env: Option<String>) -> Vec<(String, String)> {
     }
     candidates.push(("py-spy".to_string(), "py-spy on PATH".to_string()));
     candidates
+}
+
+/// Build candidates with managed-tool paths before legacy fallback.
+/// PS-14: provisioned tools are preferred but do not remove PYSPY_BIN
+/// or PATH compatibility.
+pub(crate) fn resolve_candidates_with_managed(
+    managed_candidates: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    let pyspy_bin: String = hyperactor_config::global::get_cloned(PYSPY_BIN);
+    let mut candidates = managed_candidates;
+    candidates.extend(resolve_candidates(if pyspy_bin.is_empty() {
+        None
+    } else {
+        Some(pyspy_bin)
+    }));
+    candidates
+}
+
+/// Convert a tool-plane resolve result into a py-spy candidate.
+pub(crate) fn managed_pyspy_candidate(result: ResolveResult) -> Option<(String, String)> {
+    match result {
+        ResolveResult::Available {
+            version,
+            executable,
+            ..
+        } => Some((
+            executable.display().to_string(),
+            format!("managed py-spy@{version}: {}", executable.display()),
+        )),
+        ResolveResult::NotProvisioned { .. } | ResolveResult::Failed { .. } => None,
+    }
 }
 
 /// Build the py-spy command for a given binary path.
@@ -1140,6 +1191,18 @@ mod tests {
         let candidates = resolve_candidates(Some(String::new()));
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0, "py-spy");
+    }
+
+    #[test]
+    fn managed_candidate_precedes_legacy_fallbacks() {
+        // PS-14: managed py-spy is tried first, with PATH preserved as
+        // compatibility fallback.
+        let candidates = resolve_candidates_with_managed(vec![(
+            "/cache/py-spy".to_string(),
+            "managed py-spy@test".to_string(),
+        )]);
+        assert_eq!(candidates[0].0, "/cache/py-spy");
+        assert_eq!(candidates[1].0, "py-spy");
     }
 
     #[test]

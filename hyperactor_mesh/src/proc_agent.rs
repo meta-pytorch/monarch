@@ -731,7 +731,7 @@ impl Handler<PySpyDump> for ProcAgent {
         cx: &Context<Self>,
         message: PySpyDump,
     ) -> Result<(), anyhow::Error> {
-        PySpyWorker::spawn_and_forward(cx, message.opts, message.result)
+        PySpyWorker::spawn_and_forward(cx, message.opts, Vec::new(), message.result)
     }
 }
 
@@ -742,7 +742,7 @@ impl Handler<PySpyProfile> for ProcAgent {
         cx: &Context<Self>,
         message: PySpyProfile,
     ) -> Result<(), anyhow::Error> {
-        PySpyProfileWorker::spawn_and_forward(cx, message.request, message.result)
+        PySpyProfileWorker::spawn_and_forward(cx, message.request, Vec::new(), message.result)
     }
 }
 

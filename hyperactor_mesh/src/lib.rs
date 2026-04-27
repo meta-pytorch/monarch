@@ -53,6 +53,7 @@ pub mod test_utils;
 pub mod testactor;
 pub mod testing;
 mod testresource;
+pub mod tool_provision;
 pub mod transport;
 pub mod value_mesh;
 

@@ -51,6 +51,7 @@ thiserror = "2.0.18"
 tokio = { version = "1.52.1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26.4", features = ["logging", "ring", "tls12"], default-features = false }
 tokio-util = { version = "0.7.18", features = ["full"] }
+tool_fetch = { version = "0.0.0", path = "../tool_fetch" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
 url = "2.5.8"
@@ -63,10 +64,12 @@ zbus = { version = "5.14.0", features = ["async-executor", "async-fs", "async-io
 [dev-dependencies]
 buck-resources = "1"
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
+hex = "0.4.3"
 inventory = "0.3.24"
 jsonschema = "0.17.0"
 maplit = "1.0"
 proptest = "1.11.0"
+sha2 = "0.10.9"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [lints]
