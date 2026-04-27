@@ -7,7 +7,7 @@
 # pyre-strict
 
 """
-This is the main function for the boostrapping a new process using a ProcessAllocator.
+This is the main function for the boostrapping a new Proc.
 """
 
 import asyncio

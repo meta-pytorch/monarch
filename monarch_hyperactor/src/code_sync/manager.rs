@@ -434,7 +434,7 @@ pub async fn code_sync_mesh(
                         .try_for_each_concurrent(None, |connect| async move {
                             let (mut local, mut stream) = try_join!(
                                 TcpStream::connect(daemon_addr.clone()).err_into(),
-                                accept(instance, instance.self_id().clone(), connect),
+                                accept(instance, instance.self_id().clone().into(), connect),
                             )?;
                             tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
                             Ok(())
@@ -462,7 +462,7 @@ pub async fn code_sync_mesh(
                         .err_into::<anyhow::Error>()
                         .try_for_each_concurrent(None, |connect| async {
                             let (mut read, mut write) =
-                                accept(instance, instance.self_id().clone(), connect)
+                                accept(instance, instance.self_id().clone().into(), connect)
                                     .await?
                                     .into_split();
                             let res = sender(&local_workspace, &mut read, &mut write).await;

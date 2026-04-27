@@ -16,13 +16,12 @@ use async_trait::async_trait;
 use hyperactor::PortHandle;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
-
-use crate::Name;
 
 /// LocalProcDialer dials local procs directly through a configured socket
 /// directory.
@@ -60,24 +59,24 @@ impl MailboxSender for LocalProcDialer {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let proc_id = envelope.dest().actor_id().proc_id();
-        let addr = proc_id.addr();
-        let name = proc_id.name();
+        let proc_ref = envelope.dest().actor_ref().proc_ref();
+        let addr = proc_ref.addr();
         if addr == &self.local_addr
             // ...and only non-system procs on that address; the rest are directly
             // reachable through the backend address.
-            && name.parse::<Name>().as_ref().is_ok_and(Name::is_suffixed)
+            && matches!(proc_ref.uid(), Uid::Instance(_))
         {
+            let key = proc_ref.resource_name();
             let senders = self.local_senders.read().unwrap();
-            let senders = if senders.contains_key(name) {
+            let senders = if senders.contains_key(&key) {
                 senders
             } else {
                 drop(senders);
                 let mut senders = self.local_senders.write().unwrap();
-                senders.entry(name.to_string()).or_insert_with(|| {
-                    let socket_path = self.socket_dir.join(name);
+                senders.entry(key.clone()).or_insert_with(|| {
+                    let socket_path = self.socket_dir.join(&key);
                     if socket_path.exists() {
-                        let addr = format!("unix:{}", self.socket_dir.join(name).display());
+                        let addr = format!("unix:{}", socket_path.display());
                         let addr = addr.parse().unwrap();
                         MailboxClient::dial(addr)
                     } else {
@@ -91,7 +90,7 @@ impl MailboxSender for LocalProcDialer {
                 self.local_senders.read().unwrap()
             };
 
-            match senders.get(name).unwrap() {
+            match senders.get(&key).unwrap() {
                 Ok(sender) => sender.post_unchecked(envelope, return_handle),
                 Err(e) => {
                     let err = DeliveryError::BrokenLink(format!("failed to dial proc: {}", e));
@@ -127,14 +126,14 @@ mod tests {
     use hyperactor_config::Flattrs;
 
     use super::*;
-    use crate::Name;
+    use crate::mesh_id::ResourceId;
 
     #[tokio::test]
     async fn test_proc_dialer() {
         let dir = tempfile::tempdir().unwrap();
-        let first = Name::new("first").unwrap();
-        let second = Name::new("second").unwrap();
-        let third = Name::new("third").unwrap();
+        let first = ResourceId::unique(hyperactor::id::Label::new("first").unwrap());
+        let second = ResourceId::unique(hyperactor::id::Label::new("second").unwrap());
+        let third = ResourceId::unique(hyperactor::id::Label::new("third").unwrap());
         let (_first_addr, mut first_rx) = channel::serve::<MessageEnvelope>(
             format!("unix:{}/{}", dir.path().display(), first)
                 .parse()
@@ -154,14 +153,16 @@ mod tests {
         // construct the IDs directly rather than via test_proc_id.
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
         let first_actor_id =
-            hyperactor_reference::ProcId::with_name(local_addr.clone(), first.to_string())
-                .actor_id("actor", 0);
-        let second_actor_id =
-            hyperactor_reference::ProcId::with_name(local_addr.clone(), second.to_string())
-                .actor_id("actor", 0);
+            hyperactor_reference::ProcId::from_resource_name(local_addr.clone(), first.to_string())
+                .actor_id("actor");
+        let second_actor_id = hyperactor_reference::ProcId::from_resource_name(
+            local_addr.clone(),
+            second.to_string(),
+        )
+        .actor_id("actor");
         let third_notexist_actor_id =
-            hyperactor_reference::ProcId::with_name(local_addr.clone(), third.to_string())
-                .actor_id("actor", 0);
+            hyperactor_reference::ProcId::from_resource_name(local_addr.clone(), third.to_string())
+                .actor_id("actor");
         let proc_dialer = LocalProcDialer::new(
             local_addr.clone(),
             dir.path().to_owned(),
@@ -210,8 +211,8 @@ mod tests {
 
         // System proc on the host (name must be exactly "system"):
         let system_actor_id =
-            hyperactor_reference::ProcId::with_name(local_addr.clone(), "system".to_string())
-                .actor_id("actor", 0);
+            hyperactor_reference::ProcId::from_resource_name(local_addr.clone(), "system")
+                .actor_id("actor");
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             hyperactor_reference::PortId::new(system_actor_id, 0),
