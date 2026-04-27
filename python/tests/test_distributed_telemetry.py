@@ -16,6 +16,7 @@ from typing import cast
 import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._src.actor.actor_mesh import Actor, ActorMesh
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.proc_mesh import (
@@ -351,7 +352,7 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
                       m.class AS mesh_class
                FROM actors a
                INNER JOIN meshes m ON a.mesh_id = m.id
-               WHERE a.full_name LIKE '%join_test_worker%'
+               WHERE m.given_name = 'join_test_worker'
                ORDER BY a.rank"""
         )
         result_dict = result.to_pydict()
@@ -367,6 +368,10 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
         mesh_names = result_dict.get("mesh_name", [])
         assert all("join_test_worker" in name for name in mesh_names), (
             f"Expected all joined rows to reference 'join_test_worker', got: {mesh_names}"
+        )
+        actor_names = result_dict.get("actor_name", [])
+        assert all(actor_names), (
+            f"Expected canonical actor names to be populated, got: {actor_names}"
         )
 
         # With 2 workers, we should see 2 joined rows
@@ -1345,17 +1350,16 @@ def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
 
     coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
 
-    # Discover child proc_ids by querying ProcAgent actors from the actors table.
-    # The concrete system-actor spelling has changed across the id migration, so
-    # accept either canonical actor label when extracting the child proc ref.
+    # Discover child proc_ids by parsing canonical ActorId strings for ProcAgent actors.
+    # display_name is reserved for user-facing names, so the canonical full_name is the
+    # stable source of system actor identity.
     proc_agents = engine.query("SELECT full_name FROM actors")
     proc_agent_names = proc_agents.to_pydict().get("full_name", [])
     child_proc_refs = [
-        row.rsplit(",", 1)[0]
+        actor_id.proc_id
         for row in proc_agent_names
-        if "," in row
-        and row.rsplit(",", 1)[1] in {"proc_agent", "_proc_agent"}
-        and row.rsplit(",", 1)[0] != coordinator_proc_id
+        if (actor_id := ActorId.from_string(row)).label in {"proc_agent", "_proc_agent"}
+        and actor_id.proc_id != coordinator_proc_id
     ]
     assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"
     child_proc_ref = child_proc_refs[0]
