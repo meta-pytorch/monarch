@@ -56,7 +56,6 @@ def configure(
     split_max_buffer_age: str = ...,
     stop_actor_timeout: str = ...,
     cleanup_timeout: str = ...,
-    remote_allocator_heartbeat_interval: str = ...,
     default_encoding: Encoding = ...,
     channel_net_rx_buffer_full_check_interval: str = ...,
     message_latency_sampling_rate: float = ...,
@@ -129,8 +128,6 @@ def configure(
             (humantime)
         stop_actor_timeout: Timeout for stopping actors (humantime)
         cleanup_timeout: Timeout for cleanup operations (humantime)
-        remote_allocator_heartbeat_interval: Heartbeat interval for
-            remote allocator (humantime)
         default_encoding: Default message encoding (Encoding.Bincode,
             Encoding.Json, or Encoding.Multipart)
         channel_net_rx_buffer_full_check_interval: Network receive buffer
