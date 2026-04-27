@@ -511,7 +511,8 @@ mod tests {
     use hyperactor::reference as hyperactor_reference;
     use hyperactor::testing::ids::test_actor_id;
     use hyperactor_config::Flattrs;
-    use ndslice::extent;
+    use ndslice::view::Extent;
+    use timed_test::async_timed_test;
 
     use super::*;
     use crate::testing;
@@ -549,13 +550,20 @@ mod tests {
     /// Verifies that creating a `ProcMesh` installs the
     /// process-global supervision sink used by the global root
     /// client.
-    #[tokio::test]
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
     async fn test_sink_installed_after_mesh_creation() {
-        let (_mesh, _actor, _router) = testing::local_proc_mesh(extent!(replica = 2)).await;
+        let instance = testing::instance();
+        let mut hm = testing::host_mesh(2).await;
+        let _mesh = hm
+            .spawn(instance, "test", Extent::unity(), None)
+            .await
+            .unwrap();
         assert!(
             get_global_supervision_sink().is_some(),
             "supervision sink must be set after ProcMesh creation"
         );
+        let _ = hm.shutdown(instance).await;
     }
 
     /// Proves the full forwarding pipeline:

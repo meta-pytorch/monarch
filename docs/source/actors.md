@@ -703,7 +703,8 @@ Thus, when a mesh fails in some way (for example, an actor failed), the owning a
 This is similar to exception handling mechanisms: one can choose to handle exceptions at the appropriate level in the hierarchy (call stack), and failure to handle an exception propagates the failure (and thus terminates the remainder of functions in the call stack).
 
 ### Supervision Python API
-Actors can handle failures by providing an implementation of the `__supervise__` method:
+Actors can handle failures by providing an implementation of the `__supervise__` method.
+It may be declared with either `def` or `async def`:
 ```py
 class ManagerActor(Actor):
   def __init__(self, worker_procs: ProcMesh):
@@ -725,6 +726,12 @@ class ManagerActor(Actor):
     return None
 ```
 
+An `async def` override is awaited on the actor's asyncio event loop -- the same
+loop that runs endpoint coroutines -- so it may `await` other endpoints or I/O.
+A sync override runs under `fake_sync_state` and cannot observe a running loop
+with `asyncio.get_running_loop`. Both forms receive the same arguments and obey
+the same truthy/falsey handled/unhandled contract.
+
 `__supervise__` is special: Because it handles "exceptions", we have to be able
 to invoke it at any (safe) point. This is because otherwise we might run into a
 deadlock: for example, an actor might be waiting for a result from a failed actor.
@@ -736,7 +743,7 @@ If `__supervise__` returns a truthy value, the failure will be considered handle
 and not delivered further up the chain. If it returns a falsey value (including None, if there is no return),
 the failure will be delivered to that Actor’s owner recursively until it reaches
 the original client. If it reaches the original client with no handling, it will crash.
-If `__supervise__` raises an Exception of any kind, it will be considered a new supervision event to be delivered to that Actor’s owner. Its cause will be set to the supervision event it was handling. This behavior matches the special method `__exit__` for context managers.
+If `__supervise__` raises an Exception of any kind, it will be considered a new supervision event to be delivered to that Actor’s owner. Its cause will be set to the supervision event it was handling. This behavior matches the special method `__exit__` for context managers. Both sync and async overrides observe this behavior.
 
 We make no guarantees about how many times `__supervise__` will be called.
 If you own a mesh of N actors, each of which generates a supervision error, it may be called anywhere between 1 and N times inclusive.
