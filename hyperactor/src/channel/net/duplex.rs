@@ -375,11 +375,10 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
                         // `dispatch_stream`); without it, peers
                         // retry-loop until `MESSAGE_DELIVERY_TIMEOUT`.
                         if recv_next.ack < recv_next.seq {
-                            let recv_stream =
-                                connected.stream(super::INITIATOR_TO_ACCEPTOR);
-                            let ack = super::serialize_response(
-                                super::NetRxResponse::Ack(recv_next.seq - 1),
-                            )
+                            let recv_stream = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            let ack = super::serialize_response(super::NetRxResponse::Ack(
+                                recv_next.seq - 1,
+                            ))
                             .expect("serialize ack");
                             let mut completion = recv_stream.write(ack);
                             match completion.drive().await {
@@ -409,8 +408,7 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
                             _ => None,
                         };
                         if let Some(rsp) = terminal_response {
-                            let recv_stream =
-                                connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            let recv_stream = connected.stream(super::INITIATOR_TO_ACCEPTOR);
                             let data = super::serialize_response(rsp)
                                 .expect("serialize terminal response");
                             let mut completion = recv_stream.write(data);
