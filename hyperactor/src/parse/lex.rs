@@ -175,9 +175,7 @@ impl<'a> Iterator for Lexer<'a> {
                 }
             }
             _ => {
-                let len = rest
-                    .find(['.', ':', '@', '<', '>'])
-                    .unwrap_or(rest.len());
+                let len = rest.find(['.', ':', '@', '<', '>']).unwrap_or(rest.len());
                 self.offset += len;
                 Token {
                     kind: TokenKind::Text,

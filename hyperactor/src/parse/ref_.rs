@@ -17,7 +17,6 @@ use crate::parse::id::parse_actor_id_parts;
 use crate::parse::id::parse_id_component;
 use crate::parse::id::parse_port_id_parts;
 use crate::parse::id::parse_proc_id_parts;
-use crate::parse::lex::Span;
 use crate::parse::lex::TokenKind;
 
 /// A parsed proc ref.
@@ -90,7 +89,10 @@ pub(crate) fn parse_reference(input: &str) -> Result<ReferenceParts<'_>, ParseEr
         TokenKind::Dot => {
             parser.bump();
             let proc_ = parse_id_component(&mut parser)?;
-            let actor = ActorIdParts { actor: first, proc_ };
+            let actor = ActorIdParts {
+                actor: first,
+                proc_,
+            };
             match parser.peek().kind {
                 TokenKind::At => Ok(ReferenceParts::Actor(ActorRefParts {
                     id: actor,
@@ -211,7 +213,10 @@ mod tests {
     #[test]
     fn test_parse_reference_reports_missing_separator() {
         let err = parse_reference("local").unwrap_err();
-        assert_eq!(err.to_string(), "expected \"@\" or \".\", found end of input");
+        assert_eq!(
+            err.to_string(),
+            "expected \"@\" or \".\", found end of input"
+        );
         assert_eq!(err.span, Span::new(5, 5));
     }
 
