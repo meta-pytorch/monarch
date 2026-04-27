@@ -358,7 +358,7 @@ impl Handler<RsyncMessage> for RsyncActor {
             let workspace = workspace
                 .resolve()
                 .context("resolving workspace location")?;
-            let (connect_msg, completer) = Connect::allocate(cx.self_id().clone(), cx);
+            let (connect_msg, completer) = Connect::allocate(cx.self_id().clone().into(), cx);
             connect.send(cx, connect_msg)?;
 
             // some machines (e.g. github CI) do not have ipv6, so try ipv6 then fallback to ipv4
@@ -406,7 +406,7 @@ pub async fn rsync_mesh<C: context::Actor + Copy + Unpin>(
             .try_for_each_concurrent(None, |connect| async move {
                 let (mut local, mut stream) = try_join!(
                     TcpStream::connect(daemon_addr.clone()).err_into(),
-                    accept(cx, cx.instance().self_id().clone(), connect),
+                    accept(cx, cx.instance().self_id().clone().into(), connect),
                 )?;
                 tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
                 anyhow::Ok(())

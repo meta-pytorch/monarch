@@ -367,6 +367,56 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
                                 true
                             }
                         };
+
+                        // Flush any pending recv ack so the peer's
+                        // unacked queue clears cleanly before this
+                        // connection goes away. Mirrors the simplex
+                        // server's drain logic (see
+                        // `dispatch_stream`); without it, peers
+                        // retry-loop until `MESSAGE_DELIVERY_TIMEOUT`.
+                        if recv_next.ack < recv_next.seq {
+                            let recv_stream =
+                                connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            let ack = super::serialize_response(
+                                super::NetRxResponse::Ack(recv_next.seq - 1),
+                            )
+                            .expect("serialize ack");
+                            let mut completion = recv_stream.write(ack);
+                            match completion.drive().await {
+                                Ok(()) => {
+                                    recv_next.ack = recv_next.seq;
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        session_id = session_id.0,
+                                        error = %e,
+                                        "duplex: failed to flush acks during cleanup"
+                                    );
+                                }
+                            }
+                        }
+
+                        // On terminal exit, tell the peer we're
+                        // closing so it stops trying to reconnect.
+                        let terminal_response = match &result {
+                            Err(Either::Recv(session::RecvLoopError::SequenceError(reason))) => {
+                                Some(super::NetRxResponse::Reject(reason.clone()))
+                            }
+                            Err(Either::Recv(session::RecvLoopError::Cancelled))
+                            | Err(Either::Send(session::SendLoopError::AppClosed)) => {
+                                Some(super::NetRxResponse::Closed)
+                            }
+                            _ => None,
+                        };
+                        if let Some(rsp) = terminal_response {
+                            let recv_stream =
+                                connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            let data = super::serialize_response(rsp)
+                                .expect("serialize terminal response");
+                            let mut completion = recv_stream.write(data);
+                            let _ = completion.drive().await;
+                        }
+
                         session = connected.release();
                         if terminal {
                             break;

@@ -581,7 +581,7 @@ impl WorkerMessageHandler for WorkerActor {
             &self.controller_actor,
             cx,
             seq.next(),
-            cx.self_id().clone(),
+            cx.self_id().clone().into(),
             controller,
         )
         .await?;
@@ -771,7 +771,7 @@ impl WorkerMessageHandler for WorkerActor {
             .send_value(
                 cx,
                 seq,
-                cx.self_id().clone(),
+                cx.self_id().clone().into(),
                 mutates,
                 function,
                 args_kwargs,

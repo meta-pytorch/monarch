@@ -434,8 +434,8 @@ pub(crate) async fn check(s: &DiningScenario) {
 
     // /v1/config/{proc_reference} — bogus proc — MIT-43, MIT-44,
     // MIT-46, MIT-52
-    let bogus = "unix:@nonexistent_bogus_socket_xyz,bogus-ffffffffffffffff";
-    let encoded = urlencoding::encode(bogus);
+    let bogus = crate::harness::unreachable_proc_ref();
+    let encoded = urlencoding::encode(&bogus);
     let resp = s
         .fixture
         .get(&format!("/v1/config/{encoded}"))
@@ -529,8 +529,8 @@ pub(crate) async fn check(s: &DiningScenario) {
 
     // MIT-57, MIT-58, MIT-59, MIT-61, MIT-62: error path — bogus proc
     // ref.
-    let bogus = "unix:@nonexistent_bogus_socket_xyz,bogus-ffffffffffffffff";
-    let encoded = urlencoding::encode(bogus);
+    let bogus = crate::harness::unreachable_proc_ref();
+    let encoded = urlencoding::encode(&bogus);
     let resp = s
         .fixture
         .get(&format!("/v1/pyspy/{encoded}"))
