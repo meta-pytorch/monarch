@@ -98,7 +98,7 @@ pub enum RefParseError {
 }
 
 /// A process identifier paired with a network location.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct ProcRef {
     id: ProcId,
     location: Location,
@@ -180,12 +180,36 @@ impl ProcRef {
 /// Formats: `label` (singleton), `label<uid58>` (labeled instance),
 /// `<uid58>` (unlabeled instance). Falls back to singleton from stripped name.
 pub(crate) fn parse_resource_name(s: &str) -> (Uid, Option<Label>) {
+    fn parse_wrapped_instance_uid(s: &str) -> Option<u64> {
+        let wrapped = format!("<{s}>");
+        match Uid::from_str(&wrapped) {
+            Ok(Uid::Instance(uid)) => Some(uid),
+            _ => None,
+        }
+    }
+
     if let Some(inner) = s
         .strip_prefix('<')
         .and_then(|inner| inner.strip_suffix('>'))
     {
         if let Ok(uid) = Uid::from_str(&format!("<{inner}>")) {
             return (uid, None);
+        }
+    }
+
+    if let Some((label_part, uid_part)) = s.rsplit_once('-')
+        && uid_part.len() >= 8
+    {
+        if let (Ok(label), Ok(uid)) = (
+            Label::new(label_part),
+            Uid::from_str(&format!("<{uid_part}>")),
+        ) {
+            return (uid, Some(label));
+        }
+        if let (Ok(label), Some(uid)) =
+            (Label::new(label_part), parse_wrapped_instance_uid(uid_part))
+        {
+            return (Uid::Instance(uid), Some(label));
         }
     }
 
@@ -265,10 +289,24 @@ impl FromStr for ProcRef {
 }
 
 /// An actor identifier paired with a network location.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct ActorRef {
     id: ActorId,
     location: Location,
+}
+
+hyperactor_config::impl_attrvalue!(ActorRef);
+
+impl PartialEq<crate::reference::ActorId> for ActorRef {
+    fn eq(&self, other: &crate::reference::ActorId) -> bool {
+        self == other.actor_ref()
+    }
+}
+
+impl PartialEq<ActorRef> for crate::reference::ActorId {
+    fn eq(&self, other: &ActorRef) -> bool {
+        self.actor_ref() == other
+    }
 }
 
 impl ActorRef {
@@ -422,7 +460,7 @@ impl FromStr for ActorRef {
 }
 
 /// A port identifier paired with a network location.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct PortRef {
     id: PortId,
     location: Location,
@@ -447,6 +485,16 @@ impl PortRef {
     /// Returns the actor id (delegates to port id).
     pub fn actor_id(&self) -> &ActorId {
         self.id.actor_id()
+    }
+
+    /// Whether this is a handler (actor-level) port.
+    pub(crate) fn is_actor_port(&self) -> bool {
+        self.id.port().is_handler()
+    }
+
+    /// The port index.
+    pub fn index(&self) -> u64 {
+        self.id.port().as_u64()
     }
 
     /// Reconstruct the parent ActorRef (with location preserved).

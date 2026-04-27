@@ -273,10 +273,10 @@ impl Actor for GlobalClientActor {
         env.set_error(DeliveryError::BrokenLink(
             "message returned to global root client".to_string(),
         ));
-        let actor_id = env.dest().actor_id().clone();
+        let actor_ref = env.dest().actor_ref();
         let headers = env.headers().clone();
         let event = ActorSupervisionEvent::new(
-            actor_id.clone(),
+            actor_ref.clone(),
             None,
             ActorStatus::generic_failure(format!("message not delivered: {}", env)),
             Some(headers),
@@ -287,14 +287,14 @@ impl Actor for GlobalClientActor {
                 if let Err(e) = sink.send(cx, event) {
                     tracing::warn!(
                         %e,
-                        actor=%actor_id,
+                        actor=%actor_ref,
                         "failed to forward supervision event from undeliverable"
                     );
                 }
             }
             None => {
                 tracing::warn!(
-                    actor=%actor_id,
+                    actor=%actor_ref,
                     error=?env.errors(),
                     "no supervision sink; undeliverable message logged but not forwarded"
                 );
@@ -397,7 +397,7 @@ async fn bootstrap_host() -> GlobalState {
     let proc_mesh = ProcMeshRef::new_singleton(
         ProcMeshId::singleton(Label::new("local").unwrap()),
         ProcRef::new(
-            local_proc_agent.actor_id().proc_id().clone(),
+            local_proc_agent.actor_id().proc_ref().into(),
             0,
             local_proc_agent.bind(),
         ),
@@ -542,9 +542,10 @@ mod tests {
             Flattrs::new(),
         );
         // Target the global root client's well-known Undeliverable port.
+        let client_actor_id: hyperactor_reference::ActorId = client.self_id().clone().into();
         let undeliverable_port =
             hyperactor_reference::PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(
-                client.self_id(),
+                &client_actor_id,
             );
         undeliverable_port
             .send(client, Undeliverable(env))

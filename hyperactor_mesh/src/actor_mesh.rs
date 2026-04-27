@@ -507,7 +507,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 multicast::set_cast_info_on_headers(
                     &mut headers,
                     point,
-                    cx.instance().self_id().clone(),
+                    cx.instance().self_id().clone().into(),
                 );
 
                 // Make sure that we re-bind ranks, as these may be used for
@@ -978,6 +978,8 @@ mod tests {
     use super::ActorMesh;
     use crate::ActorMeshRef;
     use crate::ProcMesh;
+    use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
+    use crate::mesh_controller::SUPERVISION_POLL_FREQUENCY;
     use crate::mesh_id::ActorMeshId;
     use crate::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
     use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
@@ -1191,7 +1193,9 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let config = hyperactor_config::global::lock();
+        let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
         let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
+        let _proc_guard = config.override_key(GET_PROC_STATE_MAX_IDLE, Duration::from_secs(1));
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.

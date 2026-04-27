@@ -114,11 +114,12 @@ async fn check_supervision(fixture: &WorkloadFixture) {
     let mut last_tree = None;
     for _attempt in 1..=DISCOVERY_ATTEMPTS {
         let tree = tree_dump(fixture).await;
-        let has_local_proc = tree.contains("\n└── _local")
-            || tree.contains("\n├── _local")
-            || tree.contains("\n_local  ->");
+        let has_local_proc = tree.contains("\n└── local")
+            || tree.contains("\n├── local")
+            || tree.contains("\nlocal  ->");
         let has_sieve_actor = tree.contains("sieve[");
-        let has_sieve_controller = tree.contains("actor_mesh_controller_sieve-");
+        let has_sieve_controller = tree.contains("actor_mesh_controller_sieve-")
+            || tree.contains("actor_mesh_controller_sieve[");
         if has_local_proc && has_sieve_actor && has_sieve_controller {
             return;
         }

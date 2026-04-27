@@ -335,9 +335,9 @@ impl CommActor {
         set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
         cx.post_with_external_seq_info(
             cx.self_id()
-                .proc_id()
-                .actor_id(message.dest_port().actor_name())
-                .port_id(message.dest_port().port()),
+                .proc_ref()
+                .actor_ref(message.dest_port().actor_name())
+                .port_ref(hyperactor::port::Port::from(message.dest_port().port())),
             headers,
             wirevalue::Any::serialize(message.data())?,
         );
@@ -465,7 +465,7 @@ impl Handler<CastMessage> for CommActor {
 
         let fwd_message = ForwardMessage {
             dests: vec![frame],
-            sender: cx.self_id().clone(),
+            sender: cx.self_id().clone().into(),
             message: cast_message.message,
             seq: *seq,
             last_seq,
@@ -844,7 +844,7 @@ mod tests {
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
                 actor_mesh_id,
-                client.self_id().clone(),
+                client.self_id().clone().into(),
                 shape,
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -873,7 +873,7 @@ mod tests {
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
                 actor_mesh_id,
-                client.self_id().clone(),
+                client.self_id().clone().into(),
                 shape,
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -883,7 +883,7 @@ mod tests {
             let last_seq = next_seq;
             next_seq += 1;
             multicast::ForwardMessage {
-                sender: client.self_id().clone(),
+                sender: client.self_id().clone().into(),
                 dests: vec![frame],
                 seq: next_seq,
                 last_seq,
@@ -903,7 +903,7 @@ mod tests {
             let slice = Slice::new_row_major(vec![1]);
             let region = Region::new(vec!["rank".to_string()], slice.clone());
             let cast_msg = multicast::CastMessageV1::new::<TestActor, TestMessage>(
-                client.self_id().clone(),
+                client.self_id().clone().into(),
                 actor_mesh_id,
                 region.clone(),
                 hyperactor_config::Flattrs::new(),

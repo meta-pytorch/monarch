@@ -77,6 +77,10 @@ use crate::transport::DEFAULT_TRANSPORT;
 /// Actor name for `ProcMeshController` when spawned as a named child.
 pub const PROC_MESH_CONTROLLER_NAME: &str = "proc_mesh_controller";
 
+fn resource_proc_name(id: &ResourceId) -> String {
+    hyperactor::id::ProcId::new(id.uid().clone(), id.label().cloned()).to_string()
+}
+
 declare_attrs! {
     /// The maximum idle time between updates while spawning proc
     /// meshes.
@@ -119,7 +123,10 @@ impl HostRef {
 
     /// The ProcId for the proc with name `name` on this host.
     fn named_proc(&self, id: &ResourceId) -> hyperactor_reference::ProcId {
-        hyperactor_reference::ProcId::from_resource_name(self.0.clone(), id.to_string())
+        hyperactor_reference::ProcId::from_proc_ref(hyperactor::ref_::ProcRef::new(
+            hyperactor::id::ProcId::new(id.uid().clone(), id.label().cloned()),
+            self.0.clone().into(),
+        ))
     }
 
     /// The service proc on this host.
@@ -1609,7 +1616,7 @@ pub async fn spawn_admin(
         crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
         crate::mesh_admin::MeshAdminAgent::new(
             hosts,
-            Some(root_client_id),
+            Some(root_client_id.into()),
             admin_addr,
             telemetry_url,
         ),

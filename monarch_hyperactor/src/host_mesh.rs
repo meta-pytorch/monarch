@@ -347,7 +347,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         let proc_mesh = ProcMeshRef::new_singleton(
             ProcMeshId::singleton(Label::new("local").unwrap()),
             ProcRef::new(
-                local_proc_agent.actor_id().proc_id().clone(),
+                local_proc_agent.actor_id().proc_ref().into(),
                 0,
                 local_proc_agent.bind(),
             ),
