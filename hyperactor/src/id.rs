@@ -999,6 +999,44 @@ mod tests {
     }
 
     #[test]
+    fn test_proc_id_fromstr_unlabeled_instance() {
+        let expected_uid = Uid::Instance(0xabc123);
+        let parsed: ProcId = expected_uid.to_string().parse().unwrap();
+        assert_eq!(parsed.uid(), &expected_uid);
+        assert_eq!(parsed.label(), None);
+    }
+
+    #[test]
+    fn test_proc_id_fromstr_labeled_instance_with_underscore() {
+        let expected_uid = Uid::Instance(0xabc123);
+        let parsed: ProcId = format!("proc_agent{}", expected_uid).parse().unwrap();
+        assert_eq!(parsed.uid(), &expected_uid);
+        assert_eq!(
+            parsed.label().map(|label| label.as_str()),
+            Some("proc_agent")
+        );
+    }
+
+    #[test]
+    fn test_proc_id_fromstr_errors_are_stable() {
+        assert_eq!(
+            "".parse::<ProcId>().unwrap_err().to_string(),
+            "invalid proc id: invalid label: label must not be empty"
+        );
+        assert_eq!(
+            "controller<2MuAHeDjLCEd"
+                .parse::<ProcId>()
+                .unwrap_err()
+                .to_string(),
+            "invalid proc id: invalid label: label contains invalid character '<'"
+        );
+        assert_eq!(
+            "controller@tcp".parse::<ProcId>().unwrap_err().to_string(),
+            "invalid proc id: invalid label: label contains invalid character '@'"
+        );
+    }
+
+    #[test]
     fn test_proc_id_serde_roundtrip() {
         let pid = ProcId::new(
             Uid::Instance(0xabcdef),
@@ -1245,11 +1283,80 @@ mod tests {
     }
 
     #[test]
+    fn test_actor_id_fromstr_mixed_examples() {
+        let proc_uid = Uid::Instance(0xabc123);
+        let parsed: ActorId = format!("controller.some-proc-123{}", proc_uid)
+            .parse()
+            .unwrap();
+        assert_eq!(
+            parsed.uid(),
+            &Uid::singleton(Label::new("controller").unwrap())
+        );
+        assert_eq!(parsed.proc_id().uid(), &proc_uid);
+        assert_eq!(
+            parsed.label().map(|label| label.as_str()),
+            Some("controller")
+        );
+        assert_eq!(
+            parsed.proc_id().label().map(|label| label.as_str()),
+            Some("some-proc-123")
+        );
+
+        let expected_actor_uid = Uid::Instance(0xabc123);
+        let expected_proc_uid = Uid::Instance(0xdef456);
+        let parsed: ActorId = format!("{}.{}", expected_actor_uid, expected_proc_uid)
+            .parse()
+            .unwrap();
+        assert_eq!(parsed.uid(), &expected_actor_uid);
+        assert_eq!(parsed.proc_id().uid(), &expected_proc_uid);
+        assert_eq!(parsed.label(), None);
+        assert_eq!(parsed.proc_id().label(), None);
+
+        let expected_actor_uid = Uid::Instance(0xabc123);
+        let parsed: ActorId = format!("controller{}.local", expected_actor_uid)
+            .parse()
+            .unwrap();
+        assert_eq!(parsed.uid(), &expected_actor_uid);
+        assert_eq!(
+            parsed.proc_id().uid(),
+            &Uid::singleton(Label::new("local").unwrap())
+        );
+        assert_eq!(
+            parsed.label().map(|label| label.as_str()),
+            Some("controller")
+        );
+        assert_eq!(
+            parsed.proc_id().label().map(|label| label.as_str()),
+            Some("local")
+        );
+    }
+
+    #[test]
     fn test_actor_id_fromstr_errors() {
         assert!("no-dot-here".parse::<ActorId>().is_err());
         assert!(".".parse::<ActorId>().is_err());
         assert!("abc.".parse::<ActorId>().is_err());
         assert!(".abc".parse::<ActorId>().is_err());
+    }
+
+    #[test]
+    fn test_actor_id_fromstr_errors_are_stable() {
+        assert_eq!(
+            "local".parse::<ActorId>().unwrap_err().to_string(),
+            "invalid actor id: expected format `<actor>.<proc>`"
+        );
+        assert_eq!(
+            ".local".parse::<ActorId>().unwrap_err().to_string(),
+            "invalid actor uid: invalid label: label must not be empty"
+        );
+        assert_eq!(
+            "local.".parse::<ActorId>().unwrap_err().to_string(),
+            "invalid proc uid in actor id: invalid label: label must not be empty"
+        );
+        assert_eq!(
+            "local.<bad!>".parse::<ActorId>().unwrap_err().to_string(),
+            "invalid proc uid in actor id: invalid base58 uid: bad!"
+        );
     }
 
     #[test]
@@ -1386,6 +1493,44 @@ mod tests {
     }
 
     #[test]
+    fn test_port_id_fromstr_examples() {
+        let parsed: PortId = "local.local:0".parse().unwrap();
+        assert_eq!(
+            parsed.actor_id().uid(),
+            &Uid::singleton(Label::new("local").unwrap())
+        );
+        assert_eq!(
+            parsed.proc_id().uid(),
+            &Uid::singleton(Label::new("local").unwrap())
+        );
+        assert_eq!(parsed.port(), Port::from(0));
+
+        let expected_actor_uid = Uid::Instance(0xabc123);
+        let parsed: PortId = format!("controller{}.local:42", expected_actor_uid)
+            .parse()
+            .unwrap();
+        assert_eq!(parsed.actor_id().uid(), &expected_actor_uid);
+        assert_eq!(
+            parsed.actor_id().label().map(|label| label.as_str()),
+            Some("controller")
+        );
+        assert_eq!(
+            parsed.proc_id().uid(),
+            &Uid::singleton(Label::new("local").unwrap())
+        );
+        assert_eq!(parsed.port(), Port::from(42));
+
+        let expected_actor_uid = Uid::Instance(0xabc123);
+        let expected_proc_uid = Uid::Instance(0xdef456);
+        let parsed: PortId = format!("{}.{}:7", expected_actor_uid, expected_proc_uid)
+            .parse()
+            .unwrap();
+        assert_eq!(parsed.actor_id().uid(), &expected_actor_uid);
+        assert_eq!(parsed.proc_id().uid(), &expected_proc_uid);
+        assert_eq!(parsed.port(), Port::from(7));
+    }
+
+    #[test]
     fn test_port_id_debug_all_labels() {
         let aid = ActorId::new(
             Uid::Instance(0xabc123),
@@ -1484,6 +1629,32 @@ mod tests {
         assert_eq!(
             parsed.actor_id().proc_id().label().map(|l| l.as_str()),
             Some("my-proc")
+        );
+    }
+
+    #[test]
+    fn test_port_id_fromstr_errors_are_stable() {
+        assert_eq!(
+            "local.local".parse::<PortId>().unwrap_err().to_string(),
+            "invalid port id: expected format `<actor>:<port>`"
+        );
+        assert_eq!(
+            "local.local:".parse::<PortId>().unwrap_err().to_string(),
+            "invalid port: "
+        );
+        assert_eq!(
+            "local.local:not-a-port"
+                .parse::<PortId>()
+                .unwrap_err()
+                .to_string(),
+            "invalid port: not-a-port"
+        );
+        assert_eq!(
+            "local.local:7@tcp://127.0.0.1:1"
+                .parse::<PortId>()
+                .unwrap_err()
+                .to_string(),
+            "invalid port: 7@tcp://127.0.0.1:1"
         );
     }
 

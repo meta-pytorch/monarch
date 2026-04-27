@@ -801,12 +801,42 @@ mod tests {
     }
 
     #[test]
+    fn test_proc_ref_fromstr_examples() {
+        let parsed: ProcRef = "local@inproc://0".parse().unwrap();
+        assert_eq!(
+            parsed.id().uid(),
+            &Uid::singleton(Label::new("local").unwrap())
+        );
+        assert_eq!(*parsed.location().addr(), ChannelAddr::Local(0));
+
+        let expected_uid = Uid::Instance(0xabc123);
+        let parsed: ProcRef = format!("controller{}@tcp://[::1]:2345", expected_uid)
+            .parse()
+            .unwrap();
+        assert_eq!(parsed.id().uid(), &expected_uid);
+        assert_eq!(
+            parsed.id().label().map(|label| label.as_str()),
+            Some("controller")
+        );
+        assert_eq!(
+            *parsed.location().addr(),
+            "tcp:[::1]:2345".parse::<ChannelAddr>().unwrap()
+        );
+    }
+
+    #[test]
     fn test_proc_ref_fromstr_missing_separator() {
         let err = ProcId::new(Uid::Instance(0xabc123), None)
             .to_string()
             .parse::<ProcRef>()
             .unwrap_err();
         assert!(matches!(err, RefParseError::MissingSeparator));
+    }
+
+    #[test]
+    fn test_proc_ref_fromstr_invalid_location() {
+        let err = "local@tcp://".parse::<ProcRef>().unwrap_err();
+        assert!(matches!(err, RefParseError::InvalidLocation(_)));
     }
 
     #[test]
@@ -913,6 +943,24 @@ mod tests {
     }
 
     #[test]
+    fn test_actor_ref_fromstr_examples() {
+        let expected_actor_uid = Uid::Instance(0xabc123);
+        let parsed: ActorRef = format!("controller{}.local@inproc://0", expected_actor_uid)
+            .parse()
+            .unwrap();
+        assert_eq!(parsed.id().uid(), &expected_actor_uid);
+        assert_eq!(
+            parsed.id().label().map(|label| label.as_str()),
+            Some("controller")
+        );
+        assert_eq!(
+            parsed.id().proc_id().uid(),
+            &Uid::singleton(Label::new("local").unwrap())
+        );
+        assert_eq!(*parsed.location().addr(), ChannelAddr::Local(0));
+    }
+
+    #[test]
     fn test_actor_ref_fromstr_missing_separator() {
         let err = ActorId::new(
             Uid::Instance(0xabc123),
@@ -923,6 +971,12 @@ mod tests {
         .parse::<ActorRef>()
         .unwrap_err();
         assert!(matches!(err, RefParseError::MissingSeparator));
+    }
+
+    #[test]
+    fn test_actor_ref_fromstr_invalid_location() {
+        let err = "local.local@tcp://".parse::<ActorRef>().unwrap_err();
+        assert!(matches!(err, RefParseError::InvalidLocation(_)));
     }
 
     #[test]
@@ -1207,6 +1261,25 @@ mod tests {
     }
 
     #[test]
+    fn test_port_ref_fromstr_examples() {
+        let expected_actor_uid = Uid::Instance(0xabc123);
+        let expected_proc_uid = Uid::Instance(0xdef456);
+        let parsed: PortRef = format!(
+            "{}.{}:42@tcp://[::1]:2345",
+            expected_actor_uid, expected_proc_uid
+        )
+        .parse()
+        .unwrap();
+        assert_eq!(parsed.id().actor_id().uid(), &expected_actor_uid);
+        assert_eq!(parsed.id().proc_id().uid(), &expected_proc_uid);
+        assert_eq!(parsed.id().port(), Port::from(42));
+        assert_eq!(
+            *parsed.location().addr(),
+            "tcp:[::1]:2345".parse::<ChannelAddr>().unwrap()
+        );
+    }
+
+    #[test]
     fn test_port_ref_fromstr_missing_separator() {
         let err = PortId::new(
             ActorId::new(
@@ -1220,6 +1293,35 @@ mod tests {
         .parse::<PortRef>()
         .unwrap_err();
         assert!(matches!(err, RefParseError::MissingSeparator));
+    }
+
+    #[test]
+    fn test_port_ref_fromstr_invalid_location() {
+        let err = "local.local:7@tcp://".parse::<PortRef>().unwrap_err();
+        assert!(matches!(err, RefParseError::InvalidLocation(_)));
+    }
+
+    #[test]
+    fn test_reference_fromstr_specificity() {
+        let parsed: Reference = "local@inproc://0".parse().unwrap();
+        assert!(matches!(parsed, Reference::Proc(_)));
+
+        let parsed: Reference = "local.local@inproc://0".parse().unwrap();
+        assert!(matches!(parsed, Reference::Actor(_)));
+
+        let parsed: Reference = "local.local:7@inproc://0".parse().unwrap();
+        assert!(matches!(parsed, Reference::Port(_)));
+    }
+
+    #[test]
+    fn test_reference_fromstr_rejects_malformed_specific_forms() {
+        assert!(
+            "local.local:not-a-port@inproc://0"
+                .parse::<Reference>()
+                .is_err()
+        );
+        assert!("local.<bad!>@inproc://0".parse::<Reference>().is_err());
+        assert!("local@tcp://".parse::<Reference>().is_err());
     }
 
     #[test]
