@@ -462,7 +462,7 @@ impl FromStr for ProcId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = crate::parse::id::parse_proc_id(s)
             .map_err(|_| legacy_parse_id_component(s).unwrap_err())?;
-        convert_proc_id_parts(parts).map_err(IdParseError::InvalidProcId)
+        Self::try_from(parts).map_err(IdParseError::InvalidProcId)
     }
 }
 
@@ -594,7 +594,7 @@ impl FromStr for ActorId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = crate::parse::id::parse_actor_id(s).map_err(|_| legacy_parse_actor_id(s))?;
-        convert_actor_id_parts(parts)
+        Self::try_from(parts)
     }
 }
 
@@ -692,7 +692,7 @@ impl FromStr for PortId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts = crate::parse::id::parse_port_id(s).map_err(|_| legacy_port_parse_error(s))?;
-        convert_port_id_parts(parts)
+        Self::try_from(parts)
     }
 }
 
@@ -710,31 +710,44 @@ fn convert_id_component(component: IdComponent<'_>) -> Result<(Uid, Option<Label
     }
 }
 
-fn convert_proc_id_parts(parts: ProcIdParts<'_>) -> Result<ProcId, UidParseError> {
-    let (uid, label) = convert_id_component(parts.component)?;
-    Ok(ProcId { uid, label })
+impl TryFrom<ProcIdParts<'_>> for ProcId {
+    type Error = UidParseError;
+
+    fn try_from(parts: ProcIdParts<'_>) -> Result<Self, Self::Error> {
+        let (uid, label) = convert_id_component(parts.component)?;
+        Ok(Self { uid, label })
+    }
 }
 
-fn convert_actor_id_parts(parts: ActorIdParts<'_>) -> Result<ActorId, IdParseError> {
-    let (uid, label) = convert_id_component(parts.actor).map_err(IdParseError::InvalidActorUid)?;
-    let proc_id = convert_proc_id_parts(ProcIdParts {
-        component: parts.proc_,
-    })
-    .map_err(IdParseError::InvalidActorProcUid)?;
-    Ok(ActorId {
-        uid,
-        proc_id,
-        label,
-    })
+impl TryFrom<ActorIdParts<'_>> for ActorId {
+    type Error = IdParseError;
+
+    fn try_from(parts: ActorIdParts<'_>) -> Result<Self, Self::Error> {
+        let (uid, label) =
+            convert_id_component(parts.actor).map_err(IdParseError::InvalidActorUid)?;
+        let proc_id = ProcId::try_from(ProcIdParts {
+            component: parts.proc_,
+        })
+        .map_err(IdParseError::InvalidActorProcUid)?;
+        Ok(Self {
+            uid,
+            proc_id,
+            label,
+        })
+    }
 }
 
-fn convert_port_id_parts(parts: PortIdParts<'_>) -> Result<PortId, IdParseError> {
-    let actor_id = convert_actor_id_parts(parts.actor)?;
-    let port = parts
-        .port
-        .parse()
-        .map_err(|_| IdParseError::InvalidPort(parts.port.to_string()))?;
-    Ok(PortId { actor_id, port })
+impl TryFrom<PortIdParts<'_>> for PortId {
+    type Error = IdParseError;
+
+    fn try_from(parts: PortIdParts<'_>) -> Result<Self, Self::Error> {
+        let actor_id = ActorId::try_from(parts.actor)?;
+        let port = parts
+            .port
+            .parse()
+            .map_err(|_| IdParseError::InvalidPort(parts.port.to_string()))?;
+        Ok(Self { actor_id, port })
+    }
 }
 
 fn legacy_parse_id_component(s: &str) -> Result<(Uid, Option<Label>), UidParseError> {
