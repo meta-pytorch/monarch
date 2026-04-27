@@ -29,7 +29,8 @@ use crate::port::Port;
 /// Maximum length of an RFC 1035 label.
 const MAX_LABEL_LEN: usize = 63;
 
-/// An RFC 1035 label: 1–63 chars, lowercase ASCII alphanumeric plus `-`,
+/// An RFC 1035-style label: 1–63 chars, lowercase ASCII alphanumeric plus `-`
+/// or `_`,
 /// starting with a letter, ending with an alphanumeric character.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Label(SmolStr);
@@ -49,7 +50,8 @@ pub enum LabelError {
     /// The last character is not alphanumeric.
     #[error("label must end with a lowercase letter or digit")]
     InvalidEnd,
-    /// The input contains a character that is not lowercase alphanumeric or `-`.
+    /// The input contains a character that is not lowercase alphanumeric, `-`,
+    /// or `_`.
     #[error("label contains invalid character '{0}'")]
     InvalidChar(char),
 }
@@ -72,7 +74,7 @@ impl Label {
             return Err(LabelError::InvalidEnd);
         }
         for ch in s.chars() {
-            if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' {
+            if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' && ch != '_' {
                 return Err(LabelError::InvalidChar(ch));
             }
         }
@@ -89,7 +91,7 @@ impl Label {
             .chars()
             .filter_map(|ch| {
                 let ch = ch.to_ascii_lowercase();
-                if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' {
+                if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_' {
                     Some(ch)
                 } else {
                     None
@@ -658,9 +660,15 @@ mod tests {
 
     #[test]
     fn test_label_invalid_char() {
-        assert_eq!(Label::new("ab_c"), Err(LabelError::InvalidChar('_')));
         assert_eq!(Label::new("ab.c"), Err(LabelError::InvalidChar('.')));
         assert_eq!(Label::new("aBc"), Err(LabelError::InvalidChar('B')));
+    }
+
+    #[test]
+    fn test_label_allows_underscores() {
+        assert!(Label::new("ab_c").is_ok());
+        assert!(Label::new("proc_agent").is_ok());
+        assert!(Label::new("host_agent").is_ok());
     }
 
     #[test]
@@ -670,7 +678,7 @@ mod tests {
         assert_eq!(Label::strip("---abc---").as_str(), "abc");
         assert_eq!(Label::strip("").as_str(), "nil");
         assert_eq!(Label::strip("123").as_str(), "nil");
-        assert_eq!(Label::strip("My_Service!").as_str(), "myservice");
+        assert_eq!(Label::strip("My_Service!").as_str(), "my_service");
     }
 
     #[test]
