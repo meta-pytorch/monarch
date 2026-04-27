@@ -23,30 +23,18 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::mailbox::BoxableMailboxSender;
-use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor::testing::ids::test_proc_id;
-use ndslice::Extent;
 use tokio::process::Command;
-use tokio::sync::OnceCell;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::Bootstrap;
 use crate::HostMeshRef;
-use crate::ProcMesh;
-use crate::alloc::Alloc;
-use crate::alloc::AllocSpec;
-use crate::alloc::Allocator;
-use crate::alloc::LocalAllocator;
-use crate::alloc::ProcessAllocator;
 use crate::host_mesh::HostMesh;
 use crate::host_mesh::HostMeshShutdownGuard;
 use crate::supervision::MeshFailure;
-use crate::transport::default_transport;
 
 #[derive(Debug)]
 pub struct TestRootClient {
@@ -140,87 +128,6 @@ pub fn fresh_instance() -> &'static Instance<TestRootClient> {
 pub fn instance() -> &'static Instance<TestRootClient> {
     static INSTANCE: OnceLock<&'static Instance<TestRootClient>> = OnceLock::new();
     INSTANCE.get_or_init(fresh_instance)
-}
-
-/// Return different alloc implementations with the provided extent.
-#[cfg(fbcode_build)]
-pub async fn allocs(extent: Extent) -> Vec<Box<dyn Alloc + Send + Sync>> {
-    let spec = AllocSpec {
-        extent: extent.clone(),
-        constraints: Default::default(),
-        proc_name: None,
-        transport: default_transport(),
-        proc_allocation_mode: Default::default(),
-    };
-
-    vec![
-        Box::new(LocalAllocator.allocate(spec.clone()).await.unwrap()),
-        Box::new(
-            ProcessAllocator::new(Command::new(crate::testresource::get(
-                "monarch/hyperactor_mesh/bootstrap",
-            )))
-            .allocate(spec.clone())
-            .await
-            .unwrap(),
-        ),
-    ]
-}
-
-/// Create a TestRootClient, and make the router it uses available.
-async fn fresh_instance_with_router() -> (
-    &'static Instance<TestRootClient>,
-    &'static DialMailboxRouter,
-) {
-    static INSTANCE: OnceLock<(Instance<TestRootClient>, DialMailboxRouter)> = OnceLock::new();
-    let router = DialMailboxRouter::new();
-    let proc = Proc::configured(test_proc_id("0"), router.boxed());
-    let ai = proc.actor_instance("testclient").unwrap();
-    // Use the OnceLock to get a 'static lifetime for the instance.
-    INSTANCE
-        .set((ai.instance, router))
-        .map_err(|_| "already initialized root client instance")
-        .unwrap();
-    let (instance, router) = INSTANCE.get().unwrap();
-    let client = TestRootClient {
-        signal_rx: ai.signal,
-        supervision_rx: ai.supervision,
-        work_rx: ai.work,
-    };
-    client.run(instance);
-    (instance, router)
-}
-
-/// Create a local proc mesh with the provided extent, returning the
-/// mesh itself, the controller actor, and the router.
-pub async fn local_proc_mesh(
-    extent: Extent,
-) -> (
-    ProcMesh,
-    &'static Instance<TestRootClient>,
-    &'static DialMailboxRouter,
-) {
-    static INSTANCE: OnceCell<(
-        &'static Instance<TestRootClient>,
-        &'static DialMailboxRouter,
-    )> = OnceCell::const_new();
-    let (actor, router) = INSTANCE.get_or_init(fresh_instance_with_router).await;
-    let alloc = LocalAllocator
-        .allocate(AllocSpec {
-            extent,
-            constraints: Default::default(),
-            proc_name: None,
-            transport: ChannelTransport::Local,
-            proc_allocation_mode: Default::default(),
-        })
-        .await
-        .unwrap();
-    (
-        ProcMesh::allocate(actor, Box::new(alloc), "test")
-            .await
-            .unwrap(),
-        actor,
-        router,
-    )
 }
 
 /// Create a host mesh using multiple processes running on the test machine.

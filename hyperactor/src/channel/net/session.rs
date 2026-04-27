@@ -14,6 +14,7 @@
 //! with a demuxing reader and a shared, mutex-protected writer.
 
 use std::any::type_name;
+use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
@@ -322,12 +323,23 @@ impl<R: AsyncRead + Unpin + Send, W> Mux<R, W> {
     }
 }
 
+/// A message queued for dispatch to a writer but not yet serialized.
+/// Used in the multi-stream sender to shift serialization cost off the
+/// single dispatcher task and onto the per-stream writer tasks, which
+/// can serialize in parallel.
+pub(super) struct PendingMessage<M: RemoteMessage> {
+    pub(super) seq: u64,
+    pub(super) message: M,
+    pub(super) received_at: Instant,
+    pub(super) return_channel: oneshot::Sender<SendError<M>>,
+}
+
 pub(super) struct QueuedMessage<M: RemoteMessage> {
-    seq: u64,
-    message: serde_multipart::Message,
-    received_at: Instant,
-    sent_at: Option<Instant>,
-    return_channel: oneshot::Sender<SendError<M>>,
+    pub(super) seq: u64,
+    pub(super) message: serde_multipart::Message,
+    pub(super) received_at: Instant,
+    pub(super) sent_at: Option<tokio::time::Instant>,
+    pub(super) return_channel: oneshot::Sender<SendError<M>>,
 }
 
 impl<M: RemoteMessage> fmt::Display for QueuedMessage<M> {
@@ -830,6 +842,87 @@ pub(super) async fn recv_connected<
     }
 }
 
+/// Multi-stream receive protocol loop: read frames, deliver them
+/// out-of-order to `deliver_tx`, record seqs into the shared
+/// [`AckWatermark`], and emit acks when the watermark's policy says
+/// so. Runs on a single physical connection; one instance per stream
+/// of a multi-stream session, all sharing the same `ack_watermark`.
+///
+/// Cancel-safe — caller wraps in a `select!` with the cancel branch.
+pub(super) async fn multi_stream_recv_connected<
+    M: RemoteMessage,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+>(
+    stream: &TaggedStream<R, W>,
+    ack_watermark: &tokio::sync::Mutex<AckWatermark>,
+    deliver_tx: &mpsc::Sender<M>,
+) -> Result<(), RecvLoopError> {
+    let mut pending_ack: Option<Completion<W, Bytes>> = None;
+
+    loop {
+        // Consolidated watermark access: decide whether to emit an ack
+        // and how long to sleep until the next timer tick.
+        let (maybe_ack, sleep_interval) = {
+            let mut w = ack_watermark.lock().await;
+            let ack = if pending_ack.is_none() {
+                w.poll()
+            } else {
+                None
+            };
+            (ack, w.interval())
+        };
+
+        if let Some(ack_val) = maybe_ack {
+            let ack = serialize_response(NetRxResponse::Ack(ack_val))
+                .map_err(|e| RecvLoopError::Io(e.into()))?;
+            pending_ack = Some(stream.write(ack));
+        }
+
+        tokio::select! {
+            biased;
+
+            // Drive ack write to completion.
+            result = async { pending_ack.as_mut().unwrap().drive().await },
+                if pending_ack.is_some() => {
+                match result {
+                    Ok(()) => pending_ack = None,
+                    Err(e) => return Err(RecvLoopError::Io(e.into())),
+                }
+            }
+
+            // Ack timer tick: loop back so we can re-poll the watermark.
+            // Guarded on `pending_ack.is_none()` to avoid spinning while
+            // a write is mid-drive.
+            _ = tokio::time::sleep(sleep_interval), if pending_ack.is_none() => {}
+
+            bytes_result = stream.next() => {
+                let bytes = match bytes_result {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => return Ok(()),
+                    Err(e) => return Err(RecvLoopError::Io(e.into())),
+                };
+
+                let message = serde_multipart::Message::from_framed(bytes)
+                    .map_err(|e| RecvLoopError::Io(e.into()))?;
+                match serde_multipart::deserialize_bincode::<Frame<M>>(message) {
+                    Ok(Frame::Message(seq, msg)) => {
+                        ack_watermark.lock().await.record(seq);
+                        deliver_tx.send(msg).await.map_err(|_| {
+                            RecvLoopError::Io(anyhow::anyhow!("deliver channel closed"))
+                        })?;
+                    }
+                    Err(e) => {
+                        return Err(RecvLoopError::Io(
+                            anyhow::Error::from(e).context("deserialize multi-stream message"),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Error from the send protocol loop. An `Ok(())` from
 /// [`send_connected`] indicates normal connection close (EOF).
 pub(super) enum SendLoopError {
@@ -872,6 +965,209 @@ pub(super) struct Next {
 impl fmt::Display for Next {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "(seq: {}, ack: {})", self.seq, self.ack)
+    }
+}
+
+/// Tracks the ack "watermark" across multiple streams — the highest
+/// sequence number N such that all of 0..=N have been received — and
+/// encapsulates the ack-emission policy (send every N messages, or
+/// after a time interval, whichever comes first).
+///
+/// Multiple streams of the same session all call [`record`](Self::record)
+/// as they receive frames and periodically call [`poll`](Self::poll)
+/// to find out whether an ack should be sent now. `poll` advances
+/// internal state so that two streams racing won't both emit the same
+/// ack value.
+#[derive(Debug)]
+pub(super) struct AckWatermark {
+    /// Sequence numbers received ahead of the contiguous frontier.
+    received: BTreeSet<u64>,
+    /// Highest N such that all 0..=N have been received, or `None`
+    /// if no messages have been received yet.
+    highest_contiguous: Option<u64>,
+
+    // --- Ack emission policy. ---
+    /// Send an ack after this many received messages since the last
+    /// emission.
+    ack_msg_interval: u64,
+    /// Send an ack after this much wall time since the last emission,
+    /// even if `ack_msg_interval` has not been hit.
+    ack_time_interval: Duration,
+    /// Last ack value [`poll`](Self::poll) handed out, or `None` if no
+    /// ack has been emitted yet.
+    last_reported: Option<u64>,
+    /// Messages recorded since the last emission.
+    msgs_since_report: u64,
+    /// When the last emission was committed.
+    last_report_time: Instant,
+}
+
+impl AckWatermark {
+    pub fn new(ack_msg_interval: u64, ack_time_interval: Duration) -> Self {
+        Self {
+            received: BTreeSet::new(),
+            highest_contiguous: None,
+            ack_msg_interval,
+            ack_time_interval,
+            last_reported: None,
+            msgs_since_report: 0,
+            last_report_time: Instant::now(),
+        }
+    }
+
+    /// Record that `seq` has been received. Returns the current
+    /// highest contiguous sequence number (the current watermark),
+    /// or `None` if nothing contiguous has been received yet.
+    pub fn record(&mut self, seq: u64) -> Option<u64> {
+        let next_expected = self.highest_contiguous.map_or(0, |h| h + 1);
+        if seq == next_expected {
+            // Extends the contiguous run.
+            let mut cur = seq;
+            // Drain any buffered sequences that extend it further.
+            while self.received.first().copied() == Some(cur + 1) {
+                self.received.pop_first();
+                cur += 1;
+            }
+            self.highest_contiguous = Some(cur);
+            self.msgs_since_report += 1;
+        } else if seq > next_expected {
+            // Out of order — buffer it.
+            if self.received.insert(seq) {
+                self.msgs_since_report += 1;
+            }
+        }
+        // seq < next_expected is a duplicate — ignore.
+        self.highest_contiguous
+    }
+
+    /// If an ack is due (either `ack_msg_interval` messages have been
+    /// recorded or `ack_time_interval` has elapsed) and the watermark
+    /// has advanced beyond the last emitted ack, return the new ack
+    /// value and commit internal bookkeeping so subsequent pollers
+    /// won't re-emit the same value. Otherwise return `None`.
+    ///
+    /// The caller is responsible for actually writing the returned
+    /// ack onto a stream.
+    pub fn poll(&mut self) -> Option<u64> {
+        if self.msgs_since_report == 0 {
+            return None;
+        }
+        let msg_due = self.msgs_since_report >= self.ack_msg_interval;
+        let time_due = self.last_report_time.elapsed() >= self.ack_time_interval;
+        if !msg_due && !time_due {
+            return None;
+        }
+        let watermark = self.highest_contiguous?;
+        if self.last_reported.is_some_and(|r| watermark <= r) {
+            return None;
+        }
+        self.last_reported = Some(watermark);
+        self.msgs_since_report = 0;
+        self.last_report_time = Instant::now();
+        Some(watermark)
+    }
+
+    /// Duration until [`poll`](Self::poll) should next be invoked to
+    /// check the time-based emission condition. Callers should sleep
+    /// for at most this long before calling `poll` again. When no
+    /// messages have been recorded since the last emission, returns a
+    /// long duration since there's no reason to wake on the timer.
+    pub fn interval(&self) -> Duration {
+        if self.msgs_since_report == 0 {
+            // Nothing pending — only wake on incoming messages.
+            return Duration::from_secs(3600);
+        }
+        self.ack_time_interval
+            .saturating_sub(self.last_report_time.elapsed())
+    }
+
+    /// The current watermark (highest contiguous seq received), or
+    /// `None` before any message has been recorded. Primarily used by
+    /// tests; production emission goes through [`poll`](Self::poll).
+    #[cfg(test)]
+    pub fn ack_value(&self) -> Option<u64> {
+        self.highest_contiguous
+    }
+}
+
+#[cfg(test)]
+mod ack_watermark_tests {
+    use std::time::Duration;
+
+    use super::AckWatermark;
+
+    fn watermark() -> AckWatermark {
+        AckWatermark::new(u64::MAX, Duration::from_secs(3600))
+    }
+
+    #[test]
+    fn in_order() {
+        let mut t = watermark();
+        assert_eq!(t.ack_value(), None);
+        assert_eq!(t.record(0), Some(0));
+        assert_eq!(t.record(1), Some(1));
+        assert_eq!(t.record(2), Some(2));
+        assert_eq!(t.ack_value(), Some(2));
+    }
+
+    #[test]
+    fn out_of_order() {
+        let mut t = watermark();
+        assert_eq!(t.record(0), Some(0));
+        assert_eq!(t.record(2), Some(0)); // gap at 1
+        assert_eq!(t.record(3), Some(0)); // still gap at 1
+        assert_eq!(t.record(1), Some(3)); // fills gap, contiguous through 3
+    }
+
+    #[test]
+    fn duplicate() {
+        let mut t = watermark();
+        assert_eq!(t.record(0), Some(0));
+        assert_eq!(t.record(0), Some(0)); // duplicate, no change
+        assert_eq!(t.record(1), Some(1));
+    }
+
+    #[test]
+    fn starts_empty() {
+        let t = watermark();
+        assert_eq!(t.ack_value(), None);
+    }
+
+    #[test]
+    fn first_record_out_of_order() {
+        let mut t = watermark();
+        // First message isn't seq 0 — watermark stays None until we
+        // see seq 0.
+        assert_eq!(t.record(5), None);
+        assert_eq!(t.record(7), None);
+        assert_eq!(t.record(0), Some(0));
+    }
+
+    #[test]
+    fn poll_msg_threshold() {
+        let mut t = AckWatermark::new(3, Duration::from_secs(3600));
+        assert_eq!(t.poll(), None); // nothing recorded
+        t.record(0);
+        t.record(1);
+        assert_eq!(t.poll(), None); // 2 < 3
+        t.record(2);
+        assert_eq!(t.poll(), Some(2)); // threshold hit
+        assert_eq!(t.poll(), None); // already emitted, nothing new
+        t.record(3);
+        t.record(4);
+        assert_eq!(t.poll(), None); // 2 < 3 since last emission
+    }
+
+    #[test]
+    fn poll_does_not_duplicate() {
+        let mut t = AckWatermark::new(1, Duration::from_secs(3600));
+        t.record(0);
+        assert_eq!(t.poll(), Some(0));
+        // No new messages — watermark unchanged. Even though time/msg
+        // could be due, poll returns None.
+        assert_eq!(t.poll(), None);
+        t.record(1);
+        assert_eq!(t.poll(), Some(1));
     }
 }
 

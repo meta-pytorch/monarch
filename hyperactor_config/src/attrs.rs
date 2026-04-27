@@ -132,7 +132,7 @@ pub struct AttrKeyInfo {
         fn(&mut dyn ErasedDeserializer) -> Result<Box<dyn SerializableValue>, erased_serde::Error>,
     /// Deserializer function for bincode bytes (used by Flattrs)
     pub deserialize_bincode:
-        fn(&[u8]) -> Result<Box<dyn SerializableValue>, Box<bincode::ErrorKind>>,
+        fn(&[u8]) -> Result<Box<dyn SerializableValue>, bincode::error::DecodeError>,
     /// Meta-attributes.
     pub meta: &'static LazyLock<Attrs>,
     /// Display an attribute value using AttrValue::display.
@@ -533,7 +533,8 @@ impl<T: AttrValue> SerializableValue for T {
     }
 
     fn serialize_bincode(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("bincode serialization failed")
+        bincode::serde::encode_to_vec(self, bincode::config::legacy())
+            .expect("bincode serialization failed")
     }
 }
 
@@ -995,7 +996,7 @@ macro_rules! declare_attrs {
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
                 },
                 deserialize_bincode: |bytes| {
-                    let value: $type = $crate::bincode::deserialize(bytes)?;
+                    let value: $type = $crate::bincode::serde::decode_from_slice(bytes, $crate::bincode::config::legacy()).map(|(v, _)| v)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
                 },
                 meta: $crate::paste! { &[<$name _META_ATTRS>] },
@@ -1057,7 +1058,7 @@ macro_rules! declare_attrs {
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
                 },
                 deserialize_bincode: |bytes| {
-                    let value: $type = $crate::bincode::deserialize(bytes)?;
+                    let value: $type = $crate::bincode::serde::decode_from_slice(bytes, $crate::bincode::config::legacy()).map(|(v, _)| v)?;
                     Ok(Box::new(value) as Box<dyn $crate::attrs::SerializableValue>)
                 },
                 meta: $crate::paste! { &[<$name _META_ATTRS>] },
@@ -1405,12 +1406,14 @@ mod tests {
 
         // Serialize this Attrs using bincode (same codec we use on
         // the wire).
-        let wire_bytes = bincode::serialize(&attrs).unwrap();
+        let wire_bytes = bincode::serde::encode_to_vec(&attrs, bincode::config::legacy()).unwrap();
 
         // Now try to decode those bytes back into Attrs. This should
         // hit the unknown-key branch and return Err.
-        let err = bincode::deserialize::<Attrs>(&wire_bytes)
-            .expect_err("should error on unknown attr key");
+        let err =
+            bincode::serde::decode_from_slice::<Attrs, _>(&wire_bytes, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .expect_err("should error on unknown attr key");
 
         let exe_str = std::env::current_exe()
             .ok()

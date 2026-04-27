@@ -31,7 +31,6 @@ use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::Proc;
 use hyperactor::RefClient;
-use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
@@ -41,7 +40,6 @@ use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::host::SingleTerminate;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::reference as hyperactor_reference;
-use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -1369,93 +1367,6 @@ impl Handler<ConfigDump> for HostAgent {
     }
 }
 
-/// A trampoline actor that spawns a [`Host`], and sends a reference to the
-/// corresponding [`HostAgent`] to the provided reply port.
-///
-/// This is used to bootstrap host meshes from proc meshes.
-#[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers=[GetHostMeshAgent]
-)]
-pub(crate) struct HostMeshAgentProcMeshTrampoline {
-    host_mesh_agent: ActorHandle<HostAgent>,
-    reply_port: hyperactor_reference::PortRef<hyperactor_reference::ActorRef<HostAgent>>,
-}
-
-#[async_trait]
-impl Actor for HostMeshAgentProcMeshTrampoline {
-    async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-        self.reply_port.send(this, self.host_mesh_agent.bind())?;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
-    type Params = (
-        ChannelTransport,
-        hyperactor_reference::PortRef<hyperactor_reference::ActorRef<HostAgent>>,
-        Option<BootstrapCommand>,
-        bool, /* local? */
-    );
-
-    async fn new(
-        (transport, reply_port, command, local): Self::Params,
-        _environment: Flattrs,
-    ) -> anyhow::Result<Self> {
-        let host = if local {
-            let spawn: ProcManagerSpawnFn =
-                Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
-            let manager = LocalProcManager::new(spawn);
-            let host = Host::new(manager, transport.any()).await?;
-            HostAgentMode::Local(host)
-        } else {
-            let command = match command {
-                Some(command) => command,
-                None => BootstrapCommand::current()?,
-            };
-            tracing::info!("booting host with proc command {:?}", command);
-            let manager = BootstrapProcManager::new(command).unwrap();
-            let host = Host::new(manager, transport.any()).await?;
-            HostAgentMode::Process {
-                host,
-                shutdown_tx: None,
-            }
-        };
-
-        let system_proc = host.system_proc().clone();
-        let host_mesh_agent =
-            system_proc.spawn(HOST_MESH_AGENT_ACTOR_NAME, HostAgent::new(host))?;
-
-        Ok(Self {
-            host_mesh_agent,
-            reply_port,
-        })
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient)]
-pub struct GetHostMeshAgent {
-    #[reply]
-    pub host_mesh_agent: hyperactor_reference::PortRef<hyperactor_reference::ActorRef<HostAgent>>,
-}
-wirevalue::register_type!(GetHostMeshAgent);
-
-#[async_trait]
-impl Handler<GetHostMeshAgent> for HostMeshAgentProcMeshTrampoline {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        get_host_mesh_agent: GetHostMeshAgent,
-    ) -> anyhow::Result<()> {
-        get_host_mesh_agent
-            .host_mesh_agent
-            .send(cx, self.host_mesh_agent.bind())?;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;
@@ -1730,16 +1641,20 @@ mod tests {
         let proc_b = crate::Name::new("proc_b").unwrap();
 
         // Create proc_a belonging to mesh_a.
-        let mut spec_a = ProcSpec::default();
-        spec_a.host_mesh_name = Some(mesh_a.clone());
+        let spec_a = ProcSpec {
+            host_mesh_name: Some(mesh_a.clone()),
+            ..Default::default()
+        };
         host_agent
             .create_or_update(&client, proc_a.clone(), resource::Rank::new(0), spec_a)
             .await
             .unwrap();
 
         // Create proc_b belonging to mesh_b.
-        let mut spec_b = ProcSpec::default();
-        spec_b.host_mesh_name = Some(mesh_b.clone());
+        let spec_b = ProcSpec {
+            host_mesh_name: Some(mesh_b.clone()),
+            ..Default::default()
+        };
         host_agent
             .create_or_update(&client, proc_b.clone(), resource::Rank::new(1), spec_b)
             .await
@@ -1817,15 +1732,19 @@ mod tests {
         let proc_a = crate::Name::new("proc_a").unwrap();
         let proc_b = crate::Name::new("proc_b").unwrap();
 
-        let mut spec_a = ProcSpec::default();
-        spec_a.host_mesh_name = Some(mesh_a);
+        let spec_a = ProcSpec {
+            host_mesh_name: Some(mesh_a),
+            ..Default::default()
+        };
         host_agent
             .create_or_update(&client, proc_a.clone(), resource::Rank::new(0), spec_a)
             .await
             .unwrap();
 
-        let mut spec_b = ProcSpec::default();
-        spec_b.host_mesh_name = Some(mesh_b);
+        let spec_b = ProcSpec {
+            host_mesh_name: Some(mesh_b),
+            ..Default::default()
+        };
         host_agent
             .create_or_update(&client, proc_b.clone(), resource::Rank::new(1), spec_b)
             .await

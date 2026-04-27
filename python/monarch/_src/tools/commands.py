@@ -8,6 +8,7 @@
 
 import argparse
 import asyncio
+import getpass
 import inspect
 import logging
 import os
@@ -20,7 +21,6 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Union
 
 from monarch.tools.colors import CYAN, ENDC
-from monarch.tools.components.hyperactor import DEFAULT_NAME
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
     defaults,
@@ -34,6 +34,11 @@ from torchx.specs.builders import parse_args
 from torchx.util.types import decode, decode_optional
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+def _default_name() -> str:
+    return f"monarch-{getpass.getuser()}"
+
 
 TIMEOUT_AFTER_KILL = 300  # 5 minutes
 
@@ -93,7 +98,7 @@ def component_args_from_cli(
 
 def create(
     config: Config,
-    name: str = DEFAULT_NAME,
+    name: Optional[str] = None,
 ) -> Union[str, AppDryRunInfo]:
     """Creates a monarch server by submitting it as a job to the target scheduler.
 
@@ -121,11 +126,10 @@ def create(
     Args:
         scheduler: where to submit a job that runs the server
         scheduler_args: scheduler configs
-        component_fn: a function that returns the AppDef (job def).
-            If not provided, defaults to the configured default for the scheduler
-            (in most cases ``monarch.tools.components.hyperactor.proc_mesh``)
         name: the name of the job. If none, a default job name will be created.
     """
+    if name is None:
+        name = _default_name()
     scheduler: str = config.scheduler
     cfg: Mapping[str, CfgVal] = config.scheduler_args
 

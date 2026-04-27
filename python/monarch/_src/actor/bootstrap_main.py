@@ -7,7 +7,7 @@
 # pyre-strict
 
 """
-This is the main function for the boostrapping a new process using a ProcessAllocator.
+This is the main function for the boostrapping a new Proc.
 """
 
 import asyncio
@@ -79,8 +79,7 @@ def invoke_main() -> None:
     except Exception as e:
         bootstrap_err = RuntimeError(
             f"Failed to bootstrap proc due to: {e}\nMake sure your proc bootstrap command is correct. "
-            f"Provided command:\n{' '.join([sys.executable, *sys.argv])}\nTo specify your proc bootstrap command, use the "
-            f"`bootstrap_cmd` kwarg in `monarch.actor.HostMesh._allocate_nonblocking(...)`."
+            f"Provided command:\n{' '.join([sys.executable, *sys.argv])}."
         )
         raise bootstrap_err from e
 
