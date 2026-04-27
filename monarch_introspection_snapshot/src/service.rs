@@ -445,7 +445,7 @@ mod tests {
     const ACTOR_TYPE: &str = "test_actor";
 
     fn test_proc_id() -> ProcId {
-        ProcId::with_name(ChannelAddr::Local(0), PROC_NAME)
+        ProcId::from_resource_name(ChannelAddr::Local(0), PROC_NAME)
     }
 
     /// Build a stub resolver backed by a `HashMap`.
