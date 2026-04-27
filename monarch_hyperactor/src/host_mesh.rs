@@ -15,6 +15,7 @@ use std::time::Duration;
 use hyperactor::ActorHandle;
 use hyperactor::Instance;
 use hyperactor::Proc;
+use hyperactor::id::Label;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::ProcBind;
@@ -26,6 +27,8 @@ use hyperactor_mesh::host_mesh::host_agent::GetLocalProcClient;
 use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::host_mesh::host_agent::ShutdownHost;
 use hyperactor_mesh::mesh_admin::MeshAdminMessageClient;
+use hyperactor_mesh::mesh_id::HostMeshId;
+use hyperactor_mesh::mesh_id::ProcMeshId;
 use hyperactor_mesh::proc_agent::GetProcClient;
 use hyperactor_mesh::proc_mesh::ProcRef;
 use hyperactor_mesh::shared_cell::SharedCell;
@@ -321,8 +324,8 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         HOST_MESH_AGENT_FOR_HOST.set(host_mesh_agent.clone()).ok();
         HOST_SHUTDOWN_HANDLE.get_or_init(|| tokio::sync::Mutex::new(Some(shutdown_handle)));
 
-        let host_mesh_name = hyperactor_mesh::Name::new_reserved("local").unwrap();
-        let host_mesh = HostMeshRef::from_host_agent(host_mesh_name, host_mesh_agent.bind())
+        let host_mesh_id = HostMeshId::singleton(Label::new("local").unwrap());
+        let host_mesh = HostMeshRef::from_host_agent(host_mesh_id, host_mesh_agent.bind())
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
         // Register C so MeshAdminAgent can discover it ("A/C
@@ -341,9 +344,8 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 .await
                 .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        let proc_mesh_name = hyperactor_mesh::Name::new_reserved("local").unwrap();
         let proc_mesh = ProcMeshRef::new_singleton(
-            proc_mesh_name,
+            ProcMeshId::singleton(Label::new("local").unwrap()),
             ProcRef::new(
                 local_proc_agent.actor_id().proc_id().clone(),
                 0,
@@ -365,13 +367,18 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         {
             let now = std::time::SystemTime::now();
 
-            let host_name_str = host_mesh.name().to_string();
+            let host_name_str = host_mesh.id().to_string();
             let host_mesh_id = hyperactor_telemetry::hash_to_u64(&host_name_str);
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: host_mesh_id,
                 timestamp: now,
                 class: "Host".to_string(),
-                given_name: host_mesh.name().name().to_string(),
+                given_name: host_mesh
+                    .id()
+                    .display_label()
+                    .map(|l| l.as_str())
+                    .unwrap_or("unnamed")
+                    .to_string(),
                 full_name: host_name_str,
                 shape_json: serde_json::to_string(&host_mesh.region().extent()).unwrap_or_default(),
                 parent_mesh_id: None,
@@ -388,14 +395,19 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 display_name: None,
             });
 
-            let proc_name_str = proc_mesh.name().to_string();
-            let proc_mesh_id = hyperactor_telemetry::hash_to_u64(&proc_name_str);
+            let proc_id_str = proc_mesh.id().to_string();
+            let proc_mesh_id = hyperactor_telemetry::hash_to_u64(&proc_id_str);
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: proc_mesh_id,
                 timestamp: now,
                 class: "Proc".to_string(),
-                given_name: proc_mesh.name().name().to_string(),
-                full_name: proc_name_str,
+                given_name: proc_mesh
+                    .id()
+                    .display_label()
+                    .map(|l| l.as_str())
+                    .unwrap_or("unnamed")
+                    .to_string(),
+                full_name: proc_id_str,
                 shape_json: serde_json::to_string(&proc_mesh.region().extent()).unwrap_or_default(),
                 parent_mesh_id: Some(host_mesh_id),
                 parent_view_json: None,
@@ -411,7 +423,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 display_name: None,
             });
 
-            let client_mesh_name = format!("{}/client", proc_mesh.name());
+            let client_mesh_name = format!("{}/client", proc_mesh.id());
             let client_mesh_id = hyperactor_telemetry::hash_to_u64(&client_mesh_name);
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: client_mesh_id,

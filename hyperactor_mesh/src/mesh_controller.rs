@@ -42,7 +42,6 @@ use serde::Serialize;
 use tokio::time::Duration;
 use typeuri::Named;
 
-use crate::Name;
 use crate::ValueMesh;
 use crate::actor_mesh::ActorMeshRef;
 use crate::bootstrap::ProcStatus;
@@ -202,7 +201,7 @@ impl<A: Referable> ActorMeshController<A> {
         initial_statuses: ValueMesh<resource::Status>,
     ) -> Self {
         let supervision_display_name =
-            supervision_display_name.unwrap_or_else(|| mesh.name().to_string());
+            supervision_display_name.unwrap_or_else(|| mesh.id().to_string());
         Self {
             mesh,
             supervision_display_name,
@@ -219,7 +218,7 @@ impl<A: Referable> ActorMeshController<A> {
         // Cannot use "ActorMesh::stop" as it tries to message the controller, which is this actor.
         self.mesh
             .proc_mesh()
-            .stop_actor_by_name(cx, self.mesh.name().clone(), reason)
+            .stop_actor_by_id(cx, self.mesh.id().clone(), reason)
             .await
     }
 
@@ -288,7 +287,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         self.mesh.proc_mesh().agent_mesh().cast(
             this,
             resource::StreamState::<ActorState> {
-                name: self.mesh.name().clone(),
+                id: self.mesh.id().resource_id().clone(),
                 // All ProcAgents send updates directly to this port
                 // so that failures along the comm tree path does not
                 // affect clean shutdowns.
@@ -317,7 +316,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         } else {
             String::from("None")
         };
-        tracing::info!(actor_id = %this.self_id(), %owner, "started mesh controller for {}", self.mesh.name());
+        tracing::info!(actor_id = %this.self_id(), %owner, "started mesh controller for {}", self.mesh.id());
         Ok(())
     }
 
@@ -329,7 +328,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         // If the monitor hasn't been dropped yet, send a stop message to the
         // proc mesh.
         if self.monitor.take().is_some() {
-            tracing::info!(actor_id = %this.self_id(), actor_mesh = %self.mesh.name(), "starting cleanup for ActorMeshController, stopping actor mesh");
+            tracing::info!(actor_id = %this.self_id(), actor_mesh = %self.mesh.id(), "starting cleanup for ActorMeshController, stopping actor mesh");
             self.stop(this, "actor mesh controller cleanup".to_string())
                 .await?;
         }
@@ -477,7 +476,7 @@ impl<A: Referable> Handler<resource::GetState<resource::mesh::State<()>>>
         message.reply.send(
             cx,
             resource::State {
-                name: message.name,
+                id: message.id,
                 status,
                 state: Some(state),
                 generation: 0,
@@ -492,7 +491,7 @@ impl<A: Referable> Handler<resource::GetState<resource::mesh::State<()>>>
 impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         let mesh = &self.mesh;
-        let mesh_name = mesh.name();
+        let mesh_name = mesh.id();
         tracing::info!(
             name = "ActorMeshControllerStatus",
             %mesh_name,
@@ -610,7 +609,7 @@ fn send_state_change(
     cx: &impl context::Actor,
     rank: usize,
     event: ActorSupervisionEvent,
-    mesh_name: &Name,
+    mesh_name: &crate::mesh_id::ActorMeshId,
     is_proc_stopped: bool,
     health_state: &mut HealthState,
 ) {
@@ -764,7 +763,7 @@ impl<A: Referable> Handler<resource::State<ActorState>> for ActorMeshController<
                 cx,
                 rank,
                 events[0].clone(),
-                self.mesh.name(),
+                self.mesh.id(),
                 false,
                 &mut self.health_state,
             );
@@ -854,7 +853,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                     )),
                     None,
                 ),
-                mesh.name(),
+                mesh.id(),
                 false,
                 &mut self.health_state,
             );
@@ -884,7 +883,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                         actor_status,
                         None,
                     ),
-                    mesh.name(),
+                    mesh.id(),
                     true,
                     &mut self.health_state,
                 );
@@ -914,7 +913,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                     )),
                     None,
                 ),
-                mesh.name(),
+                mesh.id(),
                 false,
                 &mut self.health_state,
             );
@@ -953,7 +952,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 cx,
                 rank,
                 events[0].clone(),
-                mesh.name(),
+                mesh.id(),
                 false,
                 &mut self.health_state,
             );
@@ -1020,7 +1019,7 @@ impl Actor for ProcMeshController {
             hosts
                 .stop_proc_mesh(
                     this,
-                    self.mesh.name(),
+                    self.mesh.id(),
                     names,
                     region,
                     "proc mesh controller cleanup".to_string(),
@@ -1038,14 +1037,15 @@ mod tests {
     use std::time::Duration;
 
     use hyperactor::actor::ActorStatus;
+    use hyperactor::id::Label;
     use ndslice::Extent;
     use ndslice::ViewExt;
 
     use super::SUPERVISION_POLL_FREQUENCY;
     use super::proc_status_to_actor_status;
     use crate::ActorMesh;
-    use crate::Name;
     use crate::bootstrap::ProcStatus;
+    use crate::mesh_id::ActorMeshId;
     use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
     use crate::resource;
     use crate::supervision::MeshFailure;
@@ -1073,12 +1073,12 @@ mod tests {
             .await
             .unwrap();
 
-        let actor_name = Name::new("orphan_test").unwrap();
+        let actor_mesh_id = ActorMeshId::unique(Label::new("orphan-test").unwrap());
         // Spawn as a system actor so no controller is created. This lets us
         // control keepalive messages directly without the controller
         // interfering.
         let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
-            .spawn_with_name(instance, actor_name.clone(), &(), None, true)
+            .spawn_with_name(instance, actor_mesh_id.clone(), &(), None, true)
             .await
             .unwrap();
         assert!(
@@ -1091,7 +1091,7 @@ mod tests {
         let states = proc_mesh
             .actor_states_with_keepalive(
                 instance,
-                actor_name.clone(),
+                actor_mesh_id.clone(),
                 Some(std::time::SystemTime::now() + Duration::from_secs(2)),
             )
             .await
@@ -1114,7 +1114,7 @@ mod tests {
         // Query again, this time *without* a keepalive so we don't
         // extend the expiry.
         let states = proc_mesh
-            .actor_states(instance, actor_name.clone())
+            .actor_states(instance, actor_mesh_id.clone())
             .await
             .unwrap();
         for state in states.values() {
@@ -1131,7 +1131,10 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn host_mesh_with_config(n: usize) -> crate::host_mesh::HostMeshShutdownGuard {
         use hyperactor::channel::ChannelTransport;
+        use hyperactor::id::Label;
         use tokio::process::Command;
+
+        use crate::mesh_id::HostMeshId;
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
         let mut host_addrs = vec![];
@@ -1157,7 +1160,10 @@ mod tests {
             cmd.spawn().unwrap();
         }
 
-        let host_mesh = crate::HostMeshRef::from_hosts(Name::new("test").unwrap(), host_addrs);
+        let host_mesh = crate::HostMeshRef::from_hosts(
+            HostMeshId::unique(Label::new("test").unwrap()),
+            host_addrs,
+        );
         crate::host_mesh::HostMesh::take(host_mesh).shutdown_guard()
     }
 
@@ -1194,7 +1200,8 @@ mod tests {
             .await
             .unwrap();
 
-        let child_name = Name::new("orphan_child").unwrap();
+        let child_name = ActorMeshId::unique(Label::new("orphan-child").unwrap());
+        let child_mesh_id = child_name.clone();
 
         // Supervision port required by WrapperActor params.
         let (supervision_port, _supervision_receiver) = instance.open_port::<MeshFailure>();
@@ -1222,7 +1229,7 @@ mod tests {
 
         // Verify actors are running before the crash.
         let states = actor_proc_mesh
-            .actor_states(instance, child_name.clone())
+            .actor_states(instance, child_mesh_id.clone())
             .await
             .unwrap();
         for state in states.values() {
@@ -1254,7 +1261,7 @@ mod tests {
 
         // Actors should now be stopped via the orphan timeout.
         let states = actor_proc_mesh
-            .actor_states(instance, child_name.clone())
+            .actor_states(instance, child_mesh_id.clone())
             .await
             .unwrap();
         for state in states.values() {
