@@ -13,6 +13,7 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::host::Host;
 use hyperactor::host::LocalProcManager;
 use hyperactor::host::SERVICE_PROC_NAME;
+use hyperactor::id::Label;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -46,7 +47,6 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::Bootstrap;
-use crate::Name;
 use crate::ProcMesh;
 use crate::ValueMesh;
 use crate::bootstrap::BootstrapCommand;
@@ -60,6 +60,9 @@ use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::host_agent::SetClientConfigClient;
 use crate::host_mesh::host_agent::ShutdownHostClient;
 use crate::mesh_controller::ProcMeshController;
+use crate::mesh_id::HostMeshId;
+use crate::mesh_id::ProcMeshId;
+use crate::mesh_id::ResourceId;
 use crate::proc_agent::ProcAgent;
 use crate::proc_mesh::ProcRef;
 use crate::resource;
@@ -115,8 +118,8 @@ impl HostRef {
     }
 
     /// The ProcId for the proc with name `name` on this host.
-    fn named_proc(&self, name: &Name) -> hyperactor_reference::ProcId {
-        hyperactor_reference::ProcId::with_name(self.0.clone(), name.to_string())
+    fn named_proc(&self, id: &ResourceId) -> hyperactor_reference::ProcId {
+        hyperactor_reference::ProcId::with_name(self.0.clone(), id.to_string())
     }
 
     /// The service proc on this host.
@@ -163,7 +166,7 @@ impl HostRef {
     pub(crate) async fn drain(
         &self,
         cx: &impl hyperactor::context::Actor,
-        host_mesh_name: Option<Name>,
+        host_mesh_id: Option<crate::mesh_id::HostMeshId>,
     ) -> anyhow::Result<()> {
         let agent = self.mesh_agent();
         let terminate_timeout =
@@ -175,7 +178,7 @@ impl HostRef {
                 cx,
                 terminate_timeout,
                 max_in_flight.clamp(1, 256),
-                host_mesh_name,
+                host_mesh_id,
             )
             .await?;
         Ok(())
@@ -216,7 +219,7 @@ impl FromStr for HostRef {
 /// child procs are reaped. You can use `shutdown_guard` to get a wrapper
 /// which will try to do a best-effort shutdown on Drop.
 pub struct HostMesh {
-    name: Name,
+    id: HostMeshId,
     extent: Extent,
     /// The hosts this `HostMesh` owns and is responsible for tearing
     /// down on shutdown or drop.
@@ -227,14 +230,19 @@ pub struct HostMesh {
 impl HostMesh {
     /// Emit a telemetry event for this host mesh creation.
     fn notify_created(&self) {
-        let name_str = self.name.to_string();
+        let name_str = self.id.to_string();
         let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
 
         hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
             id: mesh_id_hash,
             timestamp: std::time::SystemTime::now(),
             class: "Host".to_string(),
-            given_name: self.name.name().to_string(),
+            given_name: self
+                .id
+                .display_label()
+                .map(|l| l.as_str())
+                .unwrap_or("unnamed")
+                .to_string(),
             full_name: name_str,
             shape_json: serde_json::to_string(&self.extent).unwrap_or_default(),
             parent_mesh_id: None,
@@ -318,7 +326,7 @@ impl HostMesh {
 
         let host = HostRef(addr);
         let host_mesh_ref = HostMeshRef::new(
-            Name::new("local").unwrap(),
+            HostMeshId::unique(Label::new("local").unwrap()),
             extent!(hosts = 1).into(),
             vec![host],
         )?;
@@ -354,7 +362,7 @@ impl HostMesh {
             host_refs.push(Self::create_in_process_host(addr).await?);
         }
         HostMeshRef::new(
-            Name::new("local").unwrap(),
+            HostMeshId::unique(Label::new("local").unwrap()),
             extent!(hosts = n).into(),
             host_refs,
         )
@@ -416,10 +424,13 @@ impl HostMesh {
             hosts.push(HostRef(addr));
         }
 
-        let host_mesh_ref = HostMeshRef::new(Name::new("process").unwrap(), extent.into(), hosts)?;
+        let host_mesh_ref = HostMeshRef::new(
+            HostMeshId::unique(Label::new("process").unwrap()),
+            extent.into(),
+            hosts,
+        )?;
         Ok(HostMesh::take(host_mesh_ref))
     }
-
     /// Take ownership of an existing host mesh reference.
     ///
     /// Consumes the `HostMeshRef`, captures its region/hosts, and
@@ -430,11 +441,11 @@ impl HostMesh {
         let region = mesh.region().clone();
         let hosts: Vec<HostRef> = mesh.values().collect();
 
-        let current_ref = HostMeshRef::new(mesh.name.clone(), region.clone(), hosts.clone())
+        let current_ref = HostMeshRef::new(mesh.id.clone(), region.clone(), hosts.clone())
             .expect("region/hosts cardinality must match");
 
         let result = Self {
-            name: mesh.name,
+            id: mesh.id,
             extent: region.extent().clone(),
             owned_hosts: hosts,
             current_ref,
@@ -455,10 +466,10 @@ impl HostMesh {
     /// After this returns, host agents have the client's config.
     pub async fn attach(
         cx: &impl context::Actor,
-        name: Name,
+        id: HostMeshId,
         addresses: Vec<ChannelAddr>,
     ) -> crate::Result<Self> {
-        let mesh_ref = HostMeshRef::from_hosts(name, addresses);
+        let mesh_ref = HostMeshRef::from_hosts(id, addresses);
         let config = hyperactor_config::global::propagatable_attrs();
         mesh_ref.push_config(cx, config).await;
         Ok(Self::take(mesh_ref))
@@ -474,7 +485,7 @@ impl HostMesh {
     /// 2. **Shut down hosts** concurrently. No user procs remain, so
     ///    this is fast and cannot deadlock on cross-host flush
     ///    timeouts.
-    #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
+    #[hyperactor::instrument(fields(host_mesh=self.id.to_string()))]
     pub async fn shutdown(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
         tracing::info!(name = "HostMeshStatus", status = "Shutdown::Attempt");
@@ -556,15 +567,15 @@ impl HostMesh {
     ///
     /// After `stop`, the same worker addresses can be passed to
     /// [`HostMesh::attach`] to create a new mesh.
-    #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
+    #[hyperactor::instrument(fields(host_mesh=self.id.to_string()))]
     pub async fn stop(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
         let t0 = std::time::Instant::now();
         tracing::info!(name = "HostMeshStatus", status = "Stop::Attempt");
 
-        let mesh_name = self.name.clone();
+        let mesh_id = self.id.clone();
         let results = futures::future::join_all(self.current_ref.values().map(|host| {
-            let mesh_name = Some(mesh_name.clone());
-            async move { host.drain(cx, mesh_name).await }
+            let mesh_id = Some(mesh_id.clone());
+            async move { host.drain(cx, mesh_id).await }
         }))
         .await;
         let total_ms = t0.elapsed().as_millis();
@@ -668,7 +679,7 @@ impl Drop for HostMeshShutdownGuard {
     fn drop(&mut self) {
         tracing::info!(
             name = "HostMeshStatus",
-            host_mesh = %self.0.name,
+            host_mesh = %self.0.id,
             status = "Dropping",
         );
         // Snapshot the owned hosts we're responsible for.
@@ -676,12 +687,12 @@ impl Drop for HostMeshShutdownGuard {
 
         // Best-effort only when a Tokio runtime is available.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let mesh_name = self.0.name.clone();
+            let mesh_id = self.0.id.clone();
 
             handle.spawn(async move {
                 let span = tracing::info_span!(
                     "hostmesh_drop_cleanup",
-                    host_mesh = %mesh_name,
+                    host_mesh = %mesh_id,
                     hosts = hosts.len(),
                 );
                 let _g = span.enter();
@@ -742,7 +753,7 @@ impl Drop for HostMeshShutdownGuard {
             // No runtime here; PDEATHSIG and manager Drop remain the
             // last-resort safety net.
             tracing::warn!(
-                host_mesh = %self.0.name,
+                host_mesh = %self.0.id,
                 hosts = hosts.len(),
                 "HostMesh dropped without a Tokio runtime; skipping \
                  best-effort shutdown. This indicates that .shutdown() \
@@ -756,7 +767,7 @@ impl Drop for HostMeshShutdownGuard {
 
         tracing::info!(
             name = "HostMeshStatus",
-            host_mesh = %self.0.name,
+            host_mesh = %self.0.id,
             status = "Dropped",
         );
     }
@@ -809,7 +820,7 @@ where
 /// `HostMeshRef` may fail because the hosts are no longer running.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize, Deserialize)]
 pub struct HostMeshRef {
-    name: Name,
+    id: HostMeshId,
     region: Region,
     ranks: Arc<Vec<HostRef>>,
     /// Bootstrap command to use when spawning procs on this mesh.
@@ -823,7 +834,7 @@ impl HostMeshRef {
     /// Create a new (raw) HostMeshRef from the provided region and associated
     /// ranks, which must match in cardinality.
     #[allow(clippy::result_large_err)]
-    fn new(name: Name, region: Region, ranks: Vec<HostRef>) -> crate::Result<Self> {
+    fn new(id: HostMeshId, region: Region, ranks: Vec<HostRef>) -> crate::Result<Self> {
         if region.num_ranks() != ranks.len() {
             return Err(crate::Error::InvalidRankCardinality {
                 expected: region.num_ranks(),
@@ -831,7 +842,7 @@ impl HostMeshRef {
             });
         }
         Ok(Self {
-            name,
+            id,
             region,
             ranks: Arc::new(ranks),
             bootstrap_command: None,
@@ -840,9 +851,9 @@ impl HostMeshRef {
 
     /// Create a new HostMeshRef from an arbitrary set of hosts. This is meant to
     /// enable extrinsic bootstrapping.
-    pub fn from_hosts(name: Name, hosts: Vec<ChannelAddr>) -> Self {
+    pub fn from_hosts(id: HostMeshId, hosts: Vec<ChannelAddr>) -> Self {
         Self {
-            name,
+            id,
             region: extent!(hosts = hosts.len()).into(),
             ranks: Arc::new(hosts.into_iter().map(HostRef).collect()),
             bootstrap_command: None,
@@ -851,11 +862,11 @@ impl HostMeshRef {
 
     /// Create a new HostMeshRef from an arbitrary set of host mesh agents.
     pub fn from_host_agents(
-        name: Name,
+        id: HostMeshId,
         agents: Vec<hyperactor_reference::ActorRef<HostAgent>>,
     ) -> crate::Result<Self> {
         Ok(Self {
-            name,
+            id,
             region: extent!(hosts = agents.len()).into(),
             ranks: Arc::new(
                 agents
@@ -869,11 +880,11 @@ impl HostMeshRef {
 
     /// Create a unit HostMeshRef from a host mesh agent.
     pub fn from_host_agent(
-        name: Name,
+        id: HostMeshId,
         agent: hyperactor_reference::ActorRef<HostAgent>,
     ) -> crate::Result<Self> {
         Ok(Self {
-            name,
+            id,
             region: Extent::unity().into(),
             ranks: Arc::new(vec![HostRef::try_from(agent)?]),
             bootstrap_command: None,
@@ -981,15 +992,20 @@ impl HostMeshRef {
     where
         C::A: Handler<MeshFailure>,
     {
-        self.spawn_inner(cx, Name::new(name)?, per_host, proc_bind)
-            .await
+        self.spawn_inner(
+            cx,
+            ProcMeshId::unique(Label::strip(name)),
+            per_host,
+            proc_bind,
+        )
+        .await
     }
 
-    #[hyperactor::instrument(fields(host_mesh=self.name.to_string(), proc_mesh=proc_mesh_name.to_string()))]
+    #[hyperactor::instrument(fields(host_mesh=self.id.to_string(), proc_mesh=proc_mesh_id.to_string()))]
     async fn spawn_inner<C: context::Actor>(
         &self,
         cx: &C,
-        proc_mesh_name: Name,
+        proc_mesh_id: ProcMeshId,
         per_host: Extent,
         proc_bind: Option<Vec<ProcBind>>,
     ) -> crate::Result<ProcMesh>
@@ -999,7 +1015,7 @@ impl HostMeshRef {
         tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Attempt");
         tracing::info!(name = "ProcMeshStatus", status = "Spawn::Attempt",);
         let result = self
-            .spawn_inner_inner(cx, proc_mesh_name, per_host, proc_bind)
+            .spawn_inner_inner(cx, proc_mesh_id, per_host, proc_bind)
             .await;
         match &result {
             Ok(_) => {
@@ -1017,7 +1033,7 @@ impl HostMeshRef {
     async fn spawn_inner_inner<C: context::Actor>(
         &self,
         cx: &C,
-        proc_mesh_name: Name,
+        proc_mesh_id: ProcMeshId,
         per_host: Extent,
         proc_bind: Option<Vec<ProcBind>>,
     ) -> crate::Result<ProcMesh>
@@ -1081,14 +1097,21 @@ impl HostMeshRef {
         for (host_rank, host) in self.ranks.iter().enumerate() {
             for per_host_rank in 0..per_host.num_ranks() {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
-                let proc_name = Name::new(format!("{}_{}", proc_mesh_name.name(), per_host_rank))?;
+                let proc_name = ResourceId::unique(Label::strip(&format!(
+                    "{}-{}",
+                    proc_mesh_id
+                        .display_label()
+                        .map(|l| l.as_str())
+                        .unwrap_or("unnamed"),
+                    per_host_rank
+                )));
                 proc_names.push(proc_name.clone());
                 let bind = proc_bind.as_ref().map(|v| v[per_host_rank].clone());
                 let proc_spec = resource::ProcSpec {
                     client_config_override: client_config_override.clone(),
                     bootstrap_command: self.bootstrap_command.clone(),
                     proc_bind: bind,
-                    host_mesh_name: Some(self.name.clone()),
+                    host_mesh_id: Some(self.id.clone()),
                 };
                 host.mesh_agent()
                     .create_or_update(
@@ -1168,7 +1191,7 @@ impl HostMeshRef {
                         .send(
                             cx,
                             resource::GetState {
-                                name: proc_name.clone(),
+                                id: proc_name.clone(),
                                 reply: reply_tx,
                             },
                         )
@@ -1183,7 +1206,7 @@ impl HostMeshRef {
                     {
                         Ok(Ok(state)) => state,
                         _ => resource::State {
-                            name: proc_name.clone(),
+                            id: proc_name.clone(),
                             status,
                             state: None,
                             generation: 0,
@@ -1227,17 +1250,20 @@ impl HostMeshRef {
         }
 
         let mesh =
-            ProcMesh::create_owned_unchecked(cx, proc_mesh_name, extent, self.clone(), procs).await;
+            ProcMesh::create_owned_unchecked(cx, proc_mesh_id, extent, self.clone(), procs).await;
         if let Ok(ref mesh) = mesh {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
             let controller = ProcMeshController::new(mesh.deref().clone());
             // hyperactor::proc AI-3: controller name must include mesh
             // identity for proc-wide ActorId uniqueness.
-            let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.name());
-            let controller_handle = controller
-                .spawn_with_name(cx, &controller_name)
-                .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+            let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.id());
+            let controller_handle =
+                controller
+                    .spawn_with_name(cx, &controller_name)
+                    .map_err(|e| {
+                        crate::Error::ControllerActorSpawnError(mesh.id().resource_id().clone(), e)
+                    })?;
             // Bind the actor's well-known ports (Signal, IntrospectMessage,
             // Undeliverable). Without this, the controller's mailbox has no
             // port entries and messages (including introspection queries)
@@ -1247,9 +1273,9 @@ impl HostMeshRef {
         mesh
     }
 
-    /// The name of the referenced host mesh.
-    pub fn name(&self) -> &Name {
-        &self.name
+    /// The identity of the referenced host mesh.
+    pub fn id(&self) -> &HostMeshId {
+        &self.id
     }
 
     /// The host references (channel addresses) in rank order.
@@ -1257,11 +1283,11 @@ impl HostMeshRef {
         &self.ranks
     }
 
-    #[hyperactor::instrument(fields(host_mesh=self.name.to_string(), proc_mesh=proc_mesh_name.to_string()))]
+    #[hyperactor::instrument(fields(host_mesh=self.id.to_string(), proc_mesh=proc_mesh_id.to_string()))]
     pub(crate) async fn stop_proc_mesh(
         &self,
         cx: &impl hyperactor::context::Actor,
-        proc_mesh_name: &Name,
+        proc_mesh_id: &ProcMeshId,
         procs: impl IntoIterator<Item = hyperactor_reference::ProcId>,
         region: Region,
         reason: String,
@@ -1284,8 +1310,8 @@ impl HostMeshRef {
             // The name stored in HostAgent is not the same as the
             // one stored in the ProcMesh. We instead take each proc id
             // and map it to that particular agent.
-            let proc_name = proc_name.parse::<Name>()?;
-            proc_names.push(proc_name.clone());
+            let proc_resource_id: ResourceId = proc_name.parse()?;
+            proc_names.push(proc_resource_id.clone());
 
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
@@ -1293,12 +1319,12 @@ impl HostMeshRef {
             host.mesh_agent().send(
                 cx,
                 resource::Stop {
-                    name: proc_name.clone(),
+                    id: proc_resource_id.clone(),
                     reason: reason.clone(),
                 },
             )?;
             host.mesh_agent()
-                .wait_rank_status(cx, proc_name, Status::Stopped, port.bind())
+                .wait_rank_status(cx, proc_resource_id, Status::Stopped, port.bind())
                 .await?;
 
             tracing::info!(
@@ -1362,7 +1388,7 @@ impl HostMeshRef {
                 );
                 return Err(anyhow::anyhow!(
                     "failed to terminate proc mesh {} before timeout: {:?}",
-                    proc_mesh_name,
+                    proc_mesh_id,
                     legacy
                 ));
             }
@@ -1393,8 +1419,8 @@ impl HostMeshRef {
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
             let host = HostRef(addr);
-            let proc_name = proc_name.parse::<Name>()?;
-            proc_names.push(proc_name.clone());
+            let proc_resource_id: ResourceId = proc_name.parse()?;
+            proc_names.push(proc_resource_id.clone());
             let mut reply = tx.bind();
             // If this proc dies or some other issue renders the reply undeliverable,
             // the reply does not need to be returned to the sender.
@@ -1403,7 +1429,7 @@ impl HostMeshRef {
                 .send(
                     cx,
                     resource::GetState {
-                        name: proc_name,
+                        id: proc_resource_id,
                         reply,
                     },
                 )
@@ -1429,7 +1455,7 @@ impl HostMeshRef {
                         states.push((inner.create_rank, state));
                     }
                     None => {
-                        return Err(crate::Error::NotExist(state.name));
+                        return Err(crate::Error::NotExist(state.id));
                     }
                 }
             } else {
@@ -1451,7 +1477,7 @@ impl HostMeshRef {
                         // We populate with any ranks leftover at the time of the timeout.
                         rank,
                         resource::State {
-                            name: proc_names[rank].clone(),
+                            id: proc_names[rank].clone(),
                             status: resource::Status::Timeout(timeout),
                             state: None,
                             generation: 0,
@@ -1613,14 +1639,14 @@ impl view::RankedSliceable for HostMeshRef {
             .map(|index| self.get(index).unwrap().clone());
         Self {
             bootstrap_command: self.bootstrap_command.clone(),
-            ..Self::new(self.name.clone(), region, ranks.collect()).unwrap()
+            ..Self::new(self.id.clone(), region, ranks.collect()).unwrap()
         }
     }
 }
 
 impl std::fmt::Display for HostMeshRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:", self.name)?;
+        write!(f, "{}:", self.id)?;
         for (rank, host) in self.ranks.iter().enumerate() {
             if rank > 0 {
                 write!(f, ",")?;
@@ -1640,11 +1666,11 @@ pub enum HostMeshRefParseError {
     #[error("invalid host mesh ref: missing region")]
     MissingRegion,
 
-    #[error("invalid host mesh ref: missing name")]
-    MissingName,
+    #[error("invalid host mesh ref: missing id")]
+    MissingId,
 
     #[error(transparent)]
-    InvalidName(#[from] crate::NameParseError),
+    InvalidId(#[from] crate::mesh_id::ResourceIdParseError),
 
     #[error(transparent)]
     InvalidHostMeshRef(#[from] Box<crate::Error>),
@@ -1663,11 +1689,9 @@ impl FromStr for HostMeshRef {
     type Err = HostMeshRefParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (name, rest) = s
-            .split_once(':')
-            .ok_or(HostMeshRefParseError::MissingName)?;
+        let (id_str, rest) = s.split_once(':').ok_or(HostMeshRefParseError::MissingId)?;
 
-        let name = Name::from_str(name)?;
+        let id = HostMeshId::from_str(id_str)?;
 
         let (hosts, region) = rest
             .split_once('@')
@@ -1678,7 +1702,7 @@ impl FromStr for HostMeshRef {
             .map(|host| host.parse::<HostRef>())
             .collect::<Result<Vec<_>, _>>()?;
         let region = region.parse()?;
-        Ok(HostMeshRef::new(name, region, hosts)?)
+        Ok(HostMeshRef::new(id, region, hosts)?)
     }
 }
 
@@ -1717,7 +1741,7 @@ mod tests {
     #[test]
     fn test_host_mesh_ref_parse_roundtrip() {
         let host_mesh_ref = HostMeshRef::new(
-            Name::new("test").unwrap(),
+            HostMeshId::singleton(Label::new("test").unwrap()),
             extent!(replica = 2, host = 2).into(),
             vec![
                 "tcp:127.0.0.1:123".parse().unwrap(),
@@ -1728,10 +1752,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            host_mesh_ref.to_string().parse::<HostMeshRef>().unwrap(),
-            host_mesh_ref
-        );
+        let parsed: HostMeshRef = host_mesh_ref.to_string().parse().unwrap();
+        assert_eq!(parsed.id().to_string(), host_mesh_ref.id().to_string());
+        assert_eq!(parsed.region(), host_mesh_ref.region());
+        assert_eq!(parsed.hosts(), host_mesh_ref.hosts());
+        assert_eq!(parsed.bootstrap_command, host_mesh_ref.bootstrap_command);
     }
 
     /// Allocate a new port on localhost. This drops the listener, releasing the socket,
@@ -1767,7 +1792,8 @@ mod tests {
         }
 
         let instance = testing::instance();
-        let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
+        let host_mesh =
+            HostMeshRef::from_hosts(HostMeshId::singleton(Label::new("test").unwrap()), hosts);
 
         let proc_mesh = host_mesh
             .spawn(&testing::instance(), "test", Extent::unity(), None)
@@ -1828,7 +1854,8 @@ mod tests {
             cmd.kill_on_drop(true);
             children.push(cmd.spawn().unwrap());
         }
-        let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
+        let host_mesh =
+            HostMeshRef::from_hosts(HostMeshId::singleton(Label::new("test").unwrap()), hosts);
 
         let instance = testing::instance();
 
@@ -1874,7 +1901,8 @@ mod tests {
             cmd.kill_on_drop(true);
             children.push(cmd.spawn().unwrap());
         }
-        let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
+        let host_mesh =
+            HostMeshRef::from_hosts(HostMeshId::singleton(Label::new("test").unwrap()), hosts);
 
         let instance = testing::instance();
 
@@ -1977,7 +2005,8 @@ mod tests {
     #[tokio::test]
     async fn test_sa2_empty_hosts_rejected() {
         let instance = testing::instance();
-        let mesh = HostMeshRef::from_hosts(Name::new("empty").unwrap(), vec![]);
+        let mesh =
+            HostMeshRef::from_hosts(HostMeshId::singleton(Label::new("empty").unwrap()), vec![]);
         let result = spawn_admin([&mesh], instance, None, None).await;
         let err = result.unwrap_err().to_string();
         assert!(err.contains("SA-2"), "expected SA-2 error, got: {err}");
@@ -2027,12 +2056,12 @@ mod tests {
 
         // mesh_a: hosts a, b
         let mesh_a = HostMeshRef::from_hosts(
-            Name::new("mesh_a").unwrap(),
+            HostMeshId::singleton(Label::new("mesh-a").unwrap()),
             vec![addr_a.clone(), addr_b.clone()],
         );
         // mesh_b: hosts b, c  (b overlaps with mesh_a)
         let mesh_b = HostMeshRef::from_hosts(
-            Name::new("mesh_b").unwrap(),
+            HostMeshId::singleton(Label::new("mesh-b").unwrap()),
             vec![addr_b.clone(), addr_c.clone()],
         );
 
@@ -2056,7 +2085,7 @@ mod tests {
         let addr_b: ChannelAddr = "tcp:127.0.0.1:1002".parse().unwrap();
 
         let mesh = HostMeshRef::from_hosts(
-            Name::new("mesh").unwrap(),
+            HostMeshId::singleton(Label::new("mesh").unwrap()),
             vec![addr_a.clone(), addr_b.clone()],
         );
 
