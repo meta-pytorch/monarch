@@ -153,5 +153,11 @@ def get_system_info() -> SystemInfo:
 
 
 def get_system_actor_names() -> Set[str]:
-    """Convenience: return just the set of system actor full_names."""
-    return get_system_info().actor_names
+    """Convenience: return just the set of system actor full_names.
+
+    The root client actor (``client[0]``) is excluded even though the
+    admin API marks it ``is_system``.  It is the user's entrypoint and
+    the source of all user-visible messages; keeping it out of the
+    system set preserves message edge visibility in the DAG.
+    """
+    return {n for n in get_system_info().actor_names if not n.endswith(",client[0]")}
