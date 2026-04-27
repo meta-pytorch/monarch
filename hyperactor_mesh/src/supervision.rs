@@ -128,7 +128,7 @@ mod tests {
     use super::*;
 
     fn test_event(name: &str, display_name: Option<String>) -> ActorSupervisionEvent {
-        let proc_id = reference::ProcId::with_name(ChannelAddr::Local(0), "test_proc");
+        let proc_id = reference::ProcId::from_resource_name(ChannelAddr::Local(0), "test_proc");
         ActorSupervisionEvent::new(
             proc_id.actor_id(name, 0),
             display_name,
@@ -201,7 +201,7 @@ mod tests {
     // (`hyperactor_mesh/src/global_context.rs:278`): display_name =
     // None, actor_status = generic_failure("message not delivered: ...").
     fn undeliverable_synthesized_event() -> ActorSupervisionEvent {
-        let proc_id = reference::ProcId::with_name(ChannelAddr::Local(0), "worker_proc");
+        let proc_id = reference::ProcId::from_resource_name(ChannelAddr::Local(0), "worker_proc");
         ActorSupervisionEvent::new(
             proc_id.actor_id("dead_actor", 0),
             None, // synthesized site has no PythonActor context; display_name stays None
@@ -239,13 +239,13 @@ mod tests {
             crashed_ranks: vec![],
         };
         let expected_without = "failure with event: Supervision event: \
-                                actor local:0,worker_proc,dead_actor[0] failed:\n  \
+                                actor local:0,_worker_proc,dead_actor[0] failed:\n  \
                                 message not delivered: undeliverable message error: \
                                 ... error: broken link: message returned to global \
                                 root client";
         let expected_with = "failure on mesh \"training\" with event: \
                              Supervision event: actor \
-                             local:0,worker_proc,dead_actor[0] failed:\n  \
+                             local:0,_worker_proc,dead_actor[0] failed:\n  \
                              message not delivered: undeliverable message error: \
                              ... error: broken link: message returned to global \
                              root client";
@@ -276,7 +276,8 @@ mod tests {
     #[test]
     fn proof_direct_actor_handled_panic() {
         let panicked_event = {
-            let proc_id = reference::ProcId::with_name(ChannelAddr::Local(0), "worker_proc");
+            let proc_id =
+                reference::ProcId::from_resource_name(ChannelAddr::Local(0), "worker_proc");
             ActorSupervisionEvent::new(
                 proc_id.actor_id("philosopher_1", 0),
                 // `Proc::stop_actor` populates this via
@@ -324,7 +325,8 @@ mod tests {
     #[test]
     fn proof_controller_unreachable() {
         let controller_timeout_event = {
-            let proc_id = reference::ProcId::with_name(ChannelAddr::Local(0), "controller_proc");
+            let proc_id =
+                reference::ProcId::from_resource_name(ChannelAddr::Local(0), "controller_proc");
             ActorSupervisionEvent::new(
                 proc_id.actor_id("training_controller", 0),
                 None,
@@ -342,7 +344,7 @@ mod tests {
         };
         let expected = "failure on mesh \"training\" with event: \
                         Supervision event: actor \
-                        local:0,controller_proc,training_controller[0] \
+                        local:0,_controller_proc,training_controller[0] \
                         failed:\n  \
                         timed out reaching controller ... Assuming \
                         controller's proc is dead";
