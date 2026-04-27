@@ -146,7 +146,7 @@ impl PyProcMesh {
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let bytes = bincode::serialize(&self.mesh_ref()?)
+        let bytes = bincode::serde::encode_to_vec(&self.mesh_ref()?, bincode::config::legacy())
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
         let from_bytes =
@@ -230,8 +230,10 @@ impl PyProcMeshRefImpl {
 
 #[pyfunction]
 fn py_proc_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PyProcMesh> {
-    let r: PyResult<ProcMeshRef> = bincode::deserialize(bytes.as_bytes())
-        .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()));
+    let r: PyResult<ProcMeshRef> =
+        bincode::serde::decode_from_slice(bytes.as_bytes(), bincode::config::legacy())
+            .map(|(v, _)| v)
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()));
     r.map(PyProcMesh::new_ref)
 }
 

@@ -290,9 +290,13 @@ impl std::fmt::Debug for Encoded {
 /// The type of error returned by operations on [`Any`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Errors returned from serde bincode.
+    /// Errors returned from serde bincode encoding.
     #[error(transparent)]
-    Bincode(#[from] bincode::Error),
+    BincodeEncode(#[from] bincode::error::EncodeError),
+
+    /// Errors returned from serde bincode decoding.
+    #[error(transparent)]
+    BincodeDecode(#[from] bincode::error::DecodeError),
 
     /// Errors returned from serde JSON.
     #[error(transparent)]
@@ -398,11 +402,14 @@ impl Any {
     ) -> Result<Self> {
         Ok(Self {
             encoded: match encoding {
-                Encoding::Bincode => Encoded::Bincode(bincode::serialize(value)?.into()),
+                Encoding::Bincode => Encoded::Bincode(
+                    bincode::serde::encode_to_vec(value, bincode::config::legacy())?.into(),
+                ),
                 Encoding::Json => Encoded::Json(serde_json::to_vec(value)?.into()),
-                Encoding::Multipart => {
-                    Encoded::Multipart(serde_multipart::serialize_bincode(value)?)
-                }
+                Encoding::Multipart => Encoded::Multipart(
+                    serde_multipart::serialize_bincode(value)
+                        .map_err(|e| Error::InvalidEncoding(e.to_string()))?,
+                ),
             },
             typehash: T::typehash(),
         })
@@ -441,10 +448,15 @@ impl Any {
     /// not needed.
     pub fn deserialized_unchecked<T: DeserializeOwned>(&self) -> Result<T> {
         match &self.encoded {
-            Encoded::Bincode(data) => Ok(bincode::deserialize(data)?),
+            Encoded::Bincode(data) => Ok(bincode::serde::decode_from_slice(
+                data,
+                bincode::config::legacy(),
+            )
+            .map(|(v, _)| v)?),
             Encoded::Json(data) => Ok(serde_json::from_slice(data)?),
             Encoded::Multipart(message) => {
-                Ok(serde_multipart::deserialize_bincode(message.clone())?)
+                Ok(serde_multipart::deserialize_bincode(message.clone())
+                    .map_err(|e| Error::InvalidEncoding(e.to_string()))?)
             }
         }
     }
@@ -508,7 +520,11 @@ impl Any {
     // serialization, and generalize it to other codecs as well.
     pub fn prefix<T: DeserializeOwned>(&self) -> Result<T> {
         match &self.encoded {
-            Encoded::Bincode(data) => Ok(bincode::deserialize(data)?),
+            Encoded::Bincode(data) => Ok(bincode::serde::decode_from_slice(
+                data,
+                bincode::config::legacy(),
+            )
+            .map(|(v, _)| v)?),
             _ => Err(Error::PrefixNotSupported),
         }
     }
@@ -526,10 +542,11 @@ impl Any {
         // This is safe because we know that the prefix is the first thing
         // in the serialized value, and that the serialization format is stable.
         let mut cursor = Cursor::new(data.clone());
-        let _prefix: T = bincode::deserialize_from(&mut cursor).unwrap();
+        let _prefix: T =
+            bincode::serde::decode_from_std_read(&mut cursor, bincode::config::legacy()).unwrap();
         let position = cursor.position() as usize;
         let suffix = &cursor.into_inner()[position..];
-        let mut data = bincode::serialize(&prefix)?;
+        let mut data = bincode::serde::encode_to_vec(&prefix, bincode::config::legacy())?;
         data.extend_from_slice(suffix);
         self.encoded = Encoded::Bincode(data.into());
 

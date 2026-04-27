@@ -1154,6 +1154,9 @@ class ErrorActorWithSupervise(ErrorActor):
         self.failures = []
         self.faulted = asyncio.Event()
         self.should_handle = should_handle
+        # Number of supervise callbacks expected before ``faulted`` fires.
+        # Tests that trigger concurrent failures raise this before waiting.
+        self.expected_failures = 1
 
     @endpoint
     async def self_fail(self) -> None:
@@ -1210,13 +1213,14 @@ class ErrorActorWithSupervise(ErrorActor):
         return self.mesh
 
     @endpoint
-    async def subworker_broadcast_fail(self) -> None:
+    async def subworker_broadcast_fail(self, expected: int = 1) -> None:
+        self.expected_failures = expected
         self.mesh.check.broadcast()
         # When not awaiting the result of an endpoint which experiences a
         # failure, it should still propagate back to __supervise__.
         self.mesh.fail_with_supervision_error.broadcast()
-        # Give time for the failure to occur before returning, so get_failures
-        # will have a non-empty result.
+        # Wait until every expected supervise callback has arrived, so
+        # ``get_failures`` sees the full set.
         await asyncio.wait_for(self.faulted.wait(), timeout=30)
 
     @endpoint
@@ -1233,9 +1237,64 @@ class ErrorActorWithSupervise(ErrorActor):
 
     def __supervise__(self, failure: MeshFailure) -> bool:
         self.failures.append(failure)
-        self.faulted.set()
+        if len(self.failures) >= self.expected_failures:
+            self.faulted.set()
         # Returning true suppresses the error.
         return self.should_handle
+
+
+class AsyncErrorActorWithSupervise(ErrorActorWithSupervise):
+    """Variant of `ErrorActorWithSupervise` with `async def __supervise__`.
+
+    Used to verify that an asynchronous user-defined `__supervise__` is awaited
+    on the actor's asyncio event loop -- the same loop endpoints run on.
+    """
+
+    def __init__(self, proc_mesh: ProcMesh, should_handle: bool = True) -> None:
+        super().__init__(proc_mesh, should_handle)
+        self.endpoint_loop_id: Optional[int] = None
+        self.supervise_loop_id: Optional[int] = None
+
+    @endpoint
+    async def record_endpoint_loop(self) -> None:
+        self.endpoint_loop_id = id(asyncio.get_running_loop())
+
+    @endpoint
+    async def get_loop_ids(self) -> tuple[Optional[int], Optional[int]]:
+        return (self.endpoint_loop_id, self.supervise_loop_id)
+
+    # pyre-ignore[15]: intentionally overrides the sync base with `async def`
+    # to exercise the async `__supervise__` dispatch path.
+    async def __supervise__(self, failure: MeshFailure) -> bool:
+        # Awaiting here proves we are running on a real asyncio loop, not
+        # dispatched synchronously on the tokio task.
+        await asyncio.sleep(0)
+        self.supervise_loop_id = id(asyncio.get_running_loop())
+        self.failures.append(failure)
+        if len(self.failures) >= self.expected_failures:
+            self.faulted.set()
+        return self.should_handle
+
+
+class RaisingSyncSuperviseActor(ErrorActorWithSupervise):
+    """Variant whose sync `__supervise__` raises, to verify the exception
+    chains into `ErrorDuringHandlingSupervision` for the client."""
+
+    SUPERVISE_MESSAGE = "boom from sync supervise"
+
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        raise RuntimeError(self.SUPERVISE_MESSAGE)
+
+
+class RaisingAsyncSuperviseActor(ErrorActorWithSupervise):
+    """Async counterpart of `RaisingSyncSuperviseActor`."""
+
+    SUPERVISE_MESSAGE = "boom from async supervise"
+
+    # pyre-ignore[15]: intentionally overrides the sync base with `async def`.
+    async def __supervise__(self, failure: MeshFailure) -> bool:
+        await asyncio.sleep(0)
+        raise RuntimeError(self.SUPERVISE_MESSAGE)
 
 
 @pytest.mark.timeout(30)
@@ -1261,6 +1320,41 @@ async def test_supervise_callback_handled():
     for msg in r:
         assert "MeshFailure" in msg
         assert "error_actor" in msg
+
+    await pm.stop()
+    await second_mesh.stop()
+
+
+@pytest.mark.timeout(30)
+@parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
+async def test_async_supervise_callback_handled():
+    """`async def __supervise__` runs on the same asyncio loop as endpoints."""
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    second_mesh = spawn_procs_on_this_host({"gpus": 1})
+    supervisor = pm.spawn("supervisor", AsyncErrorActorWithSupervise, second_mesh)
+
+    await supervisor.record_endpoint_loop.call()
+    await supervisor.subworker_fail.call()
+
+    result = await supervisor.get_failures.call()
+    result = [f for _, f in result]
+    assert len(result) == 1
+    assert len(result[0]) >= 1, (
+        f"expected at least one supervision event, got {len(result[0])}"
+    )
+    for msg in result[0]:
+        assert "MeshFailure" in msg
+        assert "error_actor" in msg
+
+    loop_ids = await supervisor.get_loop_ids.call()
+    for _, (endpoint_id, supervise_id) in loop_ids:
+        assert endpoint_id is not None, "endpoint loop id was not recorded"
+        assert supervise_id is not None, "supervise loop id was not recorded"
+        assert endpoint_id == supervise_id, (
+            f"async __supervise__ must run on the same asyncio loop as "
+            f"endpoints: endpoint={endpoint_id} supervise={supervise_id}"
+        )
 
     await pm.stop()
     await second_mesh.stop()
@@ -1348,7 +1442,7 @@ async def test_supervise_callback_when_procs_killed():
     second_mesh = spawn_procs_on_this_host({"gpus": 4})
     supervisor = pm.spawn("supervisor", ErrorActorWithSupervise, second_mesh)
 
-    await supervisor.subworker_broadcast_fail.call()
+    await supervisor.subworker_broadcast_fail.call(expected=4)
     result = await supervisor.get_failures.call()
     result = [f for _, f in result]
     assert len(result) == 1
@@ -1397,6 +1491,34 @@ async def test_supervise_callback_unhandled():
     # Calling a second endpoint would also raise the same message.
     with pytest.raises(SupervisionError, match=message):
         await supervisor.subworker_fail.call(sleep=15)
+
+    await pm.stop()
+    await second_mesh.stop()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "actor_cls",
+    [RaisingSyncSuperviseActor, RaisingAsyncSuperviseActor],
+    ids=["sync", "async"],
+)
+@parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
+async def test_supervise_callback_raising(actor_cls):
+    """A `__supervise__` that raises chains into `ErrorDuringHandlingSupervision`
+    and propagates to the client as a `SupervisionError` regardless of whether
+    the user method is sync or async."""
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    second_mesh = spawn_procs_on_this_host({"gpus": 1})
+    supervisor = pm.spawn("supervisor", actor_cls, second_mesh)
+
+    with pytest.raises(SupervisionError) as exc_info:
+        await supervisor.subworker_fail.call(sleep=15)
+    report = str(exc_info.value)
+    assert actor_cls.SUPERVISE_MESSAGE in report, (
+        f"expected supervise exception message in report, got: {report}"
+    )
 
     await pm.stop()
     await second_mesh.stop()

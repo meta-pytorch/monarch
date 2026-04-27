@@ -8,7 +8,6 @@
 
 from typing import Any, final
 
-from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
@@ -16,25 +15,6 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
 
 @final
 class HostMesh:
-    @classmethod
-    def allocate_nonblocking(
-        self,
-        instance: Instance,
-        alloc: Alloc,
-        name: str,
-        bootstrap_command: BootstrapCommand | None,
-    ) -> PythonTask["HostMesh"]:
-        """
-        Allocate a host mesh according to the provided alloc.
-
-        Arguments:
-        - `instance`: The actor instance used to allocate the mesh.
-        - `alloc`: The alloc to allocate according to.
-        - `name`: Name of the mesh.
-        - `bootstrap_command`: Override the bootstrap command used to bootstrap procs.
-        """
-        ...
-
     def spawn_nonblocking(
         self,
         instance: Instance,

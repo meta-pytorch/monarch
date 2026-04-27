@@ -1731,8 +1731,11 @@ mod tests {
         let region: Region = extent!(x = 5).into();
         let dense = ValueMesh::new(region.clone(), vec![1, 2, 3, 4, 5]).unwrap();
 
-        let encoded = bincode::serialize(&dense).unwrap();
-        let restored: ValueMesh<i32> = bincode::deserialize(&encoded).unwrap();
+        let encoded = bincode::serde::encode_to_vec(&dense, bincode::config::legacy()).unwrap();
+        let restored: ValueMesh<i32> =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
 
         assert_eq!(dense, restored);
         // Dense meshes should stay dense on the wire.
@@ -1768,8 +1771,11 @@ mod tests {
         let mut mesh = ValueMesh::new(region.clone(), vec![1, 1, 1, 2, 2, 3, 3, 3, 3, 3]).unwrap();
         mesh.compress_adjacent_in_place();
 
-        let encoded = bincode::serialize(&mesh).unwrap();
-        let restored: ValueMesh<i32> = bincode::deserialize(&encoded).unwrap();
+        let encoded = bincode::serde::encode_to_vec(&mesh, bincode::config::legacy()).unwrap();
+        let restored: ValueMesh<i32> =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .unwrap();
 
         // Logical equality preserved.
         assert_eq!(mesh, restored);
