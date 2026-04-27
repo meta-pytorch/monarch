@@ -187,10 +187,11 @@ impl<M: ProcManager> Host<M> {
         // guaranteed by the ChannelAddr component, and the Name type's
         // '-' delimiter must not collide with a hash suffix.
         let service_proc_id =
-            reference::ProcId::with_name(frontend_addr.clone(), SERVICE_PROC_NAME);
+            reference::ProcId::from_resource_name(frontend_addr.clone(), SERVICE_PROC_NAME);
         let service_proc = Proc::configured(service_proc_id.clone(), router.boxed());
 
-        let local_proc_id = reference::ProcId::with_name(frontend_addr.clone(), LOCAL_PROC_NAME);
+        let local_proc_id =
+            reference::ProcId::from_resource_name(frontend_addr.clone(), LOCAL_PROC_NAME);
         let local_proc = Proc::configured(local_proc_id.clone(), router.boxed());
 
         tracing::info!(
@@ -261,7 +262,7 @@ impl<M: ProcManager> Host<M> {
             return Err(HostError::ProcExists(name));
         }
 
-        let proc_id = reference::ProcId::with_name(self.frontend_addr.clone(), &name);
+        let proc_id = reference::ProcId::from_resource_name(self.frontend_addr.clone(), &name);
         let handle = self
             .manager
             .spawn(proc_id.clone(), self.backend_addr.clone(), config)
@@ -564,7 +565,7 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
         // Unbind procs from the router so if new procs are made with the same
         // names, they can use the same slot.
         for name in self.procs.drain() {
-            let proc_id = reference::ProcId::with_name(self.frontend_addr.clone(), &name);
+            let proc_id = reference::ProcId::from_resource_name(self.frontend_addr.clone(), &name);
             self.router.unbind(&proc_id.into());
         }
         summary
@@ -1470,7 +1471,7 @@ mod tests {
         let (proc_id1, _ref) = host.spawn("proc1".to_string(), ()).await.unwrap();
         assert_eq!(
             proc_id1,
-            reference::ProcId::with_name(host.addr().clone(), "proc1")
+            reference::ProcId::from_resource_name(host.addr().clone(), "proc1")
         );
         assert!(procs.lock().await.contains_key(&proc_id1));
 
@@ -1609,7 +1610,7 @@ mod tests {
     async fn local_ready_and_wait_are_immediate() {
         // Build a LocalHandle directly.
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = reference::ProcId::with_name(addr.clone(), "p");
+        let proc_id = reference::ProcId::from_resource_name(addr.clone(), "p");
         let agent_ref = reference::ActorRef::<()>::attest(proc_id.actor_id("host_agent", 0));
         let h = LocalHandle::<()> {
             proc_id,
