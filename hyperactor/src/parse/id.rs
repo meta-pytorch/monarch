@@ -105,7 +105,9 @@ pub(crate) fn parse_port_id_parts<'a>(
     })
 }
 
-pub(crate) fn parse_id_component<'a>(parser: &mut Parser<'a>) -> Result<IdComponent<'a>, ParseError> {
+pub(crate) fn parse_id_component<'a>(
+    parser: &mut Parser<'a>,
+) -> Result<IdComponent<'a>, ParseError> {
     match parser.peek().kind {
         TokenKind::Text => {
             let label = parser.bump();
@@ -295,7 +297,10 @@ mod tests {
     #[test]
     fn test_parse_actor_id_reports_missing_proc_component() {
         let err = parse_actor_id("controller.").unwrap_err();
-        assert_eq!(err.to_string(), "expected \"label\" or \"<\", found end of input");
+        assert_eq!(
+            err.to_string(),
+            "expected \"label\" or \"<\", found end of input"
+        );
         assert_eq!(err.span, Span::new(11, 11));
     }
 
