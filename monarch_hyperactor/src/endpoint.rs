@@ -18,7 +18,7 @@ use hyperactor::accum::ReducerFactory;
 use hyperactor::accum::ReducerSpec;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor::reference::ActorId;
+use hyperactor::ref_::ActorRef;
 use hyperactor_mesh::sel;
 use hyperactor_mesh::value_mesh::ValueOverlay;
 use hyperactor_mesh::value_mesh::rle;
@@ -549,7 +549,7 @@ pub(crate) trait Endpoint {
     /// for Remote) and route the slice to an actor-specific track. The adverb is the span name,
     /// so no formatting happens at the call site and the sink formats only when
     /// it renders the slice.
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorId) -> SpanGuard;
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard;
 
     fn get_current_instance(&self, py: Python<'_>) -> PyResult<Instance<PythonActor>> {
         let context = get_context(py).call0()?;
@@ -844,7 +844,7 @@ impl Endpoint for ActorEndpoint {
         Some(format!("{}.{}()", self.mesh_name, self.method.name()))
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorId) -> SpanGuard {
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard {
         let mesh = self.mesh_name.as_str();
         let method = self.method.name();
         let span = match adverb {
@@ -1139,7 +1139,7 @@ impl Endpoint for Remote {
         None // Remote endpoints don't have qualified names
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorId) -> SpanGuard {
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard {
         let call_name = Python::attach(|py| {
             self.inner
                 .call_method0(py, "_call_name")

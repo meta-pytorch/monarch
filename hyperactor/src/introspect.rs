@@ -132,6 +132,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::InstanceCell;
+use crate::ref_;
 use crate::reference;
 
 /// Typed reference to an introspectable entity.
@@ -763,7 +764,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     let children: Vec<IntrospectRef> = cell
         .child_actor_ids()
         .into_iter()
-        .map(IntrospectRef::Actor)
+        .map(|a| IntrospectRef::Actor(a.into()))
         .collect();
 
     let events = cell.recording().tail();
@@ -787,7 +788,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 
     let supervisor = cell
         .parent()
-        .map(|p| IntrospectRef::Actor(p.actor_id().clone()));
+        .map(|p| IntrospectRef::Actor(p.actor_id().clone().into()));
 
     // FI-3: failure_info is computed from the same status value as
     // actor_status, ensuring they agree on whether the actor failed.
@@ -799,7 +800,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
                 root_cause_actor: root.actor_id.clone(),
                 root_cause_name: root.display_name.clone(),
                 occurred_at: event.occurred_at,
-                is_propagated: root.actor_id != *actor_id,
+                is_propagated: root.actor_id != actor_id.clone(),
             })
         })
     } else {
@@ -817,7 +818,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     let attrs = build_actor_attrs(cell, &snap);
 
     IntrospectResult {
-        identity: IntrospectRef::Actor(actor_id.clone()),
+        identity: IntrospectRef::Actor(actor_id.clone().into()),
         attrs,
         children,
         parent: supervisor,
@@ -885,12 +886,12 @@ pub(crate) async fn serve_introspect(
                             let children: Vec<IntrospectRef> =
                                 published.get(CHILDREN).cloned().unwrap_or_default();
                             IntrospectResult {
-                                identity: IntrospectRef::Actor(cell.actor_id().clone()),
+                                identity: IntrospectRef::Actor(cell.actor_id().clone().into()),
                                 attrs: attrs_json,
                                 children,
                                 parent: cell
                                     .parent()
-                                    .map(|p| IntrospectRef::Actor(p.actor_id().clone())),
+                                    .map(|p| IntrospectRef::Actor(p.actor_id().clone().into())),
                                 as_of: SystemTime::now(),
                             }
                         }
@@ -905,7 +906,8 @@ pub(crate) async fn serve_introspect(
                 )
             }
             IntrospectMessage::QueryChild { child_ref, reply } => {
-                let payload = cell.query_child(&child_ref).unwrap_or_else(|| {
+                let child_ref_: ref_::Reference = child_ref.clone().into();
+                let payload = cell.query_child(&child_ref_).unwrap_or_else(|| {
                     let mut error_attrs = hyperactor_config::Attrs::new();
                     error_attrs.set(ERROR_CODE, "not_found".to_string());
                     error_attrs.set(
@@ -1054,8 +1056,8 @@ mod tests {
         attrs
     }
 
-    fn test_actor_id(proc_name: &str, actor_name: &str, pid: usize) -> crate::reference::ActorId {
-        ProcId::with_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name, pid)
+    fn test_actor_id(proc_name: &str, actor_name: &str) -> crate::reference::ActorId {
+        ProcId::from_resource_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name)
     }
 
     fn failed_actor_attrs() -> Attrs {
@@ -1063,7 +1065,7 @@ mod tests {
         attrs.set(STATUS, "failed".to_string());
         attrs.set(STATUS_REASON, "something broke".to_string());
         attrs.set(FAILURE_ERROR_MESSAGE, "boom".to_string());
-        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, test_actor_id("proc", "other", 0));
+        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, test_actor_id("proc", "other"));
         attrs.set(FAILURE_ROOT_CAUSE_NAME, "OtherActor".to_string());
         attrs.set(FAILURE_OCCURRED_AT, SystemTime::UNIX_EPOCH);
         attrs.set(FAILURE_IS_PROPAGATED, true);
@@ -1151,7 +1153,7 @@ mod tests {
     fn test_actor_view_ia4_rejects_failure_attrs_on_running() {
         let mut attrs = running_actor_attrs();
         attrs.set(FAILURE_ERROR_MESSAGE, "boom".to_string());
-        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, test_actor_id("proc", "x", 0));
+        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, test_actor_id("proc", "x"));
         attrs.set(FAILURE_OCCURRED_AT, SystemTime::UNIX_EPOCH);
         let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
         assert!(matches!(
@@ -1191,9 +1193,9 @@ mod tests {
     /// integration coverage.
     #[test]
     fn test_fi7_fi8_propagated_stopped_child() {
-        let proc_id = ProcId::with_name(ChannelAddr::Local(0), "test_proc");
-        let child_id = proc_id.actor_id("proc_agent", 0);
-        let parent_id = proc_id.actor_id("mesh_actor", 0);
+        let proc_id = ProcId::from_resource_name(ChannelAddr::Local(0), "test_proc");
+        let child_id = proc_id.actor_id("proc_agent");
+        let parent_id = proc_id.actor_id("mesh_actor");
 
         let child_event = ActorSupervisionEvent::new(
             child_id.clone(),

@@ -7,32 +7,26 @@
  */
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 
 use crate::actor::Actor;
 use crate::actor::ActorHandle;
 use crate::mailbox::BoxedMailboxSender;
-use crate::reference;
+use crate::ref_;
+
 #[derive(Debug)]
 struct LocalSpawnerState {
-    root: reference::ActorId,
+    root: ref_::ActorRef,
     sender: BoxedMailboxSender,
-    next_pid: AtomicU64,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct LocalSpawner(Option<Arc<LocalSpawnerState>>);
 
 impl LocalSpawner {
-    pub(crate) fn new(root: reference::ActorId, sender: BoxedMailboxSender) -> Self {
-        Self(Some(Arc::new(LocalSpawnerState {
-            root,
-            sender,
-            next_pid: AtomicU64::new(1),
-        })))
+    pub(crate) fn new(root: ref_::ActorRef, sender: BoxedMailboxSender) -> Self {
+        Self(Some(Arc::new(LocalSpawnerState { root, sender })))
     }
 
     pub(crate) fn new_panicking() -> Self {
@@ -44,10 +38,16 @@ impl LocalSpawner {
 impl CanSpawn for LocalSpawner {
     async fn spawn<A: Actor>(&self, params: A::Params) -> ActorHandle<A::Message> {
         let state = self.0.as_ref().expect("invalid spawner");
-        let pid = state.next_pid.fetch_add(1, Ordering::Relaxed);
-        let actor_id = state.root.child_id(pid);
-        A::do_spawn(state.sender.clone(), actor_id, params, self.clone())
+        let actor_id = state.root.unique_child();
+        A::do_spawn(state.sender.clone(), actor_id.into(), params, self.clone())
             .await
             .unwrap()
     }
+}
+
+/// The trait for local spawning of actors.
+#[async_trait]
+pub(crate) trait CanSpawn: Clone + Send + Sync + 'static {
+    /// Spawn an actor with the given params.
+    async fn spawn<A: Actor>(&self, params: A::Params) -> ActorHandle<A::Message>;
 }

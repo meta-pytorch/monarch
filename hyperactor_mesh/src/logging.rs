@@ -390,7 +390,6 @@ impl LocalLogSender {
 impl LogSender for LocalLogSender {
     fn send(&mut self, target: OutputTarget, payload: Vec<Vec<u8>>) -> anyhow::Result<()> {
         if TxStatus::Active == *self.status.borrow() {
-            // Do not use tx.send, it will block the allocator as the child process state is unknown.
             self.tx.post(LogMessage::Log {
                 hostname: self.hostname.clone(),
                 proc_id: self.proc_id.clone(),
@@ -405,7 +404,6 @@ impl LogSender for LocalLogSender {
     fn flush(&mut self) -> anyhow::Result<()> {
         // send will make sure message is delivered
         if TxStatus::Active == *self.status.borrow() {
-            // Do not use tx.send, it will block the allocator as the child process state is unknown.
             self.tx.post(LogMessage::Flush { sync_version: None });
         }
         Ok(())
@@ -1600,7 +1598,8 @@ mod tests {
             BoxedMailboxSender::new(router.clone()),
         );
         proc.clone().serve(client_rx);
-        router.bind(test_proc_id("client_0").into(), proc_addr.clone());
+        let proc_ref: hyperactor::ref_::ProcRef = test_proc_id("client_0").into();
+        router.bind(proc_ref, proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 
         // Spin up both the forwarder and the client
