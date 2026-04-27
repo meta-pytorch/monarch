@@ -229,7 +229,6 @@ def test_duration_config_multiple() -> None:
         ("split_max_buffer_age", "100ms", "100ms", "50ms"),
         ("stop_actor_timeout", "15s", "15s", "10s"),
         ("cleanup_timeout", "25s", "25s", "3s"),
-        ("remote_allocator_heartbeat_interval", "10m", "10m", "5m"),
         ("channel_net_rx_buffer_full_check_interval", "200ms", "200ms", "5s"),
         # Mesh bootstrap config
         ("mesh_terminate_timeout", "20s", "20s", "10s"),
@@ -387,7 +386,6 @@ def test_all_params_together():
         split_max_buffer_age="100ms",
         stop_actor_timeout="15s",
         cleanup_timeout="25s",
-        remote_allocator_heartbeat_interval="10s",
         default_encoding=Encoding.Json,
         channel_net_rx_buffer_full_check_interval="200ms",
         message_latency_sampling_rate=0.5,
@@ -428,7 +426,6 @@ def test_all_params_together():
         assert config["split_max_buffer_age"] == "100ms"
         assert config["stop_actor_timeout"] == "15s"
         assert config["cleanup_timeout"] == "25s"
-        assert config["remote_allocator_heartbeat_interval"] == "10s"
         assert config["default_encoding"] == Encoding.Json
         assert config["channel_net_rx_buffer_full_check_interval"] == "200ms"
         assert config["message_latency_sampling_rate"] == pytest.approx(0.5, rel=1e-5)
@@ -461,7 +458,6 @@ def test_all_params_together():
     assert config["split_max_buffer_age"] == "50ms"
     assert config["stop_actor_timeout"] == "10s"
     assert config["cleanup_timeout"] == "3s"
-    assert config["remote_allocator_heartbeat_interval"] == "5m"
     assert config["default_encoding"] == Encoding.Multipart
     assert config["channel_net_rx_buffer_full_check_interval"] == "5s"
     assert config["message_latency_sampling_rate"] == pytest.approx(0.01, rel=1e-5)

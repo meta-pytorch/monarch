@@ -66,15 +66,16 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox as _;
+use hyperactor::id::Label;
 use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostMeshRef;
-use hyperactor_mesh::Name;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::context;
+use hyperactor_mesh::mesh_id::HostMeshId;
 use monarch_rdma::IbvConfig;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
@@ -482,7 +483,10 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     command.kill_on_drop(true);
     let _child = command.spawn().unwrap();
 
-    let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), vec![host_addr]);
+    let host_mesh = HostMeshRef::from_hosts(
+        HostMeshId::unique(Label::new("test").unwrap()),
+        vec![host_addr],
+    );
     let ps_proc_mesh = host_mesh
         .spawn(instance, "ps", extent!(gpu = 1), None)
         .await?;
