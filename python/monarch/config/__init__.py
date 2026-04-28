@@ -35,6 +35,7 @@ __all__ = [
     "get_global_config",
     "get_runtime_config",
     "parametrize_config",
+    "parametrize_config_pointwise",
 ]
 
 if TYPE_CHECKING:
@@ -327,6 +328,103 @@ def parametrize_config(
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         # Get original function's signature and add _config_overrides as first param
+        orig_sig = inspect.signature(fn)
+        new_params = [
+            inspect.Parameter(
+                "_config_overrides", inspect.Parameter.POSITIONAL_OR_KEYWORD
+            )
+        ] + list(orig_sig.parameters.values())
+        new_sig = orig_sig.replace(parameters=new_params)
+
+        if asyncio.iscoroutinefunction(fn):
+
+            async def async_wrapper(
+                _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
+            ) -> Any:
+                # pyre-fixme[6]: Values are checked inside the function.
+                with configured(**_config_overrides):
+                    return await fn(*args, **kwargs)
+
+            functools.update_wrapper(async_wrapper, fn)
+            async_wrapper.__signature__ = new_sig  # type: ignore[attr-defined]
+            wrapped = async_wrapper
+        else:
+
+            def sync_wrapper(
+                _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
+            ) -> Any:
+                # pyre-fixme[6]: Values are checked inside the function.
+                with configured(**_config_overrides):
+                    return fn(*args, **kwargs)
+
+            functools.update_wrapper(sync_wrapper, fn)
+            sync_wrapper.__signature__ = new_sig  # type: ignore[attr-defined]
+            wrapped = sync_wrapper
+
+        return pytest.mark.parametrize(
+            "_config_overrides", config_dicts, ids=param_ids
+        )(wrapped)
+
+    return decorator
+
+
+def parametrize_config_pointwise(
+    **config_options: Any,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Create a pytest parametrize decorator for pointwise configuration sweeps.
+
+    Like :func:`parametrize_config`, but iterates the input sequences in
+    lockstep (``zip``) rather than computing their cartesian product. Every
+    sequence must have the same length; the test is invoked once per index
+    with one value drawn from each sequence at that position.
+
+    Args:
+        **config_options: Configuration keys mapped to ordered sequences of
+            values. Each key should be a valid argument to ``configure()``.
+
+    Returns:
+        A decorator that parametrizes and wraps the test function.
+
+    Example:
+        >>> from monarch.config import parametrize_config_pointwise
+        >>>
+        >>> @parametrize_config_pointwise(
+        ...     actor_queue_dispatch=[True, False],
+        ...     shared_asyncio_runtime=[True, False],
+        ... )
+        ... async def test_actor_feature():
+        ...     # Runs 2 times:
+        ...     # (actor_queue_dispatch=True, shared_asyncio_runtime=True)
+        ...     # (actor_queue_dispatch=False, shared_asyncio_runtime=False)
+        ...     pass
+    """
+    import asyncio
+    import functools
+    import inspect
+
+    import pytest  # pyre-ignore[21]: pytest is a test-only dependency
+
+    if not config_options:
+        raise ValueError(
+            "parametrize_config_pointwise requires at least one config option"
+        )
+
+    keys = list(config_options.keys())
+    value_lists = [list(config_options[k]) for k in keys]
+    lengths = {len(v) for v in value_lists}
+    if len(lengths) != 1:
+        raise ValueError(
+            "parametrize_config_pointwise requires every option to have the "
+            f"same number of values; got lengths {dict(zip(keys, [len(v) for v in value_lists]))}"
+        )
+
+    combinations = list(zip(*value_lists))
+    param_ids = [
+        "-".join(f"{k}={v}" for k, v in zip(keys, combo)) for combo in combinations
+    ]
+    config_dicts = [dict(zip(keys, combo)) for combo in combinations]
+
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         orig_sig = inspect.signature(fn)
         new_params = [
             inspect.Parameter(
