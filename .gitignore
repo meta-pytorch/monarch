@@ -1,10 +1,10 @@
 syntax: glob
 
+**/__pycache__
 python/**/*.so
 python/**/*.json
 python/**/*.html
 python/**/*.pkl
-python/**/__pycache__
 python/monarch.egg-info/*
 python/torchmonarch.egg-info/*
 *.egg
