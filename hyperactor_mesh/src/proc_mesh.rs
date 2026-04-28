@@ -131,30 +131,26 @@ impl ProcRef {
 pub struct ProcMesh {
     #[allow(dead_code)]
     id: ProcMeshId,
-    allocation: ProcMeshAllocation,
     #[allow(dead_code)]
     comm_actor_name: Option<ActorMeshId>,
     current_ref: ProcMeshRef,
 }
 
 impl ProcMesh {
-    async fn create<C: context::Actor>(
+    pub(crate) async fn create<C: context::Actor>(
         cx: &C,
         id: ProcMeshId,
-        allocation: ProcMeshAllocation,
-        spawn_comm_actor: bool,
+        extent: Extent,
+        hosts: HostMeshRef,
+        ranks: Vec<ProcRef>,
     ) -> crate::Result<Self>
     where
         C::A: Handler<MeshFailure>,
     {
-        let comm_actor_name = if spawn_comm_actor {
-            Some(ActorMeshId::singleton(Label::new(COMM_ACTOR_NAME).unwrap()))
-        } else {
-            None
-        };
+        let comm_actor_name = ActorMeshId::singleton(Label::new(COMM_ACTOR_NAME).unwrap());
 
-        let region = allocation.extent().clone().into();
-        let ranks = allocation.ranks();
+        let region = extent.into();
+        let ranks = Arc::new(ranks);
 
         // Set the global supervision sink to the first ProcAgent's
         // supervision event handler. Last-mesh-wins semantics: if a
@@ -165,20 +161,17 @@ impl ProcMesh {
             );
         }
 
-        let root_comm_actor = comm_actor_name.as_ref().map(|comm_id| {
-            hyperactor_reference::ActorRef::attest(
-                ranks
-                    .first()
-                    .expect("root mesh cannot be empty")
-                    .actor_id(comm_id),
-            )
-        });
-        let host_mesh = allocation.hosts();
+        let root_comm_actor = hyperactor_reference::ActorRef::attest(
+            ranks
+                .first()
+                .expect("root mesh cannot be empty")
+                .actor_id(&comm_actor_name),
+        );
         let current_ref = ProcMeshRef::new(
             id.clone(),
             region,
             ranks,
-            host_mesh.cloned(),
+            Some(hosts),
             None, // this is the root mesh
             None, // comm actor is not alive yet
         )
@@ -189,13 +182,13 @@ impl ProcMesh {
             let name_str = id.to_string();
             let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
 
-            let (parent_mesh_id, parent_view_json) = match host_mesh {
-                Some(hm) => (
-                    Some(hyperactor_telemetry::hash_to_u64(&hm.id().to_string())),
-                    serde_json::to_string(hm.region()).ok(),
-                ),
-                None => (None, None),
-            };
+            let hm = current_ref
+                .host_mesh
+                .as_ref()
+                .expect("ProcMesh always has a host mesh");
+            let parent_mesh_id = hyperactor_telemetry::hash_to_u64(&hm.id().to_string());
+            let parent_view_json = serde_json::to_string(hm.region())
+                .unwrap_or_else(|e| format!("encountered error when serializing region: {}", e));
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
@@ -208,8 +201,8 @@ impl ProcMesh {
                     .to_string(),
                 full_name: name_str,
                 shape_json: serde_json::to_string(&current_ref.region.extent()).unwrap_or_default(),
-                parent_mesh_id,
-                parent_view_json,
+                parent_mesh_id: Some(parent_mesh_id),
+                parent_view_json: Some(parent_view_json),
             });
 
             // Notify telemetry of each ProcAgent actor in this mesh.
@@ -231,78 +224,54 @@ impl ProcMesh {
 
         let mut proc_mesh = Self {
             id,
-            allocation,
-            comm_actor_name: comm_actor_name.clone(),
+            comm_actor_name: Some(comm_actor_name.clone()),
             current_ref,
         };
 
-        if let Some(comm_actor_name) = comm_actor_name {
-            // CommActor satisfies `Actor + Referable`, so it can be
-            // spawned and safely referenced via ActorRef<CommActor>.
-            // It is a system actor that should not have a controller managing it.
-            let comm_actor_mesh: ActorMesh<CommActor> = proc_mesh
-                .spawn_with_name(cx, comm_actor_name, &Default::default(), None, true)
-                .await?;
-            let address_book: HashMap<_, _> = comm_actor_mesh
-                .iter()
-                .map(|(point, actor_ref)| (point.rank(), actor_ref))
-                .collect();
-            // Now that we have all of the spawned comm actors, kick them all into
-            // mesh mode.
-            for (rank, comm_actor) in &address_book {
-                comm_actor
-                    .send(cx, CommMeshConfig::new(*rank, address_book.clone()))
-                    .map_err(|e| Error::SendingError(comm_actor.actor_id().clone(), Box::new(e)))?
-            }
-
-            // The comm actor is now set up and ready to go.
-            proc_mesh.current_ref.root_comm_actor = root_comm_actor;
+        // CommActor satisfies `Actor + Referable`, so it can be
+        // spawned and safely referenced via ActorRef<CommActor>.
+        // It is a system actor that should not have a controller managing it.
+        let comm_actor_mesh: ActorMesh<CommActor> = proc_mesh
+            .spawn_with_name(cx, comm_actor_name, &Default::default(), None, true)
+            .await?;
+        let address_book: HashMap<_, _> = comm_actor_mesh
+            .iter()
+            .map(|(point, actor_ref)| (point.rank(), actor_ref))
+            .collect();
+        // Now that we have all of the spawned comm actors, kick them all into
+        // mesh mode.
+        for (rank, comm_actor) in &address_book {
+            comm_actor
+                .send(cx, CommMeshConfig::new(*rank, address_book.clone()))
+                .map_err(|e| Error::SendingError(comm_actor.actor_id().clone(), Box::new(e)))?
         }
 
-        Ok(proc_mesh)
-    }
+        // The comm actor is now set up and ready to go.
+        proc_mesh.current_ref.root_comm_actor = Some(root_comm_actor);
 
-    pub(crate) async fn create_owned_unchecked<C: context::Actor>(
-        cx: &C,
-        id: ProcMeshId,
-        extent: Extent,
-        hosts: HostMeshRef,
-        ranks: Vec<ProcRef>,
-    ) -> crate::Result<Self>
-    where
-        C::A: Handler<MeshFailure>,
-    {
-        Self::create(
-            cx,
-            id,
-            ProcMeshAllocation::Owned {
-                hosts,
-                extent,
-                ranks: Arc::new(ranks),
-            },
-            true,
-        )
-        .await
+        Ok(proc_mesh)
     }
 
     /// Stop this mesh gracefully.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         let region = self.region.clone();
-        let ProcMeshAllocation::Owned { hosts, .. } = &self.allocation;
         let procs = self
             .current_ref
             .proc_ids()
             .collect::<Vec<hyperactor_reference::ProcId>>();
         // We use the proc mesh region rather than the host mesh region
         // because the host agent stores one entry per proc, not per host.
-        hosts
+        self.current_ref
+            .host_mesh
+            .as_ref()
+            .expect("ProcMesh always has a host mesh")
             .stop_proc_mesh(cx, &self.id, procs, region, reason)
             .await
     }
 
     #[cfg(test)]
     pub(crate) fn ranks(&self) -> Arc<Vec<ProcRef>> {
-        self.allocation.ranks()
+        Arc::clone(&self.current_ref.ranks)
     }
 }
 
@@ -327,50 +296,6 @@ impl Drop for ProcMesh {
             proc_mesh = %self.id,
             status = "Dropped",
         );
-    }
-}
-
-/// An owned allocation: this ProcMesh fully owns the set of ranks.
-enum ProcMeshAllocation {
-    Owned {
-        /// The host mesh from which the proc mesh was spawned.
-        hosts: HostMeshRef,
-        // This is purely for storage: `hosts.extent()` returns a computed (by value)
-        // extent.
-        extent: Extent,
-        /// A proc reference for each rank in the mesh.
-        ranks: Arc<Vec<ProcRef>>,
-    },
-}
-
-impl ProcMeshAllocation {
-    fn extent(&self) -> &Extent {
-        let ProcMeshAllocation::Owned { extent, .. } = self;
-        extent
-    }
-
-    fn ranks(&self) -> Arc<Vec<ProcRef>> {
-        let ProcMeshAllocation::Owned { ranks, .. } = self;
-        Arc::clone(ranks)
-    }
-
-    fn hosts(&self) -> Option<&HostMeshRef> {
-        let ProcMeshAllocation::Owned { hosts, .. } = self;
-        Some(hosts)
-    }
-}
-
-impl fmt::Debug for ProcMeshAllocation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ProcMeshAllocation::Owned {
-            hosts,
-            ranks,
-            extent: _,
-        } = self;
-        f.debug_struct("ProcMeshAllocation::Owned")
-            .field("hosts", hosts)
-            .field("ranks", ranks)
-            .finish()
     }
 }
 

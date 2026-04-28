@@ -412,13 +412,34 @@ impl PythonMessage {
                 name,
                 response_port,
             } => {
+                let method_name = name.name().to_string();
                 let response_port = response_port.map_or(ResponsePort::Dropping, |port_ref| {
                     let point = cx.cast_point();
-                    ResponsePort::Port(Port {
+                    // Carry operation context onto the reply: copy
+                    // OPERATION_*-marked keys from the inbound
+                    // envelope, falling back to the method name when
+                    // the caller didn't stamp.
+                    let mut reply_headers = hyperactor_config::Flattrs::new();
+                    hyperactor_config::attrs::copy_marked_flattrs(
+                        &mut reply_headers,
+                        cx.headers(),
+                        hyperactor_config::attrs::OPERATION_CONTEXT_HEADER,
+                    );
+                    if reply_headers
+                        .get(hyperactor::mailbox::headers::OPERATION_ENDPOINT)
+                        .is_none()
+                    {
+                        reply_headers.set(
+                            hyperactor::mailbox::headers::OPERATION_ENDPOINT,
+                            format!("{}()", method_name),
+                        );
+                    }
+                    ResponsePort::Port(Port::with_reply_headers(
                         port_ref,
-                        instance: cx.instance().clone_for_py(),
-                        rank: Some(point.rank()),
-                    })
+                        cx.instance().clone_for_py(),
+                        Some(point.rank()),
+                        reply_headers,
+                    ))
                 });
                 Ok(ResolvedCallMethod {
                     method: name,
@@ -1651,6 +1672,10 @@ pub struct Port {
     port_ref: EitherPortRef,
     instance: Instance<PythonActor>,
     rank: Option<usize>,
+    /// Operation-context headers captured from the inbound request,
+    /// re-emitted on every reply so failure surfaces can name the
+    /// operation.
+    reply_headers: hyperactor_config::Flattrs,
 }
 
 #[pymethods]
@@ -1665,6 +1690,7 @@ impl Port {
             port_ref,
             instance: instance.clone().into_instance(),
             rank,
+            reply_headers: hyperactor_config::Flattrs::new(),
         }
     }
 
@@ -1695,7 +1721,7 @@ impl Port {
         );
 
         self.port_ref
-            .send(&self.instance, message)
+            .send_with_headers(&self.instance, self.reply_headers.clone(), message)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
@@ -1706,8 +1732,27 @@ impl Port {
         );
 
         self.port_ref
-            .send(&self.instance, message)
+            .send_with_headers(&self.instance, self.reply_headers.clone(), message)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+}
+
+impl Port {
+    /// Constructor that attaches operation-context headers captured
+    /// from the inbound request. The Python `#[new]` constructor
+    /// defaults to empty headers.
+    pub(crate) fn with_reply_headers(
+        port_ref: EitherPortRef,
+        instance: Instance<PythonActor>,
+        rank: Option<usize>,
+        reply_headers: hyperactor_config::Flattrs,
+    ) -> Self {
+        Self {
+            port_ref,
+            instance,
+            rank,
+            reply_headers,
+        }
     }
 }
 

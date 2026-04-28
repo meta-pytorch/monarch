@@ -25,3 +25,6 @@ build_utils = { path = "../build_utils" }
 [features]
 default = []
 tensor_engine = []
+
+[lints]
+rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }

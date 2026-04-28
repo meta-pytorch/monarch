@@ -300,6 +300,13 @@ pub struct ProcAgent {
 }
 
 impl ProcAgent {
+    /// Spawn a new `ProcAgent` on `proc` and return its actor handle.
+    ///
+    /// `shutdown_tx`, when present, is the channel the agent uses to
+    /// signal proc-level shutdown with an exit code once all tracked
+    /// actors reach terminal supervision state. The orphan-timeout
+    /// behavior is read from the `MESH_ORPHAN_TIMEOUT` config; a
+    /// zero-valued setting disables orphan detection.
     pub fn boot_v1(
         proc: Proc,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
