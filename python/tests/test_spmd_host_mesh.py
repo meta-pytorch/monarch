@@ -16,6 +16,7 @@ from typing import Callable
 
 import pytest
 from monarch._src.spmd.host_mesh import (
+    _IN_PAR,
     _spawn_worker_process,
     _worker_addr_key,
     host_mesh_from_store,
@@ -162,20 +163,29 @@ def test_host_mesh_from_store_non_local_rank_zero_is_passive(
 
 def test_parent_death_kills_worker_via_pipe_eof() -> None:
     # End-to-end check for the parent-death safety net:
-    #   pytest runner (this PAR) -> intermediate parent -> worker
-    # The intermediate parent is launched by re-invoking this test's own
-    # PAR binary with PAR_MAIN_OVERRIDE pointing at
-    # tests.spmd_host_mesh_parent_helper. That helper calls
-    # _spawn_worker_process(...) and exits; the worker's only lifeline is
-    # the parent-watch pipe, so when the intermediate parent exits the
-    # kernel closes its write end and the worker's blocking os.read
-    # returns EOF, triggering os._exit(0).
-    env = {
-        **os.environ,
-        "PAR_MAIN_OVERRIDE": "tests.spmd_host_mesh_parent_helper",
-    }
+    #   test runner -> intermediate parent -> worker
+    # Under Buck/PAR we re-invoke the test's own PAR binary with
+    # PAR_MAIN_OVERRIDE pointing at tests.spmd_host_mesh_parent_helper.
+    # Under plain pytest sys.argv[0] is the pytest CLI (which doesn't
+    # honor PAR_MAIN_OVERRIDE), so we run the helper script directly.
+    # Either way the helper calls _spawn_worker_process(...) and exits;
+    # the worker's only lifeline is the parent-watch pipe, so when the
+    # intermediate parent exits the kernel closes its write end and the
+    # worker's blocking os.read returns EOF, triggering os._exit(0).
+    if _IN_PAR:
+        env = {
+            **os.environ,
+            "PAR_MAIN_OVERRIDE": "tests.spmd_host_mesh_parent_helper",
+        }
+        cmd = [sys.argv[0]]
+    else:
+        helper_path = os.path.join(
+            os.path.dirname(__file__), "spmd_host_mesh_parent_helper.py"
+        )
+        env = dict(os.environ)
+        cmd = [sys.executable, helper_path]
     result = subprocess.run(
-        [sys.argv[0]],
+        cmd,
         capture_output=True,
         text=True,
         env=env,

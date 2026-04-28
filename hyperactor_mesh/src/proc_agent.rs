@@ -20,6 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::Address;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Data;
@@ -486,7 +487,7 @@ impl Actor for ProcAgent {
         this.set_query_child_handler(move |child_ref| {
             use hyperactor::introspect::IntrospectResult;
 
-            if let hyperactor::addr::Address::Actor(actor_ref) = child_ref {
+            if let Address::Actor(actor_ref) = child_ref {
                 if let Some(snapshot) = proc.terminated_snapshot(actor_ref) {
                     return snapshot;
                 }
@@ -499,7 +500,7 @@ impl Actor for ProcAgent {
             // next QueryChild(Address::Proc) response without an
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
-            if let hyperactor::addr::Address::Proc(proc_ref) = child_ref {
+            if let Address::Proc(proc_ref) = child_ref {
                 if *proc_ref == *proc.proc_id() {
                     let (mut children, mut system_children) = collect_live_children(&proc);
 
@@ -613,13 +614,13 @@ impl Actor for ProcAgent {
                     format!("child {} not found", child_ref),
                 );
                 let identity = match child_ref {
-                    hyperactor::addr::Address::Proc(p) => {
+                    Address::Proc(p) => {
                         hyperactor::introspect::IntrospectRef::Proc(p.clone().into())
                     }
-                    hyperactor::addr::Address::Actor(a) => {
+                    Address::Actor(a) => {
                         hyperactor::introspect::IntrospectRef::Actor(a.clone().into())
                     }
-                    hyperactor::addr::Address::Port(p) => {
+                    Address::Port(p) => {
                         hyperactor::introspect::IntrospectRef::Actor(p.actor_ref().into())
                     }
                 };

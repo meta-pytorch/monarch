@@ -16,11 +16,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::ActorAddr;
+use crate::AddrParseError;
+use crate::Location;
+use crate::PortAddr;
 use crate::actor::Referable;
-use crate::addr::ActorAddr;
-use crate::addr::AddrParseError;
-use crate::addr::Location;
-use crate::addr::PortAddr;
 use crate::id::ActorId;
 use crate::id::Label;
 use crate::mailbox::RemoteMessage;
