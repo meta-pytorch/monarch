@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use hyperactor::reference;
+use hyperactor as reference;
 use monarch_hyperactor::ndslice::PySlice;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyActorId;

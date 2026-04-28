@@ -15,6 +15,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
+use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::Handler;
 use hyperactor::RemoteMessage;
@@ -25,7 +26,6 @@ use hyperactor::actor::Referable;
 use hyperactor::actor::remote::Remote;
 use hyperactor::context;
 use hyperactor::id::Label;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -122,7 +122,7 @@ impl ProcRef {
         &self,
         id: &ActorMeshId,
     ) -> hyperactor_reference::ActorRef<A> {
-        hyperactor_reference::ActorRef::attest(self.actor_id(id).into())
+        hyperactor_reference::ActorRef::attest(self.actor_id(id))
     }
 }
 
@@ -170,8 +170,7 @@ impl ProcMesh {
                 ranks
                     .first()
                     .expect("root mesh cannot be empty")
-                    .actor_id(comm_id)
-                    .into(),
+                    .actor_id(comm_id),
             )
         });
         let host_mesh = allocation.hosts();

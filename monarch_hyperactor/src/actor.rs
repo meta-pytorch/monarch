@@ -1726,12 +1726,12 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
 #[cfg(test)]
 mod tests {
+    use hyperactor as reference;
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
     use hyperactor::id::Label;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
-    use hyperactor::reference;
     use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::host_mesh::host_agent::ProcState;
@@ -1813,10 +1813,8 @@ mod tests {
         };
 
         // A ProcCreationError
-        let mesh_agent: hyperactor::reference::ActorRef<hyperactor_mesh::host_mesh::HostAgent> =
-            hyperactor::reference::ActorRef::attest(
-                test_port_id("hello_0", "actor", 0).actor_id().clone(),
-            );
+        let mesh_agent: hyperactor::ActorRef<hyperactor_mesh::host_mesh::HostAgent> =
+            hyperactor::ActorRef::attest(test_port_id("hello_0", "actor", 0).actor_ref());
         let expected_prefix = format!(
             "error creating proc (host rank 0) on host mesh agent {}",
             mesh_agent

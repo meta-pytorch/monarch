@@ -98,7 +98,6 @@ use crate::mailbox::MailboxServerError;
 use crate::mailbox::MailboxServerHandle;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
-use crate::reference;
 
 /// Name of the system service proc on a host — hosts the admin actor
 /// layer (HostMeshAgent, MeshAdminAgent, bridge).
@@ -1741,7 +1740,6 @@ pub mod testing {
     use crate::Context;
     use crate::Handler;
     use crate::OncePortRef;
-    use crate::reference::OncePortRef;
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
     #[derive(Debug, Default)]
@@ -1899,8 +1897,8 @@ mod tests {
         assert!(matches!(host.addr().transport(), ChannelTransport::Unix));
         let (proc1, echo1) = host.spawn("proc1".to_string(), ()).await.unwrap();
         let (proc2, echo2) = host.spawn("proc2".to_string(), ()).await.unwrap();
-        assert_eq!(*echo1.actor_id().proc_id(), proc1);
-        assert_eq!(*echo2.actor_id().proc_id(), proc2);
+        assert_eq!(echo1.actor_id().proc_id(), proc1);
+        assert_eq!(echo2.actor_id().proc_id(), proc2);
 
         // (2) Duplicate name rejection.
         let dup = host.spawn("proc1".to_string(), ()).await;
@@ -2144,7 +2142,7 @@ mod tests {
         .unwrap();
 
         let (pid, agent) = host.spawn("ok".into(), ()).await.expect("must succeed");
-        assert_eq!(*agent.actor_id().proc_id(), pid);
+        assert_eq!(agent.actor_id().proc_id(), pid);
         assert!(host.procs.contains("ok"));
     }
 

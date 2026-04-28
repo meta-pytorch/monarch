@@ -18,7 +18,7 @@
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
 //! # use hyperactor::Proc;
-//! # use hyperactor::reference::{ActorId, ProcId};
+//! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
 //! # let proc = Proc::local();
 //! # let (client, _) = proc.instance("client").unwrap();
@@ -37,7 +37,7 @@
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
 //! # use hyperactor::Proc;
-//! # use hyperactor::reference::{ActorId, ProcId};
+//! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
 //! # let proc = Proc::local();
 //! # let (client, _) = proc.instance("client").unwrap();
@@ -129,7 +129,6 @@ use crate::metrics;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
 use crate::port::Port;
-use crate::reference;
 
 mod undeliverable;
 /// For [`Undeliverable`], a message type for delivery failures.
@@ -1026,7 +1025,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 envelope.set_error(DeliveryError::BrokenLink(
                     "message was undeliverable".to_owned(),
                 ));
-                let sender_id: reference::ActorId = envelope.sender().clone().into();
+                let sender_id: ActorAddr = envelope.sender().clone();
                 let return_port =
                     PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(&sender_id);
                 return_port.send_serialized(
@@ -2016,10 +2015,10 @@ impl<M: RemoteMessage> OncePortHandle<M> {
     /// ref to send a message to the port. Creating a ref also
     /// binds the port, so that it is remotely writable.
     pub fn bind(self) -> OncePortRef<M> {
-        let port_id: reference::PortId = self.port_id().clone().into();
+        let port_id: PortAddr = self.port_id().clone();
         let reducer_spec = self.reducer_spec.clone();
         self.mailbox.clone().bind_once(self);
-        OncePortRef::attest_reducible(port_id.into(), reducer_spec)
+        OncePortRef::attest_reducible(port_id, reducer_spec)
     }
 }
 
@@ -3292,9 +3291,8 @@ mod tests {
         // The actor must be on unix:@4 so that after unbinding, the prefix
         // route for world1_1 (unix!@3) is the fallback, not world1_1/actor1 (unix!@4).
         let direct_actor_ref: ActorAddr =
-            reference::ProcId::from_resource_name("unix:@4".parse().unwrap(), "my_proc")
-                .actor_id("my_actor")
-                .into();
+            ProcAddr::from_resource_name("unix:@4".parse().unwrap(), "my_proc")
+                .actor_id("my_actor");
         router.bind(
             Address::Actor(direct_actor_ref.clone()),
             "unix:@5".parse().unwrap(),
@@ -3708,10 +3706,10 @@ mod tests {
         actor1: Instance<()>,
         _actor0_handle: ActorHandle<()>,
         _actor1_handle: ActorHandle<()>,
-        port_id: reference::PortId,
-        port_id1: reference::PortId,
-        port_id2: reference::PortId,
-        port_id2_1: reference::PortId,
+        port_id: PortAddr,
+        port_id1: PortAddr,
+        port_id2: PortAddr,
+        port_id2_1: PortAddr,
     }
 
     async fn setup_split_port_ids(
@@ -3752,7 +3750,7 @@ mod tests {
         }
     }
 
-    fn post(cx: &impl context::Actor, port_id: reference::PortId, msg: u64) {
+    fn post(cx: &impl context::Actor, port_id: PortAddr, msg: u64) {
         let serialized = wirevalue::Any::serialize(&msg).unwrap();
         port_id.send(cx, serialized);
     }
@@ -4202,7 +4200,7 @@ mod tests {
         // Create a destination not owned by this mailbox to force
         // forwarding.
         let remote_actor = test_actor_id("remote_world_1", "remote");
-        let dest = reference::PortId::new(remote_actor.clone(), /*port index*/ 4242);
+        let dest = remote_actor.port_ref(4242.into());
 
         // Build an envelope (TTL is seeded in `MessageEnvelope::new` /
         // `::serialize`).

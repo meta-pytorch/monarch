@@ -20,6 +20,7 @@ use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
 use futures::try_join;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Bind;
@@ -29,7 +30,6 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor::handle;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -347,7 +347,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             return Ok(());
         }
         let res = async move {
-            let (tx, mut rx) = cx.open_port();
+            let (tx, mut rx) = cx.open_port::<Result<(), String>>();
             self.get_auto_reload_actor(cx)
                 .await?
                 .send(cx, AutoReloadMessage { result: tx.bind() })?;

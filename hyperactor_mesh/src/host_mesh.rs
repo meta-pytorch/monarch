@@ -35,10 +35,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use hyperactor::ActorId;
+use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
-use hyperactor::reference::ActorId;
-use hyperactor::reference::ProcId;
 use ndslice::Extent;
 use ndslice::Region;
 use ndslice::ViewExt;
@@ -121,17 +121,16 @@ impl HostRef {
     fn mesh_agent(&self) -> ActorRef<HostAgent> {
         ActorRef::attest(
             self.service_proc()
-                .actor_id(host_agent::HOST_MESH_AGENT_ACTOR_NAME)
-                .into(),
+                .actor_id(host_agent::HOST_MESH_AGENT_ACTOR_NAME),
         )
     }
 
     /// The ProcId for the proc with name `name` on this host.
     fn named_proc(&self, id: &ResourceId) -> ProcId {
-        ProcId::from_proc_ref(hyperactor::addr::ProcAddr::new(
+        ProcId::new(
             hyperactor::id::ProcId::new(id.uid().clone(), id.label().cloned()),
             self.0.clone().into(),
-        ))
+        )
     }
 
     /// The service proc on this host.
@@ -1160,8 +1159,7 @@ impl HostMeshRef {
                     // TODO: specify or retrieve from state instead, to avoid attestation.
                     ActorRef::attest(
                         host.named_proc(&proc_name)
-                            .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME)
-                            .into(),
+                            .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
                     ),
                 ));
             }

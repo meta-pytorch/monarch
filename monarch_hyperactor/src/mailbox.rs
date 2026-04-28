@@ -12,6 +12,7 @@ use std::hash::Hasher;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use hyperactor as reference;
 use hyperactor::Mailbox;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
@@ -28,7 +29,6 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use monarch_types::PickledPyObject;
 use monarch_types::py_global;
@@ -116,7 +116,7 @@ impl PyMailbox {
     }
 
     pub(super) fn post(&self, dest: &PyActorId, message: &PythonMessage) -> PyResult<()> {
-        let port_id = dest.inner.port_id(PythonMessage::port());
+        let port_id = dest.inner.port_ref(PythonMessage::port().into());
         let message = wirevalue::Any::serialize(message).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "failed to serialize message ({:?}) to Any: {}",
@@ -183,7 +183,7 @@ impl PyPortId {
     #[pyo3(signature = (*, actor_id, port))]
     fn new(actor_id: &PyActorId, port: u64) -> Self {
         Self {
-            inner: reference::PortId::new(actor_id.inner.clone(), port),
+            inner: actor_id.inner.port_ref(port.into()),
         }
     }
 
@@ -199,7 +199,7 @@ impl PyPortId {
     #[getter]
     fn actor_id(&self) -> PyActorId {
         PyActorId {
-            inner: self.inner.actor_id().clone(),
+            inner: self.inner.actor_ref(),
         }
     }
 
@@ -405,7 +405,7 @@ impl PythonUndeliverableMessageEnvelope {
     }
 
     fn dest(&self) -> PyResult<PyPortId> {
-        let port_id: hyperactor::reference::PortId = self.inner()?.0.dest().clone().into();
+        let port_id: hyperactor::PortId = self.inner()?.0.dest().clone();
         Ok(port_id.into())
     }
 
@@ -471,7 +471,7 @@ impl PythonOncePortRef {
         let id: Option<PyPortId> = (*slf.borrow())
             .inner
             .as_ref()
-            .map(|x| x.port_id().clone().into());
+            .map(|x: &reference::OncePortRef<PythonMessage>| x.port_id().clone().into());
         Ok((slf.get_type(), (id,)))
     }
 
@@ -479,6 +479,7 @@ impl PythonOncePortRef {
         let Some(port_ref) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePortRef is already used"));
         };
+        let port_ref: reference::OncePortRef<PythonMessage> = port_ref;
         port_ref
             .send(instance.deref(), message)
             .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
@@ -486,9 +487,10 @@ impl PythonOncePortRef {
     }
 
     fn __repr__(&self) -> String {
-        self.inner
-            .as_ref()
-            .map_or("OncePortRef is already used".to_string(), |r| r.to_string())
+        self.inner.as_ref().map_or(
+            "OncePortRef is already used".to_string(),
+            |r: &reference::OncePortRef<PythonMessage>| r.to_string(),
+        )
     }
 
     #[getter]
@@ -587,10 +589,9 @@ impl EitherPortRef {
     pub fn get_return_undeliverable(&self) -> bool {
         match self {
             EitherPortRef::Unbounded(port_ref) => port_ref.inner.get_return_undeliverable(),
-            EitherPortRef::Once(once_port_ref) => once_port_ref
-                .inner
-                .as_ref()
-                .is_some_and(|r| r.get_return_undeliverable()),
+            EitherPortRef::Once(once_port_ref) => once_port_ref.inner.as_ref().is_some_and(
+                |r: &reference::OncePortRef<PythonMessage>| r.get_return_undeliverable(),
+            ),
         }
     }
 

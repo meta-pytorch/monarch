@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
@@ -21,7 +22,6 @@ use hyperactor::Proc;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 
 use super::IbvBuffer;

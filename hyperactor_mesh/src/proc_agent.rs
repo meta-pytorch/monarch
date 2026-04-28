@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Address;
@@ -34,7 +35,6 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::proc::Proc;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -645,7 +645,7 @@ impl Actor for ProcAgent {
     ) -> Result<(), anyhow::Error> {
         if let Some(true) = envelope.0.headers().get(STREAM_STATE_SUBSCRIBER) {
             let dest_port_id: hyperactor_reference::PortId = envelope.0.dest().clone().into();
-            let port = PortRef::<resource::State<ActorState>>::attest(dest_port_id.into());
+            let port = PortRef::<resource::State<ActorState>>::attest(dest_port_id);
             // Remove this subscriber from whichever actor instance holds it.
             for instance in self.actor_states.values_mut() {
                 instance.subscribers.retain(|s| s != &port);
@@ -1220,12 +1220,12 @@ mod tests {
     // mesh_admin::tests::test_proc_children_reflect_directly_spawned_actors.
     #[tokio::test]
     async fn test_query_child_proc_returns_live_children() {
+        use hyperactor as hyperactor_reference;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
         use hyperactor::introspect::IntrospectMessage;
         use hyperactor::introspect::IntrospectResult;
-        use hyperactor::reference as hyperactor_reference;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
         let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
@@ -1330,12 +1330,12 @@ mod tests {
         use std::sync::atomic::AtomicUsize;
         use std::sync::atomic::Ordering;
 
+        use hyperactor as hyperactor_reference;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
         use hyperactor::introspect::IntrospectMessage;
         use hyperactor::introspect::IntrospectResult;
-        use hyperactor::reference as hyperactor_reference;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
         let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
@@ -1636,12 +1636,12 @@ mod tests {
     // not backlog history.
     #[tokio::test]
     async fn test_query_child_proc_queue_depth_under_pressure() {
+        use hyperactor as hyperactor_reference;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
         use hyperactor::introspect::IntrospectMessage;
         use hyperactor::introspect::IntrospectResult;
-        use hyperactor::reference as hyperactor_reference;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), "qd_proc".to_string()).unwrap();
         let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
