@@ -727,6 +727,14 @@ pub fn ibverbs_supported() -> bool {
 }
 
 fn ibverbs_supported_impl() -> bool {
+    // When rdmaxcel-sys was compiled in stub mode, CUDA driver calls and
+    // the `register_cuda_memory` helper return `NOT_INITIALIZED`, so
+    // ibverbs queue-pair initialization would fail even when hardware
+    // devices are present. Report ibverbs as unavailable so the manager
+    // actor cleanly falls through to the TCP backend.
+    if rdmaxcel_sys::IS_STUB_BUILD {
+        return false;
+    }
     // SAFETY: We are calling a C function from libibverbs.
     unsafe {
         let mut num_devices = 0;

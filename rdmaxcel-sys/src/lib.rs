@@ -290,6 +290,14 @@ mod inner {
 
 pub use inner::*;
 
+/// `true` when this crate was compiled in stub mode (no CUDA/ROCm
+/// toolchain available). In stub mode every `rdmaxcel_cu*` wrapper
+/// returns `CUDA_ERROR_NOT_INITIALIZED`, and the ibverbs backend
+/// cannot actually drive hardware because `register_cuda_memory` is a
+/// no-op. Downstream crates should consult this flag to disable the
+/// ibverbs code path at runtime and fall through to the TCP transport.
+pub const IS_STUB_BUILD: bool = cfg!(rdmaxcel_stub);
+
 // Segment scanner callback type - type alias for the bindgen-generated type
 pub type RdmaxcelSegmentScannerFn = rdmaxcel_segment_scanner_fn;
 
