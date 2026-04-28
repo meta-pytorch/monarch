@@ -66,6 +66,41 @@
 //! While this complicates the interface somewhat, it allows the
 //! implementation to avoid a serialization roundtrip when passing
 //! messages locally.
+//!
+//! ## Undeliverable-message log invariants (UM-*)
+//!
+//! The `undelivered_message_abandoned` log at
+//! `UndeliverableMailboxSender::post_unchecked` is a user-facing
+//! surface: it fires when a message could not be delivered *and*
+//! could not be returned to its sender. The following invariants
+//! govern its shape so the log stays scannable and its downstream
+//! consumers (Scuba, alerts) stay stable.
+//!
+//! - **UM-1 (bounded abandoned-message log).** The log must not emit
+//!   unbounded `envelope.headers().to_string()` or
+//!   `envelope.data().to_string()`. Payload observability is provided
+//!   by `message_type` (`data.typename()`) and `data_len`
+//!   (`data.len()`) — cheap, bounded, and type-safe.
+//!
+//! - **UM-2 (stable compatibility fields).** The `actor_name` and
+//!   `actor_id` fields stay on the log with their current values and
+//!   types. Readability improvements are strictly additive on this
+//!   surface; renames or removals require a separate migration diff
+//!   that coordinates with downstream consumers.
+//!
+//! - **UM-3a (destination naming).** When the envelope carries no
+//!   `OPERATION_ENDPOINT`, the format string names the transport
+//!   destination: `"message not delivered to <dest>"`.
+//!
+//! - **UM-3b (operation naming).** When the envelope carries
+//!   `OPERATION_ENDPOINT`, the format string names the operation:
+//!   `"abandoned message for <endpoint>"`.
+//!
+//!   `OPERATION_*` keys live in `hyperactor::mailbox::headers`
+//!   because the readers (this log, the undeliverable formatter)
+//!   live in `hyperactor` and can't depend upward on
+//!   `monarch_hyperactor`. Keys whose consumers are not at this
+//!   layer don't belong here.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -838,26 +873,42 @@ impl MailboxSender for UndeliverableMailboxSender {
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
-        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let sender_name = envelope
             .sender
             .label()
             .map_or("?".to_string(), |l| l.to_string());
         let error_str = envelope.error_msg().unwrap_or("".to_string());
-        // The undeliverable message was unable to be delivered back to the
-        // sender for some reason
-        tracing::error!(
-            name = "undelivered_message_abandoned",
-            actor_name = sender_name,
-            actor_id = envelope.sender.to_string(),
-            dest = envelope.dest.to_string(),
-            headers = envelope.headers().to_string(), // todo: implement tracing::Value for Flattrs
-            data = envelope.data().to_string(),
-            return_handle = %return_handle,
-            "message not delivered, {}",
-            error_str,
-        );
+        let operation_endpoint = envelope.headers().get(headers::OPERATION_ENDPOINT);
+        let operation_adverb = envelope.headers().get(headers::OPERATION_ADVERB);
+        // See UM-1..UM-3b in module docs.
+        match &operation_endpoint {
+            Some(endpoint) => tracing::error!(
+                name = "undelivered_message_abandoned",
+                actor_name = sender_name,
+                actor_id = envelope.sender.to_string(),
+                dest = envelope.dest.to_string(),
+                message_type = envelope.data().typename().unwrap_or("unknown"),
+                data_len = envelope.data().len(),
+                endpoint = %endpoint,
+                adverb = operation_adverb.as_deref().unwrap_or(""),
+                error = %error_str,
+                "abandoned message for {}",
+                endpoint,
+            ),
+            None => tracing::error!(
+                name = "undelivered_message_abandoned",
+                actor_name = sender_name,
+                actor_id = envelope.sender.to_string(),
+                dest = envelope.dest.to_string(),
+                message_type = envelope.data().typename().unwrap_or("unknown"),
+                data_len = envelope.data().len(),
+                error = %error_str,
+                "message not delivered to {}",
+                envelope.dest,
+            ),
+        }
     }
 }
 
@@ -4545,5 +4596,162 @@ mod tests {
 
         serve_handle.stop("test done");
         serve_handle.await.unwrap().unwrap();
+    }
+
+    /// Helper: build a `MessageEnvelope` with a recognizable payload
+    /// and non-empty headers, then feed it through
+    /// `UndeliverableMailboxSender::post_unchecked`. Returns the
+    /// sender + destination so tests can assert against the values we
+    /// know will end up on the log.
+    fn drive_abandonment_log(payload_sentinel: &str) -> (reference::ActorId, reference::PortId) {
+        use hyperactor_config::declare_attrs;
+
+        declare_attrs! {
+            // Any non-empty entry works; UM-1 only asserts the log
+            // does not dump `headers` inline.
+            attr UM_TEST_HEADER: u64;
+        }
+
+        let sender = test_actor_id("um_proc", "um_sender");
+        let dest = test_port_id("um_dest_proc", "um_dest", 42);
+
+        let mut headers = Flattrs::new();
+        headers.set(UM_TEST_HEADER, 0xC0FFEEu64);
+
+        let envelope = MessageEnvelope::new(
+            sender.clone(),
+            dest.clone(),
+            wirevalue::Any::serialize(&payload_sentinel.to_string()).unwrap(),
+            headers,
+        );
+
+        let (return_handle, _rx) = crate::mailbox::undeliverable::new_undeliverable_port();
+        UndeliverableMailboxSender.post_unchecked(envelope, return_handle);
+        (sender, dest)
+    }
+
+    /// UM-1: the log does not render unbounded `headers` or `data`
+    /// fields, and reports bounded `message_type` + `data_len`
+    /// summaries instead.
+    #[tracing_test::traced_test]
+    #[test]
+    fn test_um1_bounded_fields() {
+        let payload_sentinel = "um1_payload_sentinel_5b7a9c3d";
+        let (_sender, _dest) = drive_abandonment_log(payload_sentinel);
+
+        let buf = tracing_test::internal::global_buf().lock().unwrap();
+        let logs = std::str::from_utf8(&buf).expect("logs are utf-8");
+
+        // Bounded summaries are present.
+        assert!(
+            logs.contains("message_type="),
+            "UM-1: expected message_type field, got:\n{logs}"
+        );
+        assert!(
+            logs.contains("data_len="),
+            "UM-1: expected data_len field, got:\n{logs}"
+        );
+        // The payload body must not appear (no `data=<full body>`
+        // dump).
+        assert!(
+            !logs.contains(payload_sentinel),
+            "UM-1: payload body leaked into the log:\n{logs}"
+        );
+        // The `headers=` field must not appear. Use a space-prefixed
+        // match to avoid matching e.g. the word "headers" in free
+        // prose.
+        assert!(
+            !logs.contains(" headers="),
+            "UM-1: unbounded headers field leaked into the log:\n{logs}"
+        );
+    }
+
+    /// UM-2: the `actor_name` and `actor_id` fields are preserved
+    /// on the log for downstream Scuba / alert compatibility — same
+    /// field names, same values, same types as the prior shape.
+    #[tracing_test::traced_test]
+    #[test]
+    fn test_um2_compat_fields_preserved() {
+        let (sender, _dest) = drive_abandonment_log("um2_payload");
+
+        let buf = tracing_test::internal::global_buf().lock().unwrap();
+        let logs = std::str::from_utf8(&buf).expect("logs are utf-8");
+
+        // Decouple field-presence from value-presence so the test
+        // does not depend on the tracing formatter's quoting rules.
+        let actor_name = sender.log_name();
+        let actor_id = sender.to_string();
+        assert!(
+            logs.contains("actor_name=") && logs.contains(actor_name),
+            "UM-2: expected actor_name={actor_name} on the log, got:\n{logs}"
+        );
+        assert!(
+            logs.contains("actor_id=") && logs.contains(&actor_id),
+            "UM-2: expected actor_id={actor_id} on the log, got:\n{logs}"
+        );
+    }
+
+    /// UM-3: the format string names the transport destination.
+    #[tracing_test::traced_test]
+    #[test]
+    fn test_um3_destination_format() {
+        let (_sender, dest) = drive_abandonment_log("um3_payload");
+
+        let buf = tracing_test::internal::global_buf().lock().unwrap();
+        let logs = std::str::from_utf8(&buf).expect("logs are utf-8");
+
+        assert!(
+            logs.contains(&format!("message not delivered to {}", dest)),
+            "UM-3: expected destination-naming format string, got:\n{logs}"
+        );
+    }
+
+    /// UM-3b: when the envelope carries operation-context headers, the
+    /// format string names the user operation and the log carries
+    /// the structured `endpoint` / `adverb` fields.
+    #[tracing_test::traced_test]
+    #[test]
+    fn test_um3b_operation_format_with_operation_context() {
+        let sender = test_actor_id("um_proc", "um_sender");
+        let dest = test_port_id("um_dest_proc", "um_dest", 42);
+
+        let mut headers = Flattrs::new();
+        headers.set(
+            headers::OPERATION_ENDPOINT,
+            "training.buffer.sample()".to_string(),
+        );
+        headers.set(headers::OPERATION_ADVERB, "call_one".to_string());
+
+        let envelope = MessageEnvelope::new(
+            sender,
+            dest,
+            wirevalue::Any::serialize(&"um3b_payload".to_string()).unwrap(),
+            headers,
+        );
+
+        let (return_handle, _rx) = crate::mailbox::undeliverable::new_undeliverable_port();
+        UndeliverableMailboxSender.post_unchecked(envelope, return_handle);
+
+        let buf = tracing_test::internal::global_buf().lock().unwrap();
+        let logs = std::str::from_utf8(&buf).expect("logs are utf-8");
+
+        assert!(
+            logs.contains("abandoned message for training.buffer.sample()"),
+            "UM-3b: expected operation-naming format string, got:\n{logs}"
+        );
+        assert!(
+            logs.contains("endpoint=") && logs.contains("training.buffer.sample()"),
+            "UM-3b: expected endpoint field with the caller's operation, got:\n{logs}"
+        );
+        assert!(
+            logs.contains("adverb=") && logs.contains("call_one"),
+            "UM-3b: expected adverb field, got:\n{logs}"
+        );
+        // The UM-3a destination-naming shape must not appear when
+        // operation-context headers are stamped on the envelope.
+        assert!(
+            !logs.contains("message not delivered to"),
+            "UM-3b: unexpected destination-naming format string:\n{logs}"
+        );
     }
 }
