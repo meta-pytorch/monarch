@@ -33,7 +33,6 @@ use typeuri::Named;
 
 use crate as hyperactor; // for macros
 use crate::ActorAddr;
-use crate::ActorRef;
 use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
@@ -791,6 +790,7 @@ mod tests {
     use super::*;
     use crate as hyperactor;
     use crate::Actor;
+    use crate::Address;
     use crate::OncePortHandle;
     use crate::config;
     use crate::context::Mailbox as _;
