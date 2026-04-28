@@ -422,33 +422,36 @@ pub fn setup_cpp_static_libs() -> CppStaticLibsConfig {
 /// Returns (is_rocm, compute_home_path)
 ///
 /// Detection order:
-/// 1. MONARCH_RDMA_GPU_PLATFORM environment variable ("cuda" or "rocm")
-/// 2. Auto-detect: try CUDA first, fall back to ROCm
-/// 3. If both found, prefer CUDA (user can override with env var)
+/// 1. `MONARCH_GPU_PLATFORM` environment variable ("cuda", "rocm", or "none")
+/// 2. Auto-detect: one of CUDA or ROCm must be present; panic if both or neither are found
 pub fn detect_gpu_platform() -> (bool, String) {
-    // Check for explicit platform selection via env var
-    if let Ok(platform) = env::var("MONARCH_RDMA_GPU_PLATFORM") {
+    if let Ok(platform) = env::var("MONARCH_GPU_PLATFORM") {
         match platform.to_lowercase().as_str() {
+            "" => {}
             "rocm" => {
                 let rocm_home = rocm::validate_rocm_installation()
-                    .expect("MONARCH_RDMA_GPU_PLATFORM=rocm but ROCm installation not found");
+                    .expect("MONARCH_GPU_PLATFORM=rocm but ROCm installation not found");
                 println!("cargo:warning=Using ROCm from {} (explicit)", rocm_home);
                 return (true, rocm_home);
             }
             "cuda" => {
                 let cuda_home = validate_cuda_installation()
-                    .expect("MONARCH_RDMA_GPU_PLATFORM=cuda but CUDA installation not found");
+                    .expect("MONARCH_GPU_PLATFORM=cuda but CUDA installation not found");
                 println!("cargo:warning=Using CUDA from {} (explicit)", cuda_home);
                 return (false, cuda_home);
             }
+            "none" => panic!(
+                "MONARCH_GPU_PLATFORM=none but a GPU build target was requested; \
+                 rebuild without the tensor_engine_gpu feature"
+            ),
             _ => panic!(
-                "Invalid MONARCH_RDMA_GPU_PLATFORM value: {}. Must be 'rocm' or 'cuda'",
+                "Invalid MONARCH_GPU_PLATFORM value: {}. Must be 'cuda', 'rocm', or 'none'",
                 platform
             ),
         }
     }
 
-    // Auto-detect: try CUDA first, fall back to ROCm
+    // Auto-detect: exactly one of CUDA or ROCm must be installed.
     let cuda_result = validate_cuda_installation();
     let rocm_result = rocm::validate_rocm_installation();
 
@@ -464,10 +467,7 @@ pub fn detect_gpu_platform() -> (bool, String) {
             (false, cuda_home)
         }
         (true, true) => {
-            panic!(
-                "Both ROCm and CUDA detected. Set MONARCH_RDMA_GPU_PLATFORM=cuda or \
-                 MONARCH_RDMA_GPU_PLATFORM=rocm to select the platform."
-            );
+            panic!("Both ROCm and CUDA detected. Set MONARCH_GPU_PLATFORM=cuda, =rocm, or =none.");
         }
         (false, false) => {
             panic!("Neither CUDA nor ROCm installation found");
@@ -493,7 +493,9 @@ pub fn set_python_rpath() {
         if let Some(lib_dir) = &python_config.lib_dir {
             let lib_dir = Path::new(lib_dir);
             if cfg!(target_os = "macos") {
-                // Python.framework uses the framework root as the install-name base.
+                // Python.framework advertises libpython with an install name like
+                // @rpath/Versions/X.Y/lib/libpythonX.Y.dylib, so binaries need the
+                // framework root on their rpath rather than the inner lib dir.
                 if let Some(framework_root) = lib_dir.ancestors().find(|path| {
                     path.file_name()
                         .and_then(|name| name.to_str())

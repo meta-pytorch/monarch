@@ -282,7 +282,7 @@ impl PythonPortRef {
     #[new]
     fn new(port: PyPortId) -> Self {
         Self {
-            inner: reference::PortRef::attest(port.into()),
+            inner: reference::PortRef::attest(port.inner.into()),
         }
     }
     fn __reduce__<'py>(
@@ -462,7 +462,7 @@ impl PythonOncePortRef {
     #[new]
     fn new(port: Option<PyPortId>) -> Self {
         Self {
-            inner: port.map(|port| reference::PortRef::attest(port.inner).into_once()),
+            inner: port.map(|port| reference::PortRef::attest(port.inner.into()).into_once()),
         }
     }
     fn __reduce__<'py>(
@@ -622,6 +622,31 @@ impl EitherPortRef {
                     .take()
                     .ok_or_else(|| anyhow::anyhow!("OncePortRef already used"))?;
                 port.send(cx, message)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Send a message through this port reference with
+    /// caller-supplied envelope headers. Delegates to the underlying
+    /// `PortRef::send_with_headers` /
+    /// `OncePortRef::send_with_headers`.
+    pub fn send_with_headers(
+        &mut self,
+        cx: &impl hyperactor::context::Actor,
+        headers: hyperactor_config::Flattrs,
+        message: crate::actor::PythonMessage,
+    ) -> anyhow::Result<()> {
+        match self {
+            EitherPortRef::Unbounded(port_ref) => {
+                port_ref.inner.send_with_headers(cx, headers, message)?
+            }
+            EitherPortRef::Once(once_port_ref) => {
+                let port = once_port_ref
+                    .inner
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("OncePortRef already used"))?;
+                port.send_with_headers(cx, headers, message)?;
             }
         }
         Ok(())

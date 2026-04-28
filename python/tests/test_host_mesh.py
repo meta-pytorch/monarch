@@ -399,6 +399,9 @@ def test_spawn_procs_with_numactl_bind() -> None:
 
 @pytest.mark.timeout(120)
 def test_spawn_procs_with_taskset_bind() -> None:
+    if not hasattr(os, "sched_getaffinity"):
+        # pyre-fixme[29]: skip is a function
+        pytest.skip("os.sched_getaffinity not available on this platform")
     available = sorted(os.sched_getaffinity(0))
     if len(available) < 2:
         # pyre-fixme[29]: skip is a function
