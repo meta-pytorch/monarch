@@ -1611,14 +1611,14 @@ mod tests {
                         if p2p_threshold == 0 {
                             // Tree path: split port belongs to a comm actor.
                             assert!(
-                            reply_to
-                                .port_id()
-                                .actor_id()
-                                .label()
-                                .unwrap()
-                                .as_str()
-                                .contains("comm")
-                        );
+                                reply_to
+                                    .port_id()
+                                    .actor_id()
+                                    .label()
+                                    .unwrap()
+                                    .as_str()
+                                    .contains("comm")
+                            );
                         }
                     } else {
                         // Without reducer: port is passed through unchanged.
