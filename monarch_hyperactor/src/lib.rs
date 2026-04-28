@@ -25,6 +25,7 @@ pub mod logging;
 pub mod mailbox;
 pub mod metrics;
 pub mod ndslice;
+pub mod operation_context;
 pub mod pickle;
 pub mod proc;
 pub mod proc_launcher;
