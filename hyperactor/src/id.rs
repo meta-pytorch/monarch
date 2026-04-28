@@ -721,9 +721,7 @@ impl FromStr for PortId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let colon = s.rfind(':').ok_or(IdParseError::InvalidPortIdFormat)?;
-        let actor_part = &s[..colon];
-        let port_part = &s[colon + 1..];
+        let (actor_part, port_part) = s.split_once(':').ok_or(IdParseError::InvalidPortIdFormat)?;
 
         let actor_id: ActorId = actor_part.parse()?;
         let port: Port = port_part
