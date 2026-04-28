@@ -31,10 +31,9 @@ use serde::Serialize;
 use typeuri::Named;
 use uuid::Uuid;
 
-use crate::Name;
 use crate::ValueMesh;
 use crate::comm::CommMeshConfig;
-use crate::reference::ActorMeshId;
+use crate::mesh_id::ActorMeshId;
 
 // A temporary trait used to share code in v0/v1 migration. Can be deleted after
 // v0 casting is deleted.
@@ -124,8 +123,8 @@ impl CastMessageEnvelope {
         A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
+        let actor_name = actor_mesh_id.actor_name();
         let data = ErasedUnbound::try_from_message(message)?;
-        let actor_name = actor_mesh_id.0.to_string();
         Ok(Self {
             actor_mesh_id,
             headers,
@@ -321,7 +320,7 @@ impl CastMessageV1 {
     /// Create a new CastMessageEnvelope.
     pub(crate) fn new<A, M>(
         sender: hyperactor_reference::ActorId,
-        dest_mesh: &Name,
+        dest_mesh: &ActorMeshId,
         dest_region: Region,
         headers: Flattrs,
         message: M,
@@ -339,7 +338,7 @@ impl CastMessageV1 {
             session_id,
             seqs,
             dest_region,
-            dest_port: DestinationPort::new::<A, M>(dest_mesh.to_string()),
+            dest_port: DestinationPort::new::<A, M>(dest_mesh.actor_name()),
             data,
         })
     }

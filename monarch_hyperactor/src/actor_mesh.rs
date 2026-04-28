@@ -547,7 +547,7 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     }
 
     fn name(&self) -> PyResult<PyPythonTask> {
-        let name = self.mesh_ref().name().to_string();
+        let name = self.mesh_ref().id().to_string();
         PyPythonTask::new(async move { Ok(name) })
     }
 }
@@ -624,7 +624,7 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
     }
 
     fn name(&self) -> PyResult<PyPythonTask> {
-        let name = self.name().to_string();
+        let name = self.id().to_string();
         PyPythonTask::new(async move { Ok(name) })
     }
 }

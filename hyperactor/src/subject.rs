@@ -63,3 +63,15 @@ impl AsSubject for crate::reference::ProcId {
         Subject::proc(self)
     }
 }
+
+impl AsSubject for crate::ref_::ActorRef {
+    fn subject(&self) -> Subject<'_> {
+        Subject::actor(self)
+    }
+}
+
+impl AsSubject for crate::ref_::ProcRef {
+    fn subject(&self) -> Subject<'_> {
+        Subject::proc(self)
+    }
+}

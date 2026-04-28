@@ -218,9 +218,10 @@ async fn discover_pyspy_workers(fixture: &WorkloadFixture, expected: usize) -> R
                     };
 
                 let has_pyspy_worker = proc_node.children.iter().any(|actor_ref| match actor_ref {
-                    hyperactor_mesh::introspect::NodeRef::Actor(id) => {
-                        id.name().starts_with("pyspy_worker")
-                    }
+                    hyperactor_mesh::introspect::NodeRef::Actor(id) => id
+                        .label()
+                        .map(|l| l.as_str().starts_with("pyspy_worker"))
+                        .unwrap_or(false),
                     _ => false,
                 });
                 if has_pyspy_worker {
@@ -295,8 +296,8 @@ fn has_evidence(name: &str, evidence: &[&str]) -> bool {
 /// reported cleanly, not masked by a discovery failure.
 async fn check_preflight(s: &PyspyScenario) {
     // --- MIT-10, MIT-11: bogus proc error envelope (cheap, run first) ---
-    let bogus = "unix:@nonexistent_bogus_socket_xyz,bogus-ffffffffffffffff";
-    let encoded = urlencoding::encode(bogus);
+    let bogus = crate::harness::unreachable_proc_ref();
+    let encoded = urlencoding::encode(&bogus);
     let resp = s
         .fixture
         .get(&format!("/v1/pyspy/{encoded}"))

@@ -816,7 +816,7 @@ mod tests {
                 exit_on_shutdown: false,
             };
             let proc_id =
-                hyperactor_reference::ProcId::with_name(any_unix_addr(), "stdio-captured");
+                hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "stdio-captured");
             let opts = LaunchOptions {
                 command: with_sh(script),
                 bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -855,8 +855,10 @@ mod tests {
                 config: None,
                 exit_on_shutdown: false,
             };
-            let proc_id =
-                hyperactor_reference::ProcId::with_name(any_unix_addr(), "stdio-inherited");
+            let proc_id = hyperactor_reference::ProcId::from_resource_name(
+                any_unix_addr(),
+                "stdio-inherited",
+            );
             let opts = LaunchOptions {
                 command: with_sh(script),
                 bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -899,7 +901,7 @@ mod tests {
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "exit-7");
+        let proc_id = hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "exit-7");
         let opts = LaunchOptions {
             command: with_sh("exit 7"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -943,7 +945,7 @@ mod tests {
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "killed");
+        let proc_id = hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "killed");
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1020,7 +1022,8 @@ mod tests {
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "term-escalate");
+        let proc_id =
+            hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "term-escalate");
         let opts = LaunchOptions {
             command: with_sh(script),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1113,7 +1116,8 @@ while True:
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "drop-cleanup-test");
+        let proc_id =
+            hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "drop-cleanup-test");
         let opts = LaunchOptions {
             command,
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),

@@ -30,7 +30,7 @@ let addr = "tcp:127.0.0.1:8080".parse()?;
 // `unique` appends an address hash to make the name globally unique:
 let proc = ProcId::unique(addr.clone(), "service");
 // `with_name` uses the name as-is (for deserialization or already-unique names):
-let proc = ProcId::with_name(addr, "service");
+let proc = ProcId::from_resource_name(addr, "service");
 ```
 
 See [Host](../procs/host.md) for how procs are used in the Host architecture.
