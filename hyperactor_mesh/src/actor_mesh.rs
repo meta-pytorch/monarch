@@ -509,12 +509,6 @@ impl<A: Referable> ActorMeshRef<A> {
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
             if casting::v1_casting_enabled() {
                 if Selection::is_equivalent_to_true(&sel) {
-                    assert!(
-                        hyperactor_config::global::get(
-                            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER
-                        ),
-                        "native V1 casting requires ENABLE_DEST_ACTOR_REORDERING_BUFFER to be enabled",
-                    );
                     self.cast_v1(cx, message, root_comm_actor);
                     return Ok(());
                 }
@@ -691,7 +685,11 @@ impl<A: Referable> ActorMeshRef<A> {
                     .expect("rank replacement should not fail");
 
                 let mut rank_headers = headers.clone();
-                multicast::set_cast_info_on_headers(&mut rank_headers, cast_point, sender.clone());
+                multicast::set_cast_info_on_headers(
+                    &mut rank_headers,
+                    cast_point,
+                    sender.clone().into(),
+                );
 
                 let port_id = actor_ids
                     .get(rank)

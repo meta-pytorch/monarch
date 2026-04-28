@@ -1397,7 +1397,15 @@ mod tests {
                     );
                     if p2p_threshold == 0 {
                         // Tree path: split ports belong to comm actors.
-                        assert!(reply_to1.port_id().actor_id().name().contains("comm"));
+                        assert!(
+                            reply_to1
+                                .port_id()
+                                .actor_id()
+                                .label()
+                                .unwrap()
+                                .as_str()
+                                .contains("comm")
+                        );
                         assert!(
                             reply_to2
                                 .port_id()
