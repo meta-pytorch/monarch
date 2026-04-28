@@ -1538,7 +1538,9 @@ impl Mailbox {
 
         // TODO: don't even allocate a port until the port is bound. Possibly
         // have handles explicitly staged (unbound, bound).
-        let port_ref = self.actor_id().port_ref(Port::from(handle.inner.port_index));
+        let port_ref = self
+            .actor_id()
+            .port_ref(Port::from(handle.inner.port_index));
         match self.inner.ports.entry(handle.inner.port_index) {
             Entry::Vacant(entry) => {
                 entry.insert(Box::new(UnboundedSender::new(
@@ -1956,7 +1958,11 @@ impl<M: RemoteMessage> PortHandle<M> {
     /// This is used by [`actor::Binder`] implementations to bind actor refs.
     /// This is not intended for general use.
     pub(crate) fn bind_actor_port(&self) {
-        let port_id = self.inner.mailbox.actor_id().port_ref(Port::from(M::port()));
+        let port_id = self
+            .inner
+            .mailbox
+            .actor_id()
+            .port_ref(Port::from(M::port()));
         {
             let mut guard = self.inner.bound.write().unwrap();
             if guard.is_some() {
