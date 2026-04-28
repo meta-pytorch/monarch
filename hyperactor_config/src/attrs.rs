@@ -116,6 +116,8 @@ use serde::de::Visitor;
 use serde::ser::SerializeMap;
 use typeuri::Named;
 
+use crate::flattrs::Flattrs;
+
 // Information about an attribute key, used for automatic registration.
 // This needs to be public to be accessible from other crates, but it is
 // not part of the public API.
@@ -160,6 +162,114 @@ pub fn lookup_key_info(key_hash: u64) -> Option<&'static AttrKeyInfo> {
                 .collect()
         });
     KEYS_BY_HASH.get(&key_hash).copied()
+}
+
+/// Look up a key info by name using the global registry.
+///
+/// Returns `None` if no key with this name is registered.
+/// Uses a lazy-initialized hash map for O(1) lookup after first access.
+pub fn lookup_key_info_by_name(name: &str) -> Option<&'static AttrKeyInfo> {
+    static KEYS_BY_NAME: std::sync::LazyLock<
+        std::collections::HashMap<&'static str, &'static AttrKeyInfo>,
+    > = std::sync::LazyLock::new(|| {
+        inventory::iter::<AttrKeyInfo>()
+            .map(|info| (info.name, info))
+            .collect()
+    });
+    KEYS_BY_NAME.get(name).copied()
+}
+
+declare_attrs! {
+    /// Meta-attribute marker for operation context carried on
+    /// envelope headers. Attrs declared with
+    /// `@meta(OPERATION_CONTEXT_HEADER = true)` are stamped onto
+    /// outgoing request envelopes and copied onto reply envelopes
+    /// by the marker-driven helpers
+    /// (`stamp_marked_attrs_into_flattrs`, `copy_marked_flattrs`).
+    ///
+    /// The vocabulary describes which user operation a message
+    /// belongs to, so consumers such as the undeliverable-
+    /// abandonment log can name the operation. `OPERATION_*` names
+    /// the operation; it does not imply request/reply direction.
+    pub attr OPERATION_CONTEXT_HEADER: bool;
+}
+
+/// Returns `Some(true)` when the declared attribute key with this
+/// name carries the given bool meta marker with value `true`,
+/// `Some(false)` when it carries the marker with value `false`, and
+/// `None` for unknown names or declared keys that do not carry the
+/// marker at all.
+///
+/// Generic "is this attr a member of the category declared by this
+/// marker?" primitive. The lower layer does not know what category
+/// the marker names — the caller supplies the category marker that
+/// defines its vocabulary (e.g. `ATTRIBUTION_HEADER` for attribution
+/// data carried on envelope headers).
+pub fn is_attr_marked_with(name: &str, marker: Key<bool>) -> Option<bool> {
+    let info = lookup_key_info_by_name(name)?;
+    info.meta.get(marker).copied()
+}
+
+/// Copy every entry from `attrs` onto `dst` whose declared
+/// attribute key carries the bool meta marker `marker` with value
+/// `true`. Overwrite semantics (see `Flattrs::set_serialized`) — a
+/// later write for the same `key_hash` is the value returned by
+/// `Flattrs::get`. Entries whose declared key lacks the marker are
+/// silently skipped; entries whose key is not declared are also
+/// silently skipped.
+///
+/// Generic category-filter stamp. The lower layer does not know what
+/// category the marker names; callers pass the marker key that
+/// defines their vocabulary (e.g. `ATTRIBUTION_HEADER`). This is
+/// the single mechanism every `Attrs → Flattrs` stamp for a category
+/// should go through, so category membership is declared in one
+/// place (the meta annotation on each key) and enforced in one
+/// place (this helper).
+pub fn stamp_marked_attrs_into_flattrs(dst: &mut Flattrs, attrs: &Attrs, marker: Key<bool>) {
+    for (name, value) in attrs.iter() {
+        if is_attr_marked_with(name, marker) != Some(true) {
+            continue;
+        }
+        dst.set_serialized(fnv1a_hash(name.as_bytes()), &value.serialize_bincode());
+    }
+}
+
+/// Copy every entry from `src` to `dst` whose declared attribute
+/// key carries the bool meta marker `marker` with value `true`.
+/// Overwrite semantics (see `Flattrs::set_serialized`). Entries
+/// whose declared key lacks the marker — or whose key_hash does
+/// not resolve to a declared key in the current binary's
+/// inventory — are silently skipped.
+///
+/// Generic category-filter `Flattrs → Flattrs` copy. The companion
+/// of `stamp_marked_attrs_into_flattrs` for callers that already
+/// have a source `Flattrs` in hand (forwarding, hoisting) rather
+/// than an in-memory `Attrs`.
+pub fn copy_marked_flattrs(dst: &mut Flattrs, src: &Flattrs, marker: Key<bool>) {
+    for (key_hash, value) in src.iter() {
+        let Some(info) = lookup_key_info(key_hash) else {
+            continue;
+        };
+        if info.meta.get(marker).copied() != Some(true) {
+            continue;
+        }
+        dst.set_serialized(key_hash, value);
+    }
+}
+
+/// Returns the set of all declared attribute key names that carry
+/// the given bool meta marker (set to `true`) in the attrs
+/// inventory linked into the current binary.
+///
+/// Generic category-membership enumeration. Used by consumers that
+/// maintain explicit hard-coded category sets (for auditability)
+/// to validate the set matches the declaration-driven vocabulary;
+/// drift between the two is a bug.
+pub fn marked_attr_names(marker: Key<bool>) -> std::collections::HashSet<&'static str> {
+    inventory::iter::<AttrKeyInfo>()
+        .filter(|info| info.meta.get(marker).copied() == Some(true))
+        .map(|info| info.name)
+        .collect()
 }
 
 /// A typed key for the attribute dictionary.
@@ -1451,5 +1561,105 @@ mod tests {
         let displayed = AttrValue::display(&original);
         let parsed: Vec<String> = AttrValue::parse(&displayed).unwrap();
         assert_eq!(parsed, original);
+    }
+
+    declare_attrs! {
+        /// Test-local marker for the generic mechanism's
+        /// membership / stamp / copy / enumeration tests. Scoped to
+        /// the test module so the mechanism's coverage does not
+        /// depend on any caller-defined marker vocabulary.
+        pub attr TEST_GENERIC_MARKER: bool;
+
+        /// Declared attr carrying the test-local marker.
+        @meta(TEST_GENERIC_MARKER = true)
+        pub attr TEST_MARKED_ATTR: String;
+
+        /// Declared attr NOT carrying the test-local marker.
+        pub attr TEST_UNMARKED_ATTR: String;
+    }
+
+    // Generic marker-parameterized membership check: the helper
+    // does not know about any specific category; callers supply
+    // the marker. Validates that declared keys with
+    // `@meta(TEST_GENERIC_MARKER = true)` match and keys without
+    // do not.
+    #[test]
+    fn test_is_attr_marked_with() {
+        assert_eq!(
+            is_attr_marked_with(TEST_MARKED_ATTR.name(), TEST_GENERIC_MARKER),
+            Some(true),
+            "marked key must report Some(true)",
+        );
+        assert_eq!(
+            is_attr_marked_with(TEST_UNMARKED_ATTR.name(), TEST_GENERIC_MARKER),
+            None,
+            "unmarked key must report None (marker not present on its meta)",
+        );
+        assert_eq!(
+            is_attr_marked_with(
+                "hyperactor_config::attrs::tests::no_such_key_declared_anywhere",
+                TEST_GENERIC_MARKER,
+            ),
+            None,
+            "unknown names must report None",
+        );
+    }
+
+    // Generic marker-parameterized Attrs → Flattrs stamp. Builds
+    // an `Attrs` with one marked and one unmarked entry; stamps
+    // via the generic helper with `TEST_GENERIC_MARKER`; asserts
+    // only the marked entry lands on headers.
+    #[test]
+    fn test_stamp_marked_attrs_into_flattrs() {
+        use crate::flattrs::Flattrs;
+
+        let mut attrs = Attrs::new();
+        attrs.set(TEST_MARKED_ATTR, "marked_value".to_string());
+        attrs.set(TEST_UNMARKED_ATTR, "unmarked_value".to_string());
+
+        let mut headers = Flattrs::new();
+        stamp_marked_attrs_into_flattrs(&mut headers, &attrs, TEST_GENERIC_MARKER);
+
+        assert_eq!(
+            headers.get(TEST_MARKED_ATTR),
+            Some("marked_value".to_string()),
+        );
+        assert_eq!(headers.get::<String>(TEST_UNMARKED_ATTR), None);
+    }
+
+    // Generic marker-parameterized Flattrs → Flattrs copy. The
+    // source Flattrs gets populated with both marked and unmarked
+    // values via typed `set` (by-key-hash stamping); the generic
+    // copy resolves each key_hash through the inventory, filters by
+    // marker, and copies only the marked entry.
+    #[test]
+    fn test_copy_marked_flattrs() {
+        use crate::flattrs::Flattrs;
+
+        let mut src = Flattrs::new();
+        src.set(TEST_MARKED_ATTR, "marked".to_string());
+        src.set(TEST_UNMARKED_ATTR, "unmarked".to_string());
+
+        let mut dst = Flattrs::new();
+        copy_marked_flattrs(&mut dst, &src, TEST_GENERIC_MARKER);
+
+        assert_eq!(dst.get(TEST_MARKED_ATTR), Some("marked".to_string()),);
+        assert_eq!(dst.get::<String>(TEST_UNMARKED_ATTR), None);
+    }
+
+    // Generic marker-parameterized enumeration. The test-local
+    // `TEST_MARKED_ATTR` is marked, so it must appear; the
+    // unmarked test attr must not.
+    #[test]
+    fn test_marked_attr_names_enumeration() {
+        let names = marked_attr_names(TEST_GENERIC_MARKER);
+        assert!(
+            names.contains(TEST_MARKED_ATTR.name()),
+            "marked test attr must appear in the vocabulary enumeration",
+        );
+        assert!(
+            !names.contains(TEST_UNMARKED_ATTR.name()),
+            "unmarked test attr must not appear in the vocabulary enumeration",
+        );
     }
 }

@@ -89,7 +89,7 @@ impl BrokerId {
         let broker_name = format!("{:?}", self);
         let actor_id = cx.proc().proc_id().actor_id(&self.0);
         let actor_ref: reference::ActorRef<LocalStateBrokerActor> =
-            reference::ActorRef::attest(actor_id);
+            reference::ActorRef::attest(actor_id.into());
 
         let mut delay_ms = 1;
         loop {
