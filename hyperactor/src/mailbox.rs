@@ -2637,7 +2637,7 @@ impl MailboxRouter {
     /// Remove the binding for the given reference. Only the exact
     /// point is removed; other bindings under the same prefix are
     /// unaffected.
-    pub fn unbind(&self, dest: &ref_::Reference) {
+    pub fn unbind(&self, dest: &Address) {
         let mut w = self.entries.write().unwrap();
         w.remove(dest);
     }
