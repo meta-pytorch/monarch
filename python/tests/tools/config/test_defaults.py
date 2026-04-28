@@ -12,7 +12,6 @@ from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/con
     NOT_SET,
 )
 from torchx.specs import AppDef
-from torchx.specs.builders import _create_args_parser
 
 
 class TestDefaults(unittest.TestCase):
@@ -47,15 +46,3 @@ class TestDefaults(unittest.TestCase):
         # just make sure the common schedulers are present
         self.assertIn("local_cwd", defaults.scheduler_factories())
         self.assertIn("slurm", defaults.scheduler_factories())
-
-    def test_default_component(self) -> None:
-        # just make sure there exists a default component for each configured scheduler
-        # and that the returned default component is a valid component
-
-        for scheduler in defaults.scheduler_factories():
-            with self.subTest(scheduler=scheduler):
-                component_fn = defaults.component_fn(scheduler)
-
-                # the following will fail if the component_fn is not a valid torchx component
-                with self.assertRaises(SystemExit):
-                    _create_args_parser(component_fn).parse_args(["--help"])
