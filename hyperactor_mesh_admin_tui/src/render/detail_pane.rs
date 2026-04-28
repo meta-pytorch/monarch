@@ -282,7 +282,7 @@ fn render_host_detail(
     for child in &payload.children {
         let child_str = child.to_string();
         let short = match child {
-            NodeRef::Proc(proc_id) => proc_id.name().to_string(),
+            NodeRef::Proc(proc_id) => proc_id.id().to_string(),
             _ => child_str.clone(),
         };
         lines.push(Line::from(vec![
@@ -445,7 +445,7 @@ fn render_actor_detail(
 
     let created_str = created_at
         .as_ref()
-        .map(|t| format_system_time_iso(t))
+        .map(format_system_time_iso)
         .unwrap_or_else(|| "-".to_string());
 
     let mut lines = vec![
@@ -804,17 +804,25 @@ mod tests {
 
     fn mock_host_ref() -> NodeRef {
         use hyperactor::reference as hyperactor_reference;
-        let id_str = "unix:@test,world,host_agent[0]";
-        NodeRef::Host(hyperactor_reference::ActorId::from_str(id_str).unwrap())
+        let proc_id = hyperactor_reference::ProcId::from_resource_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "world",
+        );
+        NodeRef::Host(proc_id.actor_id("host_agent"))
     }
 
     fn mock_proc_ref() -> NodeRef {
         use hyperactor::reference as hyperactor_reference;
-        let id_str = "unix:@test,worker";
-        NodeRef::Proc(hyperactor_reference::ProcId::from_str(id_str).unwrap())
+        let proc_id = hyperactor_reference::ProcId::from_resource_name(
+            "unix:@test"
+                .parse::<hyperactor::channel::ChannelAddr>()
+                .unwrap(),
+            "worker",
+        );
+        NodeRef::Proc(proc_id)
     }
-
-    use std::str::FromStr;
 
     // PD-*: host detail shows memory stats when present.
     #[test]
