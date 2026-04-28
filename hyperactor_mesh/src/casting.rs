@@ -71,7 +71,11 @@ pub fn update_undeliverable_envelope_for_casting(
 }
 
 /// Common implementation for `ActorMesh`s and `ActorMeshRef`s to cast
-/// an `M`-typed message
+/// an `M`-typed message.
+///
+/// `caller_headers` are caller-supplied envelope headers (e.g.
+/// operation-context keys) merged into the inner envelope headers so
+/// receivers see them on `cx.headers()`.
 #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `CastError`.
 #[tracing::instrument(level = "debug", skip_all)]
 pub(crate) fn actor_mesh_cast<A, M>(
@@ -82,6 +86,7 @@ pub(crate) fn actor_mesh_cast<A, M>(
     root_mesh_shape: &Shape,
     cast_mesh_shape: &Shape,
     message: M,
+    caller_headers: &Flattrs,
 ) -> Result<(), CastError>
 where
     A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
@@ -92,7 +97,10 @@ where
         "message_variant" => message.arm().unwrap_or_default(),
     ));
 
-    let mut headers = Flattrs::new();
+    // Caller-known headers ride first; cast-info (timestamp,
+    // message type, mesh id) is stamped afterward and wins on
+    // collision because those keys are owned by this layer.
+    let mut headers = caller_headers.clone();
     mailbox::headers::set_send_timestamp(&mut headers);
     mailbox::headers::set_rust_message_type::<M>(&mut headers);
     headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
@@ -138,8 +146,10 @@ where
         message,
     };
 
-    // TEMPORARY: remove with v0 support
-    let mut headers = Flattrs::new();
+    // TEMPORARY: remove with v0 support. Same ownership rule as
+    // the inner envelope: caller-known headers ride first, cast-info
+    // wins on collision.
+    let mut headers = caller_headers.clone();
     headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
 
     comm_actor_ref
@@ -158,6 +168,7 @@ pub(crate) fn cast_to_sliced_mesh<A, M>(
     message: M,
     sliced_shape: &Shape,
     root_mesh_shape: &Shape,
+    caller_headers: &Flattrs,
 ) -> Result<(), CastError>
 where
     A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
@@ -186,6 +197,7 @@ where
         root_mesh_shape,
         sliced_shape,
         message,
+        caller_headers,
     )
 }
 
