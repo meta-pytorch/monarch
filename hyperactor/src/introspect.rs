@@ -133,6 +133,7 @@ use typeuri::Named;
 
 use crate::Address;
 use crate::InstanceCell;
+use crate::OncePortRef;
 /// Typed reference to an introspectable entity.
 ///
 /// This is the generic hyperactor layer — it knows about procs and

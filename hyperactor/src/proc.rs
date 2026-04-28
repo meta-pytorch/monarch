@@ -179,6 +179,9 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+use crate::reference::ActorId;
+use crate::reference::PortId;
+use crate::reference::ProcId;
 use crate::subject::AsSubject as _;
 
 /// Returns current epoch-millis from wall clock. Used by
@@ -492,14 +495,14 @@ impl Proc {
         // `return_undeliverable` closes the hazard path in case the
         // envelope ever escapes into the forwarder: it should be
         // dropped, not bounced to the fake sender.
-        let signal_actor_id = reference::ActorId::root(
-            reference::ProcId::from_resource_name(
+        let signal_actor_id = ActorId::root(
+            ProcId::from_resource_name(
                 ChannelAddr::any(channel::ChannelTransport::Local),
                 "attach",
             ),
             crate::id::Label::strip("attach"),
         );
-        let signal_port = reference::PortId::new(signal_actor_id.clone(), 0);
+        let signal_port = PortId::new(signal_actor_id.clone(), 0);
         let mut envelope = MessageEnvelope::serialize(
             signal_actor_id,
             signal_port,
@@ -3952,8 +3955,8 @@ mod tests {
         handle.await;
     }
 
-    // Tokio's I/O driver is not fork-safe on macOS, and this test validates
-    // termination by forking without a coordinator.
+    // Tokio's I/O driver is not fork-safe on macOS, and this test intentionally
+    // validates process termination by forking without a coordinator.
     #[cfg_attr(target_os = "macos", ignore = "tokio runtime fork assertion on macOS")]
     #[tokio::test]
     async fn test_proc_terminate_without_coordinator() {

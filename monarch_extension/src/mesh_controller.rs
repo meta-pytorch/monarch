@@ -156,7 +156,7 @@ impl _Controller {
         accumulate: bool,
     ) -> PyResult<()> {
         let response_port: Option<PortInfo> = response_port.map(|(port, ranks)| PortInfo {
-            port: reference::PortRef::attest(port.into()),
+            port: reference::PortRef::attest(reference::PortId::from(port).into()),
             ranks: ranks.into(),
             accumulate,
         });
@@ -195,7 +195,7 @@ impl _Controller {
             .send(
                 instance.deref(),
                 ClientToControllerMessage::SyncAtExit {
-                    port: reference::PortRef::attest(port.into()),
+                    port: reference::PortRef::attest(reference::PortId::from(port).into()),
                 },
             )
             .map_err(to_py_error)
@@ -781,7 +781,7 @@ impl MeshControllerActor {
     ) -> anyhow::Result<()> {
         if matches!(action, DebuggerAction::Paused()) {
             self.debugger_paused
-                .push_back(reference::ActorRef::attest(debugger_actor_id));
+                .push_back(reference::ActorRef::attest(debugger_actor_id.into()));
         } else {
             let debugger_actor = self
                 .debugger_active
