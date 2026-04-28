@@ -22,6 +22,7 @@ use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::ibverbs_supported;
 use monarch_rdma::local_memory::Keepalive;
 use monarch_rdma::local_memory::KeepaliveLocalMemory;
+use monarch_rdma::local_memory::MemoryKind;
 use monarch_rdma::local_memory::RdmaLocalMemory;
 use monarch_rdma::rdma_supported;
 use monarch_rdma::register_segment_scanner;
@@ -142,11 +143,20 @@ pub struct PyLocalMemoryHandle {
 #[pymethods]
 impl PyLocalMemoryHandle {
     #[new]
-    fn new(obj: Py<PyAny>, addr: usize, size: usize) -> Self {
+    fn new(obj: Py<PyAny>, addr: usize, size: usize, kind: &str) -> PyResult<Self> {
+        let kind = match kind {
+            "cpu" => MemoryKind::Cpu,
+            "cuda" => MemoryKind::Cuda,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown memory kind {other:?}; expected \"cpu\" or \"cuda\""
+                )));
+            }
+        };
         let keepalive: Arc<dyn Keepalive> = Arc::new(PyKeepalive(obj));
-        Self {
-            inner: KeepaliveLocalMemory::new(addr, size, keepalive),
-        }
+        Ok(Self {
+            inner: KeepaliveLocalMemory::new(addr, size, kind, keepalive),
+        })
     }
 
     #[getter]

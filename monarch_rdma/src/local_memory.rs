@@ -22,6 +22,19 @@ use std::sync::RwLock;
 use serde::Deserialize;
 use serde::Serialize;
 
+/// The kind of memory that a [`RdmaLocalMemory`] handle wraps.
+///
+/// Callers know at construction time whether the backing allocation is
+/// host memory or a CUDA device pointer; passing the kind explicitly
+/// avoids probing the CUDA driver on hosts that have no CUDA installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryKind {
+    /// Host memory, directly accessible from CPU threads.
+    Cpu,
+    /// CUDA device memory, accessible via the CUDA driver API.
+    Cuda,
+}
+
 /// Returns `true` when `addr` is a CUDA device pointer.
 ///
 /// Probes the CUDA driver via `cuPointerGetAttribute`; returns `false`
@@ -236,23 +249,16 @@ pub trait Keepalive: Send + Sync {}
 /// Local memory handle that keeps its backing allocation alive via an
 /// [`Arc<dyn Keepalive>`].
 ///
-/// Detects at construction time whether the address is a CUDA device
-/// pointer and dispatches `read_at`/`write_at` accordingly.
-///
-/// The `direct_access_host_bandwidth` and `direct_access_device_bandwidth`
-/// fields indicate the speed of reading the memory via pointer dereference
-/// on a host or device thread, respectively. A value of `None` means the
-/// memory is not directly accessible from that context.
+/// The caller specifies the [`MemoryKind`] at construction time, which
+/// selects the CPU or CUDA code path for `read_at`/`write_at`. Passing
+/// the kind explicitly (rather than probing the CUDA driver) means
+/// constructing a CPU handle does not touch CUDA and therefore works on
+/// hosts where `libcuda.so.1` is not installed.
 #[derive(Clone)]
 pub struct KeepaliveLocalMemory {
     addr: usize,
     size: usize,
-    /// Bandwidth (bytes/s) for direct host-thread pointer access, or `None`
-    /// if the memory is not host-accessible.
-    direct_access_host_bandwidth: Option<u64>,
-    /// Bandwidth (bytes/s) for direct device-thread pointer access, or
-    /// `None` if the memory is not device-accessible.
-    direct_access_device_bandwidth: Option<u64>,
+    kind: MemoryKind,
     _keepalive: Arc<dyn Keepalive>,
     guard: Arc<RwLock<()>>,
 }
@@ -262,37 +268,32 @@ impl Debug for KeepaliveLocalMemory {
         f.debug_struct("KeepaliveLocalMemory")
             .field("addr", &self.addr)
             .field("size", &self.size)
-            .field(
-                "direct_access_host_bandwidth",
-                &self.direct_access_host_bandwidth,
-            )
-            .field(
-                "direct_access_device_bandwidth",
-                &self.direct_access_device_bandwidth,
-            )
+            .field("kind", &self.kind)
             .finish_non_exhaustive()
     }
 }
 
 impl KeepaliveLocalMemory {
-    /// Create a new handle. Probes the CUDA driver to determine whether
-    /// `addr` is a device pointer and sets the bandwidth fields
-    /// accordingly.
-    pub fn new(addr: usize, size: usize, keepalive: Arc<dyn Keepalive>) -> Self {
-        // TODO(slurye): Using placeholder values for now. Fill in with real values.
-        let (host_bw, device_bw) = if is_device_ptr(addr) {
-            (None, Some(1))
-        } else {
-            (Some(1), None)
-        };
+    /// Create a new handle for an allocation whose kind is known to the
+    /// caller.
+    pub fn new(
+        addr: usize,
+        size: usize,
+        kind: MemoryKind,
+        keepalive: Arc<dyn Keepalive>,
+    ) -> Self {
         Self {
             addr,
             size,
-            direct_access_host_bandwidth: host_bw,
-            direct_access_device_bandwidth: device_bw,
+            kind,
             _keepalive: keepalive,
             guard: Arc::new(RwLock::new(())),
         }
+    }
+
+    /// The kind of memory this handle refers to.
+    pub fn kind(&self) -> MemoryKind {
+        self.kind
     }
 }
 
@@ -311,11 +312,12 @@ impl RdmaLocalMemory for KeepaliveLocalMemory {
         // SAFETY: The keepalive guard guarantees the allocation is live, and
         // check_bounds verified the access is in range.
         unsafe {
-            if self.direct_access_host_bandwidth.is_some() {
-                read_cpu(self.addr, offset, dst);
-                Ok(())
-            } else {
-                read_gpu(self.addr, offset, dst)
+            match self.kind {
+                MemoryKind::Cpu => {
+                    read_cpu(self.addr, offset, dst);
+                    Ok(())
+                }
+                MemoryKind::Cuda => read_gpu(self.addr, offset, dst),
             }
         }
     }
@@ -326,11 +328,12 @@ impl RdmaLocalMemory for KeepaliveLocalMemory {
         // SAFETY: The keepalive guard guarantees the allocation is live, and
         // check_bounds verified the access is in range.
         unsafe {
-            if self.direct_access_host_bandwidth.is_some() {
-                write_cpu(self.addr, offset, src);
-                Ok(())
-            } else {
-                write_gpu(self.addr, offset, src)
+            match self.kind {
+                MemoryKind::Cpu => {
+                    write_cpu(self.addr, offset, src);
+                    Ok(())
+                }
+                MemoryKind::Cuda => write_gpu(self.addr, offset, src),
             }
         }
     }
@@ -403,7 +406,7 @@ mod tests {
     fn host_keepalive_mem(data: Vec<u8>) -> KeepaliveLocalMemory {
         let addr = data.as_ptr() as usize;
         let size = data.len();
-        KeepaliveLocalMemory::new(addr, size, Arc::new(data))
+        KeepaliveLocalMemory::new(addr, size, MemoryKind::Cpu, Arc::new(data))
     }
 
     #[test]

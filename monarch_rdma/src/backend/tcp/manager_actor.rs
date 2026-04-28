@@ -954,6 +954,7 @@ mod tests {
     use crate::backend::RdmaBackend;
     use crate::local_memory::Keepalive;
     use crate::local_memory::KeepaliveLocalMemory;
+    use crate::local_memory::MemoryKind;
     use crate::local_memory::RdmaLocalMemory;
     use crate::rdma_manager_actor::GetTcpActorRefClient;
     use crate::rdma_manager_actor::RdmaManagerActor;
@@ -1054,6 +1055,7 @@ mod tests {
             let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
                 ptr,
                 buffer_size,
+                MemoryKind::Cpu,
                 Arc::new(cpu_buf),
             ));
             let rdma_remote_buf = rdma_handle
@@ -1584,6 +1586,7 @@ mod tests {
             let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
                 alloc.ptr(),
                 buffer_size,
+                MemoryKind::Cuda,
                 Arc::new(alloc),
             ));
             let rdma_remote_buf = rdma_handle
