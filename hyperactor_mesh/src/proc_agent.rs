@@ -42,9 +42,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use crate::Name;
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
+use crate::mesh_id::ResourceId;
 use crate::pyspy::PySpyDump;
 use crate::pyspy::PySpyProfile;
 use crate::pyspy::PySpyProfileWorker;
@@ -102,9 +102,9 @@ fn collect_live_children(
     for id in all_keys {
         if let Some(cell) = proc.get_instance(&id) {
             if cell.is_system() {
-                system_children.push(crate::introspect::NodeRef::Actor(id.clone()));
+                system_children.push(crate::introspect::NodeRef::Actor(id.clone().into()));
             }
-            children.push(hyperactor::introspect::IntrospectRef::Actor(id));
+            children.push(hyperactor::introspect::IntrospectRef::Actor(id.into()));
         }
     }
     (children, system_children)
@@ -174,7 +174,7 @@ impl ActorInstanceState {
 
     /// Build the `State<ActorState>` for this instance, suitable for
     /// replies and subscriber notifications.
-    fn to_state(&self, name: &Name) -> resource::State<ActorState> {
+    fn to_state(&self, id: &ResourceId) -> resource::State<ActorState> {
         let status = self.status();
         let actor_state = self.spawn.as_ref().ok().map(|actor_id| ActorState {
             actor_id: actor_id.clone(),
@@ -182,7 +182,7 @@ impl ActorInstanceState {
             supervision_events: self.supervision_event.clone().into_iter().collect(),
         });
         resource::State {
-            name: name.clone(),
+            id: id.clone(),
             status,
             state: actor_state,
             generation: self.generation,
@@ -194,9 +194,9 @@ impl ActorInstanceState {
     /// streaming subscribers get the full state, and one-shot
     /// `WaitRankStatus` waiters whose threshold is now met get replied
     /// to and removed.
-    fn notify_status_changed(&mut self, cx: &impl hyperactor::context::Actor, name: &Name) {
+    fn notify_status_changed(&mut self, cx: &impl hyperactor::context::Actor, id: &ResourceId) {
         // Streaming subscribers (persistent).
-        let state = self.to_state(name);
+        let state = self.to_state(id);
         for subscriber in &self.subscribers {
             let mut headers = Flattrs::new();
             headers.set(STREAM_STATE_SUBSCRIBER, true);
@@ -280,7 +280,7 @@ pub struct ProcAgent {
     proc: Proc,
     remote: Remote,
     /// Actors created and tracked through the resource behavior.
-    actor_states: HashMap<Name, ActorInstanceState>,
+    actor_states: HashMap<ResourceId, ActorInstanceState>,
     /// If true, and supervisor is None, record supervision events to be reported
     /// to owning actors later.
     record_supervision_events: bool,
@@ -370,7 +370,7 @@ impl ProcAgent {
         tracing::info!(
             name = "StopActor",
             %actor_id,
-            actor_name = actor_id.name(),
+            actor_name = actor_id.log_name(),
             %reason,
         );
         self.proc.stop_actor(actor_id, reason.to_string());
@@ -386,8 +386,8 @@ impl ProcAgent {
         // TUI can filter/gray without per-child fetches.
         let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
         for id in self.proc.all_terminated_actor_ids() {
-            let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
-            let node_ref = crate::introspect::NodeRef::Actor(id.clone());
+            let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone().into());
+            let node_ref = crate::introspect::NodeRef::Actor(id.clone().into());
             stopped_children.push(node_ref.clone());
             if let Some(snapshot) = self.proc.terminated_snapshot(&id) {
                 let snapshot_attrs: hyperactor_config::Attrs =
@@ -421,7 +421,11 @@ impl ProcAgent {
         attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
         attrs.set(
             crate::introspect::PROC_NAME,
-            self.proc.proc_id().name().to_string(),
+            self.proc
+                .proc_id()
+                .label()
+                .map(|l| l.as_str().to_string())
+                .unwrap_or_else(|| self.proc.proc_id().id().to_string()),
         );
         attrs.set(crate::introspect::NUM_ACTORS, num_live);
         attrs.set(hyperactor::introspect::CHILDREN, children);
@@ -482,8 +486,8 @@ impl Actor for ProcAgent {
         this.set_query_child_handler(move |child_ref| {
             use hyperactor::introspect::IntrospectResult;
 
-            if let hyperactor::reference::Reference::Actor(id) = child_ref {
-                if let Some(snapshot) = proc.terminated_snapshot(id) {
+            if let hyperactor::ref_::Reference::Actor(actor_ref) = child_ref {
+                if let Some(snapshot) = proc.terminated_snapshot(actor_ref) {
                     return snapshot;
                 }
             }
@@ -495,14 +499,15 @@ impl Actor for ProcAgent {
             // next QueryChild(Reference::Proc) response without an
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
-            if let hyperactor::reference::Reference::Proc(proc_id) = child_ref {
-                if proc_id == proc.proc_id() {
+            if let hyperactor::ref_::Reference::Proc(proc_ref) = child_ref {
+                if *proc_ref == *proc.proc_id() {
                     let (mut children, mut system_children) = collect_live_children(&proc);
 
                     let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
                     for id in proc.all_terminated_actor_ids() {
-                        let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
-                        let node_ref = crate::introspect::NodeRef::Actor(id.clone());
+                        let child_ref =
+                            hyperactor::introspect::IntrospectRef::Actor(id.clone().into());
+                        let node_ref = crate::introspect::NodeRef::Actor(id.clone().into());
                         stopped_children.push(node_ref.clone());
                         if let Some(snapshot) = proc.terminated_snapshot(&id) {
                             let snapshot_attrs: hyperactor_config::Attrs =
@@ -544,7 +549,13 @@ impl Actor for ProcAgent {
                     let num_live = children.len();
                     let mut attrs = hyperactor_config::Attrs::new();
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
-                    attrs.set(crate::introspect::PROC_NAME, proc_id.name().to_string());
+                    attrs.set(
+                        crate::introspect::PROC_NAME,
+                        proc_ref
+                            .label()
+                            .map(|l| l.as_str().to_string())
+                            .unwrap_or_else(|| proc_ref.id().to_string()),
+                    );
                     attrs.set(crate::introspect::NUM_ACTORS, num_live);
                     attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
                     attrs.set(crate::introspect::STOPPED_CHILDREN, stopped_children);
@@ -583,7 +594,9 @@ impl Actor for ProcAgent {
                         serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
 
                     return IntrospectResult {
-                        identity: hyperactor::introspect::IntrospectRef::Proc(proc_id.clone()),
+                        identity: hyperactor::introspect::IntrospectRef::Proc(
+                            proc_ref.clone().into(),
+                        ),
                         attrs: attrs_json,
                         children,
                         parent: None,
@@ -600,14 +613,14 @@ impl Actor for ProcAgent {
                     format!("child {} not found", child_ref),
                 );
                 let identity = match child_ref {
-                    hyperactor::reference::Reference::Proc(id) => {
-                        hyperactor::introspect::IntrospectRef::Proc(id.clone())
+                    hyperactor::ref_::Reference::Proc(p) => {
+                        hyperactor::introspect::IntrospectRef::Proc(p.clone().into())
                     }
-                    hyperactor::reference::Reference::Actor(id) => {
-                        hyperactor::introspect::IntrospectRef::Actor(id.clone())
+                    hyperactor::ref_::Reference::Actor(a) => {
+                        hyperactor::introspect::IntrospectRef::Actor(a.clone().into())
                     }
-                    hyperactor::reference::Reference::Port(id) => {
-                        hyperactor::introspect::IntrospectRef::Actor(id.actor_id().clone())
+                    hyperactor::ref_::Reference::Port(p) => {
+                        hyperactor::introspect::IntrospectRef::Actor(p.actor_ref().into())
                     }
                 };
                 IntrospectResult {
@@ -632,7 +645,7 @@ impl Actor for ProcAgent {
         envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         if let Some(true) = envelope.0.headers().get(STREAM_STATE_SUBSCRIBER) {
-            let dest_port_id = envelope.0.dest().clone();
+            let dest_port_id: hyperactor_reference::PortId = envelope.0.dest().clone().into();
             let port =
                 hyperactor_reference::PortRef::<resource::State<ActorState>>::attest(dest_port_id);
             // Remove this subscriber from whichever actor instance holds it.
@@ -670,15 +683,16 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
                 );
             }
             // Record the event in the actor's instance state and notify subscribers.
-            if let Some((name, instance)) = self
-                .actor_states
-                .iter_mut()
-                .find(|(_, s)| s.spawn.as_ref().ok() == Some(&event.actor_id))
-            {
+            if let Some((id, instance)) = self.actor_states.iter_mut().find(|(_, s)| {
+                s.spawn
+                    .as_ref()
+                    .ok()
+                    .is_some_and(|actor_id| actor_id.id() == event.actor_id.id())
+            }) {
                 instance.supervision_event = Some(event.clone());
                 instance.generation += 1;
-                let name = name.clone();
-                instance.notify_status_changed(cx, &name);
+                let id = id.clone();
+                instance.notify_status_changed(cx, &id);
             }
             // Defer republish so introspection picks up is_poisoned /
             // failed_actor_count without blocking the message loop.
@@ -702,11 +716,13 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
             // the whole process on error events.
             tracing::error!(
                 name = "supervision_event_transmit_failed",
-                proc_id = %cx.self_id().proc_id(),
+                proc_id = %cx.self_id().proc_ref(),
                 %event,
                 "could not propagate supervision event, crashing",
             );
 
+            // We should have a custom "crash" function here, so that this works
+            // in testing of the LocalAllocator, etc.
             std::process::exit(1);
         }
         Ok(())
@@ -792,7 +808,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
         cx: &Context<Self>,
         create_or_update: resource::CreateOrUpdate<ActorSpec>,
     ) -> anyhow::Result<()> {
-        if self.actor_states.contains_key(&create_or_update.name) {
+        if self.actor_states.contains_key(&create_or_update.id) {
             // There is no update.
             return Ok(());
         }
@@ -802,7 +818,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
         // invalid state.
         if self.actor_states.values().any(|s| s.has_errors()) {
             self.actor_states.insert(
-                create_or_update.name.clone(),
+                create_or_update.id.clone(),
                 ActorInstanceState {
                     spawn: Err(anyhow::anyhow!(
                         "Cannot spawn new actors on mesh with supervision events"
@@ -824,7 +840,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
             params_data,
         } = create_or_update.spec;
         self.actor_states.insert(
-            create_or_update.name.clone(),
+            create_or_update.id.clone(),
             ActorInstanceState {
                 create_rank,
                 spawn: self
@@ -832,7 +848,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                     .gspawn(
                         &self.proc,
                         &actor_type,
-                        &create_or_update.name.to_string(),
+                        &create_or_update.id.actor_name(),
                         params_data,
                         cx.headers().clone(),
                     )
@@ -854,13 +870,13 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
 #[async_trait]
 impl Handler<resource::Stop> for ProcAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
-        let actor_id = match self.actor_states.get_mut(&message.name) {
+        let actor_id = match self.actor_states.get_mut(&message.id) {
             Some(actor_state) => {
                 let id = actor_state.spawn.as_ref().ok().cloned();
                 if id.is_some() && !actor_state.stop_initiated {
                     actor_state.stop_initiated = true;
                     actor_state.generation += 1;
-                    actor_state.notify_status_changed(cx, &message.name);
+                    actor_state.notify_status_changed(cx, &message.id);
                     id
                 } else {
                     None
@@ -924,7 +940,7 @@ impl Handler<resource::GetRankStatus> for ProcAgent {
         use crate::StatusOverlay;
         use crate::resource::Status;
 
-        let (rank, status) = match self.actor_states.get(&get_rank_status.name) {
+        let (rank, status) = match self.actor_states.get(&get_rank_status.id) {
             Some(state) => (state.create_rank, state.status()),
             None => (usize::MAX, Status::NotExist),
         };
@@ -963,7 +979,7 @@ impl Handler<resource::WaitRankStatus> for ProcAgent {
         use crate::StatusOverlay;
         use crate::resource::Status;
 
-        let (rank, status) = match self.actor_states.get(&msg.name) {
+        let (rank, status) = match self.actor_states.get(&msg.id) {
             Some(state) => (state.create_rank, state.status()),
             None => (usize::MAX, Status::NotExist),
         };
@@ -982,7 +998,7 @@ impl Handler<resource::WaitRankStatus> for ProcAgent {
 
         // Otherwise, stash the waiter. It will be flushed when the
         // status changes (supervision event or stop).
-        if let Some(state) = self.actor_states.get_mut(&msg.name) {
+        if let Some(state) = self.actor_states.get_mut(&msg.id) {
             state.pending_wait_status.push((msg.min_status, msg.reply));
         }
         Ok(())
@@ -996,10 +1012,10 @@ impl Handler<resource::GetState<ActorState>> for ProcAgent {
         cx: &Context<Self>,
         get_state: resource::GetState<ActorState>,
     ) -> anyhow::Result<()> {
-        let state = match self.actor_states.get(&get_state.name) {
-            Some(instance) => instance.to_state(&get_state.name),
+        let state = match self.actor_states.get(&get_state.id) {
+            Some(instance) => instance.to_state(&get_state.id),
             None => resource::State {
-                name: get_state.name.clone(),
+                id: get_state.id.clone(),
                 status: resource::Status::NotExist,
                 state: None,
                 generation: 0,
@@ -1027,14 +1043,14 @@ impl Handler<resource::StreamState<ActorState>> for ProcAgent {
         cx: &Context<Self>,
         stream_state: resource::StreamState<ActorState>,
     ) -> anyhow::Result<()> {
-        let state = match self.actor_states.get_mut(&stream_state.name) {
+        let state = match self.actor_states.get_mut(&stream_state.id) {
             Some(instance) => {
-                let state = instance.to_state(&stream_state.name);
+                let state = instance.to_state(&stream_state.id);
                 instance.subscribers.push(stream_state.subscriber.clone());
                 state
             }
             None => resource::State {
-                name: stream_state.name.clone(),
+                id: stream_state.id.clone(),
                 status: resource::Status::NotExist,
                 state: None,
                 generation: 0,
@@ -1068,15 +1084,15 @@ impl Handler<resource::KeepaliveGetState<ActorState>> for ProcAgent {
         message: resource::KeepaliveGetState<ActorState>,
     ) -> anyhow::Result<()> {
         // Same impl as GetState, but additionally update the expiry time on the actor.
-        if let Ok(instance_state) = self
-            .actor_states
-            .get_mut(&message.get_state.name)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "attempting to register a keepalive for an actor that doesn't exist: {}",
-                    message.get_state.name
-                )
-            })
+        if let Ok(instance_state) =
+            self.actor_states
+                .get_mut(&message.get_state.id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "attempting to register a keepalive for an actor that doesn't exist: {}",
+                        message.get_state.id
+                    )
+                })
         {
             instance_state.expiry_time = Some(message.expires_after);
         }
@@ -1142,15 +1158,15 @@ impl Handler<SelfCheck> for ProcAgent {
         let now = std::time::SystemTime::now();
 
         // Collect expired actors before mutating, since stop_actor borrows &mut self.
-        let expired: Vec<(Name, hyperactor_reference::ActorId)> = self
+        let expired: Vec<(ResourceId, hyperactor_reference::ActorId)> = self
             .actor_states
             .iter()
-            .filter_map(|(name, state)| {
+            .filter_map(|(id, state)| {
                 let expiry = state.expiry_time?;
                 // If a stop was already initiated we don't need to do it again.
                 if now > expiry && !state.stop_initiated {
                     if let Ok(actor_id) = &state.spawn {
-                        return Some((name.clone(), actor_id.clone()));
+                        return Some((id.clone(), actor_id.clone()));
                     }
                 }
                 None
@@ -1164,8 +1180,8 @@ impl Handler<SelfCheck> for ProcAgent {
             );
         }
 
-        for (name, actor_id) in expired {
-            if let Some(state) = self.actor_states.get_mut(&name) {
+        for (id, actor_id) in expired {
+            if let Some(state) = self.actor_states.get_mut(&id) {
                 state.stop_initiated = true;
             }
             self.stop_actor_by_id(&actor_id, "orphaned");
@@ -1225,7 +1241,8 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let agent_id: hyperactor_reference::ActorId =
+            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
@@ -1236,7 +1253,7 @@ mod tests {
             port.send(
                 client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone().into()),
                     reply: reply_port.bind(),
                 },
             )
@@ -1333,7 +1350,8 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let agent_id: hyperactor_reference::ActorId =
+            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
@@ -1352,7 +1370,9 @@ mod tests {
                     .send(
                         &query_client,
                         IntrospectMessage::QueryChild {
-                            child_ref: hyperactor_reference::Reference::Proc(query_proc_id.clone()),
+                            child_ref: hyperactor_reference::Reference::Proc(
+                                query_proc_id.clone().into(),
+                            ),
                             reply: reply_port.bind(),
                         },
                     )
@@ -1413,7 +1433,7 @@ mod tests {
         port.send(
             &client,
             IntrospectMessage::QueryChild {
-                child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
+                child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone().into()),
                 reply: reply_port.bind(),
             },
         )
@@ -1459,7 +1479,7 @@ mod tests {
             .to_string();
         let actor_params =
             bincode::serde::encode_to_vec(&ExtraActor, bincode::config::legacy()).unwrap();
-        let actor_name = Name::Reserved("test_actor".to_string());
+        let actor_name = ResourceId::singleton(hyperactor::id::Label::new("test-actor").unwrap());
 
         // 1. Spawn an actor via CreateOrUpdate.
         agent_ref
@@ -1501,7 +1521,8 @@ mod tests {
         assert_eq!(stopped.status, resource::Status::Stopped);
 
         // 6. Test implicit unsubscription via undeliverable.
-        let actor_name_2 = Name::Reserved("test_actor_2".to_string());
+        let actor_name_2 =
+            ResourceId::singleton(hyperactor::id::Label::new("test-actor-2").unwrap());
         agent_ref
             .create_or_update(
                 &client,
@@ -1657,7 +1678,8 @@ mod tests {
 
         // QueryChild(Proc) — same aggregation logic as mesh-admin
         // resolution.
-        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let agent_id: hyperactor_reference::ActorId =
+            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
@@ -1668,7 +1690,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone().into()),
                     reply: reply_port.bind(),
                 },
             )

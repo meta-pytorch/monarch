@@ -149,7 +149,9 @@ pub fn instance() -> &'static Instance<TestRootClient> {
 /// ```
 #[cfg(fbcode_build)]
 pub async fn host_mesh(n: usize) -> HostMeshShutdownGuard {
-    use crate::Name;
+    use hyperactor::id::Label;
+
+    use crate::mesh_id::HostMeshId;
 
     let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
 
@@ -177,6 +179,7 @@ pub async fn host_mesh(n: usize) -> HostMeshShutdownGuard {
         cmd.spawn().unwrap();
     }
 
-    let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), host_addrs);
+    let host_mesh =
+        HostMeshRef::from_hosts(HostMeshId::unique(Label::new("test").unwrap()), host_addrs);
     HostMesh::take(host_mesh).shutdown_guard()
 }

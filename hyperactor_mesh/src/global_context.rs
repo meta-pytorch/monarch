@@ -65,6 +65,7 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::host::Host;
 use hyperactor::host::LocalProcManager;
+use hyperactor::id::Label;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
@@ -77,12 +78,13 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::HostMeshRef;
-use crate::Name;
 use crate::host_mesh::host_agent::GetLocalProcClient;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
+use crate::mesh_id::HostMeshId;
+use crate::mesh_id::ProcMeshId;
 use crate::proc_agent::GetProcClient;
 use crate::proc_agent::ProcAgent;
 use crate::proc_mesh::ProcMeshRef;
@@ -271,10 +273,10 @@ impl Actor for GlobalClientActor {
         env.set_error(DeliveryError::BrokenLink(
             "message returned to global root client".to_string(),
         ));
-        let actor_id = env.dest().actor_id().clone();
+        let actor_ref = env.dest().actor_ref();
         let headers = env.headers().clone();
         let event = ActorSupervisionEvent::new(
-            actor_id.clone(),
+            actor_ref.clone(),
             None,
             ActorStatus::generic_failure(format!("message not delivered: {}", env)),
             Some(headers),
@@ -285,14 +287,14 @@ impl Actor for GlobalClientActor {
                 if let Err(e) = sink.send(cx, event) {
                     tracing::warn!(
                         %e,
-                        actor=%actor_id,
+                        actor=%actor_ref,
                         "failed to forward supervision event from undeliverable"
                     );
                 }
             }
             None => {
                 tracing::warn!(
-                    actor=%actor_id,
+                    actor=%actor_ref,
                     error=?env.errors(),
                     "no supervision sink; undeliverable message logged but not forwarded"
                 );
@@ -363,9 +365,11 @@ async fn bootstrap_host() -> GlobalState {
         .expect("failed to spawn host agent");
 
     // 4. Build HostMeshRef.
-    let host_mesh =
-        HostMeshRef::from_host_agent(Name::new_reserved("local").unwrap(), host_agent.bind())
-            .expect("failed to create host mesh ref");
+    let host_mesh = HostMeshRef::from_host_agent(
+        HostMeshId::singleton(Label::new("local").unwrap()),
+        host_agent.bind(),
+    )
+    .expect("failed to create host mesh ref");
 
     // 5. Get local_proc via HostAgent (lazily boots ProcAgent).
     //
@@ -391,9 +395,9 @@ async fn bootstrap_host() -> GlobalState {
 
     // 7. Build ProcMeshRef.
     let proc_mesh = ProcMeshRef::new_singleton(
-        Name::new_reserved("local").unwrap(),
+        ProcMeshId::singleton(Label::new("local").unwrap()),
         ProcRef::new(
-            local_proc_agent.actor_id().proc_id().clone(),
+            local_proc_agent.actor_id().proc_ref().into(),
             0,
             local_proc_agent.bind(),
         ),
@@ -538,9 +542,10 @@ mod tests {
             Flattrs::new(),
         );
         // Target the global root client's well-known Undeliverable port.
+        let client_actor_id: hyperactor_reference::ActorId = client.self_id().clone().into();
         let undeliverable_port =
             hyperactor_reference::PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(
-                client.self_id(),
+                &client_actor_id,
             );
         undeliverable_port
             .send(client, Undeliverable(env))
