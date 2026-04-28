@@ -235,7 +235,9 @@ impl WorkloadFixture {
 
                     let has_actor = |name: &str| {
                         proc_node.children.iter().any(|r| match r {
-                            hyperactor_mesh::introspect::NodeRef::Actor(id) => id.name() == name,
+                            hyperactor_mesh::introspect::NodeRef::Actor(id) => {
+                                id.label().map(|l| l.as_str()) == Some(name)
+                            }
                             _ => false,
                         })
                     };
@@ -299,6 +301,18 @@ pub(crate) fn pyspy_workload_binary() -> PathBuf {
     buck_resources::get("monarch/hyperactor_mesh/pyspy_workload")
         .expect("pyspy_workload resource not found")
         .to_path_buf()
+}
+
+/// Build a canonical proc reference that is syntactically valid but
+/// points at an unreachable abstract unix socket.
+pub(crate) fn unreachable_proc_ref() -> String {
+    hyperactor::reference::ProcId::from_resource_name(
+        "unix:@nonexistent_bogus_socket_xyz"
+            .parse::<hyperactor::channel::ChannelAddr>()
+            .unwrap(),
+        "bogus-ffffffffffffffff",
+    )
+    .to_string()
 }
 
 /// Resolve the Rust sieve binary via Buck resources.

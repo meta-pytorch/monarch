@@ -1598,7 +1598,8 @@ mod tests {
             BoxedMailboxSender::new(router.clone()),
         );
         proc.clone().serve(client_rx);
-        router.bind(test_proc_id("client_0").into(), proc_addr.clone());
+        let proc_ref: hyperactor::ref_::ProcRef = test_proc_id("client_0").into();
+        router.bind(proc_ref, proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 
         // Spin up both the forwarder and the client

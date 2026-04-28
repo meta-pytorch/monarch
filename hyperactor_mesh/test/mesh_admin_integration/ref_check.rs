@@ -24,7 +24,7 @@ use crate::harness::WorkloadFixture;
 /// Panics if the ref is not an actor — callers only pass actor children.
 fn actor_base_name(r: &NodeRef) -> &str {
     match r {
-        NodeRef::Actor(id) => id.name(),
+        NodeRef::Actor(id) => id.label().map(|l| l.as_str()).unwrap_or("?"),
         other => panic!("expected actor ref, got {other:?}"),
     }
 }
