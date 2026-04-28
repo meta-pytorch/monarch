@@ -28,6 +28,7 @@ use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
 use hyperactor::handle;
+use hyperactor::id::Label;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
@@ -494,10 +495,15 @@ impl Actor for StreamActor {
         });
         PROC.with(|proc| proc.set(cx.proc().clone()).ok());
         ROOT_ACTOR_ID.with(|root_actor_id| {
+            let root_label = cx
+                .self_id()
+                .label()
+                .cloned()
+                .unwrap_or_else(|| Label::new("stream").unwrap());
             root_actor_id
                 .set(reference::ActorId::root(
-                    cx.self_id().proc_id().clone(),
-                    cx.self_id().name().to_string(),
+                    cx.self_id().proc_ref().clone().into(),
+                    root_label,
                 ))
                 .ok()
         });
@@ -638,7 +644,7 @@ impl StreamActor {
                 if self.active_recording.is_none() {
                     let worker_error = WorkerError {
                         backtrace: format!("{e}"),
-                        worker_actor_id: cx.self_id().clone(),
+                        worker_actor_id: cx.self_id().clone().into(),
                     };
                     tracing::info!("Propagating remote function error to client: {worker_error}");
                     self.controller_actor
@@ -1786,7 +1792,7 @@ impl StreamMessageHandler for StreamActor {
                             seq,
                             WorkerError {
                                 backtrace: format!("recording failed: {}", &seq_err),
-                                worker_actor_id: cx.self_id().clone(),
+                                worker_actor_id: cx.self_id().clone().into(),
                             },
                         )
                         .await?;
@@ -2089,7 +2095,7 @@ mod tests {
             .send_value(
                 cx,
                 seq,
-                stream_actor.actor_id().clone(),
+                stream_actor.actor_id().clone().into(),
                 Vec::new(),
                 None,
                 ArgsKwargs::from_wire_values(
