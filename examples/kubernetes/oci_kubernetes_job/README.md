@@ -22,8 +22,8 @@ helm install monarch-operator monarch-operator/monarch-operator \
 ## Install Controller
 
 There are 2 sets of files in this example:
-- [Files for AMD](monarch-oci/examples/kubernetes/oci_kubernetes_job/deployment_files/amd)
-- [Files for NVIDA](monarch-oci/examples/kubernetes/oci_kubernetes_job/deployment_files/amd)
+- [Files for AMD](./deployment_files/amd/)
+- [Files for NVIDA](./deployment_files/nvidia/)
 
 The files have been tested with A100 Nvidia GPUs and Mi300X AMD GPUs, but they should also work with other GPU shapes in OCI.
 
@@ -53,7 +53,7 @@ k cp controller.py monarch-tests/monarch-controller:/tmp/controller.py
 
 Step 1: Install SRIOV Plugin.
 
-Step 2: Copy [controller script with additional RDMA configuration](deployment_files/nvidia/controller-rdma.py) to the pod.
+Step 2: Copy [controller script (with additional RDMA configuration)](deployment_files/nvidia/controller-rdma.py) to the pod.
 
 ```bash
 cd examples/k8s_ddp_cnn/deployment_files/nvidia
