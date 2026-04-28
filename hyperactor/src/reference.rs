@@ -438,16 +438,22 @@ impl ProcId {
 
     /// The ResourceId text form of this proc's identity.
     ///
-    /// Produces `label` (singleton), `label<uid58>` (labeled instance),
-    /// or `<uid58>` (unlabeled instance). Suitable for filesystem paths
-    /// and string-based lookups that must round-trip through
-    /// `parse_resource_name`.
+    /// Produces `label` (singleton), `label-uid58` (labeled instance),
+    /// or `<uid58>` (unlabeled instance). Labeled instances match the
+    /// `Display` output of `mesh_id::ResourceId` and are suitable for
+    /// filesystem paths. All forms round-trip through `parse_resource_name`.
     pub fn resource_name(&self) -> String {
         let id = self.0.id();
+        fn uid_no_brackets(uid: &Uid) -> String {
+            uid.to_string()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_string()
+        }
         match (id.uid(), id.label()) {
             (Uid::Singleton(label), _) => label.to_string(),
-            (Uid::Instance(_), Some(label)) => format!("{label}{}", id.uid()),
-            (Uid::Instance(_), None) => id.uid().to_string(),
+            (uid @ Uid::Instance(_), Some(label)) => format!("{label}-{}", uid_no_brackets(uid)),
+            (uid @ Uid::Instance(_), None) => uid.to_string(),
         }
     }
 }
