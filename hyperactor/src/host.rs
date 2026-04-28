@@ -1721,7 +1721,7 @@ where
     // and call back.
     let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(backend_transport))?;
     proc.clone().serve(proc_rx);
-    channel::dial(callback_addr)?
+    channel::dial::<(ChannelAddr, ActorRef<A>)>(callback_addr)?
         .send((proc_addr, agent_handle.bind::<A>()))
         .await
         .map_err(ChannelError::from)?;
@@ -1740,7 +1740,7 @@ pub mod testing {
     use crate::Context;
     use crate::Handler;
     use crate::OncePortRef;
-    use crate::reference::OncePortRef;
+
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
     #[derive(Debug, Default)]
@@ -2288,7 +2288,7 @@ mod tests {
         // host's service proc.
         let bogus_actor = host.system_proc().proc_id().actor_ref("no-such-actor");
         let bogus_port = bogus_actor.port_ref(crate::port::Port::from(0u64));
-        let bogus_dest = reference::PortRef::<String>::attest(reference::PortId::from(bogus_port));
+        let bogus_dest = reference::PortRef::<String>::attest(bogus_port);
 
         let (trigger_inst, _h) = remote_proc.instance("trigger").unwrap();
         collector_ref
@@ -2336,7 +2336,7 @@ mod tests {
         // attached remote proc.
         let bogus_actor = remote_proc.proc_id().actor_ref("ghost-actor");
         let bogus_port = bogus_actor.port_ref(crate::port::Port::from(0u64));
-        let bogus_dest = reference::PortRef::<String>::attest(reference::PortId::from(bogus_port));
+        let bogus_dest = reference::PortRef::<String>::attest(bogus_port);
 
         let (trigger_inst, _h) = host.system_proc().instance("trigger").unwrap();
         collector_ref
@@ -2555,7 +2555,7 @@ mod tests {
                 let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
                 let _client_handle = client_proc.clone().serve(client_rx);
 
-                let echo_ref = reference::ActorRef::<EchoActor>::attest(echo_actor_id);
+                let echo_ref = reference::ActorRef::<EchoActor>::attest(echo_actor_id.into());
 
                 for ri in 0..M_REQUESTS {
                     let (client_inst, _h) = client_proc.instance(&format!("req-{}", ri)).unwrap();

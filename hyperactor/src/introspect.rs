@@ -133,6 +133,7 @@ use typeuri::Named;
 
 use crate::Address;
 use crate::InstanceCell;
+use crate::OncePortRef;
 use crate::reference;
 
 /// Typed reference to an introspectable entity.

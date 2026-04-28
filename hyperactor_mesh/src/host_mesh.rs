@@ -1257,8 +1257,7 @@ impl HostMeshRef {
             }
         }
 
-        let mesh =
-            ProcMesh::create_owned_unchecked(cx, proc_mesh_id, extent, self.clone(), procs).await;
+        let mesh = ProcMesh::create(cx, proc_mesh_id, extent, self.clone(), procs).await;
         if let Ok(ref mesh) = mesh {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
