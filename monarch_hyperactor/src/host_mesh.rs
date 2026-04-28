@@ -582,10 +582,26 @@ fn _spawn_admin(
 /// Static storage for the root client instance when using attach-based bootstrap.
 static ROOT_CLIENT_INSTANCE_FOR_ATTACH: OnceLock<Instance<PythonActor>> = OnceLock::new();
 
-/// Bootstrap a client by attaching to a remote host's duplex server.
+/// Bootstrap a Python client that runs *outside* the mesh by attaching
+/// its singleton proc to an in-mesh host's duplex server.
 ///
-/// Returns `(PyProcMesh, PyInstance)` — a singleton proc mesh for the
-/// attached proc and the root client actor instance on it.
+/// The motivating use case is a client process that cannot be reached
+/// directly by the procs it talks to — typically a developer machine
+/// driving a job whose hosts live inside a Kubernetes cluster. Rather
+/// than expose a public address for every proc, we expose a single
+/// in-mesh host at `duplex_address` and let the client attach to that
+/// host. The client's proc is created via `Proc::attach_to_host` so
+/// the host serves as the client's mailbox: outbound messages from
+/// the client and inbound replies all traverse that one connection.
+///
+/// In addition to the attached proc, this function also bootstraps a
+/// *local* host mesh in this process, so calls like `this_host()`
+/// continue to return a usable host. That host mesh is independent of
+/// the remote host the client attached to.
+///
+/// Returns `(PyHostMesh, PyProcMesh, PyInstance)` — the local host
+/// mesh, a singleton proc mesh wrapping the attached proc, and the
+/// root client actor instance running on it.
 #[pyfunction]
 fn bootstrap_attached(
     bootstrap_cmd: Option<PyBootstrapCommand>,
@@ -605,6 +621,7 @@ fn bootstrap_attached(
             Some(bootstrap_cmd),
             None,
             false,
+            None,
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
@@ -612,8 +629,9 @@ fn bootstrap_attached(
         // Store the agent for later shutdown
         HOST_MESH_AGENT_FOR_HOST.set(host_mesh_agent.clone()).ok(); // Ignore error if already set
 
-        let host_mesh_name = hyperactor_mesh::Name::new_reserved("local").unwrap();
-        let host_mesh = HostMeshRef::from_host_agent(host_mesh_name, host_mesh_agent.bind())
+        let host_mesh_id =
+            HostMeshId::singleton(Label::new("local").expect("'local' is a valid label"));
+        let host_mesh = HostMeshRef::from_host_agent(host_mesh_id, host_mesh_agent.bind())
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
         // Register C so MeshAdminAgent can discover it ("A/C
@@ -634,9 +652,14 @@ fn bootstrap_attached(
         let agent_handle = ProcAgent::boot_v1(proc.clone(), None)
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        let proc_mesh_name = hyperactor_mesh::Name::new_reserved("attached").unwrap();
-        let proc_ref = ProcRef::new(proc.proc_id().clone(), 0, agent_handle.bind());
-        let proc_mesh = ProcMeshRef::new_singleton(proc_mesh_name, proc_ref);
+        let proc_mesh_id =
+            ProcMeshId::singleton(Label::new("attached").expect("'attached' is a valid label"));
+        let proc_ref = ProcRef::new(
+            agent_handle.actor_id().proc_ref().into(),
+            0,
+            agent_handle.bind(),
+        );
+        let proc_mesh = ProcMeshRef::new_singleton(proc_mesh_id, proc_ref);
 
         let (instance, _handle) = monarch_with_gil(|py| {
             PythonActor::bootstrap_client_inner(py, proc, &ROOT_CLIENT_INSTANCE_FOR_ATTACH)

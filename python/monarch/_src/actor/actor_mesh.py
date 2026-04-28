@@ -325,8 +325,6 @@ _context: contextvars.ContextVar[Optional[Context]] = contextvars.ContextVar(
     "monarch.actor_mesh._context", default=None
 )
 
-_attach_to_addr: Optional[str] = None
-
 
 class _ActorFilter(logging.Filter):
     """
@@ -412,49 +410,41 @@ class _Lazy(Generic[T]):
 def _init_client_context() -> Context:
     """
     Create a client context that bootstraps an actor instance running on a real
-    local proc mesh on a real local host mesh, or by attaching to a remote
-    host when ``_attach_to_addr`` is set.
+    local proc mesh on a real local host mesh.
+
+    When the ``client_attach_addr`` configuration key is set to a
+    non-empty ZMQ-style address, bootstrap instead by attaching the
+    singleton proc to the remote host serving that address; the host
+    then acts as a mailbox forwarder for the client.
     """
     import atexit
 
-    from monarch._rust_bindings.monarch_hyperactor.host_mesh import bootstrap_attached, bootstrap_host
+    from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
+        bootstrap_attached,
+        bootstrap_host,
+    )
     from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
     from monarch._src.actor.proc_mesh import ProcMesh
+    from monarch.config import get_global_config
 
-    if _attach_to_addr is not None:
-        from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
-            bootstrap_attached,
-        )
-
-        hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_attached(
-            _bootstrap_cmd(), _attach_to_addr
-        ).block_on()
-
-        ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
-        token = _set_context(ctx)
-        try:
-            py_host_mesh = HostMesh._from_rust(hy_host_mesh)
-            py_proc_mesh = ProcMesh._from_rust(hy_proc_mesh, host_mesh=py_host_mesh)
-        finally:
-            _reset_context(token)
-
-        ctx.actor_instance.proc_mesh = py_proc_mesh
-        return ctx
+    attach_addr = get_global_config().get("client_attach_addr") or ""
+    if attach_addr:
+        bootstrap = bootstrap_attached(_bootstrap_cmd(), attach_addr)
     else:
-        hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
-            _bootstrap_cmd()
-        ).block_on()
+        bootstrap = bootstrap_host(_bootstrap_cmd())
 
-        ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
-        # Set the context here to avoid recursive context creation:
-        token = _set_context(ctx)
-        try:
-            py_host_mesh = HostMesh._from_rust(hy_host_mesh)
-            py_proc_mesh = ProcMesh._from_rust(hy_proc_mesh, py_host_mesh)
-        finally:
-            _reset_context(token)
+    hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap.block_on()
 
-        ctx.actor_instance.proc_mesh = py_proc_mesh
+    ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
+    # Set the context here to avoid recursive context creation:
+    token = _set_context(ctx)
+    try:
+        py_host_mesh = HostMesh._from_rust(hy_host_mesh)
+        py_proc_mesh = ProcMesh._from_rust(hy_proc_mesh, py_host_mesh)
+    finally:
+        _reset_context(token)
+
+    ctx.actor_instance.proc_mesh = py_proc_mesh
 
     # Register shutdown_context as an atexit handler. Python atexit handlers
     # run in LIFO order. shutdown_tokio_runtime was registered earlier (during
@@ -528,14 +518,11 @@ def shutdown_context() -> "Future[None]":
     return Future(coro=_shutdown_sequence())
 
 
-def context(*, attach_to: Optional[str] = None) -> Context:
+def context() -> Context:
     c = _context.get()
     if c is None:
         from monarch._src.actor.proc_mesh import _get_controller_controller
 
-        global _attach_to_addr
-        if attach_to is not None:
-            _attach_to_addr = attach_to
         c = _client_context.get()
         _set_context(c)
         _, c.actor_instance._controller_controller = _get_controller_controller()
@@ -884,7 +871,14 @@ class ValueMesh(MeshTrait, Generic[R]):
             # Shouldn't happen if Shape is consistent, but keep a clear
             # error.
             raise IndexError(f"rank {global_rank} not in current shape")
-        return self.get(local_idx)
+        try:
+            # pyre-ignore[21]: monarch.common only exists with tensor engine
+            from monarch.common.device_mesh import no_mesh
+        except ImportError:
+            return self.get(local_idx)
+        # pyre-ignore[16]: no_mesh type resolved at runtime
+        with no_mesh.activate():
+            return self.get(local_idx)
 
     def items(self) -> Iterable[Tuple[Point, R]]:
         """

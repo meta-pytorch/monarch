@@ -510,8 +510,10 @@ class DuplexProcessJob(ProcessJob):
     """ProcessJob that also exposes a duplex socket on the first host.
 
     The duplex address is available via ``duplex_addr`` after calling
-    ``state()``.  Pass it to ``context(attach_to=...)`` so the client
-    bootstraps by attaching to the worker.
+    ``state()``.  Set ``client_attach_addr`` to this value (via
+    ``configured(client_attach_addr=...)``) before the first
+    ``context()`` call so the client bootstraps by attaching to the
+    worker.
     """
 
     def __init__(
@@ -549,6 +551,7 @@ class DuplexProcessJob(ProcessJob):
         # Wait for the first worker's frontend socket to appear.
         # The duplex server is now on the same address as the frontend.
         first_key = f"{next(iter(self._meshes))}_0"
+        assert self._tmpdir is not None
         sock_path = os.path.join(self._tmpdir, first_key)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -634,9 +637,10 @@ class UndeliverableSender(Actor):
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-async def test_context_attach_to() -> None:
-    """Verify context(attach_to=...) can spawn meshes and send messages —
-    all over the duplex channel.
+async def test_client_attach_addr() -> None:
+    """Verify ``configured(client_attach_addr=...)`` causes the client
+    to bootstrap by attaching to the worker, and that subsequent mesh
+    operations route exclusively over the duplex channel.
 
     After bootstrapping and spawning procs we remove the worker's frontend
     socket from the filesystem.  Any subsequent client-side messaging that
@@ -647,55 +651,58 @@ async def test_context_attach_to() -> None:
     job = DuplexProcessJob()
     job.apply()
 
-    context(attach_to=job.duplex_addr)
+    with configured(client_attach_addr=job.duplex_addr):
+        context()
 
-    # Remove the worker's frontend socket.  The client should never need
-    # to dial the frontend — all communication flows through the duplex
-    # channel.  If anything on the client side accidentally tries to
-    # connect to the frontend, it will fail.
-    frontend = job.frontend_socket_path
-    assert os.path.exists(frontend)
-    os.remove(frontend)
-    assert not os.path.exists(frontend)
+        # Remove the worker's frontend socket.  The client should never
+        # need to dial the frontend — all communication flows through
+        # the duplex channel.  If anything on the client side
+        # accidentally tries to connect to the frontend, it will fail.
+        frontend = job.frontend_socket_path
+        assert os.path.exists(frontend)
+        os.remove(frontend)
+        assert not os.path.exists(frontend)
 
-    # (a) Spawn HostMesh, ProcMesh, and ActorMesh.
-    hm = job.state(cached_path=None).hosts
-    assert hm is not None
+        # (a) Spawn HostMesh, ProcMesh, and ActorMesh.
+        hm = job.state(cached_path=None).hosts
+        assert hm is not None
 
-    pm = hm.spawn_procs(per_host={"workers": 2})
-    assert pm is not None
+        pm = hm.spawn_procs(per_host={"workers": 2})
+        assert pm is not None
 
-    am = pm.spawn("echo", EchoActor)
+        am = pm.spawn("echo", EchoActor)
 
-    # (b) Send messages to the actor mesh.
-    results = am.echo.call("hello").get()
+        # (b) Send messages to the actor mesh.
+        results = am.echo.call("hello").get()
 
-    # (c) Get replies back.
-    for val in results.values():
-        assert val == "hello"
+        # (c) Get replies back.
+        for val in results.values():
+            assert val == "hello"
 
     job.kill()
 
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_context_attach_to_this_host_and_this_proc() -> None:
-    """After calling context(attach_to=...), this_host() and this_proc()
-    return the attached host and proc meshes."""
+def test_client_attach_addr_this_host_and_this_proc() -> None:
+    """After bootstrapping with ``client_attach_addr`` set,
+    ``this_host()`` and ``this_proc()`` return the attached host and
+    proc meshes."""
     job = DuplexProcessJob()
     job.apply()
 
-    context(attach_to=job.duplex_addr)
+    with configured(client_attach_addr=job.duplex_addr):
+        context()
 
-    proc = this_proc()
-    assert proc is not None
-    host = this_host()
-    assert host is not None
-    assert host is proc.host_mesh
+        proc = this_proc()
+        assert proc is not None
+        host = this_host()
+        assert host is not None
+        assert host is proc.host_mesh
 
-    # Verify the meshes are usable by spawning an actor.
-    am = proc.spawn("echo2", EchoActor)
-    result = am.echo.call_one("ping").get()
-    assert result == "ping"
+        # Verify the meshes are usable by spawning an actor.
+        am = proc.spawn("echo2", EchoActor)
+        result = am.echo.call_one("ping").get()
+        assert result == "ping"
 
     job.kill()

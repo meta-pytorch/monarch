@@ -87,6 +87,7 @@ if TYPE_CHECKING:
             rdma_allow_tcp_fallback: NotRequired[bool]
             rdma_disable_ibverbs: NotRequired[bool]
             rdma_max_chunk_size_mb: NotRequired[int]
+            client_attach_addr: NotRequired[str]
 
         ConfigureKwargsType = Unpack[ConfigureArgs]
     else:
@@ -183,6 +184,17 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
                 causing all RDMA operations to use the TCP fallback backend.
             rdma_max_chunk_size_mb: Maximum chunk size in megabytes for RDMA
                 transfers.
+
+        Client bootstrap:
+            client_attach_addr: ZMQ-style address of a remote host's
+                duplex server (e.g. ``"tcp://host:port"``,
+                ``"ipc:///tmp/sock"``). When set, the Python client's
+                singleton proc attaches to that host on first
+                ``context()`` and uses it as a mailbox forwarder, rather
+                than creating a fully-local host mesh. Intended for
+                running the client outside a cluster while procs run
+                inside it. Empty string (the default) disables
+                attach-mode bootstrap.
 
         **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """
