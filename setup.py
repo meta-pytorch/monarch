@@ -144,16 +144,24 @@ if use_tensor_engine and not torch_config:
 
 build_tensor_engine = use_tensor_engine and torch_config is not None
 
-# GPU platform selection: use MONARCH_RDMA_GPU_PLATFORM env var or auto-detect
-gpu_platform = os.environ.get("MONARCH_RDMA_GPU_PLATFORM", "").lower()
-if gpu_platform and gpu_platform not in ("cuda", "rocm"):
-    sys.exit(f"Invalid MONARCH_RDMA_GPU_PLATFORM={gpu_platform}. Use 'cuda' or 'rocm'")
+# GPU platform selection via MONARCH_GPU_PLATFORM:
+#   ""     - auto-detect (requires exactly one of CUDA/ROCm to be installed)
+#   "cuda" - force CUDA (error if CUDA is not installed)
+#   "rocm" - force ROCm (error if ROCm is not installed)
+#   "none" - build the tensor engine CPU-only; skip CUDA/ROCm/NCCL/RDMA linkage
+gpu_platform = os.environ.get("MONARCH_GPU_PLATFORM", "").lower()
+if gpu_platform and gpu_platform not in ("cuda", "rocm", "none"):
+    sys.exit(
+        f"Invalid MONARCH_GPU_PLATFORM={gpu_platform}. Use 'cuda', 'rocm', or 'none'"
+    )
 if gpu_platform == "rocm" and not rocm_home:
-    sys.exit("MONARCH_RDMA_GPU_PLATFORM=rocm but ROCm not found")
+    sys.exit("MONARCH_GPU_PLATFORM=rocm but ROCm not found")
 if gpu_platform == "cuda" and not cuda_home:
-    sys.exit("MONARCH_RDMA_GPU_PLATFORM=cuda but CUDA not found")
+    sys.exit("MONARCH_GPU_PLATFORM=cuda but CUDA not found")
 if not gpu_platform and build_tensor_engine and cuda_home and rocm_home:
-    sys.exit("Both CUDA and ROCm detected. Set MONARCH_RDMA_GPU_PLATFORM=cuda or =rocm")
+    sys.exit(
+        "Both CUDA and ROCm detected. Set MONARCH_GPU_PLATFORM=cuda, =rocm, or =none."
+    )
 
 build_cuda = build_tensor_engine and (
     gpu_platform == "cuda" or (not gpu_platform and cuda_home)
@@ -161,20 +169,23 @@ build_cuda = build_tensor_engine and (
 build_rocm = build_tensor_engine and (
     gpu_platform == "rocm" or (not gpu_platform and rocm_home)
 )
+build_gpu = build_cuda or build_rocm
 
 print("=" * 80)
 if build_tensor_engine:
-    print("✓ Building WITH tensor_engine (GPU support)")
-    print(f"  - PyTorch: {torch_config['lib_path']}")
-    if build_cuda:
-        print(f"  - CUDA: {cuda_home}")
-    elif build_rocm:
-        print(f"  - ROCm: {rocm_home}")
+    if build_gpu:
+        print("✓ Building WITH tensor_engine + GPU support")
+        print(f"  - PyTorch: {torch_config['lib_path']}")
+        if build_cuda:
+            print(f"  - CUDA: {cuda_home}")
+        elif build_rocm:
+            print(f"  - ROCm: {rocm_home}")
     else:
-        print("  - GPU: Not found (CPU-only)")
+        print("✓ Building WITH tensor_engine (CPU-only, no GPU/NCCL/RDMA)")
+        print(f"  - PyTorch: {torch_config['lib_path']}")
     print(f"  - C++11 ABI: {'enabled' if torch_config['cxx11_abi'] else 'disabled'}")
 else:
-    print("Building WITHOUT tensor_engine (CPU-only, no GPU support)")
+    print("Building WITHOUT tensor_engine (actors only, no torch)")
 print("=" * 80)
 
 # Set PYO3_PYTHON for Rust binaries
@@ -295,16 +306,26 @@ def create_cpp_extension(
     Args:
         name: Extension module name (e.g., "monarch.common._C")
         sources: List of source file paths
+        define_macros: Optional list of (name, value) tuples for preprocessor defines
 
     Returns:
         Extension object configured for torch
     """
+    libraries = ["c10", "torch", "torch_cpu", "torch_python"]
+    extra_link_args = []
+    if sys.platform == "darwin":
+        extra_link_args.append("-undefined")
+        extra_link_args.append("dynamic_lookup")
+    else:
+        libraries.append("dl")
+
     return Extension(
         name,
         sources,
         extra_compile_args=["-std=c++17", "-g", "-O3"],
+        extra_link_args=extra_link_args,
         define_macros=define_macros or [],
-        libraries=["dl", "c10", "torch", "torch_cpu", "torch_python"],
+        libraries=libraries,
         library_dirs=[torch_config["lib_path"]],
         include_dirs=[
             os.path.dirname(os.path.abspath(__file__)),
@@ -323,7 +344,7 @@ if build_tensor_engine:
     cpp_sources = ["python/monarch/common/init.cpp"]
     cpp_defines = []
     if build_cuda:
-        # mock_cuda.cpp is not compatible with ROCm (relies on CUDA-specific assembly)
+        # mock_cuda.cpp is not compatible with ROCm or macOS (relies on x86 CUDA-specific assembly)
         cpp_sources.append("python/monarch/common/mock_cuda.cpp")
         cpp_defines.append(("MONARCH_BUILD_CUDA", "1"))
 
@@ -344,6 +365,8 @@ rust_extensions = []
 rust_features = ["extension-module", "distributed_sql_telemetry"]
 if build_tensor_engine:
     rust_features.append("tensor_engine")
+if build_gpu:
+    rust_features.append("tensor_engine_gpu")
 
 rust_extensions.append(
     RustExtension(
@@ -352,7 +375,7 @@ rust_extensions.append(
         path="monarch_extension/Cargo.toml",
         debug=False,
         features=rust_features,
-        args=[] if build_tensor_engine else ["--no-default-features"],
+        args=["--no-default-features"],
         rustc_flags=rust_link_flags,
     )
 )

@@ -329,7 +329,10 @@ def get_active_mesh():
 
 class _ActiveMesh(TorchDispatchMode):
     ignore = ["profiler._record_function_exit._RecordFunction"]
-    allowed_local_accessors = ["aten._local_scalar_dense.default"]
+    allowed_local_accessors = [
+        "aten._local_scalar_dense.default",
+        "aten.set_.source_Storage_storage_offset",
+    ]
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         if _active is None:
