@@ -877,6 +877,70 @@ class TestKill(unittest.TestCase):
             job._kill()
 
 
+class TestRemoteMount(unittest.TestCase):
+    """Tests for KubernetesJob.remote_mount out-of-cluster defaults."""
+
+    @patch("monarch._src.job.kubernetes.configure")
+    def _make_job(
+        self,
+        mock_configure: MagicMock,
+        kubeconfig: "KubeConfig | None" = None,
+    ) -> KubernetesJob:
+        return KubernetesJob(namespace="default", kubeconfig=kubeconfig)
+
+    def test_out_of_cluster_forces_single_stream(self) -> None:
+        job = self._make_job(kubeconfig=KubeConfig.from_path("/tmp/fake"))
+        job.add_mesh("workers", num_replicas=2)
+        job.remote_mount("/tmp/src", python_exe=None)
+        entry = job._mounts._remote_entries[-1]
+        self.assertEqual(entry.kwargs.get("num_parallel_streams"), 1)
+
+    def test_in_cluster_preserves_default_streams(self) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=2)
+        job.remote_mount("/tmp/src", python_exe=None)
+        entry = job._mounts._remote_entries[-1]
+        self.assertNotIn("num_parallel_streams", entry.kwargs)
+
+    def test_out_of_cluster_respects_explicit_streams(self) -> None:
+        job = self._make_job(kubeconfig=KubeConfig.from_path("/tmp/fake"))
+        job.add_mesh("workers", num_replicas=2)
+        job.remote_mount("/tmp/src", python_exe=None, num_parallel_streams=4)
+        entry = job._mounts._remote_entries[-1]
+        self.assertEqual(entry.kwargs.get("num_parallel_streams"), 4)
+
+    def test_remote_mount_enables_fuse_on_provisioned_mesh(self) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=2, image_spec=ImageSpec("img"))
+        job.remote_mount("/tmp/src", python_exe=None)
+        pod_spec = job._meshes["workers"]["pod_spec"]
+        # Volume added.
+        vol_names = [v.name for v in pod_spec.volumes]
+        self.assertIn("dev-fuse", vol_names)
+        # Volume mount added.
+        vm_names = [vm.name for vm in pod_spec.containers[0].volume_mounts]
+        self.assertIn("dev-fuse", vm_names)
+        # Privileged set.
+        self.assertTrue(pod_spec.containers[0].security_context.privileged)
+
+    def test_remote_mount_skips_fuse_on_attach_only_mesh(self) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=2)
+        job.remote_mount("/tmp/src", python_exe=None)
+        # Attach-only meshes have no pod_spec.
+        self.assertNotIn("pod_spec", job._meshes["workers"])
+
+    def test_remote_mount_fuse_idempotent(self) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=2, image_spec=ImageSpec("img"))
+        job.remote_mount("/tmp/src", python_exe=None)
+        job.remote_mount("/tmp/src2", python_exe=None)
+        pod_spec = job._meshes["workers"]["pod_spec"]
+        # Should not duplicate volumes.
+        fuse_vols = [v for v in pod_spec.volumes if v.name == "dev-fuse"]
+        self.assertEqual(len(fuse_vols), 1)
+
+
 class TestCanRun(unittest.TestCase):
     """Tests for KubernetesJob.can_run."""
 
