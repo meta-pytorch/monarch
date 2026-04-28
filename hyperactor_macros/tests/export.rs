@@ -12,6 +12,7 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Unbind;
+use hyperactor::port::Port;
 use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
@@ -110,8 +111,11 @@ mod tests {
         // Verify that the ports can be gotten successfully.
         {
             // TestMessage type
-            let port_id = actor_handle.actor_id().port_id(TestMessage::port());
-            let port_ref: reference::PortRef<TestMessage> = reference::PortRef::attest(port_id);
+            let port_id = actor_handle
+                .actor_id()
+                .port_ref(Port::from(TestMessage::port()));
+            let port_ref: reference::PortRef<TestMessage> =
+                reference::PortRef::attest(port_id.into());
             port_ref
                 .send(&client, TestMessage("abc".to_string()))
                 .unwrap();
@@ -119,22 +123,25 @@ mod tests {
         }
         {
             // () type
-            let port_id = actor_handle.actor_id().port_id(<()>::port());
-            let port_ref: reference::PortRef<()> = reference::PortRef::attest(port_id);
+            let port_id = actor_handle.actor_id().port_ref(Port::from(<()>::port()));
+            let port_ref: reference::PortRef<()> = reference::PortRef::attest(port_id.into());
             port_ref.send(&client, ()).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "()");
         }
         {
             // u64 type
-            let port_id = actor_handle.actor_id().port_id(<u64>::port());
-            let port_ref: reference::PortRef<u64> = reference::PortRef::attest(port_id);
+            let port_id = actor_handle.actor_id().port_ref(Port::from(<u64>::port()));
+            let port_ref: reference::PortRef<u64> = reference::PortRef::attest(port_id.into());
             port_ref.send(&client, 987654321).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "u64: 987654321");
         }
         {
             // MyGeneric<()> type
-            let port_id = actor_handle.actor_id().port_id(MyGeneric::<()>::port());
-            let port_ref: reference::PortRef<MyGeneric<()>> = reference::PortRef::attest(port_id);
+            let port_id = actor_handle
+                .actor_id()
+                .port_ref(Port::from(MyGeneric::<()>::port()));
+            let port_ref: reference::PortRef<MyGeneric<()>> =
+                reference::PortRef::attest(port_id.into());
             port_ref.send(&client, MyGeneric(())).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
         }
@@ -146,9 +153,9 @@ mod tests {
             let indexed_msg = IndexedErasedUnbound::<TestMessage>::from(erased_msg);
             let port_id = actor_handle
                 .actor_id()
-                .port_id(<IndexedErasedUnbound<TestMessage>>::port());
+                .port_ref(Port::from(<IndexedErasedUnbound<TestMessage>>::port()));
             let port_ref: reference::PortRef<IndexedErasedUnbound<TestMessage>> =
-                reference::PortRef::attest(port_id);
+                reference::PortRef::attest(port_id.into());
             port_ref.send(&client, indexed_msg).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "efg");
         }
@@ -159,9 +166,9 @@ mod tests {
             let indexed_msg = IndexedErasedUnbound::<()>::from(erased_msg);
             let port_id = actor_handle
                 .actor_id()
-                .port_id(<IndexedErasedUnbound<()>>::port());
+                .port_ref(Port::from(<IndexedErasedUnbound<()>>::port()));
             let port_ref: reference::PortRef<IndexedErasedUnbound<()>> =
-                reference::PortRef::attest(port_id);
+                reference::PortRef::attest(port_id.into());
             port_ref.send(&client, indexed_msg).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "()");
         }
@@ -172,9 +179,9 @@ mod tests {
             let indexed_msg = IndexedErasedUnbound::<MyGeneric<()>>::from(erased_msg);
             let port_id = actor_handle
                 .actor_id()
-                .port_id(<IndexedErasedUnbound<MyGeneric<()>>>::port());
+                .port_ref(Port::from(<IndexedErasedUnbound<MyGeneric<()>>>::port()));
             let port_ref: reference::PortRef<IndexedErasedUnbound<MyGeneric<()>>> =
-                reference::PortRef::attest(port_id);
+                reference::PortRef::attest(port_id.into());
             port_ref.send(&client, indexed_msg).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
         }

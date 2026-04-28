@@ -46,9 +46,9 @@ use uuid::Uuid;
 use crate::ActorMesh;
 #[cfg(test)]
 use crate::ActorMeshRef;
-use crate::Name;
 use crate::ProcMeshRef;
 use crate::comm::multicast::CastInfo;
+use crate::mesh_id::ActorMeshId;
 use crate::supervision::MeshFailure;
 #[cfg(test)]
 use crate::testing;
@@ -130,7 +130,7 @@ impl Handler<GetActorId> for TestActor {
         GetActorId(reply): GetActorId,
     ) -> Result<(), anyhow::Error> {
         let seq_info = cx.headers().get(SEQ_INFO);
-        reply.send(cx, (cx.self_id().clone(), seq_info))?;
+        reply.send(cx, (cx.self_id().clone().into(), seq_info))?;
         Ok(())
     }
 }
@@ -344,7 +344,7 @@ pub struct WrapperActor {
     // Needs to be a mesh so we own this actor and have a controller for it.
     mesh: Option<ActorMesh<TestActor>>,
     supervisor: hyperactor_reference::PortRef<MeshFailure>,
-    test_name: Name,
+    test_name: ActorMeshId,
 }
 
 #[async_trait]
@@ -352,7 +352,7 @@ impl hyperactor::RemoteSpawn for WrapperActor {
     type Params = (
         ProcMeshRef,
         hyperactor_reference::PortRef<MeshFailure>,
-        Name,
+        ActorMeshId,
     );
 
     async fn new(

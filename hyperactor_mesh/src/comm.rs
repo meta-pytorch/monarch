@@ -11,7 +11,7 @@ use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 use crate::comm::multicast::CastEnvelope;
 use crate::comm::multicast::CastMessageV1;
 use crate::comm::multicast::ForwardMessageV1;
-use crate::reference::ActorMeshId;
+use crate::mesh_id::ActorMeshId;
 use crate::resource;
 pub mod multicast;
 
@@ -335,9 +335,9 @@ impl CommActor {
         set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
         cx.post_with_external_seq_info(
             cx.self_id()
-                .proc_id()
-                .actor_id(message.dest_port().actor_name(), 0)
-                .port_id(message.dest_port().port()),
+                .proc_ref()
+                .actor_ref(message.dest_port().actor_name())
+                .port_ref(hyperactor::port::Port::from(message.dest_port().port())),
             headers,
             wirevalue::Any::serialize(message.data())?,
         );
@@ -465,7 +465,7 @@ impl Handler<CastMessage> for CommActor {
 
         let fwd_message = ForwardMessage {
             dests: vec![frame],
-            sender: cx.self_id().clone(),
+            sender: cx.self_id().clone().into(),
             message: cast_message.message,
             seq: *seq,
             last_seq,
@@ -748,7 +748,7 @@ mod tests {
 
     /// Common setup for pre-config buffering tests: a single proc with a
     /// TestActor (for observing delivery) and an unconfigured CommActor.
-    /// Returns (client, rx, comm_handle, actor_mesh_name) plus handles
+    /// Returns (client, rx, comm_handle, actor_mesh_id) plus handles
     /// that must be kept alive.
     async fn buffering_fixture(
         proc_name: &str,
@@ -756,7 +756,7 @@ mod tests {
         Instance<()>,
         hyperactor::mailbox::PortReceiver<TestMessage>,
         hyperactor::ActorHandle<CommActor>,
-        crate::Name,
+        crate::mesh_id::ActorMeshId,
         // Drop guards: client handle, test actor handle, test actor ref.
         (
             hyperactor::ActorHandle<()>,
@@ -767,12 +767,13 @@ mod tests {
         use hyperactor::Proc;
         use hyperactor::RemoteSpawn;
         use hyperactor::channel::ChannelTransport;
+        use hyperactor::id::Label;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), proc_name.to_string()).unwrap();
         let (client, client_handle) = proc.instance("client").unwrap();
 
-        let actor_mesh_name = crate::Name::new("test").unwrap();
-        let actor_name = actor_mesh_name.to_string();
+        let actor_mesh_id = crate::mesh_id::ActorMeshId::unique(Label::new("test").unwrap());
+        let actor_name = actor_mesh_id.actor_name();
 
         let (tx, rx) = open_port(&client);
         let forward_port = tx.bind();
@@ -788,7 +789,7 @@ mod tests {
             client,
             rx,
             comm_handle,
-            actor_mesh_name,
+            actor_mesh_id,
             (client_handle, test_handle, test_ref),
         )
     }
@@ -807,19 +808,19 @@ mod tests {
     /// and verify both are delivered in order.
     async fn assert_buffered_and_replayed<M: hyperactor::Message>(
         proc_name: &str,
-        mut make_msg: impl FnMut(&Instance<()>, &crate::Name, &str) -> M,
+        mut make_msg: impl FnMut(&Instance<()>, &crate::mesh_id::ActorMeshId, &str) -> M,
     ) where
         CommActor: hyperactor::Handler<M>,
     {
-        let (client, mut rx, comm_handle, actor_mesh_name, _guards) =
+        let (client, mut rx, comm_handle, actor_mesh_id, _guards) =
             buffering_fixture(proc_name).await;
 
         comm_handle
-            .send(&client, make_msg(&client, &actor_mesh_name, "buffered"))
+            .send(&client, make_msg(&client, &actor_mesh_id, "buffered"))
             .unwrap();
         send_config(&client, &comm_handle);
         comm_handle
-            .send(&client, make_msg(&client, &actor_mesh_name, "direct"))
+            .send(&client, make_msg(&client, &actor_mesh_id, "direct"))
             .unwrap();
 
         assert_eq!(
@@ -837,13 +838,13 @@ mod tests {
     async fn cast_before_config_is_buffered_and_replayed() {
         use ndslice::Slice;
 
-        assert_buffered_and_replayed("test_cast", |client, name, payload| {
-            let actor_mesh_id = crate::reference::ActorMeshId(name.clone());
+        assert_buffered_and_replayed("test_cast", |client, actor_mesh_id, payload| {
+            let actor_mesh_id = actor_mesh_id.clone();
             let slice = Slice::new_row_major(vec![1]);
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
                 actor_mesh_id,
-                client.self_id().clone(),
+                client.self_id().clone().into(),
                 shape,
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -866,13 +867,13 @@ mod tests {
         use ndslice::selection::routing::RoutingFrame;
 
         let mut next_seq: usize = 0;
-        assert_buffered_and_replayed("test_fwd", move |client, name, payload| {
-            let actor_mesh_id = crate::reference::ActorMeshId(name.clone());
+        assert_buffered_and_replayed("test_fwd", move |client, actor_mesh_id, payload| {
+            let actor_mesh_id = actor_mesh_id.clone();
             let slice = Slice::new_row_major(vec![1]);
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
                 actor_mesh_id,
-                client.self_id().clone(),
+                client.self_id().clone().into(),
                 shape,
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -882,7 +883,7 @@ mod tests {
             let last_seq = next_seq;
             next_seq += 1;
             multicast::ForwardMessage {
-                sender: client.self_id().clone(),
+                sender: client.self_id().clone().into(),
                 dests: vec![frame],
                 seq: next_seq,
                 last_seq,
@@ -898,12 +899,12 @@ mod tests {
         use ndslice::Slice;
         use ndslice::selection::routing::RoutingFrame;
 
-        assert_buffered_and_replayed("test_fwd_v1", |client, name, payload| {
+        assert_buffered_and_replayed("test_fwd_v1", |client, actor_mesh_id, payload| {
             let slice = Slice::new_row_major(vec![1]);
             let region = Region::new(vec!["rank".to_string()], slice.clone());
             let cast_msg = multicast::CastMessageV1::new::<TestActor, TestMessage>(
-                client.self_id().clone(),
-                name,
+                client.self_id().clone().into(),
+                actor_mesh_id,
                 region.clone(),
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -942,7 +943,6 @@ mod tests {
 
     use super::*;
     use crate::ActorMesh;
-    use crate::Name;
     use crate::host_mesh::HostMesh;
     use crate::test_utils::local_host_mesh;
     use crate::testing;
@@ -954,7 +954,7 @@ mod tests {
     ) -> usize {
         let proc_id = actor_id.proc_id();
         *rank_lookup
-            .get(proc_id)
+            .get(&proc_id)
             .unwrap_or_else(|| panic!("proc rank not found for {}", proc_id))
     }
 
@@ -1124,15 +1124,15 @@ mod tests {
                 assert_eq!(&first, client_reply);
                 // Other ports's actor ID must be dest[?].comm[0], where ? is
                 // the rank we want to extract here.
-                assert!(dst.actor_id().name().contains("comm"));
+                assert!(dst.actor_id().label().unwrap().as_str().contains("comm"));
                 let actor_path = path
                     .into_iter()
                     .map(|p| {
-                        assert!(p.actor_id().name().contains("comm"));
-                        lookup_rank(p.actor_id(), rank_lookup)
+                        assert!(p.actor_id().label().unwrap().as_str().contains("comm"));
+                        lookup_rank(&p.actor_id(), rank_lookup)
                     })
                     .collect();
-                (lookup_rank(dst.actor_id(), rank_lookup), actor_path)
+                (lookup_rank(&dst.actor_id(), rank_lookup), actor_path)
             })
             .collect();
         PathToLeaves(ranks)
@@ -1345,7 +1345,8 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let actor_name = crate::Name::new("test").expect("valid test name");
+        let actor_name =
+            crate::mesh_id::ActorMeshId::unique(hyperactor::id::Label::new("test").unwrap());
         // Make this actor a "system" actor to avoid spawning a controller actor.
         // This test is verifying the whole comm tree, so we want fewer actors
         // involved.
@@ -1390,9 +1391,25 @@ mod tests {
                     assert_eq!(reply_to0, reply_port_ref0);
                     // ports have been replaced by comm actor's split ports.
                     assert_ne!(reply_to1, reply_port_ref1);
-                    assert!(reply_to1.port_id().actor_id().name().contains("comm"));
+                    assert!(
+                        reply_to1
+                            .port_id()
+                            .actor_id()
+                            .label()
+                            .unwrap()
+                            .as_str()
+                            .contains("comm")
+                    );
                     assert_ne!(reply_to2, reply_port_ref2);
-                    assert!(reply_to2.port_id().actor_id().name().contains("comm"));
+                    assert!(
+                        reply_to2
+                            .port_id()
+                            .actor_id()
+                            .label()
+                            .unwrap()
+                            .as_str()
+                            .contains("comm")
+                    );
                     reply_tos.push((reply_to1, reply_to2));
                 }
                 _ => {
@@ -1527,7 +1544,8 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let actor_name = crate::Name::new("test").expect("valid test name");
+        let actor_name =
+            crate::mesh_id::ActorMeshId::unique(hyperactor::id::Label::new("test").unwrap());
         // Make this actor a "system" actor to avoid spawning a controller actor.
         let actor_mesh: crate::ActorMesh<TestActor> = proc_mesh
             .spawn_with_name(&instance, actor_name, &params, None, true)
@@ -1559,7 +1577,15 @@ mod tests {
                     if has_reducer {
                         // With reducer: port is split by comm actor.
                         assert_ne!(reply_to, reply_port_ref);
-                        assert!(reply_to.port_id().actor_id().name().contains("comm"));
+                        assert!(
+                            reply_to
+                                .port_id()
+                                .actor_id()
+                                .label()
+                                .unwrap()
+                                .as_str()
+                                .contains("comm")
+                        );
                     } else {
                         // Without reducer: port is passed through unchanged.
                         assert_eq!(reply_to, reply_port_ref);
@@ -1637,7 +1663,8 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let actor_name = Name::new("test").expect("valid test name");
+        let actor_name =
+            crate::mesh_id::ActorMeshId::unique(hyperactor::id::Label::new("test").unwrap());
         let actor_mesh: ActorMesh<TestActor> = proc_mesh
             .spawn_with_name(&instance, actor_name, &params, None, true)
             .await
