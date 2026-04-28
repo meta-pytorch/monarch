@@ -181,7 +181,7 @@ if build_tensor_engine:
         elif build_rocm:
             print(f"  - ROCm: {rocm_home}")
     else:
-        print("✓ Building WITH tensor_engine (CPU-only, no GPU/NCCL/RDMA)")
+        print("✓ Building WITH tensor_engine (CPU-only, no GPU/NCCL; RDMA via TCP fallback)")
         print(f"  - PyTorch: {torch_config['lib_path']}")
     print(f"  - C++11 ABI: {'enabled' if torch_config['cxx11_abi'] else 'disabled'}")
 else:
@@ -217,6 +217,12 @@ if build_cuda:
     env_vars["CUDA_HOME"] = cuda_home
 elif build_rocm:
     env_vars["ROCM_PATH"] = rocm_home
+else:
+    # CPU-only tensor_engine build (or actors-only): tell rdmaxcel-sys
+    # to compile its stub implementation instead of linking against a
+    # non-existent CUDA/ROCm toolchain. This keeps the RDMA TCP
+    # fallback available when there is no GPU.
+    env_vars["MONARCH_GPU_PLATFORM"] = "none"
 
 os.environ.update(env_vars)
 

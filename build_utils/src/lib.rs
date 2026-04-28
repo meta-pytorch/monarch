@@ -424,7 +424,27 @@ pub fn setup_cpp_static_libs() -> CppStaticLibsConfig {
 /// Detection order:
 /// 1. `MONARCH_GPU_PLATFORM` environment variable ("cuda", "rocm", or "none")
 /// 2. Auto-detect: one of CUDA or ROCm must be present; panic if both or neither are found
+///
+/// Panics if `MONARCH_GPU_PLATFORM=none` is set. Use
+/// [`detect_gpu_platform_allow_none`] from crates that support a stub
+/// mode.
 pub fn detect_gpu_platform() -> (bool, String) {
+    match detect_gpu_platform_allow_none() {
+        Some((is_rocm, home)) => (is_rocm, home),
+        None => panic!(
+            "MONARCH_GPU_PLATFORM=none but a GPU build target was requested; \
+             rebuild without the tensor_engine_gpu feature"
+        ),
+    }
+}
+
+/// Like [`detect_gpu_platform`] but returns `None` when the caller has
+/// opted into a no-GPU "stub" build via `MONARCH_GPU_PLATFORM=none`.
+///
+/// When no explicit platform is set and neither CUDA nor ROCm is
+/// detected, this still panics — silent stub builds mask configuration
+/// bugs. Callers that want a stub build must opt in explicitly.
+pub fn detect_gpu_platform_allow_none() -> Option<(bool, String)> {
     if let Ok(platform) = env::var("MONARCH_GPU_PLATFORM") {
         match platform.to_lowercase().as_str() {
             "" => {}
@@ -432,18 +452,20 @@ pub fn detect_gpu_platform() -> (bool, String) {
                 let rocm_home = rocm::validate_rocm_installation()
                     .expect("MONARCH_GPU_PLATFORM=rocm but ROCm installation not found");
                 println!("cargo:warning=Using ROCm from {} (explicit)", rocm_home);
-                return (true, rocm_home);
+                return Some((true, rocm_home));
             }
             "cuda" => {
                 let cuda_home = validate_cuda_installation()
                     .expect("MONARCH_GPU_PLATFORM=cuda but CUDA installation not found");
                 println!("cargo:warning=Using CUDA from {} (explicit)", cuda_home);
-                return (false, cuda_home);
+                return Some((false, cuda_home));
             }
-            "none" => panic!(
-                "MONARCH_GPU_PLATFORM=none but a GPU build target was requested; \
-                 rebuild without the tensor_engine_gpu feature"
-            ),
+            "none" => {
+                println!(
+                    "cargo:warning=MONARCH_GPU_PLATFORM=none; building without GPU support"
+                );
+                return None;
+            }
             _ => panic!(
                 "Invalid MONARCH_GPU_PLATFORM value: {}. Must be 'cuda', 'rocm', or 'none'",
                 platform
@@ -459,18 +481,20 @@ pub fn detect_gpu_platform() -> (bool, String) {
         (true, false) => {
             let rocm_home = rocm_result.unwrap();
             println!("cargo:warning=Using ROCm from {}", rocm_home);
-            (true, rocm_home)
+            Some((true, rocm_home))
         }
         (false, true) => {
             let cuda_home = cuda_result.unwrap();
             println!("cargo:warning=Using CUDA from {}", cuda_home);
-            (false, cuda_home)
+            Some((false, cuda_home))
         }
         (true, true) => {
             panic!("Both ROCm and CUDA detected. Set MONARCH_GPU_PLATFORM=cuda, =rocm, or =none.");
         }
         (false, false) => {
-            panic!("Neither CUDA nor ROCm installation found");
+            panic!(
+                "Neither CUDA nor ROCm installation found. To build without a GPU backend, set MONARCH_GPU_PLATFORM=none."
+            );
         }
     }
 }
