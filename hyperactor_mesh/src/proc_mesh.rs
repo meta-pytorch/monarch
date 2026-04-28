@@ -131,7 +131,6 @@ impl ProcRef {
 pub struct ProcMesh {
     #[allow(dead_code)]
     id: ProcMeshId,
-    allocation: ProcMeshAllocation,
     #[allow(dead_code)]
     comm_actor_name: Option<ActorMeshId>,
     current_ref: ProcMeshRef,
@@ -141,7 +140,9 @@ impl ProcMesh {
     async fn create<C: context::Actor>(
         cx: &C,
         id: ProcMeshId,
-        allocation: ProcMeshAllocation,
+        hosts: HostMeshRef,
+        extent: Extent,
+        ranks: Vec<ProcRef>,
         spawn_comm_actor: bool,
     ) -> crate::Result<Self>
     where
@@ -153,8 +154,8 @@ impl ProcMesh {
             None
         };
 
-        let region = allocation.extent().clone().into();
-        let ranks = allocation.ranks();
+        let region = extent.into();
+        let ranks = Arc::new(ranks);
 
         // Set the global supervision sink to the first ProcAgent's
         // supervision event handler. Last-mesh-wins semantics: if a
@@ -173,12 +174,11 @@ impl ProcMesh {
                     .actor_id(comm_id),
             )
         });
-        let host_mesh = allocation.hosts();
         let current_ref = ProcMeshRef::new(
             id.clone(),
             region,
             ranks,
-            host_mesh.cloned(),
+            Some(hosts),
             None, // this is the root mesh
             None, // comm actor is not alive yet
         )
@@ -189,13 +189,13 @@ impl ProcMesh {
             let name_str = id.to_string();
             let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
 
-            let (parent_mesh_id, parent_view_json) = match host_mesh {
-                Some(hm) => (
-                    Some(hyperactor_telemetry::hash_to_u64(&hm.id().to_string())),
-                    serde_json::to_string(hm.region()).ok(),
-                ),
-                None => (None, None),
-            };
+            let hm = current_ref
+                .host_mesh
+                .as_ref()
+                .expect("ProcMesh always has a host mesh");
+            let parent_mesh_id = hyperactor_telemetry::hash_to_u64(&hm.id().to_string());
+            let parent_view_json = serde_json::to_string(hm.region())
+                .unwrap_or_else(|e| format!("encountered error when serializing region: {}", e));
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
@@ -208,8 +208,8 @@ impl ProcMesh {
                     .to_string(),
                 full_name: name_str,
                 shape_json: serde_json::to_string(&current_ref.region.extent()).unwrap_or_default(),
-                parent_mesh_id,
-                parent_view_json,
+                parent_mesh_id: Some(parent_mesh_id),
+                parent_view_json: Some(parent_view_json),
             });
 
             // Notify telemetry of each ProcAgent actor in this mesh.
@@ -231,7 +231,6 @@ impl ProcMesh {
 
         let mut proc_mesh = Self {
             id,
-            allocation,
             comm_actor_name: comm_actor_name.clone(),
             current_ref,
         };
@@ -272,37 +271,29 @@ impl ProcMesh {
     where
         C::A: Handler<MeshFailure>,
     {
-        Self::create(
-            cx,
-            id,
-            ProcMeshAllocation::Owned {
-                hosts,
-                extent,
-                ranks: Arc::new(ranks),
-            },
-            true,
-        )
-        .await
+        Self::create(cx, id, hosts, extent, ranks, true).await
     }
 
     /// Stop this mesh gracefully.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         let region = self.region.clone();
-        let ProcMeshAllocation::Owned { hosts, .. } = &self.allocation;
         let procs = self
             .current_ref
             .proc_ids()
             .collect::<Vec<hyperactor_reference::ProcId>>();
         // We use the proc mesh region rather than the host mesh region
         // because the host agent stores one entry per proc, not per host.
-        hosts
+        self.current_ref
+            .host_mesh
+            .as_ref()
+            .expect("ProcMesh always has a host mesh")
             .stop_proc_mesh(cx, &self.id, procs, region, reason)
             .await
     }
 
     #[cfg(test)]
     pub(crate) fn ranks(&self) -> Arc<Vec<ProcRef>> {
-        self.allocation.ranks()
+        Arc::clone(&self.current_ref.ranks)
     }
 }
 
@@ -327,50 +318,6 @@ impl Drop for ProcMesh {
             proc_mesh = %self.id,
             status = "Dropped",
         );
-    }
-}
-
-/// An owned allocation: this ProcMesh fully owns the set of ranks.
-enum ProcMeshAllocation {
-    Owned {
-        /// The host mesh from which the proc mesh was spawned.
-        hosts: HostMeshRef,
-        // This is purely for storage: `hosts.extent()` returns a computed (by value)
-        // extent.
-        extent: Extent,
-        /// A proc reference for each rank in the mesh.
-        ranks: Arc<Vec<ProcRef>>,
-    },
-}
-
-impl ProcMeshAllocation {
-    fn extent(&self) -> &Extent {
-        let ProcMeshAllocation::Owned { extent, .. } = self;
-        extent
-    }
-
-    fn ranks(&self) -> Arc<Vec<ProcRef>> {
-        let ProcMeshAllocation::Owned { ranks, .. } = self;
-        Arc::clone(ranks)
-    }
-
-    fn hosts(&self) -> Option<&HostMeshRef> {
-        let ProcMeshAllocation::Owned { hosts, .. } = self;
-        Some(hosts)
-    }
-}
-
-impl fmt::Debug for ProcMeshAllocation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ProcMeshAllocation::Owned {
-            hosts,
-            ranks,
-            extent: _,
-        } = self;
-        f.debug_struct("ProcMeshAllocation::Owned")
-            .field("hosts", hosts)
-            .field("ranks", ranks)
-            .finish()
     }
 }
 
