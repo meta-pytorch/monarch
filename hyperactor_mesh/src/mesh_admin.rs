@@ -3468,7 +3468,6 @@ mod tests {
         use hyperactor::channel::ChannelTransport;
         use hyperactor::id::Label;
 
-        use crate::Name;
         use crate::host::Host;
         use crate::host::LocalProcManager;
         use crate::host_mesh::host_agent::HostAgentMode;
