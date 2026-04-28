@@ -1718,7 +1718,7 @@ where
     let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(backend_transport))?;
     proc.clone().serve(proc_rx);
     let agent_ref: ActorRef<A> = agent_handle.bind::<A>();
-    channel::dial(callback_addr)?
+    channel::dial::<(ChannelAddr, ActorRef<A>)>(callback_addr)?
         .send((proc_addr, agent_ref))
         .await
         .map_err(ChannelError::from)?;
@@ -2551,7 +2551,7 @@ mod tests {
                 let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
                 let _client_handle = client_proc.clone().serve(client_rx);
 
-                let echo_ref = crate::ActorRef::<EchoActor>::attest(echo_actor_id);
+                let echo_ref = crate::ActorRef::<EchoActor>::attest(echo_actor_id.into());
 
                 for ri in 0..M_REQUESTS {
                     let (client_inst, _h) = client_proc.instance(&format!("req-{}", ri)).unwrap();

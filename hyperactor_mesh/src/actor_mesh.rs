@@ -440,7 +440,27 @@ impl<A: Referable> ActorMeshRef<A> {
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
-        self.cast_with_selection(cx, sel!(*), message)
+        self.cast_with_selection(cx, sel!(*), message, &Flattrs::new())
+    }
+
+    /// Cast a message to all the actors in this mesh, merging
+    /// caller-supplied `caller_headers` into the per-rank envelope
+    /// headers before send. Used to propagate caller-known context
+    /// (e.g. operation-context keys marked with `OPERATION_CONTEXT_HEADER`)
+    /// onto the outgoing request so receivers can project it back
+    /// onto replies.
+    #[allow(clippy::result_large_err)]
+    pub fn cast_with_headers<M>(
+        &self,
+        cx: &impl context::Actor,
+        caller_headers: &Flattrs,
+        message: M,
+    ) -> crate::Result<()>
+    where
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage + Clone,
+    {
+        self.cast_with_selection(cx, sel!(*), message, caller_headers)
     }
 
     /// Cast a message to the actors in this mesh according to the provided selection.
@@ -458,7 +478,7 @@ impl<A: Referable> ActorMeshRef<A> {
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
-        self.cast_with_selection(cx, sel, message)
+        self.cast_with_selection(cx, sel, message, &Flattrs::new())
     }
 
     #[allow(clippy::result_large_err)]
@@ -467,6 +487,7 @@ impl<A: Referable> ActorMeshRef<A> {
         cx: &impl context::Actor,
         sel: Selection,
         message: M,
+        caller_headers: &Flattrs,
     ) -> crate::Result<()>
     where
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
@@ -496,11 +517,14 @@ impl<A: Referable> ActorMeshRef<A> {
 
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            self.cast_v0(cx, message, sel, root_comm_actor)
+            self.cast_v0(cx, message, sel, root_comm_actor, caller_headers)
         } else {
             for (point, actor) in self.iter() {
                 let create_rank = point.rank();
-                let mut headers = Flattrs::new();
+                // Caller-known headers ride first; cast-info is
+                // stamped afterward and wins on collision because
+                // those keys are owned by this layer.
+                let mut headers = caller_headers.clone();
                 multicast::set_cast_info_on_headers(
                     &mut headers,
                     point,
@@ -535,6 +559,7 @@ impl<A: Referable> ActorMeshRef<A> {
         message: M,
         sel: Selection,
         root_comm_actor: &ActorRef<CommActor>,
+        caller_headers: &Flattrs,
     ) -> crate::Result<()>
     where
         A: RemoteHandles<IndexedErasedUnbound<M>>,
@@ -553,6 +578,7 @@ impl<A: Referable> ActorMeshRef<A> {
                     message,
                     &cast_mesh_shape,
                     &root_mesh_shape,
+                    caller_headers,
                 )
                 .map_err(|e| Error::CastingError(self.id.clone(), e.into()))
             }
@@ -564,6 +590,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 &cast_mesh_shape,
                 &cast_mesh_shape,
                 message,
+                caller_headers,
             )
             .map_err(|e| Error::CastingError(self.id.clone(), e.into())),
         }

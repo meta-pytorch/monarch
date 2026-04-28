@@ -179,6 +179,9 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
+use crate::reference::ActorId;
+use crate::reference::PortId;
+use crate::reference::ProcId;
 use crate::subject::AsSubject as _;
 
 /// Returns current epoch-millis from wall clock. Used by
@@ -3952,8 +3955,8 @@ mod tests {
         handle.await;
     }
 
-    // Tokio's I/O driver is not fork-safe on macOS, and this test validates
-    // termination by forking without a coordinator.
+    // Tokio's I/O driver is not fork-safe on macOS, and this test intentionally
+    // validates process termination by forking without a coordinator.
     #[cfg_attr(target_os = "macos", ignore = "tokio runtime fork assertion on macOS")]
     #[tokio::test]
     async fn test_proc_terminate_without_coordinator() {

@@ -15,6 +15,7 @@ use std::any::type_name;
 use std::time::SystemTime;
 
 use hyperactor_config::Flattrs;
+use hyperactor_config::attrs::OPERATION_CONTEXT_HEADER;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global;
 
@@ -35,6 +36,33 @@ declare_attrs! {
 
     /// Port index the message was delivered to, injected in post_unchecked().
     pub attr TELEMETRY_PORT_ID: u64;
+
+    // Operation-context headers (see `OPERATION_CONTEXT_HEADER` in
+    // `hyperactor_config::attrs`). Carried from the caller's outgoing
+    // request onto the reply envelope by a consumer-side helper that
+    // filters on `OPERATION_CONTEXT_HEADER`. Read at the
+    // undeliverable-abandonment log site in
+    // `hyperactor/src/mailbox.rs` to name the user operation a
+    // dropped reply belonged to (UM-3b).
+    //
+    // Layering note: these keys belong semantically to a higher layer
+    // (Monarch endpoint / adverb / method). They live in `hyperactor`
+    // as a tactical compromise because the log reader lives here and
+    // cannot depend upward on `monarch_hyperactor`. Scope narrowly;
+    // do not grow this vocabulary without revisiting whether the
+    // reader should move up a layer or a generic substrate-owned
+    // operation-context abstraction should replace these keys.
+
+    /// Qualified endpoint name of the caller's operation, e.g.
+    /// "<mesh>.<method>()". Stamped by the request-send site.
+    @meta(OPERATION_CONTEXT_HEADER = true)
+    pub attr OPERATION_ENDPOINT: String;
+
+    /// Endpoint adverb describing the call shape. Typical values from
+    /// current Monarch producers: "call", "call_one", "choose",
+    /// "stream".
+    @meta(OPERATION_CONTEXT_HEADER = true)
+    pub attr OPERATION_ADVERB: String;
 }
 
 /// Set the send timestamp for latency tracking if timestamp not already set.

@@ -11,14 +11,21 @@ import logging
 import sys
 import warnings
 from collections import defaultdict
-from typing import Any, cast, List, Optional, Tuple, TYPE_CHECKING
+from enum import Enum
+from typing import Any, cast, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import torch
 
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._src.actor.proc_mesh import ProcMesh
+from monarch._src.actor.actor_mesh import Actor, context
+from monarch._src.actor.endpoint import endpoint
+from monarch._src.actor.future import Future
+from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh
+from pyre_extensions import none_throws
 from typing_extensions import Self
+
+_NATIVE_RDMA_IMPORT_ERROR: Optional[ImportError] = None
 
 try:
     from monarch._rust_bindings.rdma import (
@@ -29,16 +36,24 @@ try:
         rdma_supported as _rdma_supported,
     )
 except ImportError as e:
-    logging.error("RDMA is not available: {}".format(e))
-    raise e
-from enum import Enum
-from typing import Dict
+    _NATIVE_RDMA_IMPORT_ERROR = e
+    logging.warning("RDMA native bindings are not available: %s", e)
 
-from monarch._src.actor.actor_mesh import Actor, context
-from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.future import Future
-from monarch._src.actor.proc_mesh import get_or_spawn_controller
-from pyre_extensions import none_throws
+    class _UnavailableNativeBinding:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise ImportError(
+                "RDMA native bindings are not available on this platform"
+            ) from _NATIVE_RDMA_IMPORT_ERROR
+
+    _LocalMemoryHandle = _UnavailableNativeBinding
+    _RdmaBuffer = _UnavailableNativeBinding
+    _RdmaManager = _UnavailableNativeBinding
+
+    def _is_ibverbs_available() -> bool:
+        return False
+
+    def _rdma_supported() -> bool:
+        return False
 
 
 # RDMARead/WriteTransferWarnings are warnings that are only printed once per process.
