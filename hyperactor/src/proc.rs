@@ -664,7 +664,7 @@ impl Proc {
     {
         let (instance, _handle) = self.instance(name)?;
         let (_handle, rx) = instance.bind_actor_port::<M>();
-        let actor_ref = ActorRef::attest(instance.self_id().clone().into());
+        let actor_ref = ActorRef::attest(instance.self_id().clone());
         Ok((instance, actor_ref, rx))
     }
 
@@ -1188,7 +1188,11 @@ impl Proc {
         &self,
         actor_ref: &ActorRef<R>,
     ) -> Option<ActorHandle<R>> {
-        let cell = self.inner.instances.get(actor_ref.actor_id())?.upgrade()?;
+        let cell = self
+            .inner
+            .instances
+            .get(actor_ref.actor_addr())?
+            .upgrade()?;
         // An actor whose status is terminal has stopped processing
         // messages even if its InstanceCell Arc is still alive (e.g.
         // held by the introspect task during teardown).
@@ -3062,7 +3066,7 @@ impl InstanceCell {
                 .exported_named_ports
                 .insert(*entry.key(), entry.value());
         }
-        ActorRef::attest(self.actor_id().clone().into())
+        ActorRef::attest(self.actor_id().clone())
     }
 
     /// Attempt to downcast this cell to a concrete actor handle.
@@ -3532,7 +3536,7 @@ mod tests {
             !lookup_actor
                 .actor_exists(
                     &client,
-                    ActorRef::attest(target_actor.actor_id().unique_child().into())
+                    ActorRef::attest(target_actor.actor_id().unique_child())
                 )
                 .await
                 .unwrap()
@@ -3540,10 +3544,7 @@ mod tests {
         // A wrongly-typed actor ref should also not obtain.
         assert!(
             !lookup_actor
-                .actor_exists(
-                    &client,
-                    ActorRef::attest(lookup_actor.actor_id().clone().into())
-                )
+                .actor_exists(&client, ActorRef::attest(lookup_actor.actor_id().clone()))
                 .await
                 .unwrap()
         );

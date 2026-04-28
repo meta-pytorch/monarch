@@ -1967,7 +1967,7 @@ mod tests {
         let addr = ChannelAddr::any(ChannelTransport::Local);
         let proc_ref = ProcAddr::from_resource_name(addr.clone(), "p");
         let actor_ref = proc_ref.actor_ref("host_agent");
-        let agent_ref = ActorRef::<()>::attest(actor_ref.into());
+        let agent_ref = ActorRef::<()>::attest(actor_ref);
         let h = LocalHandle::<()> {
             proc_id: proc_ref,
             addr,
@@ -2097,7 +2097,7 @@ mod tests {
             forwarder_addr: ChannelAddr,
             _config: (),
         ) -> Result<Self::Handle, HostError> {
-            let agent = ActorRef::<()>::attest(proc_id.actor_ref("host_agent").into());
+            let agent = ActorRef::<()>::attest(proc_id.actor_ref("host_agent"));
             Ok(TestHandle {
                 id: proc_id,
                 addr: forwarder_addr,

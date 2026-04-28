@@ -39,13 +39,12 @@ use crate::mailbox::PortSink;
 use crate::message::Bind;
 use crate::message::Bindings;
 use crate::message::Unbind;
-use crate::reference::ActorId;
-use crate::reference::PortId;
+use crate::port::Port;
 
 /// ActorRefs are typed references to actors.
 #[derive(typeuri::Named)]
 pub struct ActorRef<A: Referable> {
-    pub(crate) actor_id: ActorId,
+    pub(crate) actor_addr: ActorAddr,
     // fn() -> A so that the struct remains Send
     phantom: PhantomData<fn() -> A>,
 }
@@ -56,7 +55,7 @@ impl<A: Referable> ActorRef<A> {
     where
         A: RemoteHandles<M>,
     {
-        PortRef::attest(self.actor_id.port_id(<M as Named>::port()))
+        PortRef::attest(self.actor_addr.port_ref(Port::from(<M as Named>::port())))
     }
 
     /// Send an [`M`]-typed message to the referenced actor.
@@ -89,21 +88,31 @@ impl<A: Referable> ActorRef<A> {
     /// typed reference.  This is usually invoked to provide a guarantee
     /// that an externally-provided actor ID (e.g., through a command
     /// line argument) is a valid reference.
-    pub fn attest(actor_id: ActorId) -> Self {
+    pub fn attest(actor_addr: ActorAddr) -> Self {
         Self {
-            actor_id,
+            actor_addr,
             phantom: PhantomData,
         }
     }
 
+    /// The actor address corresponding with this reference.
+    pub fn actor_addr(&self) -> &ActorAddr {
+        &self.actor_addr
+    }
+
+    /// Convert this actor reference into its corresponding actor address.
+    pub fn into_actor_addr(self) -> ActorAddr {
+        self.actor_addr
+    }
+
     /// The actor ID corresponding with this reference.
-    pub fn actor_id(&self) -> &ActorId {
-        &self.actor_id
+    pub fn actor_id(&self) -> crate::reference::ActorId {
+        self.actor_addr.clone().into()
     }
 
     /// Convert this actor reference into its corresponding actor ID.
-    pub fn into_actor_id(self) -> ActorId {
-        self.actor_id
+    pub fn into_actor_id(self) -> crate::reference::ActorId {
+        self.actor_addr.into()
     }
 
     /// Attempt to downcast this reference into a (local) actor handle.
@@ -124,7 +133,7 @@ impl<A: Referable> Serialize for ActorRef<A> {
         S: Serializer,
     {
         // Serialize only the fields that don't depend on A
-        self.actor_id().serialize(serializer)
+        self.actor_addr.serialize(serializer)
     }
 }
 
@@ -134,9 +143,9 @@ impl<'de, A: Referable> Deserialize<'de> for ActorRef<A> {
     where
         D: Deserializer<'de>,
     {
-        let actor_id = <ActorId>::deserialize(deserializer)?;
+        let actor_addr = <ActorAddr>::deserialize(deserializer)?;
         Ok(ActorRef {
-            actor_id,
+            actor_addr,
             phantom: PhantomData,
         })
     }
@@ -146,7 +155,7 @@ impl<'de, A: Referable> Deserialize<'de> for ActorRef<A> {
 impl<A: Referable> fmt::Debug for ActorRef<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActorRef")
-            .field("actor_id", &self.actor_id)
+            .field("actor_addr", &self.actor_addr)
             .field("type", &std::any::type_name::<A>())
             .finish()
     }
@@ -154,7 +163,7 @@ impl<A: Referable> fmt::Debug for ActorRef<A> {
 
 impl<A: Referable> fmt::Display for ActorRef<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.actor_id, f)?;
+        fmt::Display::fmt(&self.actor_addr, f)?;
         write!(f, "<{}>", std::any::type_name::<A>())
     }
 }
@@ -163,7 +172,7 @@ impl<A: Referable> fmt::Display for ActorRef<A> {
 impl<A: Referable> Clone for ActorRef<A> {
     fn clone(&self) -> Self {
         Self {
-            actor_id: self.actor_id.clone(),
+            actor_addr: self.actor_addr.clone(),
             phantom: PhantomData,
         }
     }
@@ -171,7 +180,7 @@ impl<A: Referable> Clone for ActorRef<A> {
 
 impl<A: Referable> PartialEq for ActorRef<A> {
     fn eq(&self, other: &Self) -> bool {
-        self.actor_id == other.actor_id
+        self.actor_addr == other.actor_addr
     }
 }
 
@@ -185,13 +194,13 @@ impl<A: Referable> PartialOrd for ActorRef<A> {
 
 impl<A: Referable> Ord for ActorRef<A> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.actor_id.cmp(&other.actor_id)
+        self.actor_addr.cmp(&other.actor_addr)
     }
 }
 
 impl<A: Referable> Hash for ActorRef<A> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.actor_id.hash(state);
+        self.actor_addr.hash(state);
     }
 }
 
@@ -200,7 +209,7 @@ impl<A: Referable> Hash for ActorRef<A> {
 #[derive(Debug, Serialize, Deserialize, Derivative, typeuri::Named)]
 #[derivative(PartialEq, Eq, PartialOrd, Hash, Ord)]
 pub struct PortRef<M> {
-    port_id: PortId,
+    port_addr: PortAddr,
     #[derivative(
         PartialEq = "ignore",
         PartialOrd = "ignore",
@@ -229,9 +238,9 @@ pub struct PortRef<M> {
 impl<M: RemoteMessage> PortRef<M> {
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed port reference.
-    pub fn attest(port_id: PortId) -> Self {
+    pub fn attest(port_addr: PortAddr) -> Self {
         Self {
-            port_id,
+            port_addr,
             reducer_spec: None,
             streaming_opts: StreamingReducerOpts::default(),
             phantom: PhantomData,
@@ -243,12 +252,12 @@ impl<M: RemoteMessage> PortRef<M> {
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed port reference.
     pub fn attest_reducible(
-        port_id: PortId,
+        port_addr: PortAddr,
         reducer_spec: Option<ReducerSpec>,
         streaming_opts: StreamingReducerOpts,
     ) -> Self {
         Self {
-            port_id,
+            port_addr,
             reducer_spec,
             streaming_opts,
             phantom: PhantomData,
@@ -265,8 +274,8 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed port reference.
-    pub fn attest_message_port(actor: &ActorId) -> Self {
-        PortRef::<M>::attest(actor.port_id(<M as Named>::port()))
+    pub fn attest_message_port(actor: &crate::reference::ActorId) -> Self {
+        PortRef::<M>::attest(actor.actor_ref().port_ref(Port::from(<M as Named>::port())))
     }
 
     /// The typehash of this port's reducer, if any. Reducers
@@ -275,14 +284,24 @@ impl<M: RemoteMessage> PortRef<M> {
         &self.reducer_spec
     }
 
+    /// This port's address.
+    pub fn port_addr(&self) -> &PortAddr {
+        &self.port_addr
+    }
+
+    /// Convert this PortRef into its corresponding port address.
+    pub fn into_port_addr(self) -> PortAddr {
+        self.port_addr
+    }
+
     /// This port's ID.
-    pub fn port_id(&self) -> &PortId {
-        &self.port_id
+    pub fn port_id(&self) -> crate::reference::PortId {
+        self.port_addr.clone().into()
     }
 
     /// Convert this PortRef into its corresponding port id.
-    pub fn into_port_id(self) -> PortId {
-        self.port_id
+    pub fn into_port_id(self) -> crate::reference::PortId {
+        self.port_addr.into()
     }
 
     /// coerce it into OncePortRef so we can send messages to this port from
@@ -290,7 +309,7 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn into_once(self) -> OncePortRef<M> {
         let return_undeliverable = self.return_undeliverable;
         let unsplit = self.unsplit;
-        let mut once = OncePortRef::attest(self.into_port_id());
+        let mut once = OncePortRef::attest(self.into_port_addr());
         once.return_undeliverable = return_undeliverable;
         once.unsplit = unsplit;
         once
@@ -313,7 +332,7 @@ impl<M: RemoteMessage> PortRef<M> {
     ) -> Result<(), MailboxSenderError> {
         let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
-                self.port_id.clone(),
+                self.port_addr.clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
@@ -332,7 +351,7 @@ impl<M: RemoteMessage> PortRef<M> {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
         cx.post(
-            self.port_id.clone().into(),
+            self.port_addr.clone(),
             headers,
             message,
             self.return_undeliverable,
@@ -361,7 +380,7 @@ impl<M: RemoteMessage> PortRef<M> {
 impl<M: RemoteMessage> Clone for PortRef<M> {
     fn clone(&self) -> Self {
         Self {
-            port_id: self.port_id.clone(),
+            port_addr: self.port_addr.clone(),
             reducer_spec: self.reducer_spec.clone(),
             streaming_opts: self.streaming_opts.clone(),
             phantom: PhantomData,
@@ -373,7 +392,7 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
 
 impl<M: RemoteMessage> fmt::Display for PortRef<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.port_id, f)
+        fmt::Display::fmt(&self.port_addr, f)
     }
 }
 
@@ -389,7 +408,7 @@ pub enum UnboundPortKind {
 /// The parameters extracted from [`PortRef`] to [`Bindings`].
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, typeuri::Named)]
 pub struct UnboundPort(
-    pub PortId,
+    pub PortAddr,
     pub Option<ReducerSpec>,
     pub bool, // return_undeliverable
     pub UnboundPortKind,
@@ -399,15 +418,15 @@ wirevalue::register_type!(UnboundPort);
 
 impl UnboundPort {
     /// Update the port id of this binding.
-    pub fn update(&mut self, port_id: PortId) {
-        self.0 = port_id;
+    pub fn update(&mut self, port_addr: PortAddr) {
+        self.0 = port_addr;
     }
 }
 
 impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
     fn from(port_ref: &PortRef<M>) -> Self {
         UnboundPort(
-            port_ref.port_id.clone(),
+            port_ref.port_addr.clone(),
             port_ref.reducer_spec.clone(),
             port_ref.return_undeliverable,
             UnboundPortKind::Streaming(Some(port_ref.streaming_opts.clone())),
@@ -424,9 +443,9 @@ impl<M: RemoteMessage> Unbind for PortRef<M> {
 
 impl<M: RemoteMessage> Bind for PortRef<M> {
     fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let UnboundPort(port_id, reducer_spec, return_undeliverable, port_kind, unsplit) =
+        let UnboundPort(port_addr, reducer_spec, return_undeliverable, port_kind, unsplit) =
             bindings.try_pop_front::<UnboundPort>()?;
-        self.port_id = port_id;
+        self.port_addr = port_addr;
         self.reducer_spec = reducer_spec;
         self.return_undeliverable = return_undeliverable;
         self.unsplit = unsplit;
@@ -445,7 +464,7 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
 /// a message to this port.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct OncePortRef<M> {
-    port_id: PortId,
+    port_addr: PortAddr,
     reducer_spec: Option<ReducerSpec>,
     return_undeliverable: bool,
     unsplit: bool,
@@ -453,9 +472,9 @@ pub struct OncePortRef<M> {
 }
 
 impl<M: RemoteMessage> OncePortRef<M> {
-    pub(crate) fn attest(port_id: PortId) -> Self {
+    pub(crate) fn attest(port_addr: PortAddr) -> Self {
         Self {
-            port_id,
+            port_addr,
             reducer_spec: None,
             return_undeliverable: true,
             unsplit: false,
@@ -465,9 +484,9 @@ impl<M: RemoteMessage> OncePortRef<M> {
 
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed once port reference.
-    pub fn attest_reducible(port_id: PortId, reducer_spec: Option<ReducerSpec>) -> Self {
+    pub fn attest_reducible(port_addr: PortAddr, reducer_spec: Option<ReducerSpec>) -> Self {
         Self {
-            port_id,
+            port_addr,
             reducer_spec,
             return_undeliverable: true,
             unsplit: false,
@@ -486,14 +505,24 @@ impl<M: RemoteMessage> OncePortRef<M> {
         &self.reducer_spec
     }
 
+    /// This port's address.
+    pub fn port_addr(&self) -> &PortAddr {
+        &self.port_addr
+    }
+
+    /// Convert this OncePortRef into its corresponding port address.
+    pub fn into_port_addr(self) -> PortAddr {
+        self.port_addr
+    }
+
     /// This port's ID.
-    pub fn port_id(&self) -> &PortId {
-        &self.port_id
+    pub fn port_id(&self) -> crate::reference::PortId {
+        self.port_addr.clone().into()
     }
 
     /// Convert this PortRef into its corresponding port id.
-    pub fn into_port_id(self) -> PortId {
-        self.port_id
+    pub fn into_port_id(self) -> crate::reference::PortId {
+        self.port_addr.into()
     }
 
     /// Send a message to this port, provided a sending capability, such as
@@ -513,12 +542,12 @@ impl<M: RemoteMessage> OncePortRef<M> {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
-                self.port_id.clone(),
+                self.port_addr.clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
         cx.post(
-            self.port_id.clone().into(),
+            self.port_addr.clone(),
             headers,
             serialized,
             self.return_undeliverable,
@@ -543,7 +572,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
 impl<M: RemoteMessage> Clone for OncePortRef<M> {
     fn clone(&self) -> Self {
         Self {
-            port_id: self.port_id.clone(),
+            port_addr: self.port_addr.clone(),
             reducer_spec: self.reducer_spec.clone(),
             return_undeliverable: self.return_undeliverable,
             unsplit: self.unsplit,
@@ -554,7 +583,7 @@ impl<M: RemoteMessage> Clone for OncePortRef<M> {
 
 impl<M: RemoteMessage> fmt::Display for OncePortRef<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.port_id, f)
+        fmt::Display::fmt(&self.port_addr, f)
     }
 }
 
@@ -567,7 +596,7 @@ impl<M: RemoteMessage> Named for OncePortRef<M> {
 impl<M: RemoteMessage> From<&OncePortRef<M>> for UnboundPort {
     fn from(port_ref: &OncePortRef<M>) -> Self {
         UnboundPort(
-            port_ref.port_id.clone(),
+            port_ref.port_addr.clone(),
             port_ref.reducer_spec.clone(),
             true, // return_undeliverable
             UnboundPortKind::Once,
@@ -584,11 +613,11 @@ impl<M: RemoteMessage> Unbind for OncePortRef<M> {
 
 impl<M: RemoteMessage> Bind for OncePortRef<M> {
     fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let UnboundPort(port_id, reducer_spec, _return_undeliverable, port_kind, unsplit) =
+        let UnboundPort(port_addr, reducer_spec, _return_undeliverable, port_kind, unsplit) =
             bindings.try_pop_front::<UnboundPort>()?;
         match port_kind {
             UnboundPortKind::Once => {
-                self.port_id = port_id;
+                self.port_addr = port_addr;
                 self.reducer_spec = reducer_spec;
                 self.unsplit = unsplit;
                 Ok(())

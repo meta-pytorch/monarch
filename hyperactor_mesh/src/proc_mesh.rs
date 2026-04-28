@@ -122,7 +122,7 @@ impl ProcRef {
         &self,
         id: &ActorMeshId,
     ) -> hyperactor_reference::ActorRef<A> {
-        hyperactor_reference::ActorRef::attest(self.actor_id(id))
+        hyperactor_reference::ActorRef::attest(self.actor_id(id).into())
     }
 }
 
@@ -170,7 +170,8 @@ impl ProcMesh {
                 ranks
                     .first()
                     .expect("root mesh cannot be empty")
-                    .actor_id(comm_id),
+                    .actor_id(comm_id)
+                    .into(),
             )
         });
         let host_mesh = allocation.hosts();
@@ -219,7 +220,7 @@ impl ProcMesh {
                 let actor_id = rank.agent.actor_id();
 
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                    id: hyperactor_telemetry::hash_to_u64(actor_id),
+                    id: hyperactor_telemetry::hash_to_u64(&actor_id),
                     timestamp: now,
                     mesh_id: mesh_id_hash,
                     rank: rank.create_rank as u64,

@@ -587,13 +587,13 @@ impl fmt::Display for ActorId {
 }
 impl<A: Referable> From<ActorRef<A>> for ActorId {
     fn from(actor_ref: ActorRef<A>) -> Self {
-        actor_ref.actor_id.clone()
+        actor_ref.into_actor_addr().into()
     }
 }
 
-impl<'a, A: Referable> From<&'a ActorRef<A>> for &'a ActorId {
-    fn from(actor_ref: &'a ActorRef<A>) -> Self {
-        &actor_ref.actor_id
+impl<A: Referable> From<&ActorRef<A>> for ActorId {
+    fn from(actor_ref: &ActorRef<A>) -> Self {
+        actor_ref.actor_addr().clone().into()
     }
 }
 
@@ -961,7 +961,7 @@ mod tests {
             _ => panic!("port_handle should be bound"),
         };
         assert!(port_ref_val.is_actor_port());
-        let port_ref = PortRef::attest(port_ref_val.clone().into());
+        let port_ref = PortRef::attest(port_ref_val.clone());
 
         port_handle.send(&client, ()).unwrap();
         let SeqInfo::Session {
@@ -1053,7 +1053,7 @@ mod tests {
         assert_eq!(seq1, 1);
         assert_eq!(session_id, client.sequencer().session_id());
 
-        let port_ref = PortRef::attest(port_ref_val.clone().into());
+        let port_ref = PortRef::attest(port_ref_val.clone());
         port_ref.send(&client, ()).unwrap();
         let SeqInfo::Session { seq: seq2, .. } = rx
             .try_recv()
