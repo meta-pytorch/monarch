@@ -70,7 +70,7 @@ from monarch.common.client import Client
 from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.future import Future as OldFuture
-from monarch.common.invocation import DeviceException, RemoteException
+from monarch.common.invocation import DeviceException
 
 logger: Logger = logging.getLogger(__name__)
 

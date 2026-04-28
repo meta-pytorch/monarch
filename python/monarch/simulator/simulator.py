@@ -177,10 +177,9 @@ class Simulator:
             cuda_device_count = torch.cuda.device_count()
             if cuda_device_count > 0 and torch.cuda.is_available():
                 # Try a small CUDA operation and sync to verify CUDA actually works
-                test_tensor = torch.zeros(1, device="cuda")
+                torch.zeros(1, device="cuda")
                 # Force synchronization to catch any deferred CUDA errors
                 torch.cuda.synchronize()
-                del test_tensor
                 use_real_profiler = True
         except Exception:
             pass

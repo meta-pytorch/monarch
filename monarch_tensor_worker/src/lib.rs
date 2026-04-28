@@ -581,7 +581,7 @@ impl WorkerMessageHandler for WorkerActor {
             &self.controller_actor,
             cx,
             seq.next(),
-            cx.self_id().clone().into(),
+            cx.self_id().clone(),
             controller,
         )
         .await?;
@@ -693,7 +693,7 @@ impl WorkerMessageHandler for WorkerActor {
     async fn exit(
         &mut self,
         cx: &hyperactor::Context<Self>,
-        error: Option<(Option<reference::ActorId>, String)>,
+        error: Option<(Option<reference::ActorAddr>, String)>,
     ) -> Result<()> {
         for (_, stream) in self.streams.drain() {
             stream.drain_and_stop("tensor worker exit cleanup")?;
@@ -719,7 +719,7 @@ impl WorkerMessageHandler for WorkerActor {
                     actor_id,
                     reason
                 );
-                if *cx.self_id() == actor_id {
+                if cx.self_id() == &actor_id {
                     self_error_exit_code
                 } else {
                     peer_error_exit_code
@@ -771,7 +771,7 @@ impl WorkerMessageHandler for WorkerActor {
             .send_value(
                 cx,
                 seq,
-                cx.self_id().clone().into(),
+                cx.self_id().clone(),
                 mutates,
                 function,
                 args_kwargs,

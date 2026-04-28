@@ -8,7 +8,7 @@
 import logging
 import time
 from logging import Logger
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Optional, Protocol
 
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
     ClientActor,
@@ -18,12 +18,8 @@ from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarc
     init_proc,
     Proc,
 )
-from monarch._src.actor.shape import NDSlice
-from monarch.common.client import Client
-from monarch.common.device_mesh import DeviceMesh, DeviceMeshStatus
-from monarch.common.invocation import DeviceException, RemoteException
+from monarch.common.device_mesh import DeviceMesh
 from monarch.common.mast import MastJob
-from monarch.controller.rust_backend.controller import RustController
 
 TORCHX_MAST_TASK_GROUP_NAME = "script"
 

@@ -103,7 +103,7 @@ impl _Controller {
         let proc_mesh = py_proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
 
         // Build rank map from proc ids to ranks.
-        let rank_map: HashMap<reference::ProcId, usize> = proc_mesh
+        let rank_map: HashMap<reference::ProcAddr, usize> = proc_mesh
             .iter()
             .map(|(point, proc)| (proc.proc_id().clone(), point.rank()))
             .collect();
@@ -731,13 +731,13 @@ struct MeshControllerActor {
     id: usize,
     debugger_active: Option<reference::ActorRef<DebuggerActor>>,
     debugger_paused: VecDeque<reference::ActorRef<DebuggerActor>>,
-    rank_map: HashMap<reference::ProcId, usize>,
+    rank_map: HashMap<reference::ProcAddr, usize>,
 }
 
 struct MeshControllerActorParams {
     proc_mesh_ref: ProcMeshRef,
     id: usize,
-    rank_map: HashMap<reference::ProcId, usize>,
+    rank_map: HashMap<reference::ProcAddr, usize>,
 }
 
 impl MeshControllerActor {
@@ -776,7 +776,7 @@ impl MeshControllerActor {
     async fn handle_debug(
         &mut self,
         this: &Context<'_, Self>,
-        debugger_actor_id: reference::ActorId,
+        debugger_actor_id: reference::ActorAddr,
         action: DebuggerAction,
     ) -> anyhow::Result<()> {
         if matches!(action, DebuggerAction::Paused()) {
@@ -889,7 +889,7 @@ impl Debug for MeshControllerActor {
 }
 
 impl MeshControllerActor {
-    fn rank_of_worker(&self, actor_id: &reference::ActorId) -> usize {
+    fn rank_of_worker(&self, actor_id: &reference::ActorAddr) -> usize {
         *self
             .rank_map
             .get(&actor_id.proc_id())
