@@ -36,6 +36,7 @@ use pyo3::types::PyDict;
 use pyo3::types::PyTuple;
 use torch_sys_cuda::nccl::ReduceOp;
 use torch_sys_cuda::nccl::UniqueId;
+use torch_sys_cuda::nccl::UniqueIdExt;
 
 struct MessageParser<'a> {
     current: Bound<'a, PyAny>,
@@ -212,7 +213,9 @@ fn create_map(py: Python) -> HashMap<u64, FnType> {
     };
     m.insert(key("BackendNetworkInit"), |_p| {
         Ok(WorkerMessage::BackendNetworkInit(
-            UniqueId::new().map_err(|err| PyRuntimeError::new_err(err.to_string()))?,
+            UniqueId::new_nccl().map_err(|err: torch_sys_cuda::nccl::RawNcclError| {
+                PyRuntimeError::new_err(err.to_string())
+            })?,
         ))
     });
     m.insert(key("BackendNetworkPointToPointInit"), |p| {
