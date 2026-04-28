@@ -137,22 +137,17 @@ pub struct ProcMesh {
 }
 
 impl ProcMesh {
-    async fn create<C: context::Actor>(
+    pub(crate) async fn create<C: context::Actor>(
         cx: &C,
         id: ProcMeshId,
-        hosts: HostMeshRef,
         extent: Extent,
+        hosts: HostMeshRef,
         ranks: Vec<ProcRef>,
-        spawn_comm_actor: bool,
     ) -> crate::Result<Self>
     where
         C::A: Handler<MeshFailure>,
     {
-        let comm_actor_name = if spawn_comm_actor {
-            Some(ActorMeshId::singleton(Label::new(COMM_ACTOR_NAME).unwrap()))
-        } else {
-            None
-        };
+        let comm_actor_name = ActorMeshId::singleton(Label::new(COMM_ACTOR_NAME).unwrap());
 
         let region = extent.into();
         let ranks = Arc::new(ranks);
@@ -166,14 +161,12 @@ impl ProcMesh {
             );
         }
 
-        let root_comm_actor = comm_actor_name.as_ref().map(|comm_id| {
-            hyperactor_reference::ActorRef::attest(
-                ranks
-                    .first()
-                    .expect("root mesh cannot be empty")
-                    .actor_id(comm_id),
-            )
-        });
+        let root_comm_actor = hyperactor_reference::ActorRef::attest(
+            ranks
+                .first()
+                .expect("root mesh cannot be empty")
+                .actor_id(&comm_actor_name),
+        );
         let current_ref = ProcMeshRef::new(
             id.clone(),
             region,
@@ -231,47 +224,32 @@ impl ProcMesh {
 
         let mut proc_mesh = Self {
             id,
-            comm_actor_name: comm_actor_name.clone(),
+            comm_actor_name: Some(comm_actor_name.clone()),
             current_ref,
         };
 
-        if let Some(comm_actor_name) = comm_actor_name {
-            // CommActor satisfies `Actor + Referable`, so it can be
-            // spawned and safely referenced via ActorRef<CommActor>.
-            // It is a system actor that should not have a controller managing it.
-            let comm_actor_mesh: ActorMesh<CommActor> = proc_mesh
-                .spawn_with_name(cx, comm_actor_name, &Default::default(), None, true)
-                .await?;
-            let address_book: HashMap<_, _> = comm_actor_mesh
-                .iter()
-                .map(|(point, actor_ref)| (point.rank(), actor_ref))
-                .collect();
-            // Now that we have all of the spawned comm actors, kick them all into
-            // mesh mode.
-            for (rank, comm_actor) in &address_book {
-                comm_actor
-                    .send(cx, CommMeshConfig::new(*rank, address_book.clone()))
-                    .map_err(|e| Error::SendingError(comm_actor.actor_id().clone(), Box::new(e)))?
-            }
-
-            // The comm actor is now set up and ready to go.
-            proc_mesh.current_ref.root_comm_actor = root_comm_actor;
+        // CommActor satisfies `Actor + Referable`, so it can be
+        // spawned and safely referenced via ActorRef<CommActor>.
+        // It is a system actor that should not have a controller managing it.
+        let comm_actor_mesh: ActorMesh<CommActor> = proc_mesh
+            .spawn_with_name(cx, comm_actor_name, &Default::default(), None, true)
+            .await?;
+        let address_book: HashMap<_, _> = comm_actor_mesh
+            .iter()
+            .map(|(point, actor_ref)| (point.rank(), actor_ref))
+            .collect();
+        // Now that we have all of the spawned comm actors, kick them all into
+        // mesh mode.
+        for (rank, comm_actor) in &address_book {
+            comm_actor
+                .send(cx, CommMeshConfig::new(*rank, address_book.clone()))
+                .map_err(|e| Error::SendingError(comm_actor.actor_id().clone(), Box::new(e)))?
         }
 
-        Ok(proc_mesh)
-    }
+        // The comm actor is now set up and ready to go.
+        proc_mesh.current_ref.root_comm_actor = Some(root_comm_actor);
 
-    pub(crate) async fn create_owned_unchecked<C: context::Actor>(
-        cx: &C,
-        id: ProcMeshId,
-        extent: Extent,
-        hosts: HostMeshRef,
-        ranks: Vec<ProcRef>,
-    ) -> crate::Result<Self>
-    where
-        C::A: Handler<MeshFailure>,
-    {
-        Self::create(cx, id, hosts, extent, ranks, true).await
+        Ok(proc_mesh)
     }
 
     /// Stop this mesh gracefully.
