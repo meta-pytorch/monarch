@@ -1,0 +1,30 @@
+ARG NGC_TAG=25.10-py3
+FROM nvcr.io/nvidia/pytorch:${NGC_TAG}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN set -eux; \
+    rm -f /etc/apt/sources.list.d/*doca* \
+          /etc/apt/sources.list.d/*mellanox* \
+          /etc/apt/sources.list.d/*mlnx* \
+          /etc/apt/sources.list.d/nvidia-doca* 2>/dev/null || true; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+    curl -fsSL https://linux.mellanox.com/public/repo/doca/GPG-KEY-Mellanox.pub \
+        | gpg --dearmor -o /etc/apt/trusted.gpg.d/GPG-KEY-Mellanox.gpg; \
+    echo "deb [signed-by=/etc/apt/trusted.gpg.d/GPG-KEY-Mellanox.gpg] https://linux.mellanox.com/public/repo/doca/3.2.1/ubuntu24.04/x86_64/ ./" \
+        > /etc/apt/sources.list.d/doca.list; \
+    apt-mark showhold | xargs -r apt-mark unhold; \
+    apt-get update; \
+    apt-get install -y --allow-downgrades --allow-change-held-packages \
+        doca-ofed-userspace=3.2.1-044000; \
+    rm -rf /var/lib/apt/lists/*; \
+    ldconfig
+
+RUN pip install torchmonarch==0.4.0rc1 kubernetes --break-system-packages
+
+COPY examples/k8s_ddp_cnn/vanilla_cnn/requirements.txt /tmp/requirements.txt
+
+RUN pip install -r /tmp/requirements.txt --break-system-packages
+
+RUN python -c "import kagglehub; kagglehub.dataset_download('gpiosenka/cards-image-datasetclassification')"

@@ -1,0 +1,9 @@
+FROM docker.io/rocm/pytorch:rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1
+
+RUN pip install torchmonarch==0.4.0rc1 kubernetes --break-system-packages
+
+COPY examples/k8s_ddp_cnn/vanilla_cnn/requirements.txt /tmp/requirements.txt
+
+RUN pip install -r /tmp/requirements.txt --break-system-packages
+
+RUN python -c "import kagglehub; kagglehub.dataset_download('gpiosenka/cards-image-datasetclassification')"
