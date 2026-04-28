@@ -505,8 +505,11 @@ impl<A: Referable> ActorMeshRef<A> {
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
             if hyperactor_config::global::get(ENABLE_NATIVE_V1_CASTING) {
+                assert!(
+                    hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
+                    "native V1 casting requires ENABLE_DEST_ACTOR_REORDERING_BUFFER to be enabled",
+                );
                 if Selection::is_equivalent_to_true(&sel) {
-                        hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
                     self.cast_v1(cx, message, root_comm_actor);
                     return Ok(());
                 }
