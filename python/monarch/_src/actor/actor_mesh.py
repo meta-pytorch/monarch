@@ -411,16 +411,29 @@ def _init_client_context() -> Context:
     """
     Create a client context that bootstraps an actor instance running on a real
     local proc mesh on a real local host mesh.
+
+    When the ``client_attach_addr`` configuration key is set to a
+    non-empty ZMQ-style address, bootstrap instead by attaching the
+    singleton proc to the remote host serving that address; the host
+    then acts as a mailbox forwarder for the client.
     """
     import atexit
 
-    from monarch._rust_bindings.monarch_hyperactor.host_mesh import bootstrap_host
+    from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
+        bootstrap_attached,
+        bootstrap_host,
+    )
     from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
     from monarch._src.actor.proc_mesh import ProcMesh
+    from monarch.config import get_global_config
 
-    hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
-        _bootstrap_cmd()
-    ).block_on()
+    attach_addr = get_global_config().get("client_attach_addr") or ""
+    if attach_addr:
+        bootstrap = bootstrap_attached(_bootstrap_cmd(), attach_addr)
+    else:
+        bootstrap = bootstrap_host(_bootstrap_cmd())
+
+    hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap.block_on()
 
     ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
     # Set the context here to avoid recursive context creation:
