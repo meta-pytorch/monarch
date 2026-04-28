@@ -12,9 +12,9 @@ use serde::Serialize;
 pub use crate as hyperactor;
 use crate::HandleClient;
 use crate::Handler;
+use crate::ProcAddr;
 use crate::RefClient;
 use crate::mailbox::ChannelAddr;
-use crate::reference;
 
 /// Messages relating to mailbox administration.
 #[derive(
@@ -32,7 +32,7 @@ pub enum MailboxAdminMessage {
     /// An address update.
     UpdateAddress {
         /// The ID of the proc.
-        proc_id: reference::ProcId,
+        proc_id: ProcAddr,
 
         /// The address at which it listens.
         addr: ChannelAddr,

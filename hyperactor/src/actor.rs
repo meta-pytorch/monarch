@@ -33,7 +33,6 @@ use typeuri::Named;
 
 use crate as hyperactor; // for macros
 use crate::ActorAddr;
-use crate::ActorRef;
 use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
