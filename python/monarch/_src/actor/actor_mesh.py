@@ -561,6 +561,11 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
         transport_config = BindSpec(transport)
 
     if _context.get() is not None:
+        # Context already initialized. It is only an error to enable a *different* transport;
+        # re-enabling the same transport is a no-op.
+        with _transport_lock:
+            if _transport == transport_config:
+                return
         raise RuntimeError(
             "`enable_transport()` must be called before any other calls in the monarch API. "
             "If it isn't called, we will implicitly call `monarch.enable_transport(ChannelTransport.Unix)` "

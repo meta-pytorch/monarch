@@ -54,7 +54,11 @@ class TestDefaults(unittest.TestCase):
 
         for scheduler in defaults.scheduler_factories():
             with self.subTest(scheduler=scheduler):
-                component_fn = defaults.component_fn(scheduler)
+                try:
+                    component_fn = defaults.component_fn(scheduler)
+                except NotImplementedError:
+                    # No default component for this scheduler in OSS builds.
+                    continue
 
                 # the following will fail if the component_fn is not a valid torchx component
                 with self.assertRaises(SystemExit):
