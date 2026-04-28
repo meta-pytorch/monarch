@@ -164,13 +164,21 @@ impl ProcRef {
         self.label().map(|l| l.as_str()).unwrap_or("?")
     }
 
-    /// The ResourceId text form: `label` (singleton), `label<uid58>`
-    /// (labeled instance), or `<uid58>` (unlabeled instance).
+    /// The ResourceId text form: `label` (singleton), `label-uid58`
+    /// (labeled instance), or `uid58` (unlabeled instance). Matches the
+    /// `Display` output of `mesh_id::ResourceId` and is suitable for use as
+    /// a filesystem path component.
     pub fn resource_name(&self) -> String {
+        fn uid_str(uid: &Uid) -> String {
+            uid.to_string()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_string()
+        }
         match (self.id.uid(), self.id.label()) {
             (Uid::Singleton(label), _) => label.to_string(),
-            (Uid::Instance(_), Some(label)) => format!("{label}{}", self.id.uid()),
-            (Uid::Instance(_), None) => self.id.uid().to_string(),
+            (uid @ Uid::Instance(_), Some(label)) => format!("{label}-{}", uid_str(uid)),
+            (uid @ Uid::Instance(_), None) => uid_str(uid),
         }
     }
 }
