@@ -89,7 +89,7 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
                 if let Some(return_channel) = return_channel {
                     return_channel
                         .send(SendError {
-                            error: err.into(),
+                            error: ChannelError::Other(anyhow::Error::from(err)),
                             message,
                             reason: None,
                         })
@@ -131,7 +131,8 @@ pub struct LocalRx<M: RemoteMessage> {
 impl<M: RemoteMessage> Rx<M> for LocalRx<M> {
     async fn recv(&mut self) -> Result<M, ChannelError> {
         let message = self.data_rx.recv().await.ok_or(ChannelError::Closed)?;
-        serde_multipart::deserialize_bincode(message).map_err(ChannelError::from)
+        serde_multipart::deserialize_bincode(message)
+            .map_err(|err| ChannelError::Other(anyhow::Error::from(err)))
     }
 
     fn addr(&self) -> ChannelAddr {
