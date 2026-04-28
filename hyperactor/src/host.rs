@@ -96,7 +96,6 @@ use crate::mailbox::MailboxServer;
 use crate::mailbox::MailboxServerError;
 use crate::mailbox::MailboxServerHandle;
 use crate::mailbox::MessageEnvelope;
-use crate::mailbox::Undeliverable;
 use crate::reference;
 
 /// Name of the system service proc on a host — hosts the admin actor
@@ -598,7 +597,7 @@ async fn duplex_accept_loop(
             duplex_tx.post(Host2Client::Bootstrap(assignment));
 
             router.bind(
-                ref_::Reference::from(proc_id.proc_ref().clone()),
+                Address::from(proc_id.proc_ref().clone()),
                 AttachSender(duplex_tx),
             );
 
@@ -613,7 +612,7 @@ async fn duplex_accept_loop(
                         let _ = handle.await;
                     }
                 }
-                cleanup_router.unbind(&ref_::Reference::from(proc_id.proc_ref().clone()));
+                cleanup_router.unbind(&Address::from(proc_id.proc_ref().clone()));
                 tracing::info!(
                     proc_id = proc_id.to_string(),
                     "attach connection closed, removed route"
@@ -2435,21 +2434,20 @@ mod tests {
 
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            ref_::Reference::from(host.system_proc().proc_id().clone()),
+            Address::from(host.system_proc().proc_id().clone()),
             host.addr().clone(),
         );
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-        let client_proc_id = reference::ProcId::from_resource_name(client_listen_addr, "client");
+        let client_proc_id = ProcAddr::from_resource_name(client_listen_addr, "client");
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
         let (client_inst, _h) = client_proc.instance("requester").unwrap();
-        let (reply_port, reply_handle) =
-            client_inst.mailbox().open_once_port::<reference::ActorId>();
+        let (reply_port, reply_handle) = client_inst.mailbox().open_once_port::<ActorAddr>();
         let reply_port = reply_port.bind();
         echo_ref
-            .port::<reference::OncePortRef<reference::ActorId>>()
+            .port::<reference::OncePortRef<ActorAddr>>()
             .send(&client_inst, reply_port)
             .unwrap();
         let _ = tokio::time::timeout(Duration::from_secs(5), reply_handle.recv())
@@ -2460,12 +2458,11 @@ mod tests {
         // Snapshot the client's outbound NetTx status before shutdown.
         let host_tx = channel::dial::<MessageEnvelope>(host.addr().clone()).unwrap();
         // Push one message so the lazy-connect kicks in.
-        let dummy_dest = reference::PortId::from(
-            host.system_proc()
-                .proc_id()
-                .actor_ref("noop")
-                .port_ref(crate::port::Port::from(0u64)),
-        );
+        let dummy_dest = host
+            .system_proc()
+            .proc_id()
+            .actor_ref("noop")
+            .port_ref(crate::port::Port::from(0u64));
         let envelope = MessageEnvelope::serialize(
             client_inst.self_id().clone(),
             dummy_dest,
@@ -2548,13 +2545,11 @@ mod tests {
             let system_proc_id = system_proc_id.clone();
             client_tasks.push(tokio::spawn(async move {
                 let dial_router = DialMailboxRouter::new();
-                dial_router.bind(ref_::Reference::from(system_proc_id.clone()), host_addr);
+                dial_router.bind(Address::from(system_proc_id.clone()), host_addr);
                 let client_addr = ChannelAddr::any(ChannelTransport::Unix);
                 let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-                let client_proc_id = reference::ProcId::from_resource_name(
-                    client_listen_addr,
-                    format!("client-{}", ci),
-                );
+                let client_proc_id =
+                    ProcAddr::from_resource_name(client_listen_addr, format!("client-{}", ci));
                 let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
                 let _client_handle = client_proc.clone().serve(client_rx);
 
@@ -2563,10 +2558,10 @@ mod tests {
                 for ri in 0..M_REQUESTS {
                     let (client_inst, _h) = client_proc.instance(&format!("req-{}", ri)).unwrap();
                     let (reply_port, reply_handle) =
-                        client_inst.mailbox().open_once_port::<reference::ActorId>();
+                        client_inst.mailbox().open_once_port::<ActorAddr>();
                     let reply_port = reply_port.bind();
                     echo_ref
-                        .port::<reference::OncePortRef<reference::ActorId>>()
+                        .port::<reference::OncePortRef<ActorAddr>>()
                         .send(&client_inst, reply_port)
                         .unwrap();
                     let received =
@@ -2625,12 +2620,11 @@ mod tests {
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            ref_::Reference::from(host.system_proc().proc_id().clone()),
+            Address::from(host.system_proc().proc_id().clone()),
             host.addr().clone(),
         );
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-        let client_proc_id =
-            reference::ProcId::from_resource_name(client_listen_addr, "external-client");
+        let client_proc_id = ProcAddr::from_resource_name(client_listen_addr, "external-client");
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
@@ -2639,11 +2633,10 @@ mod tests {
         // Send a request to the echo actor on the host. The reply
         // travels back through the host's dial router → simplex dial
         // → client's frontend.
-        let (reply_port, reply_handle) =
-            client_inst.mailbox().open_once_port::<reference::ActorId>();
+        let (reply_port, reply_handle) = client_inst.mailbox().open_once_port::<ActorAddr>();
         let reply_port = reply_port.bind();
         echo_ref
-            .port::<reference::OncePortRef<reference::ActorId>>()
+            .port::<reference::OncePortRef<ActorAddr>>()
             .send(&client_inst, reply_port)
             .unwrap();
 
