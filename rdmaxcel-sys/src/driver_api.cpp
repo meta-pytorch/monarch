@@ -169,13 +169,42 @@ DriverAPI create_driver_api() {
 } // namespace
 
 DriverAPI* DriverAPI::get() {
-  // Ensure we have a valid CUDA context for this thread
+  // Ensure we have a valid CUDA context for this thread.
   cudaFree(0);
-  static DriverAPI singleton = create_driver_api();
-  return &singleton;
+  // Lazily construct the singleton once. Catch exceptions internally so
+  // they never cross the extern "C" boundary below (doing so would be
+  // undefined behavior and in practice triggers std::terminate).  On
+  // failure we cache a nullptr and the wrappers return
+  // CUDA_ERROR_NOT_INITIALIZED.
+  static DriverAPI* singleton = []() -> DriverAPI* {
+    try {
+      static DriverAPI api = create_driver_api();
+      return &api;
+    } catch (const std::exception& e) {
+      std::cerr << "[RdmaXcel] Driver API initialization failed: " << e.what()
+                << std::endl;
+      return nullptr;
+    } catch (...) {
+      std::cerr << "[RdmaXcel] Driver API initialization failed: unknown error"
+                << std::endl;
+      return nullptr;
+    }
+  }();
+  return singleton;
 }
 
 } // namespace rdmaxcel
+
+// Dispatch a C API call to the lazily-initialized DriverAPI singleton.
+// Returns CUDA_ERROR_NOT_INITIALIZED when initialization failed so that
+// C++ exceptions from create_driver_api() never cross the extern "C"
+// boundary below.
+#define RDMAXCEL_DISPATCH(method, ...)     \
+  auto* _api = rdmaxcel::DriverAPI::get(); \
+  if (_api == nullptr) {                   \
+    return CUDA_ERROR_NOT_INITIALIZED;     \
+  }                                        \
+  return _api->method##_(__VA_ARGS__)
 
 // C API wrapper implementations
 extern "C" {
@@ -187,16 +216,15 @@ CUresult rdmaxcel_cuMemGetHandleForAddressRange(
     size_t size,
     CUmemRangeHandleType handleType,
     unsigned long long flags) {
-  return rdmaxcel::DriverAPI::get()->memGetHandleForAddressRange_(
-      handle, dptr, size, handleType, flags);
+  RDMAXCEL_DISPATCH(
+      memGetHandleForAddressRange, handle, dptr, size, handleType, flags);
 }
 
 CUresult rdmaxcel_cuMemGetAllocationGranularity(
     size_t* granularity,
     const CUmemAllocationProp* prop,
     CUmemAllocationGranularity_flags option) {
-  return rdmaxcel::DriverAPI::get()->memGetAllocationGranularity_(
-      granularity, prop, option);
+  RDMAXCEL_DISPATCH(memGetAllocationGranularity, granularity, prop, option);
 }
 
 CUresult rdmaxcel_cuMemCreate(
@@ -204,7 +232,7 @@ CUresult rdmaxcel_cuMemCreate(
     size_t size,
     const CUmemAllocationProp* prop,
     unsigned long long flags) {
-  return rdmaxcel::DriverAPI::get()->memCreate_(handle, size, prop, flags);
+  RDMAXCEL_DISPATCH(memCreate, handle, size, prop, flags);
 }
 
 CUresult rdmaxcel_cuMemAddressReserve(
@@ -213,8 +241,7 @@ CUresult rdmaxcel_cuMemAddressReserve(
     size_t alignment,
     CUdeviceptr addr,
     unsigned long long flags) {
-  return rdmaxcel::DriverAPI::get()->memAddressReserve_(
-      ptr, size, alignment, addr, flags);
+  RDMAXCEL_DISPATCH(memAddressReserve, ptr, size, alignment, addr, flags);
 }
 
 CUresult rdmaxcel_cuMemMap(
@@ -223,7 +250,7 @@ CUresult rdmaxcel_cuMemMap(
     size_t offset,
     CUmemGenericAllocationHandle handle,
     unsigned long long flags) {
-  return rdmaxcel::DriverAPI::get()->memMap_(ptr, size, offset, handle, flags);
+  RDMAXCEL_DISPATCH(memMap, ptr, size, offset, handle, flags);
 }
 
 CUresult rdmaxcel_cuMemSetAccess(
@@ -231,38 +258,38 @@ CUresult rdmaxcel_cuMemSetAccess(
     size_t size,
     const CUmemAccessDesc* desc,
     size_t count) {
-  return rdmaxcel::DriverAPI::get()->memSetAccess_(ptr, size, desc, count);
+  RDMAXCEL_DISPATCH(memSetAccess, ptr, size, desc, count);
 }
 
 CUresult rdmaxcel_cuMemUnmap(CUdeviceptr ptr, size_t size) {
-  return rdmaxcel::DriverAPI::get()->memUnmap_(ptr, size);
+  RDMAXCEL_DISPATCH(memUnmap, ptr, size);
 }
 
 CUresult rdmaxcel_cuMemAddressFree(CUdeviceptr ptr, size_t size) {
-  return rdmaxcel::DriverAPI::get()->memAddressFree_(ptr, size);
+  RDMAXCEL_DISPATCH(memAddressFree, ptr, size);
 }
 
 CUresult rdmaxcel_cuMemRelease(CUmemGenericAllocationHandle handle) {
-  return rdmaxcel::DriverAPI::get()->memRelease_(handle);
+  RDMAXCEL_DISPATCH(memRelease, handle);
 }
 
 CUresult rdmaxcel_cuMemcpyHtoD_v2(
     CUdeviceptr dstDevice,
     const void* srcHost,
     size_t ByteCount) {
-  return rdmaxcel::DriverAPI::get()->memcpyHtoD_(dstDevice, srcHost, ByteCount);
+  RDMAXCEL_DISPATCH(memcpyHtoD, dstDevice, srcHost, ByteCount);
 }
 
 CUresult rdmaxcel_cuMemcpyDtoH_v2(
     void* dstHost,
     CUdeviceptr srcDevice,
     size_t ByteCount) {
-  return rdmaxcel::DriverAPI::get()->memcpyDtoH_(dstHost, srcDevice, ByteCount);
+  RDMAXCEL_DISPATCH(memcpyDtoH, dstHost, srcDevice, ByteCount);
 }
 
 CUresult
 rdmaxcel_cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N) {
-  return rdmaxcel::DriverAPI::get()->memsetD8_(dstDevice, uc, N);
+  RDMAXCEL_DISPATCH(memsetD8, dstDevice, uc, N);
 }
 
 // Pointer queries
@@ -270,58 +297,60 @@ CUresult rdmaxcel_cuPointerGetAttribute(
     void* data,
     CUpointer_attribute attribute,
     CUdeviceptr ptr) {
-  return rdmaxcel::DriverAPI::get()->pointerGetAttribute_(data, attribute, ptr);
+  RDMAXCEL_DISPATCH(pointerGetAttribute, data, attribute, ptr);
 }
 
 // Device management
 CUresult rdmaxcel_cuInit(unsigned int Flags) {
-  return rdmaxcel::DriverAPI::get()->init_(Flags);
+  RDMAXCEL_DISPATCH(init, Flags);
 }
 
 CUresult rdmaxcel_cuDeviceGet(CUdevice* device, int ordinal) {
-  return rdmaxcel::DriverAPI::get()->deviceGet_(device, ordinal);
+  RDMAXCEL_DISPATCH(deviceGet, device, ordinal);
 }
 
 CUresult rdmaxcel_cuDeviceGetCount(int* count) {
-  return rdmaxcel::DriverAPI::get()->deviceGetCount_(count);
+  RDMAXCEL_DISPATCH(deviceGetCount, count);
 }
 
 CUresult rdmaxcel_cuDeviceGetAttribute(
     int* pi,
     CUdevice_attribute attrib,
     CUdevice dev) {
-  return rdmaxcel::DriverAPI::get()->deviceGetAttribute_(pi, attrib, dev);
+  RDMAXCEL_DISPATCH(deviceGetAttribute, pi, attrib, dev);
 }
 
 // Context management
 CUresult
 rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev) {
-  return rdmaxcel::DriverAPI::get()->ctxCreate_(pctx, flags, dev);
+  RDMAXCEL_DISPATCH(ctxCreate, pctx, flags, dev);
 }
 
 CUresult rdmaxcel_cuDevicePrimaryCtxRetain(CUcontext* pctx, CUdevice dev) {
-  return rdmaxcel::DriverAPI::get()->devicePrimaryCtxRetain_(pctx, dev);
+  RDMAXCEL_DISPATCH(devicePrimaryCtxRetain, pctx, dev);
 }
 
 CUresult rdmaxcel_cuDevicePrimaryCtxRelease(CUdevice dev) {
-  return rdmaxcel::DriverAPI::get()->devicePrimaryCtxRelease_(dev);
+  RDMAXCEL_DISPATCH(devicePrimaryCtxRelease, dev);
 }
 
 CUresult rdmaxcel_cuCtxGetCurrent(CUcontext* pctx) {
-  return rdmaxcel::DriverAPI::get()->ctxGetCurrent_(pctx);
+  RDMAXCEL_DISPATCH(ctxGetCurrent, pctx);
 }
 
 CUresult rdmaxcel_cuCtxSetCurrent(CUcontext ctx) {
-  return rdmaxcel::DriverAPI::get()->ctxSetCurrent_(ctx);
+  RDMAXCEL_DISPATCH(ctxSetCurrent, ctx);
 }
 
 CUresult rdmaxcel_cuCtxSynchronize(void) {
-  return rdmaxcel::DriverAPI::get()->ctxSynchronize_();
+  RDMAXCEL_DISPATCH(ctxSynchronize);
 }
 
 // Error handling
 CUresult rdmaxcel_cuGetErrorString(CUresult error, const char** pStr) {
-  return rdmaxcel::DriverAPI::get()->getErrorString_(error, pStr);
+  RDMAXCEL_DISPATCH(getErrorString, error, pStr);
 }
 
 } // extern "C"
+
+#undef RDMAXCEL_DISPATCH
