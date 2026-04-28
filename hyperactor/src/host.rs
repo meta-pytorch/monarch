@@ -1721,7 +1721,7 @@ where
     // and call back.
     let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(backend_transport))?;
     proc.clone().serve(proc_rx);
-    channel::dial(callback_addr)?
+    channel::dial::<(ChannelAddr, ActorRef<A>)>(callback_addr)?
         .send((proc_addr, agent_handle.bind::<A>()))
         .await
         .map_err(ChannelError::from)?;
@@ -1740,7 +1740,7 @@ pub mod testing {
     use crate::Context;
     use crate::Handler;
     use crate::OncePortRef;
-    use crate::reference::OncePortRef;
+
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
     #[derive(Debug, Default)]
