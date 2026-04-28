@@ -489,7 +489,7 @@ impl Actor for HostAgent {
         this.bind::<Self>();
         match self.host_mut().unwrap() {
             HostAgentMode::Process { host, .. } => {
-                self.mailbox_handle = host.serve();
+                self.mailbox_handle = Some(host.serve()?);
                 let (directory, file) = hyperactor_telemetry::log_file_path(
                     hyperactor_telemetry::env::Env::current(),
                     None,
@@ -503,7 +503,7 @@ impl Actor for HostAgent {
                 );
             }
             HostAgentMode::Local(host) => {
-                host.serve();
+                host.serve()?;
             }
         };
         this.set_system();
