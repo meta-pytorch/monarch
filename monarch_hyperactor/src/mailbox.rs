@@ -626,6 +626,31 @@ impl EitherPortRef {
         }
         Ok(())
     }
+
+    /// Send a message through this port reference with
+    /// caller-supplied envelope headers. Delegates to the underlying
+    /// `PortRef::send_with_headers` /
+    /// `OncePortRef::send_with_headers`.
+    pub fn send_with_headers(
+        &mut self,
+        cx: &impl hyperactor::context::Actor,
+        headers: hyperactor_config::Flattrs,
+        message: crate::actor::PythonMessage,
+    ) -> anyhow::Result<()> {
+        match self {
+            EitherPortRef::Unbounded(port_ref) => {
+                port_ref.inner.send_with_headers(cx, headers, message)?
+            }
+            EitherPortRef::Once(once_port_ref) => {
+                let port = once_port_ref
+                    .inner
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("OncePortRef already used"))?;
+                port.send_with_headers(cx, headers, message)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Named)]

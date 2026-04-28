@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -199,7 +200,7 @@ pub enum StreamMessage {
         to_rank: Option<usize>,
         tensor: Ref,
         factory: Factory,
-        comm: Arc<ActorHandle<NcclCommActor>>,
+        comm: Option<Arc<ActorHandle<NcclCommActor>>>,
     },
 
     SendValue {
@@ -1357,7 +1358,7 @@ impl StreamMessageHandler for StreamActor {
         to_rank: Option<usize>,
         tensor: Ref,
         factory: Factory,
-        comm: Arc<ActorHandle<NcclCommActor>>,
+        comm: Option<Arc<ActorHandle<NcclCommActor>>>,
     ) -> Result<()> {
         if let Some((recording, _)) = self.get_defining_recording() {
             recording.messages.push(StreamMessage::SendTensor {
@@ -1400,6 +1401,8 @@ impl StreamMessageHandler for StreamActor {
             self.env.insert(result, output_cell);
             return Ok(());
         }
+
+        let comm = comm.context("send_tensor requires backend comm")?;
 
         let mut messages = Vec::new();
 
@@ -1925,7 +1928,7 @@ impl StreamMessageHandler for StreamActor {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use hyperactor::actor::ActorStatus;
     use hyperactor::context;
@@ -1933,10 +1936,11 @@ mod tests {
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::worker::StreamCreationMode;
     use monarch_types::PickledPyObject;
+    use monarch_types::UniqueId;
     use pyo3::IntoPyObjectExt;
     use timed_test::async_timed_test;
     use tokio::sync::watch;
-    use torch_sys_cuda::nccl::UniqueId;
+    use torch_sys_cuda::nccl::UniqueIdExt;
     use torch_sys2::factory_float_tensor;
     use torch_sys2::testing::allclose;
 
@@ -2456,7 +2460,7 @@ mod tests {
             "comm",
             NcclCommActor::new(CommParams::New {
                 device: CudaDevice::new(0.into()),
-                unique_id: UniqueId::new()?,
+                unique_id: UniqueId::new_nccl()?,
                 world_size: 1,
                 rank: 0,
             })
