@@ -111,8 +111,10 @@ Monarch includes
 [distributed tensor](https://meta-pytorch.org/monarch/generated/examples/getting_started.html#distributed-tensors)
 and
 [RDMA](https://meta-pytorch.org/monarch/generated/examples/getting_started.html#point-to-point-rdma)
-APIs. Since these are hardware-specific, it can be useful to develop with a
-lighter-weight version of Monarch (actors only) by setting
+APIs. The tensor engine builds on any platform, including CPU-only hosts and
+macOS; GPU-specific pieces (NCCL, RDMA, rdmaxcel) layer on top and only build on
+Linux with a CUDA or ROCm toolchain installed. If you want a lighter-weight
+version of Monarch (actors only, no torch dependency), set
 `USE_TENSOR_ENGINE=0`.
 
 By default, Monarch builds with tensor_engine enabled. To build without it:
@@ -123,6 +125,26 @@ USE_TENSOR_ENGINE=0 uv sync
 
 **Note**: Building without tensor_engine means you won't have access to the
 distributed tensor or RDMA APIs. Torch is required to use tensor_engine, and the latest stable torch is ABI compatible with the latest versioned torchmonarch
+
+**Selecting a GPU platform**: The `MONARCH_GPU_PLATFORM` environment variable
+controls which GPU libraries the build links against. It accepts:
+
+- `cuda` — build against CUDA (NCCL + RDMA).
+- `rocm` — build against ROCm.
+- `none` — force a CPU-only tensor engine even on a host where CUDA or ROCm is
+  installed.
+
+Leaving it unset auto-detects whichever toolchain is present. Setting it
+explicitly is required when both CUDA and ROCm are installed, and `none` is the
+explicit opt-out when you want the CPU tensor engine on a GPU-capable host.
+
+```sh
+# Force a CPU-only tensor engine (no CUDA/ROCm/RDMA libraries required)
+MONARCH_GPU_PLATFORM=none uv sync
+
+# Force CUDA on a host that also has ROCm
+MONARCH_GPU_PLATFORM=cuda uv sync
+```
 
 #### Build Dependencies by Platform
 
@@ -205,10 +227,10 @@ USE_TENSOR_ENGINE=0 uv pip install -e .
 ##### On non-CUDA machines
 
 You can also build Monarch on non-CUDA machines (e.g., macOS laptops) for
-CPU-only usage.
-
-Note that this does not support tensor_engine, which requires CUDA and RDMA
-libraries.
+CPU-only usage. The tensor engine itself works on CPU; only the GPU-specific
+bits (NCCL, RDMA, rdmaxcel) are skipped. Auto-detection handles hosts with no
+CUDA or ROCm installed. If your host does have a GPU toolchain installed but
+you want the CPU tensor engine anyway, set `MONARCH_GPU_PLATFORM=none`.
 
 ```sh
 # Install nightly rust toolchain
@@ -216,11 +238,14 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup toolchain install nightly
 rustup default nightly
 
-# Clone and sync dependencies (without tensor_engine)
+# Clone and sync dependencies
 git clone https://github.com/meta-pytorch/monarch.git
 cd monarch
 
-# Install without tensor engine (CPU-only)
+# Build the CPU tensor engine (auto-detects no GPU)
+uv sync
+
+# Or, to skip the tensor engine entirely (actors only, no torch required)
 USE_TENSOR_ENGINE=0 uv sync
 
 # Verify installation

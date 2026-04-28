@@ -1118,6 +1118,7 @@ async def test_slice_supervision() -> None:
 
 
 @pytest.mark.timeout(30)
+@pytest.mark.skipif(sys.platform != "linux", reason="linux-only")
 @parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_mesh_slices_inherit_parent_errors() -> None:
@@ -1389,6 +1390,7 @@ async def test_supervise_callback_without_await_handled():
 
 
 @pytest.mark.timeout(30)
+@pytest.mark.skipif(sys.platform != "linux", reason="linux-only")
 @parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_supervise_callback_with_mesh_ref():

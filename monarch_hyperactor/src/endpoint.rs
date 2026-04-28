@@ -537,6 +537,47 @@ pub(crate) trait Endpoint {
         instance: &Instance<PythonActor>,
     ) -> PyResult<()>;
 
+    /// Like `send_message` but stamps `caller_headers` onto the
+    /// outgoing request envelope. Implementations that can carry
+    /// headers override this; the default delegates to `send_message`
+    /// and drops them.
+    fn send_message_with_headers<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+        port_ref: Option<EitherPortRef>,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+        _caller_headers: hyperactor_config::Flattrs,
+    ) -> PyResult<()> {
+        self.send_message(py, args, kwargs, port_ref, selection, instance)
+    }
+
+    /// Build the operation-context envelope headers to stamp on an
+    /// outgoing request for this endpoint invocation. The result is
+    /// empty when the endpoint cannot supply a qualified name
+    /// (e.g. `RemoteEndpoint`'s `get_qualified_name` returns `None`),
+    /// in which case callers see the unchanged dispatch surface.
+    fn build_operation_context_headers(
+        &self,
+        adverb: EndpointAdverb,
+    ) -> hyperactor_config::Flattrs {
+        let adverb_str = match adverb {
+            EndpointAdverb::Call => "call",
+            EndpointAdverb::CallOne => "call_one",
+            EndpointAdverb::Choose => "choose",
+            EndpointAdverb::Stream => "stream",
+        };
+        let attrs = crate::operation_context::build_operation_context_attrs(
+            self.get_qualified_name(),
+            Some(adverb_str),
+        );
+        let mut headers = hyperactor_config::Flattrs::new();
+        crate::operation_context::stamp_operation_context(&mut headers, &attrs);
+        headers
+    }
+
     /// Get the supervision_monitor for this endpoint (if any).
     fn get_supervision_monitor(&self) -> Option<Arc<dyn Supervisable>>;
 
@@ -592,13 +633,15 @@ pub(crate) trait Endpoint {
         let supervision_monitor = self.get_supervision_monitor();
         let qualified_endpoint_name = self.get_qualified_name();
 
-        self.send_message(
+        let caller_headers = self.build_operation_context_headers(EndpointAdverb::Call);
+        self.send_message_with_headers(
             py,
             args,
             kwargs,
             Some(EitherPortRef::Once(port_ref)),
             sel!(*),
             &instance,
+            caller_headers,
         )?;
 
         let instance_for_task = instance.clone_for_py();
@@ -630,13 +673,15 @@ pub(crate) trait Endpoint {
         let span_guard = self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_id());
         let (port_ref, receiver) = self.open_response_port(&instance);
 
-        self.send_message(
+        let caller_headers = self.build_operation_context_headers(EndpointAdverb::Choose);
+        self.send_message_with_headers(
             py,
             args,
             kwargs,
             Some(EitherPortRef::Unbounded(port_ref)),
             sel!(?),
             &instance,
+            caller_headers,
         )?;
 
         let task = value_collector(
@@ -672,13 +717,15 @@ pub(crate) trait Endpoint {
         let span_guard = self.enter_endpoint_span(EndpointAdverb::CallOne, instance.self_id());
         let (port_ref, receiver) = self.open_response_port(&instance);
 
-        self.send_message(
+        let caller_headers = self.build_operation_context_headers(EndpointAdverb::CallOne);
+        self.send_message_with_headers(
             py,
             args,
             kwargs,
             Some(EitherPortRef::Unbounded(port_ref)),
             sel!(*),
             &instance,
+            caller_headers,
         )?;
 
         let task = value_collector(
@@ -707,13 +754,15 @@ pub(crate) trait Endpoint {
         let instance = self.get_current_instance(py)?;
         let (port_ref, receiver) = self.open_response_port(&instance);
 
-        self.send_message(
+        let caller_headers = self.build_operation_context_headers(EndpointAdverb::Stream);
+        self.send_message_with_headers(
             py,
             args,
             kwargs,
             Some(EitherPortRef::Unbounded(port_ref)),
             sel!(*),
             &instance,
+            caller_headers,
         )?;
 
         let actor_count = extent.num_ranks();
@@ -834,6 +883,21 @@ impl Endpoint for ActorEndpoint {
     ) -> PyResult<()> {
         let message = self.create_message(py, args, kwargs, port_ref)?;
         self.inner.cast_unresolved(message, selection, instance)
+    }
+
+    fn send_message_with_headers<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+        port_ref: Option<EitherPortRef>,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+        caller_headers: hyperactor_config::Flattrs,
+    ) -> PyResult<()> {
+        let message = self.create_message(py, args, kwargs, port_ref)?;
+        self.inner
+            .cast_unresolved_with_headers(message, selection, instance, caller_headers)
     }
 
     fn get_supervision_monitor(&self) -> Option<Arc<dyn Supervisable>> {
@@ -1411,5 +1475,100 @@ impl Accumulator for PythonResponseMessageAccumulator {
             typehash: <PythonResponseMessageReducer as Named>::typehash(),
             builder_params: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperactor::mailbox::headers::OPERATION_ADVERB;
+    use hyperactor::mailbox::headers::OPERATION_ENDPOINT;
+
+    use super::*;
+
+    /// Minimal `Endpoint` impl that only serves `get_qualified_name`.
+    /// The default `build_operation_context_headers` consults no other
+    /// method, so the rest are unreachable.
+    struct TestEndpoint {
+        qualified_name: Option<String>,
+    }
+
+    impl Endpoint for TestEndpoint {
+        fn get_extent(&self, _py: Python<'_>) -> PyResult<Extent> {
+            unreachable!()
+        }
+        fn get_method_name(&self) -> &str {
+            unreachable!()
+        }
+        fn send_message<'py>(
+            &self,
+            _py: Python<'py>,
+            _args: &Bound<'py, PyTuple>,
+            _kwargs: Option<&Bound<'py, PyDict>>,
+            _port_ref: Option<EitherPortRef>,
+            _selection: Selection,
+            _instance: &Instance<PythonActor>,
+        ) -> PyResult<()> {
+            unreachable!()
+        }
+        fn get_supervision_monitor(&self) -> Option<Arc<dyn Supervisable>> {
+            None
+        }
+        fn get_qualified_name(&self) -> Option<String> {
+            self.qualified_name.clone()
+        }
+        fn enter_endpoint_span(&self, _adverb: EndpointAdverb, _actor_id: &ActorRef) -> SpanGuard {
+            unreachable!()
+        }
+    }
+
+    /// OC-1 request-side producer: each `EndpointAdverb` maps to the
+    /// expected wire adverb string, and the qualified endpoint name
+    /// from `get_qualified_name()` flows through to `OPERATION_ENDPOINT`.
+    #[test]
+    fn test_rc1_build_operation_context_headers_stamps_each_adverb() {
+        let ep = TestEndpoint {
+            qualified_name: Some("training.Philosopher.ping()".to_string()),
+        };
+        for (adverb, expected_adverb) in [
+            (EndpointAdverb::Call, "call"),
+            (EndpointAdverb::CallOne, "call_one"),
+            (EndpointAdverb::Choose, "choose"),
+            (EndpointAdverb::Stream, "stream"),
+        ] {
+            let headers = ep.build_operation_context_headers(adverb);
+            assert_eq!(
+                headers.get(OPERATION_ENDPOINT).as_deref(),
+                Some("training.Philosopher.ping()"),
+                "adverb {:?}: OPERATION_ENDPOINT",
+                adverb,
+            );
+            assert_eq!(
+                headers.get(OPERATION_ADVERB).as_deref(),
+                Some(expected_adverb),
+                "adverb {:?}: OPERATION_ADVERB",
+                adverb,
+            );
+        }
+    }
+
+    /// OC-1 request-side producer: when the endpoint has no
+    /// qualified name (e.g. `Remote::get_qualified_name` returns
+    /// `None`), `OPERATION_ENDPOINT` is omitted while `OPERATION_ADVERB`
+    /// is still stamped.
+    #[test]
+    fn test_rc1_build_operation_context_headers_omits_endpoint_when_no_qualified_name() {
+        let ep = TestEndpoint {
+            qualified_name: None,
+        };
+        let headers = ep.build_operation_context_headers(EndpointAdverb::CallOne);
+        assert!(
+            headers.get(OPERATION_ENDPOINT).is_none(),
+            "OPERATION_ENDPOINT must be absent when endpoint has no qualified name",
+        );
+        assert_eq!(
+            headers.get(OPERATION_ADVERB).as_deref(),
+            Some("call_one"),
+            "OPERATION_ADVERB should still be stamped",
+        );
     }
 }
