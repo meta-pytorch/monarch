@@ -131,9 +131,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::Address;
 use crate::InstanceCell;
-use crate::OncePortRef;
-use crate::addr;
 use crate::reference;
 
 /// Typed reference to an introspectable entity.
@@ -907,7 +906,7 @@ pub(crate) async fn serve_introspect(
                 )
             }
             IntrospectMessage::QueryChild { child_ref, reply } => {
-                let child_ref_: addr::Address = child_ref.clone().into();
+                let child_ref_: Address = child_ref.clone().into();
                 let payload = cell.query_child(&child_ref_).unwrap_or_else(|| {
                     let mut error_attrs = hyperactor_config::Attrs::new();
                     error_attrs.set(ERROR_CODE, "not_found".to_string());
