@@ -44,6 +44,41 @@ roleRef:
   name: hello-controller
   apiGroup: rbac.authorization.k8s.io
 ---
+# Headless Service for mesh1.
+# The MonarchMesh operator may create this automatically; defining it
+# here ensures it exists for out-of-cluster port-forwarding
+# (kubectl port-forward svc/mesh1-svc 26600:26600).
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh1-svc
+  namespace: monarch-tests
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: monarch-worker
+    monarch.pytorch.org/mesh-name: mesh1
+  ports:
+    - name: monarch
+      port: 26600
+      targetPort: 26600
+---
+# Headless Service for mesh2.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh2-svc
+  namespace: monarch-tests
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: monarch-worker
+    monarch.pytorch.org/mesh-name: mesh2
+  ports:
+    - name: monarch
+      port: 26600
+      targetPort: 26600
+---
 apiVersion: monarch.pytorch.org/v1alpha1
 kind: MonarchMesh
 metadata:
@@ -78,10 +113,11 @@ spec:
           # Use FQDN for cross-pod DNS resolution
           hostname = socket.getfqdn()
           address = f"tcp://{hostname}:{port}"
+          bind_address = f"tcp://0.0.0.0:{port}"
           logger.info(f"--- Starting Monarch Worker ---")
           logger.info(f"Identity: {hostname}")
-          logger.info(f"Listening on: {address}")
-          run_worker_loop_forever(address=address, ca="trust_all_connections")
+          logger.info(f"Listening on: {address} (bind: {bind_address})")
+          run_worker_loop_forever(address=address, bind_address=bind_address, ca="trust_all_connections")
 ---
 apiVersion: monarch.pytorch.org/v1alpha1
 kind: MonarchMesh
@@ -117,10 +153,11 @@ spec:
           # Use FQDN for cross-pod DNS resolution
           hostname = socket.getfqdn()
           address = f"tcp://{hostname}:{port}"
+          bind_address = f"tcp://0.0.0.0:{port}"
           logger.info(f"--- Starting Monarch Worker ---")
           logger.info(f"Identity: {hostname}")
-          logger.info(f"Listening on: {address}")
-          run_worker_loop_forever(address=address, ca="trust_all_connections")
+          logger.info(f"Listening on: {address} (bind: {bind_address})")
+          run_worker_loop_forever(address=address, bind_address=bind_address, ca="trust_all_connections")
 ---
 # Controller pod for running the hello_kubernetes_job script
 apiVersion: v1
