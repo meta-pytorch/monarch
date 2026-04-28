@@ -139,6 +139,7 @@ fn parse_location<'a>(parser: &mut Parser<'a>) -> Result<&'a str, ParseError> {
 mod tests {
     use super::*;
     use crate::parse::id::IdComponent;
+    use crate::parse::lex::Span;
 
     #[test]
     fn test_parse_proc_ref() {
