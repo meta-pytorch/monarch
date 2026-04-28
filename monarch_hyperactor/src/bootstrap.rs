@@ -55,10 +55,7 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
 
 #[pyfunction]
 #[pyo3(signature = (address))]
-pub fn run_worker_loop_forever(
-    _py: Python<'_>,
-    address: &str,
-) -> PyResult<PyPythonTask> {
+pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPythonTask> {
     let (addr, listener) = ChannelAddr::from_zmq_url_with_listener(address)?;
 
     // Check if we're running in a PAR/XAR build by looking for FB_XAR_INVOKED_NAME environment variable

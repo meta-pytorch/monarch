@@ -21,9 +21,7 @@ def bootstrap_main() -> int:
     with sys.exit()."""
     ...
 
-def run_worker_loop_forever(
-    address: str,
-) -> PythonTask[None]: ...
+def run_worker_loop_forever(address: str) -> PythonTask[None]: ...
 def attach_to_workers(
     instance: Instance,
     workers: List[PythonTask[str]],
