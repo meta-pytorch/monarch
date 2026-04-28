@@ -16,7 +16,7 @@ from typing import cast
 import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._src.actor.actor_mesh import Actor, ActorMesh
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.proc_mesh import (
@@ -696,7 +696,7 @@ def test_sent_messages_table(
     All send paths (call, call_one, broadcast, choose) go through
     cast_with_selection in actor_mesh.rs, which calls notify_sent_message
     with a SentMessageEvent containing:
-      - sender_actor_id: hash of the sending actor's ActorId
+      - sender_actor_id: hash of the sending actor's ActorAddr
       - actor_mesh_id: hash of the target actor mesh name
       - view_json: serialized ndslice::Region of the current view
       - shape_json: serialized ndslice::Shape (converted from the Region)
@@ -1350,7 +1350,7 @@ def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
 
     coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
 
-    # Discover child proc_ids by parsing canonical ActorId strings for ProcAgent actors.
+    # Discover child proc_addrs by parsing canonical ActorAddr strings for ProcAgent actors.
     # display_name is reserved for user-facing names, so the canonical full_name is the
     # stable source of system actor identity.
     proc_agents = engine.query("SELECT full_name FROM actors")
@@ -1358,7 +1358,8 @@ def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
     child_proc_refs = [
         actor_id.proc_id
         for row in proc_agent_names
-        if (actor_id := ActorId.from_string(row)).label in {"proc_agent", "_proc_agent"}
+        if (actor_id := ActorAddr.from_string(row)).label
+        in {"proc_agent", "_proc_agent"}
         and actor_id.proc_id != coordinator_proc_id
     ]
     assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"

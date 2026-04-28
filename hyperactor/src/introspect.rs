@@ -131,8 +131,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::ActorAddr;
+use crate::AddrParseError;
 use crate::Address;
 use crate::InstanceCell;
+use crate::OncePortRef;
+use crate::ProcAddr;
 /// Typed reference to an introspectable entity.
 ///
 /// This is the generic hyperactor layer — it knows about procs and
@@ -771,7 +775,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     let children: Vec<IntrospectRef> = cell
         .child_actor_ids()
         .into_iter()
-        .map(|a| IntrospectRef::Actor(a.into()))
+        .map(IntrospectRef::Actor)
         .collect();
 
     let events = cell.recording().tail();
@@ -795,7 +799,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 
     let supervisor = cell
         .parent()
-        .map(|p| IntrospectRef::Actor(p.actor_id().clone().into()));
+        .map(|p| IntrospectRef::Actor(p.actor_id().clone()));
 
     // FI-3: failure_info is computed from the same status value as
     // actor_status, ensuring they agree on whether the actor failed.
@@ -825,7 +829,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     let attrs = build_actor_attrs(cell, &snap);
 
     IntrospectResult {
-        identity: IntrospectRef::Actor(actor_id.clone().into()),
+        identity: IntrospectRef::Actor(actor_id.clone()),
         attrs,
         children,
         parent: supervisor,
@@ -893,12 +897,12 @@ pub(crate) async fn serve_introspect(
                             let children: Vec<IntrospectRef> =
                                 published.get(CHILDREN).cloned().unwrap_or_default();
                             IntrospectResult {
-                                identity: IntrospectRef::Actor(cell.actor_id().clone().into()),
+                                identity: IntrospectRef::Actor(cell.actor_id().clone()),
                                 attrs: attrs_json,
                                 children,
                                 parent: cell
                                     .parent()
-                                    .map(|p| IntrospectRef::Actor(p.actor_id().clone().into())),
+                                    .map(|p| IntrospectRef::Actor(p.actor_id().clone())),
                                 as_of: SystemTime::now(),
                             }
                         }
@@ -913,7 +917,7 @@ pub(crate) async fn serve_introspect(
                 )
             }
             IntrospectMessage::QueryChild { child_ref, reply } => {
-                let child_ref_: Address = child_ref.clone().into();
+                let child_ref_: Address = child_ref.clone();
                 let payload = cell.query_child(&child_ref_).unwrap_or_else(|| {
                     let mut error_attrs = hyperactor_config::Attrs::new();
                     error_attrs.set(ERROR_CODE, "not_found".to_string());

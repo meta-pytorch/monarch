@@ -75,7 +75,7 @@ use crate::metrics::ENDPOINT_ACTOR_ERROR;
 use crate::metrics::ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_ACTOR_PANIC;
 use crate::pickle::pickle_to_part;
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 use crate::pympsc;
 use crate::pytokio::PythonTask;
 use crate::runtime::get_proc_runtime;
@@ -502,7 +502,7 @@ impl PythonActorHandle {
         Ok(())
     }
 
-    fn bind(&self) -> PyActorId {
+    fn bind(&self) -> PyActorAddr {
         self.inner.bind::<PythonActor>().into_actor_id().into()
     }
 }
@@ -1749,7 +1749,7 @@ mod tests {
             typehash: 123,
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
         };
-        let port_ref = reference::PortRef::<PythonMessage>::attest_reducible(
+        let port_ref = hyperactor::PortRef::<PythonMessage>::attest_reducible(
             test_port_id("world_0", "client", 123),
             Some(reducer_spec),
             StreamingReducerOpts::default(),

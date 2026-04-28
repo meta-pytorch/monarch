@@ -327,7 +327,7 @@ enum EntityEventState {
 /// This is passed to EntityEventDispatcher implementations when an actor is spawned.
 #[derive(Debug, Clone)]
 pub struct ActorEvent {
-    /// Unique identifier for this actor (hashed from ActorId)
+    /// Unique identifier for this actor (hashed from ActorAddr)
     pub id: u64,
     /// Timestamp when the actor was created
     pub timestamp: SystemTime,
@@ -407,7 +407,7 @@ pub fn notify_actor_status_changed(event: ActorStatusEvent) {
 #[derive(Debug, Clone)]
 pub struct SentMessageEvent {
     pub timestamp: SystemTime,
-    /// Hash of the sending actor's [`ActorId`].
+    /// Hash of the sending actor's [`ActorAddr`].
     pub sender_actor_id: u64,
     /// Hash of the target actor mesh's name.
     pub actor_mesh_id: u64,
@@ -434,9 +434,9 @@ pub struct MessageEvent {
     pub timestamp: SystemTime,
     /// Unique identifier for this received message.
     pub id: u64,
-    /// Hash of sender's ActorId.
+    /// Hash of sender's ActorAddr.
     pub from_actor_id: u64,
-    /// Hash of receiver's ActorId.
+    /// Hash of receiver's ActorAddr.
     pub to_actor_id: u64,
     /// Endpoint name if this message targets a specific actor endpoint
     pub endpoint: Option<String>,

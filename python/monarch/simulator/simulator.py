@@ -40,7 +40,7 @@ from typing import (
 import numpy as np
 import torch
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
 )
 from monarch._src.actor.shape import iter_ranks, NDSlice
 from monarch.common import messages
@@ -919,7 +919,7 @@ class SimulatorController(MockController):
                     error=DeviceException(
                         e,
                         traceback.extract_tb(e.__traceback__),
-                        ActorId(
+                        ActorAddr(
                             addr="local:0", proc_name="unknown", actor_name="unknown"
                         ),
                         message="Simulator has an internal error.",

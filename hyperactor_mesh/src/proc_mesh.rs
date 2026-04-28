@@ -87,7 +87,7 @@ pub const COMM_ACTOR_NAME: &str = "comm";
 /// A reference to a single [`hyperactor::Proc`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProcRef {
-    proc_id: hyperactor_reference::ProcId,
+    proc_id: hyperactor_reference::ProcAddr,
     /// The rank of this proc at creation.
     create_rank: usize,
     /// The agent managing this proc.
@@ -97,7 +97,7 @@ pub struct ProcRef {
 impl ProcRef {
     /// Create a new proc ref from the provided id, create rank and agent.
     pub fn new(
-        proc_id: hyperactor_reference::ProcId,
+        proc_id: hyperactor_reference::ProcAddr,
         create_rank: usize,
         agent: hyperactor_reference::ActorRef<ProcAgent>,
     ) -> Self {
@@ -108,11 +108,11 @@ impl ProcRef {
         }
     }
 
-    pub fn proc_id(&self) -> &hyperactor_reference::ProcId {
+    pub fn proc_id(&self) -> &hyperactor_reference::ProcAddr {
         &self.proc_id
     }
 
-    pub(crate) fn actor_id(&self, id: &ActorMeshId) -> hyperactor_reference::ActorId {
+    pub(crate) fn actor_id(&self, id: &ActorMeshId) -> hyperactor_reference::ActorAddr {
         self.proc_id.actor_id(id.actor_name())
     }
 
@@ -292,7 +292,7 @@ impl ProcMesh {
         let procs = self
             .current_ref
             .proc_ids()
-            .collect::<Vec<hyperactor_reference::ProcId>>();
+            .collect::<Vec<hyperactor_reference::ProcAddr>>();
         // We use the proc mesh region rather than the host mesh region
         // because the host agent stores one entry per proc, not per host.
         hosts
@@ -559,7 +559,7 @@ impl ProcMeshRef {
                         resource::State {
                             id: id.resource_id().clone(),
                             status: resource::Status::Timeout(timeout),
-                            // We don't know the ActorId that used to live on this rank.
+                            // We don't know the ActorAddr that used to live on this rank.
                             // But we do know the mesh agent id, so we'll use that.
                             // Use u64::MAX so this synthetic state always wins
                             // last-writer-wins ordering against real streamed updates.
@@ -601,7 +601,7 @@ impl ProcMeshRef {
     ) -> crate::Result<Option<ValueMesh<resource::State<ProcState>>>> {
         let names = self
             .proc_ids()
-            .collect::<Vec<hyperactor_reference::ProcId>>();
+            .collect::<Vec<hyperactor_reference::ProcAddr>>();
         if let Some(host_mesh) = &self.host_mesh {
             Ok(Some(
                 host_mesh
@@ -614,7 +614,7 @@ impl ProcMeshRef {
     }
 
     /// Returns an iterator over the proc ids in this mesh.
-    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = hyperactor_reference::ProcId> {
+    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = hyperactor_reference::ProcAddr> {
         self.ranks.iter().map(|proc_ref| proc_ref.proc_id.clone())
     }
 
@@ -852,7 +852,7 @@ impl ProcMeshRef {
                 statuses,
             );
             // hyperactor::proc AI-3: controller name must include mesh
-            // identity for proc-wide ActorId uniqueness. A fixed base name alone
+            // identity for proc-wide ActorAddr uniqueness. A fixed base name alone
             // collides across parents because pid allocation is
             // parent-scoped.
             let controller_name = format!(

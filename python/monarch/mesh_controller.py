@@ -47,7 +47,7 @@ from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PicklingState,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
 )
 from monarch._src.actor.actor_mesh import Channel
 from monarch._src.actor.shape import NDSlice
@@ -191,7 +191,7 @@ class WriteWrapper:
 class Controller(_Controller):
     def __init__(self, instance: Instance, workers: "HyProcMesh") -> None:
         super().__init__()
-        self._pending_debugger_sessions: deque[ActorId] = deque()
+        self._pending_debugger_sessions: deque[ActorAddr] = deque()
 
     def node(
         self,

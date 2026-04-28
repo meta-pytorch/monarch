@@ -67,13 +67,13 @@
 //!
 //! These govern the HTTP DTO layer in [`dto`].
 //!
-//! - **HB-1 (typed-internal, string-external):** `NodeRef`, `ActorId`,
-//!   `ProcId`, and `SystemTime` are typed Rust values internally. At the
+//! - **HB-1 (typed-internal, string-external):** `NodeRef`, `ActorAddr`,
+//!   `ProcAddr`, and `SystemTime` are typed Rust values internally. At the
 //!   HTTP JSON boundary, [`dto::NodePayloadDto`],
 //!   [`dto::NodePropertiesDto`], and [`dto::FailureInfoDto`] encode them
 //!   as canonical strings.
 //! - **HB-2 (round-trip):** The HTTP string forms round-trip through the
-//!   internal typed parsers (`NodeRef::from_str`, `ActorId::from_str`,
+//!   internal typed parsers (`NodeRef::from_str`, `ActorAddr::from_str`,
 //!   `humantime::parse_rfc3339`). Timestamps are formatted at
 //!   millisecond precision; sub-millisecond values are truncated at
 //!   the boundary.
@@ -220,7 +220,7 @@
 //!   contract.
 //!
 //! v1 contract notes:
-//! - The current py-spy bridge expects a ProcId-form reference and
+//! - The current py-spy bridge expects a ProcAddr-form reference and
 //!   rejects other forms as `bad_request`. This may be broadened in
 //!   future versions.
 //! - If `worker.send()` fails after the reply port has moved into
@@ -827,11 +827,11 @@ pub enum NodeRef {
     #[serde(rename = "root")]
     Root,
     /// A host in the mesh, identified by its `HostAgent` actor ID.
-    Host(hyperactor::ActorId),
+    Host(hyperactor::ActorAddr),
     /// A proc running on a host.
-    Proc(hyperactor::ProcId),
+    Proc(hyperactor::ProcAddr),
     /// An actor instance within a proc.
-    Actor(hyperactor::ActorId),
+    Actor(hyperactor::ActorAddr),
 }
 
 hyperactor_config::impl_attrvalue!(NodeRef);
@@ -853,11 +853,11 @@ pub enum NodeRefParseError {
     #[error("empty reference string")]
     Empty,
     #[error("invalid host reference: {0}")]
-    InvalidHost(hyperactor::ReferenceParsingError),
+    InvalidHost(hyperactor::AddrParseError),
     #[error("port references are not valid node references")]
     PortNotAllowed,
     #[error(transparent)]
-    Reference(#[from] hyperactor::ReferenceParsingError),
+    Reference(#[from] hyperactor::AddrParseError),
 }
 
 impl FromStr for NodeRef {
@@ -871,15 +871,15 @@ impl FromStr for NodeRef {
             return Ok(Self::Root);
         }
         if let Some(rest) = s.strip_prefix("host:") {
-            let actor_id: hyperactor::ActorId =
+            let actor_id: hyperactor::ActorAddr =
                 rest.parse().map_err(NodeRefParseError::InvalidHost)?;
             return Ok(Self::Host(actor_id));
         }
-        let r: hyperactor::Reference = s.parse()?;
+        let r: hyperactor::Address = s.parse()?;
         match r {
-            hyperactor::Reference::Proc(id) => Ok(Self::Proc(id)),
-            hyperactor::Reference::Actor(id) => Ok(Self::Actor(id)),
-            hyperactor::Reference::Port(_) => Err(NodeRefParseError::PortNotAllowed),
+            hyperactor::Address::Proc(id) => Ok(Self::Proc(id)),
+            hyperactor::Address::Actor(id) => Ok(Self::Actor(id)),
+            hyperactor::Address::Port(_) => Err(NodeRefParseError::PortNotAllowed),
         }
     }
 }
@@ -976,7 +976,7 @@ pub struct FailureInfo {
     /// Error message describing the failure.
     pub error_message: String,
     /// Actor that caused the failure (root cause).
-    pub root_cause_actor: hyperactor::ActorId,
+    pub root_cause_actor: hyperactor::ActorAddr,
     /// Display name of the root-cause actor, if available.
     pub root_cause_name: Option<String>,
     /// When the failure occurred.
@@ -1254,10 +1254,10 @@ mod tests {
     }
 
     fn test_actor_ref(proc_name: &str, actor_name: &str) -> NodeRef {
-        use hyperactor::ProcId;
+        use hyperactor::ProcAddr;
         use hyperactor::channel::ChannelAddr;
         NodeRef::Actor(
-            ProcId::from_resource_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name),
+            ProcAddr::from_resource_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name),
         )
     }
 
@@ -1649,7 +1649,7 @@ mod tests {
     /// SC-3: real payloads validate against the generated schema.
     #[test]
     fn test_payloads_validate_against_schema() {
-        use hyperactor::ProcId;
+        use hyperactor::ProcAddr;
         use hyperactor::channel::ChannelAddr;
 
         let schema = schemars::schema_for!(dto::NodePayloadDto);
@@ -1657,7 +1657,7 @@ mod tests {
         let compiled = jsonschema::JSONSchema::compile(&schema_value).expect("schema must compile");
 
         let epoch = std::time::UNIX_EPOCH;
-        let proc_id = ProcId::from_resource_name(ChannelAddr::Local(0), "worker");
+        let proc_id = ProcAddr::from_resource_name(ChannelAddr::Local(0), "worker");
         let actor_id = proc_id.actor_id("actor");
 
         let samples = [

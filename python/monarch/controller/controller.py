@@ -14,7 +14,7 @@ from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monar
     DebuggerMessage,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
 )
 from monarch._src.actor.shape import NDSlice
 from monarch.common import messages
@@ -136,7 +136,7 @@ class Controller:
             error=DeviceException(
                 exception,
                 worker_frames,
-                ActorId(addr="local:0", proc_name="unknown", actor_name="unknown"),
+                ActorAddr(addr="local:0", proc_name="unknown", actor_name="unknown"),
                 message="A worker experienced an internal error.",
             ),
         )
@@ -153,7 +153,7 @@ class Controller:
             error=DeviceException(
                 exception=exception,
                 frames=frames,
-                source_actor_id=ActorId(
+                source_actor_id=ActorAddr(
                     addr="local:0", proc_name="unknown", actor_name="unknown"
                 ),
                 message="A remote generator failed.",

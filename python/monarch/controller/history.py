@@ -9,7 +9,7 @@ from collections import deque
 from typing import Generator, Sequence, TYPE_CHECKING
 
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
 )
 from monarch.common.controller_api import MessageResult
 from monarch.common.invocation import Invocation, RemoteException, Seq
@@ -56,7 +56,7 @@ class History:
             traceback_index,
             None,
             worker_frames,
-            ActorId(addr="local:0", proc_name="unknown", actor_name="unknown"),
+            ActorAddr(addr="local:0", proc_name="unknown", actor_name="unknown"),
         )
         worklist = deque((invocation,))
         while worklist:

@@ -183,13 +183,13 @@ def _derive_label(payload: Dict[str, Any]) -> str:
             addr = addr.split(":", 1)[1]
         return addr
 
-    if "ActorId" in identity:
+    if "ActorAddr" in identity:
         inner = identity.split("(", 1)[-1].rstrip(")")
         parts = inner.split(",")
         if len(parts) >= 3:
             return f"{parts[1].strip()}[{parts[2].strip()}]"
         return inner
-    if "ProcId" in identity:
+    if "ProcAddr" in identity:
         inner = identity.split("(", 1)[-1].rstrip(")")
         parts = inner.split(",")
         if len(parts) >= 2:

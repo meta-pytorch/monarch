@@ -35,8 +35,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyperactor::ActorId;
-use hyperactor::ProcId;
+use hyperactor::ActorAddr;
+use hyperactor::ProcAddr;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
 use ndslice::Extent;
@@ -125,17 +125,17 @@ impl HostRef {
         )
     }
 
-    /// The ProcId for the proc with name `name` on this host.
-    fn named_proc(&self, id: &ResourceId) -> ProcId {
-        ProcId::new(
+    /// The ProcAddr for the proc with name `name` on this host.
+    fn named_proc(&self, id: &ResourceId) -> ProcAddr {
+        ProcAddr::new(
             hyperactor::id::ProcId::new(id.uid().clone(), id.label().cloned()),
             self.0.clone().into(),
         )
     }
 
     /// The service proc on this host.
-    fn service_proc(&self) -> ProcId {
-        ProcId::from_resource_name(self.0.clone(), SERVICE_PROC_NAME)
+    fn service_proc(&self) -> ProcAddr {
+        ProcAddr::from_resource_name(self.0.clone(), SERVICE_PROC_NAME)
     }
 
     /// Request an orderly teardown of this host and all procs it
@@ -1262,7 +1262,7 @@ impl HostMeshRef {
             // mesh can be preserved.
             let controller = ProcMeshController::new(mesh.deref().clone());
             // hyperactor::proc AI-3: controller name must include mesh
-            // identity for proc-wide ActorId uniqueness.
+            // identity for proc-wide ActorAddr uniqueness.
             let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.id());
             let controller_handle =
                 controller
@@ -1294,7 +1294,7 @@ impl HostMeshRef {
         &self,
         cx: &impl hyperactor::context::Actor,
         proc_mesh_id: &ProcMeshId,
-        procs: impl IntoIterator<Item = ProcId>,
+        procs: impl IntoIterator<Item = ProcAddr>,
         region: Region,
         reason: String,
     ) -> anyhow::Result<()> {
@@ -1410,13 +1410,13 @@ impl HostMeshRef {
     pub(crate) async fn proc_states(
         &self,
         cx: &impl context::Actor,
-        procs: impl IntoIterator<Item = ProcId>,
+        procs: impl IntoIterator<Item = ProcAddr>,
         region: Region,
     ) -> crate::Result<ValueMesh<resource::State<ProcState>>> {
         let (tx, mut rx) = cx.mailbox().open_port();
 
         let mut num_ranks = 0;
-        let procs: Vec<ProcId> = procs.into_iter().collect();
+        let procs: Vec<ProcAddr> = procs.into_iter().collect();
         let mut proc_names = Vec::new();
         for proc_id in procs.iter() {
             num_ranks += 1;
@@ -1506,15 +1506,15 @@ impl HostMeshRef {
     }
 }
 
-/// An ordered set of host entries, deduplicated by `HostAgent` `ActorId`
+/// An ordered set of host entries, deduplicated by `HostAgent` `ActorAddr`
 /// in first-seen order.
 ///
-/// Insertion is idempotent by construction — SA-3 (dedup by ActorId)
+/// Insertion is idempotent by construction — SA-3 (dedup by ActorAddr)
 /// is a property of this type, not a comment on careful control flow.
 /// First-seen order is preserved: the first occurrence of a given
-/// ActorId wins; subsequent duplicates are silently dropped.
+/// ActorAddr wins; subsequent duplicates are silently dropped.
 struct HostSet {
-    seen: HashSet<ActorId>,
+    seen: HashSet<ActorAddr>,
     entries: Vec<(String, ActorRef<HostAgent>)>,
 }
 
@@ -1526,7 +1526,7 @@ impl HostSet {
         }
     }
 
-    /// Insert a host entry. No-op if `ActorId` already present (SA-3).
+    /// Insert a host entry. No-op if `ActorAddr` already present (SA-3).
     /// First-seen order is preserved.
     fn insert(&mut self, addr: String, agent_ref: ActorRef<HostAgent>) {
         if self.seen.insert(agent_ref.actor_id().clone()) {
@@ -1547,7 +1547,7 @@ impl HostSet {
 }
 
 /// Ordered union of hosts from meshes and optional client host
-/// entries, deduplicated by `HostAgent` `ActorId` in first-seen
+/// entries, deduplicated by `HostAgent` `ActorAddr` in first-seen
 /// order.
 ///
 /// SA-3 dedup and SA-6 client-host merge are structural properties
@@ -1615,7 +1615,7 @@ pub async fn spawn_admin(
         crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
         crate::mesh_admin::MeshAdminAgent::new(
             hosts,
-            Some(root_client_id.into()),
+            Some(root_client_id),
             admin_addr,
             telemetry_url,
         ),
@@ -2019,7 +2019,7 @@ mod tests {
     }
 
     /// SA-3: `HostSet::insert` is idempotent — inserting the same
-    /// `ActorId` twice does not add a duplicate entry, and first-seen
+    /// `ActorAddr` twice does not add a duplicate entry, and first-seen
     /// order is preserved. This is a structural property of `HostSet`,
     /// not an invariant on `aggregate_hosts` control flow.
     #[test]
@@ -2040,7 +2040,7 @@ mod tests {
         assert_eq!(
             result.len(),
             2,
-            "SA-3: duplicate ActorId must not add entry"
+            "SA-3: duplicate ActorAddr must not add entry"
         );
         assert_eq!(
             result[0].0,

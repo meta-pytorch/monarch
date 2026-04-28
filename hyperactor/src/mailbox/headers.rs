@@ -27,7 +27,7 @@ declare_attrs! {
     /// The rust type of the message.
     pub attr RUST_MESSAGE_TYPE: String;
 
-    /// Hashed ActorId of the message sender, injected in post_unchecked().
+    /// Hashed ActorAddr of the message sender, injected in post_unchecked().
     pub attr SENDER_ACTOR_ID_HASH: u64;
 
     /// Telemetry message ID for correlating lifecycle events, injected in post_unchecked().

@@ -28,7 +28,7 @@
 //!
 //! - **AI-1 (named-child uid):** Each child gets a globally unique
 //!   random uid. Named children carry a label for display purposes.
-//! - **AI-3 (controller ActorId uniqueness):** Each named child gets
+//! - **AI-3 (controller ActorAddr uniqueness):** Each named child gets
 //!   a unique uid; the label is informational only.
 //!
 //! ## Flight recorder span invariants (FR-*)
@@ -492,14 +492,14 @@ impl Proc {
         // `return_undeliverable` closes the hazard path in case the
         // envelope ever escapes into the forwarder: it should be
         // dropped, not bounced to the fake sender.
-        let signal_actor_id = reference::ActorId::root(
-            reference::ProcId::from_resource_name(
+        let signal_actor_id = ActorAddr::root(
+            ProcAddr::from_resource_name(
                 ChannelAddr::any(channel::ChannelTransport::Local),
                 "attach",
             ),
             crate::id::Label::strip("attach"),
         );
-        let signal_port = reference::PortId::new(signal_actor_id.clone(), 0);
+        let signal_port = signal_actor_id.port_ref(crate::port::Port::from(0u64));
         let mut envelope = MessageEnvelope::serialize(
             signal_actor_id,
             signal_port,
@@ -795,7 +795,7 @@ impl Proc {
         self.state().queue_stats.last_nonzero_age_ms()
     }
 
-    /// Look up an instance by ActorId.
+    /// Look up an instance by ActorAddr.
     pub fn get_instance(&self, actor_id: &ActorAddr) -> Option<InstanceCell> {
         self.state()
             .instances
@@ -803,7 +803,7 @@ impl Proc {
             .and_then(|weak| weak.upgrade())
     }
 
-    /// Returns the ActorIds of all root actors in this proc.
+    /// Returns the ActorAddrs of all root actors in this proc.
     ///
     /// **Caution:** This iterates the full DashMap under shard read
     /// locks. The per-entry work is lightweight (key filter + clone),
@@ -820,7 +820,7 @@ impl Proc {
             .collect()
     }
 
-    /// Returns the ActorIds of all live actors in this proc, including
+    /// Returns the ActorAddrs of all live actors in this proc, including
     /// dynamically spawned children.
     ///
     /// An actor is considered live if its weak reference is
@@ -2897,7 +2897,7 @@ impl InstanceCell {
         self.inner.children.len()
     }
 
-    /// Returns the ActorIds of this instance's direct children.
+    /// Returns the ActorAddrs of this instance's direct children.
     pub fn child_actor_ids(&self) -> Vec<ActorAddr> {
         self.inner
             .children
@@ -4647,7 +4647,7 @@ mod tests {
         assert_ne!(
             ctrl_a.actor_id(),
             ctrl_b.actor_id(),
-            "controller ActorIds must be unique across parents"
+            "controller ActorAddrs must be unique across parents"
         );
     }
 

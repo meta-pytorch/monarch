@@ -6,7 +6,7 @@
         "description": "Self-identification payload returned by `GET /v1/admin`.\n\nConstruct via [`AdminInfo::new`]. AI-1, AI-2, AI-3 are live\ninvariants. The relationship between `host` and `url` is a\nconstructor guarantee — `AdminInfo::new()` rejects URLs with no\nhost, so `host` always derives from `url` at construction.",
         "properties": {
           "actor_id": {
-            "description": "Stringified `ActorId` of the `MeshAdminAgent`.",
+            "description": "Stringified `ActorAddr` of the `MeshAdminAgent`.",
             "type": "string"
           },
           "host": {
@@ -14,7 +14,7 @@
             "type": "string"
           },
           "proc_id": {
-            "description": "Stringified `ProcId` of the proc hosting `MeshAdminAgent`.",
+            "description": "Stringified `ProcAddr` of the proc hosting `MeshAdminAgent`.",
             "type": "string"
           },
           "url": {
@@ -816,7 +816,7 @@
         "operationId": "getConfig",
         "parameters": [
           {
-            "description": "URL-encoded proc reference (ProcId)",
+            "description": "URL-encoded proc reference (ProcAddr)",
             "in": "path",
             "name": "proc_reference",
             "required": true,
@@ -910,7 +910,7 @@
         "operationId": "getPyspy",
         "parameters": [
           {
-            "description": "URL-encoded proc reference (ProcId)",
+            "description": "URL-encoded proc reference (ProcAddr)",
             "in": "path",
             "name": "proc_reference",
             "required": true,
@@ -980,7 +980,7 @@
         "operationId": "pyspyDumpAndStore",
         "parameters": [
           {
-            "description": "URL-encoded proc reference (ProcId)",
+            "description": "URL-encoded proc reference (ProcAddr)",
             "in": "path",
             "name": "proc_reference",
             "required": true,
@@ -1050,7 +1050,7 @@
         "operationId": "pyspyProfileSvg",
         "parameters": [
           {
-            "description": "URL-encoded proc reference (ProcId)",
+            "description": "URL-encoded proc reference (ProcAddr)",
             "in": "path",
             "name": "proc_reference",
             "required": true,

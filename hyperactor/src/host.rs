@@ -97,7 +97,6 @@ use crate::mailbox::MailboxServer;
 use crate::mailbox::MailboxServerError;
 use crate::mailbox::MailboxServerHandle;
 use crate::mailbox::MessageEnvelope;
-use crate::mailbox::Undeliverable;
 
 /// Name of the system service proc on a host — hosts the admin actor
 /// layer (HostMeshAgent, MeshAdminAgent, bridge).
@@ -115,11 +114,11 @@ pub const LOCAL_PROC_NAME: &str = "local";
 
 /// Identity assignment sent by the host as the first message on a duplex
 /// connection during proc bootstrap. The child reads this to learn its
-/// [`reference::ProcId`].
+/// [`ProcAddr`].
 #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct BootstrapAssignment {
     /// The assigned proc identity.
-    pub proc_id: reference::ProcId,
+    pub proc_id: ProcAddr,
 }
 wirevalue::register_type!(BootstrapAssignment);
 
@@ -586,7 +585,7 @@ async fn duplex_accept_loop(
             // `remote` label so procs attached to different host
             // generations sharing a frontend address (e.g., after
             // restart on the same ip:port) cannot collide.
-            let proc_id = reference::ProcId::unique(frontend_addr.clone(), "remote");
+            let proc_id = ProcAddr::unique(frontend_addr.clone(), "remote");
 
             let assignment = BootstrapAssignment {
                 proc_id: proc_id.clone(),
@@ -597,10 +596,7 @@ async fn duplex_accept_loop(
             );
             duplex_tx.post(Host2Client::Bootstrap(assignment));
 
-            router.bind(
-                ref_::Reference::from(proc_id.proc_ref().clone()),
-                AttachSender(duplex_tx),
-            );
+            router.bind(Address::from(proc_id.clone()), AttachSender(duplex_tx));
 
             let mut handle = forwarder.clone().serve(duplex_rx);
             let cleanup_router = router.clone();
@@ -613,7 +609,7 @@ async fn duplex_accept_loop(
                         let _ = handle.await;
                     }
                 }
-                cleanup_router.unbind(&ref_::Reference::from(proc_id.proc_ref().clone()));
+                cleanup_router.unbind(&Address::from(proc_id.clone()));
                 tracing::info!(
                     proc_id = proc_id.to_string(),
                     "attach connection closed, removed route"
@@ -1721,8 +1717,9 @@ where
     // and call back.
     let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(backend_transport))?;
     proc.clone().serve(proc_rx);
+    let agent_ref: ActorRef<A> = agent_handle.bind::<A>();
     channel::dial(callback_addr)?
-        .send((proc_addr, agent_handle.bind::<A>()))
+        .send((proc_addr, agent_ref))
         .await
         .map_err(ChannelError::from)?;
 
@@ -1778,7 +1775,7 @@ mod tests {
     /// A PortRef<String> targeting a nonexistent actor. When the
     /// collector receives this, it sends a message to the dest; the
     /// resulting Undeliverable is captured.
-    type SendTo = reference::PortRef<String>;
+    type SendTo = crate::PortRef<String>;
 
     /// Test actor that sends a message to a provided destination and
     /// collects the resulting Undeliverable.
@@ -2287,7 +2284,7 @@ mod tests {
         // host's service proc.
         let bogus_actor = host.system_proc().proc_id().actor_ref("no-such-actor");
         let bogus_port = bogus_actor.port_ref(crate::port::Port::from(0u64));
-        let bogus_dest = reference::PortRef::<String>::attest(reference::PortId::from(bogus_port));
+        let bogus_dest = crate::PortRef::<String>::attest(bogus_port);
 
         let (trigger_inst, _h) = remote_proc.instance("trigger").unwrap();
         collector_ref
@@ -2335,7 +2332,7 @@ mod tests {
         // attached remote proc.
         let bogus_actor = remote_proc.proc_id().actor_ref("ghost-actor");
         let bogus_port = bogus_actor.port_ref(crate::port::Port::from(0u64));
-        let bogus_dest = reference::PortRef::<String>::attest(reference::PortId::from(bogus_port));
+        let bogus_dest = crate::PortRef::<String>::attest(bogus_port);
 
         let (trigger_inst, _h) = host.system_proc().instance("trigger").unwrap();
         collector_ref
@@ -2435,21 +2432,20 @@ mod tests {
 
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            ref_::Reference::from(host.system_proc().proc_id().clone()),
+            Address::from(host.system_proc().proc_id().clone()),
             host.addr().clone(),
         );
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-        let client_proc_id = reference::ProcId::from_resource_name(client_listen_addr, "client");
+        let client_proc_id = ProcAddr::from_resource_name(client_listen_addr, "client");
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
         let (client_inst, _h) = client_proc.instance("requester").unwrap();
-        let (reply_port, reply_handle) =
-            client_inst.mailbox().open_once_port::<reference::ActorId>();
+        let (reply_port, reply_handle) = client_inst.mailbox().open_once_port::<ActorAddr>();
         let reply_port = reply_port.bind();
         echo_ref
-            .port::<reference::OncePortRef<reference::ActorId>>()
+            .port::<crate::OncePortRef<ActorAddr>>()
             .send(&client_inst, reply_port)
             .unwrap();
         let _ = tokio::time::timeout(Duration::from_secs(5), reply_handle.recv())
@@ -2460,12 +2456,11 @@ mod tests {
         // Snapshot the client's outbound NetTx status before shutdown.
         let host_tx = channel::dial::<MessageEnvelope>(host.addr().clone()).unwrap();
         // Push one message so the lazy-connect kicks in.
-        let dummy_dest = reference::PortId::from(
-            host.system_proc()
-                .proc_id()
-                .actor_ref("noop")
-                .port_ref(crate::port::Port::from(0u64)),
-        );
+        let dummy_dest = host
+            .system_proc()
+            .proc_id()
+            .actor_ref("noop")
+            .port_ref(crate::port::Port::from(0u64));
         let envelope = MessageEnvelope::serialize(
             client_inst.self_id().clone(),
             dummy_dest,
@@ -2548,25 +2543,23 @@ mod tests {
             let system_proc_id = system_proc_id.clone();
             client_tasks.push(tokio::spawn(async move {
                 let dial_router = DialMailboxRouter::new();
-                dial_router.bind(ref_::Reference::from(system_proc_id.clone()), host_addr);
+                dial_router.bind(Address::from(system_proc_id.clone()), host_addr);
                 let client_addr = ChannelAddr::any(ChannelTransport::Unix);
                 let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-                let client_proc_id = reference::ProcId::from_resource_name(
-                    client_listen_addr,
-                    format!("client-{}", ci),
-                );
+                let client_proc_id =
+                    ProcAddr::from_resource_name(client_listen_addr, format!("client-{}", ci));
                 let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
                 let _client_handle = client_proc.clone().serve(client_rx);
 
-                let echo_ref = reference::ActorRef::<EchoActor>::attest(echo_actor_id);
+                let echo_ref = crate::ActorRef::<EchoActor>::attest(echo_actor_id);
 
                 for ri in 0..M_REQUESTS {
                     let (client_inst, _h) = client_proc.instance(&format!("req-{}", ri)).unwrap();
                     let (reply_port, reply_handle) =
-                        client_inst.mailbox().open_once_port::<reference::ActorId>();
+                        client_inst.mailbox().open_once_port::<ActorAddr>();
                     let reply_port = reply_port.bind();
                     echo_ref
-                        .port::<reference::OncePortRef<reference::ActorId>>()
+                        .port::<crate::OncePortRef<ActorAddr>>()
                         .send(&client_inst, reply_port)
                         .unwrap();
                     let received =
@@ -2625,12 +2618,11 @@ mod tests {
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            ref_::Reference::from(host.system_proc().proc_id().clone()),
+            Address::from(host.system_proc().proc_id().clone()),
             host.addr().clone(),
         );
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-        let client_proc_id =
-            reference::ProcId::from_resource_name(client_listen_addr, "external-client");
+        let client_proc_id = ProcAddr::from_resource_name(client_listen_addr, "external-client");
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
@@ -2639,11 +2631,10 @@ mod tests {
         // Send a request to the echo actor on the host. The reply
         // travels back through the host's dial router → simplex dial
         // → client's frontend.
-        let (reply_port, reply_handle) =
-            client_inst.mailbox().open_once_port::<reference::ActorId>();
+        let (reply_port, reply_handle) = client_inst.mailbox().open_once_port::<ActorAddr>();
         let reply_port = reply_port.bind();
         echo_ref
-            .port::<reference::OncePortRef<reference::ActorId>>()
+            .port::<crate::OncePortRef<ActorAddr>>()
             .send(&client_inst, reply_port)
             .unwrap();
 

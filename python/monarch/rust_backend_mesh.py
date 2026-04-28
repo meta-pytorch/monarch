@@ -14,7 +14,7 @@ from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monar
     ClientActor,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
     init_proc,
     Proc,
 )
@@ -31,7 +31,7 @@ logger: Logger = logging.getLogger(__name__)
 
 # A world tuple contains a worker world name and a controller actor id
 # The pair forms a functional world that can be used to create a device mesh
-MeshWorld = tuple[str, ActorId]
+MeshWorld = tuple[str, ActorAddr]
 
 # Taken from //monarch/controller/src/bootstrap.rs
 WORLD_WORKER_LABEL = "world.monarch.meta.com/worker"
