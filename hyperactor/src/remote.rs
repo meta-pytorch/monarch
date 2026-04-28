@@ -328,37 +328,38 @@ mod tests {
 
     #[test]
     fn test_remote_debug_all_labels() {
-        let remote = Remote::<MyWorker>::new(make_actor_ref(Some("my-actor"), Some("my-proc")));
+        let aref = make_actor_ref(Some("my-actor"), Some("my-proc"));
+        let remote = Remote::<MyWorker>::new(aref.clone());
         assert_eq!(
             format!("{:?}", remote),
-            "<'my-actor<MyWorker>.my-proc' 0000000000abc123.0000000000def456@inproc://42>"
+            format!("<'my-actor<MyWorker>.my-proc' {}>", aref)
         );
     }
 
     #[test]
     fn test_remote_debug_actor_label_only() {
-        let remote = Remote::<MyWorker>::new(make_actor_ref(Some("my-actor"), None));
+        let aref = make_actor_ref(Some("my-actor"), None);
+        let remote = Remote::<MyWorker>::new(aref.clone());
         assert_eq!(
             format!("{:?}", remote),
-            "<'my-actor<MyWorker>' 0000000000abc123.0000000000def456@inproc://42>"
+            format!("<'my-actor<MyWorker>' {}>", aref)
         );
     }
 
     #[test]
     fn test_remote_debug_no_labels() {
-        let remote = Remote::<MyWorker>::new(make_actor_ref(None, None));
-        assert_eq!(
-            format!("{:?}", remote),
-            "<'<MyWorker>' 0000000000abc123.0000000000def456@inproc://42>"
-        );
+        let aref = make_actor_ref(None, None);
+        let remote = Remote::<MyWorker>::new(aref.clone());
+        assert_eq!(format!("{:?}", remote), format!("<'<MyWorker>' {}>", aref));
     }
 
     #[test]
     fn test_remote_debug_proc_label_only() {
-        let remote = Remote::<MyWorker>::new(make_actor_ref(None, Some("my-proc")));
+        let aref = make_actor_ref(None, Some("my-proc"));
+        let remote = Remote::<MyWorker>::new(aref.clone());
         assert_eq!(
             format!("{:?}", remote),
-            "<'<MyWorker>.my-proc' 0000000000abc123.0000000000def456@inproc://42>"
+            format!("<'<MyWorker>.my-proc' {}>", aref)
         );
     }
 
@@ -444,21 +445,19 @@ mod tests {
 
     #[test]
     fn test_port_remote_debug_all_labels() {
-        let remote =
-            Remote::<MyWorker>::from_port(make_port_ref(Some("my-actor"), Some("my-proc")));
+        let pref = make_port_ref(Some("my-actor"), Some("my-proc"));
+        let remote = Remote::<MyWorker>::from_port(pref.clone());
         assert_eq!(
             format!("{:?}", remote),
-            "<'my-actor<MyWorker>.my-proc' 0000000000abc123.0000000000def456:42@inproc://7>"
+            format!("<'my-actor<MyWorker>.my-proc' {}>", pref)
         );
     }
 
     #[test]
     fn test_port_remote_debug_no_labels() {
-        let remote = Remote::<MyWorker>::from_port(make_port_ref(None, None));
-        assert_eq!(
-            format!("{:?}", remote),
-            "<'<MyWorker>' 0000000000abc123.0000000000def456:42@inproc://7>"
-        );
+        let pref = make_port_ref(None, None);
+        let remote = Remote::<MyWorker>::from_port(pref.clone());
+        assert_eq!(format!("{:?}", remote), format!("<'<MyWorker>' {}>", pref));
     }
 
     #[test]
