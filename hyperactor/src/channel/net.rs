@@ -47,7 +47,6 @@
 //!   when EOF occurs exactly on a frame boundary. If EOF happens
 //!   mid-frame, it returns `Err(io::ErrorKind::UnexpectedEof)`.
 
-use std::collections::VecDeque;
 use std::fmt;
 use std::fmt::Debug;
 use std::net::ToSocketAddrs;
@@ -172,7 +171,7 @@ pub(crate) trait Link: Send + Sync + Debug + 'static {
 
     /// Acquire the next usable connection. For initiator links this
     /// dials; for acceptor links this waits on a dispatch channel.
-    async fn next(&self) -> Result<Self::Stream, ClientError>;
+    async fn next(&mut self) -> Result<Self::Stream, ClientError>;
 }
 
 use session::Session;
@@ -735,7 +734,7 @@ impl Link for NetLink {
         }
     }
 
-    async fn next(&self) -> Result<Box<dyn Stream>, ClientError> {
+    async fn next(&mut self) -> Result<Box<dyn Stream>, ClientError> {
         match self {
             Self::Tcp(l) => Ok(Box::new(l.next().await?)),
             Self::Unix(l) => Ok(Box::new(l.next().await?)),
@@ -1079,7 +1078,7 @@ pub(crate) mod unix {
             self.session_id
         }
 
-        async fn next(&self) -> Result<Self::Stream, ClientError> {
+        async fn next(&mut self) -> Result<Self::Stream, ClientError> {
             let session_id = self.session_id;
             let sock_addr = match &self.addr {
                 SocketAddr::Bound(a) => a,
@@ -1372,7 +1371,7 @@ pub(crate) mod tcp {
             self.session_id
         }
 
-        async fn next(&self) -> Result<Self::Stream, ClientError> {
+        async fn next(&mut self) -> Result<Self::Stream, ClientError> {
             let session_id = self.session_id;
             let mut backoff = ExponentialBackoffBuilder::new()
                 .with_initial_interval(Duration::from_millis(1))
@@ -1756,7 +1755,7 @@ pub(crate) mod tls {
             self.session_id
         }
 
-        async fn next(&self) -> Result<Self::Stream, ClientError> {
+        async fn next(&mut self) -> Result<Self::Stream, ClientError> {
             let session_id = self.session_id;
             let server_name = ServerName::try_from(self.hostname.clone()).map_err(|e| {
                 ClientError::Connect(
@@ -2612,7 +2611,7 @@ mod tests {
             self.session_id
         }
 
-        async fn next(&self) -> Result<Self::Stream, ClientError> {
+        async fn next(&mut self) -> Result<Self::Stream, ClientError> {
             let session_id = self.session_id;
             tracing::debug!("MockLink starts to connect.");
             if self.fail_connects.load(Ordering::Acquire) {
@@ -2806,22 +2805,22 @@ mod tests {
     }
 
     /// Create an AcceptorLink-based server test rig. Returns the
-    /// session task handle, an MVar for dispatching streams,
-    /// the message receiver, and a cancellation token.
+    /// session task handle, the channel sender for dispatching
+    /// streams, the message receiver, and a cancellation token.
     fn serve_acceptor_test<M: RemoteMessage>(
         session_id: SessionId,
     ) -> (
         JoinHandle<()>,
-        crate::sync::mvar::MVar<DuplexStream>,
+        mpsc::UnboundedSender<DuplexStream>,
         mpsc::Receiver<M>,
         CancellationToken,
     ) {
-        let mvar = crate::sync::mvar::MVar::empty();
+        let (acceptor_tx, acceptor_rx) = mpsc::unbounded_channel::<DuplexStream>();
         let cancel_token = CancellationToken::new();
         let link = AcceptorLink {
             dest: ChannelAddr::Local(u64::MAX),
             session_id,
-            stream: mvar.clone(),
+            stream: acceptor_rx,
             cancel: cancel_token.clone(),
         };
         let (tx, rx) = mpsc::channel::<M>(1024);
@@ -2885,7 +2884,7 @@ mod tests {
                 break;
             }
         });
-        (handle, mvar, rx, cancel_token)
+        (handle, acceptor_tx, rx, cancel_token)
     }
 
     async fn write_stream<M, W>(
@@ -2940,12 +2939,12 @@ mod tests {
         }
 
         let session_id = SessionId(123);
-        let (_handle, mvar, mut rx, cancel_token) = serve_acceptor_test::<u64>(session_id);
+        let (_handle, acceptor_tx, mut rx, cancel_token) = serve_acceptor_test::<u64>(session_id);
 
         // First connection: send messages, verify delivery and ack.
         {
             let (sender, receiver) = tokio::io::duplex(5000);
-            mvar.put(receiver).await;
+            acceptor_tx.send(receiver).unwrap();
 
             let (r, writer) = tokio::io::split(sender);
             let mut reader = FrameReader::new(
@@ -2978,7 +2977,7 @@ mod tests {
         // Second connection (reconnection): retransmitted messages are deduped.
         {
             let (sender2, receiver2) = tokio::io::duplex(5000);
-            mvar.put(receiver2).await;
+            acceptor_tx.send(receiver2).unwrap();
 
             let (r2, writer2) = tokio::io::split(sender2);
             let mut reader2 = FrameReader::new(
@@ -3014,10 +3013,10 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         let session_id = SessionId(123);
-        let (_handle, mvar, mut rx, cancel_token) = serve_acceptor_test::<u64>(session_id);
+        let (_handle, acceptor_tx, mut rx, cancel_token) = serve_acceptor_test::<u64>(session_id);
 
         let (sender, receiver) = tokio::io::duplex(5000);
-        mvar.put(receiver).await;
+        acceptor_tx.send(receiver).unwrap();
         let (r, mut writer) = tokio::io::split(sender);
         let mut reader = FrameReader::new(
             r,
@@ -3731,10 +3730,10 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         let session_id = SessionId(123);
-        let (_handle, mvar, mut rx, _cancel_token) = serve_acceptor_test::<u64>(session_id);
+        let (_handle, acceptor_tx, mut rx, _cancel_token) = serve_acceptor_test::<u64>(session_id);
 
         let (sender, receiver) = tokio::io::duplex(5000);
-        mvar.put(receiver).await;
+        acceptor_tx.send(receiver).unwrap();
         let (r, writer) = tokio::io::split(sender);
         let mut reader = FrameReader::new(
             r,
@@ -3789,5 +3788,368 @@ mod tests {
         // dropped and when wait_for was called. So we still need to do an
         // equality check.
         assert!(watcher.borrow().is_closed());
+    }
+
+    /// Yields pre-built `DuplexStream`s to the accept loop and
+    /// blocks once drained. Lets the `rx_join_flushes_pending_ack_*`
+    /// tests inspect the wire from the other end.
+    struct QueueListener {
+        streams: std::collections::VecDeque<DuplexStream>,
+        addr: ChannelAddr,
+    }
+
+    #[async_trait]
+    impl super::Listener for QueueListener {
+        type Stream = DuplexStream;
+
+        async fn accept(&mut self) -> Result<(DuplexStream, ChannelAddr), ServerError> {
+            match self.streams.pop_front() {
+                Some(s) => Ok((s, self.addr.clone())),
+                None => std::future::pending().await,
+            }
+        }
+    }
+
+    /// In-memory connection: server end goes into the listener; the
+    /// test reads from `client_r`.
+    struct PreparedConnection {
+        server_side: DuplexStream,
+        // Kept alive so the server's recv-loop stays in its `select!`
+        // on cancellation rather than exiting on EOF. Tests must
+        // exercise the cancel-flush path.
+        _client_w: tokio::io::WriteHalf<DuplexStream>,
+        client_r: ReadHalf<DuplexStream>,
+    }
+
+    /// Write `LinkInit` and the framed `Frame::Message(seq, value)`
+    /// payloads on the client side; return both halves.
+    async fn prepare_connection(
+        session_id: SessionId,
+        stream_id: u8,
+        messages: &[(u64, u64)],
+    ) -> PreparedConnection {
+        let (client_side, server_side) = tokio::io::duplex(8192);
+        let (client_r, mut client_w) = tokio::io::split(client_side);
+
+        super::write_link_init(&mut client_w, session_id, stream_id)
+            .await
+            .unwrap();
+        let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+        for (seq, value) in messages {
+            let payload =
+                serde_multipart::serialize_bincode(&Frame::<u64>::Message(*seq, *value)).unwrap();
+            let mut fw = FrameWrite::new(client_w, payload.framed(), max_len, 0)
+                .map_err(|(_w, e)| e)
+                .unwrap();
+            fw.send().await.unwrap();
+            client_w = fw.complete();
+        }
+
+        PreparedConnection {
+            server_side,
+            _client_w: client_w,
+            client_r,
+        }
+    }
+
+    /// Test plan for `run_separate_sessions_flush_test`: each entry
+    /// describes one connection that lives on its own session.
+    struct SeparateSessionPlan {
+        session_id: SessionId,
+        stream_id: u8,
+        messages: Vec<(u64, u64)>,
+    }
+
+    /// Drive the rx.join flush test across multiple connections,
+    /// each on its own session. Verifies:
+    ///
+    /// 1. Every message sent reaches the application via `rx.recv()`.
+    /// 2. After application delivery completes, *no* ack frames have
+    ///    been emitted on any connection's read side — the policy
+    ///    thresholds are out of reach.
+    /// 3. After `rx.join()` returns, every connection has exactly
+    ///    one `NetRxResponse::Ack(highest_seq)` frame on its read
+    ///    side, followed by a `NetRxResponse::Closed` terminal frame.
+    async fn run_separate_sessions_flush_test(
+        plans: Vec<SeparateSessionPlan>,
+        stream_id_label: &str,
+    ) {
+        let config = hyperactor_config::global::lock();
+        let _g_msg = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1_000_000);
+        let _g_time =
+            config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(3600));
+
+        // Build all connections and stage them into a `QueueListener`.
+        let mut conns: Vec<PreparedConnection> = Vec::with_capacity(plans.len());
+        let mut expected_messages: std::collections::HashSet<u64> =
+            std::collections::HashSet::new();
+        let mut expected_acks: Vec<u64> = Vec::with_capacity(plans.len());
+        for plan in &plans {
+            for (_seq, value) in &plan.messages {
+                expected_messages.insert(*value);
+            }
+            expected_acks.push(plan.messages.iter().map(|(s, _)| *s).max().unwrap());
+            conns.push(prepare_connection(plan.session_id, plan.stream_id, &plan.messages).await);
+        }
+
+        let addr = ChannelAddr::Local(u64::MAX);
+        let listener = QueueListener {
+            streams: conns
+                .iter_mut()
+                .map(|c| {
+                    // Move server_side out of each PreparedConnection by replacing it with a placeholder.
+                    std::mem::replace(&mut c.server_side, tokio::io::duplex(1).0)
+                })
+                .collect(),
+            addr: addr.clone(),
+        };
+        let (_addr, mut rx) = super::server::serve_with_listener::<u64, _>(listener, addr).unwrap();
+
+        // Drain every expected message off the application channel.
+        let mut received: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for _ in 0..expected_messages.len() {
+            received.insert(rx.recv().await.unwrap());
+        }
+        assert_eq!(
+            received, expected_messages,
+            "{stream_id_label}: every produced message should reach the application"
+        );
+
+        // Give any policy-driven ack timer a generous grace period to
+        // fire. Because `MESSAGE_ACK_EVERY_N_MESSAGES` and
+        // `MESSAGE_ACK_TIME_INTERVAL` are out of reach, no ack should
+        // be emitted yet — but if a regression makes them reachable
+        // (or adds a new spontaneous emission path), this sleep gives
+        // it room to do so before the assertion below.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+        let mut readers: Vec<FrameReader<ReadHalf<DuplexStream>>> = conns
+            .into_iter()
+            .map(|c| FrameReader::new(c.client_r, max_len))
+            .collect();
+        for (idx, reader) in readers.iter_mut().enumerate() {
+            match tokio::time::timeout(Duration::from_millis(10), reader.next()).await {
+                Err(_) => {} // timeout — no frame, expected.
+                Ok(Err(e)) => panic!(
+                    "{stream_id_label}: connection {idx} frame reader error before rx.join: {e}"
+                ),
+                Ok(Ok(None)) => {
+                    panic!("{stream_id_label}: connection {idx} closed before rx.join()")
+                }
+                Ok(Ok(Some((_, bytes)))) => {
+                    let resp = super::deserialize_response(bytes).unwrap();
+                    panic!(
+                        "{stream_id_label}: connection {idx} unexpectedly received {resp:?} \
+                         before rx.join()"
+                    );
+                }
+            }
+        }
+
+        rx.join().await;
+
+        // After rx.join() returns, every connection must have its
+        // terminal cleanup frames already written: an `Ack` covering
+        // the highest seq it sent, then a `Closed`.
+        for (idx, (reader, expected_ack)) in readers.iter_mut().zip(&expected_acks).enumerate() {
+            let bytes = tokio::time::timeout(Duration::from_millis(50), reader.next())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "{stream_id_label}: connection {idx} produced no Ack frame within 50ms \
+                         after rx.join()"
+                    )
+                })
+                .expect("frame reader error")
+                .expect("frame reader returned None");
+            let acked = super::deserialize_response(bytes.1)
+                .unwrap()
+                .into_ack()
+                .unwrap_or_else(|other| {
+                    panic!("{stream_id_label}: connection {idx} expected Ack, got {other:?}")
+                });
+            assert_eq!(
+                acked, *expected_ack,
+                "{stream_id_label}: connection {idx} ack mismatch"
+            );
+
+            let bytes = tokio::time::timeout(Duration::from_millis(50), reader.next())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "{stream_id_label}: connection {idx} produced no Closed frame within 50ms"
+                    )
+                })
+                .expect("frame reader error")
+                .expect("frame reader returned None");
+            assert!(
+                super::deserialize_response(bytes.1).unwrap().is_closed(),
+                "{stream_id_label}: connection {idx} expected Closed terminal frame"
+            );
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn rx_join_flushes_pending_ack_single_stream() {
+        // Three independent single-stream sessions, each with three
+        // framed messages. Verifies every recv-loop's terminal flush
+        // ran by the time `rx.join()` returns.
+        let plans = (1u64..=3)
+            .map(|sid| SeparateSessionPlan {
+                session_id: SessionId(sid),
+                stream_id: 0,
+                messages: (0u64..3).map(|seq| (seq, sid * 100 + seq)).collect(),
+            })
+            .collect();
+        run_separate_sessions_flush_test(plans, "single-stream").await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn rx_join_flushes_pending_ack_multi_stream() {
+        // Three independent multi-stream sessions, each with three
+        // framed messages, each on its own session_id with a single
+        // stream_id of 1. Exercises `dispatch_multi_stream`'s terminal
+        // cleanup once per session.
+        let plans = (1u64..=3)
+            .map(|sid| SeparateSessionPlan {
+                session_id: SessionId(sid),
+                stream_id: 1,
+                messages: (0u64..3).map(|seq| (seq, sid * 100 + seq)).collect(),
+            })
+            .collect();
+        run_separate_sessions_flush_test(plans, "multi-stream").await;
+    }
+
+    /// One session, multiple stream_ids — exercises `AckWatermark`'s
+    /// shared-watermark path. Three streams in the same session each
+    /// send three messages with disjoint seqs filling the contiguous
+    /// range 0..=8. Each stream's cleanup reads `highest_uncommitted`
+    /// and emits `Ack(8)` on its own wire so the peer's per-wire
+    /// NetTx sees an ack for messages it sent there; the receiver
+    /// discards duplicates. Every stream also emits its own `Closed`.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn rx_join_flushes_pending_ack_shared_multi_stream_session() {
+        let config = hyperactor_config::global::lock();
+        let _g_msg = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1_000_000);
+        let _g_time =
+            config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(3600));
+
+        let session_id = SessionId(99);
+        let num_streams = 3u8;
+        let msgs_per_stream = 3u64;
+        let mut conns: Vec<PreparedConnection> = Vec::with_capacity(num_streams as usize);
+        let mut expected_messages: std::collections::HashSet<u64> =
+            std::collections::HashSet::new();
+        for stream_id in 1..=num_streams {
+            let messages: Vec<(u64, u64)> = (0u64..msgs_per_stream)
+                .map(|i| {
+                    let seq = (stream_id as u64 - 1) * msgs_per_stream + i;
+                    (seq, 1000 + seq)
+                })
+                .collect();
+            for (_, v) in &messages {
+                expected_messages.insert(*v);
+            }
+            conns.push(prepare_connection(session_id, stream_id, &messages).await);
+        }
+        let highest_seq = num_streams as u64 * msgs_per_stream - 1;
+
+        let addr = ChannelAddr::Local(u64::MAX);
+        let listener = QueueListener {
+            streams: conns
+                .iter_mut()
+                .map(|c| std::mem::replace(&mut c.server_side, tokio::io::duplex(1).0))
+                .collect(),
+            addr: addr.clone(),
+        };
+        let (_addr, mut rx) = super::server::serve_with_listener::<u64, _>(listener, addr).unwrap();
+
+        let mut received: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for _ in 0..expected_messages.len() {
+            received.insert(rx.recv().await.unwrap());
+        }
+        assert_eq!(
+            received, expected_messages,
+            "shared-session multi-stream: every message reaches the application"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+        let mut readers: Vec<FrameReader<ReadHalf<DuplexStream>>> = conns
+            .into_iter()
+            .map(|c| FrameReader::new(c.client_r, max_len))
+            .collect();
+        for (idx, reader) in readers.iter_mut().enumerate() {
+            match tokio::time::timeout(Duration::from_millis(10), reader.next()).await {
+                Err(_) | Ok(Ok(None)) => {} // timeout / EOF — no early ack, good.
+                Ok(Err(e)) => {
+                    panic!("shared-session multi-stream: stream {idx} frame reader error: {e}")
+                }
+                Ok(Ok(Some((_, bytes)))) => {
+                    let resp = super::deserialize_response(bytes).unwrap();
+                    panic!(
+                        "shared-session multi-stream: stream {idx} unexpectedly received \
+                         {resp:?} before rx.join()"
+                    );
+                }
+            }
+        }
+
+        rx.join().await;
+
+        // Drain every frame on every reader. Terminal cleanup may emit
+        // `Ack(highest_seq)` on one or more wires before `Closed`, but
+        // once one cleanup commits the shared watermark, later streams
+        // may emit only `Closed`.
+        let mut ack_count = 0;
+        let mut closed_count = 0;
+        for (idx, reader) in readers.iter_mut().enumerate() {
+            loop {
+                match tokio::time::timeout(Duration::from_millis(50), reader.next()).await {
+                    Err(_) => panic!(
+                        "shared-session multi-stream: stream {idx} did not yield expected \
+                         frames within 50ms after rx.join()"
+                    ),
+                    Ok(Err(e)) => panic!("frame reader error: {e}"),
+                    Ok(Ok(None)) => break,
+                    Ok(Ok(Some((_, bytes)))) => {
+                        let resp = super::deserialize_response(bytes).unwrap();
+                        match resp {
+                            NetRxResponse::Ack(seq) => {
+                                assert_eq!(
+                                    seq, highest_seq,
+                                    "shared-session multi-stream: ack should cover the full \
+                                     contiguous range 0..={highest_seq}"
+                                );
+                                ack_count += 1;
+                            }
+                            NetRxResponse::Closed => {
+                                closed_count += 1;
+                                break;
+                            }
+                            other => panic!(
+                                "shared-session multi-stream: stream {idx} unexpected {other:?}"
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            ack_count >= 1,
+            "shared-session multi-stream: expected at least one Ack({highest_seq}); \
+             got {ack_count}"
+        );
+        assert!(
+            ack_count <= num_streams as usize,
+            "shared-session multi-stream: expected at most {num_streams} Ack({highest_seq}) \
+             frames; got {ack_count}"
+        );
+        assert_eq!(
+            closed_count, num_streams as usize,
+            "shared-session multi-stream: every stream should emit its own Closed frame"
+        );
     }
 }
