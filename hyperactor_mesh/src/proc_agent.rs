@@ -1204,7 +1204,7 @@ mod tests {
     #[hyperactor::export(handlers = [])]
     struct ExtraActor;
     impl hyperactor::Actor for ExtraActor {}
-    hyperactor::remote!(ExtraActor);
+    hyperactor::register_spawnable!(ExtraActor);
     // Verifies that QueryChild(Reference::Proc) on a ProcAgent returns
     // a live IntrospectResult whose children reflect actors spawned
     // directly on the proc — i.e. via proc.spawn(), which bypasses the
