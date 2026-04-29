@@ -23,7 +23,9 @@ use serde::Serializer;
 use typeuri::Named;
 
 use crate::Actor;
+use crate::ActorAddr;
 use crate::ActorHandle;
+use crate::PortAddr;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::accum::ReducerSpec;

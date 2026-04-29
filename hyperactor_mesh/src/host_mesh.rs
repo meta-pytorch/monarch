@@ -1528,7 +1528,7 @@ impl HostSet {
     /// Insert a host entry. No-op if `ActorId` already present (SA-3).
     /// First-seen order is preserved.
     fn insert(&mut self, addr: String, agent_ref: ActorRef<HostAgent>) {
-        if self.seen.insert(agent_ref.actor_id().clone()) {
+        if self.seen.insert(agent_ref.actor_id()) {
             self.entries.push((addr, agent_ref));
         }
     }
