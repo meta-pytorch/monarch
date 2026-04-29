@@ -94,6 +94,7 @@ pub use trace_dispatcher::DispatcherControl;
 pub use trace_dispatcher::FieldValue;
 pub use trace_dispatcher::TraceEvent;
 pub use trace_dispatcher::TraceEventSink;
+use trace_dispatcher::TraceFields;
 pub use tracing;
 pub use tracing::Level;
 use tracing_appender::non_blocking::NonBlocking;
@@ -294,6 +295,14 @@ fn writer() -> Box<dyn Write + Send> {
 lazy_static! {
     static ref TELEMETRY_CLOCK: Arc<Mutex<Box<dyn TelemetryClock + Send>>> =
         Arc::new(Mutex::new(Box::new(DefaultTelemetryClock {})));
+    /// Global sender into the active `TraceEventDispatcher` queue.
+    ///
+    /// This is for `TraceEvent`s synthesized outside normal `tracing` subscriber callbacks,
+    /// such as Python user spans. Once telemetry initializes and constructs the dispatcher,
+    /// we stash its sender here so those synthetic events flow through the same sink fan-out
+    /// path as native Rust tracing events.
+    static ref SYNTHETIC_TRACE_EVENT_SENDER: Mutex<Option<mpsc::SyncSender<TraceEvent>>> =
+        Mutex::new(None);
     /// Global control channel for sink registration.
     /// Created upfront so sinks can be registered at any time (before or after telemetry init).
     /// The receiver is taken once when the TraceEventDispatcher is created.
@@ -312,6 +321,89 @@ lazy_static! {
     static ref ENTITY_EVENT_STATE: Mutex<EntityEventState> = Mutex::new(
         EntityEventState::Buffering(Vec::new())
     );
+}
+
+const SYNTHETIC_USER_SPAN_ID_BASE: u64 = 1 << 63;
+static USER_SPAN_SEQ: AtomicU64 = AtomicU64::new(SYNTHETIC_USER_SPAN_ID_BASE);
+const SYNTHETIC_USER_SPAN_TRACK_NAME: &str = "python";
+
+/// Install the sender for the active dispatcher so synthesized events can join the
+/// same pipeline as events captured from native `tracing` callbacks.
+pub(crate) fn set_synthetic_trace_event_sender(sender: mpsc::SyncSender<TraceEvent>) {
+    *SYNTHETIC_TRACE_EVENT_SENDER
+        .lock()
+        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned") = Some(sender);
+}
+
+/// Sends a synthesized trace event to the active dispatcher queue.
+/// Returns `true` if sent successfully.
+pub(crate) fn emit_trace_event(event: TraceEvent) -> bool {
+    let sender = SYNTHETIC_TRACE_EVENT_SENDER
+        .lock()
+        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned")
+        .clone();
+    match sender {
+        Some(sender) => sender.try_send(event).is_ok(),
+        None => false,
+    }
+}
+
+/// Begins a user-defined span and returns its id. Returns 0 if the dispatcher is not initialized.
+pub fn start_user_span(name: String, actor_id: Option<String>) -> u64 {
+    if SYNTHETIC_TRACE_EVENT_SENDER
+        .lock()
+        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned")
+        .is_none()
+    {
+        return 0;
+    }
+
+    let id = USER_SPAN_SEQ.fetch_add(1, Ordering::Relaxed);
+
+    let mut fields = TraceFields::new();
+    fields.push(("name", FieldValue::Str(name)));
+    if let Some(actor_id) = actor_id {
+        fields.push(("actor_id", FieldValue::Str(actor_id)));
+    }
+
+    let _ = emit_trace_event(TraceEvent::NewSpan {
+        id,
+        name: "python_user_span",
+        target: sinks::perfetto::USER_TELEMETRY_PREFIX,
+        level: tracing::Level::INFO,
+        fields,
+        timestamp: SystemTime::now(),
+        parent_id: None,
+        thread_name: SYNTHETIC_USER_SPAN_TRACK_NAME,
+        file: None,
+        line: None,
+    });
+
+    let _ = emit_trace_event(TraceEvent::SpanEnter {
+        id,
+        timestamp: SystemTime::now(),
+        thread_name: SYNTHETIC_USER_SPAN_TRACK_NAME,
+    });
+
+    id
+}
+
+/// Ends a user-defined span previously started with [`start_user_span`].
+pub fn end_user_span(id: u64) {
+    if id == 0 {
+        return;
+    }
+
+    let _ = emit_trace_event(TraceEvent::SpanExit {
+        id,
+        timestamp: SystemTime::now(),
+        thread_name: SYNTHETIC_USER_SPAN_TRACK_NAME,
+    });
+
+    let _ = emit_trace_event(TraceEvent::SpanClose {
+        id,
+        timestamp: SystemTime::now(),
+    });
 }
 
 /// State machine for the entity event dispatcher.
@@ -1125,6 +1217,7 @@ fn initialize_logging_with_log_prefix_impl(
             }
 
             let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+            let synthetic_sender = dispatcher.sender();
 
             if let Err(err) = Registry::default()
                 .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
@@ -1136,6 +1229,8 @@ fn initialize_logging_with_log_prefix_impl(
                 .try_init()
             {
                 tracing::debug!("logging already initialized for this process: {}", err);
+            } else {
+                set_synthetic_trace_event_sender(synthetic_sender);
             }
         } else {
             // For file_layer, use NonBlocking
@@ -1284,9 +1379,12 @@ fn initialize_logging_with_log_prefix_impl(
             }
 
             let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+            let synthetic_sender = dispatcher.sender();
 
             if let Err(err) = registry.with(dispatcher).try_init() {
                 tracing::debug!("logging already initialized for this process: {}", err);
+            } else {
+                set_synthetic_trace_event_sender(synthetic_sender);
             }
         } else {
             let (non_blocking, guard) =
