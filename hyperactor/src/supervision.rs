@@ -45,6 +45,7 @@ use indenter::indented;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::ActorAddr;
 use crate::actor::ActorErrorKind;
 use crate::actor::ActorStatus;
 
@@ -87,7 +88,7 @@ impl ActorSupervisionEvent {
     fn actor_name(&self) -> String {
         self.display_name.clone().unwrap_or_else(|| {
             if self.actor_id.is_root() {
-                format!("{},{}", self.actor_id.proc_id(), self.actor_id.log_name())
+                format!("{},{}", self.actor_id.proc_ref(), self.actor_id.log_name())
             } else {
                 self.actor_id.to_string()
             }
@@ -218,7 +219,7 @@ impl fmt::Display for ActorSupervisionEvent {
                     .label()
                     .is_some_and(|l| l.as_str() == "host_agent" || l.as_str() == "proc_agent") =>
             {
-                let addr = self.actor_id.proc_id().addr().to_string();
+                let addr = self.actor_id.proc_ref().addr().to_string();
                 write!(
                     f,
                     "Supervision event: the process {} owned by actor {} became unresponsive \
@@ -238,6 +239,7 @@ impl fmt::Display for ActorSupervisionEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProcAddr;
     use crate::actor::ActorErrorKind;
     use crate::actor::ActorStatus;
     use crate::channel::ChannelAddr;
