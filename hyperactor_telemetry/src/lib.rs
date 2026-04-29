@@ -349,7 +349,11 @@ pub(crate) fn emit_trace_event(event: TraceEvent) -> bool {
 }
 
 /// Begins a user-defined span and returns its id. Returns 0 if the dispatcher is not initialized.
-pub fn start_user_span(name: String, actor_id: Option<String>) -> u64 {
+pub fn start_user_span(
+    name: &'static str,
+    target: &'static str,
+    fields: impl IntoIterator<Item = (&'static str, FieldValue)>,
+) -> u64 {
     if SYNTHETIC_TRACE_EVENT_SENDER
         .lock()
         .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned")
@@ -360,16 +364,12 @@ pub fn start_user_span(name: String, actor_id: Option<String>) -> u64 {
 
     let id = USER_SPAN_SEQ.fetch_add(1, Ordering::Relaxed);
 
-    let mut fields = TraceFields::new();
-    fields.push(("name", FieldValue::Str(name)));
-    if let Some(actor_id) = actor_id {
-        fields.push(("actor_id", FieldValue::Str(actor_id)));
-    }
+    let fields = fields.into_iter().collect::<TraceFields>();
 
     let _ = emit_trace_event(TraceEvent::NewSpan {
         id,
-        name: "python_user_span",
-        target: sinks::perfetto::USER_TELEMETRY_PREFIX,
+        name,
+        target,
         level: tracing::Level::INFO,
         fields,
         timestamp: SystemTime::now(),

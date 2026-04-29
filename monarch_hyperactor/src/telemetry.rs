@@ -9,8 +9,10 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use hyperactor_telemetry::end_user_span;
+use hyperactor_telemetry::sinks::perfetto::USER_TELEMETRY_PREFIX;
 use hyperactor_telemetry::sqlite::SqliteTracing;
 use hyperactor_telemetry::start_user_span;
+use hyperactor_telemetry::trace_dispatcher::FieldValue;
 use opentelemetry::global;
 use opentelemetry::metrics;
 use pyo3::prelude::*;
@@ -253,8 +255,11 @@ impl PySpan {
     #[new]
     #[pyo3(signature = (name, actor_id = None))]
     fn new(name: &str, actor_id: Option<&PyActorId>) -> Self {
-        let actor_id = actor_id.map(|actor_id| actor_id.inner.to_string());
-        let id = start_user_span(name.to_string(), actor_id);
+        let mut fields = vec![("name", FieldValue::Str(name.to_string()))];
+        if let Some(actor_id) = actor_id {
+            fields.push(("actor_id", FieldValue::Str(actor_id.inner.to_string())));
+        }
+        let id = start_user_span("python_user_span", USER_TELEMETRY_PREFIX, fields);
 
         Self {
             id: (id != 0).then_some(id),
