@@ -11,13 +11,13 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
 use hyperactor::proc::Proc;
-use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -42,10 +42,10 @@ struct ClearList {
 }
 
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
-struct GetItemCount<C> {
+struct GetItemCount {
     category_filter: String,
     #[reply]
-    reply: reference::OncePortRef<C>,
+    reply: reference::OncePortRef<usize>,
 }
 
 // Define an actor.
@@ -105,8 +105,8 @@ impl ClearListHandler for ShoppingListActor {
 }
 
 #[async_trait]
-#[hyperactor::handle(GetItemCount<usize>)]
-impl GetItemCountHandler<usize> for ShoppingListActor {
+#[hyperactor::handle(GetItemCount)]
+impl GetItemCountHandler for ShoppingListActor {
     async fn get_item_count(
         &mut self,
         _cx: &Context<Self>,
@@ -126,7 +126,7 @@ impl GetItemCountHandler<usize> for ShoppingListActor {
 // Define a behavior `ShoppingApi`. Clients can use
 // `ActorRef<ShoppingApi>` instead of referencing the concrete
 // `ShoppingListActor` directly.
-hyperactor::behavior!(ShoppingApi, ShoppingList, ClearList, GetItemCount<usize>,);
+hyperactor::behavior!(ShoppingApi, ShoppingList, ClearList, GetItemCount,);
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
