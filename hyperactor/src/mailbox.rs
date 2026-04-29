@@ -4601,7 +4601,7 @@ mod tests {
     /// `UndeliverableMailboxSender::post_unchecked`. Returns the
     /// sender + destination so tests can assert against the values we
     /// know will end up on the log.
-    fn drive_abandonment_log(payload_sentinel: &str) -> (reference::ActorId, reference::PortId) {
+    fn drive_abandonment_log(payload_sentinel: &str) -> (crate::ActorAddr, crate::PortAddr) {
         use hyperactor_config::declare_attrs;
 
         declare_attrs! {

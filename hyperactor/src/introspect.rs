@@ -131,9 +131,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::ActorAddr;
+use crate::AddrParseError;
 use crate::Address;
 use crate::InstanceCell;
 use crate::OncePortRef;
+use crate::ProcAddr;
 /// Typed reference to an introspectable entity.
 ///
 /// This is the generic hyperactor layer — it knows about procs and
@@ -957,6 +960,8 @@ pub(crate) async fn serve_introspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ActorAddr;
+    use crate::ProcAddr;
     use crate::actor::ActorErrorKind;
     use crate::actor::ActorStatus;
     use crate::channel::ChannelAddr;
