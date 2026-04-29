@@ -1272,7 +1272,14 @@ impl MailboxSender for Proc {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        if envelope.dest().actor_id().proc_id() == self.state().proc_id.id() {
+        // TODO(https://github.com/meta-pytorch/monarch/issues/3673):
+        // Eventually we want this comparison to just be based on proc id
+        // rather than proc ref (proc id + addr), since proc id is supposed
+        // to be globally unique. However, every host today runs two processes
+        // with the hardcoded names "local" and "service", violating this
+        // invariant. Until that is fixed, we need to include the addr in this
+        // routing decision.
+        if envelope.dest().actor_ref().proc_ref() == self.state().proc_id {
             self.state().proc_muxer.post(envelope, return_handle)
         } else {
             self.state().forwarder.post(envelope, return_handle)
@@ -3484,6 +3491,77 @@ mod tests {
             )
             .unwrap();
         rx.await.unwrap();
+    }
+
+    /// Two procs in different processes can share the same `ProcId`
+    /// (uid + label) but live at distinct channel addresses. The local
+    /// muxer must only handle envelopes for *this* address; everything
+    /// else has to fall through to the forwarder.
+    #[tokio::test]
+    async fn test_post_routes_by_addr() {
+        use crate::mailbox::monitored_return_handle;
+        use crate::testing::ids::test_actor_id;
+        use crate::testing::ids::test_proc_id_with_addr;
+
+        #[derive(Clone)]
+        struct CountingSender(Arc<AtomicUsize>);
+
+        #[async_trait]
+        impl MailboxSender for CountingSender {
+            fn post_unchecked(
+                &self,
+                _envelope: MessageEnvelope,
+                _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // Distinct in-process local addresses; `ChannelAddr::any` would
+        // hand out the same `Local(0)` sentinel both times.
+        let local_addr = ChannelAddr::Local(1);
+        let remote_addr = ChannelAddr::Local(2);
+
+        let proc_local = test_proc_id_with_addr(local_addr, "shared");
+        let proc_remote = test_proc_id_with_addr(remote_addr, "shared");
+        assert_eq!(
+            proc_local.id(),
+            proc_remote.id(),
+            "test setup: both procs must share a ProcId for the routing decision to be ambiguous"
+        );
+
+        let forwarded = Arc::new(AtomicUsize::new(0));
+        let proc = Proc::configured(
+            proc_local.clone(),
+            BoxedMailboxSender::new(CountingSender(forwarded.clone())),
+        );
+        let sender = test_actor_id("sender", "client");
+
+        // Same ProcId, same addr: route locally; the forwarder must not see it.
+        let local_dest = proc_local.actor_id("worker").port_id(1234);
+        proc.post(
+            MessageEnvelope::new(
+                sender.clone(),
+                local_dest,
+                wirevalue::Any::serialize(&1u64).unwrap(),
+                Flattrs::new(),
+            ),
+            monitored_return_handle(),
+        );
+        assert_eq!(forwarded.load(Ordering::SeqCst), 0);
+
+        // Same ProcId, different addr: must forward to reach the remote proc.
+        let remote_dest = proc_remote.actor_id("worker").port_id(1234);
+        proc.post(
+            MessageEnvelope::new(
+                sender,
+                remote_dest,
+                wirevalue::Any::serialize(&1u64).unwrap(),
+                Flattrs::new(),
+            ),
+            monitored_return_handle(),
+        );
+        assert_eq!(forwarded.load(Ordering::SeqCst), 1);
     }
 
     #[derive(Debug, Default)]
