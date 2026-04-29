@@ -62,7 +62,6 @@ use crate::channel::net::Stream;
 use crate::channel::net::meta;
 use crate::channel::net::tls;
 use crate::metrics;
-use crate::sync::mvar::MVar;
 
 /// Public duplex server that yields `(DuplexRx<In>, DuplexTx<Out>)` pairs.
 pub struct DuplexServer<In: RemoteMessage, Out: RemoteMessage> {
@@ -205,7 +204,8 @@ pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
         }
     };
 
-    let sessions: Arc<DashMap<SessionId, MVar<Box<dyn Stream>>>> = Arc::new(DashMap::new());
+    let sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>> =
+        Arc::new(DashMap::new());
     let child_cancel = CancellationToken::new();
     let dispatch_dest = channel_addr.clone();
     let dispatch = {
@@ -222,7 +222,7 @@ pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
                 dispatch_duplex_stream::<In, Out>(
                     link_init.session_id,
                     stream,
-                    &sessions,
+                    sessions,
                     dest,
                     &accept_tx,
                     cancel,
@@ -260,21 +260,21 @@ enum Either {
 async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
     session_id: SessionId,
     stream: Box<dyn Stream>,
-    sessions: &DashMap<SessionId, MVar<Box<dyn Stream>>>,
+    sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>>,
     addr: ChannelAddr,
     accept_tx: &mpsc::Sender<(DuplexRx<In>, DuplexTx<Out>)>,
     cancel: CancellationToken,
 ) {
-    let mvar = {
+    let sender = {
         let entry = sessions.entry(session_id);
         match entry {
             dashmap::mapref::entry::Entry::Occupied(e) => e.get().clone(),
             dashmap::mapref::entry::Entry::Vacant(e) => {
-                let mvar: MVar<Box<dyn Stream>> = MVar::empty();
+                let (sender, receiver) = mpsc::unbounded_channel::<Box<dyn Stream>>();
                 let link = AcceptorLink {
                     dest: addr.clone(),
                     session_id,
-                    stream: mvar.clone(),
+                    stream: receiver,
                     cancel: cancel.clone(),
                 };
 
@@ -292,6 +292,7 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
 
                 let session_ct = cancel.clone();
                 let dest = addr.clone();
+                let cleanup_sessions = Arc::clone(&sessions);
                 tokio::spawn(async move {
                     let mut session = Session::new(link);
                     let mut recv_next = Next { seq: 0, ack: 0 };
@@ -421,16 +422,26 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
                         }
                     }
 
+                    // Recv-loop is finished — no further conns will
+                    // be drained. Drop the session entry so a later
+                    // reconnect for the same session_id starts a
+                    // fresh dispatch task instead of feeding a dead
+                    // channel; any in-flight feeder's send fails
+                    // after the link's receiver above is dropped.
+                    cleanup_sessions.remove(&session_id);
+
                     let _ = notify.send(TxStatus::Closed("duplex session ended".into()));
                 });
 
-                e.insert(mvar.clone());
-                mvar
+                e.insert(sender.clone());
+                sender
             }
         }
     };
 
-    mvar.put(stream).await;
+    // Send returns Err if the spawned recv-loop task exited and
+    // dropped the receiver — drop the conn in that case.
+    let _ = sender.send(stream);
 }
 
 /// Establish a duplex (bidirectional) session over the given link.
