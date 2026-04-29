@@ -839,36 +839,40 @@ def test_messages_table(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_messages_endpoint(cleanup_callbacks) -> None:
     """Test that the messages table endpoint column is populated with the method name."""
-    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10))
-    state = job.state(cached_path=None)
-    engine = state.query_engine
-    assert engine is not None
-    hosts = state.hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="ep_workers_procs")
-    workers = worker_procs.spawn("ep_test_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="ep_workers_procs"
+        )
+        workers = worker_procs.spawn("ep_test_worker", WorkerActor)
+        workers.initialized.get()
 
-    # Call the "ping" endpoint
-    for _ in range(3):
-        workers.ping.call().get()
+        # Call the "ping" endpoint
+        for _ in range(3):
+            workers.ping.call().get()
 
-    # Query for messages with a non-null endpoint received by our workers
-    result = engine.query(
-        "SELECT m.endpoint FROM messages m "
-        "JOIN actors a ON m.to_actor_id = a.id "
-        "JOIN meshes mesh ON a.mesh_id = mesh.id "
-        "WHERE mesh.given_name = 'ep_test_worker' AND m.endpoint IS NOT NULL"
-    )
-    result_dict = result.to_pydict()
-    endpoints = result_dict.get("endpoint", [])
+        # Query for messages with a non-null endpoint received by our workers
+        result = engine.query(
+            "SELECT m.endpoint FROM messages m "
+            "JOIN actors a ON m.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'ep_test_worker' AND m.endpoint IS NOT NULL"
+        )
+        result_dict = result.to_pydict()
+        endpoints = result_dict.get("endpoint", [])
 
-    # 3 casts x 2 workers = 6 messages, all with endpoint "ping"
-    assert len(endpoints) == 6, (
-        f"Expected 6 messages with endpoint, got {len(endpoints)}"
-    )
-    assert all(ep == "ping" for ep in endpoints), (
-        f"Expected all endpoints to be 'ping', got {set(endpoints)}"
-    )
+        # 3 casts x 2 workers = 6 messages, all with endpoint "ping"
+        assert len(endpoints) == 6, (
+            f"Expected 6 messages with endpoint, got {len(endpoints)}"
+        )
+        assert all(ep == "ping" for ep in endpoints), (
+            f"Expected all endpoints to be 'ping', got {set(endpoints)}"
+        )
 
 
 @pytest.mark.timeout(120)
@@ -1339,152 +1343,159 @@ def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
     """store_pyspy_dump stores data with a child proc_ref."""
-    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10))
-    state = job.state(cached_path=None)
-    engine = state.query_engine
-    assert engine is not None
-    hosts = state.hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="pyspy_route_procs")
-    workers = worker_procs.spawn("pyspy_route_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="pyspy_route_procs"
+        )
+        workers = worker_procs.spawn("pyspy_route_worker", WorkerActor)
+        workers.initialized.get()
 
-    coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
+        coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
 
-    # Discover child proc_addrs by parsing canonical ActorAddr strings for ProcAgent actors.
-    # display_name is reserved for user-facing names, so the canonical full_name is the
-    # stable source of system actor identity.
-    proc_agents = engine.query("SELECT full_name FROM actors")
-    proc_agent_names = proc_agents.to_pydict().get("full_name", [])
-    child_proc_refs = [
-        actor_id.proc_id
-        for row in proc_agent_names
-        if (actor_id := ActorAddr.from_string(row)).label
-        in {"proc_agent", "_proc_agent"}
-        and actor_id.proc_id != coordinator_proc_id
-    ]
-    assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"
-    child_proc_ref = child_proc_refs[0]
+        # Discover child proc_refs by parsing canonical ActorAddr strings for
+        # ProcAgent actors. display_name is reserved for user-facing names,
+        # so the canonical full_name is the stable source of system actor
+        # identity.
+        proc_agents = engine.query("SELECT full_name FROM actors")
+        proc_agent_names = proc_agents.to_pydict().get("full_name", [])
+        child_proc_refs = [
+            actor_id.proc_id
+            for row in proc_agent_names
+            if (actor_id := ActorAddr.from_string(row)).label
+            in {"proc_agent", "_proc_agent"}
+            and actor_id.proc_id != coordinator_proc_id
+        ]
+        assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"
+        child_proc_ref = child_proc_refs[0]
 
-    pyspy_json = json.dumps(
-        {
-            "Ok": {
-                "pid": 9999,
-                "binary": "python3",
-                "stack_traces": [
-                    {
-                        "pid": 9999,
-                        "thread_id": 1,
-                        "thread_name": "MainThread",
-                        "os_thread_id": 200,
-                        "active": True,
-                        "owns_gil": True,
-                        "frames": [
-                            {
-                                "name": "child_fn",
-                                "filename": "child.py",
-                                "module": "child",
-                                "short_filename": "child.py",
-                                "line": 42,
-                                "locals": [],
-                                "is_entry": True,
-                            }
-                        ],
-                    }
-                ],
-                "warnings": [],
+        pyspy_json = json.dumps(
+            {
+                "Ok": {
+                    "pid": 9999,
+                    "binary": "python3",
+                    "stack_traces": [
+                        {
+                            "pid": 9999,
+                            "thread_id": 1,
+                            "thread_name": "MainThread",
+                            "os_thread_id": 200,
+                            "active": True,
+                            "owns_gil": True,
+                            "frames": [
+                                {
+                                    "name": "child_fn",
+                                    "filename": "child.py",
+                                    "module": "child",
+                                    "short_filename": "child.py",
+                                    "line": 42,
+                                    "locals": [],
+                                    "is_entry": True,
+                                }
+                            ],
+                        }
+                    ],
+                    "warnings": [],
+                }
             }
-        }
-    )
+        )
 
-    # Store a pyspy dump targeting the child proc_ref on the root actor.
-    result = engine._actor.store_pyspy_dump.call_one(
-        "child-dump-1", child_proc_ref, pyspy_json
-    ).get()
-    assert result
+        # Store a pyspy dump targeting the child proc_ref on the root actor.
+        result = engine._actor.store_pyspy_dump.call_one(
+            "child-dump-1", child_proc_ref, pyspy_json
+        ).get()
+        assert result
 
-    # The dump should be queryable via distributed scan.
-    frames = engine.query(
-        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'child-dump-1'"
-    )
-    frames_dict = frames.to_pydict()
-    assert frames_dict["name"] == ["child_fn"]
-    assert frames_dict["line"] == [42]
+        # The dump should be queryable via distributed scan.
+        frames = engine.query(
+            "SELECT name, line FROM pyspy_frames WHERE dump_id = 'child-dump-1'"
+        )
+        frames_dict = frames.to_pydict()
+        assert frames_dict["name"] == ["child_fn"]
+        assert frames_dict["line"] == [42]
 
-    # Verify the dump's proc_ref is stored correctly.
-    dumps = engine.query(
-        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'child-dump-1'"
-    )
-    assert dumps.to_pydict()["proc_ref"] == [child_proc_ref]
+        # Verify the dump's proc_ref is stored correctly.
+        dumps = engine.query(
+            "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'child-dump-1'"
+        )
+        assert dumps.to_pydict()["proc_ref"] == [child_proc_ref]
 
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
     """store_pyspy_dump stores data even for unknown proc_ref values."""
-    job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10))
-    state = job.state(cached_path=None)
-    engine = state.query_engine
-    assert engine is not None
-    hosts = state.hosts
-    worker_procs = hosts.spawn_procs(
-        per_host={"workers": 2}, name="pyspy_fallback_procs"
-    )
-    workers = worker_procs.spawn("pyspy_fallback_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="pyspy_fallback_procs"
+        )
+        workers = worker_procs.spawn("pyspy_fallback_worker", WorkerActor)
+        workers.initialized.get()
 
-    # Trigger child spawning.
-    engine.query("SELECT COUNT(*) AS cnt FROM actors")
+        # Trigger child spawning.
+        engine.query("SELECT COUNT(*) AS cnt FROM actors")
 
-    pyspy_json = json.dumps(
-        {
-            "Ok": {
-                "pid": 7777,
-                "binary": "python3",
-                "stack_traces": [
-                    {
-                        "pid": 7777,
-                        "thread_id": 1,
-                        "thread_name": "MainThread",
-                        "os_thread_id": 300,
-                        "active": True,
-                        "owns_gil": False,
-                        "frames": [
-                            {
-                                "name": "orphan_fn",
-                                "filename": "orphan.py",
-                                "module": "orphan",
-                                "short_filename": "orphan.py",
-                                "line": 99,
-                                "locals": [],
-                                "is_entry": True,
-                            }
-                        ],
-                    }
-                ],
-                "warnings": [],
+        pyspy_json = json.dumps(
+            {
+                "Ok": {
+                    "pid": 7777,
+                    "binary": "python3",
+                    "stack_traces": [
+                        {
+                            "pid": 7777,
+                            "thread_id": 1,
+                            "thread_name": "MainThread",
+                            "os_thread_id": 300,
+                            "active": True,
+                            "owns_gil": False,
+                            "frames": [
+                                {
+                                    "name": "orphan_fn",
+                                    "filename": "orphan.py",
+                                    "module": "orphan",
+                                    "short_filename": "orphan.py",
+                                    "line": 99,
+                                    "locals": [],
+                                    "is_entry": True,
+                                }
+                            ],
+                        }
+                    ],
+                    "warnings": [],
+                }
             }
-        }
-    )
+        )
 
-    # Store with a proc_ref that doesn't exist in the tree.
-    result = engine._actor.store_pyspy_dump.call_one(
-        "orphan-dump-1", "nonexistent.proc[999]", pyspy_json
-    ).get()
-    assert result
+        # Store with a proc_ref that doesn't exist in the tree.
+        result = engine._actor.store_pyspy_dump.call_one(
+            "orphan-dump-1", "nonexistent.proc[999]", pyspy_json
+        ).get()
+        assert result
 
-    # The dump should be queryable (stored on root).
-    frames = engine.query(
-        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'orphan-dump-1'"
-    )
-    frames_dict = frames.to_pydict()
-    assert frames_dict["name"] == ["orphan_fn"]
-    assert frames_dict["line"] == [99]
+        # The dump should be queryable (stored on root).
+        frames = engine.query(
+            "SELECT name, line FROM pyspy_frames WHERE dump_id = 'orphan-dump-1'"
+        )
+        frames_dict = frames.to_pydict()
+        assert frames_dict["name"] == ["orphan_fn"]
+        assert frames_dict["line"] == [99]
 
-    # Verify proc_ref is preserved even though it didn't match any proc.
-    dumps = engine.query(
-        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'orphan-dump-1'"
-    )
-    assert dumps.to_pydict()["proc_ref"] == ["nonexistent.proc[999]"]
+        # Verify proc_ref is preserved even though it didn't match any proc.
+        dumps = engine.query(
+            "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'orphan-dump-1'"
+        )
+        assert dumps.to_pydict()["proc_ref"] == ["nonexistent.proc[999]"]
 
 
 @pytest.mark.timeout(120)

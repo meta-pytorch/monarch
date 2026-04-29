@@ -410,9 +410,9 @@ impl ClientActor {
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
 
         signal_safe_block_on(py, async move {
-            reference::ActorRef::<ControllerActor>::attest(
-                reference::ActorId::from(&controller_id).into(),
-            )
+            reference::ActorRef::<ControllerActor>::attest(reference::ActorAddr::from(
+                &controller_id,
+            ))
             .attach(&instance, reference::ActorRef::attest(actor_id.into()))
             .await
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))
@@ -427,9 +427,9 @@ impl ClientActor {
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
 
         signal_safe_block_on(py, async move {
-            reference::ActorRef::<ControllerActor>::attest(
-                reference::ActorId::from(&controller_id).into(),
-            )
+            reference::ActorRef::<ControllerActor>::attest(reference::ActorAddr::from(
+                &controller_id,
+            ))
             .drop_refs(&instance, refs)
             .await
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))

@@ -156,7 +156,7 @@ impl _Controller {
         accumulate: bool,
     ) -> PyResult<()> {
         let response_port: Option<PortInfo> = response_port.map(|(port, ranks)| PortInfo {
-            port: reference::PortRef::attest(reference::PortId::from(port).into()),
+            port: reference::PortRef::attest(reference::PortAddr::from(port)),
             ranks: ranks.into(),
             accumulate,
         });
@@ -195,7 +195,7 @@ impl _Controller {
             .send(
                 instance.deref(),
                 ClientToControllerMessage::SyncAtExit {
-                    port: reference::PortRef::attest(reference::PortId::from(port).into()),
+                    port: reference::PortRef::attest(reference::PortAddr::from(port)),
                 },
             )
             .map_err(to_py_error)
