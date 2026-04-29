@@ -94,6 +94,7 @@ pub use trace_dispatcher::DispatcherControl;
 pub use trace_dispatcher::FieldValue;
 pub use trace_dispatcher::TraceEvent;
 pub use trace_dispatcher::TraceEventSink;
+use trace_dispatcher::TraceFields;
 pub use tracing;
 pub use tracing::Level;
 use tracing_appender::non_blocking::NonBlocking;
@@ -294,6 +295,14 @@ fn writer() -> Box<dyn Write + Send> {
 lazy_static! {
     static ref TELEMETRY_CLOCK: Arc<Mutex<Box<dyn TelemetryClock + Send>>> =
         Arc::new(Mutex::new(Box::new(DefaultTelemetryClock {})));
+    /// Global sender into the active `TraceEventDispatcher` queue.
+    ///
+    /// This is for `TraceEvent`s synthesized outside normal `tracing` subscriber callbacks,
+    /// such as Python user spans. Once telemetry initializes and constructs the dispatcher,
+    /// we stash its sender here so those synthetic events flow through the same sink fan-out
+    /// path as native Rust tracing events.
+    static ref SYNTHETIC_TRACE_EVENT_SENDER: Mutex<Option<mpsc::SyncSender<TraceEvent>>> =
+        Mutex::new(None);
     /// Global control channel for sink registration.
     /// Created upfront so sinks can be registered at any time (before or after telemetry init).
     /// The receiver is taken once when the TraceEventDispatcher is created.
@@ -312,6 +321,89 @@ lazy_static! {
     static ref ENTITY_EVENT_STATE: Mutex<EntityEventState> = Mutex::new(
         EntityEventState::Buffering(Vec::new())
     );
+}
+
+const SYNTHETIC_USER_SPAN_ID_BASE: u64 = 1 << 63;
+static USER_SPAN_SEQ: AtomicU64 = AtomicU64::new(SYNTHETIC_USER_SPAN_ID_BASE);
+const SYNTHETIC_USER_SPAN_TRACK_NAME: &str = "python";
+
+/// Install the sender for the active dispatcher so synthesized events can join the
+/// same pipeline as events captured from native `tracing` callbacks.
+pub(crate) fn set_synthetic_trace_event_sender(sender: mpsc::SyncSender<TraceEvent>) {
+    *SYNTHETIC_TRACE_EVENT_SENDER
+        .lock()
+        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned") = Some(sender);
+}
+
+/// Sends a synthesized trace event to the active dispatcher queue.
+/// Returns `true` if sent successfully.
+pub(crate) fn emit_trace_event(event: TraceEvent) -> bool {
+    let sender = SYNTHETIC_TRACE_EVENT_SENDER
+        .lock()
+        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned")
+        .clone();
+    match sender {
+        Some(sender) => sender.try_send(event).is_ok(),
+        None => false,
+    }
+}
+
+/// Begins a user-defined span and returns its id. Returns 0 if the dispatcher is not initialized.
+pub fn start_user_span(name: String, actor_id: Option<String>) -> u64 {
+    if SYNTHETIC_TRACE_EVENT_SENDER
+        .lock()
+        .expect("SYNTHETIC_TRACE_EVENT_SENDER mutex should not be poisoned")
+        .is_none()
+    {
+        return 0;
+    }
+
+    let id = USER_SPAN_SEQ.fetch_add(1, Ordering::Relaxed);
+
+    let mut fields = TraceFields::new();
+    fields.push(("name", FieldValue::Str(name)));
+    if let Some(actor_id) = actor_id {
+        fields.push(("actor_id", FieldValue::Str(actor_id)));
+    }
+
+    let _ = emit_trace_event(TraceEvent::NewSpan {
+        id,
+        name: "python_user_span",
+        target: sinks::perfetto::USER_TELEMETRY_PREFIX,
+        level: tracing::Level::INFO,
+        fields,
+        timestamp: SystemTime::now(),
+        parent_id: None,
+        thread_name: SYNTHETIC_USER_SPAN_TRACK_NAME,
+        file: None,
+        line: None,
+    });
+
+    let _ = emit_trace_event(TraceEvent::SpanEnter {
+        id,
+        timestamp: SystemTime::now(),
+        thread_name: SYNTHETIC_USER_SPAN_TRACK_NAME,
+    });
+
+    id
+}
+
+/// Ends a user-defined span previously started with [`start_user_span`].
+pub fn end_user_span(id: u64) {
+    if id == 0 {
+        return;
+    }
+
+    let _ = emit_trace_event(TraceEvent::SpanExit {
+        id,
+        timestamp: SystemTime::now(),
+        thread_name: SYNTHETIC_USER_SPAN_TRACK_NAME,
+    });
+
+    let _ = emit_trace_event(TraceEvent::SpanClose {
+        id,
+        timestamp: SystemTime::now(),
+    });
 }
 
 /// State machine for the entity event dispatcher.
@@ -1037,8 +1129,12 @@ fn initialize_logging_with_log_prefix_impl(
     mock_scuba: bool,
 ) -> Box<dyn TelemetryTestHandle> {
     let use_unified = hyperactor_config::global::get(USE_UNIFIED_LAYER);
+    let should_install_subscriber = !tracing::dispatcher::has_been_set();
 
     swap_telemetry_clock(clock);
+    if !should_install_subscriber {
+        tracing::debug!("logging already initialized for this process");
+    }
     let file_log_level = match env::Env::current() {
         env::Env::Local => LOG_LEVEL_INFO,
         env::Env::MastEmulator => LOG_LEVEL_INFO,
@@ -1054,151 +1150,158 @@ fn initialize_logging_with_log_prefix_impl(
     {
         let mut mock_scuba_client: Option<crate::meta::scuba_utils::MockScubaClient> = None;
 
-        if use_unified {
-            let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
-            sinks.push(Box::new(sinks::glog::GlogSink::new(
-                writer(),
-                prefix_env_var.clone(),
-                file_log_level,
-            )));
+        if should_install_subscriber {
+            if use_unified {
+                let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
+                sinks.push(Box::new(sinks::glog::GlogSink::new(
+                    writer(),
+                    prefix_env_var.clone(),
+                    file_log_level,
+                )));
 
-            let sqlite_enabled = hyperactor_config::global::get(ENABLE_SQLITE_TRACING);
+                let sqlite_enabled = hyperactor_config::global::get(ENABLE_SQLITE_TRACING);
 
-            if sqlite_enabled {
-                match create_sqlite_sink() {
-                    Ok(sink) => {
-                        sinks.push(Box::new(sink));
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to create SqliteSink: {}", e);
-                    }
-                }
-            }
-
-            if hyperactor_config::global::get(sinks::perfetto::PERFETTO_TRACE_MODE)
-                != sinks::perfetto::PerfettoTraceMode::Off
-            {
-                let exec_id = env::execution_id();
-                let process_name = std::env::var("HYPERACTOR_PROCESS_NAME")
-                    .unwrap_or_else(|_| "client".to_string());
-                match sinks::perfetto::PerfettoFileSink::new(
-                    sinks::perfetto::default_trace_dir(),
-                    &exec_id,
-                    &process_name,
-                ) {
-                    Ok(sink) => {
-                        sinks.push(Box::new(sink));
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to create PerfettoFileSink: {}", e);
+                if sqlite_enabled {
+                    match create_sqlite_sink() {
+                        Ok(sink) => {
+                            sinks.push(Box::new(sink));
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to create SqliteSink: {}", e);
+                        }
                     }
                 }
-            }
 
-            {
-                if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
-                    use crate::meta;
-                    use crate::meta::scuba_utils::LOG_ENTER_EXIT;
+                if hyperactor_config::global::get(sinks::perfetto::PERFETTO_TRACE_MODE)
+                    != sinks::perfetto::PerfettoTraceMode::Off
+                {
+                    let exec_id = env::execution_id();
+                    let process_name = std::env::var("HYPERACTOR_PROCESS_NAME")
+                        .unwrap_or_else(|_| "client".to_string());
+                    match sinks::perfetto::PerfettoFileSink::new(
+                        sinks::perfetto::default_trace_dir(),
+                        &exec_id,
+                        &process_name,
+                    ) {
+                        Ok(sink) => {
+                            sinks.push(Box::new(sink));
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to create PerfettoFileSink: {}", e);
+                        }
+                    }
+                }
 
-                    if mock_scuba {
-                        let tracing_client = meta::scuba_utils::MockScubaClient::new();
+                {
+                    if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
+                        use crate::meta;
+                        use crate::meta::scuba_utils::LOG_ENTER_EXIT;
 
-                        sinks.push(Box::new(
-                            meta::scuba_sink::ScubaSink::with_client(
-                                tracing_client.clone(),
-                                match meta::tracing_resource().get(&LOG_ENTER_EXIT) {
-                                    Some(Value::Bool(enabled)) => enabled,
-                                    _ => false,
-                                },
-                            )
-                            .with_target_filter(crate::config::get_tracing_targets()),
-                        ));
+                        if mock_scuba {
+                            let tracing_client = meta::scuba_utils::MockScubaClient::new();
 
-                        mock_scuba_client = Some(tracing_client);
-                    } else {
-                        sinks.push(Box::new(
-                            meta::scuba_sink::ScubaSink::new(meta::tracing_resource())
+                            sinks.push(Box::new(
+                                meta::scuba_sink::ScubaSink::with_client(
+                                    tracing_client.clone(),
+                                    match meta::tracing_resource().get(&LOG_ENTER_EXIT) {
+                                        Some(Value::Bool(enabled)) => enabled,
+                                        _ => false,
+                                    },
+                                )
                                 .with_target_filter(crate::config::get_tracing_targets()),
-                        ));
+                            ));
+
+                            mock_scuba_client = Some(tracing_client);
+                        } else {
+                            sinks.push(Box::new(
+                                meta::scuba_sink::ScubaSink::new(meta::tracing_resource())
+                                    .with_target_filter(crate::config::get_tracing_targets()),
+                            ));
+                        }
                     }
                 }
-            }
 
-            let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+                let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+                let synthetic_sender = dispatcher.sender();
 
-            if let Err(err) = Registry::default()
-                .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
-                    Some(recorder().layer())
+                if let Err(err) = Registry::default()
+                    .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
+                        Some(recorder().layer())
+                    } else {
+                        None
+                    })
+                    .with(dispatcher)
+                    .try_init()
+                {
+                    tracing::debug!("logging already initialized for this process: {}", err);
                 } else {
-                    None
-                })
-                .with(dispatcher)
-                .try_init()
-            {
-                tracing::debug!("logging already initialized for this process: {}", err);
-            }
-        } else {
-            // For file_layer, use NonBlocking
-            let (non_blocking, guard) =
-                tracing_appender::non_blocking::NonBlockingBuilder::default()
-                    .lossy(false)
-                    .finish(writer());
-            let writer_guard = Arc::new((non_blocking, guard));
-            let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
+                    set_synthetic_trace_event_sender(synthetic_sender);
+                }
+            } else {
+                // For file_layer, use NonBlocking
+                let (non_blocking, guard) =
+                    tracing_appender::non_blocking::NonBlockingBuilder::default()
+                        .lossy(false)
+                        .finish(writer());
+                let writer_guard = Arc::new((non_blocking, guard));
+                let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
 
-            let file_layer = fmt::Layer::default()
-                .with_writer(writer_guard.0.clone())
-                .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
-                .fmt_fields(GlogFields::default().compact())
-                .with_ansi(false)
-                .with_filter(
-                    Targets::new()
-                        .with_default(LevelFilter::from_level({
-                            let log_level_str =
-                                hyperactor_config::global::try_get_cloned(MONARCH_FILE_LOG_LEVEL)
-                                    .unwrap_or_else(|| file_log_level.to_string());
-                            tracing::Level::from_str(&log_level_str).unwrap_or_else(|_| {
-                                tracing::Level::from_str(file_log_level)
-                                    .expect("Invalid default log level")
-                            })
-                        }))
-                        .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
-                );
+                let file_layer = fmt::Layer::default()
+                    .with_writer(writer_guard.0.clone())
+                    .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
+                    .fmt_fields(GlogFields::default().compact())
+                    .with_ansi(false)
+                    .with_filter(
+                        Targets::new()
+                            .with_default(LevelFilter::from_level({
+                                let log_level_str = hyperactor_config::global::try_get_cloned(
+                                    MONARCH_FILE_LOG_LEVEL,
+                                )
+                                .unwrap_or_else(|| file_log_level.to_string());
+                                tracing::Level::from_str(&log_level_str).unwrap_or_else(|_| {
+                                    tracing::Level::from_str(file_log_level)
+                                        .expect("Invalid default log level")
+                                })
+                            }))
+                            .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
+                    );
 
-            let registry = Registry::default()
-                .with(if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
-                    // TODO: get_reloadable_sqlite_layer currently still returns None,
-                    // and some additional work is required to make it work.
-                    Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
-                } else {
-                    None
-                })
-                .with(file_layer)
-                .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
-                    Some(recorder().layer())
-                } else {
-                    None
-                });
+                let registry = Registry::default()
+                    .with(if hyperactor_config::global::get(ENABLE_SQLITE_TRACING) {
+                        // TODO: get_reloadable_sqlite_layer currently still returns None,
+                        // and some additional work is required to make it work.
+                        Some(get_reloadable_sqlite_layer().expect("failed to create sqlite layer"))
+                    } else {
+                        None
+                    })
+                    .with(file_layer)
+                    .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
+                        Some(recorder().layer())
+                    } else {
+                        None
+                    });
 
-            if mock_scuba {
-                let tracing_client = crate::meta::scuba_utils::MockScubaClient::new();
+                if mock_scuba {
+                    let tracing_client = crate::meta::scuba_utils::MockScubaClient::new();
 
-                let scuba_layer = crate::meta::tracing_layer_with_client(tracing_client.clone());
+                    let scuba_layer =
+                        crate::meta::tracing_layer_with_client(tracing_client.clone());
 
-                if let Err(err) = registry.with(scuba_layer).try_init() {
+                    if let Err(err) = registry.with(scuba_layer).try_init() {
+                        tracing::debug!("logging already initialized for this process: {}", err);
+                    }
+
+                    mock_scuba_client = Some(tracing_client);
+                } else if let Err(err) = registry
+                    .with(if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
+                        Some(otel::tracing_layer())
+                    } else {
+                        None
+                    })
+                    .try_init()
+                {
                     tracing::debug!("logging already initialized for this process: {}", err);
                 }
-
-                mock_scuba_client = Some(tracing_client);
-            } else if let Err(err) = registry
-                .with(if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
-                    Some(otel::tracing_layer())
-                } else {
-                    None
-                })
-                .try_init()
-            {
-                tracing::debug!("logging already initialized for this process: {}", err);
             }
         }
         let exec_id = env::execution_id();
@@ -1257,66 +1360,72 @@ fn initialize_logging_with_log_prefix_impl(
                 None
             });
 
-        if use_unified {
-            let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
+        if should_install_subscriber {
+            if use_unified {
+                let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
 
-            let sqlite_enabled = hyperactor_config::global::get(ENABLE_SQLITE_TRACING);
+                let sqlite_enabled = hyperactor_config::global::get(ENABLE_SQLITE_TRACING);
 
-            if sqlite_enabled {
-                match create_sqlite_sink() {
-                    Ok(sink) => {
-                        sinks.push(Box::new(sink));
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to create SqliteSink: {}", e);
+                if sqlite_enabled {
+                    match create_sqlite_sink() {
+                        Ok(sink) => {
+                            sinks.push(Box::new(sink));
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to create SqliteSink: {}", e);
+                        }
                     }
                 }
-            }
 
-            sinks.push(Box::new(sinks::glog::GlogSink::new(
-                writer(),
-                prefix_env_var.clone(),
-                file_log_level,
-            )));
+                sinks.push(Box::new(sinks::glog::GlogSink::new(
+                    writer(),
+                    prefix_env_var.clone(),
+                    file_log_level,
+                )));
 
-            if let Some(log_sink) = otlp::otlp_log_sink() {
-                sinks.push(log_sink);
-            }
+                if let Some(log_sink) = otlp::otlp_log_sink() {
+                    sinks.push(log_sink);
+                }
 
-            let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+                let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+                let synthetic_sender = dispatcher.sender();
 
-            if let Err(err) = registry.with(dispatcher).try_init() {
-                tracing::debug!("logging already initialized for this process: {}", err);
-            }
-        } else {
-            let (non_blocking, guard) =
-                tracing_appender::non_blocking::NonBlockingBuilder::default()
-                    .lossy(false)
-                    .finish(writer());
-            let writer_guard = Arc::new((non_blocking, guard));
-            let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
+                if let Err(err) = registry.with(dispatcher).try_init() {
+                    tracing::debug!("logging already initialized for this process: {}", err);
+                } else {
+                    set_synthetic_trace_event_sender(synthetic_sender);
+                }
+            } else {
+                let (non_blocking, guard) =
+                    tracing_appender::non_blocking::NonBlockingBuilder::default()
+                        .lossy(false)
+                        .finish(writer());
+                let writer_guard = Arc::new((non_blocking, guard));
+                let _ = FILE_WRITER_GUARD.set(writer_guard.clone());
 
-            let file_layer = fmt::Layer::default()
-                .with_writer(writer_guard.0.clone())
-                .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
-                .fmt_fields(GlogFields::default().compact())
-                .with_ansi(false)
-                .with_filter(
-                    Targets::new()
-                        .with_default(LevelFilter::from_level({
-                            let log_level_str =
-                                hyperactor_config::global::try_get_cloned(MONARCH_FILE_LOG_LEVEL)
-                                    .unwrap_or_else(|| file_log_level.to_string());
-                            tracing::Level::from_str(&log_level_str).unwrap_or_else(|_| {
-                                tracing::Level::from_str(file_log_level)
-                                    .expect("Invalid default log level")
-                            })
-                        }))
-                        .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
-                );
+                let file_layer = fmt::Layer::default()
+                    .with_writer(writer_guard.0.clone())
+                    .event_format(PrefixedFormatter::new(prefix_env_var.clone()))
+                    .fmt_fields(GlogFields::default().compact())
+                    .with_ansi(false)
+                    .with_filter(
+                        Targets::new()
+                            .with_default(LevelFilter::from_level({
+                                let log_level_str = hyperactor_config::global::try_get_cloned(
+                                    MONARCH_FILE_LOG_LEVEL,
+                                )
+                                .unwrap_or_else(|| file_log_level.to_string());
+                                tracing::Level::from_str(&log_level_str).unwrap_or_else(|_| {
+                                    tracing::Level::from_str(file_log_level)
+                                        .expect("Invalid default log level")
+                                })
+                            }))
+                            .with_target("opentelemetry", LevelFilter::OFF), // otel has some log span under debug that we don't care about
+                    );
 
-            if let Err(err) = registry.with(file_layer).try_init() {
-                tracing::debug!("logging already initialized for this process: {}", err);
+                if let Err(err) = registry.with(file_layer).try_init() {
+                    tracing::debug!("logging already initialized for this process: {}", err);
+                }
             }
         }
 
