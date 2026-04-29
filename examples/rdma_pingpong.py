@@ -116,9 +116,10 @@ def main(
 
     if backend == "mast":
         from monarch.actor import enable_transport
+        from monarch.config import ChannelTransport
         from monarch.job.meta import MASTJob
 
-        enable_transport("metatls-hostname")
+        enable_transport("metatls")
         job = MASTJob(
             hpcIdentity=hpc_identity,
             hpcJobOncall=hpc_job_oncall,
@@ -126,6 +127,7 @@ def main(
             rmAttribution=rm_attribution,
             useStrictName=True,
             localityConstraints=["region", "gtn"],
+            default_transport=ChannelTransport.MetaTlsWithIpV6,
         )
         job.add_mesh("workers", 2)
     else:
