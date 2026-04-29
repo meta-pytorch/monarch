@@ -1480,6 +1480,7 @@ impl Accumulator for PythonResponseMessageAccumulator {
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::ActorAddr;
     use hyperactor::mailbox::headers::OPERATION_ADVERB;
     use hyperactor::mailbox::headers::OPERATION_ENDPOINT;
 
@@ -1516,7 +1517,7 @@ mod tests {
         fn get_qualified_name(&self) -> Option<String> {
             self.qualified_name.clone()
         }
-        fn enter_endpoint_span(&self, _adverb: EndpointAdverb, _actor_id: &ActorRef) -> SpanGuard {
+        fn enter_endpoint_span(&self, _adverb: EndpointAdverb, _actor_id: &ActorAddr) -> SpanGuard {
             unreachable!()
         }
     }
