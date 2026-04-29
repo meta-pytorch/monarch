@@ -168,13 +168,20 @@ impl ProcAddr {
         self.label().map(|l| l.as_str()).unwrap_or("?")
     }
 
-    /// The ResourceId text form: `label` (singleton), `label<uid58>`
+    /// The ResourceId text form: `label` (singleton), `label-uid58`
     /// (labeled instance), or `<uid58>` (unlabeled instance).
     pub fn resource_name(&self) -> String {
+        fn uid_no_brackets(uid: &Uid) -> String {
+            uid.to_string()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_string()
+        }
+
         match (self.id.uid(), self.id.label()) {
             (Uid::Singleton(label), _) => label.to_string(),
-            (Uid::Instance(_), Some(label)) => format!("{label}{}", self.id.uid()),
-            (Uid::Instance(_), None) => self.id.uid().to_string(),
+            (uid @ Uid::Instance(_), Some(label)) => format!("{label}-{}", uid_no_brackets(uid)),
+            (uid @ Uid::Instance(_), None) => uid.to_string(),
         }
     }
 }
@@ -1189,6 +1196,25 @@ mod tests {
             (
                 Uid::Singleton(Label::new("dead").unwrap()),
                 Some(Label::new("dead").unwrap())
+            )
+        );
+    }
+
+    #[test]
+    fn test_proc_resource_name_uses_legacy_labeled_instance_format() {
+        let proc_ref = ProcAddr::new(
+            ProcId::new(Uid::Instance(0xabc123), Some(Label::new("worker").unwrap())),
+            ChannelAddr::Local(42).into(),
+        );
+
+        assert_eq!(
+            proc_ref.resource_name(),
+            format!(
+                "worker-{}",
+                Uid::Instance(0xabc123)
+                    .to_string()
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
             )
         );
     }
