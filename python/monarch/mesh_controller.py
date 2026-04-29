@@ -334,7 +334,9 @@ class MeshClient(Client):
     def shutdown(
         self,
         destroy_pg: bool = True,
-        error_reason: Optional[RemoteException | DeviceException | Exception] = None,
+        error_reason: Optional[
+            Union["RemoteException", DeviceException, Exception]
+        ] = None,
     ):
         # return
         if self.has_shutdown:

@@ -785,7 +785,7 @@
     }
   },
   "info": {
-    "description": "Reference-walking introspection API for a Monarch actor mesh. See the Admin Gateway Pattern RFC.",
+    "description": "Address-walking introspection API for a Monarch actor mesh. See the Admin Gateway Pattern RFC.",
     "title": "Monarch Mesh Admin API",
     "version": "1.0.0"
   },
@@ -1346,7 +1346,7 @@
                 }
               }
             },
-            "description": "Reference not found"
+            "description": "Address not found"
           },
           "500": {
             "content": {
