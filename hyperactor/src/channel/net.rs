@@ -4152,4 +4152,452 @@ mod tests {
             "shared-session multi-stream: every stream should emit its own Closed frame"
         );
     }
+
+    /// Duplex analog of `rx_join_flushes_pending_ack_single_stream`.
+    /// Three independent duplex sessions, each with three framed
+    /// messages. Verifies every `dispatch_duplex_stream`'s terminal
+    /// flush ran by the time `DuplexServer::join()` returns —
+    /// structured concurrency makes the listener task await every
+    /// inline recv/send loop before resolving.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn server_join_flushes_pending_ack_duplex_session() {
+        let config = hyperactor_config::global::lock();
+        let _g_msg = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1_000_000);
+        let _g_time =
+            config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(3600));
+
+        let session_count = 3u64;
+        let msgs_per_session = 3u64;
+        let mut conns: Vec<PreparedConnection> = Vec::with_capacity(session_count as usize);
+        let mut expected_messages: std::collections::HashSet<u64> =
+            std::collections::HashSet::new();
+        let mut expected_acks: Vec<u64> = Vec::with_capacity(session_count as usize);
+        for sid in 1..=session_count {
+            let messages: Vec<(u64, u64)> = (0u64..msgs_per_session)
+                .map(|seq| (seq, sid * 100 + seq))
+                .collect();
+            for (_, v) in &messages {
+                expected_messages.insert(*v);
+            }
+            expected_acks.push(messages.iter().map(|(s, _)| *s).max().unwrap());
+            conns.push(prepare_connection(SessionId(sid), 0, &messages).await);
+        }
+
+        let addr = ChannelAddr::Local(u64::MAX);
+        let listener = QueueListener {
+            streams: conns
+                .iter_mut()
+                .map(|c| std::mem::replace(&mut c.server_side, tokio::io::duplex(1).0))
+                .collect(),
+            addr: addr.clone(),
+        };
+        let mut server = super::duplex::serve_with_listener::<u64, u64, _>(listener, addr).unwrap();
+
+        // Accept one (rx, tx) pair per session. Hold the tx halves
+        // alive so the server's send-loop stays parked in `select!`
+        // (it never sees an `AppClosed` terminal) — the test must
+        // exercise the cancel-driven flush path, not an
+        // app-disconnect one.
+        let mut all_rx: Vec<super::duplex::DuplexRx<u64>> =
+            Vec::with_capacity(session_count as usize);
+        let mut all_tx: Vec<super::duplex::DuplexTx<u64>> =
+            Vec::with_capacity(session_count as usize);
+        for _ in 0..session_count {
+            let (rx, tx) = server.accept().await.unwrap();
+            all_rx.push(rx);
+            all_tx.push(tx);
+        }
+
+        // Drain the messages each session sent. Each session's
+        // dispatch task delivers exactly its own `msgs_per_session`
+        // values to its own `rx`, but the order in which sessions
+        // are accepted is non-deterministic — collect into a set.
+        let mut received: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for rx in all_rx.iter_mut() {
+            for _ in 0..msgs_per_session {
+                received.insert(rx.recv().await.unwrap());
+            }
+        }
+        assert_eq!(
+            received, expected_messages,
+            "duplex: every produced message should reach the application"
+        );
+
+        // Policy thresholds are out of reach, so no ack should fire
+        // spontaneously. The sleep gives any regression that adds a
+        // new emission path room to surface.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+        let mut readers: Vec<FrameReader<ReadHalf<DuplexStream>>> = conns
+            .into_iter()
+            .map(|c| FrameReader::new(c.client_r, max_len))
+            .collect();
+        for (idx, reader) in readers.iter_mut().enumerate() {
+            match tokio::time::timeout(Duration::from_millis(10), reader.next()).await {
+                Err(_) => {} // timeout — no frame, expected.
+                Ok(Err(e)) => {
+                    panic!("duplex: connection {idx} frame reader error before join: {e}")
+                }
+                Ok(Ok(None)) => {
+                    panic!("duplex: connection {idx} closed before server.join()")
+                }
+                Ok(Ok(Some((_, bytes)))) => {
+                    let resp = super::deserialize_response(bytes).unwrap();
+                    panic!(
+                        "duplex: connection {idx} unexpectedly received {resp:?} \
+                         before server.join()"
+                    );
+                }
+            }
+        }
+
+        // Trigger graceful shutdown. Holding `all_tx` / `all_rx`
+        // alive keeps the send-loop parked and `inbound_tx` valid,
+        // so the dispatch task only exits via the cancel branch of
+        // its `select!` — exercising the structured-concurrency
+        // flush-on-cancel path.
+        server.join().await;
+
+        // After server.join() returns, every connection must have
+        // its terminal cleanup frames already on the wire: an
+        // `Ack(highest_seq)` covering the messages it sent, then a
+        // `Closed`.
+        for (idx, (reader, expected_ack)) in readers.iter_mut().zip(&expected_acks).enumerate() {
+            let bytes = tokio::time::timeout(Duration::from_millis(50), reader.next())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "duplex: connection {idx} produced no Ack frame within 50ms after \
+                         server.join()"
+                    )
+                })
+                .expect("frame reader error")
+                .expect("frame reader returned None");
+            let acked = super::deserialize_response(bytes.1)
+                .unwrap()
+                .into_ack()
+                .unwrap_or_else(|other| {
+                    panic!("duplex: connection {idx} expected Ack, got {other:?}")
+                });
+            assert_eq!(
+                acked, *expected_ack,
+                "duplex: connection {idx} ack mismatch"
+            );
+
+            let bytes = tokio::time::timeout(Duration::from_millis(50), reader.next())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("duplex: connection {idx} produced no Closed frame within 50ms")
+                })
+                .expect("frame reader error")
+                .expect("frame reader returned None");
+            assert!(
+                super::deserialize_response(bytes.1).unwrap().is_closed(),
+                "duplex: connection {idx} expected Closed terminal frame"
+            );
+        }
+    }
+
+    /// Test-only [`Link`] that yields each pre-built `DuplexStream`
+    /// once. Writes `LinkInit` on the stream before returning it so
+    /// the test (which holds the other end) sees the same wire
+    /// format a real `TcpLink` produces.
+    struct DuplexDialMockLink {
+        session_id: SessionId,
+        streams: std::collections::VecDeque<DuplexStream>,
+    }
+
+    impl fmt::Debug for DuplexDialMockLink {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("DuplexDialMockLink")
+                .field("session_id", &self.session_id)
+                .field("remaining_streams", &self.streams.len())
+                .finish()
+        }
+    }
+
+    #[async_trait]
+    impl super::Link for DuplexDialMockLink {
+        type Stream = DuplexStream;
+
+        fn dest(&self) -> ChannelAddr {
+            ChannelAddr::Local(u64::MAX)
+        }
+
+        fn link_id(&self) -> SessionId {
+            self.session_id
+        }
+
+        async fn next(&mut self) -> Result<DuplexStream, ClientError> {
+            match self.streams.pop_front() {
+                Some(mut stream) => {
+                    super::write_link_init(&mut stream, self.session_id, 0)
+                        .await
+                        .map_err(|err| ClientError::Io(self.dest(), err))?;
+                    Ok(stream)
+                }
+                None => Err(ClientError::Connect(
+                    self.dest(),
+                    std::io::Error::other("mock link exhausted"),
+                    "no more streams".into(),
+                )),
+            }
+        }
+    }
+
+    /// Acceptor-side counterpart of
+    /// [`duplex_dial_flushes_pending_ack_on_app_closed`]. The
+    /// application drops its `DuplexTx`, the dispatch task's
+    /// `send_connected` returns `SendLoopError::AppClosed` —
+    /// terminal — so `dispatch_duplex_stream`'s loop exits via the
+    /// flush + `Closed` + break path. Verifies the cumulative ack
+    /// and the terminal `Closed` are written on
+    /// `INITIATOR_TO_ACCEPTOR` before the dispatch task ends.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn duplex_serve_flushes_pending_ack_on_app_closed() {
+        let config = hyperactor_config::global::lock();
+        let _g_msg = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1_000_000);
+        let _g_time =
+            config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(3600));
+
+        let session_id = SessionId(1);
+        let messages: Vec<(u64, u64)> = vec![(0, 100), (1, 200), (2, 300)];
+        let expected_ack: u64 = 2;
+        let conn = prepare_connection(session_id, 0, &messages).await;
+
+        let addr = ChannelAddr::Local(u64::MAX);
+        let listener = QueueListener {
+            streams: std::collections::VecDeque::from([conn.server_side]),
+            addr: addr.clone(),
+        };
+
+        let mut server = super::duplex::serve_with_listener::<u64, u64, _>(listener, addr).unwrap();
+
+        let (mut server_rx, server_tx) = server.accept().await.unwrap();
+
+        // Drain the messages the test wrote on `INITIATOR_TO_ACCEPTOR`.
+        let mut received: Vec<u64> = Vec::with_capacity(messages.len());
+        for _ in &messages {
+            received.push(server_rx.recv().await.unwrap());
+        }
+        let expected_values: Vec<u64> = messages.iter().map(|(_, v)| *v).collect();
+        assert_eq!(
+            received, expected_values,
+            "duplex serve: every message should reach the application"
+        );
+
+        // Policy thresholds are unreachable, so no ack should fire
+        // spontaneously.
+        let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut reader = FrameReader::new(conn.client_r, max_len);
+        match tokio::time::timeout(Duration::from_millis(10), reader.next()).await {
+            Err(_) => {} // timeout — expected.
+            Ok(Err(e)) => panic!("duplex serve: frame reader error before app close: {e}"),
+            Ok(Ok(None)) => panic!("duplex serve: wire closed before app close"),
+            Ok(Ok(Some((_, bytes)))) => {
+                let resp = super::deserialize_response(bytes).unwrap();
+                panic!("duplex serve: unexpectedly received {resp:?} before app close");
+            }
+        }
+
+        // Drop the application's `DuplexTx` to trigger `AppClosed`
+        // in `send_connected` — terminal — so the dispatch task
+        // exits. The flush logic must write the cumulative ack on
+        // `INITIATOR_TO_ACCEPTOR` and the terminal `Closed` before
+        // the loop breaks.
+        drop(server_tx);
+
+        let bytes = tokio::time::timeout(Duration::from_millis(100), reader.next())
+            .await
+            .unwrap_or_else(|_| panic!("duplex serve: produced no Ack frame within 100ms"))
+            .expect("frame reader error")
+            .expect("frame reader returned None");
+        let acked = super::deserialize_response(bytes.1)
+            .unwrap()
+            .into_ack()
+            .unwrap_or_else(|other| panic!("duplex serve: expected Ack, got {other:?}"));
+        assert_eq!(
+            acked, expected_ack,
+            "duplex serve: ack should cover the highest seq received"
+        );
+
+        let bytes = tokio::time::timeout(Duration::from_millis(100), reader.next())
+            .await
+            .unwrap_or_else(|_| panic!("duplex serve: produced no Closed frame within 100ms"))
+            .expect("frame reader error")
+            .expect("frame reader returned None");
+        assert!(
+            super::deserialize_response(bytes.1).unwrap().is_closed(),
+            "duplex serve: expected Closed terminal frame after Ack"
+        );
+
+        drop(server_rx);
+        // `server.join()` triggers the listener-task cancel so the
+        // outer `accept_loop` returns. The dispatch task already
+        // exited via `AppClosed` and was drained from the JoinSet,
+        // so this just stops the listener.
+        server.join().await;
+    }
+
+    /// [`DuplexClient::join`] cancels the recv/send loop's
+    /// cancellation token. The `select!`s observe cancel and the
+    /// loop exits via the flush + `Closed` + break path. Verifies
+    /// the cumulative ack and the terminal `Closed` are written on
+    /// `ACCEPTOR_TO_INITIATOR` before the spawned task ends.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn duplex_client_join_flushes_pending_ack() {
+        let config = hyperactor_config::global::lock();
+        let _g_msg = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1_000_000);
+        let _g_time =
+            config.override_key(config::MESSAGE_ACK_TIME_INTERVAL, Duration::from_secs(3600));
+
+        let session_id = SessionId(123);
+        let (client_side, server_side) = tokio::io::duplex(8192);
+        let (mut test_r, mut test_w) = tokio::io::split(server_side);
+
+        let link = DuplexDialMockLink {
+            session_id,
+            streams: std::collections::VecDeque::from([client_side]),
+        };
+
+        let mut dial_client = super::duplex::spawn::<u64, u64>(link);
+        let _dial_tx = dial_client.tx();
+        let mut dial_rx = dial_client.take_rx().unwrap();
+
+        // Drain the LinkInit the dial-side wrote on connect.
+        super::read_link_init(&mut test_r).await.unwrap();
+
+        // Test acts as the acceptor: write framed `Frame::Message`s
+        // on `ACCEPTOR_TO_INITIATOR` so the dial-side recv-loop
+        // reads them and forwards to the application via
+        // `inbound_tx`.
+        let max_len = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+        let messages: Vec<(u64, u64)> = vec![(0, 100), (1, 200), (2, 300)];
+        let expected_ack: u64 = 2;
+        for (seq, value) in &messages {
+            let payload =
+                serde_multipart::serialize_bincode(&Frame::<u64>::Message(*seq, *value)).unwrap();
+            let mut fw = FrameWrite::new(
+                test_w,
+                payload.framed(),
+                max_len,
+                super::ACCEPTOR_TO_INITIATOR,
+            )
+            .map_err(|(_w, e)| e)
+            .unwrap();
+            fw.send().await.unwrap();
+            test_w = fw.complete();
+        }
+
+        // Drain the messages on the dial-side rx so the dial-side's
+        // `recv_next.seq` advances past every seq.
+        let mut received: Vec<u64> = Vec::with_capacity(messages.len());
+        for _ in &messages {
+            received.push(dial_rx.recv().await.unwrap());
+        }
+        let expected_values: Vec<u64> = messages.iter().map(|(_, v)| *v).collect();
+        assert_eq!(
+            received, expected_values,
+            "dial: every message should reach the application"
+        );
+
+        // Policy thresholds are unreachable, so no ack should fire
+        // spontaneously.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut reader = FrameReader::new(test_r, max_len);
+        match tokio::time::timeout(Duration::from_millis(10), reader.next()).await {
+            Err(_) => {} // timeout — expected.
+            Ok(Err(e)) => panic!("dial: frame reader error before join: {e}"),
+            Ok(Ok(None)) => panic!("dial: wire closed before join"),
+            Ok(Ok(Some((_, bytes)))) => {
+                let resp = super::deserialize_response(bytes).unwrap();
+                panic!("dial: unexpectedly received {resp:?} before join");
+            }
+        }
+
+        // Trigger graceful shutdown via the structured-concurrency
+        // join handle. Cancel propagates into the spawn loop's
+        // `select!`s; the loop exits via Cancelled (terminal) and
+        // the flush logic writes the cumulative ack and the
+        // `Closed` terminal frame before the task ends.
+        dial_client.join().await;
+
+        let bytes = tokio::time::timeout(Duration::from_millis(100), reader.next())
+            .await
+            .unwrap_or_else(|_| panic!("dial: produced no Ack frame within 100ms after join"))
+            .expect("frame reader error")
+            .expect("frame reader returned None");
+        let acked = super::deserialize_response(bytes.1)
+            .unwrap()
+            .into_ack()
+            .unwrap_or_else(|other| panic!("dial: expected Ack, got {other:?}"));
+        assert_eq!(
+            acked, expected_ack,
+            "dial: ack should cover the highest seq received"
+        );
+
+        // After the ack, the dial-side writes the terminal
+        // `Closed` response on `ACCEPTOR_TO_INITIATOR` (mirrors
+        // `dispatch_duplex_stream`), then releases the connection.
+        let bytes = tokio::time::timeout(Duration::from_millis(100), reader.next())
+            .await
+            .unwrap_or_else(|_| panic!("dial: produced no Closed frame within 100ms after join"))
+            .expect("frame reader error")
+            .expect("frame reader returned None");
+        assert!(
+            super::deserialize_response(bytes.1).unwrap().is_closed(),
+            "dial: expected Closed terminal frame after Ack"
+        );
+
+        drop(dial_rx);
+        drop(test_w);
+    }
+
+    /// Verifies that an in-progress [`DuplexRx::recv`] on the
+    /// receiver returned by [`DuplexClient::take_rx`] resolves with
+    /// [`ChannelError::Closed`] when [`DuplexClient::join`] is
+    /// called concurrently. Structured concurrency guarantees the
+    /// spawned task drops `inbound_tx` before `join` returns, so
+    /// the receiver observes the close deterministically.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn duplex_client_join_terminates_in_progress_recv() {
+        let session_id = SessionId(123);
+        let (client_side, server_side) = tokio::io::duplex(8192);
+        let (mut test_r, _test_w) = tokio::io::split(server_side);
+
+        let link = DuplexDialMockLink {
+            session_id,
+            streams: std::collections::VecDeque::from([client_side]),
+        };
+
+        let mut dial_client = super::duplex::spawn::<u64, u64>(link);
+        let mut dial_rx = dial_client.take_rx().unwrap();
+
+        // Drain the LinkInit so the dial-side has finished its
+        // setup before we kick off the recv() under test.
+        super::read_link_init(&mut test_r).await.unwrap();
+
+        // Park a recv() in a separate task; the dial-side hasn't
+        // forwarded any inbound frames so this future will sit in
+        // `inbound_rx.recv().await` indefinitely until `join`
+        // drops the spawned task's `inbound_tx`.
+        let recv_handle: tokio::task::JoinHandle<Result<u64, ChannelError>> =
+            tokio::spawn(async move { dial_rx.recv().await });
+
+        // `join` cancels the spawned task; on exit the task drops
+        // its `inbound_tx`, which closes `inbound_rx` and resolves
+        // the recv() with `ChannelError::Closed`.
+        dial_client.join().await;
+
+        let result = tokio::time::timeout(Duration::from_millis(100), recv_handle)
+            .await
+            .expect("parked recv should resolve within 100ms after join")
+            .expect("recv task should not panic");
+        assert!(
+            matches!(result, Err(ChannelError::Closed)),
+            "in-progress recv should resolve with ChannelError::Closed after join, got {result:?}"
+        );
+    }
 }
