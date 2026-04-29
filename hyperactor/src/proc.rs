@@ -179,9 +179,6 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
-use crate::reference::ActorId;
-use crate::reference::PortId;
-use crate::reference::ProcId;
 use crate::subject::AsSubject as _;
 
 /// Returns current epoch-millis from wall clock. Used by

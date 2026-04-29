@@ -960,6 +960,8 @@ pub(crate) async fn serve_introspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ActorAddr;
+    use crate::ProcAddr;
     use crate::actor::ActorErrorKind;
     use crate::actor::ActorStatus;
     use crate::channel::ChannelAddr;
