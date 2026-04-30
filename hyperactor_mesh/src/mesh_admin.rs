@@ -996,7 +996,7 @@ impl Actor for MeshAdminAgent {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
         let bridge_state = Arc::new(BridgeState {
-            admin_ref: hyperactor_reference::ActorRef::attest(this.self_id().clone().into()),
+            admin_ref: hyperactor_reference::ActorRef::attest(this.self_id().clone()),
             bridge_cx,
             resolve_semaphore: tokio::sync::Semaphore::new(hyperactor_config::global::get(
                 crate::config::MESH_ADMIN_MAX_CONCURRENT_RESOLVES,
@@ -1290,7 +1290,7 @@ impl MeshAdminAgent {
         // Try the host agent's QueryChild first.
         let result = query_child_introspect(
             cx,
-            agent.actor_id(),
+            &agent.actor_id(),
             hyperactor_reference::Reference::Proc(proc_id.clone()),
             hyperactor_config::global::get(crate::config::MESH_ADMIN_QUERY_CHILD_TIMEOUT),
             "querying proc details",
@@ -2144,7 +2144,7 @@ enum ResolvedProcHandler {
 }
 
 impl ResolvedProcHandler {
-    fn agent_id(&self) -> &hyperactor_reference::ActorId {
+    fn agent_id(&self) -> hyperactor_reference::ActorId {
         match self {
             Self::Host(r) => r.actor_id(),
             Self::Proc(r) => r.actor_id(),
@@ -2266,12 +2266,12 @@ fn route_proc_handler(raw_proc_reference: &str) -> Result<ResolvedProcHandler, A
     if is_service {
         let agent_id = proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME);
         Ok(ResolvedProcHandler::Host(
-            hyperactor_reference::ActorRef::attest(agent_id),
+            hyperactor_reference::ActorRef::attest(agent_id.into()),
         ))
     } else {
         let agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME);
         Ok(ResolvedProcHandler::Proc(
-            hyperactor_reference::ActorRef::attest(agent_id),
+            hyperactor_reference::ActorRef::attest(agent_id.into()),
         ))
     }
 }
@@ -2283,7 +2283,7 @@ async fn resolve_proc_handler(
 ) -> Result<ResolvedProcHandler, ApiError> {
     let handler = route_proc_handler(raw_proc_reference)?;
     let cx = &state.bridge_cx;
-    if !probe_actor(cx, handler.agent_id()).await? {
+    if !probe_actor(cx, &handler.agent_id()).await? {
         return Err(ApiError::not_found(
             format!(
                 "proc does not have a reachable handler ({})",
@@ -3242,9 +3242,9 @@ mod tests {
         let actor_id2 = proc2.actor_id("mesh_agent");
 
         let ref1: hyperactor_reference::ActorRef<HostAgent> =
-            hyperactor_reference::ActorRef::attest(actor_id1.clone());
+            hyperactor_reference::ActorRef::attest(actor_id1.clone().into());
         let ref2: hyperactor_reference::ActorRef<HostAgent> =
-            hyperactor_reference::ActorRef::attest(actor_id2.clone());
+            hyperactor_reference::ActorRef::attest(actor_id2.clone().into());
 
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1), ("host_b".to_string(), ref2)],
@@ -3596,7 +3596,7 @@ mod tests {
         let actor_id1 =
             hyperactor_reference::ActorId::root(proc1, Label::new("mesh_agent").unwrap());
         let ref1: hyperactor_reference::ActorRef<HostAgent> =
-            hyperactor_reference::ActorRef::attest(actor_id1.clone());
+            hyperactor_reference::ActorRef::attest(actor_id1.clone().into());
 
         let client_proc_id =
             hyperactor_reference::ProcId::from_resource_name(ChannelAddr::Tcp(addr1), "local");
