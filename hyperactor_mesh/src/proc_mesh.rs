@@ -658,7 +658,7 @@ impl ProcMeshRef {
         C::A: Handler<MeshFailure>,
     {
         let remote = Remote::collect();
-        // `RemoteSpawn` + `remote!(A)` ensure that `A` has a
+        // `RemoteSpawn` + `register_spawnable!(A)` ensure that `A` has a
         // `SpawnableActor` entry in this registry, so
         // `name_of::<A>()` can resolve its global type name.
         let actor_type = remote

@@ -49,7 +49,8 @@ use ndslice::view::Ranked;
 // requirement for at least one handler.
 
 #[derive(Default, Debug)]
-#[hyperactor::export(spawn = true, handlers = [()])]
+#[hyperactor::spawnable]
+#[hyperactor::export(handlers = [()])]
 struct SnapshotTestActor;
 
 impl Actor for SnapshotTestActor {}
