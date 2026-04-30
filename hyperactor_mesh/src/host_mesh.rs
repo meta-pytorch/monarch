@@ -1432,7 +1432,12 @@ impl HostMeshRef {
             // If this proc dies or some other issue renders the reply undeliverable,
             // the reply does not need to be returned to the sender.
             reply.return_undeliverable(false);
-            host.mesh_agent()
+            let mut send_port = host.mesh_agent().port();
+            // If the message is undeliverable, the timeout below will catch the issue, and the caller
+            // can handle the error as it pleases. Set this so an undeliverable message doesn't cause
+            // a supervision crash.
+            send_port.return_undeliverable(false);
+            send_port
                 .send(
                     cx,
                     resource::GetState {

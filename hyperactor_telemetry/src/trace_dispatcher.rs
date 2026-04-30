@@ -302,6 +302,13 @@ impl TraceEventDispatcher {
         }
     }
 
+    pub(crate) fn sender(&self) -> mpsc::SyncSender<TraceEvent> {
+        self.sender
+            .as_ref()
+            .expect("trace event dispatcher sender should exist during initialization")
+            .clone()
+    }
+
     fn send_drop_event(&self, total_dropped: u64) {
         if let Some(dropped_sender) = &self.dropped_sender {
             let (thread_name, thread_id) = get_thread_info();
