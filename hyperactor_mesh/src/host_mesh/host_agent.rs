@@ -24,12 +24,14 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::Address;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::Proc;
+use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::context;
 use hyperactor::host::Host;
@@ -39,7 +41,6 @@ use hyperactor::host::LocalProcManager;
 use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::host::SingleTerminate;
 use hyperactor::mailbox::MailboxServerHandle;
-use hyperactor::ref_;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
@@ -120,7 +121,7 @@ impl HostAgentMode {
     async fn request_stop(
         &self,
         cx: &impl context::Actor,
-        proc: &ref_::ProcRef,
+        proc: &ProcAddr,
         timeout: Duration,
         reason: &str,
     ) {
@@ -140,7 +141,7 @@ impl HostAgentMode {
     /// that need process-level detail such as PIDs or exit codes.
     async fn proc_status(
         &self,
-        proc_id: &ref_::ProcRef,
+        proc_id: &ProcAddr,
     ) -> (resource::Status, Option<bootstrap::ProcStatus>) {
         match self {
             HostAgentMode::Process { host, .. } => match host.manager().status(proc_id).await {
@@ -171,8 +172,7 @@ impl HostAgentMode {
 pub(crate) struct ProcCreationState {
     pub(crate) rank: usize,
     pub(crate) host_mesh_id: Option<HostMeshId>,
-    pub(crate) created:
-        Result<(ref_::ProcRef, hyperactor_reference::ActorRef<ProcAgent>), HostError>,
+    pub(crate) created: Result<(ProcAddr, hyperactor_reference::ActorRef<ProcAgent>), HostError>,
 }
 
 /// Actor name used when spawning the host mesh agent on the system proc.
@@ -519,7 +519,7 @@ impl Actor for HostAgent {
             use hyperactor::introspect::IntrospectResult;
 
             let proc = match child_ref {
-                hyperactor::ref_::Reference::Proc(proc_ref) => {
+                Address::Proc(proc_ref) => {
                     if *proc_ref == *system_proc.proc_id() {
                         Some((&system_proc, SERVICE_PROC_NAME))
                     } else if *proc_ref == *local_proc.proc_id() {
@@ -610,13 +610,13 @@ impl Actor for HostAgent {
                         format!("child {} not found", child_ref),
                     );
                     let identity = match child_ref {
-                        hyperactor::ref_::Reference::Proc(p) => {
+                        Address::Proc(p) => {
                             hyperactor::introspect::IntrospectRef::Proc(p.clone().into())
                         }
-                        hyperactor::ref_::Reference::Actor(a) => {
+                        Address::Actor(a) => {
                             hyperactor::introspect::IntrospectRef::Actor(a.clone().into())
                         }
-                        hyperactor::ref_::Reference::Port(p) => {
+                        Address::Port(p) => {
                             hyperactor::introspect::IntrospectRef::Actor(p.actor_ref().into())
                         }
                     };
@@ -969,7 +969,7 @@ impl HostAgent {
 
     /// Start a bridge task that watches a proc's status channel and sends
     /// `ProcStatusChanged` to self on each change. At most one bridge per proc.
-    async fn start_watch_bridge(&mut self, id: &ResourceId, proc_id: &ref_::ProcRef) {
+    async fn start_watch_bridge(&mut self, id: &ResourceId, proc_id: &ProcAddr) {
         if self.watching.contains(id) {
             return;
         }
