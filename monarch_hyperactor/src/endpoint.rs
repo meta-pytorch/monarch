@@ -102,6 +102,17 @@ pub(crate) enum EndpointAdverb {
     Stream,
 }
 
+impl EndpointAdverb {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Call => "call",
+            Self::CallOne => "call_one",
+            Self::Choose => "choose",
+            Self::Stream => "stream",
+        }
+    }
+}
+
 /// RAII guard for recording endpoint call telemetry.
 ///
 /// Records latency on drop, similar to Python's `@_with_telemetry` decorator.
@@ -160,7 +171,6 @@ impl Drop for RecordEndpointGuard {
             "method" => self.method_name.clone(),
             "actor_count" => actor_count_str
         );
-        tracing::info!(message = "response received", method = self.method_name);
 
         let duration_us = self.start.elapsed().as_micros();
 
@@ -200,33 +210,67 @@ impl Drop for RecordEndpointGuard {
 
 /// Send-safe RAII guard for an OTEL-style endpoint span.
 ///
-/// `tracing::Span::enter()` returns a `!Send` `Entered<'_>` guard that cannot
-/// cross `.await` points. We need the span to open on the Python thread (at
-/// call site) and close on whatever tokio thread delivers the response. To
-/// achieve that, we drive the `Layer::on_enter`/`on_exit` callbacks directly
-/// through the global dispatcher instead of holding an `Entered` guard.
-///
-/// The perfetto sink remembers which track a span entered on and replays the
-/// matching exit on that same track, so slices render on the originating
-/// (Python) thread regardless of where `Drop` fires.
+/// We only need endpoint spans for telemetry slices, not for `tracing` context
+/// propagation. So this guard emits synthetic trace events directly into the
+/// unified telemetry dispatcher instead of holding a real `tracing::Span`
+/// across `.await` points.
 pub(crate) struct SpanGuard {
-    span: tracing::Span,
+    id: u64,
 }
 
 impl SpanGuard {
-    fn enter(span: tracing::Span) -> Self {
-        if let Some(id) = span.id() {
-            tracing::dispatcher::get_default(|d| d.enter(&id));
+    fn actor_endpoint(name: &'static str, actor_id: &ActorRef, mesh: &str, method: &str) -> Self {
+        Self {
+            id: hyperactor_telemetry::start_user_span(
+                name,
+                hyperactor_telemetry::sinks::perfetto::ENDPOINT_TELEMETRY_TARGET,
+                [
+                    (
+                        "actor_id",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(
+                            actor_id.to_string(),
+                        ),
+                    ),
+                    (
+                        "mesh",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(mesh.to_string()),
+                    ),
+                    (
+                        "method",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(method.to_string()),
+                    ),
+                ],
+            ),
         }
-        Self { span }
+    }
+
+    fn remote(name: &'static str, actor_id: &ActorRef, call_name: &str) -> Self {
+        Self {
+            id: hyperactor_telemetry::start_user_span(
+                name,
+                hyperactor_telemetry::sinks::perfetto::ENDPOINT_TELEMETRY_TARGET,
+                [
+                    (
+                        "actor_id",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(
+                            actor_id.to_string(),
+                        ),
+                    ),
+                    (
+                        "call_name",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(
+                            call_name.to_string(),
+                        ),
+                    ),
+                ],
+            ),
+        }
     }
 }
 
 impl Drop for SpanGuard {
     fn drop(&mut self) {
-        if let Some(id) = self.span.id() {
-            tracing::dispatcher::get_default(|d| d.exit(&id));
-        }
+        hyperactor_telemetry::end_user_span(self.id);
     }
 }
 
@@ -911,37 +955,7 @@ impl Endpoint for ActorEndpoint {
     fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard {
         let mesh = self.mesh_name.as_str();
         let method = self.method.name();
-        let span = match adverb {
-            EndpointAdverb::Call => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::CallOne => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call_one",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Choose => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "choose",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Stream => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "stream",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-        };
-        SpanGuard::enter(span)
+        SpanGuard::actor_endpoint(adverb.as_str(), actor_id, mesh, method)
     }
 }
 
@@ -1211,33 +1225,7 @@ impl Endpoint for Remote {
                 .and_then(|v| v.extract::<String>(py).ok())
         });
         let call_name = call_name.as_deref().unwrap_or("");
-        let span = match adverb {
-            EndpointAdverb::Call => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::CallOne => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call_one",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Choose => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "choose",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Stream => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "stream",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-        };
-        SpanGuard::enter(span)
+        SpanGuard::remote(adverb.as_str(), actor_id, call_name)
     }
 }
 

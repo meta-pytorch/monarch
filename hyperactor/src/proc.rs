@@ -479,8 +479,11 @@ impl Proc {
         use crate::host::AttachRequest;
         use crate::host::AttachRx;
         use crate::host::Host2Client;
-        let (duplex_tx, mut duplex_rx) =
-            channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
+        let mut duplex_client = channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
+        let duplex_tx = duplex_client.tx();
+        let mut duplex_rx = duplex_client
+            .take_rx()
+            .expect("dial returns a fresh DuplexClient with rx present");
         // Send an AttachRequest envelope to signal attach intent.
         // The host deserializes the first message and enters the
         // attach protocol when it finds an AttachRequest. The
@@ -516,7 +519,19 @@ impl Proc {
             assignment.proc_id,
             MailboxClient::new(duplex_tx).into_boxed(),
         );
-        let handle = proc.clone().serve(AttachRx(duplex_rx));
+        // Wrap the inner mailbox server handle so that stopping/
+        // joining the outer handle also joins the dial-side
+        // `DuplexClient`.
+        let inner_handle = proc.clone().serve(AttachRx(duplex_rx));
+        let (stopped_tx, mut stopped_rx) = tokio::sync::watch::channel(false);
+        let wrapped_join = tokio::spawn(async move {
+            let _ = stopped_rx.wait_for(|stopped| *stopped).await;
+            inner_handle.stop("proc shutting down");
+            let _ = inner_handle.await;
+            duplex_client.join().await;
+            Ok(())
+        });
+        let handle = crate::mailbox::MailboxServerHandle::from_parts(wrapped_join, stopped_tx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
         Ok(proc)
     }
