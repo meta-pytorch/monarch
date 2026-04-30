@@ -28,7 +28,7 @@
 //!
 //! - **AI-1 (named-child uid):** Each child gets a globally unique
 //!   random uid. Named children carry a label for display purposes.
-//! - **AI-3 (controller ActorId uniqueness):** Each named child gets
+//! - **AI-3 (controller ActorAddr uniqueness):** Each named child gets
 //!   a unique uid; the label is informational only.
 //!
 //! ## Flight recorder span invariants (FR-*)
@@ -179,9 +179,6 @@ use crate::mailbox::Undeliverable;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
-use crate::reference::ActorId;
-use crate::reference::PortId;
-use crate::reference::ProcId;
 use crate::subject::AsSubject as _;
 
 /// Returns current epoch-millis from wall clock. Used by
@@ -498,14 +495,14 @@ impl Proc {
         // `return_undeliverable` closes the hazard path in case the
         // envelope ever escapes into the forwarder: it should be
         // dropped, not bounced to the fake sender.
-        let signal_actor_id = ActorId::root(
-            ProcId::from_resource_name(
+        let signal_actor_id = ActorAddr::root(
+            ProcAddr::from_resource_name(
                 ChannelAddr::any(channel::ChannelTransport::Local),
                 "attach",
             ),
             crate::id::Label::strip("attach"),
         );
-        let signal_port = PortId::new(signal_actor_id.clone(), 0);
+        let signal_port = signal_actor_id.port_ref(crate::port::Port::from(0u64));
         let mut envelope = MessageEnvelope::serialize(
             signal_actor_id,
             signal_port,
@@ -813,7 +810,7 @@ impl Proc {
         self.state().queue_stats.last_nonzero_age_ms()
     }
 
-    /// Look up an instance by ActorId.
+    /// Look up an instance by ActorAddr.
     pub fn get_instance(&self, actor_id: &ActorAddr) -> Option<InstanceCell> {
         self.state()
             .instances
@@ -821,7 +818,7 @@ impl Proc {
             .and_then(|weak| weak.upgrade())
     }
 
-    /// Returns the ActorIds of all root actors in this proc.
+    /// Returns the ActorAddrs of all root actors in this proc.
     ///
     /// **Caution:** This iterates the full DashMap under shard read
     /// locks. The per-entry work is lightweight (key filter + clone),
@@ -838,7 +835,7 @@ impl Proc {
             .collect()
     }
 
-    /// Returns the ActorIds of all live actors in this proc, including
+    /// Returns the ActorAddrs of all live actors in this proc, including
     /// dynamically spawned children.
     ///
     /// An actor is considered live if its weak reference is
@@ -2922,7 +2919,7 @@ impl InstanceCell {
         self.inner.children.len()
     }
 
-    /// Returns the ActorIds of this instance's direct children.
+    /// Returns the ActorAddrs of this instance's direct children.
     pub fn child_actor_ids(&self) -> Vec<ActorAddr> {
         self.inner
             .children
@@ -3560,7 +3557,9 @@ mod tests {
         let sender = test_actor_id("sender", "client");
 
         // Same ProcId, same addr: route locally; the forwarder must not see it.
-        let local_dest = proc_local.actor_id("worker").port_id(1234);
+        let local_dest = proc_local
+            .actor_id("worker")
+            .port_ref(crate::port::Port::from(1234));
         proc.post(
             MessageEnvelope::new(
                 sender.clone(),
@@ -3573,7 +3572,9 @@ mod tests {
         assert_eq!(forwarded.load(Ordering::SeqCst), 0);
 
         // Same ProcId, different addr: must forward to reach the remote proc.
-        let remote_dest = proc_remote.actor_id("worker").port_id(1234);
+        let remote_dest = proc_remote
+            .actor_id("worker")
+            .port_ref(crate::port::Port::from(1234));
         proc.post(
             MessageEnvelope::new(
                 sender,
@@ -4743,7 +4744,7 @@ mod tests {
         assert_ne!(
             ctrl_a.actor_id(),
             ctrl_b.actor_id(),
-            "controller ActorIds must be unique across parents"
+            "controller ActorAddrs must be unique across parents"
         );
     }
 

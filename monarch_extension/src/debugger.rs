@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use hyperactor::reference;
+use hyperactor as reference;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyProc;
 use monarch_hyperactor::proc::PySerialized;
@@ -151,10 +151,10 @@ pub fn register_python_bindings(debugger: &Bound<'_, PyModule>) -> PyResult<()> 
 
 #[cfg(test)]
 mod tests {
+    use hyperactor as reference;
     use hyperactor::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::proc::Proc;
-    use hyperactor::reference;
     use monarch_hyperactor::runtime::monarch_with_gil_blocking;
     use monarch_messages::controller::ControllerMessage;
     use typeuri::Named;

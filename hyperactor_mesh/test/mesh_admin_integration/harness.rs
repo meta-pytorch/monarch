@@ -306,7 +306,7 @@ pub(crate) fn pyspy_workload_binary() -> PathBuf {
 /// Build a canonical proc reference that is syntactically valid but
 /// points at an unreachable abstract unix socket.
 pub(crate) fn unreachable_proc_ref() -> String {
-    hyperactor::reference::ProcId::from_resource_name(
+    hyperactor::ProcAddr::from_resource_name(
         "unix:@nonexistent_bogus_socket_xyz"
             .parse::<hyperactor::channel::ChannelAddr>()
             .unwrap(),

@@ -348,6 +348,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::routing::post;
+use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
@@ -362,7 +363,6 @@ use hyperactor::introspect::IntrospectMessage;
 use hyperactor::introspect::IntrospectResult;
 use hyperactor::introspect::IntrospectView;
 use hyperactor::mailbox::open_once_port;
-use hyperactor::reference as hyperactor_reference;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -1290,7 +1290,7 @@ impl MeshAdminAgent {
         // Try the host agent's QueryChild first.
         let result = query_child_introspect(
             cx,
-            &agent.actor_id(),
+            agent.actor_id(),
             hyperactor_reference::Reference::Proc(proc_id.clone()),
             hyperactor_config::global::get(crate::config::MESH_ADMIN_QUERY_CHILD_TIMEOUT),
             "querying proc details",
@@ -2146,8 +2146,8 @@ enum ResolvedProcHandler {
 impl ResolvedProcHandler {
     fn agent_id(&self) -> hyperactor_reference::ActorId {
         match self {
-            Self::Host(r) => r.actor_id(),
-            Self::Proc(r) => r.actor_id(),
+            Self::Host(r) => r.actor_id().clone(),
+            Self::Proc(r) => r.actor_id().clone(),
         }
     }
 
@@ -2266,12 +2266,12 @@ fn route_proc_handler(raw_proc_reference: &str) -> Result<ResolvedProcHandler, A
     if is_service {
         let agent_id = proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME);
         Ok(ResolvedProcHandler::Host(
-            hyperactor_reference::ActorRef::attest(agent_id.into()),
+            hyperactor_reference::ActorRef::attest(agent_id),
         ))
     } else {
         let agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME);
         Ok(ResolvedProcHandler::Proc(
-            hyperactor_reference::ActorRef::attest(agent_id.into()),
+            hyperactor_reference::ActorRef::attest(agent_id),
         ))
     }
 }
@@ -3242,9 +3242,9 @@ mod tests {
         let actor_id2 = proc2.actor_id("mesh_agent");
 
         let ref1: hyperactor_reference::ActorRef<HostAgent> =
-            hyperactor_reference::ActorRef::attest(actor_id1.clone().into());
+            hyperactor_reference::ActorRef::attest(actor_id1.clone());
         let ref2: hyperactor_reference::ActorRef<HostAgent> =
-            hyperactor_reference::ActorRef::attest(actor_id2.clone().into());
+            hyperactor_reference::ActorRef::attest(actor_id2.clone());
 
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1), ("host_b".to_string(), ref2)],
@@ -3596,7 +3596,7 @@ mod tests {
         let actor_id1 =
             hyperactor_reference::ActorId::root(proc1, Label::new("mesh_agent").unwrap());
         let ref1: hyperactor_reference::ActorRef<HostAgent> =
-            hyperactor_reference::ActorRef::attest(actor_id1.clone().into());
+            hyperactor_reference::ActorRef::attest(actor_id1.clone());
 
         let client_proc_id =
             hyperactor_reference::ProcId::from_resource_name(ChannelAddr::Tcp(addr1), "local");
@@ -4403,7 +4403,7 @@ mod tests {
     /// PS-12: service proc routes to HostAgent.
     #[test]
     fn route_proc_handler_service_proc_yields_host() {
-        use hyperactor::reference::ProcId;
+        use hyperactor::ProcId;
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         // Use ProcId::from_resource_name directly — test_proc_id_with_addr
         // prepends "test_" which would not match SERVICE_PROC_NAME.
@@ -4430,7 +4430,7 @@ mod tests {
     /// PS-12: a labeled instance named "service" is still a normal proc.
     #[test]
     fn route_proc_handler_service_instance_yields_proc() {
-        use hyperactor::reference::ProcId;
+        use hyperactor::ProcId;
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         let proc_id =
             ProcId::from_resource_name(ChannelAddr::Tcp(addr), "service-deadbeefdeadbeef");

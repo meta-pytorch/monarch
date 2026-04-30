@@ -21,10 +21,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::ActorHandle;
 use hyperactor::Instance;
 use hyperactor::Mailbox;
-use hyperactor::reference;
 use hyperactor_mesh::proc_launcher::LaunchOptions;
 use hyperactor_mesh::proc_launcher::LaunchResult;
 use hyperactor_mesh::proc_launcher::ProcExitKind;
@@ -704,10 +704,13 @@ impl ProcLauncher for ActorProcLauncher {
             .send(&self.instance, message)
             .map_err(|e| ProcLauncherError::Other(format!("send to spawner failed: {e}")))?;
 
-        self.active_procs.lock().await.insert(proc_id.clone());
+        let mut active_procs: tokio::sync::MutexGuard<'_, HashSet<reference::ProcId>> =
+            self.active_procs.lock().await;
+        active_procs.insert(proc_id.clone());
+        drop(active_procs);
 
         let (exit_tx, exit_rx) = oneshot::channel();
-        let active_procs = Arc::clone(&self.active_procs);
+        let active_procs: Arc<Mutex<HashSet<reference::ProcId>>> = Arc::clone(&self.active_procs);
         let proc_id_clone = proc_id.clone();
 
         tokio::spawn(async move {

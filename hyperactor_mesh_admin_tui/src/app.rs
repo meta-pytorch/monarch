@@ -609,7 +609,7 @@ impl App {
     /// - Proc selected → proc's own reference.
     /// - Actor selected → owning proc from `detail.parent`.
     /// - Root/Host selected → `None` (PY-4).
-    pub(crate) fn pyspy_proc_ref(&self) -> Option<hyperactor::reference::ProcId> {
+    pub(crate) fn pyspy_proc_ref(&self) -> Option<hyperactor::ProcId> {
         let rows = self.visible_rows();
         let row = rows.get(&self.cursor)?;
         match (&row.node.node_type, &row.node.reference) {
@@ -654,7 +654,7 @@ impl App {
     ///
     /// Calls `set_job` which drops any prior variant and its receiver,
     /// cancelling any in-flight fetch (PY-1/PY-2).
-    pub(crate) fn start_pyspy(&mut self, proc_id: hyperactor::reference::ProcId) {
+    pub(crate) fn start_pyspy(&mut self, proc_id: hyperactor::ProcId) {
         let proc_ref = proc_id.to_string();
         let short = proc_id
             .label()
@@ -713,7 +713,7 @@ impl App {
     ///
     /// Calls `set_job` which drops any prior variant and its receiver,
     /// cancelling any in-flight fetch (CFG-1/CFG-2).
-    pub(crate) fn start_config(&mut self, proc_id: hyperactor::reference::ProcId) {
+    pub(crate) fn start_config(&mut self, proc_id: hyperactor::ProcId) {
         let proc_ref = proc_id.to_string();
         let short = proc_id
             .label()

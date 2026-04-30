@@ -12,13 +12,13 @@ use std::hash::Hasher;
 use std::time::Duration;
 
 use anyhow::Result;
+use hyperactor as reference;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
-use hyperactor::reference;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -60,7 +60,7 @@ impl PyProc {
         self.inner
             .proc_id()
             .label()
-            .map(|l| l.as_str().to_string())
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
             .unwrap_or_else(|| self.inner.proc_id().id().to_string())
     }
 
@@ -167,10 +167,7 @@ impl PyActorId {
             PyValueError::new_err(format!("Failed to parse channel address '{}': {}", addr, e))
         })?;
         Ok(Self {
-            inner: reference::ActorId::new(
-                reference::ProcId::from_resource_name(addr, proc_name),
-                actor_name,
-            ),
+            inner: reference::ProcId::from_resource_name(addr, proc_name).actor_id(actor_name),
         })
     }
 
@@ -196,7 +193,7 @@ impl PyActorId {
         self.inner
             .proc_id()
             .label()
-            .map(|l| l.as_str().to_string())
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
             .unwrap_or_else(|| self.inner.proc_id().id().to_string())
     }
 
@@ -204,18 +201,23 @@ impl PyActorId {
     fn actor_name(&self) -> String {
         self.inner
             .label()
-            .map(|l| l.as_str().to_string())
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
             .unwrap_or_else(|| self.inner.uid().to_string())
     }
 
     #[getter]
     fn label(&self) -> Option<String> {
-        self.inner.label().map(|l| l.as_str().to_string())
+        self.inner
+            .label()
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
     }
 
     #[getter]
     fn proc_label(&self) -> Option<String> {
-        self.inner.proc_id().label().map(|l| l.as_str().to_string())
+        self.inner
+            .proc_id()
+            .label()
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
     }
 
     #[getter]
@@ -360,7 +362,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         );
         actor_id
             .inner
-            .port_id(message.port())
+            .port_ref(message.port().into())
             .send(&self.instance, message.inner.clone());
         Ok(())
     }

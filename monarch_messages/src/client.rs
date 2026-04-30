@@ -13,10 +13,10 @@
 #![allow(unused_assignments)]
 
 use enum_as_inner::EnumAsInner;
+use hyperactor as reference;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
-use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
