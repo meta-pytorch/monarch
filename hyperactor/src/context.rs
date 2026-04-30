@@ -183,11 +183,17 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             .transpose()?
             .flatten();
         let enqueue: Box<
-            dyn Fn(wirevalue::Any) -> Result<bool, (wirevalue::Any, anyhow::Error)> + Send + Sync,
+            dyn Fn(
+                    Flattrs,
+                    wirevalue::Any,
+                )
+                    -> Result<mailbox::SerializedSendDisposition, mailbox::SerializedSendFailure>
+                + Send
+                + Sync,
         > = match reducer {
-            None => Box::new(move |serialized: wirevalue::Any| {
+            None => Box::new(move |_headers: Flattrs, serialized: wirevalue::Any| {
                 post(&mailbox, port_id.clone(), serialized, return_undeliverable);
-                Ok(true)
+                Ok(mailbox::SerializedSendDisposition::Delivered)
             }),
             Some(reducer) => match reducer_mode {
                 ReducerMode::Streaming(_) => {
@@ -246,7 +252,8 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                             .build(),
                     );
 
-                    Box::new(move |update: wirevalue::Any| {
+                    let error_port_id = split_port.clone();
+                    Box::new(move |headers: Flattrs, update: wirevalue::Any| {
                         // Hold the lock until messages are sent. This is to avoid another
                         // invocation of this method trying to send message concurrently and
                         // cause messages delivered out of order.
@@ -257,44 +264,74 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                             None => {
                                 let interval = backoff.lock().unwrap().next_backoff().unwrap();
                                 alarm.lock().unwrap().rearm(interval);
-                                Ok(true)
+                                Ok(mailbox::SerializedSendDisposition::Delivered)
                             }
                             Some(Ok(reduced)) => {
                                 alarm.lock().unwrap().disarm();
                                 post(&mailbox, port_id.clone(), reduced, return_undeliverable);
-                                Ok(true)
+                                Ok(mailbox::SerializedSendDisposition::Delivered)
                             }
-                            Some(Err(e)) => Err((buf.pop().unwrap(), e)),
+                            Some(Err(error)) => Err(mailbox::SerializedSendFailure::Error(
+                                mailbox::SerializedSendError {
+                                    data: buf
+                                        .pop()
+                                        .expect("reducer error should leave update buffered"),
+                                    error: crate::mailbox::MailboxSenderError::new_bound(
+                                        error_port_id.clone(),
+                                        crate::mailbox::MailboxSenderErrorKind::Other(error),
+                                    ),
+                                    headers,
+                                },
+                            )),
                         }
                     })
                 }
-                ReducerMode::Once(0) => Box::new(move |update: wirevalue::Any| {
-                    Err((
-                        update,
-                        anyhow::anyhow!(
-                            "invalid ReducerMode: Once must specify at least one update"
-                        ),
-                    ))
-                }),
+                ReducerMode::Once(0) => {
+                    let error_port_id = split_port.clone();
+                    Box::new(move |headers: Flattrs, update: wirevalue::Any| {
+                        Err(mailbox::SerializedSendFailure::Error(
+                            mailbox::SerializedSendError {
+                                data: update,
+                                error: crate::mailbox::MailboxSenderError::new_bound(
+                                    error_port_id.clone(),
+                                    crate::mailbox::MailboxSenderErrorKind::Other(anyhow::anyhow!(
+                                        "invalid ReducerMode: Once must specify at least one update"
+                                    )),
+                                ),
+                                headers,
+                            },
+                        ))
+                    })
+                }
                 ReducerMode::Once(expected) => {
                     let buffer: Arc<Mutex<OnceBuffer>> =
                         Arc::new(Mutex::new(OnceBuffer::new(reducer, expected)));
+                    let error_port_id = split_port.clone();
 
-                    Box::new(move |update: wirevalue::Any| {
+                    Box::new(move |headers: Flattrs, update: wirevalue::Any| {
                         let mut buf = buffer.lock().unwrap();
                         if buf.done {
-                            return Err((
-                                update,
-                                anyhow::anyhow!("OnceReducer has already emitted"),
-                            ));
+                            return Err(mailbox::SerializedSendFailure::Dead {
+                                data: update,
+                                headers,
+                            });
                         }
                         match buf.push(update) {
                             Ok(Some(reduced)) => {
                                 post(&mailbox, port_id.clone(), reduced, return_undeliverable);
-                                Ok(false) // Done, tear down the port
+                                Ok(mailbox::SerializedSendDisposition::DeliveredAndExhausted)
                             }
-                            Ok(None) => Ok(true),
-                            Err(e) => Err(e),
+                            Ok(None) => Ok(mailbox::SerializedSendDisposition::Delivered),
+                            Err((data, error)) => Err(mailbox::SerializedSendFailure::Error(
+                                mailbox::SerializedSendError {
+                                    data,
+                                    error: crate::mailbox::MailboxSenderError::new_bound(
+                                        error_port_id.clone(),
+                                        crate::mailbox::MailboxSenderErrorKind::Other(error),
+                                    ),
+                                    headers,
+                                },
+                            )),
                         }
                     })
                 }
@@ -302,10 +339,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         };
         self.mailbox().bind_untyped(
             &split_port,
-            mailbox::UntypedUnboundedSender {
-                sender: enqueue,
-                port_id: split_port.clone(),
-            },
+            mailbox::UntypedUnboundedSender { sender: enqueue },
         );
         Ok(split_port)
     }
