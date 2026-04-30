@@ -144,13 +144,13 @@ impl<A: Actor> RdmaBackendActor<A> {
 
 #[derive(Debug)]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         GetIbvActorRef,
         GetTcpActorRef,
         ReleaseBuffer,
     ],
 )]
+#[hyperactor::spawnable]
 pub struct RdmaManagerActor {
     next_remote_buf_id: usize,
     buffers: HashMap<usize, Arc<dyn RdmaLocalMemory>>,
