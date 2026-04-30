@@ -1,15 +1,16 @@
 # Remote Registry
 
-The `hyperactor::actor::remote` module provides the process-local registry for remote-spawnable actors. It is the counterpart to `RemoteSpawn`: given actor types that implement `RemoteSpawn` and are registered with `remote!`, this module discovers them at runtime and allows actors to be spawned by their global type name. The implementation uses the [`inventory`](https://docs.rs/inventory/0.3.21/inventory/index.html) crate to collect registrations contributed from any crate linked into the application.
+The `hyperactor::actor::remote` module provides the process-local registry for remote-spawnable actors. It is the counterpart to `RemoteSpawn`: given actor types that implement `RemoteSpawn` and are registered with `#[spawnable]` or `register_spawnable!(...)`, this module discovers them at runtime and allows actors to be spawned by their global type name. The implementation uses the [`inventory`](https://docs.rs/inventory/0.3.21/inventory/index.html) crate to collect registrations contributed from any crate linked into the application.
 
-## Registration model and the `remote!` macro
+## Registration model and spawnable registration
 
-Remote-spawnable actors are registered using the `remote!` macro. Given an actor type that implements [`RemoteSpawn`](./remote_spawn.md) and `Named`, `remote!(MyActor)` arranges for a `SpawnableActor` record to be submitted to a global registry using the [`inventory`](https://docs.rs/inventory/0.3.21/inventory/index.html) crate.
+Remote-spawnable actors are registered using either the `#[spawnable]` attribute or the `register_spawnable!` macro. Given an actor type that implements [`RemoteSpawn`](./remote_spawn.md) and `Named`, either form arranges for a `SpawnableActor` record to be submitted to a global registry using the [`inventory`](https://docs.rs/inventory/0.3.21/inventory/index.html) crate.
 
 In idiomatic use:
 ```rust
 #[derive(Debug)]
-#[hyperactor::export(handlers = [()])]
+#[hyperactor::spawnable]
+#[hyperactor::export(())]
 struct MyActor;
 
 impl Actor for MyActor {}
@@ -26,11 +27,9 @@ impl RemoteSpawn for MyActor {
         }
     }
 }
-
-remote!(MyActor);
 ```
 
-Conceptually, the `remote!` invocation expands to something like:
+Conceptually, the generated registration expands to something like:
 ```rust
 static MY_ACTOR_NAME: std::sync::LazyLock<&'static str> =
     std::sync::LazyLock::new(|| <MyActor as hyperactor::data::Named>::typename());
@@ -43,7 +42,7 @@ inventory::submit! {
     }
 }
 ```
-The real macro uses `paste!` to synthesize the `MY_ACTOR_NAME` identifier and the crate-local paths, but the effect is the same:
+The real expansion uses crate-local paths and an anonymous const wrapper, but the effect is the same:
 - compute a **global type name** for `MyActor` via `Named::typename()`,
 - build a `SpawnableActor` record that points at `MyActor`s `RemoteSpawn` implementation, and
 - submit that record into the inventory of `SpawnableActor` entries.
@@ -52,7 +51,7 @@ At runtime, the `Remote` registry (described below) discovers all such submissio
 
 ## `SpawnableActor`: registration records
 
-A `SpawnableActor` is the type-erased registration record produced by `remote!`. Each remotely spawnable actor type contributes exactly one of these records to the process. The registry discovers them at runtime and uses them to look up actors by global type name and to invoke their type-erased constructor.
+A `SpawnableActor` is the type-erased registration record produced by `#[spawnable]` or `register_spawnable!(...)`. Each remotely spawnable actor type contributes exactly one of these records to the process. The registry discovers them at runtime and uses them to look up actors by global type name and to invoke their type-erased constructor.
 ```rust
 #[derive(Debug)]
 pub struct SpawnableActor {
@@ -72,17 +71,17 @@ pub struct SpawnableActor {
 - `gspawn` is the type-erased entry point for constructing the actor on a remote `Proc`. It is backed by the actor's `RemoteSpawn::gspawn` implementation and handles deserializing parameters and invoking `RemoteSpawn::new(...).await`.
 - `get_type_id` returns the actor's `TypeId`, allowing the registry to map a concrete Rust type back to it's registration entry.
 
-Users never construct a `SpawnableActor` manually; these records are generated automatically by the `remote!` macro.
+Users never construct a `SpawnableActor` manually; these records are generated automatically by `#[spawnable]` or `register_spawnable!(...)`.
 
-The reason `remote!(MyActor)` works is that it only requires `MyActor: RemoteSpawn`. You can provide that either with an explicit `impl RemoteSpawn for MyActor`, or you get it for free from the blanket `impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A`.
+The reason `#[spawnable]` and `register_spawnable!(MyActor)` work is that they only require `MyActor: RemoteSpawn`. You can provide that either with an explicit `impl RemoteSpawn for MyActor`, or you get it for free from the blanket `impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A`.
 
 > **Note:** `Referable` itself only requires `Named`, not `Send + Sync`. The `Actor` trait already provides `Send`, but `Sync` must be added explicitly at call sites that require it.
 
-In both cases, `remote!` can safely plug `<MyActor as RemoteSpawn>::gspawn` into the `SpawnableActor` record it generates.
+In both cases, the registration step can safely plug `<MyActor as RemoteSpawn>::gspawn` into the `SpawnableActor` record it generates.
 
 ## The `Remote` registry
 
-The `Remote` type is the process-local registry of remote-spawnable actors. It is built from all `SpawnableActor` records submitted via `remote!` and exposed through two lookups: by global type name and by `TypeId`.
+The `Remote` type is the process-local registry of remote-spawnable actors. It is built from all `SpawnableActor` records submitted via `#[spawnable]` and `register_spawnable!(...)` and exposed through two lookups: by global type name and by `TypeId`.
 ```rust
 #[derive(Debug)]
 pub struct Remote {
@@ -140,7 +139,7 @@ impl Remote {
 ```
 `name_of` resolves a concrete `A: RemoteSpawn` to its registered global type name string.
 
-Given a concrete `A: Actor`, `name_of` returns the string name that was registered via `remote!`. This is used by caller-side APIs that *start from a Rust type* and need to put a string type name on the wire for a remote spawn request.
+Given a concrete `A: Actor`, `name_of` returns the string name that was registered by `#[spawnable]` or `register_spawnable!(...)`. This is used by caller-side APIs that *start from a Rust type* and need to put a string type name on the wire for a remote spawn request.
 
 For example, `spawn_with_name_inner`  constructs an `ActorSpec` by first resolving the type `A` to its global name:
 ```rust
@@ -213,7 +212,7 @@ to look up the corresponding `SpawnableActor` by `actor_type` and invoke its `gs
 ## Putting it together
 
 Remote spawning in hyperactor involves two complementary pieces:
-1. **Type-level registration** Each `A: RemoteSpawn` contributes a `SpawnableActor` record when the user writes `remote!(A)`. These records are collected at runtime by `Remote::collect()`.
+1. **Type-level registration** Each `A: RemoteSpawn` contributes a `SpawnableActor` record when the user writes `#[spawnable]` on a concrete actor declaration or `register_spawnable!(A)` for a concrete instantiation. These records are collected at runtime by `Remote::collect()`.
 2. **Data-level spawn requests** Higher-level code starts from a concrete actor type (e.g. `A: RemoteSpawn`), uses `Remote::name_of::<A>()` to obtain it's global type name, serializes `A::Params`, and sends a request containing those two pieces of data.
 
 On the receiving side, a management component reconstructs the actor by calling:
