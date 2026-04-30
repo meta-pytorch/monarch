@@ -366,9 +366,9 @@ mod tests {
 
     #[test]
     fn test_castable() {
-        let original_port0 = PortRef::attest(test_port_id("world_0", "actor", 123));
+        let original_port0 = PortRef::attest(test_port_id("world_0", "actor", 123).into());
         let original_port1 = PortRef::attest_reducible(
-            test_port_id("world_1", "actor1", 456),
+            test_port_id("world_1", "actor1", 456).into(),
             Some(ReducerSpec {
                 typehash: 123,
                 builder_params: None,
@@ -409,22 +409,22 @@ mod tests {
 
         // Modify the port in the erased
         let new_port_id0 = test_port_id("world_0", "comm", 680);
-        assert_ne!(&new_port_id0, original_port0.port_id());
+        assert_ne!(&new_port_id0, &original_port0.port_id());
         let new_port_id1 = test_port_id("world_1", "comm", 257);
-        assert_ne!(&new_port_id1, original_port1.port_id());
+        assert_ne!(&new_port_id1, &original_port1.port_id());
 
         let mut new_ports = vec![&new_port_id0, &new_port_id1].into_iter();
         erased
             .visit_mut::<UnboundPort>(|b| {
                 let port = new_ports.next().unwrap();
-                b.update(port.clone());
+                b.update(port.clone().into());
                 Ok(())
             })
             .unwrap();
 
-        let new_port0 = PortRef::<String>::attest(new_port_id0);
+        let new_port0 = PortRef::<String>::attest(new_port_id0.into());
         let new_port1 = PortRef::<MyReply>::attest_reducible(
-            new_port_id1,
+            new_port_id1.into(),
             Some(ReducerSpec {
                 typehash: 123,
                 builder_params: None,
