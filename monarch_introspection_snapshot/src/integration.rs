@@ -129,7 +129,7 @@ pub async fn register_snapshot_schemas(table_store: &TableStore) -> anyhow::Resu
 pub fn start_periodic_snapshots(
     cx: &impl hyperactor::context::Actor,
     table_store: TableStore,
-    admin_ref: hyperactor::reference::ActorRef<MeshAdminAgent>,
+    admin_ref: hyperactor::ActorRef<MeshAdminAgent>,
     interval: Duration,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(

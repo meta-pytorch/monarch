@@ -120,10 +120,10 @@ mod tests {
     //! regenerated on the new baseline — the mesh-name-rendering
     //! behavior this module tests is independent of the id format.
 
+    use hyperactor as reference;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::reference;
 
     use super::*;
 
