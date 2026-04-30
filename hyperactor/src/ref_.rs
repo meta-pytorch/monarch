@@ -44,6 +44,10 @@ use crate::id::Label;
 use crate::id::PortId;
 use crate::id::ProcId;
 use crate::id::Uid;
+use crate::parse;
+use crate::parse::ref_::ActorRefParts;
+use crate::parse::ref_::PortRefParts;
+use crate::parse::ref_::ProcRefParts;
 use crate::port::Port;
 
 /// A network location, wrapping a [`ChannelAddr`].
@@ -288,12 +292,8 @@ impl FromStr for ProcRef {
     type Err = RefParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let at = s.find('@').ok_or(RefParseError::MissingSeparator)?;
-        let id: ProcId = s[..at].parse()?;
-        let location: Location = s[at + 1..]
-            .parse()
-            .map_err(RefParseError::InvalidLocation)?;
-        Ok(Self { id, location })
+        let parts = parse::ref_::parse_proc_ref(s).map_err(|_| legacy_parse_proc_ref(s))?;
+        Self::try_from((s, parts))
     }
 }
 
@@ -459,12 +459,8 @@ impl FromStr for ActorRef {
     type Err = RefParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let at = s.find('@').ok_or(RefParseError::MissingSeparator)?;
-        let id: ActorId = s[..at].parse()?;
-        let location: Location = s[at + 1..]
-            .parse()
-            .map_err(RefParseError::InvalidLocation)?;
-        Ok(Self { id, location })
+        let parts = parse::ref_::parse_actor_ref(s).map_err(|_| legacy_parse_actor_ref(s))?;
+        Self::try_from((s, parts))
     }
 }
 
@@ -577,12 +573,8 @@ impl FromStr for PortRef {
     type Err = RefParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let at = s.find('@').ok_or(RefParseError::MissingSeparator)?;
-        let id: PortId = s[..at].parse()?;
-        let location: Location = s[at + 1..]
-            .parse()
-            .map_err(RefParseError::InvalidLocation)?;
-        Ok(Self { id, location })
+        let parts = parse::ref_::parse_port_ref(s).map_err(|_| legacy_parse_port_ref(s))?;
+        Self::try_from((s, parts))
     }
 }
 
@@ -681,18 +673,140 @@ impl FromStr for Reference {
     type Err = RefParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Try most specific first.
-        if let Ok(port_ref) = s.parse::<PortRef>() {
-            return Ok(Self::Port(port_ref));
+        match parse::ref_::parse_reference(s).map_err(|_| legacy_parse_reference(s))? {
+            parse::ref_::ReferenceParts::Proc(_) => Ok(Self::Proc(s.parse()?)),
+            parse::ref_::ReferenceParts::Actor(_) => Ok(Self::Actor(s.parse()?)),
+            parse::ref_::ReferenceParts::Port(_) => Ok(Self::Port(s.parse()?)),
         }
-        if let Ok(actor_ref) = s.parse::<ActorRef>() {
-            return Ok(Self::Actor(actor_ref));
-        }
-        if let Ok(proc_ref) = s.parse::<ProcRef>() {
-            return Ok(Self::Proc(proc_ref));
-        }
-        Err(RefParseError::MissingSeparator)
     }
+}
+
+fn id_text_from_ref_input<'a>(input: &'a str, location: &str) -> &'a str {
+    &input[..input.len() - location.len() - 1]
+}
+
+impl<'a> TryFrom<(&'a str, ProcRefParts<'a>)> for ProcRef {
+    type Error = RefParseError;
+
+    fn try_from((input, parts): (&'a str, ProcRefParts<'a>)) -> Result<Self, Self::Error> {
+        let id_text = id_text_from_ref_input(input, parts.location);
+        let id: ProcId = id_text.parse()?;
+        let location: Location = parts
+            .location
+            .parse()
+            .map_err(RefParseError::InvalidLocation)?;
+        Ok(Self { id, location })
+    }
+}
+
+impl<'a> TryFrom<(&'a str, ActorRefParts<'a>)> for ActorRef {
+    type Error = RefParseError;
+
+    fn try_from((input, parts): (&'a str, ActorRefParts<'a>)) -> Result<Self, Self::Error> {
+        let id_text = id_text_from_ref_input(input, parts.location);
+        let id: ActorId = id_text.parse()?;
+        let location: Location = parts
+            .location
+            .parse()
+            .map_err(RefParseError::InvalidLocation)?;
+        Ok(Self { id, location })
+    }
+}
+
+impl<'a> TryFrom<(&'a str, PortRefParts<'a>)> for PortRef {
+    type Error = RefParseError;
+
+    fn try_from((input, parts): (&'a str, PortRefParts<'a>)) -> Result<Self, Self::Error> {
+        let id_text = id_text_from_ref_input(input, parts.location);
+        let id: PortId = id_text.parse()?;
+        let location: Location = parts
+            .location
+            .parse()
+            .map_err(RefParseError::InvalidLocation)?;
+        Ok(Self { id, location })
+    }
+}
+
+fn split_ref_input(s: &str) -> Result<(&str, &str), RefParseError> {
+    let Some((id_text, location_text)) = s.split_once('@') else {
+        return Err(RefParseError::MissingSeparator);
+    };
+    Ok((id_text, location_text))
+}
+
+fn legacy_parse_proc_ref(s: &str) -> RefParseError {
+    let Ok((id_text, location_text)) = split_ref_input(s) else {
+        return RefParseError::MissingSeparator;
+    };
+    if let Err(err) = id_text.parse::<ProcId>() {
+        return RefParseError::InvalidId(err);
+    }
+    let location = if location_text.is_empty() {
+        "@"
+    } else {
+        location_text
+    };
+    let err = location.parse::<Location>().unwrap_err();
+    RefParseError::InvalidLocation(err)
+}
+
+fn legacy_parse_actor_ref(s: &str) -> RefParseError {
+    let Ok((id_text, location_text)) = split_ref_input(s) else {
+        return RefParseError::MissingSeparator;
+    };
+    if let Err(err) = id_text.parse::<ActorId>() {
+        return RefParseError::InvalidId(err);
+    }
+    let location = if location_text.is_empty() {
+        "@"
+    } else {
+        location_text
+    };
+    let err = location.parse::<Location>().unwrap_err();
+    RefParseError::InvalidLocation(err)
+}
+
+fn legacy_parse_port_ref(s: &str) -> RefParseError {
+    let Ok((id_text, location_text)) = split_ref_input(s) else {
+        return RefParseError::MissingSeparator;
+    };
+    if let Err(err) = id_text.parse::<PortId>() {
+        return RefParseError::InvalidId(err);
+    }
+    let location = if location_text.is_empty() {
+        "@"
+    } else {
+        location_text
+    };
+    let err = location.parse::<Location>().unwrap_err();
+    RefParseError::InvalidLocation(err)
+}
+
+fn legacy_parse_reference(s: &str) -> RefParseError {
+    let Ok((id_text, location_text)) = split_ref_input(s) else {
+        return RefParseError::MissingSeparator;
+    };
+    let location = if location_text.is_empty() {
+        "@"
+    } else {
+        location_text
+    };
+    let location_err = || {
+        let err = location.parse::<Location>().unwrap_err();
+        RefParseError::InvalidLocation(err)
+    };
+
+    if id_text.parse::<PortId>().is_ok() {
+        return location_err();
+    }
+    if id_text.parse::<ActorId>().is_ok() {
+        return location_err();
+    }
+    if id_text.parse::<ProcId>().is_ok() {
+        return location_err();
+    }
+
+    RefParseError::InvalidId(id_text.parse::<ProcId>().unwrap_err())
 }
 
 impl From<ProcRef> for Reference {
