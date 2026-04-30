@@ -55,18 +55,6 @@ pub trait AsSubject: fmt::Display {
     fn subject(&self) -> Subject<'_>;
 }
 
-impl AsSubject for crate::reference::ActorId {
-    fn subject(&self) -> Subject<'_> {
-        Subject::actor(self)
-    }
-}
-
-impl AsSubject for crate::reference::ProcId {
-    fn subject(&self) -> Subject<'_> {
-        Subject::proc(self)
-    }
-}
-
 impl AsSubject for ActorAddr {
     fn subject(&self) -> Subject<'_> {
         Subject::actor(self)

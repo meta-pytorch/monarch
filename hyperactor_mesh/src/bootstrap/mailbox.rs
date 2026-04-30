@@ -116,12 +116,12 @@ mod tests {
 
     use std::assert_matches::assert_matches;
 
+    use hyperactor as hyperactor_reference;
     use hyperactor::Mailbox;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
     use hyperactor::channel::{self};
-    use hyperactor::reference as hyperactor_reference;
     use hyperactor::testing::ids::test_actor_id;
     use hyperactor_config::Flattrs;
 
@@ -176,7 +176,7 @@ mod tests {
         // Existing address on the host:
         let envelope = MessageEnvelope::new(
             third_notexist_actor_id.clone(),
-            hyperactor_reference::PortId::new(first_actor_id.clone(), 0),
+            first_actor_id.port_ref(0.into()),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
@@ -189,7 +189,7 @@ mod tests {
         // Nonexistant address on the host:
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
-            hyperactor_reference::PortId::new(third_notexist_actor_id.clone(), 0),
+            third_notexist_actor_id.port_ref(0.into()),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
@@ -202,7 +202,7 @@ mod tests {
         // Outside the host:
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
-            hyperactor_reference::PortId::new(test_actor_id("external_0", "actor"), 0),
+            test_actor_id("external_0", "actor").port_ref(0.into()),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
@@ -215,7 +215,7 @@ mod tests {
                 .actor_id("actor");
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
-            hyperactor_reference::PortId::new(system_actor_id, 0),
+            system_actor_id.port_ref(0.into()),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );

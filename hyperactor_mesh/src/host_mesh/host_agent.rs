@@ -22,6 +22,7 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
+use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Address;
@@ -41,7 +42,6 @@ use hyperactor::host::LocalProcManager;
 use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::host::SingleTerminate;
 use hyperactor::mailbox::MailboxServerHandle;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -1038,7 +1038,7 @@ pub struct ShutdownHost {
     pub max_in_flight: usize,
     /// Ack that the agent finished shutdown work (best-effort).
     #[reply]
-    pub ack: hyperactor::reference::PortRef<()>,
+    pub ack: hyperactor::PortRef<()>,
 }
 wirevalue::register_type!(ShutdownHost);
 
@@ -1055,7 +1055,7 @@ pub struct DrainHost {
     pub max_in_flight: usize,
     pub host_mesh_id: Option<HostMeshId>,
     #[reply]
-    pub ack: hyperactor::reference::PortRef<()>,
+    pub ack: hyperactor::PortRef<()>,
 }
 wirevalue::register_type!(DrainHost);
 
@@ -1435,7 +1435,7 @@ mod tests {
                 ..
             } if id == resource_id
               && proc_id == hyperactor_reference::ProcId::from_resource_name(host_addr.clone(), id.to_string())
-              && mesh_agent == hyperactor_reference::ActorRef::attest(hyperactor_reference::ProcId::from_resource_name(host_addr.clone(), id.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME).into()) && bootstrap_command == Some(BootstrapCommand::test())
+              && mesh_agent == hyperactor_reference::ActorRef::attest(hyperactor_reference::ProcId::from_resource_name(host_addr.clone(), id.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }
@@ -1781,10 +1781,10 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_service_proc_query_child_has_queue_stats() {
+        use hyperactor as hyperactor_reference;
         use hyperactor::actor::ActorStatus;
         use hyperactor::introspect::IntrospectMessage;
         use hyperactor::introspect::IntrospectResult;
-        use hyperactor::reference as hyperactor_reference;
 
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),

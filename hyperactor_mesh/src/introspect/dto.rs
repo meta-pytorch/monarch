@@ -462,18 +462,15 @@ mod tests {
 
     // Test fixtures
 
-    fn test_proc_id() -> hyperactor::reference::ProcId {
-        hyperactor::reference::ProcId::from_resource_name(
-            hyperactor::channel::ChannelAddr::Local(0),
-            "worker",
-        )
+    fn test_proc_id() -> hyperactor::ProcId {
+        hyperactor::ProcId::from_resource_name(hyperactor::channel::ChannelAddr::Local(0), "worker")
     }
 
-    fn test_actor_id() -> hyperactor::reference::ActorId {
+    fn test_actor_id() -> hyperactor::ActorId {
         test_proc_id().actor_id("actor")
     }
 
-    fn test_host_actor_id() -> hyperactor::reference::ActorId {
+    fn test_host_actor_id() -> hyperactor::ActorId {
         test_proc_id().actor_id("host_agent")
     }
 
