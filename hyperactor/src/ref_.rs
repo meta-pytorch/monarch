@@ -796,17 +796,27 @@ fn legacy_parse_reference(s: &str) -> RefParseError {
         RefParseError::InvalidLocation(err)
     };
 
-    if id_text.parse::<PortId>().is_ok() {
+    let port_result = id_text.parse::<PortId>();
+    if port_result.is_ok() {
         return location_err();
     }
-    if id_text.parse::<ActorId>().is_ok() {
+    let actor_result = id_text.parse::<ActorId>();
+    if actor_result.is_ok() {
         return location_err();
     }
-    if id_text.parse::<ProcId>().is_ok() {
+    let proc_result = id_text.parse::<ProcId>();
+    if proc_result.is_ok() {
         return location_err();
     }
 
-    RefParseError::InvalidId(id_text.parse::<ProcId>().unwrap_err())
+    if id_text.contains(':') {
+        return RefParseError::InvalidId(port_result.unwrap_err());
+    }
+    if id_text.contains('.') {
+        return RefParseError::InvalidId(actor_result.unwrap_err());
+    }
+
+    RefParseError::InvalidId(proc_result.unwrap_err())
 }
 
 impl From<ProcRef> for Reference {
@@ -1445,6 +1455,26 @@ mod tests {
         );
         assert!("local.<bad!>@inproc://0".parse::<Reference>().is_err());
         assert!("local@tcp://".parse::<Reference>().is_err());
+    }
+
+    #[test]
+    fn test_reference_fromstr_does_not_downcast_malformed_port_ref() {
+        let err = "local.local:not-a-port@inproc://0"
+            .parse::<Reference>()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RefParseError::InvalidId(IdParseError::InvalidPort(_))
+        ));
+    }
+
+    #[test]
+    fn test_reference_fromstr_does_not_downcast_malformed_actor_ref() {
+        let err = "local.<bad!>@inproc://0".parse::<Reference>().unwrap_err();
+        assert!(matches!(
+            err,
+            RefParseError::InvalidId(IdParseError::InvalidActorProcUid(_))
+        ));
     }
 
     #[test]

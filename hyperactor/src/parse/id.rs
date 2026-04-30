@@ -7,6 +7,11 @@
  */
 
 //! Recursive-descent parsing for Hyperactor ids.
+//!
+//! This module parses only the id grammar. It does not validate labels,
+//! base58 uid text, or decimal ports beyond the structural checks that are
+//! needed to distinguish grammar productions. Semantic validation happens when
+//! the parsed parts are converted into concrete `id` types.
 
 use crate::parse::error::ParseError;
 use crate::parse::lex::Lexer;
@@ -316,6 +321,13 @@ mod tests {
         let err = parse_port_id("controller.local:not-a-port").unwrap_err();
         assert_eq!(err.to_string(), "invalid port \"not-a-port\"");
         assert_eq!(err.span, Span::new(17, 27));
+    }
+
+    #[test]
+    fn test_parse_port_id_reports_missing_port_token() {
+        let err = parse_port_id("controller.local:@inproc://0").unwrap_err();
+        assert_eq!(err.to_string(), "expected decimal port, found \"@\"");
+        assert_eq!(err.span, Span::new(17, 18));
     }
 
     #[test]

@@ -7,6 +7,11 @@
  */
 
 //! Recursive-descent parsing for Hyperactor refs.
+//!
+//! These parsers compose on top of the shared id parser and then treat the
+//! location tail after `@` as opaque input for `Location::from_str`. That
+//! keeps URL punctuation out of the Hyperactor lexer while still giving
+//! token-aware errors at the id/ref boundary.
 
 use crate::parse::error::ParseError;
 use crate::parse::id::ActorIdParts;
@@ -226,5 +231,19 @@ mod tests {
         let err = parse_reference("local@").unwrap_err();
         assert_eq!(err.to_string(), "expected location, found end of input");
         assert_eq!(err.span, Span::new(5, 6));
+    }
+
+    #[test]
+    fn test_parse_reference_does_not_downcast_malformed_port_ref() {
+        let err = parse_reference("local.local:not-a-port@inproc://0").unwrap_err();
+        assert_eq!(err.to_string(), "invalid port \"not-a-port\"");
+        assert_eq!(err.span, Span::new(12, 22));
+    }
+
+    #[test]
+    fn test_parse_reference_does_not_downcast_malformed_actor_ref() {
+        let err = parse_reference("local.@inproc://0").unwrap_err();
+        assert_eq!(err.to_string(), "expected \"label\" or \"<\", found \"@\"");
+        assert_eq!(err.span, Span::new(6, 7));
     }
 }
