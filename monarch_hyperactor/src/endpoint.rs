@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use hyperactor::ActorAddr;
 use hyperactor::Instance;
 use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
@@ -18,7 +19,6 @@ use hyperactor::accum::ReducerFactory;
 use hyperactor::accum::ReducerSpec;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor::ref_::ActorRef;
 use hyperactor_mesh::sel;
 use hyperactor_mesh::value_mesh::ValueOverlay;
 use hyperactor_mesh::value_mesh::rle;
@@ -219,7 +219,7 @@ pub(crate) struct SpanGuard {
 }
 
 impl SpanGuard {
-    fn actor_endpoint(name: &'static str, actor_id: &ActorRef, mesh: &str, method: &str) -> Self {
+    fn actor_endpoint(name: &'static str, actor_id: &ActorAddr, mesh: &str, method: &str) -> Self {
         Self {
             id: hyperactor_telemetry::start_user_span(
                 name,
@@ -244,7 +244,7 @@ impl SpanGuard {
         }
     }
 
-    fn remote(name: &'static str, actor_id: &ActorRef, call_name: &str) -> Self {
+    fn remote(name: &'static str, actor_id: &ActorAddr, call_name: &str) -> Self {
         Self {
             id: hyperactor_telemetry::start_user_span(
                 name,
@@ -634,7 +634,7 @@ pub(crate) trait Endpoint {
     /// for Remote) and route the slice to an actor-specific track. The adverb is the span name,
     /// so no formatting happens at the call site and the sink formats only when
     /// it renders the slice.
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard;
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard;
 
     fn get_current_instance(&self, py: Python<'_>) -> PyResult<Instance<PythonActor>> {
         let context = get_context(py).call0()?;
@@ -952,7 +952,7 @@ impl Endpoint for ActorEndpoint {
         Some(format!("{}.{}()", self.mesh_name, self.method.name()))
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard {
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard {
         let mesh = self.mesh_name.as_str();
         let method = self.method.name();
         SpanGuard::actor_endpoint(adverb.as_str(), actor_id, mesh, method)
@@ -1217,7 +1217,7 @@ impl Endpoint for Remote {
         None // Remote endpoints don't have qualified names
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard {
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard {
         let call_name = Python::attach(|py| {
             self.inner
                 .call_method0(py, "_call_name")
@@ -1468,6 +1468,7 @@ impl Accumulator for PythonResponseMessageAccumulator {
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::ActorAddr;
     use hyperactor::mailbox::headers::OPERATION_ADVERB;
     use hyperactor::mailbox::headers::OPERATION_ENDPOINT;
 
@@ -1504,7 +1505,7 @@ mod tests {
         fn get_qualified_name(&self) -> Option<String> {
             self.qualified_name.clone()
         }
-        fn enter_endpoint_span(&self, _adverb: EndpointAdverb, _actor_id: &ActorRef) -> SpanGuard {
+        fn enter_endpoint_span(&self, _adverb: EndpointAdverb, _actor_id: &ActorAddr) -> SpanGuard {
             unreachable!()
         }
     }
