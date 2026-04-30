@@ -53,4 +53,19 @@ declare_attrs! {
         Some("rdma_tcp_fallback_parallelism".to_string()),
     ))
     pub attr RDMA_TCP_FALLBACK_PARALLELISM: usize = 1;
+
+    /// Maximum number of entries in the LRU cache of locally registered
+    /// memory regions used by [`IbvManagerActor`]'s RDMA data path.
+    ///
+    /// Reuses `ibv_reg_mr` registrations across RDMA operations over the
+    /// same `(addr, size)` window, avoiding a register/deregister pair
+    /// per op. When the cache fills, the least-recently-used entry is
+    /// evicted and its underlying MR is deregistered, unless it is a
+    /// segment-backed mlx5dv MR (which the segment scanner owns). Must
+    /// be greater than 0.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_MR_LRU_CACHE_SIZE".to_string()),
+        Some("rdma_mr_lru_cache_size".to_string()),
+    ))
+    pub attr RDMA_MR_LRU_CACHE_SIZE: usize = 1;
 }

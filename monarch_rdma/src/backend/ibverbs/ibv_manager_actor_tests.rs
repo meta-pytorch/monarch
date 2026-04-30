@@ -28,6 +28,7 @@ mod tests {
     use super::super::PollTarget;
     use super::super::manager_actor::IbvBackend;
     use super::super::manager_actor::IbvManagerActor;
+    use super::super::manager_actor::IbvManagerLocalMessageClient;
     use super::super::manager_actor::IbvManagerMessageClient;
     use super::super::primitives::IbvQpType;
     use super::super::primitives::get_all_devices;
@@ -1163,5 +1164,87 @@ mod tests {
         assert!(crate::is_cuda_available(), "CUDA must be available");
         ensure_cuda_segment_scanner();
         submit_fanout_reads_inner("cuda:0").await
+    }
+
+    // Verify that the per-actor LRU cache of locally registered MRs evicts
+    // its least-recently-used entry when capacity is exceeded. We pin the
+    // cache size to 2, register three distinct (addr, size) keys, then
+    // observe that the evicted key triggers a fresh registration (new
+    // `mrv.id`) while a still-cached key is served from the cache (same
+    // `mrv.id`).
+    #[timed_test::async_timed_test(timeout_secs = 30)]
+    async fn test_mr_lru_cache_evicts_on_overflow() -> Result<(), anyhow::Error> {
+        // Override before IbvTestEnv::setup — IbvManagerActor::new reads
+        // RDMA_MR_LRU_CACHE_SIZE once at construction time.
+        let config_lock = hyperactor_config::global::lock();
+        let _lru_guard = config_lock.override_key(crate::config::RDMA_MR_LRU_CACHE_SIZE, 2);
+
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        const BSIZE: usize = 4096;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+
+        let ibv_handle = env
+            .ibv_actor_1
+            .downcast_handle(&env.client_1)
+            .ok_or_else(|| anyhow::anyhow!("IbvManagerActor not local to client_1"))?;
+
+        // Hold these buffers for the whole test so the underlying MRs
+        // stay valid. Distinct allocations give us distinct (addr, size)
+        // cache keys.
+        let buf_a = vec![0u8; BSIZE].into_boxed_slice();
+        let buf_b = vec![0u8; BSIZE].into_boxed_slice();
+        let buf_c = vec![0u8; BSIZE].into_boxed_slice();
+        let addr_a = buf_a.as_ptr() as usize;
+        let addr_b = buf_b.as_ptr() as usize;
+        let addr_c = buf_c.as_ptr() as usize;
+
+        let mr_a1 = ibv_handle
+            .register_mr(&env.client_1, addr_a, BSIZE)
+            .await?
+            .map_err(anyhow::Error::msg)?;
+        let mr_b1 = ibv_handle
+            .register_mr(&env.client_1, addr_b, BSIZE)
+            .await?
+            .map_err(anyhow::Error::msg)?;
+        // Inserting c evicts a. LRU now holds {c, b}.
+        let mr_c1 = ibv_handle
+            .register_mr(&env.client_1, addr_c, BSIZE)
+            .await?
+            .map_err(anyhow::Error::msg)?;
+
+        // b is still cached: same mrv id.
+        let mr_b2 = ibv_handle
+            .register_mr(&env.client_1, addr_b, BSIZE)
+            .await?
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            mr_b1.mrv.id, mr_b2.mrv.id,
+            "cached (addr, size) should return the same mrv id"
+        );
+
+        // a was evicted: fresh registration yields a new id.
+        let mr_a2 = ibv_handle
+            .register_mr(&env.client_1, addr_a, BSIZE)
+            .await?
+            .map_err(anyhow::Error::msg)?;
+        assert_ne!(
+            mr_a1.mrv.id, mr_a2.mrv.id,
+            "evicted (addr, size) should produce a fresh mrv id"
+        );
+        assert!(
+            mr_a2.mrv.id > mr_c1.mrv.id,
+            "fresh registration after eviction should receive an id past all prior registrations \
+             (got mr_a2.mrv.id = {}, mr_c1.mrv.id = {})",
+            mr_a2.mrv.id,
+            mr_c1.mrv.id,
+        );
+
+        env.cleanup().await?;
+        Ok(())
     }
 }

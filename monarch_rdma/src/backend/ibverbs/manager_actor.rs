@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -35,6 +36,7 @@ use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::RefClient;
 use hyperactor::reference;
+use lru::LruCache;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::OwnedSemaphorePermit;
@@ -194,22 +196,17 @@ impl QpFlowControl {
     }
 }
 
-/// Local-only messages for MR registration/deregistration and fetching
-/// the per-QP flow-control semaphores.
+/// Local-only messages for MR registration and fetching the per-QP
+/// flow-control semaphores.
 #[derive(Handler, HandleClient, Debug)]
 pub enum IbvManagerLocalMessage {
-    /// Register a memory region, returning the MR view and device name.
+    /// Register a memory region; reply is a refcounted handle (see
+    /// [`OwnedMr`]).
     RegisterMr {
         addr: usize,
         size: usize,
         #[reply]
-        reply: OncePortHandle<Result<(IbvMemoryRegionView, String), String>>,
-    },
-    /// Deregister a memory region by its MR view id.
-    DeregisterMr {
-        id: usize,
-        #[reply]
-        reply: OncePortHandle<Result<(), String>>,
+        reply: OncePortHandle<Result<Arc<OwnedMr>, String>>,
     },
     /// Return the [`QpFlowControl`] for the given QP, or `None` if it
     /// hasn't been created yet.
@@ -220,6 +217,25 @@ pub enum IbvManagerLocalMessage {
         #[reply]
         reply: OncePortHandle<Option<Arc<QpFlowControl>>>,
     },
+}
+
+/// Refcounted owner of an `ibv_mr*`. `Drop` calls
+/// [`IbvManagerActor::deregister_mr`], so an in-flight op that holds a
+/// clone keeps the MR alive past LRU eviction. `mr_ptr == 0` marks a
+/// segment-backed mlx5dv MR; `deregister_mr` is a no-op for it.
+#[derive(Debug)]
+pub struct OwnedMr {
+    pub mrv: IbvMemoryRegionView,
+    pub device_name: String,
+    mr_ptr: usize,
+}
+
+impl Drop for OwnedMr {
+    fn drop(&mut self) {
+        if let Err(e) = IbvManagerActor::deregister_mr(self.mr_ptr) {
+            tracing::error!("OwnedMr::drop failed to deregister MR: {}", e);
+        }
+    }
 }
 
 /// Manages all ibverbs-specific RDMA resources and operations.
@@ -253,15 +269,22 @@ pub struct IbvManagerActor {
 
     mlx5dv_enabled: bool,
 
-    // Map of unique IbvMemoryRegionView to ibv_mr*.  In case of cuda w/ pytorch its -1
-    // since its managed independently.  Only used for registration/deregistration purposes
-    mr_map: HashMap<usize, usize>,
-
     // Id for next mrv created
     mrv_id: usize,
 
-    // Map from buffer_id to registration details.
-    buffer_registrations: HashMap<usize, IbvBuffer>,
+    // Remote-facing buffer registrations keyed by `remote_buf_id`. The
+    // stored `mr_ptr` (as `usize`; `0` for segment-backed mlx5dv MRs) is
+    // the raw `ibv_mr*` owned by this registration; it is deregistered
+    // on `release_buffer` so remote holders of the `IbvBuffer` can drop
+    // it deterministically.
+    buffer_registrations: HashMap<usize, (IbvBuffer, usize)>,
+
+    // LRU of locally registered MRs for the RDMA op data path
+    // (`IbvManagerLocalMessage::RegisterMr`), keyed by `(virtual_addr,
+    // size)`. Remote-facing buffers go in `buffer_registrations`
+    // instead — they must live until `release_buffer` and can't be
+    // evicted.
+    mr_lru: LruCache<(usize, usize), Arc<OwnedMr>>,
 }
 
 #[async_trait]
@@ -309,20 +332,13 @@ impl Drop for IbvManagerActor {
             drop(domain);
         }
 
-        // 3. Clean up memory regions
-        let _mr_count = self.mr_map.len();
-        for (id, mr_ptr) in self.mr_map.drain() {
-            if mr_ptr != 0 {
-                unsafe {
-                    let result = rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr);
-                    if result != 0 {
-                        tracing::error!(
-                            "Failed to deregister MR with id {}: error code {}",
-                            id,
-                            result
-                        );
-                    }
-                }
+        // 3. Clean up memory regions. Entries with no other holders
+        // deregister now via `OwnedMr::drop`; in-flight ops finish
+        // theirs when they complete.
+        self.mr_lru.clear();
+        for (_remote_buf_id, (_buf, mr_ptr)) in self.buffer_registrations.drain() {
+            if let Err(e) = Self::deregister_mr(mr_ptr) {
+                tracing::error!("{}", e);
             }
         }
 
@@ -390,6 +406,11 @@ impl IbvManagerActor {
             }
         }
 
+        let mr_lru_capacity = NonZeroUsize::new(hyperactor_config::global::get(
+            crate::config::RDMA_MR_LRU_CACHE_SIZE,
+        ))
+        .ok_or_else(|| anyhow::anyhow!("RDMA_MR_LRU_CACHE_SIZE must be non-zero"))?;
+
         let actor = Self {
             owner: OnceLock::new(),
             device_qps: HashMap::new(),
@@ -398,9 +419,9 @@ impl IbvManagerActor {
             device_domains: HashMap::new(),
             config,
             mlx5dv_enabled,
-            mr_map: HashMap::new(),
             mrv_id: 0,
             buffer_registrations: HashMap::new(),
+            mr_lru: LruCache::new(mr_lru_capacity),
         };
 
         Ok(actor)
@@ -520,11 +541,22 @@ impl IbvManagerActor {
         None
     }
 
-    fn register_mr_impl(
+    /// Register the local memory range `[addr, addr + size)` as an
+    /// ibverbs memory region, selecting the appropriate RDMA device and
+    /// either resolving the range via the mlx5dv segment scanner
+    /// (CUDA + mlx5dv) or calling `ibv_reg_dmabuf_mr` / `ibv_reg_mr`.
+    ///
+    /// Returns `(view, device_name, mr_ptr)`. `mr_ptr` is the raw
+    /// `ibv_mr*` (as `usize`) owned by the caller, or `0` when the view
+    /// is backed by an mlx5dv segment whose underlying MR is owned by
+    /// the segment scanner. Callers are responsible for eventually
+    /// passing `mr_ptr` to [`Self::deregister_mr`]; the `0` case is a
+    /// no-op so the same code path is safe for both.
+    fn register_mr(
         &mut self,
         addr: usize,
         size: usize,
-    ) -> Result<(IbvMemoryRegionView, String), anyhow::Error> {
+    ) -> Result<(IbvMemoryRegionView, String, usize), anyhow::Error> {
         unsafe {
             let mut mem_type: i32 = 0;
             let ptr = addr as rdmaxcel_sys::CUdeviceptr;
@@ -579,6 +611,9 @@ impl IbvManagerActor {
                     | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC
             };
 
+            // `mr` stays null for segment-backed mlx5dv MRs whose lifetime
+            // belongs to the segment scanner; eviction and Drop both use
+            // this nullness as the mlx5dv marker.
             let mut mr: *mut rdmaxcel_sys::ibv_mr = std::ptr::null_mut();
             let mrv;
 
@@ -665,18 +700,26 @@ impl IbvManagerActor {
                 };
                 self.mrv_id += 1;
             }
-            self.mr_map.insert(mrv.id, mr as usize);
-            Ok((mrv, device_name))
+
+            Ok((mrv, device_name, mr as usize))
         }
     }
 
-    fn deregister_mr_impl(&mut self, id: usize) -> Result<(), anyhow::Error> {
-        if let Some(mr_ptr) = self.mr_map.remove(&id) {
-            if mr_ptr != 0 {
-                unsafe {
-                    rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr);
-                }
-            }
+    /// Deregister an `ibv_mr*` previously returned from
+    /// [`Self::register_mr`]. A null pointer (`mr_ptr == 0`) marks a
+    /// segment-backed mlx5dv MR whose lifetime is owned by the segment
+    /// scanner, so this is a no-op in that case.
+    fn deregister_mr(mr_ptr: usize) -> Result<(), anyhow::Error> {
+        if mr_ptr == 0 {
+            return Ok(());
+        }
+        let result = unsafe { rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr) };
+        if result != 0 {
+            anyhow::bail!(
+                "failed to deregister MR at 0x{:x}: error code {}",
+                mr_ptr,
+                result
+            );
         }
         Ok(())
     }
@@ -861,7 +904,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         remote_buf_id: usize,
     ) -> Result<Option<IbvBuffer>, anyhow::Error> {
         // If already registered, return it
-        if let Some(buf) = self.buffer_registrations.get(&remote_buf_id) {
+        if let Some((buf, _)) = self.buffer_registrations.get(&remote_buf_id) {
             return Ok(Some(buf.clone()));
         }
 
@@ -874,7 +917,10 @@ impl IbvManagerMessageHandler for IbvManagerActor {
             None => return Ok(None),
         };
 
-        let (mrv, device_name) = self.register_mr_impl(mem.addr(), mem.size())?;
+        // Use the raw registration path (not the LRU cache): remote
+        // holders expect this MR to live until `release_buffer`, so it
+        // must not be subject to LRU eviction.
+        let (mrv, device_name, mr_ptr) = self.register_mr(mem.addr(), mem.size())?;
 
         let buf = IbvBuffer {
             mr_id: mrv.id,
@@ -885,7 +931,8 @@ impl IbvManagerMessageHandler for IbvManagerActor {
             device_name,
         };
 
-        self.buffer_registrations.insert(remote_buf_id, buf.clone());
+        self.buffer_registrations
+            .insert(remote_buf_id, (buf.clone(), mr_ptr));
 
         Ok(Some(buf))
     }
@@ -895,9 +942,8 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         _cx: &Context<Self>,
         remote_buf_id: usize,
     ) -> Result<(), anyhow::Error> {
-        if let Some(buf) = self.buffer_registrations.remove(&remote_buf_id) {
-            self.deregister_mr_impl(buf.mr_id)
-                .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
+        if let Some((_buf, mr_ptr)) = self.buffer_registrations.remove(&remote_buf_id) {
+            Self::deregister_mr(mr_ptr)?;
         }
         Ok(())
     }
@@ -1078,16 +1124,21 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
         _cx: &Context<Self>,
         addr: usize,
         size: usize,
-    ) -> Result<Result<(IbvMemoryRegionView, String), String>, anyhow::Error> {
-        Ok(self.register_mr_impl(addr, size).map_err(|e| e.to_string()))
-    }
-
-    async fn deregister_mr(
-        &mut self,
-        _cx: &Context<Self>,
-        id: usize,
-    ) -> Result<Result<(), String>, anyhow::Error> {
-        Ok(self.deregister_mr_impl(id).map_err(|e| e.to_string()))
+    ) -> Result<Result<Arc<OwnedMr>, String>, anyhow::Error> {
+        if let Some(owned) = self.mr_lru.get(&(addr, size)) {
+            return Ok(Ok(Arc::clone(owned)));
+        }
+        let (mrv, device_name, mr_ptr) = match IbvManagerActor::register_mr(self, addr, size) {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e.to_string())),
+        };
+        let owned = Arc::new(OwnedMr {
+            mrv,
+            device_name,
+            mr_ptr,
+        });
+        self.mr_lru.push((addr, size), Arc::clone(&owned));
+        Ok(Ok(owned))
     }
 
     async fn get_qp_flow_control(
@@ -1108,8 +1159,8 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
 
 /// Wrapper around [`ActorHandle<IbvManagerActor>`] that moves the RDMA
 /// data-plane (post send/recv, poll CQ) off the actor loop while keeping
-/// state-mutating operations (MR registration/deregistration, QP management)
-/// serialized through actor messages.
+/// state-mutating operations (MR registration, QP management) serialized
+/// through actor messages.
 #[derive(Debug, Clone)]
 pub struct IbvBackend(pub ActorHandle<IbvManagerActor>);
 
@@ -1200,90 +1251,72 @@ impl IbvBackend {
         ))
     }
 
-    /// Core submit logic: registers local MR via actor message, resolves remote
-    /// IbvBuffer lazily, executes the op locally, and deregisters local MR.
+    /// Core submit logic: registers local MR via actor message, resolves
+    /// remote IbvBuffer lazily, then executes the op locally. The MR
+    /// registration is cached by the actor for reuse across subsequent
+    /// ops, so no explicit deregistration step is needed here.
     async fn execute_op(
         &self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
         op: IbvOp,
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
-        // Register the local memory via actor message
-        let (local_mrv, local_device_name) = self
+        // Held across post + completion so eviction can't deregister
+        // an MR with a WR still in flight on the hardware.
+        let local_mr = self
             .register_mr(cx, op.local_memory.addr(), op.local_memory.size())
             .await?
             .map_err(|e| anyhow::anyhow!(e))?;
 
         let local_buffer = IbvBuffer {
-            mr_id: local_mrv.id,
-            lkey: local_mrv.lkey,
-            rkey: local_mrv.rkey,
-            addr: local_mrv.rdma_addr,
-            size: local_mrv.size,
-            device_name: local_device_name,
+            mr_id: local_mr.mrv.id,
+            lkey: local_mr.mrv.lkey,
+            rkey: local_mr.mrv.rkey,
+            addr: local_mr.mrv.rdma_addr,
+            size: local_mr.mrv.size,
+            device_name: local_mr.device_name.clone(),
         };
 
-        let op_result = async {
-            let mut qp = self
-                .request_queue_pair(
-                    cx,
-                    op.remote_manager.clone(),
-                    local_buffer.device_name.clone(),
-                    op.remote_buffer.device_name.clone(),
-                )
-                .await?
-                .map_err(|e| anyhow::anyhow!(e))?;
-
-            // Hold one send-queue permit per WR `qp.put`/`qp.get` will post,
-            // until `wait_for_completion` drains all of their CQEs. A single
-            // op chunked into N WRs consumes N slots in the QP send queue
-            // (and N `max_rd_atomic` slots if it's an RDMA-READ), so we
-            // reserve N permits up front to avoid `ENOMEM` from
-            // `ibv_post_send` under concurrent submitters.
-            let flow_control = self
-                .get_qp_flow_control(
-                    cx,
-                    local_buffer.device_name.clone(),
-                    op.remote_manager.actor_id().clone(),
-                    op.remote_buffer.device_name.clone(),
-                )
-                .await?
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "QP flow control missing for {} -> {}",
-                        local_buffer.device_name,
-                        op.remote_buffer.device_name,
-                    )
-                })?;
-            let n_wrs = wr_count_for_size(local_buffer.size);
-            let _flow_guard = flow_control.acquire_many(op.op_type, n_wrs).await?;
-
-            let wr_id = match op.op_type {
-                RdmaOpType::WriteFromLocal => qp.put(local_buffer.clone(), op.remote_buffer)?,
-                RdmaOpType::ReadIntoLocal => qp.get(local_buffer.clone(), op.remote_buffer)?,
-            };
-
-            Self::wait_for_completion(&local_buffer, &mut qp, PollTarget::Send, &wr_id, timeout)
-                .await
-        }
-        .await;
-
-        // Always deregister the locally registered MR via actor message
-        let dereg_result = self
-            .deregister_mr(cx, local_buffer.mr_id)
+        let mut qp = self
+            .request_queue_pair(
+                cx,
+                op.remote_manager.clone(),
+                local_buffer.device_name.clone(),
+                op.remote_buffer.device_name.clone(),
+            )
             .await?
-            .map_err(|e| anyhow::anyhow!(e));
+            .map_err(|e| anyhow::anyhow!(e))?;
 
-        match (op_result, dereg_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(e), Ok(())) => Err(e),
-            (Ok(()), Err(e)) => Err(e),
-            (Err(op_err), Err(dereg_err)) => Err(anyhow::anyhow!(
-                "deregister MR error: {}; op error: {}",
-                dereg_err,
-                op_err
-            )),
-        }
+        // Hold one send-queue permit per WR `qp.put`/`qp.get` will post,
+        // until `wait_for_completion` drains all of their CQEs. A single
+        // op chunked into N WRs consumes N slots in the QP send queue
+        // (and N `max_rd_atomic` slots if it's an RDMA-READ), so we
+        // reserve N permits up front to avoid `ENOMEM` from
+        // `ibv_post_send` under concurrent submitters.
+        let flow_control = self
+            .get_qp_flow_control(
+                cx,
+                local_buffer.device_name.clone(),
+                op.remote_manager.actor_id().clone(),
+                op.remote_buffer.device_name.clone(),
+            )
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "QP flow control missing for {} -> {}",
+                    local_buffer.device_name,
+                    op.remote_buffer.device_name,
+                )
+            })?;
+        let n_wrs = wr_count_for_size(local_buffer.size);
+        let _flow_guard = flow_control.acquire_many(op.op_type, n_wrs).await?;
+
+        let wr_id = match op.op_type {
+            RdmaOpType::WriteFromLocal => qp.put(local_buffer.clone(), op.remote_buffer)?,
+            RdmaOpType::ReadIntoLocal => qp.get(local_buffer.clone(), op.remote_buffer)?,
+        };
+
+        Self::wait_for_completion(&local_buffer, &mut qp, PollTarget::Send, &wr_id, timeout).await
     }
 }
 
