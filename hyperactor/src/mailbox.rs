@@ -1607,7 +1607,7 @@ impl Mailbox {
         let port_ref = self.actor_id().port_ref(Port::from(handle.port_index));
         match self.inner.ports.entry(handle.port_index) {
             Entry::Vacant(entry) => {
-                entry.insert(Box::new(UnboundedSender::new(
+                entry.insert(Arc::new(UnboundedSender::new(
                     handle.sender.clone(),
                     port_ref.clone(),
                 )));
@@ -1629,7 +1629,7 @@ impl Mailbox {
         let port_ref = self.actor_id().port_ref(Port::from(port_index));
         match self.inner.ports.entry(port_index) {
             Entry::Vacant(entry) => {
-                entry.insert(Box::new(UnboundedSender::new(
+                entry.insert(Arc::new(UnboundedSender::new(
                     handle.sender.clone(),
                     port_ref,
                 )));
@@ -1642,7 +1642,7 @@ impl Mailbox {
         let port_id = handle.port_id().clone();
         match self.inner.ports.entry(handle.port_index) {
             Entry::Vacant(entry) => {
-                entry.insert(Box::new(OnceSender::new(handle.sender, port_id.clone())));
+                entry.insert(Arc::new(OnceSender::new(handle.sender, port_id.clone())));
             }
             Entry::Occupied(_entry) => {}
         }
@@ -1657,7 +1657,7 @@ impl Mailbox {
 
         match self.inner.ports.entry(port_id.index()) {
             Entry::Vacant(entry) => {
-                entry.insert(Box::new(sender));
+                entry.insert(Arc::new(sender));
             }
             Entry::Occupied(_entry) => {}
         }
@@ -1722,20 +1722,30 @@ impl MailboxSender for Mailbox {
             return self.inner.forwarder.post(envelope, return_handle);
         }
 
-        match self.inner.ports.entry(envelope.dest().index()) {
-            Entry::Vacant(_) => {
+        let port_index = envelope.dest().index();
+
+        // Clone the Arc<dyn SerializedSender> out of the DashMap while holding
+        // only a short-lived read lock, then release the lock before calling
+        // send_serialized. This prevents a deadlock that occurs when
+        // send_serialized itself tries to post a message to another port on the
+        // same mailbox: if both ports hash to the same DashMap shard, acquiring
+        // the shard's write lock a second time on the same thread deadlocks
+        // (RwLock is not reentrant). DashMap uses a random per-process hasher,
+        // so whether two port indices collide in the same shard varies across
+        // test runs, explaining the longstanding flaky timeout failures.
+        let port_sender = match self.inner.ports.get(&port_index) {
+            None => {
                 let err = DeliveryError::Unroutable(format!(
                     "port not bound in mailbox; port id: {}; message type: {}",
-                    envelope.dest().index(),
+                    port_index,
                     envelope.data().typename().map_or_else(
                         || format!("unregistered type hash {}", envelope.data().typehash()),
                         |s| s.to_string(),
                     )
                 ));
-
-                envelope.undeliverable(err, return_handle);
+                return envelope.undeliverable(err, return_handle);
             }
-            Entry::Occupied(entry) => {
+            Some(ref_) => {
                 let closed = self.inner.closed.read().unwrap();
                 if let Some(status) = &*closed {
                     match status {
@@ -1765,81 +1775,78 @@ impl MailboxSender for Mailbox {
                         }
                     }
                 }
+                // Clone the Arc so we can release the shard read lock before
+                // calling send_serialized, which may re-enter post_unchecked.
+                Arc::clone(&*ref_)
+            }
+        };
+        // Shard read lock is released here when `ref_` is dropped.
 
-                let (metadata, data) = envelope.open();
-                let MessageMetadata {
-                    mut headers,
-                    sender,
-                    dest,
-                    errors: metadata_errors,
-                    ttl,
-                    return_undeliverable,
-                } = metadata;
+        let (metadata, data) = envelope.open();
+        let MessageMetadata {
+            mut headers,
+            sender,
+            dest,
+            errors: metadata_errors,
+            ttl,
+            return_undeliverable,
+        } = metadata;
 
-                let to_actor_id = hash_to_u64(&dest);
-                let message_id = hyperactor_telemetry::generate_message_id(to_actor_id);
-                headers.set(crate::mailbox::headers::TELEMETRY_MESSAGE_ID, message_id);
-                // Only set sender hash if not already present (cast path
-                // pre-sets it with the originating actor).
-                if !headers.contains_key(crate::mailbox::headers::SENDER_ACTOR_ID_HASH) {
-                    headers.set(
-                        crate::mailbox::headers::SENDER_ACTOR_ID_HASH,
-                        hash_to_u64(&sender),
-                    );
-                }
-                headers.set(crate::mailbox::headers::TELEMETRY_PORT_ID, dest.index());
+        let to_actor_id = hash_to_u64(&dest);
+        let message_id = hyperactor_telemetry::generate_message_id(to_actor_id);
+        headers.set(crate::mailbox::headers::TELEMETRY_MESSAGE_ID, message_id);
+        // Only set sender hash if not already present (cast path
+        // pre-sets it with the originating actor).
+        if !headers.contains_key(crate::mailbox::headers::SENDER_ACTOR_ID_HASH) {
+            headers.set(
+                crate::mailbox::headers::SENDER_ACTOR_ID_HASH,
+                hash_to_u64(&sender),
+            );
+        }
+        headers.set(crate::mailbox::headers::TELEMETRY_PORT_ID, dest.index());
 
-                // We use the entry API here so that we can remove the
-                // entry while holding an (entry) reference. The DashMap
-                // documentation suggests that deadlocks are possible
-                // "when holding any sort of reference into the map",
-                // but surely this applies only to the same thread? This
-                // would also imply we have to be careful holding any
-                // sort of reference across .await points.
-                match entry.get().send_serialized(headers, data) {
-                    Ok(false) => {
-                        hyperactor_telemetry::notify_message_status(
-                            hyperactor_telemetry::MessageStatusEvent {
-                                timestamp: std::time::SystemTime::now(),
-                                id: hyperactor_telemetry::generate_status_event_id(message_id),
-                                message_id,
-                                status: "queued".to_string(),
-                            },
-                        );
-                        entry.remove();
-                    }
-                    Ok(true) => {
-                        hyperactor_telemetry::notify_message_status(
-                            hyperactor_telemetry::MessageStatusEvent {
-                                timestamp: std::time::SystemTime::now(),
-                                id: hyperactor_telemetry::generate_status_event_id(message_id),
-                                message_id,
-                                status: "queued".to_string(),
-                            },
-                        );
-                    }
-                    Err(SerializedSenderError {
-                        data,
-                        error: sender_error,
+        match port_sender.send_serialized(headers, data) {
+            Ok(false) => {
+                hyperactor_telemetry::notify_message_status(
+                    hyperactor_telemetry::MessageStatusEvent {
+                        timestamp: std::time::SystemTime::now(),
+                        id: hyperactor_telemetry::generate_status_event_id(message_id),
+                        message_id,
+                        status: "queued".to_string(),
+                    },
+                );
+                self.inner.ports.remove(&port_index);
+            }
+            Ok(true) => {
+                hyperactor_telemetry::notify_message_status(
+                    hyperactor_telemetry::MessageStatusEvent {
+                        timestamp: std::time::SystemTime::now(),
+                        id: hyperactor_telemetry::generate_status_event_id(message_id),
+                        message_id,
+                        status: "queued".to_string(),
+                    },
+                );
+            }
+            Err(SerializedSenderError {
+                data,
+                error: sender_error,
+                headers,
+            }) => {
+                self.inner.ports.remove(&port_index);
+                let err = DeliveryError::Mailbox(format!("{}", sender_error));
+
+                MessageEnvelope::seal(
+                    MessageMetadata {
                         headers,
-                    }) => {
-                        entry.remove();
-                        let err = DeliveryError::Mailbox(format!("{}", sender_error));
-
-                        MessageEnvelope::seal(
-                            MessageMetadata {
-                                headers,
-                                sender,
-                                dest,
-                                errors: metadata_errors,
-                                ttl,
-                                return_undeliverable,
-                            },
-                            data,
-                        )
-                        .undeliverable(err, return_handle)
-                    }
-                }
+                        sender,
+                        dest,
+                        errors: metadata_errors,
+                        ttl,
+                        return_undeliverable,
+                    },
+                    data,
+                )
+                .undeliverable(err, return_handle)
             }
         }
     }
@@ -2498,7 +2505,7 @@ struct State {
     // insert if it's serializable; otherwise don't.
     /// The set of active ports in the mailbox. All currently
     /// allocated ports are
-    ports: DashMap<u64, Box<dyn SerializedSender>>,
+    ports: DashMap<u64, Arc<dyn SerializedSender>>,
 
     /// The next port ID to allocate.
     next_port: AtomicU64,
