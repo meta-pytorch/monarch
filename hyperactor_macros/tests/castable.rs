@@ -8,11 +8,11 @@
 
 #![allow(dead_code)]
 
+use hyperactor as reference;
 use hyperactor::Bind;
 use hyperactor::Unbind;
 use hyperactor::message::Bind;
 use hyperactor::message::Unbind;
-use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -37,14 +37,14 @@ struct MyNamedStruct {
     field2: reference::PortRef<MyReply>,
     field3: bool,
     #[binding(include)]
-    field4: hyperactor::reference::PortRef<u64>,
+    field4: reference::PortRef<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Bind, Unbind)]
 struct MyUnamedStruct(
     u64,
     MyReply,
-    #[binding(include)] hyperactor::reference::PortRef<MyReply>,
+    #[binding(include)] reference::PortRef<MyReply>,
     bool,
     #[binding(include)] reference::PortRef<u64>,
 );
@@ -67,7 +67,7 @@ enum MyEnum {
         MyReply,
         #[binding(include)] reference::PortRef<MyReply>,
         bool,
-        #[binding(include)] hyperactor::reference::PortRef<u64>,
+        #[binding(include)] reference::PortRef<u64>,
     ),
     Struct {
         field0: u64,
@@ -76,7 +76,7 @@ enum MyEnum {
         field2: reference::PortRef<MyReply>,
         field3: bool,
         #[binding(include)]
-        field4: hyperactor::reference::PortRef<u64>,
+        field4: reference::PortRef<u64>,
     },
 }
 
