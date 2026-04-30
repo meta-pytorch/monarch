@@ -40,15 +40,19 @@ use crate::channel::net::meta;
 use crate::channel::net::tls;
 use crate::config;
 use crate::metrics;
-use crate::sync::mvar::MVar;
 
 /// Server-side link that receives pre-established streams from the
-/// dispatcher via an MVar. Implements [`Link`] so it can be used
-/// with [`Session::new`].
+/// dispatcher via an unbounded mpsc channel. Implements [`Link`] so
+/// it can be used with [`Session::new`]. Dropping the link drops
+/// the receiver, which causes any feeder's later `send` to fail
+/// with `SendError` (the conn is dropped). The channel is unbounded
+/// so the dispatch task can publish its sender to the session map
+/// before draining the first connection without risking a deadlock
+/// against a concurrent feeder for the same session_id.
 pub(super) struct AcceptorLink<S: Stream> {
     pub(super) dest: ChannelAddr,
     pub(super) session_id: SessionId,
-    pub(super) stream: MVar<S>,
+    pub(super) stream: mpsc::UnboundedReceiver<S>,
     pub(super) cancel: CancellationToken,
 }
 
@@ -73,29 +77,33 @@ impl<S: Stream> Link for AcceptorLink<S> {
         self.session_id
     }
 
-    async fn next(&self) -> Result<S, ClientError> {
-        tokio::select! {
-            stream = self.stream.take() => Ok(stream),
-            _ = self.cancel.cancelled() => Err(ClientError::Connect(
-                self.dest.clone(),
+    async fn next(&mut self) -> Result<S, ClientError> {
+        let dest = self.dest.clone();
+        let make_err = move || {
+            ClientError::Connect(
+                dest.clone(),
                 std::io::Error::other("acceptor closed"),
                 "acceptor channel closed".into(),
-            )),
+            )
+        };
+        tokio::select! {
+            result = self.stream.recv() => result.ok_or_else(&make_err),
+            _ = self.cancel.cancelled() => Err(make_err()),
         }
     }
 }
 
 /// Shared state for multi-stream sessions. Each additional stream
-/// (stream_id > 0) gets its own MVar for connection handoff. The
+/// (stream_id > 0) gets its own connection-handoff channel. The
 /// [`AckWatermark`] is shared across all streams so cumulative acks
 /// reflect the global sequence space.
 pub(super) struct StreamState<S: Stream> {
-    /// Per-stream MVars for connection handoff. Keyed by stream_id.
+    /// Per-stream connection-handoff senders. Keyed by stream_id.
     /// Accessed concurrently from multiple accept-loop dispatch tasks
     /// (one per incoming connection for the same session), but only
     /// for a brief `entry().or_insert_with()` — a plain std Mutex is
     /// cheaper than DashMap here.
-    streams: std::sync::Mutex<HashMap<u8, MVar<S>>>,
+    streams: std::sync::Mutex<HashMap<u8, mpsc::UnboundedSender<S>>>,
     /// Shared ack tracker: each stream records its received seqs here.
     ack_watermark: tokio::sync::Mutex<session::AckWatermark>,
 }
@@ -136,147 +144,172 @@ fn resolve_stream<S: Stream>(
 
 /// Dispatch a newly accepted connection to the right session.
 ///
-/// When `streams` is `None`, this is a single-stream (strictly
-/// in-order) session, and the MVar to hand the connection to is
-/// looked up in `sessions` (creating a fresh session reader on first
-/// use).
+/// `streams = None` is a single-stream (strictly in-order) session;
+/// `Some((stream_id, state))` is the `stream_id`-th stream of a
+/// multi-stream session sharing `state`.
 ///
-/// When `streams` is `Some((stream_id, state))`, this is the
-/// `stream_id`-th stream of a multi-stream session sharing `state`
-/// (the caller resolves the per-session state from its own map). The
-/// connection is handed to a per-`stream_id` MVar inside `state`.
+/// Structured concurrency: the first dispatch for a session runs the
+/// recv-loop inline and only returns after its terminal cleanup
+/// (flush any pending ack, emit `Closed` on cancellation).
+/// Reconnects hand the connection off via the per-session
+/// channel and return immediately. [`accept_loop`] joins every
+/// dispatch in its `connections` `JoinSet`, so it finishes only
+/// after every recv-loop has finished.
 pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
     session_id: SessionId,
     streams: Option<(u8, Arc<StreamState<S>>)>,
     conn: S,
-    sessions: &DashMap<SessionId, MVar<S>>,
+    sessions: &DashMap<SessionId, mpsc::UnboundedSender<S>>,
     dest: ChannelAddr,
     tx: mpsc::Sender<M>,
     cancel: CancellationToken,
 ) {
     if let Some((stream_id, state)) = streams {
-        // Multi-stream: route to a per-stream reader task.
+        // Multi-stream: route to the per-stream dispatch handler.
         dispatch_multi_stream::<M, S>(session_id, stream_id, conn, state, dest, tx, cancel).await;
         return;
     }
 
-    // Single-stream: existing logic.
-    let stream = {
+    // Single-stream: insert into the session map and drop the
+    // DashMap shard guard before any await. Vacant inserts the
+    // sender side; occupied returns the existing sender so this
+    // dispatch acts as a feeder. Unbounded so this task can publish
+    // the sender before draining the first conn without deadlocking
+    // a concurrent feeder for the same session_id.
+    let entry_result = {
         let entry = sessions.entry(session_id);
         match entry {
-            dashmap::mapref::entry::Entry::Occupied(e) => e.get().clone(),
+            dashmap::mapref::entry::Entry::Occupied(e) => Err(e.get().clone()),
             dashmap::mapref::entry::Entry::Vacant(e) => {
-                let stream: MVar<S> = MVar::empty();
-                let link = AcceptorLink {
-                    dest: dest.clone(),
-                    session_id,
-                    stream: stream.clone(),
-                    cancel: cancel.clone(),
-                };
-                let deliver_tx = tx;
-                let ct = cancel.clone();
-                tokio::spawn(async move {
-                    let mut session = Session::new(link);
-                    let mut next = Next { seq: 0, ack: 0 };
-
-                    loop {
-                        let connected = match session.connect().await {
-                            Ok(s) => s,
-                            Err(_) => break,
-                        };
-
-                        let result = {
-                            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
-                            tokio::select! {
-                                r = session::recv_connected::<M, _, _>(
-                                    &conn,
-                                    &deliver_tx,
-                                    &mut next,
-                                ) => r,
-                                _ = ct.cancelled() => Err(session::RecvLoopError::Cancelled),
-                            }
-                        };
-
-                        // Flush remaining ack if behind.
-                        if next.ack < next.seq {
-                            let ack =
-                                super::serialize_response(super::NetRxResponse::Ack(next.seq - 1))
-                                    .unwrap();
-                            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
-                            let mut completion = conn.write(ack);
-                            match completion.drive().await {
-                                Ok(()) => {
-                                    next.ack = next.seq;
-                                }
-                                Err(e) => {
-                                    tracing::debug!(
-                                        error = %e,
-                                        "failed to flush acks during cleanup"
-                                    );
-                                }
-                            }
-                        }
-
-                        // Send reject or closed response if appropriate.
-                        let terminal_response = match &result {
-                            Err(session::RecvLoopError::SequenceError(reason)) => {
-                                Some(super::NetRxResponse::Reject(reason.clone()))
-                            }
-                            Err(session::RecvLoopError::Cancelled) => {
-                                Some(super::NetRxResponse::Closed)
-                            }
-                            _ => None,
-                        };
-                        if let Some(rsp) = terminal_response {
-                            let data = super::serialize_response(rsp).unwrap();
-                            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
-                            let mut completion = conn.write(data);
-                            let _ = completion.drive().await;
-                        }
-
-                        let recoverable =
-                            matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));
-
-                        match &result {
-                            Ok(()) => {
-                                tracing::info!(
-                                    %dest,
-                                    %session_id,
-                                    "recv_connected returned EOF, awaiting reconnect"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::info!(
-                                    %dest,
-                                    %session_id,
-                                    error = %e,
-                                    recoverable,
-                                    "recv_connected returned error"
-                                );
-                            }
-                        }
-
-                        session = connected.release();
-
-                        if recoverable {
-                            continue;
-                        }
-                        break; // SequenceError or Cancelled
-                    }
-                });
-                e.insert(stream.clone());
-                stream
+                let (sender, receiver) = mpsc::unbounded_channel::<S>();
+                e.insert(sender.clone());
+                Ok((sender, receiver))
             }
         }
     };
 
-    stream.put(conn).await;
+    let (sender, receiver) = match entry_result {
+        Err(sender) => {
+            // Feeder: forward the conn through the existing channel.
+            // Send returns Err if the processor task exited and
+            // dropped the receiver — drop the conn in that case.
+            let _ = sender.send(conn);
+            return;
+        }
+        Ok(pair) => pair,
+    };
+
+    let link = AcceptorLink {
+        dest: dest.clone(),
+        session_id,
+        stream: receiver,
+        cancel: cancel.clone(),
+    };
+    let deliver_tx = tx;
+    let ct = cancel;
+
+    // Hand the first connection off through the channel; the
+    // recv-loop below picks it up via `session.connect().await`.
+    let _ = sender.send(conn);
+    drop(sender);
+
+    let mut session = Session::new(link);
+    let mut next = Next { seq: 0, ack: 0 };
+
+    loop {
+        let connected = match session.connect().await {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+
+        let result = {
+            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+            tokio::select! {
+                r = session::recv_connected::<M, _, _>(
+                    &conn,
+                    &deliver_tx,
+                    &mut next,
+                ) => r,
+                _ = ct.cancelled() => Err(session::RecvLoopError::Cancelled),
+            }
+        };
+
+        // Flush a final ack if behind.
+        if next.ack < next.seq {
+            let ack = super::serialize_response(super::NetRxResponse::Ack(next.seq - 1)).unwrap();
+            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+            let mut completion = conn.write(ack);
+            match completion.drive().await {
+                Ok(()) => {
+                    next.ack = next.seq;
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "failed to flush acks during cleanup"
+                    );
+                }
+            }
+        }
+
+        // Send reject or closed response if appropriate.
+        let terminal_response = match &result {
+            Err(session::RecvLoopError::SequenceError(reason)) => {
+                Some(super::NetRxResponse::Reject(reason.clone()))
+            }
+            Err(session::RecvLoopError::Cancelled) => Some(super::NetRxResponse::Closed),
+            _ => None,
+        };
+        if let Some(rsp) = terminal_response {
+            let data = super::serialize_response(rsp).unwrap();
+            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+            let mut completion = conn.write(data);
+            let _ = completion.drive().await;
+        }
+
+        let recoverable = matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));
+
+        match &result {
+            Ok(()) => {
+                tracing::info!(
+                    %dest,
+                    %session_id,
+                    "recv_connected returned EOF, awaiting reconnect"
+                );
+            }
+            Err(e) => {
+                tracing::info!(
+                    %dest,
+                    %session_id,
+                    error = %e,
+                    recoverable,
+                    "recv_connected returned error"
+                );
+            }
+        }
+
+        session = connected.release();
+
+        if recoverable {
+            continue;
+        }
+        break;
+    }
+
+    // Recv-loop is finished — no further conns will be drained.
+    // Drop the session entry so a later reconnect for the same
+    // session_id starts a fresh dispatch task instead of feeding a
+    // dead channel; any in-flight feeder's send fails after the
+    // receiver above is dropped.
+    sessions.remove(&session_id);
 }
 
-/// Handle a multi-stream connection (stream_id > 0). Spawns a per-stream
-/// reader task that reads frames, deserializes, delivers to the shared
-/// mpsc, and sends acks. Uses an AckWatermark shared across all streams
-/// of the same session for cumulative out-of-order acking.
+/// Handle a multi-stream connection (stream_id > 0). All streams of
+/// a session share an `AckWatermark` for cumulative out-of-order
+/// acking. Same structured-concurrency contract as
+/// [`dispatch_stream`]: first dispatch for a given (`session_id`,
+/// `stream_id`) runs the recv-loop inline; reconnects hand off via
+/// the per-stream channel and return.
 async fn dispatch_multi_stream<M: RemoteMessage, S: Stream>(
     session_id: SessionId,
     stream_id: u8,
@@ -291,86 +324,148 @@ async fn dispatch_multi_stream<M: RemoteMessage, S: Stream>(
         "dispatch_multi_stream: new connection"
     );
 
-    // Get or create an MVar for this stream_id.
-    let stream_mvar = {
+    // Insert into the per-session map and drop the std::sync::Mutex
+    // guard before any await — its guard is !Send. Vacant inserts
+    // the sender side; occupied returns the existing sender so this
+    // dispatch acts as a feeder. Unbounded so this task can publish
+    // the sender before draining the first conn without deadlocking
+    // a concurrent feeder for the same (session_id, stream_id).
+    let entry_result = {
         use std::collections::hash_map::Entry;
         let mut streams = state.streams.lock().unwrap();
         match streams.entry(stream_id) {
-            Entry::Occupied(e) => e.get().clone(),
+            Entry::Occupied(e) => Err(e.get().clone()),
             Entry::Vacant(e) => {
-                let mvar: MVar<S> = MVar::empty();
-                let link = AcceptorLink {
-                    dest: dest.clone(),
-                    session_id,
-                    stream: mvar.clone(),
-                    cancel: cancel.clone(),
-                };
-                let deliver_tx = tx;
-                let ct = cancel.clone();
-                let shared_state = state.clone();
-
-                // Spawn a reader task for this stream.
-                tokio::spawn(async move {
-                    let mut session = Session::new(link);
-
-                    loop {
-                        let connected = match session.connect().await {
-                            Ok(s) => s,
-                            Err(_) => break,
-                        };
-
-                        let result = {
-                            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
-                            tokio::select! {
-                                r = session::multi_stream_recv_connected::<M, _, _>(
-                                    &conn,
-                                    &shared_state.ack_watermark,
-                                    &deliver_tx,
-                                ) => r,
-                                _ = ct.cancelled() => Err(session::RecvLoopError::Cancelled),
-                            }
-                        };
-
-                        let recoverable =
-                            matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));
-
-                        match &result {
-                            Ok(()) => {
-                                tracing::info!(
-                                    %dest,
-                                    %session_id,
-                                    stream_id,
-                                    "multi-stream recv EOF, awaiting reconnect"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::info!(
-                                    %dest,
-                                    %session_id,
-                                    stream_id,
-                                    error = %e,
-                                    recoverable,
-                                    "multi-stream recv error"
-                                );
-                            }
-                        }
-
-                        session = connected.release();
-
-                        if recoverable {
-                            continue;
-                        }
-                        break;
-                    }
-                });
-
-                e.insert(mvar.clone());
-                mvar
+                let (sender, receiver) = mpsc::unbounded_channel::<S>();
+                e.insert(sender.clone());
+                Ok((sender, receiver))
             }
         }
     };
 
-    stream_mvar.put(conn).await;
+    let (sender, receiver) = match entry_result {
+        Err(sender) => {
+            // Feeder: forward the conn through the existing channel.
+            // Send returns Err if the processor task exited and
+            // dropped the receiver — drop the conn in that case.
+            let _ = sender.send(conn);
+            return;
+        }
+        Ok(pair) => pair,
+    };
+
+    let link = AcceptorLink {
+        dest: dest.clone(),
+        session_id,
+        stream: receiver,
+        cancel: cancel.clone(),
+    };
+    let deliver_tx = tx;
+    let ct = cancel;
+    let shared_state = state;
+
+    // Hand the first connection off through the channel; the
+    // recv-loop below picks it up via `session.connect().await`.
+    let _ = sender.send(conn);
+    drop(sender);
+
+    let mut session = Session::new(link);
+
+    loop {
+        let connected = match session.connect().await {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+
+        let result = {
+            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+            tokio::select! {
+                r = session::multi_stream_recv_connected::<M, _, _>(
+                    &conn,
+                    &shared_state.ack_watermark,
+                    &deliver_tx,
+                ) => r,
+                _ = ct.cancelled() => Err(session::RecvLoopError::Cancelled),
+            }
+        };
+
+        // Each stream emits the cumulative watermark on its own wire
+        // so the peer's per-wire NetTx sees an ack for messages it
+        // sent on this connection.
+        let pending_ack = shared_state
+            .ack_watermark
+            .lock()
+            .await
+            .highest_uncommitted();
+        if let Some(ack_val) = pending_ack {
+            let ack = super::serialize_response(super::NetRxResponse::Ack(ack_val)).unwrap();
+            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+            let mut completion = conn.write(ack);
+            match completion.drive().await {
+                Ok(()) => {
+                    shared_state.ack_watermark.lock().await.commit(ack_val);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        stream_id,
+                        "failed to flush multi-stream ack during cleanup"
+                    );
+                }
+            }
+        }
+
+        // Send reject or closed response if appropriate.
+        let terminal_response = match &result {
+            Err(session::RecvLoopError::SequenceError(reason)) => {
+                Some(super::NetRxResponse::Reject(reason.clone()))
+            }
+            Err(session::RecvLoopError::Cancelled) => Some(super::NetRxResponse::Closed),
+            _ => None,
+        };
+        if let Some(rsp) = terminal_response {
+            let data = super::serialize_response(rsp).unwrap();
+            let conn = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+            let mut completion = conn.write(data);
+            let _ = completion.drive().await;
+        }
+
+        let recoverable = matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));
+
+        match &result {
+            Ok(()) => {
+                tracing::info!(
+                    %dest,
+                    %session_id,
+                    stream_id,
+                    "multi-stream recv EOF, awaiting reconnect"
+                );
+            }
+            Err(e) => {
+                tracing::info!(
+                    %dest,
+                    %session_id,
+                    stream_id,
+                    error = %e,
+                    recoverable,
+                    "multi-stream recv error"
+                );
+            }
+        }
+
+        session = connected.release();
+
+        if recoverable {
+            continue;
+        }
+        break;
+    }
+
+    // Recv-loop is finished — no further conns will be drained for
+    // this (session_id, stream_id). Drop the per-stream sender entry
+    // so a later reconnect starts a fresh dispatch task instead of
+    // feeding a dead channel.
+    shared_state.streams.lock().unwrap().remove(&stream_id);
 }
 
 /// Generic accept loop. Accepts connections from `listener`, transforms
@@ -584,22 +679,22 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
         }
     };
 
-    let sessions: Arc<DashMap<SessionId, MVar<Box<dyn Stream>>>> = Arc::new(DashMap::new());
+    let sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>> =
+        Arc::new(DashMap::new());
     let stream_state: Arc<std::sync::Mutex<HashMap<SessionId, Arc<StreamState<Box<dyn Stream>>>>>> =
         Arc::new(std::sync::Mutex::new(HashMap::new()));
-    let child_cancel = CancellationToken::new();
     let dispatch_dest = channel_addr.clone();
+    let dispatch_cancel = child_token.clone();
     let dispatch = {
         let sessions = Arc::clone(&sessions);
         let stream_state = Arc::clone(&stream_state);
         let tx = tx.clone();
-        let child_cancel = child_cancel.clone();
         let dest = dispatch_dest;
         move |link_init: super::LinkInit, stream: Box<dyn Stream>| {
             let sessions = Arc::clone(&sessions);
             let stream_state = Arc::clone(&stream_state);
             let tx = tx.clone();
-            let cancel = child_cancel.child_token();
+            let cancel = dispatch_cancel.clone();
             let dest = dest.clone();
             async move {
                 let streams = resolve_stream(&stream_state, &link_init);
@@ -619,9 +714,7 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
 
     let ca: ChannelAddr = channel_addr.clone();
     let join_handle = tokio::spawn(async move {
-        let result = accept_loop(&mut listener, &ca, &child_token, prepare, dispatch).await;
-        child_cancel.cancel();
-        result
+        accept_loop(&mut listener, &ca, &child_token, prepare, dispatch).await
     });
 
     let server_handle = ServerHandle {
@@ -659,21 +752,21 @@ where
         Ok((link_init, stream))
     };
 
-    let sessions: Arc<DashMap<SessionId, MVar<L::Stream>>> = Arc::new(DashMap::new());
+    let sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<L::Stream>>> =
+        Arc::new(DashMap::new());
     let stream_state: Arc<std::sync::Mutex<HashMap<SessionId, Arc<StreamState<L::Stream>>>>> =
         Arc::new(std::sync::Mutex::new(HashMap::new()));
-    let child_cancel = CancellationToken::new();
+    let dispatch_cancel = child_token.clone();
     let dispatch = {
         let sessions = Arc::clone(&sessions);
         let stream_state = Arc::clone(&stream_state);
         let tx = tx.clone();
-        let child_cancel = child_cancel.clone();
         let dest = channel_addr.clone();
         move |link_init: super::LinkInit, stream: L::Stream| {
             let sessions = Arc::clone(&sessions);
             let stream_state = Arc::clone(&stream_state);
             let tx = tx.clone();
-            let cancel = child_cancel.child_token();
+            let cancel = dispatch_cancel.clone();
             let dest = dest.clone();
             async move {
                 let streams = resolve_stream(&stream_state, &link_init);
@@ -693,9 +786,7 @@ where
 
     let ca = channel_addr.clone();
     let join_handle = tokio::spawn(async move {
-        let result = accept_loop(&mut listener, &ca, &child_token, prepare, dispatch).await;
-        child_cancel.cancel();
-        result
+        accept_loop(&mut listener, &ca, &child_token, prepare, dispatch).await
     });
 
     let server_handle = ServerHandle {
