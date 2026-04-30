@@ -32,6 +32,7 @@ try:
         _LocalMemoryHandle,
         _RdmaBuffer,
         _RdmaManager,
+        _RdmaOpType,
         is_ibverbs_available as _is_ibverbs_available,
         rdma_supported as _rdma_supported,
     )
@@ -359,12 +360,55 @@ class RDMABuffer:
     def size(self) -> int:
         return self._buffer.size()
 
+    def _submit_impl(
+        self,
+        ops: "List[Tuple[_RdmaOpType, torch.Tensor | memoryview]]",
+        timeout: int,
+    ) -> "PythonTask[None]":
+        """
+        Build a PythonTask that submits a batch of ``(_RdmaOpType, local)``
+        ops to the underlying backend. Size checks run eagerly so errors
+        surface at task-construction time.
+
+        Intended to be called only from ``RDMAAction.submit``, which runs
+        intra-batch overlap detection; bypassing it cannot guarantee
+        safety against intra-batch data races.
+        """
+        prepared: List[Tuple[_RdmaOpType, _LocalMemoryHandle]] = []
+        for op_type, local in ops:
+            handle = _make_local_memory_handle(local)
+            if op_type == _RdmaOpType.ReadInto:
+                if self.size() > handle.size:
+                    raise ValueError(
+                        f"Destination tensor size ({handle.size}) must be >= RDMA buffer size ({self.size()})"
+                    )
+            elif op_type == _RdmaOpType.WriteFrom:
+                if handle.size > self.size():
+                    raise ValueError(
+                        f"Source tensor size ({handle.size}) must be <= RDMA buffer size ({self.size()})"
+                    )
+            else:
+                raise NotImplementedError(f"Unsupported RDMA op type: {op_type}")
+            prepared.append((op_type, handle))
+
+        client = context().actor_instance
+
+        async def submit_nonblocking() -> None:
+            await _ensure_init_rdma_manager()
+            await self._buffer.submit(
+                ops=prepared,
+                client=client,
+                timeout=timeout,
+            )
+
+        return PythonTask.from_coroutine(submit_nonblocking())
+
     def read_into(
         self,
         dst: "torch.Tensor | memoryview",
         *,
-        timeout: int = 3,
-    ) -> Future[Optional[int]]:
+        timeout: int = 60,
+    ) -> Future[None]:
         """
         Read data from the RDMABuffer into a destination tensor.
 
@@ -372,16 +416,12 @@ class RDMABuffer:
         Args:
             dst: Destination tensor or memoryview to read into.
         Keyword Args:
-            timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s.
+            timeout (int, optional): Timeout in seconds for the operation. Defaults to 60s.
         Returns:
-            Future[Optional[int]]: A Monarch Future that can be awaited or called with .get() for blocking operation.
+            Future[None]: A Monarch Future that can be awaited or called with .get() for blocking operation.
 
         Raises:
             ValueError: If the destination tensor size is smaller than the RDMA buffer size.
-
-        Note:
-            Currently only CPU tensors are fully supported. GPU tensors will be temporarily
-            copied to CPU, which may impact performance.
         """
         handle = _make_local_memory_handle(dst)
 
@@ -392,15 +432,13 @@ class RDMABuffer:
 
         client = context().actor_instance
 
-        async def read_into_nonblocking() -> Optional[int]:
+        async def read_into_nonblocking() -> None:
             await _ensure_init_rdma_manager()
-
-            res = await self._buffer.read_into(
+            await self._buffer.read_into(
                 dst=handle,
                 client=client,
                 timeout=timeout,
             )
-            return res
 
         return Future(coro=read_into_nonblocking())
 
@@ -408,7 +446,7 @@ class RDMABuffer:
         self,
         src: "torch.Tensor | memoryview",
         *,
-        timeout: int = 3,
+        timeout: int = 60,
     ) -> Future[None]:
         """
         Write data from a source tensor into the RDMABuffer.
@@ -418,7 +456,7 @@ class RDMABuffer:
                                 Must be a contiguous tensor (including tensor views/slices).
                                 Either src or addr/size must be provided.
         Keyword Args:
-            timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s.
+            timeout (int, optional): Timeout in seconds for the operation. Defaults to 60s.
 
         Returns:
             Future[None]: A Monarch Future object that can be awaited or called with .get()
@@ -426,29 +464,23 @@ class RDMABuffer:
 
         Raises:
             ValueError: If the source tensor size exceeds the RDMA buffer size.
-
-        Note:
-            Currently only CPU tensors are fully supported. GPU tensors will be temporarily
-            copied to CPU, which may impact performance.
         """
-
         handle = _make_local_memory_handle(src)
 
         if handle.size > self.size():
             raise ValueError(
                 f"Source tensor size ({handle.size}) must be <= RDMA buffer size ({self.size()})"
             )
+
         client = context().actor_instance
 
         async def write_from_nonblocking() -> None:
             await _ensure_init_rdma_manager()
-
-            res = await self._buffer.write_from(
+            await self._buffer.write_from(
                 src=handle,
                 client=client,
                 timeout=timeout,
             )
-            return res
 
         return Future(coro=write_from_nonblocking())
 
@@ -645,49 +677,46 @@ class RDMAAction:
         """
         raise NotImplementedError("Not yet supported")
 
-    def submit(self) -> Future[None]:
+    def submit(self, *, timeout: int = 60) -> Future[None]:
         """
-        Schedules the work (can be called multiple times to schedule the same work more than once).
-        Future completes when all the work is done.
+        Schedule the registered work.
 
-        Executes futures for each src actor independently and concurrently for optimal performance.
+        Ops are grouped by source ``RDMABuffer`` and submitted as one
+        batch per buffer; submits across buffers are awaited concurrently.
+        The Future resolves when all ops finish, or fails with the first
+        error. Safe to call more than once.
+
+        Keyword Args:
+            timeout (int, optional): Per-buffer batch timeout in seconds.
+                Defaults to 60s.
         """
+        ops_by_buffer: Dict[RDMABuffer, List[Tuple[_RdmaOpType, "LocalMemory"]]] = (
+            defaultdict(list)
+        )
+        for op, src, dst in self._instructs:
+            if op == self.RDMAOp.READ_INTO:
+                rdma_op = _RdmaOpType.ReadInto
+            elif op == self.RDMAOp.WRITE_FROM:
+                rdma_op = _RdmaOpType.WriteFrom
+            else:
+                raise NotImplementedError(f"Unknown RDMA operation: {op}")
+            ops_by_buffer[src].append((rdma_op, dst))
 
-        async def submit_all_work() -> None:
-            if not self._instructs:
-                return
+        async def run() -> None:
+            # Spawn before awaiting so per-buffer submits run concurrently.
+            shareds = [
+                buf._submit_impl(ops, timeout).spawn()
+                for buf, ops in ops_by_buffer.items()
+            ]
+            results = await Shared.gather(*shareds)
+            # Re-raise non-`Exception` `BaseException`s (e.g. `KeyboardInterrupt`,
+            # `SystemExit`) directly: `ExceptionGroup` only accepts `Exception`
+            # subclasses, so wrapping them would either drop them or fail.
+            for r in results:
+                if isinstance(r, BaseException) and not isinstance(r, Exception):
+                    raise r
+            errors = [r for r in results if isinstance(r, Exception)]
+            if errors:
+                raise ExceptionGroup("RDMAAction.submit failed", errors)
 
-            work = defaultdict(list)
-
-            # Group operations by owner for concurrent execution per owner
-            for op, src, dst in self._instructs:
-                if op == self.RDMAOp.READ_INTO:
-                    fut = src.read_into(dst)
-                elif op == self.RDMAOp.WRITE_FROM:
-                    fut = src.write_from(dst)
-                else:
-                    raise NotImplementedError(f"Unknown RDMA operation: {op}")
-                work[src.owner].append(fut)
-
-            # Create a list of tasks, one per owner, that wait for all that owner's futures sequentially
-            owner_tasks = []
-
-            for _, futures in work.items():
-                # Create a coroutine that processes all futures for a qp sequentially
-                async def process_owner_futures(owner_futures_list=futures):
-                    """Process all futures for a single qp sequentially"""
-                    for future in owner_futures_list:
-                        await future
-
-                # Convert to PythonTask for Monarch's native concurrency
-                owner_task = PythonTask.from_coroutine(process_owner_futures())
-                owner_tasks.append(owner_task)
-
-            # Spawn all owner tasks concurrently and collect their shared handles
-            shared_tasks = [task.spawn() for task in owner_tasks]
-
-            # Wait for all owner tasks to complete concurrently
-            for shared_task in shared_tasks:
-                await shared_task
-
-        return Future(coro=submit_all_work())
+        return Future(coro=run())
