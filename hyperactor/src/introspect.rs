@@ -133,6 +133,7 @@ use typeuri::Named;
 
 use crate::Address;
 use crate::InstanceCell;
+use crate::OncePortRef;
 use crate::reference;
 
 /// Typed reference to an introspectable entity.
@@ -630,14 +631,14 @@ pub enum IntrospectMessage {
         /// View context - Entity or Actor.
         view: IntrospectView,
         /// Reply port receiving the actor's self-description.
-        reply: reference::OncePortRef<IntrospectResult>,
+        reply: OncePortRef<IntrospectResult>,
     },
     /// "Describe one of your children."
     QueryChild {
         /// Address identifying the child to describe.
         child_ref: reference::Reference,
         /// Reply port receiving the child's description.
-        reply: reference::OncePortRef<IntrospectResult>,
+        reply: OncePortRef<IntrospectResult>,
     },
 }
 wirevalue::register_type!(IntrospectMessage);
