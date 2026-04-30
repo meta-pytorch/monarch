@@ -74,6 +74,7 @@ pub mod message;
 pub mod metrics;
 pub mod ordering;
 pub mod panic_handler;
+mod parse;
 pub mod port;
 pub mod proc;
 pub mod ref_;
