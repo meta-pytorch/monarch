@@ -66,7 +66,8 @@ pub struct CondaSyncParams {}
 wirevalue::register_type!(CondaSyncParams);
 
 #[derive(Debug, Default)]
-#[hyperactor::export(spawn = true, handlers = [CondaSyncMessage { cast = true }])]
+#[hyperactor::export(handlers = [CondaSyncMessage { cast = true }])]
+#[hyperactor::spawnable]
 pub struct CondaSyncActor {}
 
 impl Actor for CondaSyncActor {}

@@ -33,27 +33,29 @@ pub const USER_PORT_OFFSET: u64 = 1024;
 /// ```ignore
 /// struct MyActor { ... }
 ///
-/// remote!(MyActor);
+/// register_spawnable!(MyActor);
 /// ```
 #[macro_export]
-macro_rules! remote {
+macro_rules! register_spawnable {
     ($actor:ty) => {
-        $crate::internal_macro_support::paste! {
-            static [<$actor:snake:upper _NAME>]: std::sync::LazyLock<&'static str> =
-              std::sync::LazyLock::new(|| <$actor as $crate::internal_macro_support::typeuri::Named>::typename());
+        const _: () = {
+            static NAME: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(|| {
+                <$actor as $crate::internal_macro_support::typeuri::Named>::typename()
+            });
+
             $crate::internal_macro_support::inventory::submit! {
                 $crate::actor::remote::SpawnableActor {
-                    name: &[<$actor:snake:upper _NAME>],
+                    name: &NAME,
                     gspawn: <$actor as $crate::actor::RemoteSpawn>::gspawn,
                     get_type_id: <$actor as $crate::actor::RemoteSpawn>::get_type_id,
                 }
             }
-        }
+        };
     };
 }
 
 /// A type-erased actor registration entry. These are constructed via
-/// [`crate::remote`].
+/// [`crate::register_spawnable`].
 #[derive(Debug)]
 pub struct SpawnableActor {
     /// A URI that globally identifies an actor. It is an error to register
@@ -81,7 +83,7 @@ pub struct SpawnableActor {
 inventory::collect!(SpawnableActor);
 
 /// Registry of actors linked into this image and registered by way of
-/// [`crate::remote`].
+/// [`crate::register_spawnable`].
 #[derive(Debug)]
 pub struct Remote {
     by_name: HashMap<&'static str, &'static SpawnableActor>,
@@ -151,7 +153,7 @@ mod tests {
     use crate::RemoteSpawn;
 
     #[derive(Debug)]
-    #[hyperactor::export(handlers = [()])]
+    #[hyperactor::export(())]
     struct MyActor;
 
     #[async_trait]
@@ -177,7 +179,24 @@ mod tests {
         }
     }
 
-    remote!(MyActor);
+    register_spawnable!(MyActor);
+
+    #[derive(Debug, Default)]
+    #[hyperactor::export(())]
+    struct GenericActor<T>(std::marker::PhantomData<T>);
+
+    #[async_trait]
+    impl<T: Send + 'static> Actor for GenericActor<T> {}
+
+    #[async_trait]
+    impl<T: Send + Sync + 'static> Handler<()> for GenericActor<T> {
+        async fn handle(&mut self, _cx: &Context<Self>, _message: ()) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+    }
+
+    register_spawnable!(GenericActor<u64>);
+    register_spawnable!(GenericActor<bool>);
 
     #[tokio::test]
     async fn test_registry() {
@@ -185,6 +204,18 @@ mod tests {
         assert_matches!(
             remote.name_of::<MyActor>(),
             Some("hyperactor::actor::remote::tests::MyActor")
+        );
+        assert_matches!(
+            remote.name_of::<GenericActor<u64>>(),
+            Some("hyperactor::actor::remote::tests::GenericActor<u64>")
+        );
+        assert_matches!(
+            remote.name_of::<GenericActor<bool>>(),
+            Some("hyperactor::actor::remote::tests::GenericActor<bool>")
+        );
+        assert_ne!(
+            <GenericActor<u64> as typeuri::Named>::typename(),
+            <GenericActor<bool> as typeuri::Named>::typename()
         );
 
         let _ = remote
