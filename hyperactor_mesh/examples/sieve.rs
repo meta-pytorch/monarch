@@ -75,12 +75,8 @@ pub struct SieveParams {
 /// Filters candidates divisible by `prime`. Forwards survivors to
 /// `next`. Spawns a new child when a new prime is discovered.
 #[derive(Debug)]
-#[hyperactor::export(
-        spawn = true,
-        handlers = [
-          NextNumber,
-        ],
-    )]
+#[hyperactor::export(NextNumber)]
+#[hyperactor::spawnable]
 pub struct SieveActor {
     /// Prime used for filtering.
     prime: u64,

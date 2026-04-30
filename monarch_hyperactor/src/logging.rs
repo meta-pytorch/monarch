@@ -68,7 +68,8 @@ pub enum LoggerRuntimeMessage {
 
 /// Simple Rust actor that invokes python logger APIs. It needs a python runtime.
 #[derive(Debug)]
-#[hyperactor::export(spawn = true, handlers = [LoggerRuntimeMessage {cast = true}])]
+#[hyperactor::export(handlers = [LoggerRuntimeMessage {cast = true}])]
+#[hyperactor::spawnable]
 pub struct LoggerRuntimeActor {
     logger: Arc<Py<PyAny>>,
 }

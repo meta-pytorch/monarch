@@ -247,8 +247,8 @@ impl CliConfig {
 
 // CUDA RDMA Actor
 #[derive(Debug)]
+#[hyperactor::spawnable]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         InitializeBuffer,
         PerformPingPong,

@@ -336,7 +336,8 @@ pub struct RsyncMessage {
 wirevalue::register_type!(RsyncMessage);
 
 #[derive(Debug, Default)]
-#[hyperactor::export(spawn = true, handlers = [RsyncMessage { cast = true }])]
+#[hyperactor::export(handlers = [RsyncMessage { cast = true }])]
+#[hyperactor::spawnable]
 pub struct RsyncActor {
     //workspace: WorkspaceLocation,
 }
