@@ -17,7 +17,6 @@ use async_trait::async_trait;
 use futures::future;
 use futures::future::FutureExt;
 use futures::future::Shared;
-use hyperactor as reference;
 use hyperactor::Instance;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::ActorMesh;
@@ -46,7 +45,7 @@ use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
 use crate::pickle::PendingMessage;
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
@@ -719,12 +718,12 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
 
 #[pymethods]
 impl PythonActorMeshImpl {
-    fn get(&self, rank: usize) -> PyResult<Option<PyActorId>> {
+    fn get(&self, rank: usize) -> PyResult<Option<PyActorAddr>> {
         Ok(self
             .mesh_ref()
             .get(rank)
-            .map(|r| reference::ActorRef::into_actor_id(r.clone()))
-            .map(PyActorId::from))
+            .map(|r| hyperactor::ActorRef::into_actor_id(r.clone()))
+            .map(PyActorAddr::from))
     }
 
     fn __repr__(&self) -> String {
@@ -758,8 +757,8 @@ impl PyActorSupervisionEvent {
     }
 
     #[getter]
-    pub(crate) fn actor_id(&self) -> PyResult<PyActorId> {
-        Ok(PyActorId::from(self.inner.actor_id.clone()))
+    pub(crate) fn actor_id(&self) -> PyResult<PyActorAddr> {
+        Ok(PyActorAddr::from(self.inner.actor_id.clone()))
     }
 
     #[getter]

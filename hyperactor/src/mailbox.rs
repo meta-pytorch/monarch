@@ -12,7 +12,7 @@
 //! An actor can open one or more typed _ports_ in the mailbox; messages
 //! are in turn delivered to specific ports.
 //!
-//! Mailboxes are associated with an [`ActorId`] (given by `actor_id`
+//! Mailboxes are associated with an [`ActorAddr`] (given by `actor_id`
 //! in the following example):
 //!
 //! ```
@@ -59,9 +59,9 @@
 //! Mailboxes allow delivery of serialized messages to named ports:
 //!
 //! 1) Ports restrict message types to (serializable) [`Message`]s.
-//! 2) Each [`Port`] is associated with a [`PortId`] which globally names the port.
+//! 2) Each [`Port`] is associated with a [`PortAddr`] which globally names the port.
 //! 3) [`Mailbox`] provides interfaces to deliver serialized
-//!    messages to ports named by their [`PortId`].
+//!    messages to ports named by their [`PortAddr`].
 //!
 //! While this complicates the interface somewhat, it allows the
 //! implementation to avoid a serialization roundtrip when passing
@@ -2554,7 +2554,7 @@ struct State {
 }
 
 impl State {
-    /// Create a new state with the provided owning ActorId.
+    /// Create a new state with the provided owning ActorAddr.
     fn new(actor_id: ActorAddr, forwarder: BoxedMailboxSender) -> Self {
         Self {
             actor_id,
@@ -3106,11 +3106,11 @@ mod tests {
     use crate::testing::ids::test_proc_id;
 
     fn test_proc_ref(name: &str) -> Address {
-        Address::Proc(test_proc_id(name).into())
+        Address::Proc(test_proc_id(name))
     }
 
     fn test_actor_ref(proc_name: &str, actor_name: &str) -> Address {
-        Address::Actor(test_actor_id(proc_name, actor_name).into())
+        Address::Actor(test_actor_id(proc_name, actor_name))
     }
 
     #[test]
@@ -3120,7 +3120,7 @@ mod tests {
             test_actor_id("myworld_2", "myactor"),
             MailboxErrorKind::Closed,
         );
-        // ActorId display is now "actor_uid.proc_uid@location"
+        // ActorAddr display is now "actor_uid.proc_uid@location"
         let err_str = format!("{err}");
         assert!(
             err_str.contains("mailbox closed"),
@@ -3787,7 +3787,7 @@ mod tests {
         fn create_receiver<M>(coalesce: bool) -> (mpsc::UnboundedSender<M>, PortReceiver<M>) {
             // Create dummy state and port_id to create PortReceiver. They are
             // not used in the test.
-            let dummy_actor_ref: ActorAddr = test_actor_id("world_0", "actor").into();
+            let dummy_actor_ref: ActorAddr = test_actor_id("world_0", "actor");
             let dummy_state = State::new(
                 dummy_actor_ref.clone(),
                 BOXED_PANICKING_MAILBOX_SENDER.clone(),
@@ -4273,7 +4273,7 @@ mod tests {
                 .expect("receiver should not be closed");
 
         // Verify the undeliverable message has the correct destination
-        let split_port_ref: PortAddr = split_port_id.into();
+        let split_port_ref: PortAddr = split_port_id;
         assert_eq!(undeliverable.0.dest(), &split_port_ref);
 
         // Verify no additional messages arrived at the original receiver

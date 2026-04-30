@@ -72,8 +72,7 @@ impl Actor for TestActor {}
 /// A message that returns the recipient actor's id and cast message's seq info.
 #[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
 pub struct GetActorId(
-    #[binding(include)]
-    pub  hyperactor_reference::PortRef<(hyperactor_reference::ActorId, Option<SeqInfo>)>,
+    #[binding(include)] pub hyperactor::PortRef<(hyperactor::ActorAddr, Option<SeqInfo>)>,
 );
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,7 +127,7 @@ impl Handler<GetActorId> for TestActor {
         GetActorId(reply): GetActorId,
     ) -> Result<(), anyhow::Error> {
         let seq_info = cx.headers().get(SEQ_INFO);
-        reply.send(cx, (cx.self_id().clone().into(), seq_info))?;
+        reply.send(cx, (cx.self_id().clone(), seq_info))?;
         Ok(())
     }
 }
@@ -201,8 +200,8 @@ impl Handler<std::time::Duration> for SleepActor {
 /// 'visited' list.
 #[derive(Debug, Clone, Named, Bind, Unbind, Serialize, Deserialize)]
 pub struct Forward {
-    pub to_visit: VecDeque<hyperactor_reference::PortRef<Forward>>,
-    pub visited: Vec<hyperactor_reference::PortRef<Forward>>,
+    pub to_visit: VecDeque<hyperactor::PortRef<Forward>>,
+    pub visited: Vec<hyperactor::PortRef<Forward>>,
 }
 
 #[async_trait]
@@ -241,10 +240,10 @@ impl Handler<Forward> for TestActor {
 pub struct GetCastInfo {
     /// Originating actor, point, sender.
     #[reply]
-    pub cast_info: hyperactor_reference::PortRef<(
+    pub cast_info: hyperactor::PortRef<(
         Point,
         hyperactor_reference::ActorRef<TestActor>,
-        hyperactor_reference::ActorId,
+        hyperactor::ActorAddr,
     )>,
 }
 
@@ -298,7 +297,7 @@ impl Handler<SetConfigAttrs> for TestActor {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct GetConfigAttrs(pub hyperactor_reference::PortRef<Vec<u8>>);
+pub struct GetConfigAttrs(pub hyperactor::PortRef<Vec<u8>>);
 
 #[async_trait]
 impl Handler<GetConfigAttrs> for TestActor {
@@ -320,7 +319,7 @@ impl Handler<GetConfigAttrs> for TestActor {
 /// Replies with None if no supervision event is encountered within a timeout
 /// (10 seconds).
 #[derive(Clone, Debug, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct NextSupervisionFailure(pub hyperactor_reference::PortRef<Option<MeshFailure>>);
+pub struct NextSupervisionFailure(pub hyperactor::PortRef<Option<MeshFailure>>);
 
 /// A small wrapper to handle supervision messages so they don't
 /// need to reach the client. This just wraps and forwards all messages to TestActor.
@@ -336,17 +335,13 @@ pub struct WrapperActor {
     proc_mesh: ProcMeshRef,
     // Needs to be a mesh so we own this actor and have a controller for it.
     mesh: Option<ActorMesh<TestActor>>,
-    supervisor: hyperactor_reference::PortRef<MeshFailure>,
+    supervisor: hyperactor::PortRef<MeshFailure>,
     test_name: ActorMeshId,
 }
 
 #[async_trait]
 impl hyperactor::RemoteSpawn for WrapperActor {
-    type Params = (
-        ProcMeshRef,
-        hyperactor_reference::PortRef<MeshFailure>,
-        ActorMeshId,
-    );
+    type Params = (ProcMeshRef, hyperactor::PortRef<MeshFailure>, ActorMeshId);
 
     async fn new(
         (proc_mesh, supervisor, test_name): Self::Params,
@@ -470,8 +465,7 @@ pub async fn assert_casting_correctness(
         .values()
         .map(|actor_ref| actor_ref.actor_id().clone())
         .collect::<Vec<_>>();
-    let mut expected: HashMap<&hyperactor_reference::ActorId, Option<SeqInfo>> = match expected_seqs
-    {
+    let mut expected: HashMap<&hyperactor::ActorAddr, Option<SeqInfo>> = match expected_seqs {
         None => expected_actor_ids
             .iter()
             .map(|actor_id| (actor_id, None))

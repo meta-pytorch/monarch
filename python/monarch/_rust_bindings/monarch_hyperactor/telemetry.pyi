@@ -8,7 +8,7 @@
 
 import logging
 
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 
 def forward_to_tracing(record: logging.LogRecord) -> None:
     """
@@ -68,14 +68,14 @@ class PySpan:
     def __init__(
         self,
         name: str,
-        actor_id: ActorId | None = None,
+        actor_id: ActorAddr | None = None,
     ) -> None:
         """
         Create a new PySpan.
 
         Args:
         - name (str): The name of the span.
-        - actor_id (ActorId | None, optional): The actor whose Perfetto track should own the span.
+        - actor_id (ActorAddr | None, optional): The actor whose Perfetto track should own the span.
         """
         ...
 

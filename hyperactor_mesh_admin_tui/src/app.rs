@@ -199,7 +199,7 @@ impl App {
     /// Fetch a single node payload from the admin API.
     ///
     /// `reference` is the opaque identifier used by the server (e.g.
-    /// `"root"`, a `ProcId` string, or an `ActorId` string). The
+    /// `"root"`, a `ProcAddr` string, or an `ActorAddr` string). The
     /// reference is URL-encoded and requested from `GET
     /// /v1/{reference}`. Returns a parsed `NodePayload` on success,
     /// or a human-readable error string on failure.
@@ -609,7 +609,7 @@ impl App {
     /// - Proc selected → proc's own reference.
     /// - Actor selected → owning proc from `detail.parent`.
     /// - Root/Host selected → `None` (PY-4).
-    pub(crate) fn pyspy_proc_ref(&self) -> Option<hyperactor::ProcId> {
+    pub(crate) fn pyspy_proc_ref(&self) -> Option<hyperactor::ProcAddr> {
         let rows = self.visible_rows();
         let row = rows.get(&self.cursor)?;
         match (&row.node.node_type, &row.node.reference) {
@@ -654,11 +654,11 @@ impl App {
     ///
     /// Calls `set_job` which drops any prior variant and its receiver,
     /// cancelling any in-flight fetch (PY-1/PY-2).
-    pub(crate) fn start_pyspy(&mut self, proc_id: hyperactor::ProcId) {
+    pub(crate) fn start_pyspy(&mut self, proc_id: hyperactor::ProcAddr) {
         let proc_ref = proc_id.to_string();
         let short = proc_id
             .label()
-            .map(|l| l.as_str().to_string())
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
             .unwrap_or_else(|| proc_id.id().to_string());
         let scheme = self.theme.scheme; // ColorScheme: Copy
         let client = self.client.clone();
@@ -713,11 +713,11 @@ impl App {
     ///
     /// Calls `set_job` which drops any prior variant and its receiver,
     /// cancelling any in-flight fetch (CFG-1/CFG-2).
-    pub(crate) fn start_config(&mut self, proc_id: hyperactor::ProcId) {
+    pub(crate) fn start_config(&mut self, proc_id: hyperactor::ProcAddr) {
         let proc_ref = proc_id.to_string();
         let short = proc_id
             .label()
-            .map(|l| l.as_str().to_string())
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
             .unwrap_or_else(|| proc_id.id().to_string());
         let scheme = self.theme.scheme; // ColorScheme: Copy
         let client = self.client.clone();

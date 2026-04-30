@@ -205,7 +205,7 @@ pub enum StreamMessage {
 
     SendValue {
         seq: Seq,
-        worker_actor_id: reference::ActorId,
+        worker_actor_id: reference::ActorAddr,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
         args_kwargs: ArgsKwargs,
@@ -504,9 +504,9 @@ impl Actor for StreamActor {
                 .cloned()
                 .unwrap_or_else(|| Label::new("stream").unwrap());
             root_actor_id
-                .set(reference::ActorId::root(
-                    cx.self_id().proc_ref(),
+                .set(reference::ActorId::singleton(
                     root_label,
+                    cx.self_id().proc_ref().id().clone(),
                 ))
                 .ok()
         });
@@ -647,7 +647,7 @@ impl StreamActor {
                 if self.active_recording.is_none() {
                     let worker_error = WorkerError {
                         backtrace: format!("{e}"),
-                        worker_actor_id: cx.self_id().clone().into(),
+                        worker_actor_id: cx.self_id().clone(),
                     };
                     tracing::info!("Propagating remote function error to client: {worker_error}");
                     self.controller_actor
@@ -1454,7 +1454,7 @@ impl StreamMessageHandler for StreamActor {
         &mut self,
         cx: &Context<Self>,
         seq: Seq,
-        worker_actor_id: reference::ActorId,
+        worker_actor_id: reference::ActorAddr,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
         args_kwargs: ArgsKwargs,
@@ -1797,7 +1797,7 @@ impl StreamMessageHandler for StreamActor {
                             seq,
                             WorkerError {
                                 backtrace: format!("recording failed: {}", &seq_err),
-                                worker_actor_id: cx.self_id().clone().into(),
+                                worker_actor_id: cx.self_id().clone(),
                             },
                         )
                         .await?;
@@ -2101,7 +2101,7 @@ mod tests {
             .send_value(
                 cx,
                 seq,
-                stream_actor.actor_id().clone().into(),
+                stream_actor.actor_id().clone(),
                 Vec::new(),
                 None,
                 ArgsKwargs::from_wire_values(

@@ -277,12 +277,12 @@ pub struct LaunchOptions {
 /// include a friendly identifier in logs, crash reports, etc.
 ///
 /// Format:
-/// - `ProcId(_, name)` → `<name> @ <host_process_name>`
+/// - `ProcAddr(_, name)` → `<name> @ <host_process_name>`
 ///
 /// The host identity is taken from the current process's
 /// `HYPERACTOR_PROCESS_NAME`, falling back to the machine hostname.
 /// This groups procs under their host process in traces and logs.
-pub fn format_process_name(proc_id: &hyperactor_reference::ProcId) -> String {
+pub fn format_process_name(proc_id: &hyperactor::ProcAddr) -> String {
     let who = proc_id
         .label()
         .map(|l| l.as_str().to_string())
@@ -343,7 +343,7 @@ pub trait ProcLauncher: Send + Sync + 'static {
     /// (pipes vs inherit, log streaming, etc.).
     async fn launch(
         &self,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         opts: LaunchOptions,
     ) -> Result<LaunchResult, ProcLauncherError>;
 
@@ -361,7 +361,7 @@ pub trait ProcLauncher: Send + Sync + 'static {
     /// (agent-first) termination cannot be applied or fails.
     async fn terminate(
         &self,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         timeout: Duration,
     ) -> Result<(), ProcLauncherError>;
 
@@ -387,5 +387,5 @@ pub trait ProcLauncher: Send + Sync + 'static {
     /// Idempotent behavior is preferred: killing an already-dead proc
     /// should not be treated as an error unless the backend cannot
     /// determine state.
-    async fn kill(&self, proc_id: &hyperactor_reference::ProcId) -> Result<(), ProcLauncherError>;
+    async fn kill(&self, proc_id: &hyperactor::ProcAddr) -> Result<(), ProcLauncherError>;
 }

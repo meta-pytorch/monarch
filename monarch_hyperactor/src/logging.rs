@@ -45,7 +45,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::context::PyInstance;
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 use crate::proc_mesh::PyProcMesh;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::monarch_with_gil;
@@ -548,7 +548,7 @@ fn log_endpoint_exception<'py>(
     py: Python<'py>,
     e: Py<PyAny>,
     endpoint: Py<PyAny>,
-    actor_id: PyActorId,
+    actor_id: PyActorAddr,
 ) {
     let pyerr = PyErr::from_value(e.into_bound(py));
     let exception_str = format_traceback(py, &pyerr);

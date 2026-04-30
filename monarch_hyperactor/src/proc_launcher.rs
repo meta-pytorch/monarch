@@ -21,7 +21,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hyperactor as reference;
 use hyperactor::ActorHandle;
 use hyperactor::Instance;
 use hyperactor::Mailbox;
@@ -567,7 +566,7 @@ pub struct ActorProcLauncher {
     ///
     /// Not used for correctness; used for diagnostics and sanity
     /// checks.
-    active_procs: Arc<Mutex<HashSet<reference::ProcId>>>,
+    active_procs: Arc<Mutex<HashSet<hyperactor::ProcAddr>>>,
 }
 
 impl ActorProcLauncher {
@@ -621,7 +620,7 @@ impl ProcLauncher for ActorProcLauncher {
     ///   resolves to `ProcExitKind::Failed` with a decode error reason.
     async fn launch(
         &self,
-        proc_id: &reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         opts: LaunchOptions,
     ) -> Result<LaunchResult, ProcLauncherError> {
         let (exit_port, exit_port_rx) = self.mailbox.open_once_port::<PythonMessage>();
@@ -704,13 +703,14 @@ impl ProcLauncher for ActorProcLauncher {
             .send(&self.instance, message)
             .map_err(|e| ProcLauncherError::Other(format!("send to spawner failed: {e}")))?;
 
-        let mut active_procs: tokio::sync::MutexGuard<'_, HashSet<reference::ProcId>> =
+        let mut active_procs: tokio::sync::MutexGuard<'_, HashSet<hyperactor::ProcAddr>> =
             self.active_procs.lock().await;
         active_procs.insert(proc_id.clone());
         drop(active_procs);
 
         let (exit_tx, exit_rx) = oneshot::channel();
-        let active_procs: Arc<Mutex<HashSet<reference::ProcId>>> = Arc::clone(&self.active_procs);
+        let active_procs: Arc<Mutex<HashSet<hyperactor::ProcAddr>>> =
+            Arc::clone(&self.active_procs);
         let proc_id_clone = proc_id.clone();
 
         tokio::spawn(async move {
@@ -758,7 +758,7 @@ impl ProcLauncher for ActorProcLauncher {
     /// - send the message to the spawner actor.
     async fn terminate(
         &self,
-        proc_id: &reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         timeout: Duration,
     ) -> Result<(), ProcLauncherError> {
         let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
@@ -801,7 +801,7 @@ impl ProcLauncher for ActorProcLauncher {
     /// Returns `ProcLauncherError::Kill` if we fail to:
     /// - import/serialize the request via `cloudpickle`, or
     /// - send the message to the spawner actor.
-    async fn kill(&self, proc_id: &reference::ProcId) -> Result<(), ProcLauncherError> {
+    async fn kill(&self, proc_id: &hyperactor::ProcAddr) -> Result<(), ProcLauncherError> {
         let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
             let cloudpickle =
                 import_cloudpickle(py).map_err(|e| ProcLauncherError::Kill(format!("{e}")))?;
