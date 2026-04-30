@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::reference::ProcId;
+use hyperactor::ProcId;
 use hyperactor_mesh::introspect::NodeRef;
 
 /// Result of handling a key event.

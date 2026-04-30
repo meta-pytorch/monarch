@@ -9,6 +9,7 @@
 //! The comm actor that provides message casting and result accumulation.
 
 use hyperactor::Actor;
+use hyperactor::ActorId;
 use hyperactor::Context;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
@@ -16,7 +17,6 @@ use hyperactor::actor::Referable;
 use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::reference::ActorId;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::Extent;

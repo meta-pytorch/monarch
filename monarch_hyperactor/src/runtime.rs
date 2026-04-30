@@ -16,12 +16,12 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
+use hyperactor as reference;
 use hyperactor::Proc;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::PanickingMailboxSender;
-use hyperactor::reference;
 use once_cell::sync::Lazy;
 use once_cell::unsync::OnceCell as UnsyncOnceCell;
 use pyo3::PyResult;

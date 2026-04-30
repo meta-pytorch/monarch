@@ -7,10 +7,10 @@
  */
 
 use derive_more::Display;
+use hyperactor as reference;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
-use hyperactor::reference;
 use pyo3::FromPyObject;
 use pyo3::IntoPyObject;
 use pyo3::IntoPyObjectExt;

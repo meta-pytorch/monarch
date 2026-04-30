@@ -131,11 +131,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::ActorAddr;
+use crate::AddrParseError;
 use crate::Address;
 use crate::InstanceCell;
 use crate::OncePortRef;
-use crate::reference;
-
+use crate::ProcAddr;
 /// Typed reference to an introspectable entity.
 ///
 /// This is the generic hyperactor layer — it knows about procs and
@@ -146,11 +147,22 @@ use crate::reference;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
 pub enum IntrospectRef {
     /// A proc reference.
-    Proc(reference::ProcId),
+    Proc(ProcAddr),
     /// An actor reference.
-    Actor(reference::ActorId),
+    Actor(ActorAddr),
 }
 hyperactor_config::impl_attrvalue!(IntrospectRef);
+
+/// Error returned when parsing an [`IntrospectRef`].
+#[derive(Debug, thiserror::Error)]
+pub enum IntrospectRefParseError {
+    /// The address text could not be parsed.
+    #[error(transparent)]
+    Address(#[from] AddrParseError),
+    /// Port references are not introspectable.
+    #[error("port references are not valid introspection references")]
+    PortNotAllowed,
+}
 
 impl fmt::Display for IntrospectRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -162,28 +174,26 @@ impl fmt::Display for IntrospectRef {
 }
 
 impl FromStr for IntrospectRef {
-    type Err = reference::ReferenceParsingError;
+    type Err = IntrospectRefParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let r: reference::Reference = s.parse()?;
+        let r: Address = s.parse()?;
         match r {
-            reference::Reference::Proc(id) => Ok(Self::Proc(id)),
-            reference::Reference::Actor(id) => Ok(Self::Actor(id)),
-            reference::Reference::Port(_) => Err(reference::ReferenceParsingError::WrongType(
-                "port references are not valid introspection references".to_string(),
-            )),
+            Address::Proc(id) => Ok(Self::Proc(id)),
+            Address::Actor(id) => Ok(Self::Actor(id)),
+            Address::Port(_) => Err(IntrospectRefParseError::PortNotAllowed),
         }
     }
 }
 
-impl From<reference::ProcId> for IntrospectRef {
-    fn from(id: reference::ProcId) -> Self {
+impl From<ProcAddr> for IntrospectRef {
+    fn from(id: ProcAddr) -> Self {
         Self::Proc(id)
     }
 }
 
-impl From<reference::ActorId> for IntrospectRef {
-    fn from(id: reference::ActorId) -> Self {
+impl From<ActorAddr> for IntrospectRef {
+    fn from(id: ActorAddr) -> Self {
         Self::Actor(id)
     }
 }
@@ -332,7 +342,7 @@ declare_attrs! {
         name: "failure_root_cause_actor".into(),
         desc: "Actor that caused the failure (root cause)".into(),
     })
-    pub attr FAILURE_ROOT_CAUSE_ACTOR: reference::ActorId;
+    pub attr FAILURE_ROOT_CAUSE_ACTOR: ActorAddr;
 
     /// Name of root cause actor.
     @meta(INTROSPECT = IntrospectAttr {
@@ -406,7 +416,7 @@ pub struct FailureAttrs {
     /// Error message describing the failure.
     pub error_message: String,
     /// Actor that caused the failure (root cause).
-    pub root_cause_actor: reference::ActorId,
+    pub root_cause_actor: ActorAddr,
     /// Display name of the root-cause actor, if available.
     pub root_cause_name: Option<String>,
     /// When the failure occurred.
@@ -636,7 +646,7 @@ pub enum IntrospectMessage {
     /// "Describe one of your children."
     QueryChild {
         /// Address identifying the child to describe.
-        child_ref: reference::Reference,
+        child_ref: Address,
         /// Reply port receiving the child's description.
         reply: OncePortRef<IntrospectResult>,
     },
@@ -685,7 +695,7 @@ pub fn format_timestamp(time: SystemTime) -> String {
 /// Failure fields extracted from a supervision event.
 struct FailureSnapshot {
     error_message: String,
-    root_cause_actor: reference::ActorId,
+    root_cause_actor: ActorAddr,
     root_cause_name: Option<String>,
     occurred_at: SystemTime,
     is_propagated: bool,
@@ -917,11 +927,9 @@ pub(crate) async fn serve_introspect(
                     );
                     // Use the queried child_ref as identity for the error node.
                     let identity = match &child_ref {
-                        reference::Reference::Proc(id) => IntrospectRef::Proc(id.clone()),
-                        reference::Reference::Actor(id) => IntrospectRef::Actor(id.clone()),
-                        reference::Reference::Port(id) => {
-                            IntrospectRef::Actor(id.actor_id().clone())
-                        }
+                        Address::Proc(id) => IntrospectRef::Proc(id.clone()),
+                        Address::Actor(id) => IntrospectRef::Actor(id.clone()),
+                        Address::Port(id) => IntrospectRef::Actor(id.actor_ref()),
                     };
                     IntrospectResult {
                         identity,
@@ -952,10 +960,11 @@ pub(crate) async fn serve_introspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ActorAddr;
+    use crate::ProcAddr;
     use crate::actor::ActorErrorKind;
     use crate::actor::ActorStatus;
     use crate::channel::ChannelAddr;
-    use crate::reference::ProcId;
     use crate::supervision::ActorSupervisionEvent;
 
     /// Exercises IK-1 (see module doc).
@@ -1057,8 +1066,8 @@ mod tests {
         attrs
     }
 
-    fn test_actor_id(proc_name: &str, actor_name: &str) -> crate::reference::ActorId {
-        ProcId::from_resource_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name)
+    fn test_actor_id(proc_name: &str, actor_name: &str) -> ActorAddr {
+        ProcAddr::from_resource_name(ChannelAddr::Local(0), proc_name).actor_ref(actor_name)
     }
 
     fn failed_actor_attrs() -> Attrs {
@@ -1194,7 +1203,7 @@ mod tests {
     /// integration coverage.
     #[test]
     fn test_fi7_fi8_propagated_stopped_child() {
-        let proc_id = ProcId::from_resource_name(ChannelAddr::Local(0), "test_proc");
+        let proc_id = ProcAddr::from_resource_name(ChannelAddr::Local(0), "test_proc");
         let child_id = proc_id.actor_id("proc_agent");
         let parent_id = proc_id.actor_id("mesh_actor");
 

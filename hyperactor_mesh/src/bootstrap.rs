@@ -39,6 +39,7 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::ProcAddr;
+use hyperactor::ProcId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
@@ -56,7 +57,6 @@ use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
-use hyperactor::reference::ProcId;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::Attrs;
@@ -1172,7 +1172,7 @@ impl BootstrapProcHandle {
         let _ = self.mark_stopping();
 
         if let Some(launcher) = self.launcher.upgrade() {
-            let ref_proc_id: ProcId = self.proc_id.clone().into();
+            let ref_proc_id: ProcId = self.proc_id.clone();
             if let Err(e) = launcher.terminate(&ref_proc_id, timeout).await {
                 tracing::warn!(
                     proc_id = %self.proc_id,
@@ -1337,7 +1337,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
 
         // Delegate to launcher for SIGTERM/SIGKILL escalation.
         tracing::info!(proc_id = %self.proc_id, ?timeout, "terminate(): delegating to launcher");
-        let ref_proc_id: ProcId = self.proc_id.clone().into();
+        let ref_proc_id: ProcId = self.proc_id.clone();
         if let Some(launcher) = self.launcher.upgrade() {
             if let Err(e) = launcher.terminate(&ref_proc_id, timeout).await {
                 tracing::warn!(proc_id = %self.proc_id, error=%e, "terminate(): launcher termination failed");
@@ -1389,7 +1389,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
 
         // Delegate to launcher for kill.
         tracing::info!(proc_id = %self.proc_id, "kill(): delegating to launcher");
-        let ref_proc_id: ProcId = self.proc_id.clone().into();
+        let ref_proc_id: ProcId = self.proc_id.clone();
         if let Some(launcher) = self.launcher.upgrade() {
             if let Err(e) = launcher.kill(&ref_proc_id).await {
                 tracing::warn!(proc_id = %self.proc_id, error=%e, "kill(): launcher kill failed");
@@ -1965,7 +1965,7 @@ impl ProcManager for BootstrapProcManager {
 
         // Launch via the configured launcher backend.
         tracing::info!(proc_id = %proc_id, "launching proc with opts={opts:?}");
-        let ref_proc_id: ProcId = proc_id.clone().into();
+        let ref_proc_id: ProcId = proc_id.clone();
         let launch_result = self
             .launcher()
             .launch(&ref_proc_id, opts.clone())
@@ -2508,8 +2508,8 @@ mod tests {
 
         use async_trait::async_trait;
         use hyperactor::ActorRef;
+        use hyperactor::ProcId;
         use hyperactor::host::ProcHandle;
-        use hyperactor::reference::ProcId;
         use hyperactor::testing::ids::test_proc_id;
 
         use super::super::*;
@@ -2845,8 +2845,7 @@ mod tests {
         let addr = ChannelAddr::any(ChannelTransport::Unix);
         let agent = ActorRef::attest(
             test_proc_id_with_addr(addr.clone(), "proc")
-                .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME)
-                .into(),
+                .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
         );
 
         let st = ProcStatus::Ready {
@@ -2883,8 +2882,7 @@ mod tests {
                 addr: ChannelAddr::any(ChannelTransport::Unix),
                 agent: ActorRef::attest(
                     test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "x")
-                        .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME)
-                        .into(),
+                        .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
                 ),
             },
             ProcStatus::Killed {
