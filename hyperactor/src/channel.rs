@@ -44,6 +44,7 @@ pub use net::try_tls_pem_bundle;
 
 /// Duplex channel API: a single connection carries messages in both directions.
 pub mod duplex {
+    pub use super::net::duplex::DuplexClient;
     pub use super::net::duplex::DuplexRx;
     pub use super::net::duplex::DuplexServer;
     pub use super::net::duplex::DuplexTx;
