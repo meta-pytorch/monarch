@@ -282,7 +282,7 @@ impl PythonPortRef {
     #[new]
     fn new(port: PyPortId) -> Self {
         Self {
-            inner: reference::PortRef::attest(port.into()),
+            inner: reference::PortRef::attest(port.inner.into()),
         }
     }
     fn __reduce__<'py>(
@@ -462,7 +462,7 @@ impl PythonOncePortRef {
     #[new]
     fn new(port: Option<PyPortId>) -> Self {
         Self {
-            inner: port.map(|port| reference::PortRef::attest(port.inner).into_once()),
+            inner: port.map(|port| reference::PortRef::attest(port.inner.into()).into_once()),
         }
     }
     fn __reduce__<'py>(
