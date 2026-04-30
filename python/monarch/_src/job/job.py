@@ -310,8 +310,9 @@ class TelemetryConfig:
         snapshot_interval_secs: Interval in seconds between periodic mesh
             introspection snapshots. Snapshots capture the mesh topology
             into the telemetry query surface. 0 disables periodic capture
-            (default). Snapshot table schemas are always pre-registered
-            regardless of this setting.
+            (default). When ``include_dashboard`` is True and this is 0,
+            it is automatically set to 30s because the dashboard requires
+            snapshot data for system actor filtering.
     """
 
     batch_size: int = 1000
@@ -319,6 +320,10 @@ class TelemetryConfig:
     include_dashboard: bool = False
     dashboard_port: int = 8265
     snapshot_interval_secs: float = 0  # 0 = disabled
+
+    def __post_init__(self) -> None:
+        if self.include_dashboard and self.snapshot_interval_secs <= 0:
+            self.snapshot_interval_secs = 30.0
 
 
 @dataclass
