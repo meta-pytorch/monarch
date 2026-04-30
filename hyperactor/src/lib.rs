@@ -78,6 +78,7 @@ pub mod panic_handler;
 mod parse;
 pub mod port;
 pub mod proc;
+pub mod ref_;
 pub mod reference;
 pub mod remote;
 mod signal_handler;
@@ -168,9 +169,11 @@ pub use proc::Instance;
 pub use proc::InstanceCell;
 pub use proc::Proc;
 pub use proc::WeakProc;
-// Re-exported because `hyperactor_macros::RefClient` generates code referencing `hyperactor::ActorRef`.
-#[doc(hidden)]
-pub use reference::ActorRef;
+pub use ref_::ActorRef;
+pub use ref_::OncePortRef;
+pub use ref_::PortRef;
+pub use ref_::UnboundPort;
+pub use ref_::UnboundPortKind;
 pub use remote::Accepts;
 #[doc(inline)]
 pub use signal_handler::SignalCleanupGuard;
