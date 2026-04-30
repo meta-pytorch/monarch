@@ -10,6 +10,7 @@
 
 use std::collections::BTreeSet;
 
+use hyperactor::ActorRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
@@ -20,7 +21,6 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::Selection;
@@ -81,7 +81,7 @@ pub fn update_undeliverable_envelope_for_casting(
 pub(crate) fn actor_mesh_cast<A, M>(
     cx: &impl context::Actor,
     actor_mesh_id: ActorMeshId,
-    comm_actor_ref: &hyperactor_reference::ActorRef<CommActor>,
+    comm_actor_ref: &ActorRef<CommActor>,
     selection_of_root: Selection,
     root_mesh_shape: &Shape,
     cast_mesh_shape: &Shape,
@@ -163,7 +163,7 @@ where
 pub(crate) fn cast_to_sliced_mesh<A, M>(
     cx: &impl context::Actor,
     actor_mesh_id: ActorMeshId,
-    comm_actor_ref: &hyperactor_reference::ActorRef<CommActor>,
+    comm_actor_ref: &ActorRef<CommActor>,
     sel_of_sliced: &Selection,
     message: M,
     sliced_shape: &Shape,
