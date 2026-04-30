@@ -56,17 +56,15 @@ use crate::testing;
 /// A simple test actor used by various unit tests.
 #[derive(Default, Debug)]
 #[hyperactor::export(
-    spawn = true,
-    handlers = [
-        () { cast = true },
-        GetActorId { cast = true },
-        GetCastInfo { cast = true },
-        CauseSupervisionEvent { cast = true },
-        Forward,
-        GetConfigAttrs { cast = true },
-        SetConfigAttrs { cast = true },
-    ]
+    () { cast = true },
+    GetActorId { cast = true },
+    GetCastInfo { cast = true },
+    CauseSupervisionEvent { cast = true },
+    Forward,
+    GetConfigAttrs { cast = true },
+    SetConfigAttrs { cast = true },
 )]
+#[hyperactor::spawnable]
 pub struct TestActor;
 
 impl Actor for TestActor {}
@@ -148,10 +146,8 @@ impl Handler<CauseSupervisionEvent> for TestActor {
 /// A test actor that handles supervision events.
 /// It should be the parent of TestActor who can panic or cause a SIGSEGV.
 #[derive(Default, Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [ActorSupervisionEvent],
-)]
+#[hyperactor::export(ActorSupervisionEvent)]
+#[hyperactor::spawnable]
 pub struct TestActorWithSupervisionHandling;
 
 #[async_trait]
@@ -181,10 +177,8 @@ impl Handler<ActorSupervisionEvent> for TestActorWithSupervisionHandling {
 /// A test actor that sleeps when it receives a Duration message.
 /// Used for testing timeout and abort behavior.
 #[derive(Default, Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [std::time::Duration],
-)]
+#[hyperactor::export(std::time::Duration)]
+#[hyperactor::spawnable]
 pub struct SleepActor;
 
 impl Actor for SleepActor {}
@@ -266,7 +260,8 @@ impl Handler<GetCastInfo> for TestActor {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(spawn = true)]
+#[hyperactor::export]
+#[hyperactor::spawnable]
 pub struct FailingCreateTestActor;
 
 #[async_trait]
@@ -331,13 +326,11 @@ pub struct NextSupervisionFailure(pub hyperactor::PortRef<Option<MeshFailure>>);
 /// The supervision events are sent back to "supervisor".
 #[derive(Debug)]
 #[hyperactor::export(
-    spawn = true,
-    handlers = [
-        CauseSupervisionEvent { cast = true },
-        MeshFailure { cast = true },
-        NextSupervisionFailure { cast = true },
-    ]
+    CauseSupervisionEvent { cast = true },
+    MeshFailure { cast = true },
+    NextSupervisionFailure { cast = true },
 )]
+#[hyperactor::spawnable]
 pub struct WrapperActor {
     proc_mesh: ProcMeshRef,
     // Needs to be a mesh so we own this actor and have a controller for it.

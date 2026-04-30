@@ -29,7 +29,8 @@ pub enum LocalStateBrokerMessage {
 }
 
 #[derive(Debug, Default)]
-#[hyperactor::export(spawn = true)]
+#[hyperactor::export]
+#[hyperactor::spawnable]
 pub struct LocalStateBrokerActor {
     states: HashMap<usize, LocalState>,
     ports: HashMap<usize, OncePortHandle<LocalState>>,
