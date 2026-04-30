@@ -329,22 +329,22 @@ fn convert_failure(
 mod tests {
     use std::time::Duration;
 
+    use hyperactor::ProcAddr;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::reference::ProcId;
 
     use super::*;
 
     // Test fixtures
 
-    fn test_proc_id() -> ProcId {
-        ProcId::from_resource_name(ChannelAddr::Local(0), "worker")
+    fn test_proc_id() -> ProcAddr {
+        ProcAddr::from_resource_name(ChannelAddr::Local(0), "worker")
     }
 
-    fn test_actor_id() -> hyperactor::reference::ActorId {
+    fn test_actor_id() -> hyperactor::ActorAddr {
         test_proc_id().actor_id("actor")
     }
 
-    fn test_host_actor_id() -> hyperactor::reference::ActorId {
+    fn test_host_actor_id() -> hyperactor::ActorAddr {
         test_proc_id().actor_id("host_agent")
     }
 

@@ -74,11 +74,11 @@ pub use global_context::context;
 pub use global_context::this_host;
 pub use global_context::this_proc;
 pub use host_mesh::HostMeshRef;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
+use hyperactor::ProcId;
 use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
-use hyperactor::reference::ActorId;
-use hyperactor::reference::ProcId;
 pub use hyperactor_mesh_macros::sel;
 pub use mesh::Mesh;
 // Re-exported for internal test binaries that don't have ndslice as a direct dependency
