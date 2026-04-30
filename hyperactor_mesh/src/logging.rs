@@ -982,10 +982,8 @@ pub enum LogForwardMessage {
 }
 
 /// A log forwarder that receives the log from its parent process and forward it back to the client
-#[hyperactor::export(
-    spawn = true,
-    handlers = [LogForwardMessage {cast = true}],
-)]
+#[hyperactor::export(LogForwardMessage { cast = true })]
+#[hyperactor::spawnable]
 pub struct LogForwardActor {
     rx: ChannelRx<LogMessage>,
     flush_tx: Arc<Mutex<ChannelTx<LogMessage>>>,
@@ -1166,10 +1164,8 @@ fn deserialize_message_lines(serialized_message: &wirevalue::Any) -> Result<Vec<
 
 /// A client to receive logs from remote processes
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [LogMessage, LogClientMessage],
-)]
+#[hyperactor::export(LogMessage, LogClientMessage)]
+#[hyperactor::spawnable]
 pub struct LogClientActor {
     aggregate_window_sec: Option<u64>,
     aggregators: HashMap<OutputTarget, Aggregator>,
