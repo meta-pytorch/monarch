@@ -65,7 +65,7 @@ from monarch._rust_bindings.monarch_hyperactor.pickle import (
     pickle,
     PicklingState,
 )
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
@@ -165,7 +165,7 @@ class Instance(abc.ABC):
         return self.actor_id.proc_id
 
     @abstractproperty
-    def actor_id(self) -> ActorId:
+    def actor_id(self) -> ActorAddr:
         """
         The actor_id of the current actor.
         """

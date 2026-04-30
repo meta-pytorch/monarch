@@ -858,7 +858,7 @@ pub enum WorkerMessage {
         /// - error message or stacktrace
         ///
         /// The worker process will be stopped if the error is provided.
-        error: Option<(Option<reference::ActorId>, String)>,
+        error: Option<(Option<reference::ActorAddr>, String)>,
     },
 
     /// Defines (part of) a new recording on the worker. This is a list of commands

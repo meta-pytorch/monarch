@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use hyperactor as reference;
 use monarch_hyperactor::ndslice::PySlice;
-use monarch_hyperactor::proc::PyActorId;
+use monarch_hyperactor::proc::PyActorAddr;
 use monarch_messages::controller::Seq;
 use monarch_messages::worker;
 use monarch_messages::worker::ArgsKwargs;
@@ -180,13 +180,13 @@ impl<'a> MessageParser<'a> {
     fn parse_error_reason(
         &self,
         name: &str,
-    ) -> PyResult<Option<(Option<reference::ActorId>, String)>> {
+    ) -> PyResult<Option<(Option<reference::ActorAddr>, String)>> {
         let err = self.attr(name)?;
         if err.is_none() {
             return Ok(None);
         }
         if let Ok(actor_source_id) = err.getattr("source_actor_id") {
-            let actor_id: PyActorId = actor_source_id.extract()?;
+            let actor_id: PyActorAddr = actor_source_id.extract()?;
             return Ok(Some((
                 Some(actor_id.into()),
                 err.getattr("message")?.extract()?,

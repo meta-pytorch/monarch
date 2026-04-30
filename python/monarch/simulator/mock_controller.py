@@ -20,7 +20,7 @@ from typing import (
 
 import torch
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
 )
 from monarch._src.actor.shape import iter_ranks, NDSlice, Slices as Ranks
 from monarch.common import messages
@@ -74,7 +74,7 @@ class History:
             traceback_index,
             None,
             worker_frames,
-            ActorId(addr="local:0", proc_name="unknown", actor_name="unknown"),
+            ActorAddr(addr="local:0", proc_name="unknown", actor_name="unknown"),
         )
         worklist = deque((invocation,))
         while worklist:

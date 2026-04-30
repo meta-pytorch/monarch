@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::ProcId;
+use hyperactor::ProcAddr;
 use hyperactor_mesh::introspect::NodeRef;
 
 /// Result of handling a key event.
@@ -23,7 +23,7 @@ pub(crate) enum KeyResult {
     /// Start the self-diagnostic suite against the attached mesh.
     RunDiagnostics,
     /// Fetch a py-spy stack dump for the given proc.
-    RunPySpy(ProcId),
+    RunPySpy(ProcAddr),
     /// Fetch the config dump for the given proc.
-    RunConfig(ProcId),
+    RunConfig(ProcAddr),
 }
