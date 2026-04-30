@@ -82,7 +82,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use hyperactor::reference as hyperactor_reference;
+use hyperactor as hyperactor_reference;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 
