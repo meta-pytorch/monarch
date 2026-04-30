@@ -133,8 +133,12 @@ use wirevalue::TypeInfo;
 
 use crate as hyperactor;
 use crate::Actor;
+use crate::ActorAddr;
+use crate::Address;
 use crate::Handler;
 use crate::Message;
+use crate::PortAddr;
+use crate::ProcAddr;
 use crate::RemoteMessage;
 use crate::actor::ActorError;
 use crate::actor::ActorErrorKind;
@@ -329,7 +333,6 @@ use crate::ordering::SeqInfo;
 use crate::ordering::Sequencer;
 use crate::ordering::ordered_channel;
 use crate::panic_handler;
-use crate::ref_;
 use crate::reference;
 use crate::supervision::ActorSupervisionEvent;
 
@@ -358,7 +361,7 @@ impl fmt::Debug for Proc {
 struct ProcState {
     /// The proc's id. This should be globally unique, but is not (yet)
     /// for local-only procs.
-    proc_id: ref_::ProcRef,
+    proc_id: ProcAddr,
 
     /// A muxer instance that has entries for every actor managed by
     /// the proc.
@@ -373,7 +376,7 @@ struct ProcState {
     reserved_roots: DashSet<crate::id::Uid>,
 
     /// All actor instances in this proc.
-    instances: DashMap<ref_::ActorRef, WeakInstanceCell>,
+    instances: DashMap<ActorAddr, WeakInstanceCell>,
 
     /// Proc-level queue-pressure accounting (PD-6 through PD-9).
     /// Runtime-driven — updated from `account_enqueue` /
@@ -385,7 +388,7 @@ struct ProcState {
     /// Populated by the introspect task just before it exits on
     /// terminal status. Bounded by
     /// [`config::TERMINATED_SNAPSHOT_RETENTION`].
-    terminated_snapshots: DashMap<ref_::ActorRef, crate::introspect::IntrospectResult>,
+    terminated_snapshots: DashMap<ActorAddr, crate::introspect::IntrospectResult>,
 
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
@@ -393,7 +396,7 @@ struct ProcState {
 
     /// The actor ID of the supervision coordinator, if it lives on this proc.
     /// Used to ensure the coordinator is shut down last during proc teardown.
-    supervision_coordinator_actor_id: OnceLock<ref_::ActorRef>,
+    supervision_coordinator_actor_id: OnceLock<ActorAddr>,
 
     /// Handle to the mailbox server task, if this proc was created with
     /// `Proc::direct()` or had `serve()` called on it. Used to
@@ -434,7 +437,7 @@ pub struct ActorInstance<A: Actor> {
 
 impl Proc {
     /// Create a pre-configured proc with the given proc id and forwarder.
-    pub fn configured(proc_id: impl Into<ref_::ProcRef>, forwarder: BoxedMailboxSender) -> Self {
+    pub fn configured(proc_id: impl Into<ProcAddr>, forwarder: BoxedMailboxSender) -> Self {
         let proc_id = proc_id.into();
         tracing::info!(
             subject = %proc_id.subject(),
@@ -461,7 +464,7 @@ impl Proc {
     /// Create a new direct-addressed proc.
     pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
-        let proc_id = ref_::ProcRef::from_resource_name(addr, name);
+        let proc_id = ProcAddr::from_resource_name(addr, name);
         let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
         let handle = proc.clone().serve(rx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
@@ -542,7 +545,7 @@ impl Proc {
         &self,
         port: PortHandle<ActorSupervisionEvent>,
     ) -> Result<(), anyhow::Error> {
-        let actor_ref: ref_::ActorRef = port.location().actor_id();
+        let actor_ref: ActorAddr = port.location().actor_id();
         self.state()
             .supervision_coordinator_port
             .set(port)
@@ -553,7 +556,7 @@ impl Proc {
 
     /// The actor ID of the supervision coordinator, if one is set and
     /// lives on this proc.
-    pub fn supervision_coordinator_actor_id(&self) -> Option<&ref_::ActorRef> {
+    pub fn supervision_coordinator_actor_id(&self) -> Option<&ActorAddr> {
         self.state().supervision_coordinator_actor_id.get()
     }
 
@@ -606,12 +609,12 @@ impl Proc {
     pub fn local() -> Self {
         let rank = NEXT_LOCAL_RANK.fetch_add(1, Ordering::Relaxed);
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = ref_::ProcRef::unique(addr, format!("local_{}", rank));
+        let proc_id = ProcAddr::unique(addr, format!("local_{}", rank));
         Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     }
 
     /// The proc's ID.
-    pub fn proc_id(&self) -> &ref_::ProcRef {
+    pub fn proc_id(&self) -> &ProcAddr {
         &self.state().proc_id
     }
 
@@ -637,25 +640,25 @@ impl Proc {
         static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
         RUNTIME_PROC.get_or_init(|| {
             let addr = ChannelAddr::any(ChannelTransport::Local);
-            let proc_id = ref_::ProcRef::unique(addr, "hyperactor_runtime");
+            let proc_id = ProcAddr::unique(addr, "hyperactor_runtime");
             Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
         })
     }
 
     /// Attach a mailbox to the proc with the provided root name.
     pub fn attach(&self, name: &str) -> Result<Mailbox, anyhow::Error> {
-        let actor_id: ref_::ActorRef = self.allocate_root_id(name)?;
+        let actor_id: ActorAddr = self.allocate_root_id(name)?;
         Ok(self.bind_mailbox(actor_id))
     }
 
     /// Attach a mailbox to the proc as a child actor.
-    pub fn attach_child(&self, parent_id: &ref_::ActorRef) -> Result<Mailbox, anyhow::Error> {
-        let actor_id: ref_::ActorRef = self.allocate_child_id(parent_id)?;
+    pub fn attach_child(&self, parent_id: &ActorAddr) -> Result<Mailbox, anyhow::Error> {
+        let actor_id: ActorAddr = self.allocate_child_id(parent_id)?;
         Ok(self.bind_mailbox(actor_id))
     }
 
     /// Bind a mailbox to the proc.
-    fn bind_mailbox(&self, actor_id: ref_::ActorRef) -> Mailbox {
+    fn bind_mailbox(&self, actor_id: ActorAddr) -> Mailbox {
         let mbox = Mailbox::new(actor_id, BoxedMailboxSender::new(self.downgrade()));
 
         // TODO: T210748165 tie the muxer entry to the lifecycle of the mailbox held
@@ -664,7 +667,7 @@ impl Proc {
         mbox
     }
 
-    /// Attach a mailbox to the proc with the provided root name, and bind an [`ActorRef`].
+    /// Attach a mailbox to the proc with the provided root name, and bind an [`ActorAddr`].
     /// This is intended only for testing, and will be replaced by simpled utilities.
     pub fn attach_actor<R, M>(
         &self,
@@ -683,7 +686,7 @@ impl Proc {
     /// Spawn a named (root) actor on this proc. The name of the actor must be
     /// unique.
     pub fn spawn<A: Actor>(&self, name: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
-        let actor_id: ref_::ActorRef = self.allocate_root_id(name)?;
+        let actor_id: ActorAddr = self.allocate_root_id(name)?;
         self.spawn_inner(actor_id, actor, None)
     }
 
@@ -691,7 +694,7 @@ impl Proc {
     #[hyperactor::instrument(fields(subject = actor_id.subject().to_string()))]
     fn spawn_inner<A: Actor>(
         &self,
-        actor_id: ref_::ActorRef,
+        actor_id: ActorAddr,
         actor: A,
         parent: Option<InstanceCell>,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
@@ -704,7 +707,7 @@ impl Proc {
     /// runtime — unlike [`actor_instance`], it never calls
     /// `tokio::spawn`.
     pub fn instance(&self, name: &str) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
-        let actor_id: ref_::ActorRef = self.allocate_root_id(name)?;
+        let actor_id: ActorAddr = self.allocate_root_id(name)?;
         let (instance, _receivers) = Instance::new(self.clone(), actor_id, false, None);
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
@@ -727,7 +730,7 @@ impl Proc {
         &self,
         name: &str,
     ) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
-        let actor_id: ref_::ActorRef = self.allocate_root_id(name)?;
+        let actor_id: ActorAddr = self.allocate_root_id(name)?;
         let (instance, receivers) = Instance::new(self.clone(), actor_id, false, None);
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
@@ -745,7 +748,7 @@ impl Proc {
     /// launch child actors, etc. The actor itself does not handle any
     /// messages unless driven by the caller.
     pub fn actor_instance<A: Actor>(&self, name: &str) -> Result<ActorInstance<A>, anyhow::Error> {
-        let actor_id: ref_::ActorRef = self.allocate_root_id(name)?;
+        let actor_id: ActorAddr = self.allocate_root_id(name)?;
         let span = tracing::debug_span!(
             "actor_instance",
             subject = %actor_id.subject(),
@@ -808,7 +811,7 @@ impl Proc {
     }
 
     /// Look up an instance by ActorId.
-    pub fn get_instance(&self, actor_id: &ref_::ActorRef) -> Option<InstanceCell> {
+    pub fn get_instance(&self, actor_id: &ActorAddr) -> Option<InstanceCell> {
         self.state()
             .instances
             .get(actor_id)
@@ -823,7 +826,7 @@ impl Proc {
     /// with concurrent writes. Prefer `all_instance_keys()` with a
     /// post-filter if this becomes a hot path. Currently unused in
     /// production code.
-    pub fn root_actor_ids(&self) -> Vec<ref_::ActorRef> {
+    pub fn root_actor_ids(&self) -> Vec<ActorAddr> {
         self.state()
             .instances
             .iter()
@@ -840,7 +843,7 @@ impl Proc {
     /// actors whose `InstanceCell` has been dropped and actors that
     /// have stopped or failed but whose Arc is still held (e.g. by
     /// the introspect task during teardown).
-    pub fn all_actor_ids(&self) -> Vec<ref_::ActorRef> {
+    pub fn all_actor_ids(&self) -> Vec<ActorAddr> {
         self.state()
             .instances
             .iter()
@@ -865,7 +868,7 @@ impl Proc {
     /// whose `WeakInstanceCell` no longer upgrades. Callers should
     /// tolerate stale entries (e.g. by handling "not found" on
     /// subsequent per-actor lookups).
-    pub fn all_instance_keys(&self) -> Vec<ref_::ActorRef> {
+    pub fn all_instance_keys(&self) -> Vec<ActorAddr> {
         self.state()
             .instances
             .iter()
@@ -876,7 +879,7 @@ impl Proc {
     /// Look up a terminated actor's snapshot by ID.
     pub fn terminated_snapshot(
         &self,
-        actor_id: &ref_::ActorRef,
+        actor_id: &ActorAddr,
     ) -> Option<crate::introspect::IntrospectResult> {
         self.state()
             .terminated_snapshots
@@ -885,7 +888,7 @@ impl Proc {
     }
 
     /// Return all terminated actor IDs currently retained.
-    pub fn all_terminated_actor_ids(&self) -> Vec<ref_::ActorRef> {
+    pub fn all_terminated_actor_ids(&self) -> Vec<ActorAddr> {
         self.state()
             .terminated_snapshots
             .iter()
@@ -944,9 +947,9 @@ impl Proc {
     /// `None`.
     pub fn abort_root_actor(
         &self,
-        root: &ref_::ActorRef,
+        root: &ActorAddr,
         this_handle: Option<&JoinHandle<()>>,
-    ) -> Option<impl Future<Output = ref_::ActorRef>> {
+    ) -> Option<impl Future<Output = ActorAddr>> {
         self.state()
             .instances
             .get(root)
@@ -985,7 +988,7 @@ impl Proc {
     /// returning a status observer if successful.
     pub fn stop_actor(
         &self,
-        actor_id: &ref_::ActorRef,
+        actor_id: &ActorAddr,
         reason: String,
     ) -> Option<watch::Receiver<ActorStatus>> {
         if let Some(entry) = self.state().instances.get(actor_id) {
@@ -1023,7 +1026,7 @@ impl Proc {
         timeout: Duration,
         cx: Option<&Context<'_, A>>,
         reason: &str,
-    ) -> Result<(Vec<ref_::ActorRef>, Vec<ref_::ActorRef>), anyhow::Error> {
+    ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error> {
         self.destroy_and_wait_except_current::<A>(timeout, cx, false, reason)
             .await
     }
@@ -1044,7 +1047,7 @@ impl Proc {
         cx: Option<&Context<'_, A>>,
         except_current: bool,
         reason: &str,
-    ) -> Result<(Vec<ref_::ActorRef>, Vec<ref_::ActorRef>), anyhow::Error> {
+    ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error> {
         tracing::debug!("proc stopping");
 
         let (this_handle, this_actor_id) = cx.map_or((None, None), |cx| {
@@ -1213,7 +1216,7 @@ impl Proc {
     /// Create a root allocation in the proc.
     ///
     /// Uses `reserved_roots` to prevent races between concurrent callers.
-    fn allocate_root_id(&self, name: &str) -> Result<ref_::ActorRef, anyhow::Error> {
+    fn allocate_root_id(&self, name: &str) -> Result<ActorAddr, anyhow::Error> {
         let actor_ref = self.state().proc_id.actor_ref(name);
         let uid = actor_ref.uid().clone();
         if !self.state().reserved_roots.insert(uid) {
@@ -1226,8 +1229,8 @@ impl Proc {
     #[hyperactor::instrument]
     pub(crate) fn allocate_child_id(
         &self,
-        parent_id: &ref_::ActorRef,
-    ) -> Result<ref_::ActorRef, anyhow::Error> {
+        parent_id: &ActorAddr,
+    ) -> Result<ActorAddr, anyhow::Error> {
         assert_eq!(parent_id.proc_ref(), self.state().proc_id);
         Ok(parent_id.unique_child())
     }
@@ -1235,17 +1238,17 @@ impl Proc {
     /// Allocate an actor ID with a custom name on this proc.
     pub(crate) fn allocate_named_child_id(
         &self,
-        parent_id: &ref_::ActorRef,
+        parent_id: &ActorAddr,
         name: &str,
-    ) -> Result<ref_::ActorRef, anyhow::Error> {
+    ) -> Result<ActorAddr, anyhow::Error> {
         assert_eq!(parent_id.proc_ref(), self.state().proc_id);
         let proc_id = self.state().proc_id.id().clone();
-        let (_uid, label) = crate::ref_::parse_resource_name(name);
+        let (_uid, label) = crate::addr::parse_resource_name(name);
         let actor_id = match label {
             Some(label) => crate::id::ActorId::instance_labeled(label, proc_id),
             None => crate::id::ActorId::instance(proc_id),
         };
-        Ok(ref_::ActorRef::new(
+        Ok(ActorAddr::new(
             actor_id,
             self.state().proc_id.location().clone(),
         ))
@@ -1456,7 +1459,7 @@ struct InstanceState<A: Actor> {
 }
 
 impl<A: Actor> InstanceState<A> {
-    fn self_id(&self) -> &ref_::ActorRef {
+    fn self_id(&self) -> &ActorAddr {
         self.mailbox.actor_id()
     }
 }
@@ -1502,7 +1505,7 @@ impl<A: Actor> Instance<A> {
     /// Create a new actor instance in Created state.
     fn new(
         proc: Proc,
-        actor_id: ref_::ActorRef,
+        actor_id: ActorAddr,
         detached: bool,
         parent: Option<InstanceCell>,
     ) -> (Self, InstanceReceivers<A>) {
@@ -1649,7 +1652,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// This instance's actor ID.
-    pub fn self_id(&self) -> &ref_::ActorRef {
+    pub fn self_id(&self) -> &ActorAddr {
         self.inner.self_id()
     }
 
@@ -1754,7 +1757,7 @@ impl<A: Actor> Instance<A> {
     /// procs that have no independent `ProcAgent`.
     pub fn set_query_child_handler(
         &self,
-        handler: impl (Fn(&crate::ref_::Reference) -> IntrospectResult) + Send + Sync + 'static,
+        handler: impl (Fn(&Address) -> IntrospectResult) + Send + Sync + 'static,
     ) {
         self.inner.cell.set_query_child_handler(handler);
     }
@@ -1802,13 +1805,8 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Send a message to the actor running on the proc.
-    pub fn post(
-        &self,
-        port_id: impl Into<ref_::PortRef>,
-        headers: Flattrs,
-        message: wirevalue::Any,
-    ) {
-        let port_id: ref_::PortRef = port_id.into();
+    pub fn post(&self, port_id: impl Into<PortAddr>, headers: Flattrs, message: wirevalue::Any) {
+        let port_id: PortAddr = port_id.into();
         <Self as context::MailboxExt>::post(
             self,
             port_id,
@@ -1827,7 +1825,7 @@ impl<A: Actor> Instance<A> {
     #[doc(hidden)]
     pub fn post_with_external_seq_info(
         &self,
-        port_id: impl Into<ref_::PortRef>,
+        port_id: impl Into<PortAddr>,
         headers: Flattrs,
         message: wirevalue::Any,
     ) {
@@ -2566,7 +2564,7 @@ impl fmt::Debug for InstanceCell {
 
 struct InstanceCellState {
     /// The actor's id.
-    actor_id: ref_::ActorRef,
+    actor_id: ActorAddr,
 
     /// Actor info contains the actor's type information.
     actor_type: ActorType,
@@ -2637,8 +2635,7 @@ struct InstanceCellState {
     /// `None` means `QueryChild` returns a "not_found" error.
     ///
     /// See S7 in `introspect` module doc.
-    query_child_handler:
-        RwLock<Option<Box<dyn (Fn(&crate::ref_::Reference) -> IntrospectResult) + Send + Sync>>>,
+    query_child_handler: RwLock<Option<Box<dyn (Fn(&Address) -> IntrospectResult) + Send + Sync>>>,
 
     /// The supervision event for this actor's failure, if any.
     /// See FI-1, FI-2 in `introspect` module doc.
@@ -2683,11 +2680,11 @@ impl InstanceCellState {
 ///    newest-first (descending `occurred_at`), preserving the
 ///    earliest failures which are closest to the root cause.
 fn select_eviction_candidates(
-    entries: &[(ref_::ActorRef, Option<String>)],
+    entries: &[(ActorAddr, Option<String>)],
     excess: usize,
-) -> Vec<ref_::ActorRef> {
-    let mut clean: Vec<&ref_::ActorRef> = Vec::new();
-    let mut failed: Vec<(&ref_::ActorRef, &str)> = Vec::new();
+) -> Vec<ActorAddr> {
+    let mut clean: Vec<&ActorAddr> = Vec::new();
+    let mut failed: Vec<(&ActorAddr, &str)> = Vec::new();
     for (id, occurred_at) in entries {
         match occurred_at {
             Some(ts) => failed.push((id, ts.as_str())),
@@ -2695,7 +2692,7 @@ fn select_eviction_candidates(
         }
     }
 
-    let mut to_remove: Vec<ref_::ActorRef> = Vec::new();
+    let mut to_remove: Vec<ActorAddr> = Vec::new();
     let mut remaining = excess;
 
     // Evict cleanly-stopped first.
@@ -2722,7 +2719,7 @@ impl InstanceCell {
     /// Creates a new instance cell with the provided internal state. If a parent
     /// is provided, it is linked to this cell.
     fn new(
-        actor_id: ref_::ActorRef,
+        actor_id: ActorAddr,
         actor_type: ActorType,
         proc: Proc,
         actor_loop: Option<(PortHandle<Signal>, PortHandle<ActorSupervisionEvent>)>,
@@ -2768,7 +2765,7 @@ impl InstanceCell {
     }
 
     /// The actor's ID.
-    pub fn actor_id(&self) -> &ref_::ActorRef {
+    pub fn actor_id(&self) -> &ActorAddr {
         &self.inner.actor_id
     }
 
@@ -2919,7 +2916,7 @@ impl InstanceCell {
     }
 
     /// Returns the ActorIds of this instance's direct children.
-    pub fn child_actor_ids(&self) -> Vec<ref_::ActorRef> {
+    pub fn child_actor_ids(&self) -> Vec<ActorAddr> {
         self.inner
             .children
             .iter()
@@ -3006,13 +3003,13 @@ impl InstanceCell {
     /// Capture cloned `Proc` references, not `&mut self`.
     pub fn set_query_child_handler(
         &self,
-        handler: impl (Fn(&crate::ref_::Reference) -> IntrospectResult) + Send + Sync + 'static,
+        handler: impl (Fn(&Address) -> IntrospectResult) + Send + Sync + 'static,
     ) {
         *self.inner.query_child_handler.write().unwrap() = Some(Box::new(handler));
     }
 
     /// Invoke the registered QueryChild handler, if any.
-    pub fn query_child(&self, child_ref: &crate::ref_::Reference) -> Option<IntrospectResult> {
+    pub fn query_child(&self, child_ref: &Address) -> Option<IntrospectResult> {
         let guard = self.inner.query_child_handler.read().unwrap();
         guard.as_ref().map(|handler| handler(child_ref))
     }
@@ -3440,6 +3437,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::await_holding_invalid_type)]
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
@@ -3670,6 +3668,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::await_holding_invalid_type)]
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_child() {
@@ -4142,6 +4141,7 @@ mod tests {
 
         #[async_trait]
         impl Handler<Arc<(Barrier, Barrier)>> for LoggingActor {
+            #[allow(clippy::await_holding_invalid_type)]
             async fn handle(
                 &mut self,
                 _cx: &crate::Context<Self>,
@@ -4270,7 +4270,7 @@ mod tests {
     /// have stored the snapshot by the time `handle.await` returns.
     async fn wait_for_terminated_snapshot(
         proc: &Proc,
-        actor_id: &ref_::ActorRef,
+        actor_id: &ActorAddr,
     ) -> crate::introspect::IntrospectResult {
         // Yield to let the introspect task run, then poll. Use a
         // combination of yields (for fast paths) and sleeps (to
