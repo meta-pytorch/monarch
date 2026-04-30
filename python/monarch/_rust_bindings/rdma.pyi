@@ -5,9 +5,18 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-strict
+import enum
 from typing import Any, final
 
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+
+@final
+class _RdmaOpType(enum.IntEnum):
+    """Mirror of the Rust ``RdmaOpType`` enum, used to build mixed-op
+    batches for ``_RdmaBuffer.submit``."""
+
+    ReadInto = 0
+    WriteFrom = 1
 
 @final
 class _RdmaMemoryRegionView:
@@ -48,6 +57,12 @@ class _RdmaBuffer:
         cls, local: _LocalMemoryHandle, client: Any
     ) -> PythonTask[Any]: ...
     def drop(self, client: Any) -> PythonTask[None]: ...
+    def submit(
+        self,
+        ops: list[tuple[_RdmaOpType, _LocalMemoryHandle]],
+        client: Any,
+        timeout: int,
+    ) -> PythonTask[Any]: ...
     def read_into(
         self,
         dst: _LocalMemoryHandle,

@@ -18,6 +18,7 @@ use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
+use monarch_rdma::RdmaOpType;
 use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::ibverbs_supported;
 use monarch_rdma::local_memory::Keepalive;
@@ -181,6 +182,28 @@ impl PyLocalMemoryHandle {
     }
 }
 
+/// Python-visible mirror of [`RdmaOpType`] for [`PyRdmaBuffer::submit`].
+#[pyclass(
+    name = "_RdmaOpType",
+    module = "monarch._rust_bindings.rdma",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyRdmaOpType {
+    ReadInto,
+    WriteFrom,
+}
+
+impl From<PyRdmaOpType> for RdmaOpType {
+    fn from(op_type: PyRdmaOpType) -> Self {
+        match op_type {
+            PyRdmaOpType::ReadInto => RdmaOpType::ReadIntoLocal,
+            PyRdmaOpType::WriteFrom => RdmaOpType::WriteFromLocal,
+        }
+    }
+}
+
 #[pyclass(name = "_RdmaBuffer", module = "monarch._rust_bindings.rdma")]
 #[derive(Clone, Named)]
 struct PyRdmaBuffer {
@@ -235,6 +258,34 @@ impl PyRdmaBuffer {
         format!("<RdmaBuffer'{:?}'>", self.buffer)
     }
 
+    /// Submit a batch of `(op_type, local)` ops against this buffer.
+    /// `timeout` is in seconds and applies to the batch.
+    fn submit<'py>(
+        &self,
+        _py: Python<'py>,
+        ops: Vec<(PyRdmaOpType, PyLocalMemoryHandle)>,
+        client: PyInstance,
+        timeout: u64,
+    ) -> PyResult<PyPythonTask> {
+        let buffer = self.buffer.clone();
+        PyPythonTask::new(async move {
+            let rdma_ops: Vec<(RdmaOpType, Arc<dyn RdmaLocalMemory>)> = ops
+                .into_iter()
+                .map(|(op_type, handle)| {
+                    let local: Arc<dyn RdmaLocalMemory> = Arc::new(handle.inner);
+                    (op_type.into(), local)
+                })
+                .collect();
+
+            buffer
+                .submit(client.deref(), rdma_ops, timeout)
+                .await
+                .map_err(|e| PyException::new_err(format!("failed to submit batch: {}", e)))?;
+
+            Ok(())
+        })
+    }
+
     /// Reads from this remote RDMA buffer into a local memory region.
     ///
     /// # Arguments
@@ -243,23 +294,12 @@ impl PyRdmaBuffer {
     /// * `timeout` - Maximum time in seconds to wait for the operation
     fn read_into<'py>(
         &self,
-        _py: Python<'py>,
+        py: Python<'py>,
         dst: PyLocalMemoryHandle,
         client: PyInstance,
         timeout: u64,
     ) -> PyResult<PyPythonTask> {
-        let buffer = self.buffer.clone();
-
-        PyPythonTask::new(async move {
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(dst.inner);
-
-            buffer
-                .read_into_local(client.deref(), local_memory, timeout)
-                .await
-                .map_err(|e| PyException::new_err(format!("failed to read into buffer: {}", e)))?;
-
-            Ok(())
-        })
+        self.submit(py, vec![(PyRdmaOpType::ReadInto, dst)], client, timeout)
     }
 
     /// Writes from a local memory region into this remote RDMA buffer.
@@ -270,23 +310,12 @@ impl PyRdmaBuffer {
     /// * `timeout` - Maximum time in seconds to wait for the operation
     fn write_from<'py>(
         &self,
-        _py: Python<'py>,
+        py: Python<'py>,
         src: PyLocalMemoryHandle,
         client: PyInstance,
         timeout: u64,
     ) -> PyResult<PyPythonTask> {
-        let buffer = self.buffer.clone();
-
-        PyPythonTask::new(async move {
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(src.inner);
-
-            buffer
-                .write_from_local(client.deref(), local_memory, timeout)
-                .await
-                .map_err(|e| PyException::new_err(format!("failed to write from buffer: {}", e)))?;
-
-            Ok(())
-        })
+        self.submit(py, vec![(PyRdmaOpType::WriteFrom, src)], client, timeout)
     }
 
     fn size(&self) -> usize {
@@ -393,6 +422,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     register_segment_scanner(Some(pytorch_segment_scanner));
 
     module.add_class::<PyLocalMemoryHandle>()?;
+    module.add_class::<PyRdmaOpType>()?;
     module.add_class::<PyRdmaBuffer>()?;
     module.add_class::<PyRdmaManager>()?;
     py_module_add_function!(

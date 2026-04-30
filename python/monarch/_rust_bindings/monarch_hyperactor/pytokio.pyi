@@ -14,12 +14,18 @@ from typing import (
     Generator,
     Generic,
     Optional,
+    overload,
     Sequence,
     Tuple,
     TypeVar,
 )
 
 T = TypeVar("T")
+T1 = TypeVar("T1")
+T2 = TypeVar("T2")
+T3 = TypeVar("T3")
+T4 = TypeVar("T4")
+T5 = TypeVar("T5")
 
 class PythonTask(Generic[T], Awaitable[T]):
     """
@@ -107,6 +113,50 @@ class Shared(Generic[T]):
         """
         Create a Shared that has already completed with the given value. It will return that
         value the first time poll is called.
+        """
+        ...
+
+    @overload
+    @staticmethod
+    def gather(__t1: "Shared[T1]", /) -> "Shared[tuple[T1 | BaseException]]": ...
+    @overload
+    @staticmethod
+    def gather(
+        __t1: "Shared[T1]", __t2: "Shared[T2]", /
+    ) -> "Shared[tuple[T1 | BaseException, T2 | BaseException]]": ...
+    @overload
+    @staticmethod
+    def gather(
+        __t1: "Shared[T1]", __t2: "Shared[T2]", __t3: "Shared[T3]", /
+    ) -> (
+        "Shared[tuple[T1 | BaseException, T2 | BaseException, T3 | BaseException]]"
+    ): ...
+    @overload
+    @staticmethod
+    def gather(
+        __t1: "Shared[T1]",
+        __t2: "Shared[T2]",
+        __t3: "Shared[T3]",
+        __t4: "Shared[T4]",
+        /,
+    ) -> "Shared[tuple[T1 | BaseException, T2 | BaseException, T3 | BaseException, T4 | BaseException]]": ...
+    @overload
+    @staticmethod
+    def gather(
+        __t1: "Shared[T1]",
+        __t2: "Shared[T2]",
+        __t3: "Shared[T3]",
+        __t4: "Shared[T4]",
+        __t5: "Shared[T5]",
+        /,
+    ) -> "Shared[tuple[T1 | BaseException, T2 | BaseException, T3 | BaseException, T4 | BaseException, T5 | BaseException]]": ...
+    @overload
+    @staticmethod
+    def gather(*tasks: "Shared[Any]") -> "Shared[tuple[Any, ...]]":
+        """
+        Run the given Shareds concurrently and return a tuple of their results in input order.
+        Each entry is either the resolved value or the exception object the corresponding task
+        failed with -- exceptions are returned as values, not raised.
         """
         ...
 

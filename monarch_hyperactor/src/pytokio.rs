@@ -817,6 +817,41 @@ impl PyShared {
         )
     }
 
+    /// Run the given `Shared`s concurrently and collect their
+    /// results.
+    ///
+    /// Returns a `Shared` resolving to a tuple with one entry per
+    /// input, in the same order. Each entry is either the resolved
+    /// value (on success) or the Python exception object the task
+    /// failed with -- exceptions are returned as values, not raised.
+    #[staticmethod]
+    #[pyo3(signature = (*tasks))]
+    fn gather(tasks: Vec<PyRef<'_, PyShared>>) -> PyResult<PyShared> {
+        let futures = tasks
+            .iter()
+            .map(|s| {
+                let mut t = s.task()?;
+                t.take_task()
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let mut task = PyPythonTask::new(async move {
+            let results = futures::future::join_all(futures).await;
+            monarch_with_gil(|py| -> PyResult<Py<PyAny>> {
+                let items: Vec<Py<PyAny>> = results
+                    .into_iter()
+                    .map(|r| match r {
+                        Ok(v) => v,
+                        Err(err) => err.into_value(py).into_any(),
+                    })
+                    .collect();
+                Ok(PyTuple::new(py, items)?.into_any().unbind())
+            })
+            .await
+        })?;
+        task.spawn()
+    }
+
     /// Implement Python's `await` protocol for `Shared`.
     ///
     /// This delegates to `self.task()` (which returns a `PythonTask`
