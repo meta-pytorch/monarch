@@ -131,8 +131,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::Address;
 use crate::InstanceCell;
-use crate::ref_;
 use crate::reference;
 
 /// Typed reference to an introspectable entity.
@@ -581,7 +581,7 @@ impl ActorAttrsView {
 /// (with `NodeProperties`) lives in `hyperactor_mesh::introspect`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct IntrospectResult {
-    /// Reference identifying this node.
+    /// Address identifying this node.
     pub identity: IntrospectRef,
     /// JSON-serialized `Attrs` bag containing introspection attributes.
     pub attrs: String,
@@ -634,7 +634,7 @@ pub enum IntrospectMessage {
     },
     /// "Describe one of your children."
     QueryChild {
-        /// Reference identifying the child to describe.
+        /// Address identifying the child to describe.
         child_ref: reference::Reference,
         /// Reply port receiving the child's description.
         reply: reference::OncePortRef<IntrospectResult>,
@@ -906,7 +906,7 @@ pub(crate) async fn serve_introspect(
                 )
             }
             IntrospectMessage::QueryChild { child_ref, reply } => {
-                let child_ref_: ref_::Reference = child_ref.clone().into();
+                let child_ref_: Address = child_ref.clone().into();
                 let payload = cell.query_child(&child_ref_).unwrap_or_else(|| {
                     let mut error_attrs = hyperactor_config::Attrs::new();
                     error_attrs.set(ERROR_CODE, "not_found".to_string());
