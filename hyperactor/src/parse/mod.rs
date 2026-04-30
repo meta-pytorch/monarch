@@ -8,7 +8,7 @@
 
 //! Shared parser infrastructure for Hyperactor ids and refs.
 
+pub(crate) mod addr;
 pub(crate) mod error;
 pub(crate) mod id;
 pub(crate) mod lex;
-pub(crate) mod ref_;

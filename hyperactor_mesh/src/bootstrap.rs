@@ -35,7 +35,9 @@ use base64::prelude::*;
 use futures::StreamExt;
 use futures::stream;
 use humantime::format_duration;
+use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
+use hyperactor::ProcAddr;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
@@ -53,7 +55,6 @@ use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
-use hyperactor::ref_;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -736,7 +737,7 @@ impl std::error::Error for ReadyError {}
 #[derive(Clone)]
 pub struct BootstrapProcHandle {
     /// Logical identity of the proc in the mesh.
-    proc_id: ref_::ProcRef,
+    proc_id: ProcAddr,
 
     /// Live lifecycle snapshot (see [`ProcStatus`]). Kept in a mutex
     /// so [`BootstrapProcHandle::status`] can return a synchronous
@@ -804,7 +805,7 @@ impl BootstrapProcHandle {
     /// This is the canonical entry point used by
     /// `BootstrapProcManager` when it launches a proc into a new
     /// process.
-    pub(crate) fn new(proc_id: ref_::ProcRef, launcher: Weak<dyn ProcLauncher>) -> Self {
+    pub(crate) fn new(proc_id: ProcAddr, launcher: Weak<dyn ProcLauncher>) -> Self {
         let (tx, rx) = watch::channel(ProcStatus::Starting);
         Self {
             proc_id,
@@ -819,7 +820,7 @@ impl BootstrapProcHandle {
 
     /// Return the logical proc identity in the mesh.
     #[inline]
-    pub fn proc_id(&self) -> &ref_::ProcRef {
+    pub fn proc_id(&self) -> &ProcAddr {
         &self.proc_id
     }
 
@@ -1228,7 +1229,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     type TerminalStatus = ProcStatus;
 
     #[inline]
-    fn proc_id(&self) -> &ref_::ProcRef {
+    fn proc_id(&self) -> &ProcAddr {
         &self.proc_id
     }
 
@@ -1611,7 +1612,7 @@ pub struct BootstrapProcManager {
     /// Async registry of running children, keyed by [`ProcId`]. Holds
     /// [`BootstrapProcHandle`]s so callers can query or monitor
     /// status.
-    children: Arc<tokio::sync::Mutex<HashMap<ref_::ProcRef, BootstrapProcHandle>>>,
+    children: Arc<tokio::sync::Mutex<HashMap<ProcAddr, BootstrapProcHandle>>>,
 
     /// FileMonitor that aggregates logs from all children. None if
     /// file monitor creation failed.
@@ -1709,7 +1710,7 @@ impl BootstrapProcManager {
     ///
     /// Returns `None` if the manager has no record of the proc (e.g.
     /// never spawned here, or entry already removed).
-    pub async fn status(&self, proc_id: &ref_::ProcRef) -> Option<ProcStatus> {
+    pub async fn status(&self, proc_id: &ProcAddr) -> Option<ProcStatus> {
         self.children.lock().await.get(proc_id).map(|h| h.status())
     }
 
@@ -1717,7 +1718,7 @@ impl BootstrapProcManager {
     /// if the proc is known to this manager.
     pub async fn watch(
         &self,
-        proc_id: &ref_::ProcRef,
+        proc_id: &ProcAddr,
     ) -> Option<tokio::sync::watch::Receiver<ProcStatus>> {
         self.children.lock().await.get(proc_id).map(|h| h.watch())
     }
@@ -1731,7 +1732,7 @@ impl BootstrapProcManager {
     pub(crate) async fn request_stop(
         &self,
         cx: &impl context::Actor,
-        proc: &ref_::ProcRef,
+        proc: &ProcAddr,
         timeout: Duration,
         reason: &str,
     ) {
@@ -1766,7 +1767,7 @@ impl BootstrapProcManager {
 
     fn spawn_exit_monitor(
         &self,
-        proc_id: ref_::ProcRef,
+        proc_id: ProcAddr,
         handle: BootstrapProcHandle,
         exit_rx: tokio::sync::oneshot::Receiver<ProcExitResult>,
     ) {
@@ -1919,7 +1920,7 @@ impl ProcManager for BootstrapProcManager {
     #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string()))]
     async fn spawn(
         &self,
-        proc_id: ref_::ProcRef,
+        proc_id: ProcAddr,
         backend_addr: ChannelAddr,
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
@@ -2082,10 +2083,10 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
-        proc: &ref_::ProcRef,
+        proc: &ProcAddr,
         timeout: Duration,
         reason: &str,
-    ) -> Result<(Vec<ref_::ActorRef>, Vec<ref_::ActorRef>), anyhow::Error> {
+    ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error> {
         // Snapshot to avoid holding the lock across awaits.
         let proc_handle: Option<BootstrapProcHandle> = {
             let mut guard = self.children.lock().await;
@@ -2451,7 +2452,7 @@ mod tests {
             BoxedMailboxSender::new(router.clone()),
         );
         proc.clone().serve(proc_rx);
-        let proc_ref: hyperactor::ref_::ProcRef = test_proc_id("client_0").into();
+        let proc_ref: ProcAddr = test_proc_id("client_0").into();
         router.bind(proc_ref, proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 
@@ -2563,7 +2564,7 @@ mod tests {
         // ensuring tests only exercise status transitions and not
         // actual process lifecycle.
         fn handle_for_test() -> BootstrapProcHandle {
-            let proc_id: hyperactor::ref_::ProcRef = test_proc_id("0").into();
+            let proc_id: ProcAddr = test_proc_id("0").into();
             let launcher: Arc<dyn ProcLauncher> = Arc::new(TestProcLauncher);
             BootstrapProcHandle::new(proc_id, Arc::downgrade(&launcher))
         }
