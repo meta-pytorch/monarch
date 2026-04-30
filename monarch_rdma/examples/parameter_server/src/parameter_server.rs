@@ -94,8 +94,8 @@ const BUFFER_SIZE: usize = 8;
 
 // Parameter Server Actor
 #[derive(Debug)]
+#[hyperactor::spawnable]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         PsGetBuffers,
         PsUpdate,
@@ -249,8 +249,8 @@ impl Handler<Log> for ParameterServerActor {
 
 // Worker Actor
 #[derive(Debug)]
+#[hyperactor::spawnable]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         WorkerInit { cast = true },
         WorkerStep { cast = true },
