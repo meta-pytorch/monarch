@@ -386,7 +386,7 @@ impl DatabaseScanner {
         let instance: Instance<PythonActor> = py_instance.clone_for_py();
 
         // Build destination PortRef once
-        let dest_port_id: reference::PortId = dest.clone().into();
+        let dest_port_id: reference::PortAddr = dest.clone().into();
         let dest_ref: reference::PortRef<QueryResponse> =
             reference::PortRef::attest(dest_port_id.into());
 

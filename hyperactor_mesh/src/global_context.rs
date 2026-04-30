@@ -396,7 +396,7 @@ async fn bootstrap_host() -> GlobalState {
     let proc_mesh = ProcMeshRef::new_singleton(
         ProcMeshId::singleton(Label::new("local").unwrap()),
         ProcRef::new(
-            local_proc_agent.actor_id().proc_ref().into(),
+            local_proc_agent.actor_id().proc_ref(),
             0,
             local_proc_agent.bind(),
         ),
@@ -531,7 +531,7 @@ mod tests {
     /// sink is shared across tests running in the same process).
     fn inject_undeliverable(
         client: &'static Instance<GlobalClientActor>,
-        dest_actor: hyperactor::ActorId,
+        dest_actor: hyperactor::ActorAddr,
     ) {
         let env = MessageEnvelope::new(
             client.self_id().clone(),
@@ -540,7 +540,7 @@ mod tests {
             Flattrs::new(),
         );
         // Target the global root client's well-known Undeliverable port.
-        let client_actor_id: hyperactor::ActorId = client.self_id().clone();
+        let client_actor_id: hyperactor::ActorAddr = client.self_id().clone();
         let undeliverable_port =
             PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(&client_actor_id);
         undeliverable_port

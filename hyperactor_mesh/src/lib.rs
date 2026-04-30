@@ -74,9 +74,9 @@ pub use global_context::context;
 pub use global_context::this_host;
 pub use global_context::this_proc;
 pub use host_mesh::HostMeshRef;
-use hyperactor::ActorId;
+use hyperactor::ActorAddr;
 use hyperactor::ActorRef;
-use hyperactor::ProcId;
+use hyperactor::ProcAddr;
 use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
 pub use hyperactor_mesh_macros::sel;
@@ -144,7 +144,7 @@ pub enum Error {
     UnroutableMesh(),
 
     #[error("error while calling actor {0}: {1}")]
-    CallError(ActorId, anyhow::Error),
+    CallError(ActorAddr, anyhow::Error),
 
     #[error("actor not registered for type {0}")]
     ActorTypeNotRegistered(String),
@@ -154,13 +154,13 @@ pub enum Error {
     GspawnError(mesh_id::ActorMeshId, String),
 
     #[error("error while sending message to actor {0}: {1}")]
-    SendingError(ActorId, Box<MailboxSenderError>),
+    SendingError(ActorAddr, Box<MailboxSenderError>),
 
     #[error("error while casting message to {0}: {1}")]
     CastingError(mesh_id::ActorMeshId, anyhow::Error),
 
     #[error("error configuring host mesh agent {0}: {1}")]
-    HostMeshAgentConfigurationError(ActorId, String),
+    HostMeshAgentConfigurationError(ActorAddr, String),
 
     #[error(
         "error creating proc (host rank {host_rank}) on host mesh agent {mesh_agent}, state: {state}"
@@ -196,7 +196,7 @@ pub enum Error {
     ControllerActorSpawnError(mesh_id::ResourceId, anyhow::Error),
 
     #[error("proc {0} must be direct-addressable")]
-    RankedProc(ProcId),
+    RankedProc(ProcAddr),
 
     #[error("{0}")]
     Supervision(Box<MeshFailure>),

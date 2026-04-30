@@ -428,7 +428,7 @@ mod tests {
     use std::collections::HashMap;
     use std::time::SystemTime;
 
-    use hyperactor::ProcId;
+    use hyperactor::ProcAddr;
     use hyperactor::channel::ChannelAddr;
     use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
     use hyperactor_mesh::introspect::NodeProperties;
@@ -444,8 +444,8 @@ mod tests {
     /// and as the `actor_type` string in test fixtures.
     const ACTOR_TYPE: &str = "test_actor";
 
-    fn test_proc_id() -> ProcId {
-        ProcId::from_resource_name(ChannelAddr::Local(0), PROC_NAME)
+    fn test_proc_id() -> ProcAddr {
+        ProcAddr::from_resource_name(ChannelAddr::Local(0), PROC_NAME)
     }
 
     /// Build a stub resolver backed by a `HashMap`.

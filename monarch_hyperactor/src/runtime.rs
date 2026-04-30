@@ -16,7 +16,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
-use hyperactor as reference;
 use hyperactor::Proc;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
@@ -89,7 +88,7 @@ pub(crate) fn get_proc_runtime() -> &'static Proc {
     static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
     RUNTIME_PROC.get_or_init(|| {
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = reference::ProcId::unique(addr, "monarch_hyperactor_runtime");
+        let proc_id = hyperactor::ProcAddr::unique(addr, "monarch_hyperactor_runtime");
         Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     })
 }

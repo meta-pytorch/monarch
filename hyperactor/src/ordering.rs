@@ -254,8 +254,8 @@ impl Sequencer {
     /// Assign the next seq for a port, mutate the sequencer with the new seq,
     /// and return the new seq.
     ///
-    /// - Actor ports: share the same sequence scheme per actor (keyed by ActorId)
-    /// - Non-actor ports: get individual sequence schemes (keyed by PortId)
+    /// - Actor ports: share the same sequence scheme per actor (keyed by ActorAddr)
+    /// - Non-actor ports: get individual sequence schemes (keyed by PortAddr)
     pub fn assign_seq(&self, port_id: &PortAddr) -> SeqInfo {
         let key = if port_id.is_actor_port() {
             SeqKey::Actor(port_id.actor_ref().clone())
@@ -476,7 +476,7 @@ mod tests {
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_ref: ActorAddr = test_actor_id("test_0", "test").into();
+        let actor_ref: ActorAddr = test_actor_id("test_0", "test");
         let port_ref = actor_ref.port_ref(Port::from(1));
 
         // Modify original sequencer
@@ -496,7 +496,7 @@ mod tests {
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_ref: ActorAddr = test_actor_id("worker_0", "worker").into();
+        let actor_ref: ActorAddr = test_actor_id("worker_0", "worker");
         // Two different actor ports for the same actor (using Named::port())
         let actor_port_1 = actor_ref.port_ref(Port::from(TestMsg1::port()));
         let actor_port_2 = actor_ref.port_ref(Port::from(TestMsg2::port()));
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 3);
 
         // Actor ports from a different actor get their own shared sequence
-        let actor_ref_2: ActorAddr = test_actor_id("worker_1", "worker").into();
+        let actor_ref_2: ActorAddr = test_actor_id("worker_1", "worker");
         let actor_port_3 = actor_ref_2.port_ref(Port::from(TestMsg1::port()));
         assert_eq!(get_seq(sequencer.assign_seq(&actor_port_3)), 1); // independent from actor_ref
     }
@@ -519,8 +519,8 @@ mod tests {
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_ref_0: ActorAddr = test_actor_id("worker_0", "worker").into();
-        let actor_ref_1: ActorAddr = test_actor_id("worker_1", "worker").into();
+        let actor_ref_0: ActorAddr = test_actor_id("worker_0", "worker");
+        let actor_ref_1: ActorAddr = test_actor_id("worker_1", "worker");
 
         // Non-actor ports from the same actor (without ACTOR_PORT_BIT)
         let port_1 = actor_ref_0.port_ref(Port::from(1));
@@ -546,7 +546,7 @@ mod tests {
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_ref: ActorAddr = test_actor_id("worker_0", "worker").into();
+        let actor_ref: ActorAddr = test_actor_id("worker_0", "worker");
 
         // Actor ports (share sequence per actor)
         let actor_port_1 = actor_ref.port_ref(Port::from(TestMsg1::port()));
