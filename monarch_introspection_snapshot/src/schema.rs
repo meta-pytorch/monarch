@@ -17,7 +17,7 @@
 //! Typed in Rust, canonical string IDs in SQL, numeric time in SQL.
 //! ID columns (`node_id`, `parent_id`, `child_id`,
 //! `failure_root_cause_actor`) are opaque strings derived from typed
-//! refs (`NodeRef`, `ActorId`, `ProcId`) at the conversion boundary.
+//! refs (`NodeRef`, `ActorAddr`, `ProcAddr`) at the conversion boundary.
 //! Timestamps are `i64` microseconds since epoch. Queries should
 //! treat ID columns as opaque join keys — do not parse them in SQL.
 //!
@@ -249,7 +249,7 @@ pub struct ActorFailureRow {
     pub node_id: String,
     /// Human-readable error message.
     pub failure_error_message: String,
-    /// Opaque `ActorId.to_string()` of the root-cause actor — do not
+    /// Opaque `ActorAddr.to_string()` of the root-cause actor — do not
     /// parse in SQL.
     pub failure_root_cause_actor: String,
     /// Display name of the root-cause actor. Nullable —

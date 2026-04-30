@@ -38,6 +38,10 @@ _SYSTEM_NAME_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_DISPLAY_ID_COMPONENT_RE = re.compile(
+    r"^(?:(?P<label>[^<]+)<(?P<uid>[^>]+)>|<(?P<anon_uid>[^>]+)>)$"
+)
+
 
 def _is_client_actor(ref: str) -> bool:
     """The root client actor (client[0]) is the user's entrypoint.
@@ -55,6 +59,16 @@ def _is_system_by_name(label: str) -> bool:
     return bool(_SYSTEM_NAME_PATTERNS.search(label))
 
 
+def _format_display_id_component(component: str) -> str:
+    """Format a canonical Hyperactor id component for display."""
+    match = _DISPLAY_ID_COMPONENT_RE.fullmatch(component.strip())
+    if not match:
+        return component
+    label = match.group("label")
+    uid = match.group("uid") or match.group("anon_uid") or component
+    return f"{label}[{uid}]" if label else uid
+
+
 def _derive_label(node_id: str, node_kind: str, addr: str = "") -> str:
     """Derive a short display label from a snapshot node.
 
@@ -68,7 +82,30 @@ def _derive_label(node_id: str, node_kind: str, addr: str = "") -> str:
             addr = addr.split(":", 1)[1]
         return addr
 
-    # node_id for actors/procs is the last comma-separated component
+    # Compatibility with older snapshot rows that stored tuple-like ids.
+    if node_kind == "actor" and "(" in node_id and node_id.endswith(")"):
+        inner = node_id.split("(", 1)[-1].rstrip(")")
+        parts = inner.split(",")
+        if len(parts) >= 3:
+            return f"{parts[1].strip()}[{parts[2].strip()}]"
+        return inner
+
+    if node_kind == "proc" and "(" in node_id and node_id.endswith(")"):
+        inner = node_id.split("(", 1)[-1].rstrip(")")
+        parts = inner.split(",")
+        if len(parts) >= 2:
+            return f"{parts[0].strip()}[{parts[1].strip()}]"
+        return inner
+
+    if node_kind == "actor":
+        actor_id = node_id.rsplit("@", 1)[0]
+        actor_component = actor_id.split(".", 1)[0]
+        return _format_display_id_component(actor_component)
+
+    if node_kind == "proc":
+        proc_id = node_id.rsplit("@", 1)[0]
+        return _format_display_id_component(proc_id)
+
     return node_id.rsplit(",", 1)[-1] or node_id
 
 

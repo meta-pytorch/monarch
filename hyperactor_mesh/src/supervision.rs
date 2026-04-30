@@ -113,14 +113,13 @@ mod tests {
     //! "with mesh name" and "without mesh name" rendered output is
     //! locked down and any regression surfaces here.
     //!
-    //! The `assert_eq!` literals capture the `ActorId::Display`
+    //! The `assert_eq!` literals capture the `ActorAddr::Display`
     //! output of the checkout the tests were generated against. If
     //! the identifier encoding changes (e.g. a reference-stack
     //! refactor lands in the same tree), the literals need to be
     //! regenerated on the new baseline — the mesh-name-rendering
     //! behavior this module tests is independent of the id format.
 
-    use hyperactor as reference;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
@@ -128,7 +127,7 @@ mod tests {
     use super::*;
 
     fn test_event(name: &str, display_name: Option<String>) -> ActorSupervisionEvent {
-        let proc_id = reference::ProcId::from_resource_name(ChannelAddr::Local(0), "test_proc");
+        let proc_id = hyperactor::ProcAddr::from_resource_name(ChannelAddr::Local(0), "test_proc");
         ActorSupervisionEvent::new(
             proc_id.actor_id(name),
             display_name,
@@ -201,7 +200,8 @@ mod tests {
     // (`hyperactor_mesh/src/global_context.rs:278`): display_name =
     // None, actor_status = generic_failure("message not delivered: ...").
     fn undeliverable_synthesized_event() -> ActorSupervisionEvent {
-        let proc_id = reference::ProcId::from_resource_name(ChannelAddr::Local(0), "worker_proc");
+        let proc_id =
+            hyperactor::ProcAddr::from_resource_name(ChannelAddr::Local(0), "worker_proc");
         ActorSupervisionEvent::new(
             proc_id.actor_id("dead_actor"),
             None, // synthesized site has no PythonActor context; display_name stays None
@@ -255,7 +255,7 @@ mod tests {
         // Note: the inner event here has `display_name = None` (the
         // synthesis site at `global_context.rs` has no PythonActor
         // context to populate it), so the inner actor mention
-        // renders via raw `ActorId` text. That is a separate concern
+        // renders via raw `ActorAddr` text. That is a separate concern
         // from mesh-name plumbing.
     }
 
@@ -277,7 +277,7 @@ mod tests {
     fn proof_direct_actor_handled_panic() {
         let panicked_event = {
             let proc_id =
-                reference::ProcId::from_resource_name(ChannelAddr::Local(0), "worker_proc");
+                hyperactor::ProcAddr::from_resource_name(ChannelAddr::Local(0), "worker_proc");
             ActorSupervisionEvent::new(
                 proc_id.actor_id("philosopher_1"),
                 // `Proc::stop_actor` populates this via
@@ -326,7 +326,7 @@ mod tests {
     fn proof_controller_unreachable() {
         let controller_timeout_event = {
             let proc_id =
-                reference::ProcId::from_resource_name(ChannelAddr::Local(0), "controller_proc");
+                hyperactor::ProcAddr::from_resource_name(ChannelAddr::Local(0), "controller_proc");
             ActorSupervisionEvent::new(
                 proc_id.actor_id("training_controller"),
                 None,

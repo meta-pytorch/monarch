@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
@@ -88,8 +87,8 @@ impl BrokerId {
 
         let broker_name = format!("{:?}", self);
         let actor_id = cx.proc().proc_id().actor_id(&self.0);
-        let actor_ref: reference::ActorRef<LocalStateBrokerActor> =
-            reference::ActorRef::attest(actor_id.into());
+        let actor_ref: hyperactor::ActorRef<LocalStateBrokerActor> =
+            hyperactor::ActorRef::attest(actor_id);
 
         let mut delay_ms = 1;
         loop {
