@@ -545,12 +545,12 @@ pub enum PythonActorDispatchMode {
 /// An actor for which message handlers are implemented in Python.
 #[derive(Debug)]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         PythonMessage { cast = true },
         MeshFailure { cast = true },
     ],
 )]
+#[hyperactor::spawnable]
 pub struct PythonActor {
     /// The Python object that we delegate message handling to.
     actor: Py<PyAny>,
