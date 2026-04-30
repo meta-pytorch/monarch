@@ -114,16 +114,11 @@ pub use actor::RemoteHandles;
 pub use actor::RemoteSpawn;
 pub use actor_local::ActorLocal;
 pub use addr::ActorAddr;
-pub use addr::ActorAddr as ActorId;
 pub use addr::AddrParseError;
-pub use addr::AddrParseError as ReferenceParsingError;
 pub use addr::Address;
-pub use addr::Address as Reference;
 pub use addr::Location;
 pub use addr::PortAddr;
-pub use addr::PortAddr as PortId;
 pub use addr::ProcAddr;
-pub use addr::ProcAddr as ProcId;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]
@@ -154,10 +149,10 @@ pub use hyperactor_telemetry::declare_static_histogram;
 pub use hyperactor_telemetry::declare_static_timer;
 pub use hyperactor_telemetry::key_value;
 pub use hyperactor_telemetry::kv_pairs;
-pub use id::ActorId as RawActorId;
+pub use id::ActorId;
 pub use id::Label;
-pub use id::PortId as RawPortId;
-pub use id::ProcId as RawProcId;
+pub use id::PortId;
+pub use id::ProcId;
 pub use id::Uid;
 #[doc(inline)]
 pub use init::initialize;

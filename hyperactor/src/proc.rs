@@ -3347,6 +3347,7 @@ mod tests {
     use crate::Handler;
     use crate::OncePortRef;
     use crate::PortRef;
+    use crate::port::Port;
     use crate::testing::proc_supervison::ProcSupervisionCoordinator;
     use crate::testing::process_assertion::assert_termination;
 
@@ -3557,9 +3558,7 @@ mod tests {
         let sender = test_actor_id("sender", "client");
 
         // Same ProcId, same addr: route locally; the forwarder must not see it.
-        let local_dest = proc_local
-            .actor_id("worker")
-            .port_ref(crate::port::Port::from(1234));
+        let local_dest = proc_local.actor_id("worker").port_ref(Port::from(1234));
         proc.post(
             MessageEnvelope::new(
                 sender.clone(),
@@ -3572,9 +3571,7 @@ mod tests {
         assert_eq!(forwarded.load(Ordering::SeqCst), 0);
 
         // Same ProcId, different addr: must forward to reach the remote proc.
-        let remote_dest = proc_remote
-            .actor_id("worker")
-            .port_ref(crate::port::Port::from(1234));
+        let remote_dest = proc_remote.actor_id("worker").port_ref(Port::from(1234));
         proc.post(
             MessageEnvelope::new(
                 sender,

@@ -68,8 +68,21 @@ def _derive_label(node_id: str, node_kind: str, addr: str = "") -> str:
             addr = addr.split(":", 1)[1]
         return addr
 
-    # node_id for actors/procs is the last comma-separated component
-    return node_id.rsplit(",", 1)[-1] or node_id
+    if "ActorAddr" in node_id or "ActorId" in node_id:
+        inner = node_id.split("(", 1)[-1].rstrip(")")
+        parts = inner.split(",")
+        if len(parts) >= 3:
+            return f"{parts[1].strip()}[{parts[2].strip()}]"
+        return inner
+
+    if "ProcAddr" in node_id or "ProcId" in node_id:
+        inner = node_id.split("(", 1)[-1].rstrip(")")
+        parts = inner.split(",")
+        if len(parts) >= 2:
+            return f"{parts[0].strip()}[{parts[1].strip()}]"
+        return inner
+
+    return node_id.rsplit("/", 1)[-1].rsplit(",", 1)[-1] or node_id
 
 
 def _extract_status(
