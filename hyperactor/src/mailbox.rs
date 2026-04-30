@@ -1736,14 +1736,7 @@ impl MailboxSender for Mailbox {
         // test runs, explaining the longstanding flaky timeout failures.
         let port_sender = match self.inner.ports.get(&port_index) {
             None => {
-                let err = DeliveryError::Unroutable(format!(
-                    "port not bound in mailbox; port id: {}; message type: {}",
-                    port_index,
-                    envelope.data().typename().map_or_else(
-                        || format!("unregistered type hash {}", envelope.data().typehash()),
-                        |s| s.to_string(),
-                    )
-                ));
+                let err = unbound_port_delivery_error(port_index, envelope.data());
                 return envelope.undeliverable(err, return_handle);
             }
             Some(ref_) => {
@@ -1807,7 +1800,7 @@ impl MailboxSender for Mailbox {
         headers.set(crate::mailbox::headers::TELEMETRY_PORT_ID, dest.index());
 
         match port_sender.send_serialized(headers, data) {
-            Ok(false) => {
+            Ok(disposition) => {
                 hyperactor_telemetry::notify_message_status(
                     hyperactor_telemetry::MessageStatusEvent {
                         timestamp: std::time::SystemTime::now(),
@@ -1816,24 +1809,33 @@ impl MailboxSender for Mailbox {
                         status: "queued".to_string(),
                     },
                 );
+
+                if disposition == SerializedSendDisposition::DeliveredAndExhausted {
+                    self.inner.ports.remove(&port_index);
+                }
+            }
+            Err(SerializedSendFailure::Dead { data, headers }) => {
                 self.inner.ports.remove(&port_index);
-            }
-            Ok(true) => {
-                hyperactor_telemetry::notify_message_status(
-                    hyperactor_telemetry::MessageStatusEvent {
-                        timestamp: std::time::SystemTime::now(),
-                        id: hyperactor_telemetry::generate_status_event_id(message_id),
-                        message_id,
-                        status: "queued".to_string(),
+                let err = unbound_port_delivery_error(port_index, &data);
+
+                MessageEnvelope::seal(
+                    MessageMetadata {
+                        headers,
+                        sender,
+                        dest,
+                        errors: metadata_errors,
+                        ttl,
+                        return_undeliverable,
                     },
-                );
+                    data,
+                )
+                .undeliverable(err, return_handle)
             }
-            Err(SerializedSenderError {
+            Err(SerializedSendFailure::Error(SerializedSendError {
                 data,
                 error: sender_error,
                 headers,
-            }) => {
-                self.inner.ports.remove(&port_index);
+            })) => {
                 let err = DeliveryError::Mailbox(format!("{}", sender_error));
 
                 MessageEnvelope::seal(
@@ -1851,6 +1853,17 @@ impl MailboxSender for Mailbox {
             }
         }
     }
+}
+
+fn unbound_port_delivery_error(port_index: u64, data: &wirevalue::Any) -> DeliveryError {
+    DeliveryError::Unroutable(format!(
+        "port not bound in mailbox; port id: {}; message type: {}",
+        port_index,
+        data.typename().map_or_else(
+            || format!("unregistered type hash {}", data.typehash()),
+            |name| name.to_string(),
+        )
+    ))
 }
 
 /// A port to which M-typed messages can be delivered. Ports may be
@@ -2238,14 +2251,28 @@ impl<M> Drop for OncePortReceiver<M> {
     }
 }
 
-/// Error that that occur during SerializedSender's send operation.
-pub struct SerializedSenderError {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SerializedSendDisposition {
+    Delivered,
+    DeliveredAndExhausted,
+}
+
+/// Error that that occur during `SerializedSender::send_serialized`.
+pub(crate) struct SerializedSendError {
     /// The headers associated with the message.
-    pub headers: Flattrs,
+    pub(crate) headers: Flattrs,
     /// The message was tried to send.
-    pub data: wirevalue::Any,
+    pub(crate) data: wirevalue::Any,
     /// The mailbox sender error that occurred.
-    pub error: MailboxSenderError,
+    pub(crate) error: MailboxSenderError,
+}
+
+pub(crate) enum SerializedSendFailure {
+    Dead {
+        headers: Flattrs,
+        data: wirevalue::Any,
+    },
+    Error(SerializedSendError),
 }
 
 /// SerializedSender encapsulates senders:
@@ -2264,14 +2291,13 @@ trait SerializedSender: Send + Sync {
     /// message (failing if it fails to deserialize), and then send the
     /// resulting message on the underlying port.
     ///
-    /// Send_serialized returns true whenever the port remains valid
-    /// after the send operation.
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SerializedSender`.
+    /// The returned disposition describes successful delivery. Errors
+    /// report both the failed message and whether the sender remains live.
     fn send_serialized(
         &self,
         headers: Flattrs,
         serialized: wirevalue::Any,
-    ) -> Result<bool, SerializedSenderError>;
+    ) -> Result<SerializedSendDisposition, SerializedSendFailure>;
 }
 
 /// A sender to an M-typed unbounded port.
@@ -2355,7 +2381,7 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
         &self,
         headers: Flattrs,
         serialized: wirevalue::Any,
-    ) -> Result<bool, SerializedSenderError> {
+    ) -> Result<SerializedSendDisposition, SerializedSendFailure> {
         // Here, the stack ensures that this port is only instantiated for M-typed messages.
         // This does not protect against bad senders (e.g., encoding wrongly-typed messages),
         // but it is required as we have some usages that rely on representational equivalence
@@ -2363,27 +2389,40 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
         // support port aggregation.
         match serialized.deserialized_unchecked() {
             Ok(message) => {
-                self.sender.send(headers.clone(), message).map_err(|err| {
-                    SerializedSenderError {
-                        data: serialized,
-                        error: MailboxSenderError::new_bound(
-                            self.port_id.clone(),
-                            MailboxSenderErrorKind::Other(err),
-                        ),
-                        headers,
+                match &self.sender {
+                    UnboundedPortSender::Mpsc(sender) => {
+                        sender
+                            .send(message)
+                            .map_err(anyhow::Error::from)
+                            .map_err(|_| SerializedSendFailure::Dead {
+                                data: serialized,
+                                headers,
+                            })?;
                     }
-                })?;
+                    UnboundedPortSender::Func(func) => {
+                        func(headers.clone(), message).map_err(|err| {
+                            SerializedSendFailure::Error(SerializedSendError {
+                                data: serialized,
+                                error: MailboxSenderError::new_bound(
+                                    self.port_id.clone(),
+                                    MailboxSenderErrorKind::Other(err),
+                                ),
+                                headers,
+                            })
+                        })?;
+                    }
+                }
 
-                Ok(true)
+                Ok(SerializedSendDisposition::Delivered)
             }
-            Err(err) => Err(SerializedSenderError {
+            Err(err) => Err(SerializedSendFailure::Error(SerializedSendError {
                 data: serialized,
                 error: MailboxSenderError::new_bound(
                     self.port_id.clone(),
                     MailboxSenderErrorKind::Deserialize(M::typename(), err.into()),
                 ),
                 headers,
-            }),
+            })),
         }
     }
 }
@@ -2406,7 +2445,7 @@ impl<M: Message> OnceSender<M> {
         }
     }
 
-    fn send_once(&self, message: M) -> Result<bool, MailboxSenderError> {
+    fn send_once(&self, message: M) -> Result<SerializedSendDisposition, MailboxSenderError> {
         // TODO: we should replace the sender on error
         match self.sender.lock().unwrap().take() {
             None => Err(MailboxSenderError::new_bound(
@@ -2424,7 +2463,7 @@ impl<M: Message> OnceSender<M> {
                         MailboxSenderErrorKind::Closed,
                     )
                 })?;
-                Ok(false)
+                Ok(SerializedSendDisposition::DeliveredAndExhausted)
             }
         }
     }
@@ -2451,30 +2490,33 @@ impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
         &self,
         headers: Flattrs,
         serialized: wirevalue::Any,
-    ) -> Result<bool, SerializedSenderError> {
+    ) -> Result<SerializedSendDisposition, SerializedSendFailure> {
         match serialized.deserialized() {
-            Ok(message) => self.send_once(message).map_err(|e| SerializedSenderError {
-                data: serialized,
-                error: e,
-                headers,
-            }),
-            Err(err) => Err(SerializedSenderError {
+            Ok(message) => self
+                .send_once(message)
+                .map_err(|_| SerializedSendFailure::Dead {
+                    data: serialized,
+                    headers,
+                }),
+            Err(err) => Err(SerializedSendFailure::Error(SerializedSendError {
                 data: serialized,
                 error: MailboxSenderError::new_bound(
                     self.port_id.clone(),
                     MailboxSenderErrorKind::Deserialize(M::typename(), err.into()),
                 ),
                 headers,
-            }),
+            })),
         }
     }
 }
 
 /// Use the provided function to send untyped messages (i.e. Any objects).
 pub(crate) struct UntypedUnboundedSender {
-    pub(crate) sender:
-        Box<dyn Fn(wirevalue::Any) -> Result<bool, (wirevalue::Any, anyhow::Error)> + Send + Sync>,
-    pub(crate) port_id: ref_::PortRef,
+    pub(crate) sender: Box<
+        dyn Fn(Flattrs, wirevalue::Any) -> Result<SerializedSendDisposition, SerializedSendFailure>
+            + Send
+            + Sync,
+    >,
 }
 
 impl SerializedSender for UntypedUnboundedSender {
@@ -2486,15 +2528,8 @@ impl SerializedSender for UntypedUnboundedSender {
         &self,
         headers: Flattrs,
         serialized: wirevalue::Any,
-    ) -> Result<bool, SerializedSenderError> {
-        (self.sender)(serialized).map_err(|(data, err)| SerializedSenderError {
-            data,
-            error: MailboxSenderError::new_bound(
-                self.port_id.clone(),
-                MailboxSenderErrorKind::Other(err),
-            ),
-            headers,
-        })
+    ) -> Result<SerializedSendDisposition, SerializedSendFailure> {
+        (self.sender)(headers, serialized)
     }
 }
 
@@ -3219,6 +3254,146 @@ mod tests {
 
         assert_matches!(err.kind(), MailboxSenderErrorKind::Closed);
         assert_matches!(err.location(), PortLocation::Bound(bound) if *bound == **port.port_id());
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_type_mismatch_does_not_evict_unbounded_port() {
+        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let (port, mut receiver) = mbox.open_port::<u64>();
+        let port = port.bind();
+        let port_index = port.port_id().index();
+        let (return_handle, mut return_receiver) =
+            crate::mailbox::undeliverable::new_undeliverable_port();
+
+        let wrong_message = wirevalue::Any::serialize(&TestMessage).unwrap();
+        mbox.post(
+            MessageEnvelope::new_unknown(port.port_id().clone(), wrong_message),
+            return_handle.clone(),
+        );
+
+        let Undeliverable(envelope) =
+            tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
+                .await
+                .expect("undeliverable mismatch should arrive")
+                .unwrap();
+        assert!(
+            envelope
+                .error_msg()
+                .is_some_and(|message| message.contains("deserialization error")),
+            "expected deserialization error in {envelope}",
+        );
+        assert!(
+            mbox.inner.ports.contains_key(&port_index),
+            "deserialization mismatch should not evict reusable port",
+        );
+
+        mbox.serialize_and_send(&port, 123u64, return_handle)
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .expect("valid message should still be delivered")
+                .unwrap(),
+            123u64
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_closed_unbounded_port_is_removed_after_send_failure() {
+        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let port_index = mbox.allocate_port();
+        let port_id = mbox.actor_id().port_ref(Port::from(port_index));
+        let port = reference::PortRef::attest(port_id.clone().into());
+        let (return_handle, mut return_receiver) =
+            crate::mailbox::undeliverable::new_undeliverable_port();
+        let (sender, receiver) = mpsc::unbounded_channel::<u64>();
+
+        drop(receiver);
+
+        mbox.inner.ports.insert(
+            port_index,
+            Arc::new(UnboundedSender::new(
+                UnboundedPortSender::Mpsc(sender),
+                port_id,
+            )),
+        );
+
+        mbox.serialize_and_send(&port, 123u64, return_handle.clone())
+            .unwrap();
+
+        let Undeliverable(envelope) =
+            tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
+                .await
+                .expect("closed port should produce undeliverable")
+                .unwrap();
+        let first_error = envelope.error_msg().expect("expected delivery error");
+        assert!(
+            first_error.contains("port not bound in mailbox"),
+            "expected unbound-port error in {envelope}",
+        );
+        assert!(
+            !mbox.inner.ports.contains_key(&port_index),
+            "dead reusable port should be removed after send failure",
+        );
+
+        mbox.serialize_and_send(&port, 456u64, return_handle)
+            .unwrap();
+        let Undeliverable(envelope) =
+            tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
+                .await
+                .expect("removed port should produce unbound undeliverable")
+                .unwrap();
+        let second_error = envelope.error_msg().expect("expected delivery error");
+        assert_eq!(
+            first_error, second_error,
+            "dead-port undeliverable should match unbound-port undeliverable exactly",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_once_type_mismatch_preserves_sender_until_delivery() {
+        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let (port, receiver) = mbox.open_once_port::<u64>();
+        let port = port.bind();
+        let port_index = port.port_id().index();
+        let (return_handle, mut return_receiver) =
+            crate::mailbox::undeliverable::new_undeliverable_port();
+
+        let wrong_message = wirevalue::Any::serialize(&TestMessage).unwrap();
+        mbox.post(
+            MessageEnvelope::new_unknown(port.port_id().clone(), wrong_message),
+            return_handle.clone(),
+        );
+
+        let Undeliverable(envelope) =
+            tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
+                .await
+                .expect("once-port mismatch should arrive")
+                .unwrap();
+        assert!(
+            envelope
+                .error_msg()
+                .is_some_and(|message| message.contains("deserialization error")),
+            "expected deserialization error in {envelope}",
+        );
+        assert!(
+            mbox.inner.ports.contains_key(&port_index),
+            "once port should survive deserialization mismatch before delivery",
+        );
+
+        mbox.serialize_and_send_once(port, 123u64, return_handle)
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .expect("valid once message should still be delivered")
+                .unwrap(),
+            123u64
+        );
+        assert!(
+            !mbox.inner.ports.contains_key(&port_index),
+            "successful once send should remove the sender entry",
+        );
     }
 
     #[tokio::test]
