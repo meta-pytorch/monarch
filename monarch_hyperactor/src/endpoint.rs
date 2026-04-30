@@ -160,8 +160,6 @@ impl Drop for RecordEndpointGuard {
             "method" => self.method_name.clone(),
             "actor_count" => actor_count_str
         );
-        tracing::info!(message = "response received", method = self.method_name);
-
         let duration_us = self.start.elapsed().as_micros();
 
         match self.adverb {
