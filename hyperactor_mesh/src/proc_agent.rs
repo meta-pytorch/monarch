@@ -352,6 +352,11 @@ impl ProcAgent {
             Ok(Ok(())) => {}
         }
 
+        // Stop and join the mailbox server (no-op if this proc was
+        // not created with one). Pending receive-side acks are
+        // flushed before the underlying channel server is torn down.
+        self.proc.join_mailbox_server().await;
+
         tracing::info!(
             "shutting down process after all actors reached terminal state (exit_code={})",
             exit_code,
