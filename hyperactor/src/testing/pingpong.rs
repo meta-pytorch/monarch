@@ -38,7 +38,8 @@ wirevalue::register_type!(PingPongMessage);
 
 /// A PingPong actor that can play the PingPong game by sending messages around.
 #[derive(Debug)]
-#[hyperactor::export(spawn = true, handlers = [PingPongMessage])]
+#[hyperactor::export(PingPongMessage)]
+#[hyperactor::spawnable]
 pub struct PingPongActor {
     /// A port to send undeliverable messages to.
     undeliverable_port_ref: Option<reference::PortRef<Undeliverable<MessageEnvelope>>>,
