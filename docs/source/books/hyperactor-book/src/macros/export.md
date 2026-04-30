@@ -1,6 +1,6 @@
 # `#[export]`
 
-The `#[hyperactor::export]` macro turns a regular `Actor` implementation into a remotely spawnable actor, registering its type information, `spawn` function, and supported message handlers for discovery and use across processes or runtimes.
+The `#[hyperactor::export]` macro turns a regular `Actor` implementation into a remotely addressable actor by generating its type information and supported message handlers.
 
 It also supports message casting (broadcasting to multiple actors) by specifying `cast = true` for individual handlers.
 
@@ -9,10 +9,8 @@ It also supports message casting (broadcasting to multiple actors) by specifying
 When applied to an actor type like this:
 
 ```rust
-#[hyperactor::export(
-    spawn = true,
-    handlers = [ShoppingList],
-)]
+#[hyperactor::spawnable]
+#[hyperactor::export(ShoppingList)]
 struct ShoppingListActor(HashSet<String>);
 ```
 The macro expands to include:
@@ -20,12 +18,12 @@ The macro expands to include:
  - A `Binds<Self>` implementation that registers supported message types
  - Implementations of `RemoteHandles<T>` for each type in the `handlers = [...]` list
  - A `Referable` marker implementation
- - If `spawn = true`, the actor's `RemoteSpawn` implementation is registered in the remote actor inventory.
 
 This enables the actor to be:
- - Spawned dynamically by name
  - Routed to via typed messages
  - Reflected on at runtime (for diagnostics, tools, and orchestration)
+
+To make a concrete actor remotely spawnable, add `#[hyperactor::spawnable]`. For generic instantiations, use `hyperactor::register_spawnable!(MyActor<u64>);`.
 
 ## Casting Messages
 
@@ -69,7 +67,7 @@ impl Named for ShoppingListActor {
 
 > **Note:** The `Referable` trait itself only requires `Named`. It does not automatically provide `Send` or `Sync` bounds. If your actor needs to be passed across threads or stored in shared contexts, those bounds will be enforced at the specific call sites that require them.
 
-If `spawn = true`, the macro also emits:
+If the actor is marked `#[hyperactor::spawnable]`, that attribute emits:
 ```rust
 impl RemoteSpawn for ShoppingListActor {}
 ```
@@ -87,9 +85,8 @@ This allows the actor to be discovered and spawned by name at runtime.
 
 ## Summary
 
-The `#[export]` macro makes an actor remotely visible, spawnable, and routable by declaring:
+The `#[export]` macro makes an actor remotely visible and routable by declaring:
  - What messages it handles
  - How to bind those messages
  - What its globally unique name is
- - (Optionally) how to spawn it dynamically
  - (Optionally) which messages support multicast (broadcasting)
