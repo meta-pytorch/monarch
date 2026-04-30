@@ -354,7 +354,11 @@ impl<M: ProcManager> Host<M> {
             frontend: Some(frontend),
         };
 
-        // Serve the same router on the backend address.
+        // Serve the same router on the backend address. We don't ever need
+        // to join this handle because the server is used only to receive
+        // messages from procs spawned by this host -- if the host is shutting down,
+        // then all its procs should have shut down first, and we don't have to worry
+        // about any unacked messages.
         let _backend_handle = host.forwarder().serve(backend_rx);
 
         Ok(host)
@@ -646,6 +650,14 @@ async fn duplex_accept_loop(
     }
 
     while tasks.join_next().await.is_some() {}
+
+    // Drain the duplex server's listener task so every in-flight
+    // dispatch (one per session) finishes its terminal cleanup —
+    // final ack flush + `Closed` emit — before the host exits.
+    // Without this, simply dropping `duplex_server` would detach the
+    // listener and skip the flush, surfacing as undeliverable
+    // message errors on the peer's send-side after `process::exit`.
+    duplex_server.join().await;
 }
 
 /// Error returned by [`ProcHandle::ready`].
