@@ -15,6 +15,19 @@
 /// Maximum size for a single RDMA operation in bytes (1 GiB).
 const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
 
+/// Number of work requests `put`/`get` will post for an op of `size` bytes.
+/// Each WR consumes one slot in the QP send queue (and one `max_rd_atomic`
+/// slot if the op is an RDMA-READ), so callers that need to reserve send-queue
+/// capacity ahead of time should use this to size the reservation.
+pub(crate) fn wr_count_for_size(size: usize) -> u32 {
+    // A zero-byte op still posts no WRs; otherwise it's ceil(size / chunk).
+    if size == 0 {
+        0
+    } else {
+        size.div_ceil(MAX_RDMA_MSG_SIZE) as u32
+    }
+}
+
 use std::io::Error;
 use std::result::Result;
 use std::time::Duration;
@@ -250,7 +263,9 @@ impl IbvQueuePair {
                 &mut port_attr as *mut rdmaxcel_sys::ibv_port_attr as *mut _,
             );
             if errno != 0 {
-                let os_error = Error::last_os_error();
+                // ibv_query_port returns the errno value directly; reading
+                // the C global Error::last_os_error() can be stale.
+                let os_error = Error::from_raw_os_error(errno);
                 return Err(anyhow::anyhow!(
                     "Failed to query port attributes: {}",
                     os_error
@@ -295,7 +310,9 @@ impl IbvQueuePair {
                 &mut qp_init_attr,
             );
             if errno != 0 {
-                let os_error = Error::last_os_error();
+                // ibv_query_qp returns the errno value directly; reading
+                // the C global Error::last_os_error() can be stale.
+                let os_error = Error::from_raw_os_error(errno);
                 return Err(anyhow::anyhow!("failed to query QP state: {}", os_error));
             }
             Ok(qp_attr.qp_state)
@@ -337,7 +354,9 @@ impl IbvQueuePair {
 
             let errno = rdmaxcel_sys::ibv_modify_qp((*qp).ibv_qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
-                let os_error = Error::last_os_error();
+                // ibv_modify_qp returns the errno value directly; reading
+                // the C global Error::last_os_error() can be stale.
+                let os_error = Error::from_raw_os_error(errno);
                 return Err(anyhow::anyhow!(
                     "failed to transition QP to INIT: {}",
                     os_error
@@ -382,7 +401,9 @@ impl IbvQueuePair {
 
             let errno = rdmaxcel_sys::ibv_modify_qp((*qp).ibv_qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
-                let os_error = Error::last_os_error();
+                // ibv_modify_qp returns the errno value directly; reading
+                // the C global Error::last_os_error() can be stale.
+                let os_error = Error::from_raw_os_error(errno);
                 return Err(anyhow::anyhow!(
                     "failed to transition QP to RTR: {}",
                     os_error
@@ -409,7 +430,9 @@ impl IbvQueuePair {
 
             let errno = rdmaxcel_sys::ibv_modify_qp((*qp).ibv_qp, &mut qp_attr, mask.0 as i32);
             if errno != 0 {
-                let os_error = Error::last_os_error();
+                // ibv_modify_qp returns the errno value directly; reading
+                // the C global Error::last_os_error() can be stale.
+                let os_error = Error::from_raw_os_error(errno);
                 return Err(anyhow::anyhow!(
                     "failed to transition QP to RTS: {}",
                     os_error
@@ -793,7 +816,9 @@ impl IbvQueuePair {
             }
 
             if errno != 0 {
-                let os_error = Error::last_os_error();
+                // ibv_post_send returns the errno value directly; reading
+                // the C global Error::last_os_error() can be stale.
+                let os_error = Error::from_raw_os_error(errno);
                 return Err(anyhow::anyhow!("Failed to post send request: {}", os_error));
             }
             tracing::debug!(
