@@ -15,15 +15,6 @@ Note: pull requests are not imported into the GitHub directory in the usual way.
 5. Make sure your code lints.
 6. If you haven't already, complete the Contributor License Agreement ("CLA").
 
-## Test layout
-
-Test modules under `tests/` are named after the source module they cover
-(e.g. `tests/layouts.py` covers `src/tensor_layouts/layouts.py`). Pytest
-is configured to discover **every** `*.py` file in `tests/`, so anything
-added there must be either a test module or pytest infrastructure
-(`conftest.py`). Shared helpers belong in the source tree or in a
-`tests/_support/` module that pytest does not auto-collect.
-
 ## Contributor License Agreement ("CLA")
 In order to accept your pull request, we need you to submit a CLA. You only need
 to do this once to work on any of Meta's open source projects.
