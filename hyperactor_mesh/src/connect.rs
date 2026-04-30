@@ -47,6 +47,8 @@ use futures::future;
 use futures::stream::FusedStream;
 use futures::task::Context;
 use futures::task::Poll;
+use hyperactor::OncePortRef;
+use hyperactor::PortRef;
 use hyperactor::context;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
@@ -55,7 +57,7 @@ use hyperactor::mailbox::open_port;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor::reference as hyperactor_reference;
+use hyperactor::reference::ActorId;
 use pin_project::pin_project;
 use pin_project::pinned_drop;
 use serde::Deserialize;
@@ -85,18 +87,18 @@ struct OwnedReadHalfStream {
 
 /// Wrap a `PortReceiver<IoMsg>` as a `AsyncRead`.
 pub struct OwnedReadHalf {
-    peer: hyperactor_reference::ActorId,
+    peer: ActorId,
     inner: StreamReader<OwnedReadHalfStream, Cursor<Vec<u8>>>,
 }
 
 /// Wrap a `PortRef<IoMsg>` as a `AsyncWrite`.
 #[pin_project(PinnedDrop)]
 pub struct OwnedWriteHalf<C: context::Actor> {
-    peer: hyperactor_reference::ActorId,
+    peer: ActorId,
     #[pin]
     caps: C,
     #[pin]
-    port: hyperactor_reference::PortRef<Io>,
+    port: PortRef<Io>,
     #[pin]
     shutdown: bool,
 }
@@ -115,13 +117,13 @@ impl<C: context::Actor> ActorConnection<C> {
         (self.reader, self.writer)
     }
 
-    pub fn peer(&self) -> &hyperactor_reference::ActorId {
+    pub fn peer(&self) -> &ActorId {
         self.reader.peer()
     }
 }
 
 impl OwnedReadHalf {
-    fn new(peer: hyperactor_reference::ActorId, port: PortReceiver<Io>) -> Self {
+    fn new(peer: ActorId, port: PortReceiver<Io>) -> Self {
         Self {
             peer,
             inner: StreamReader::new(OwnedReadHalfStream {
@@ -131,7 +133,7 @@ impl OwnedReadHalf {
         }
     }
 
-    pub fn peer(&self) -> &hyperactor_reference::ActorId {
+    pub fn peer(&self) -> &ActorId {
         &self.peer
     }
 
@@ -144,11 +146,7 @@ impl OwnedReadHalf {
 }
 
 impl<C: context::Actor> OwnedWriteHalf<C> {
-    fn new(
-        peer: hyperactor_reference::ActorId,
-        caps: C,
-        port: hyperactor_reference::PortRef<Io>,
-    ) -> Self {
+    fn new(peer: ActorId, caps: C, port: PortRef<Io>) -> Self {
         Self {
             peer,
             caps,
@@ -157,7 +155,7 @@ impl<C: context::Actor> OwnedWriteHalf<C> {
         }
     }
 
-    pub fn peer(&self) -> &hyperactor_reference::ActorId {
+    pub fn peer(&self) -> &ActorId {
         &self.peer
     }
 
@@ -316,20 +314,17 @@ impl<C: context::Actor> ConnectionCompleter<C> {
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct Connect {
     /// The ID of the client initiating the connection.
-    id: hyperactor_reference::ActorId,
-    conn: hyperactor_reference::PortRef<Io>,
+    id: ActorId,
+    conn: PortRef<Io>,
     /// The port the server can use to complete the connection.
-    return_conn: hyperactor_reference::OncePortRef<Accept>,
+    return_conn: OncePortRef<Accept>,
 }
 wirevalue::register_type!(Connect);
 
 impl Connect {
     /// Allocate a new `Connect` message and return the associated `ConnectionCompleter` that can be used
     /// to finish setting up the connection.
-    pub fn allocate<C: context::Actor>(
-        id: hyperactor_reference::ActorId,
-        caps: C,
-    ) -> (Self, ConnectionCompleter<C>) {
+    pub fn allocate<C: context::Actor>(id: ActorId, caps: C) -> (Self, ConnectionCompleter<C>) {
         let (conn_tx, conn_rx) = open_port::<Io>(&caps);
         let (return_tx, return_rx) = open_once_port::<Accept>(&caps);
         (
@@ -352,9 +347,9 @@ impl Connect {
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct Accept {
     /// The ID of the server that accepted the connection.
-    id: hyperactor_reference::ActorId,
+    id: ActorId,
     /// The port the client will use to send data over the connection to the server.
-    conn: hyperactor_reference::PortRef<Io>,
+    conn: PortRef<Io>,
 }
 wirevalue::register_type!(Accept);
 
@@ -376,7 +371,7 @@ impl Unbind for Connect {
 /// return `AsyncRead` and `AsyncWrite` streams that can be used to communicate with the other side.
 pub async fn accept<C: context::Actor>(
     caps: C,
-    self_id: hyperactor_reference::ActorId,
+    self_id: ActorId,
     message: Connect,
 ) -> Result<ActorConnection<C>> {
     let (tx, rx) = open_port::<Io>(&caps);
