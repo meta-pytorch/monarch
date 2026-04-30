@@ -37,6 +37,8 @@ use hyperactor::RefClient;
 use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 use typeuri::Named;
 
 use super::IbvBuffer;
@@ -52,6 +54,7 @@ use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::PollCompletionError;
 use super::queue_pair::PollTarget;
+use super::queue_pair::wr_count_for_size;
 use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
@@ -127,7 +130,72 @@ pub enum IbvManagerMessage {
 }
 wirevalue::register_type!(IbvManagerMessage);
 
-/// Local-only messages for MR registration/deregistration.
+/// Per-QP send-queue flow control. Splits the QP's `max_send_wr`
+/// capacity into two independent pools: `max_rd_atomic` permits for
+/// RDMA-READs (NIC-level cap; over-posting trips `ENOMEM` from
+/// `ibv_post_send`) and the remainder for RDMA-WRITEs. Permits map
+/// 1:1 to send-queue WRs, so an op that posts N WRs claims N permits.
+#[derive(Debug)]
+pub struct QpFlowControl {
+    read_sem: Arc<Semaphore>,
+    write_sem: Arc<Semaphore>,
+    max_read_permits: u32,
+    max_write_permits: u32,
+}
+
+impl QpFlowControl {
+    fn new(config: &IbvConfig) -> Result<Self, anyhow::Error> {
+        let max_rd_atomic = config.max_rd_atomic as u32;
+        let max_send_wr = config.max_send_wr;
+        // `max_rd_atomic == 0` would deadlock any RDMA-READ op, and a QP
+        // whose `max_send_wr` does not exceed `max_rd_atomic` would give
+        // writes zero permits and deadlock any RDMA-WRITE op.
+        anyhow::ensure!(
+            max_rd_atomic > 0,
+            "max_rd_atomic must be > 0 (got {})",
+            max_rd_atomic,
+        );
+        anyhow::ensure!(
+            max_send_wr > max_rd_atomic,
+            "max_send_wr ({}) must exceed max_rd_atomic ({})",
+            max_send_wr,
+            max_rd_atomic,
+        );
+        let max_write_permits = max_send_wr - max_rd_atomic;
+        Ok(Self {
+            read_sem: Arc::new(Semaphore::new(max_rd_atomic as usize)),
+            write_sem: Arc::new(Semaphore::new(max_write_permits as usize)),
+            max_read_permits: max_rd_atomic,
+            max_write_permits,
+        })
+    }
+
+    /// Acquire `n` permits from the pool for `op_type`, one per WR the op
+    /// will post. Drop the returned guard to return them all. Errors if
+    /// `n` exceeds the pool's total capacity, since otherwise the await
+    /// would block forever waiting for permits that can never be released.
+    async fn acquire_many(
+        &self,
+        op_type: RdmaOpType,
+        n: u32,
+    ) -> Result<OwnedSemaphorePermit, anyhow::Error> {
+        let (sem, capacity) = match op_type {
+            RdmaOpType::ReadIntoLocal => (self.read_sem.clone(), self.max_read_permits),
+            RdmaOpType::WriteFromLocal => (self.write_sem.clone(), self.max_write_permits),
+        };
+        anyhow::ensure!(
+            n <= capacity,
+            "RDMA op of {} WRs exceeds {:?} pool capacity ({})",
+            n,
+            op_type,
+            capacity,
+        );
+        Ok(sem.acquire_many_owned(n).await?)
+    }
+}
+
+/// Local-only messages for MR registration/deregistration and fetching
+/// the per-QP flow-control semaphores.
 #[derive(Handler, HandleClient, Debug)]
 pub enum IbvManagerLocalMessage {
     /// Register a memory region, returning the MR view and device name.
@@ -142,6 +210,15 @@ pub enum IbvManagerLocalMessage {
         id: usize,
         #[reply]
         reply: OncePortHandle<Result<(), String>>,
+    },
+    /// Return the [`QpFlowControl`] for the given QP, or `None` if it
+    /// hasn't been created yet.
+    GetQpFlowControl {
+        local_device: String,
+        remote_actor_id: reference::ActorId,
+        remote_device: String,
+        #[reply]
+        reply: OncePortHandle<Option<Arc<QpFlowControl>>>,
     },
 }
 
@@ -160,6 +237,9 @@ pub struct IbvManagerActor {
 
     // Nested map: local_device -> (ActorId, remote_device) -> IbvQueuePair
     device_qps: HashMap<String, HashMap<(reference::ActorId, String), IbvQueuePair>>,
+
+    // Per-QP flow control, keyed identically to `device_qps`.
+    qp_flow_control: HashMap<String, HashMap<(reference::ActorId, String), Arc<QpFlowControl>>>,
 
     // Track QPs currently being created to prevent duplicate creation
     // Wrapped in Arc<Mutex> to allow safe concurrent access
@@ -313,6 +393,7 @@ impl IbvManagerActor {
         let actor = Self {
             owner: OnceLock::new(),
             device_qps: HashMap::new(),
+            qp_flow_control: HashMap::new(),
             pending_qp_creation: Arc::new(Mutex::new(HashSet::new())),
             device_domains: HashMap::new(),
             config,
@@ -899,11 +980,15 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         let qp = IbvQueuePair::new(domain_context, domain_pd, self.config.clone())
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {}", e))?;
 
-        // Insert the QP into the nested map structure
+        let flow_control = Arc::new(QpFlowControl::new(&self.config)?);
         self.device_qps
             .entry(self_device.clone())
             .or_insert_with(HashMap::new)
-            .insert(inner_key, qp);
+            .insert(inner_key.clone(), qp);
+        self.qp_flow_control
+            .entry(self_device.clone())
+            .or_insert_with(HashMap::new)
+            .insert(inner_key, flow_control);
 
         tracing::debug!(
             "successfully created a connection with {:?} for local device {} -> remote device {}",
@@ -1003,6 +1088,21 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
         id: usize,
     ) -> Result<Result<(), String>, anyhow::Error> {
         Ok(self.deregister_mr_impl(id).map_err(|e| e.to_string()))
+    }
+
+    async fn get_qp_flow_control(
+        &mut self,
+        _cx: &Context<Self>,
+        local_device: String,
+        remote_actor_id: reference::ActorId,
+        remote_device: String,
+    ) -> Result<Option<Arc<QpFlowControl>>, anyhow::Error> {
+        let inner_key = (remote_actor_id, remote_device);
+        Ok(self
+            .qp_flow_control
+            .get(&local_device)
+            .and_then(|m| m.get(&inner_key))
+            .cloned())
     }
 }
 
@@ -1134,6 +1234,30 @@ impl IbvBackend {
                 .await?
                 .map_err(|e| anyhow::anyhow!(e))?;
 
+            // Hold one send-queue permit per WR `qp.put`/`qp.get` will post,
+            // until `wait_for_completion` drains all of their CQEs. A single
+            // op chunked into N WRs consumes N slots in the QP send queue
+            // (and N `max_rd_atomic` slots if it's an RDMA-READ), so we
+            // reserve N permits up front to avoid `ENOMEM` from
+            // `ibv_post_send` under concurrent submitters.
+            let flow_control = self
+                .get_qp_flow_control(
+                    cx,
+                    local_buffer.device_name.clone(),
+                    op.remote_manager.actor_id().clone(),
+                    op.remote_buffer.device_name.clone(),
+                )
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "QP flow control missing for {} -> {}",
+                        local_buffer.device_name,
+                        op.remote_buffer.device_name,
+                    )
+                })?;
+            let n_wrs = wr_count_for_size(local_buffer.size);
+            let _flow_guard = flow_control.acquire_many(op.op_type, n_wrs).await?;
+
             let wr_id = match op.op_type {
                 RdmaOpType::WriteFromLocal => qp.put(local_buffer.clone(), op.remote_buffer)?,
                 RdmaOpType::ReadIntoLocal => qp.get(local_buffer.clone(), op.remote_buffer)?,
@@ -1167,10 +1291,8 @@ impl IbvBackend {
 impl RdmaBackend for IbvBackend {
     type TransportInfo = ();
 
-    /// Submit a batch of RDMA operations.
-    ///
-    /// Resolves ibv ops, then executes each directly — registering/deregistering
-    /// MRs via actor messages, while performing QP put/get and CQ polling locally.
+    /// Submit a batch of RDMA ops, sharing one deadline across the
+    /// batch. Per-op flow control runs inside [`Self::execute_op`].
     async fn submit(
         &mut self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
@@ -1193,14 +1315,33 @@ impl RdmaBackend for IbvBackend {
         }
 
         let deadline = Instant::now() + timeout;
-        for op in ibv_ops {
+        let this = &*self;
+        let futs = ibv_ops.into_iter().map(|op| async move {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(anyhow::anyhow!("submit timed out"));
             }
-            self.execute_op(cx, op, remaining).await?;
+            this.execute_op(cx, op, remaining).await
+        });
+        // `join_all` (not `try_join_all`) so a sibling failure can't drop
+        // an in-flight `execute_op` mid-await, which would skip its
+        // `deregister_mr` cleanup and release a flow-control permit
+        // while the WR is still posted on the hardware.
+        let results = futures::future::join_all(futs).await;
+        let errors: Vec<anyhow::Error> = results.into_iter().filter_map(Result::err).collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "{} op(s) failed: {}",
+                errors.len(),
+                errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ))
         }
-        Ok(())
     }
 
     fn transport_level(&self) -> RdmaTransportLevel {
