@@ -1795,7 +1795,7 @@ mod tests {
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
         };
         let port_ref = reference::PortRef::<PythonMessage>::attest_reducible(
-            test_port_id("world_0", "client", 123),
+            test_port_id("world_0", "client", 123).into(),
             Some(reducer_spec),
             StreamingReducerOpts::default(),
         );
@@ -1860,7 +1860,10 @@ mod tests {
         // A ProcCreationError
         let mesh_agent: hyperactor::reference::ActorRef<hyperactor_mesh::host_mesh::HostAgent> =
             hyperactor::reference::ActorRef::attest(
-                test_port_id("hello_0", "actor", 0).actor_id().clone(),
+                test_port_id("hello_0", "actor", 0)
+                    .actor_id()
+                    .clone()
+                    .into(),
             );
         let expected_prefix = format!(
             "error creating proc (host rank 0) on host mesh agent {}",

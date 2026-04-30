@@ -27,6 +27,7 @@ use hyperactor::Data;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
+use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
@@ -125,7 +126,7 @@ struct ActorInstanceState {
     supervision_event: Option<ActorSupervisionEvent>,
     /// Streaming subscribers that receive `State<ActorState>` on every
     /// state change. Dead subscribers are removed via undeliverable handling.
-    subscribers: Vec<hyperactor_reference::PortRef<resource::State<ActorState>>>,
+    subscribers: Vec<PortRef<resource::State<ActorState>>>,
     /// The time at which the actor should be considered expired if no further
     /// keepalive is received. `None` meaning it will never expire.
     expiry_time: Option<std::time::SystemTime>,
@@ -136,10 +137,7 @@ struct ActorInstanceState {
     /// Pending `WaitRankStatus` callers: each entry is the minimum
     /// status threshold and the reply port to send once the threshold
     /// is met.
-    pending_wait_status: Vec<(
-        resource::Status,
-        hyperactor_reference::PortRef<crate::StatusOverlay>,
-    )>,
+    pending_wait_status: Vec<(resource::Status, PortRef<crate::StatusOverlay>)>,
 }
 
 impl ActorInstanceState {
@@ -652,8 +650,7 @@ impl Actor for ProcAgent {
     ) -> Result<(), anyhow::Error> {
         if let Some(true) = envelope.0.headers().get(STREAM_STATE_SUBSCRIBER) {
             let dest_port_id: hyperactor_reference::PortId = envelope.0.dest().clone().into();
-            let port =
-                hyperactor_reference::PortRef::<resource::State<ActorState>>::attest(dest_port_id);
+            let port = PortRef::<resource::State<ActorState>>::attest(dest_port_id.into());
             // Remove this subscriber from whichever actor instance holds it.
             for instance in self.actor_states.values_mut() {
                 instance.subscribers.retain(|s| s != &port);
@@ -1203,6 +1200,8 @@ impl Handler<SelfCheck> for ProcAgent {
 mod tests {
     use std::sync::Arc;
 
+    use hyperactor::ActorRef;
+
     use super::*;
 
     // A no-op actor used to test direct proc-level spawning.
@@ -1249,8 +1248,7 @@ mod tests {
 
         let agent_id: hyperactor_reference::ActorId =
             proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
-        let port =
-            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Helper: send QueryChild(Proc) and return the payload with a
         // timeout so a misrouted reply fails fast rather than hanging.
@@ -1358,8 +1356,7 @@ mod tests {
 
         let agent_id: hyperactor_reference::ActorId =
             proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
-        let port =
-            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Concurrent query task: send QueryChild(Proc) every 10ms.
         let query_client_proc =
@@ -1477,7 +1474,7 @@ mod tests {
             .unwrap();
 
         let (client, _client_handle) = proc.instance("client").unwrap();
-        let agent_ref: hyperactor_reference::ActorRef<ProcAgent> = agent_handle.bind();
+        let agent_ref: ActorRef<ProcAgent> = agent_handle.bind();
 
         let actor_type = hyperactor::actor::remote::Remote::collect()
             .name_of::<ExtraActor>()
@@ -1686,8 +1683,7 @@ mod tests {
         // resolution.
         let agent_id: hyperactor_reference::ActorId =
             proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
-        let port =
-            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Poll until queue stats are non-zero.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);

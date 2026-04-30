@@ -1616,7 +1616,7 @@ impl Mailbox {
             Entry::Occupied(_entry) => {}
         }
 
-        PortRef::attest(port_ref.into())
+        PortRef::attest(port_ref)
     }
 
     fn bind_to_actor_port<M: RemoteMessage>(&self, handle: &PortHandle<M>) {
@@ -1990,11 +1990,11 @@ impl<M: RemoteMessage> PortHandle<M> {
         let port_ref = {
             let mut guard = self.bound.write().unwrap();
             guard
-                .get_or_insert_with(|| self.mailbox.bind(self).port_id().clone().into())
+                .get_or_insert_with(|| self.mailbox.bind(self).into_port_addr())
                 .clone()
         };
         PortRef::attest_reducible(
-            port_ref.into(),
+            port_ref,
             self.reducer_spec.clone(),
             self.streaming_opts.clone(),
         )
@@ -2090,7 +2090,7 @@ impl<M: RemoteMessage> OncePortHandle<M> {
         let port_id: reference::PortId = self.port_id().clone().into();
         let reducer_spec = self.reducer_spec.clone();
         self.mailbox.clone().bind_once(self);
-        OncePortRef::attest_reducible(port_id, reducer_spec)
+        OncePortRef::attest_reducible(port_id.into(), reducer_spec)
     }
 }
 
@@ -3251,7 +3251,7 @@ mod tests {
         };
 
         assert_matches!(err.kind(), MailboxSenderErrorKind::Closed);
-        assert_matches!(err.location(), PortLocation::Bound(bound) if *bound == **port.port_id());
+        assert_matches!(err.location(), PortLocation::Bound(bound) if *bound == *port.port_addr());
     }
 
     #[tokio::test]

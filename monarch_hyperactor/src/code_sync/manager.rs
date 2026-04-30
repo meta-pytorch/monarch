@@ -376,7 +376,7 @@ impl Handler<SetActorMeshMessage> for CodeSyncManager {
         let mesh = self.self_mesh.get_or_init(|| msg.actor_mesh);
         self.rank.get_or_init(|| {
             mesh.iter()
-                .find(|(_, actor)| actor.actor_id() == cx.self_id())
+                .find(|(_, actor)| *actor.actor_id() == *cx.self_id())
                 .unwrap()
                 .0
                 .rank()
