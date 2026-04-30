@@ -310,7 +310,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
             //
             // This will be replaced by a proper export/registry
             // mechanism.
-            Ok(handle.bind::<Self>().actor_id)
+            Ok(handle.bind::<Self>().into_actor_id())
         })
     }
 
