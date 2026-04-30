@@ -46,8 +46,8 @@ use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor as hyperactor_reference;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::reference as hyperactor_reference;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::ChildStderr;

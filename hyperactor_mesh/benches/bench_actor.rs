@@ -10,13 +10,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;

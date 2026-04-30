@@ -124,11 +124,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeRef;
 use hyperactor_mesh::mesh_admin::MeshAdminAgent;
@@ -428,8 +428,8 @@ mod tests {
     use std::collections::HashMap;
     use std::time::SystemTime;
 
+    use hyperactor::ProcId;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::reference::ProcId;
     use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
     use hyperactor_mesh::introspect::NodeProperties;
     use hyperactor_mesh::introspect::NodeRef;

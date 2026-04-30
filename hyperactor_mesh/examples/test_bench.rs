@@ -15,12 +15,12 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Unbind;
-use hyperactor::reference;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::comm::multicast::CastInfo;

@@ -531,16 +531,16 @@ mod tests {
     /// sink is shared across tests running in the same process).
     fn inject_undeliverable(
         client: &'static Instance<GlobalClientActor>,
-        dest_actor: hyperactor::reference::ActorId,
+        dest_actor: hyperactor::ActorId,
     ) {
         let env = MessageEnvelope::new(
             client.self_id().clone(),
-            hyperactor::reference::PortId::new(dest_actor, 0),
+            dest_actor.port_ref(0.into()),
             wirevalue::Any::serialize(&0u64).unwrap(),
             Flattrs::new(),
         );
         // Target the global root client's well-known Undeliverable port.
-        let client_actor_id: hyperactor::reference::ActorId = client.self_id().clone().into();
+        let client_actor_id: hyperactor::ActorId = client.self_id().clone();
         let undeliverable_port =
             PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(&client_actor_id);
         undeliverable_port

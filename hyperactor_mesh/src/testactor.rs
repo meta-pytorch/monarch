@@ -19,6 +19,7 @@ use std::ops::Deref;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
@@ -30,7 +31,6 @@ use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_config::global::Source;

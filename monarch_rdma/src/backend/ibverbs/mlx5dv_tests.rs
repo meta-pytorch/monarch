@@ -11,12 +11,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::context;

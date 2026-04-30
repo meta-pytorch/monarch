@@ -22,6 +22,7 @@ use std::fmt::Debug;
 use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
@@ -40,7 +41,6 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
-use hyperactor::reference::ActorId;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -384,7 +384,7 @@ fn split_ports(
                 }
             };
 
-            let split = hyperactor::reference::PortId::from(port_id.clone()).split(
+            let split = port_id.clone().split(
                 cx,
                 reducer_spec.clone(),
                 reducer_mode,
@@ -392,13 +392,9 @@ fn split_ports(
             )?;
 
             #[cfg(test)]
-            tests::collect_split_port(
-                &hyperactor::reference::PortId::from(port_id.clone()),
-                &split,
-                deliver_here,
-            );
+            tests::collect_split_port(&port_id.clone(), &split, deliver_here);
 
-            *port_id = split.into();
+            *port_id = split;
             Ok(())
         },
     )
@@ -643,12 +639,12 @@ pub mod test_utils {
     use anyhow::Result;
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::ActorId;
     use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
     use hyperactor::PortRef;
     use hyperactor::Unbind;
-    use hyperactor::reference::ActorId;
     use serde::Deserialize;
     use serde::Serialize;
     use typeuri::Named;
@@ -915,19 +911,19 @@ mod tests {
         .await;
     }
 
+    use hyperactor::ActorId;
     use hyperactor::ActorRef;
+    use hyperactor::Index;
     use hyperactor::OncePortRef;
+    use hyperactor::PortId;
     use hyperactor::PortRef;
+    use hyperactor::ProcId;
     use hyperactor::accum::Accumulator;
     use hyperactor::accum::ReducerSpec;
     use hyperactor::context;
     use hyperactor::context::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
-    use hyperactor::reference::ActorId;
-    use hyperactor::reference::Index;
-    use hyperactor::reference::PortId;
-    use hyperactor::reference::ProcId;
     use hyperactor_config;
     use hyperactor_mesh_macros::sel;
     use maplit::btreemap;
@@ -948,10 +944,7 @@ mod tests {
     use crate::testing;
 
     // Helper to look up the rank for a given actor ID using the rank_lookup table.
-    fn lookup_rank(
-        actor_id: &hyperactor::reference::ActorId,
-        rank_lookup: &HashMap<ProcId, usize>,
-    ) -> usize {
+    fn lookup_rank(actor_id: &ActorId, rank_lookup: &HashMap<ProcId, usize>) -> usize {
         let proc_id = actor_id.proc_id();
         *rank_lookup
             .get(&proc_id)
@@ -992,7 +985,7 @@ mod tests {
     // tree so it will only contain the cast we want to check.
     fn clear_collected_tree() {
         if let Some(tree) = SPLIT_PORT_TREE.get() {
-            let mut tree = tree.lock().unwrap();
+            let mut tree: std::sync::MutexGuard<'_, Vec<Edge<PortId>>> = tree.lock().unwrap();
             tree.clear();
         }
     }
@@ -1113,7 +1106,7 @@ mod tests {
         let ranks = paths
             .0
             .into_iter()
-            .map(|(dst, mut path)| {
+            .map(|(dst, mut path): (PortId, Vec<PortId>)| {
                 let first = path.remove(0);
                 // The first PortId is the client's reply port.
                 assert_eq!(&first, client_reply);
@@ -1122,12 +1115,14 @@ mod tests {
                 assert!(dst.actor_id().label().unwrap().as_str().contains("comm"));
                 let actor_path = path
                     .into_iter()
-                    .map(|p| {
+                    .map(|p: PortId| {
                         assert!(p.actor_id().label().unwrap().as_str().contains("comm"));
-                        lookup_rank(&p.actor_id(), rank_lookup)
+                        let actor_ref = p.actor_ref();
+                        lookup_rank(&actor_ref, rank_lookup)
                     })
                     .collect();
-                (lookup_rank(&dst.actor_id(), rank_lookup), actor_path)
+                let dst_actor_ref = dst.actor_ref();
+                (lookup_rank(&dst_actor_ref, rank_lookup), actor_path)
             })
             .collect();
         PathToLeaves(ranks)
@@ -1177,18 +1172,10 @@ mod tests {
             let (reply1, reply2): (BTreeMap<_, _>, BTreeMap<_, _>) = build_paths(&edges)
                 .0
                 .into_iter()
-                .partition(|(_dst, path)| path[0] == reply_port_ref1.port_id());
+                .partition(|(_dst, path)| path[0] == *reply_port_ref1.port_id());
             (
-                get_ranks(
-                    PathToLeaves(reply1),
-                    &reply_port_ref1.port_id(),
-                    rank_lookup,
-                ),
-                get_ranks(
-                    PathToLeaves(reply2),
-                    &reply_port_ref2.port_id(),
-                    rank_lookup,
-                ),
+                get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id(), rank_lookup),
+                get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id(), rank_lookup),
             )
         };
 
