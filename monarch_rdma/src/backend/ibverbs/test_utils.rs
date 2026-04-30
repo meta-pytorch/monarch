@@ -45,11 +45,11 @@ unsafe impl Sync for SendSyncCudaContext {}
 /// Actor responsible for CUDA initialization and buffer management within its own process context.
 /// This is important because you preform CUDA operations within the same process as the RDMA operations.
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         CudaActorMessage,
     ],
 )]
+#[hyperactor::spawnable]
 #[derive(Debug)]
 pub struct CudaActor {
     device: Option<i32>,
