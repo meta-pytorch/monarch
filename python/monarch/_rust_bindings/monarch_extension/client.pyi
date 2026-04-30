@@ -9,7 +9,7 @@
 from typing import Any, ClassVar, Dict, final, List, NamedTuple, Union
 
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr, Proc, Serialized
 from monarch._rust_bindings.monarch_hyperactor.shape import Slice as NDSlice
 from monarch._rust_bindings.monarch_messages.debugger import DebuggerActionType
 
@@ -38,8 +38,8 @@ class Error(Exception):
         ...
 
     @property
-    def actor_id(self) -> ActorId:
-        """The actor id of the worker where the error occured."""
+    def actor_id(self) -> ActorAddr:
+        """The actor address of the worker where the error occured."""
         ...
 
     @property
@@ -49,7 +49,7 @@ class Error(Exception):
 
     @staticmethod
     def new_for_unit_test(
-        seq: int, caused_by_seq: int, actor_id: ActorId, backtrace: str
+        seq: int, caused_by_seq: int, actor_id: ActorAddr, backtrace: str
     ) -> "Error": ...
 
 @final
@@ -61,8 +61,8 @@ class Failure(Exception):
     """
 
     @property
-    def actor_id(self) -> ActorId:
-        """The actor id of the worker where the failure occured."""
+    def actor_id(self) -> ActorAddr:
+        """The actor address of the worker where the failure occured."""
         ...
 
     @property
@@ -76,7 +76,7 @@ class Failure(Exception):
         ...
 
     @staticmethod
-    def new_for_unit_test(actor_id: ActorId) -> "Failure": ...
+    def new_for_unit_test(actor_id: ActorAddr) -> "Failure": ...
 
 @final
 class WorkerResponse:
@@ -153,45 +153,45 @@ class ClientActor:
 
     def __init__(self, proc: Proc, actor_name: str) -> None: ...
     @staticmethod
-    def new_with_parent(proc: Proc, parent_id: ActorId) -> ClientActor:
+    def new_with_parent(proc: Proc, parent_id: ActorAddr) -> ClientActor:
         """
         Create a new client actor with the given parent id. This is used to create
         a client actor that is a child of another client actor.
         """
         ...
 
-    def attach(self, controller_id: ActorId) -> None:
+    def attach(self, controller_id: ActorAddr) -> None:
         """Attach the client to the given controller.
 
         Arguments:
-        - `controller_id`: The actor id of the controller to attach to.
+        - `controller_id`: The actor address of the controller to attach to.
         """
         ...
 
-    def send(self, actor_id: ActorId, message: Serialized) -> None:
-        """Send a message to the actor with the given actor id.
+    def send(self, actor_id: ActorAddr, message: Serialized) -> None:
+        """Send a message to the actor with the given actor address.
 
         Arguments:
-        - `actor_id`: The actor id of the actor to send the message to.
+        - `actor_id`: The actor address of the actor to send the message to.
         - `message`: The message to send.
         """
         ...
 
     def send_obj(
         self,
-        controller: ActorId,
+        controller: ActorAddr,
         ranks: Union[NDSlice | List[NDSlice]],
         message: NamedTuple,
     ) -> None:
         """Send a worker message to the controller actor
 
         Arguments:
-        - `actor_id`: The actor id of the actor to send the message to.
+        - `actor_id`: The actor address of the actor to send the message to.
         - `message`: The monarch
         """
         ...
 
-    def drop_refs(self, controller_id: ActorId, refs: List[Ref]) -> None:
+    def drop_refs(self, controller_id: ActorAddr, refs: List[Ref]) -> None:
         """
         Mark references as never being used again
         """
@@ -217,8 +217,8 @@ class ClientActor:
         ...
 
     @property
-    def actor_id(self) -> ActorId:
-        """The actor id of the actor."""
+    def actor_id(self) -> ActorAddr:
+        """The actor address of the actor."""
         ...
 
 @final
@@ -228,11 +228,11 @@ class DebuggerMessage:
     """
 
     def __init__(
-        self, *, debugger_actor_id: ActorId, action: DebuggerActionType
+        self, *, debugger_actor_id: ActorAddr, action: DebuggerActionType
     ) -> None: ...
     @property
-    def debugger_actor_id(self) -> ActorId:
-        """Get the actor id of the debugger actor."""
+    def debugger_actor_id(self) -> ActorAddr:
+        """Get the actor address of the debugger actor."""
         ...
 
     @property

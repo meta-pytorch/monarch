@@ -24,7 +24,7 @@ from typing import (
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 from monarch._rust_bindings.monarch_hyperactor.pickle import PicklingState
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId, Proc, Serialized
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr, Proc, Serialized
 
 class PythonMessageKind:
     @classmethod
@@ -168,9 +168,9 @@ class PythonActorHandle:
         """
         ...
 
-    def bind(self) -> ActorId:
+    def bind(self) -> ActorAddr:
         """
-        Bind this actor. The returned actor id can be used to reach the actor externally.
+        Bind this actor. The returned actor address can be used to reach the actor externally.
         """
         ...
 

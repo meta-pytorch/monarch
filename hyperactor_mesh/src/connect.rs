@@ -47,7 +47,7 @@ use futures::future;
 use futures::stream::FusedStream;
 use futures::task::Context;
 use futures::task::Poll;
-use hyperactor::ActorId;
+use hyperactor::ActorAddr;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::context;
@@ -87,14 +87,14 @@ struct OwnedReadHalfStream {
 
 /// Wrap a `PortReceiver<IoMsg>` as a `AsyncRead`.
 pub struct OwnedReadHalf {
-    peer: ActorId,
+    peer: ActorAddr,
     inner: StreamReader<OwnedReadHalfStream, Cursor<Vec<u8>>>,
 }
 
 /// Wrap a `PortRef<IoMsg>` as a `AsyncWrite`.
 #[pin_project(PinnedDrop)]
 pub struct OwnedWriteHalf<C: context::Actor> {
-    peer: ActorId,
+    peer: ActorAddr,
     #[pin]
     caps: C,
     #[pin]
@@ -117,13 +117,13 @@ impl<C: context::Actor> ActorConnection<C> {
         (self.reader, self.writer)
     }
 
-    pub fn peer(&self) -> &ActorId {
+    pub fn peer(&self) -> &ActorAddr {
         self.reader.peer()
     }
 }
 
 impl OwnedReadHalf {
-    fn new(peer: ActorId, port: PortReceiver<Io>) -> Self {
+    fn new(peer: ActorAddr, port: PortReceiver<Io>) -> Self {
         Self {
             peer,
             inner: StreamReader::new(OwnedReadHalfStream {
@@ -133,7 +133,7 @@ impl OwnedReadHalf {
         }
     }
 
-    pub fn peer(&self) -> &ActorId {
+    pub fn peer(&self) -> &ActorAddr {
         &self.peer
     }
 
@@ -146,7 +146,7 @@ impl OwnedReadHalf {
 }
 
 impl<C: context::Actor> OwnedWriteHalf<C> {
-    fn new(peer: ActorId, caps: C, port: PortRef<Io>) -> Self {
+    fn new(peer: ActorAddr, caps: C, port: PortRef<Io>) -> Self {
         Self {
             peer,
             caps,
@@ -155,7 +155,7 @@ impl<C: context::Actor> OwnedWriteHalf<C> {
         }
     }
 
-    pub fn peer(&self) -> &ActorId {
+    pub fn peer(&self) -> &ActorAddr {
         &self.peer
     }
 
@@ -314,7 +314,7 @@ impl<C: context::Actor> ConnectionCompleter<C> {
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct Connect {
     /// The ID of the client initiating the connection.
-    id: ActorId,
+    id: ActorAddr,
     conn: PortRef<Io>,
     /// The port the server can use to complete the connection.
     return_conn: OncePortRef<Accept>,
@@ -324,7 +324,7 @@ wirevalue::register_type!(Connect);
 impl Connect {
     /// Allocate a new `Connect` message and return the associated `ConnectionCompleter` that can be used
     /// to finish setting up the connection.
-    pub fn allocate<C: context::Actor>(id: ActorId, caps: C) -> (Self, ConnectionCompleter<C>) {
+    pub fn allocate<C: context::Actor>(id: ActorAddr, caps: C) -> (Self, ConnectionCompleter<C>) {
         let (conn_tx, conn_rx) = open_port::<Io>(&caps);
         let (return_tx, return_rx) = open_once_port::<Accept>(&caps);
         (
@@ -347,7 +347,7 @@ impl Connect {
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct Accept {
     /// The ID of the server that accepted the connection.
-    id: ActorId,
+    id: ActorAddr,
     /// The port the client will use to send data over the connection to the server.
     conn: PortRef<Io>,
 }
@@ -371,7 +371,7 @@ impl Unbind for Connect {
 /// return `AsyncRead` and `AsyncWrite` streams that can be used to communicate with the other side.
 pub async fn accept<C: context::Actor>(
     caps: C,
-    self_id: ActorId,
+    self_id: ActorAddr,
     message: Connect,
 ) -> Result<ActorConnection<C>> {
     let (tx, rx) = open_port::<Io>(&caps);
@@ -414,7 +414,7 @@ mod tests {
             cx: &Context<Self>,
             message: Connect,
         ) -> Result<(), anyhow::Error> {
-            let (mut rd, mut wr) = accept(cx, cx.self_id().clone().into(), message)
+            let (mut rd, mut wr) = accept(cx, cx.self_id().clone(), message)
                 .await?
                 .into_split();
             tokio::io::copy(&mut rd, &mut wr).await?;
@@ -427,7 +427,7 @@ mod tests {
     async fn test_simple_connection() -> Result<()> {
         let proc = Proc::local();
         let (client, _) = proc.instance("client")?;
-        let (connect, completer) = Connect::allocate(client.self_id().clone().into(), client);
+        let (connect, completer) = Connect::allocate(client.self_id().clone(), client);
         let actor = proc.spawn("actor", EchoActor {})?;
         actor.send(&completer.caps, connect)?;
         let (mut rd, mut wr) = completer.complete().await?.into_split();
@@ -454,14 +454,10 @@ mod tests {
         let (client, _client_handle) = proc.instance("client")?;
 
         let (connect, completer) =
-            Connect::allocate(client.self_id().clone().into(), client.clone_for_py());
-        let (mut rd, _) = accept(
-            client.clone_for_py(),
-            client.self_id().clone().into(),
-            connect,
-        )
-        .await?
-        .into_split();
+            Connect::allocate(client.self_id().clone(), client.clone_for_py());
+        let (mut rd, _) = accept(client.clone_for_py(), client.self_id().clone(), connect)
+            .await?
+            .into_split();
         let (_, mut wr) = completer.complete().await?.into_split();
 
         // Write some data
@@ -485,14 +481,10 @@ mod tests {
         let (client, _client_handle) = proc.instance("client")?;
 
         let (connect, completer) =
-            Connect::allocate(client.self_id().clone().into(), client.clone_for_py());
-        let (mut rd, _) = accept(
-            client.clone_for_py(),
-            client.self_id().clone().into(),
-            connect,
-        )
-        .await?
-        .into_split();
+            Connect::allocate(client.self_id().clone(), client.clone_for_py());
+        let (mut rd, _) = accept(client.clone_for_py(), client.self_id().clone(), connect)
+            .await?
+            .into_split();
         let (_, mut wr) = completer.complete().await?.into_split();
 
         // Write some data

@@ -36,7 +36,6 @@ tracing-core = { version = "0.1.33", features = ["valuable"] }
 tracing-glog = { version = "0.4.1", features = ["ansi", "tracing-log"] }
 tracing-perfetto-sdk-schema = "0.13.1"
 tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
-urlencoding = "2.1.0"
 whoami = "1.5"
 
 [dev-dependencies]
