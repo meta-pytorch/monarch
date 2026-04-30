@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Remote references: typed wrappers around [`ActorRef`] or [`PortRef`] for type-safe message sending.
+//! Remote references: typed wrappers around [`ActorAddr`] or [`PortAddr`] for type-safe message sending.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -16,14 +16,14 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::ActorAddr;
+use crate::AddrParseError;
+use crate::Location;
+use crate::PortAddr;
 use crate::actor::Referable;
 use crate::id::ActorId;
 use crate::id::Label;
 use crate::mailbox::RemoteMessage;
-use crate::ref_::ActorRef;
-use crate::ref_::Location;
-use crate::ref_::PortRef;
-use crate::ref_::RefParseError;
 
 /// Marker trait: `Remote<T>` can send message `M` when `T: Accepts<M>`.
 ///
@@ -36,8 +36,8 @@ impl<M: RemoteMessage> Accepts<M> for M {}
 /// The inner reference: either an actor or a port.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum RemoteRef {
-    Actor(ActorRef),
-    Port(PortRef),
+    Actor(ActorAddr),
+    Port(PortAddr),
 }
 
 impl RemoteRef {
@@ -67,7 +67,7 @@ impl fmt::Display for RemoteRef {
     }
 }
 
-/// A typed remote actor reference, wrapping an [`ActorRef`] or [`PortRef`]
+/// A typed remote actor reference, wrapping an [`ActorAddr`] or [`PortAddr`]
 /// with a type parameter for type-safe message sending.
 #[derive(Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct Remote<A: Named> {
@@ -77,16 +77,16 @@ pub struct Remote<A: Named> {
 }
 
 impl<A: Named> Remote<A> {
-    /// Create a new [`Remote`] reference from an [`ActorRef`].
-    pub fn new(actor_ref: ActorRef) -> Self {
+    /// Create a new [`Remote`] reference from an [`ActorAddr`].
+    pub fn new(actor_ref: ActorAddr) -> Self {
         Self {
             inner: RemoteRef::Actor(actor_ref),
             _phantom: PhantomData,
         }
     }
 
-    /// Create a new [`Remote`] reference from a [`PortRef`].
-    pub fn from_port(port_ref: PortRef) -> Self {
+    /// Create a new [`Remote`] reference from a [`PortAddr`].
+    pub fn from_port(port_ref: PortAddr) -> Self {
         Self {
             inner: RemoteRef::Port(port_ref),
             _phantom: PhantomData,
@@ -226,16 +226,16 @@ impl<A: Named> fmt::Debug for Remote<A> {
 }
 
 impl<A: Named> FromStr for Remote<A> {
-    type Err = RefParseError;
+    type Err = AddrParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let at = s.find('@').ok_or(RefParseError::MissingSeparator)?;
+        let at = s.find('@').ok_or(AddrParseError::MissingSeparator)?;
         let id_part = &s[..at];
         if id_part.contains(':') {
-            let port_ref: PortRef = s.parse()?;
+            let port_ref: PortAddr = s.parse()?;
             Ok(Self::from_port(port_ref))
         } else {
-            let actor_ref: ActorRef = s.parse()?;
+            let actor_ref: ActorAddr = s.parse()?;
             Ok(Self::new(actor_ref))
         }
     }
@@ -274,7 +274,7 @@ mod tests {
     impl Accepts<Ping> for TestActor {}
     impl Accepts<Pong> for TestActor {}
 
-    fn make_actor_ref(actor_label: Option<&str>, proc_label: Option<&str>) -> ActorRef {
+    fn make_actor_ref(actor_label: Option<&str>, proc_label: Option<&str>) -> ActorAddr {
         let aid = ActorId::new(
             Uid::Instance(0xabc123),
             ProcId::new(
@@ -284,10 +284,10 @@ mod tests {
             actor_label.map(|l| Label::new(l).unwrap()),
         );
         let loc: Location = ChannelAddr::Local(42).into();
-        ActorRef::new(aid, loc)
+        ActorAddr::new(aid, loc)
     }
 
-    fn make_port_ref(actor_label: Option<&str>, proc_label: Option<&str>) -> PortRef {
+    fn make_port_ref(actor_label: Option<&str>, proc_label: Option<&str>) -> PortAddr {
         let aid = ActorId::new(
             Uid::Instance(0xabc123),
             ProcId::new(
@@ -298,7 +298,7 @@ mod tests {
         );
         let port_id = PortId::new(aid, Port::from(42));
         let loc: Location = ChannelAddr::Local(7).into();
-        PortRef::new(port_id, loc)
+        PortAddr::new(port_id, loc)
     }
 
     fn make_remote<A: Named>() -> Remote<A> {
