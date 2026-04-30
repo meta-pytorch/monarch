@@ -42,6 +42,10 @@ use serde::Deserialize;
 use serde::Serialize;
 use smol_str::SmolStr;
 
+use crate::parse::id::ActorIdParts;
+use crate::parse::id::IdComponent;
+use crate::parse::id::PortIdParts;
+use crate::parse::id::ProcIdParts;
 use crate::port::Port;
 
 /// Maximum length of an RFC 1035 label.
@@ -332,27 +336,6 @@ fn fmt_id_component(f: &mut fmt::Formatter<'_>, uid: &Uid, label: Option<&Label>
     }
 }
 
-fn parse_id_component(s: &str) -> Result<(Uid, Option<Label>), UidParseError> {
-    if let Some(inner) = s
-        .strip_prefix('<')
-        .and_then(|inner| inner.strip_suffix('>'))
-    {
-        let uid = parse_base58_uid(inner)?;
-        return Ok((Uid::Instance(uid), None));
-    }
-
-    if let Some(open) = s.find('<') {
-        if s.ends_with('>') {
-            let label = Label::new(&s[..open])?;
-            let uid = parse_base58_uid(&s[open + 1..s.len() - 1])?;
-            return Ok((Uid::Instance(uid), Some(label)));
-        }
-    }
-
-    let label = Label::new(s)?;
-    Ok((Uid::Singleton(label.clone()), Some(label)))
-}
-
 impl Serialize for Uid {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.to_string())
@@ -477,8 +460,9 @@ impl FromStr for ProcId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (uid, label) = parse_id_component(s)?;
-        Ok(Self { uid, label })
+        let parts = crate::parse::id::parse_proc_id(s)
+            .map_err(|_| legacy_parse_id_component(s).unwrap_err())?;
+        Self::try_from(parts).map_err(IdParseError::InvalidProcId)
     }
 }
 
@@ -609,22 +593,8 @@ impl FromStr for ActorId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let dot = s.find('.').ok_or(IdParseError::InvalidActorIdFormat)?;
-        let actor_part = &s[..dot];
-        let proc_part = &s[dot + 1..];
-
-        let (actor_uid, actor_label) =
-            parse_id_component(actor_part).map_err(IdParseError::InvalidActorUid)?;
-        let proc_id: ProcId = proc_part.parse().map_err(|err| match err {
-            IdParseError::InvalidProcId(uid_err) => IdParseError::InvalidActorProcUid(uid_err),
-            _ => IdParseError::InvalidActorIdFormat,
-        })?;
-
-        Ok(Self {
-            uid: actor_uid,
-            proc_id,
-            label: actor_label,
-        })
+        let parts = crate::parse::id::parse_actor_id(s).map_err(|_| legacy_parse_actor_id(s))?;
+        Self::try_from(parts)
     }
 }
 
@@ -721,15 +691,112 @@ impl FromStr for PortId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (actor_part, port_part) = s.split_once(':').ok_or(IdParseError::InvalidPortIdFormat)?;
+        let parts = crate::parse::id::parse_port_id(s).map_err(|_| legacy_port_parse_error(s))?;
+        Self::try_from(parts)
+    }
+}
 
-        let actor_id: ActorId = actor_part.parse()?;
-        let port: Port = port_part
+fn convert_id_component(component: IdComponent<'_>) -> Result<(Uid, Option<Label>), UidParseError> {
+    match component {
+        IdComponent::Singleton { label, .. } => {
+            let label = Label::new(label)?;
+            Ok((Uid::Singleton(label.clone()), Some(label)))
+        }
+        IdComponent::Instance { label, uid, .. } => {
+            let uid = Uid::Instance(parse_base58_uid(uid)?);
+            let label = label.map(Label::new).transpose()?;
+            Ok((uid, label))
+        }
+    }
+}
+
+impl TryFrom<ProcIdParts<'_>> for ProcId {
+    type Error = UidParseError;
+
+    fn try_from(parts: ProcIdParts<'_>) -> Result<Self, Self::Error> {
+        let (uid, label) = convert_id_component(parts.component)?;
+        Ok(Self { uid, label })
+    }
+}
+
+impl TryFrom<ActorIdParts<'_>> for ActorId {
+    type Error = IdParseError;
+
+    fn try_from(parts: ActorIdParts<'_>) -> Result<Self, Self::Error> {
+        let (uid, label) =
+            convert_id_component(parts.actor).map_err(IdParseError::InvalidActorUid)?;
+        let proc_id = ProcId::try_from(ProcIdParts {
+            component: parts.proc_,
+        })
+        .map_err(IdParseError::InvalidActorProcUid)?;
+        Ok(Self {
+            uid,
+            proc_id,
+            label,
+        })
+    }
+}
+
+impl TryFrom<PortIdParts<'_>> for PortId {
+    type Error = IdParseError;
+
+    fn try_from(parts: PortIdParts<'_>) -> Result<Self, Self::Error> {
+        let actor_id = ActorId::try_from(parts.actor)?;
+        let port = parts
+            .port
             .parse()
-            .map_err(|_| IdParseError::InvalidPort(port_part.to_string()))?;
-
+            .map_err(|_| IdParseError::InvalidPort(parts.port.to_string()))?;
         Ok(Self { actor_id, port })
     }
+}
+
+fn legacy_parse_id_component(s: &str) -> Result<(Uid, Option<Label>), UidParseError> {
+    if let Some(inner) = s
+        .strip_prefix('<')
+        .and_then(|inner| inner.strip_suffix('>'))
+    {
+        let uid = parse_base58_uid(inner)?;
+        return Ok((Uid::Instance(uid), None));
+    }
+
+    if let Some(open) = s.find('<')
+        && s.ends_with('>')
+    {
+        let label = Label::new(&s[..open])?;
+        let uid = parse_base58_uid(&s[open + 1..s.len() - 1])?;
+        return Ok((Uid::Instance(uid), Some(label)));
+    }
+
+    let label = Label::new(s)?;
+    Ok((Uid::Singleton(label.clone()), Some(label)))
+}
+
+fn legacy_parse_actor_id(s: &str) -> IdParseError {
+    let Some((actor_part, proc_part)) = s.split_once('.') else {
+        return IdParseError::InvalidActorIdFormat;
+    };
+
+    if let Err(err) = legacy_parse_id_component(actor_part) {
+        return IdParseError::InvalidActorUid(err);
+    }
+
+    if let Err(err) = legacy_parse_id_component(proc_part) {
+        return IdParseError::InvalidActorProcUid(err);
+    }
+
+    IdParseError::InvalidActorIdFormat
+}
+
+fn legacy_port_parse_error(s: &str) -> IdParseError {
+    let Some((actor_part, port_part)) = s.split_once(':') else {
+        return IdParseError::InvalidPortIdFormat;
+    };
+
+    if crate::parse::id::parse_actor_id(actor_part).is_ok() {
+        return IdParseError::InvalidPort(port_part.to_string());
+    }
+
+    IdParseError::InvalidPortIdFormat
 }
 
 #[cfg(test)]
