@@ -9,6 +9,7 @@
 #![allow(clippy::result_large_err)]
 
 use hyperactor::Actor;
+use hyperactor::ActorRef;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
@@ -36,7 +37,8 @@ use std::time::Duration;
 
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
-use hyperactor::reference as hyperactor_reference;
+use hyperactor::reference::ActorId;
+use hyperactor::reference::ProcId;
 use ndslice::Extent;
 use ndslice::Region;
 use ndslice::ViewExt;
@@ -116,24 +118,25 @@ wirevalue::register_type!(HostRef);
 
 impl HostRef {
     /// The host mesh agent associated with this host.
-    fn mesh_agent(&self) -> hyperactor_reference::ActorRef<HostAgent> {
-        hyperactor_reference::ActorRef::attest(
+    fn mesh_agent(&self) -> ActorRef<HostAgent> {
+        ActorRef::attest(
             self.service_proc()
-                .actor_id(host_agent::HOST_MESH_AGENT_ACTOR_NAME),
+                .actor_id(host_agent::HOST_MESH_AGENT_ACTOR_NAME)
+                .into(),
         )
     }
 
     /// The ProcId for the proc with name `name` on this host.
-    fn named_proc(&self, id: &ResourceId) -> hyperactor_reference::ProcId {
-        hyperactor_reference::ProcId::from_proc_ref(hyperactor::addr::ProcAddr::new(
+    fn named_proc(&self, id: &ResourceId) -> ProcId {
+        ProcId::from_proc_ref(hyperactor::addr::ProcAddr::new(
             hyperactor::id::ProcId::new(id.uid().clone(), id.label().cloned()),
             self.0.clone().into(),
         ))
     }
 
     /// The service proc on this host.
-    fn service_proc(&self) -> hyperactor_reference::ProcId {
-        hyperactor_reference::ProcId::from_resource_name(self.0.clone(), SERVICE_PROC_NAME)
+    fn service_proc(&self) -> ProcId {
+        ProcId::from_resource_name(self.0.clone(), SERVICE_PROC_NAME)
     }
 
     /// Request an orderly teardown of this host and all procs it
@@ -194,10 +197,10 @@ impl HostRef {
     }
 }
 
-impl TryFrom<hyperactor_reference::ActorRef<HostAgent>> for HostRef {
+impl TryFrom<ActorRef<HostAgent>> for HostRef {
     type Error = crate::Error;
 
-    fn try_from(value: hyperactor_reference::ActorRef<HostAgent>) -> Result<Self, crate::Error> {
+    fn try_from(value: ActorRef<HostAgent>) -> Result<Self, crate::Error> {
         let proc_id = value.actor_id().proc_id();
         Ok(HostRef(proc_id.addr().clone()))
     }
@@ -264,7 +267,7 @@ impl HostMesh {
         for (rank, host) in self.current_ref.hosts().iter().enumerate() {
             let actor = host.mesh_agent();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(actor.actor_id()),
+                id: hyperactor_telemetry::hash_to_u64(&actor.actor_id()),
                 timestamp: now,
                 mesh_id: mesh_id_hash,
                 rank: rank as u64,
@@ -870,7 +873,7 @@ impl HostMeshRef {
     /// Create a new HostMeshRef from an arbitrary set of host mesh agents.
     pub fn from_host_agents(
         id: HostMeshId,
-        agents: Vec<hyperactor_reference::ActorRef<HostAgent>>,
+        agents: Vec<ActorRef<HostAgent>>,
     ) -> crate::Result<Self> {
         Ok(Self {
             id,
@@ -886,10 +889,7 @@ impl HostMeshRef {
     }
 
     /// Create a unit HostMeshRef from a host mesh agent.
-    pub fn from_host_agent(
-        id: HostMeshId,
-        agent: hyperactor_reference::ActorRef<HostAgent>,
-    ) -> crate::Result<Self> {
+    pub fn from_host_agent(id: HostMeshId, agent: ActorRef<HostAgent>) -> crate::Result<Self> {
         Ok(Self {
             id,
             region: Extent::unity().into(),
@@ -910,7 +910,7 @@ impl HostMeshRef {
     /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.
     /// Used by `MeshAdminAgent::effective_hosts()` to merge C into the
     /// admin's host list (see CH-1 in mesh_admin module doc).
-    pub(crate) fn host_entries(&self) -> Vec<(String, hyperactor_reference::ActorRef<HostAgent>)> {
+    pub(crate) fn host_entries(&self) -> Vec<(String, ActorRef<HostAgent>)> {
         self.ranks
             .iter()
             .map(|h| (h.0.to_string(), h.mesh_agent()))
@@ -1158,9 +1158,10 @@ impl HostMeshRef {
                     proc_id,
                     create_rank,
                     // TODO: specify or retrieve from state instead, to avoid attestation.
-                    hyperactor_reference::ActorRef::attest(
+                    ActorRef::attest(
                         host.named_proc(&proc_name)
-                            .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
+                            .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME)
+                            .into(),
                     ),
                 ));
             }
@@ -1274,7 +1275,7 @@ impl HostMeshRef {
             // Undeliverable). Without this, the controller's mailbox has no
             // port entries and messages (including introspection queries)
             // are returned as undeliverable.
-            let _: hyperactor::reference::ActorRef<ProcMeshController> = controller_handle.bind();
+            let _: ActorRef<ProcMeshController> = controller_handle.bind();
         }
         mesh
     }
@@ -1294,7 +1295,7 @@ impl HostMeshRef {
         &self,
         cx: &impl hyperactor::context::Actor,
         proc_mesh_id: &ProcMeshId,
-        procs: impl IntoIterator<Item = hyperactor_reference::ProcId>,
+        procs: impl IntoIterator<Item = ProcId>,
         region: Region,
         reason: String,
     ) -> anyhow::Result<()> {
@@ -1410,13 +1411,13 @@ impl HostMeshRef {
     pub(crate) async fn proc_states(
         &self,
         cx: &impl context::Actor,
-        procs: impl IntoIterator<Item = hyperactor_reference::ProcId>,
+        procs: impl IntoIterator<Item = ProcId>,
         region: Region,
     ) -> crate::Result<ValueMesh<resource::State<ProcState>>> {
         let (tx, mut rx) = cx.mailbox().open_port();
 
         let mut num_ranks = 0;
-        let procs: Vec<hyperactor_reference::ProcId> = procs.into_iter().collect();
+        let procs: Vec<ProcId> = procs.into_iter().collect();
         let mut proc_names = Vec::new();
         for proc_id in procs.iter() {
             num_ranks += 1;
@@ -1519,8 +1520,8 @@ impl HostMeshRef {
 /// First-seen order is preserved: the first occurrence of a given
 /// ActorId wins; subsequent duplicates are silently dropped.
 struct HostSet {
-    seen: HashSet<hyperactor_reference::ActorId>,
-    entries: Vec<(String, hyperactor_reference::ActorRef<HostAgent>)>,
+    seen: HashSet<ActorId>,
+    entries: Vec<(String, ActorRef<HostAgent>)>,
 }
 
 impl HostSet {
@@ -1533,8 +1534,8 @@ impl HostSet {
 
     /// Insert a host entry. No-op if `ActorId` already present (SA-3).
     /// First-seen order is preserved.
-    fn insert(&mut self, addr: String, agent_ref: hyperactor_reference::ActorRef<HostAgent>) {
-        if self.seen.insert(agent_ref.actor_id().clone()) {
+    fn insert(&mut self, addr: String, agent_ref: ActorRef<HostAgent>) {
+        if self.seen.insert(agent_ref.actor_id()) {
             self.entries.push((addr, agent_ref));
         }
     }
@@ -1546,7 +1547,7 @@ impl HostSet {
         }
     }
 
-    fn into_vec(self) -> Vec<(String, hyperactor_reference::ActorRef<HostAgent>)> {
+    fn into_vec(self) -> Vec<(String, ActorRef<HostAgent>)> {
         self.entries
     }
 }
@@ -1559,8 +1560,8 @@ impl HostSet {
 /// of [`HostSet`], not invariants on this function's control flow.
 fn aggregate_hosts(
     meshes: &[impl AsRef<HostMeshRef>],
-    client_host_entries: Option<Vec<(String, hyperactor_reference::ActorRef<HostAgent>)>>,
-) -> Vec<(String, hyperactor_reference::ActorRef<HostAgent>)> {
+    client_host_entries: Option<Vec<(String, ActorRef<HostAgent>)>>,
+) -> Vec<(String, ActorRef<HostAgent>)> {
     let mut set = HostSet::new();
 
     // SA-3: dedup across all mesh hosts in first-seen order.
@@ -1596,7 +1597,7 @@ pub async fn spawn_admin(
     cx: &impl hyperactor::context::Actor,
     admin_addr: Option<std::net::SocketAddr>,
     telemetry_url: Option<String>,
-) -> anyhow::Result<hyperactor_reference::ActorRef<MeshAdminAgent>> {
+) -> anyhow::Result<ActorRef<MeshAdminAgent>> {
     let meshes: Vec<_> = meshes.into_iter().collect();
     anyhow::ensure!(!meshes.is_empty(), "at least one mesh is required (SA-1)");
     for (i, mesh) in meshes.iter().enumerate() {
