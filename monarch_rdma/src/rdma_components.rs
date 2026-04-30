@@ -136,6 +136,29 @@ impl RdmaRemoteBuffer {
         .await
     }
 
+    /// Submit a batch of `(op_type, local)` ops against this buffer to
+    /// the chosen backend. `timeout` (seconds) applies to the whole
+    /// batch.
+    pub async fn submit(
+        &self,
+        client: &(impl context::Actor + Send + Sync),
+        ops: Vec<(RdmaOpType, Arc<dyn RdmaLocalMemory>)>,
+        timeout: u64,
+    ) -> Result<(), anyhow::Error> {
+        let mut backend = self.choose_backend(client).await?;
+        let rdma_ops = ops
+            .into_iter()
+            .map(|(op_type, local)| RdmaOp {
+                op_type,
+                local,
+                remote: self.clone(),
+            })
+            .collect();
+        backend
+            .submit(client, rdma_ops, Duration::from_secs(timeout))
+            .await
+    }
+
     /// Push data from local memory into this remote buffer (local->remote).
     pub async fn write_from_local(
         &self,
@@ -143,17 +166,7 @@ impl RdmaRemoteBuffer {
         local: Arc<dyn RdmaLocalMemory>,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
-        let mut backend = self.choose_backend(client).await?;
-        backend
-            .submit(
-                client,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::WriteFromLocal,
-                    local,
-                    remote: self.clone(),
-                }],
-                Duration::from_secs(timeout),
-            )
+        self.submit(client, vec![(RdmaOpType::WriteFromLocal, local)], timeout)
             .await?;
         Ok(true)
     }
@@ -165,17 +178,7 @@ impl RdmaRemoteBuffer {
         local: Arc<dyn RdmaLocalMemory>,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
-        let mut backend = self.choose_backend(client).await?;
-        backend
-            .submit(
-                client,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::ReadIntoLocal,
-                    local,
-                    remote: self.clone(),
-                }],
-                Duration::from_secs(timeout),
-            )
+        self.submit(client, vec![(RdmaOpType::ReadIntoLocal, local)], timeout)
             .await?;
         Ok(true)
     }
