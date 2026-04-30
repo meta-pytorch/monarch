@@ -608,7 +608,7 @@ impl IbvManagerActor {
         other_device: String,
     ) -> Result<IbvQueuePair, anyhow::Error> {
         let self_ref: reference::ActorRef<IbvManagerActor> = cx.bind();
-        let other_id = other.actor_id().clone();
+        let other_id = other.actor_id().id().clone();
 
         // Use the nested map structure: local_device -> (actor_id, remote_device) -> IbvQueuePair
         let inner_key = (other_id.clone(), other_device.clone());
@@ -670,7 +670,7 @@ impl IbvManagerActor {
 
         // Queue pair doesn't exist - need to create connection
         let result = async {
-            let is_loopback = other_id == *self_ref.actor_id() && self_device == other_device;
+            let is_loopback = other_id == *self_ref.actor_id().id() && self_device == other_device;
 
             if is_loopback {
                 // Loopback connection setup
@@ -855,7 +855,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         endpoint: IbvQpInfo,
     ) -> Result<(), anyhow::Error> {
         tracing::debug!("connecting with {:?}", other);
-        let other_id = other.actor_id().clone();
+        let other_id = other.actor_id().id().clone();
 
         let inner_key = (other_id.clone(), other_device.clone());
 
@@ -889,7 +889,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         self_device: String,
         other_device: String,
     ) -> Result<bool, anyhow::Error> {
-        let other_id = other.actor_id().clone();
+        let other_id = other.actor_id().id().clone();
         let inner_key = (other_id.clone(), other_device.clone());
 
         // Check if QP already exists in nested structure
@@ -939,7 +939,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         other_device: String,
     ) -> Result<IbvQpInfo, anyhow::Error> {
         tracing::debug!("getting connection info with {:?}", other);
-        let other_id = other.actor_id().clone();
+        let other_id = other.actor_id().id().clone();
 
         let inner_key = (other_id.clone(), other_device.clone());
 
@@ -982,7 +982,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         self_device: String,
         other_device: String,
     ) -> Result<u32, anyhow::Error> {
-        let other_id = other.actor_id().clone();
+        let other_id = other.actor_id().id().clone();
         let inner_key = (other_id.clone(), other_device.clone());
 
         let device_map: Option<&mut HashMap<(reference::ActorId, String), IbvQueuePair>> =

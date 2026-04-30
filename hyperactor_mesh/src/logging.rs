@@ -28,7 +28,7 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortRef;
-use hyperactor::ProcId;
+use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::channel;
@@ -287,7 +287,7 @@ pub enum LogMessage {
     Log {
         /// The hostname of the process that generated the log
         hostname: String,
-        /// String representation of the ProcId that generated the log
+        /// String representation of the ProcAddr that generated the log
         proc_id: String,
         /// The target output stream (stdout or stderr)
         output_target: OutputTarget,
@@ -368,7 +368,7 @@ pub struct LocalLogSender {
 }
 
 impl LocalLogSender {
-    fn new(log_channel: ChannelAddr, proc_id: &ProcId) -> Result<Self, anyhow::Error> {
+    fn new(log_channel: ChannelAddr, proc_id: &ProcAddr) -> Result<Self, anyhow::Error> {
         let tx = channel::dial::<LogMessage>(log_channel)?;
         let status = tx.status().clone();
 
@@ -850,7 +850,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        proc_id: &ProcId,
+        proc_id: &ProcAddr,
         local_rank: usize,
     ) -> Self {
         let prefix = match hyperactor_config::global::get(PREFIX_WITH_RANK) {
@@ -879,7 +879,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        proc_id: &ProcId,
+        proc_id: &ProcAddr,
         prefix: Option<String>,
     ) -> Self {
         // Sanity: when there is no file sink, no log forwarding, and
@@ -1598,7 +1598,7 @@ mod tests {
             BoxedMailboxSender::new(router.clone()),
         );
         proc.clone().serve(client_rx);
-        let proc_ref: ProcAddr = test_proc_id("client_0").into();
+        let proc_ref: ProcAddr = test_proc_id("client_0");
         router.bind(proc_ref, proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 

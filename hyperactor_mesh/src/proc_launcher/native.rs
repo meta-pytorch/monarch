@@ -41,7 +41,7 @@
 //! to the child via environment variables:
 //! - [`BOOTSTRAP_MODE_ENV`] carries an env-safe encoding of [`Bootstrap`].
 //! - [`PROCESS_NAME_ENV`] carries a diagnostic name derived from the
-//!   [`ProcId`] and hostname (useful for logs/`ps`/systemd).
+//!   [`ProcAddr`] and hostname (useful for logs/`ps`/systemd).
 //! - [`BOOTSTRAP_LOG_CHANNEL`] is optionally set when the manager
 //!   provisions a mesh log-forwarding channel in [`LaunchOptions`].
 //!
@@ -128,7 +128,7 @@ pub(crate) struct NativeProcLauncher {
     /// removed by the exit-monitor task after `wait()` completes.
     /// Missing entries are treated as idempotent success (already
     /// exited / unknown).
-    pid_table: Arc<Mutex<HashMap<hyperactor_reference::ProcId, u32>>>,
+    pid_table: Arc<Mutex<HashMap<hyperactor::ProcAddr, u32>>>,
 }
 
 impl NativeProcLauncher {
@@ -314,7 +314,7 @@ impl ProcLauncher for NativeProcLauncher {
     )]
     async fn launch(
         &self,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         opts: LaunchOptions,
     ) -> Result<LaunchResult, ProcLauncherError> {
         // Apply NUMA/CPU binding if requested.
@@ -478,7 +478,7 @@ impl ProcLauncher for NativeProcLauncher {
     ///   channel when the proc actually terminates.
     async fn terminate(
         &self,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         timeout: Duration,
     ) -> Result<(), ProcLauncherError> {
         let pid = {
@@ -558,7 +558,7 @@ impl ProcLauncher for NativeProcLauncher {
     /// - We do not remove `proc_id` from `pid_table` here; the
     ///   exit-monitor task spawned in `launch` removes it once the
     ///   child actually exits.
-    async fn kill(&self, proc_id: &hyperactor_reference::ProcId) -> Result<(), ProcLauncherError> {
+    async fn kill(&self, proc_id: &hyperactor::ProcAddr) -> Result<(), ProcLauncherError> {
         let pid = {
             let table = self.pid_table.lock().expect("pid_table mutex poisoned");
             table.get(proc_id).copied()
@@ -605,7 +605,7 @@ impl Drop for NativeProcLauncher {
     fn drop(&mut self) {
         // Collect PIDs while holding the lock, then release before killing.
         // This avoids holding the lock during syscalls.
-        let pids: Vec<(hyperactor_reference::ProcId, u32)> = {
+        let pids: Vec<(hyperactor::ProcAddr, u32)> = {
             let table = self.pid_table.lock().expect("pid_table mutex poisoned");
             table.iter().map(|(k, v)| (k.clone(), *v)).collect()
         };
@@ -816,7 +816,7 @@ mod tests {
                 exit_on_shutdown: false,
             };
             let proc_id =
-                hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "stdio-captured");
+                hyperactor::ProcAddr::from_resource_name(any_unix_addr(), "stdio-captured");
             let opts = LaunchOptions {
                 command: with_sh(script),
                 bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -855,10 +855,8 @@ mod tests {
                 config: None,
                 exit_on_shutdown: false,
             };
-            let proc_id = hyperactor_reference::ProcId::from_resource_name(
-                any_unix_addr(),
-                "stdio-inherited",
-            );
+            let proc_id =
+                hyperactor::ProcAddr::from_resource_name(any_unix_addr(), "stdio-inherited");
             let opts = LaunchOptions {
                 command: with_sh(script),
                 bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -901,7 +899,7 @@ mod tests {
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id = hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "exit-7");
+        let proc_id = hyperactor::ProcAddr::from_resource_name(any_unix_addr(), "exit-7");
         let opts = LaunchOptions {
             command: with_sh("exit 7"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -945,7 +943,7 @@ mod tests {
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id = hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "killed");
+        let proc_id = hyperactor::ProcAddr::from_resource_name(any_unix_addr(), "killed");
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1022,8 +1020,7 @@ mod tests {
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id =
-            hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "term-escalate");
+        let proc_id = hyperactor::ProcAddr::from_resource_name(any_unix_addr(), "term-escalate");
         let opts = LaunchOptions {
             command: with_sh(script),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1117,7 +1114,7 @@ while True:
             exit_on_shutdown: false,
         };
         let proc_id =
-            hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "drop-cleanup-test");
+            hyperactor::ProcAddr::from_resource_name(any_unix_addr(), "drop-cleanup-test");
         let opts = LaunchOptions {
             command,
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),

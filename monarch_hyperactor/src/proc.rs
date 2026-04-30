@@ -12,7 +12,6 @@ use std::hash::Hasher;
 use std::time::Duration;
 
 use anyhow::Result;
-use hyperactor as reference;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelAddr;
@@ -138,28 +137,28 @@ impl PyProc {
 
 #[pyclass(
     frozen,
-    name = "ActorId",
+    name = "ActorAddr",
     module = "monarch._rust_bindings.monarch_hyperactor.proc"
 )]
 #[derive(Clone)]
-pub struct PyActorId {
-    pub(super) inner: reference::ActorId,
+pub struct PyActorAddr {
+    pub(super) inner: hyperactor::ActorAddr,
 }
 
-impl From<reference::ActorId> for PyActorId {
-    fn from(actor_id: reference::ActorId) -> Self {
+impl From<hyperactor::ActorAddr> for PyActorAddr {
+    fn from(actor_id: hyperactor::ActorAddr) -> Self {
         Self { inner: actor_id }
     }
 }
 
-impl From<PyActorId> for reference::ActorId {
-    fn from(val: PyActorId) -> Self {
+impl From<PyActorAddr> for hyperactor::ActorAddr {
+    fn from(val: PyActorAddr) -> Self {
         val.inner
     }
 }
 
 #[pymethods]
-impl PyActorId {
+impl PyActorAddr {
     #[new]
     #[pyo3(signature = (*, addr, proc_name, actor_name))]
     fn new(addr: &str, proc_name: &str, actor_name: &str) -> PyResult<Self> {
@@ -167,7 +166,7 @@ impl PyActorId {
             PyValueError::new_err(format!("Failed to parse channel address '{}': {}", addr, e))
         })?;
         Ok(Self {
-            inner: reference::ProcId::from_resource_name(addr, proc_name).actor_id(actor_name),
+            inner: hyperactor::ProcAddr::from_resource_name(addr, proc_name).actor_id(actor_name),
         })
     }
 
@@ -251,7 +250,7 @@ impl PyActorId {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        if let Ok(other) = other.extract::<PyActorId>() {
+        if let Ok(other) = other.extract::<PyActorAddr>() {
             Ok(self.inner == other.inner)
         } else {
             Ok(false)
@@ -263,13 +262,13 @@ impl PyActorId {
     }
 }
 
-impl From<&PyActorId> for reference::ActorId {
-    fn from(actor_id: &PyActorId) -> Self {
+impl From<&PyActorAddr> for hyperactor::ActorAddr {
+    fn from(actor_id: &PyActorAddr) -> Self {
         actor_id.inner.clone()
     }
 }
 
-impl std::fmt::Debug for PyActorId {
+impl std::fmt::Debug for PyActorAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.inner.fmt(f)
     }
@@ -329,7 +328,7 @@ pub struct InstanceWrapper<M: RemoteMessage> {
     message_receiver: PortReceiver<M>,
     signal_receiver: PortReceiver<Signal>,
     status: InstanceStatus,
-    actor_id: reference::ActorId,
+    actor_id: hyperactor::ActorAddr,
 }
 
 impl<M: RemoteMessage> InstanceWrapper<M> {
@@ -340,7 +339,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 
         let (_signal_port, signal_receiver) = instance.bind_actor_port::<Signal>();
 
-        let actor_id = instance.self_id().clone().into();
+        let actor_id = instance.self_id().clone();
 
         Ok(Self {
             instance,
@@ -353,7 +352,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 
     /// Send a message to any actor. It is the responsibility of the caller to ensure the right
     /// payload accepted by the target actor has been serialized and provided to this function.
-    pub fn send(&self, actor_id: &PyActorId, message: &PySerialized) -> PyResult<()> {
+    pub fn send(&self, actor_id: &PyActorAddr, message: &PySerialized) -> PyResult<()> {
         hyperactor::internal_macro_support::tracing::debug!(
             name = "py_send_message",
             actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_id()),
@@ -455,14 +454,14 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         &self.instance
     }
 
-    pub fn actor_id(&self) -> &reference::ActorId {
+    pub fn actor_id(&self) -> &hyperactor::ActorAddr {
         &self.actor_id
     }
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyProc>()?;
-    hyperactor_mod.add_class::<PyActorId>()?;
+    hyperactor_mod.add_class::<PyActorAddr>()?;
     hyperactor_mod.add_class::<PySerialized>()?;
     Ok(())
 }

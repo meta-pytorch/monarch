@@ -1729,8 +1729,9 @@ where
     // and call back.
     let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(backend_transport))?;
     proc.clone().serve(proc_rx);
+    let agent_ref: ActorRef<A> = agent_handle.bind::<A>();
     channel::dial::<(ChannelAddr, ActorRef<A>)>(callback_addr)?
-        .send((proc_addr, agent_handle.bind::<A>()))
+        .send((proc_addr, agent_ref))
         .await
         .map_err(ChannelError::from)?;
 
