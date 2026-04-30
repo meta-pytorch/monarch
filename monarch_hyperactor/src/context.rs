@@ -79,7 +79,7 @@ impl PyInstance {
 
     #[getter]
     pub fn actor_id(&self) -> PyActorId {
-        let actor_id: hyperactor::reference::ActorId = self.inner.self_id().clone().into();
+        let actor_id: hyperactor::ActorId = self.inner.self_id().clone();
         actor_id.into()
     }
 

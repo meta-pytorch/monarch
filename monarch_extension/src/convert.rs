@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use hyperactor::reference;
+use hyperactor as reference;
 use monarch_hyperactor::ndslice::PySlice;
 use monarch_hyperactor::proc::PyActorId;
 use monarch_messages::controller::Seq;

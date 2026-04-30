@@ -827,11 +827,11 @@ pub enum NodeRef {
     #[serde(rename = "root")]
     Root,
     /// A host in the mesh, identified by its `HostAgent` actor ID.
-    Host(hyperactor::reference::ActorId),
+    Host(hyperactor::ActorId),
     /// A proc running on a host.
-    Proc(hyperactor::reference::ProcId),
+    Proc(hyperactor::ProcId),
     /// An actor instance within a proc.
-    Actor(hyperactor::reference::ActorId),
+    Actor(hyperactor::ActorId),
 }
 
 hyperactor_config::impl_attrvalue!(NodeRef);
@@ -853,11 +853,11 @@ pub enum NodeRefParseError {
     #[error("empty reference string")]
     Empty,
     #[error("invalid host reference: {0}")]
-    InvalidHost(hyperactor::reference::ReferenceParsingError),
+    InvalidHost(hyperactor::ReferenceParsingError),
     #[error("port references are not valid node references")]
     PortNotAllowed,
     #[error(transparent)]
-    Reference(#[from] hyperactor::reference::ReferenceParsingError),
+    Reference(#[from] hyperactor::ReferenceParsingError),
 }
 
 impl FromStr for NodeRef {
@@ -871,15 +871,15 @@ impl FromStr for NodeRef {
             return Ok(Self::Root);
         }
         if let Some(rest) = s.strip_prefix("host:") {
-            let actor_id: hyperactor::reference::ActorId =
+            let actor_id: hyperactor::ActorId =
                 rest.parse().map_err(NodeRefParseError::InvalidHost)?;
             return Ok(Self::Host(actor_id));
         }
-        let r: hyperactor::reference::Reference = s.parse()?;
+        let r: hyperactor::Reference = s.parse()?;
         match r {
-            hyperactor::reference::Reference::Proc(id) => Ok(Self::Proc(id)),
-            hyperactor::reference::Reference::Actor(id) => Ok(Self::Actor(id)),
-            hyperactor::reference::Reference::Port(_) => Err(NodeRefParseError::PortNotAllowed),
+            hyperactor::Reference::Proc(id) => Ok(Self::Proc(id)),
+            hyperactor::Reference::Actor(id) => Ok(Self::Actor(id)),
+            hyperactor::Reference::Port(_) => Err(NodeRefParseError::PortNotAllowed),
         }
     }
 }
@@ -976,7 +976,7 @@ pub struct FailureInfo {
     /// Error message describing the failure.
     pub error_message: String,
     /// Actor that caused the failure (root cause).
-    pub root_cause_actor: hyperactor::reference::ActorId,
+    pub root_cause_actor: hyperactor::ActorId,
     /// Display name of the root-cause actor, if available.
     pub root_cause_name: Option<String>,
     /// When the failure occurred.
@@ -1254,8 +1254,8 @@ mod tests {
     }
 
     fn test_actor_ref(proc_name: &str, actor_name: &str) -> NodeRef {
+        use hyperactor::ProcId;
         use hyperactor::channel::ChannelAddr;
-        use hyperactor::reference::ProcId;
         NodeRef::Actor(
             ProcId::from_resource_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name),
         )
@@ -1649,8 +1649,8 @@ mod tests {
     /// SC-3: real payloads validate against the generated schema.
     #[test]
     fn test_payloads_validate_against_schema() {
+        use hyperactor::ProcId;
         use hyperactor::channel::ChannelAddr;
-        use hyperactor::reference::ProcId;
 
         let schema = schemars::schema_for!(dto::NodePayloadDto);
         let schema_value = serde_json::to_value(&schema).unwrap();

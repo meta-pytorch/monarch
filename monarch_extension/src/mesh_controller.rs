@@ -21,6 +21,7 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
@@ -32,7 +33,6 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
-use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMeshRef;

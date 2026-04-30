@@ -53,8 +53,8 @@ mod tests {
 
     use super::*;
 
-    fn mock_actor_id() -> hyperactor::reference::ActorId {
-        hyperactor::reference::ProcId::from_resource_name(
+    fn mock_actor_id() -> hyperactor::ActorAddr {
+        hyperactor::ProcAddr::from_resource_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),

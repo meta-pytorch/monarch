@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use hyperactor::reference;
+use hyperactor as reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;

@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
@@ -37,7 +38,6 @@ use hyperactor::OncePortHandle;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
-use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
@@ -162,9 +162,13 @@ impl RdmaManagerActor {
     /// Construct an [`ActorHandle`] for the [`RdmaManagerActor`] co-located
     /// with the caller.
     pub fn local_handle(client: &impl context::Actor) -> ActorHandle<Self> {
-        let proc_id = client.mailbox().actor_id().proc_ref().into();
-        let actor_ref =
-            reference::ActorRef::attest(reference::ActorId::new(proc_id, "rdma_manager").into());
+        let actor_ref = reference::ActorRef::attest(
+            client
+                .mailbox()
+                .actor_id()
+                .proc_ref()
+                .actor_id("rdma_manager"),
+        );
         actor_ref
             .downcast_handle(client)
             .expect("RdmaManagerActor is not in the local process")

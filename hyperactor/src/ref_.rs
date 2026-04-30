@@ -105,14 +105,14 @@ impl<A: Referable> ActorRef<A> {
         self.actor_addr
     }
 
-    /// The actor ID corresponding with this reference.
-    pub fn actor_id(&self) -> crate::reference::ActorId {
-        self.actor_addr.clone().into()
+    /// The actor address corresponding with this reference.
+    pub fn actor_id(&self) -> &ActorAddr {
+        &self.actor_addr
     }
 
-    /// Convert this actor reference into its corresponding actor ID.
-    pub fn into_actor_id(self) -> crate::reference::ActorId {
-        self.actor_addr.into()
+    /// Convert this actor reference into its corresponding actor address.
+    pub fn into_actor_id(self) -> ActorAddr {
+        self.actor_addr
     }
 
     /// Attempt to downcast this reference into a (local) actor handle.
@@ -274,8 +274,8 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed port reference.
-    pub fn attest_message_port(actor: &crate::reference::ActorId) -> Self {
-        PortRef::<M>::attest(actor.actor_ref().port_ref(Port::from(<M as Named>::port())))
+    pub fn attest_message_port(actor: &ActorAddr) -> Self {
+        PortRef::<M>::attest(actor.port_ref(Port::from(<M as Named>::port())))
     }
 
     /// The typehash of this port's reducer, if any. Reducers
@@ -294,14 +294,14 @@ impl<M: RemoteMessage> PortRef<M> {
         self.port_addr
     }
 
-    /// This port's ID.
-    pub fn port_id(&self) -> crate::reference::PortId {
-        self.port_addr.clone().into()
+    /// This port's address.
+    pub fn port_id(&self) -> &PortAddr {
+        &self.port_addr
     }
 
-    /// Convert this PortRef into its corresponding port id.
-    pub fn into_port_id(self) -> crate::reference::PortId {
-        self.port_addr.into()
+    /// Convert this PortRef into its corresponding port address.
+    pub fn into_port_id(self) -> PortAddr {
+        self.port_addr
     }
 
     /// coerce it into OncePortRef so we can send messages to this port from
@@ -515,14 +515,14 @@ impl<M: RemoteMessage> OncePortRef<M> {
         self.port_addr
     }
 
-    /// This port's ID.
-    pub fn port_id(&self) -> crate::reference::PortId {
-        self.port_addr.clone().into()
+    /// This port's address.
+    pub fn port_id(&self) -> &PortAddr {
+        &self.port_addr
     }
 
-    /// Convert this PortRef into its corresponding port id.
-    pub fn into_port_id(self) -> crate::reference::PortId {
-        self.port_addr.into()
+    /// Convert this PortRef into its corresponding port address.
+    pub fn into_port_id(self) -> PortAddr {
+        self.port_addr
     }
 
     /// Send a message to this port, provided a sending capability, such as

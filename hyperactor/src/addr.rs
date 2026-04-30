@@ -37,6 +37,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::channel::ChannelAddr;
+use crate::context::MailboxExt;
 use crate::id;
 use crate::id::ActorId;
 use crate::id::IdParseError;
@@ -161,6 +162,11 @@ impl ProcAddr {
     /// Create an ActorAddr with the provided name within this proc.
     pub fn actor_ref(&self, name: impl AsRef<str>) -> ActorAddr {
         ActorAddr::new_from_name(self.clone(), name)
+    }
+
+    /// Compatibility alias for callers still using `actor_id` naming.
+    pub fn actor_id(&self, name: impl AsRef<str>) -> ActorAddr {
+        self.actor_ref(name)
     }
 
     /// A human-readable name for logging.
@@ -304,18 +310,6 @@ pub struct ActorAddr {
 
 hyperactor_config::impl_attrvalue!(ActorAddr);
 
-impl PartialEq<crate::reference::ActorId> for ActorAddr {
-    fn eq(&self, other: &crate::reference::ActorId) -> bool {
-        self == other.actor_ref()
-    }
-}
-
-impl PartialEq<ActorAddr> for crate::reference::ActorId {
-    fn eq(&self, other: &ActorAddr) -> bool {
-        self.actor_ref() == other
-    }
-}
-
 impl ActorAddr {
     /// Create a new [`ActorAddr`].
     pub fn new(id: ActorId, location: Location) -> Self {
@@ -361,6 +355,11 @@ impl ActorAddr {
     /// Reconstruct the parent ProcAddr (with location preserved).
     pub fn proc_ref(&self) -> ProcAddr {
         ProcAddr::new(self.id.proc_id().clone(), self.location.clone())
+    }
+
+    /// Compatibility alias for callers still using `proc_id` naming.
+    pub fn proc_id(&self) -> ProcAddr {
+        self.proc_ref()
     }
 
     /// Create a PortAddr for a port on this actor.
@@ -503,6 +502,52 @@ impl PortAddr {
     /// Reconstruct the parent ActorAddr (with location preserved).
     pub fn actor_ref(&self) -> ActorAddr {
         ActorAddr::new(self.id.actor_id().clone(), self.location.clone())
+    }
+
+    /// Send a serialized message to this port, provided a sending capability.
+    pub fn send(&self, cx: &impl crate::context::Actor, serialized: wirevalue::Any) {
+        let mut headers = hyperactor_config::Flattrs::new();
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
+        cx.post(
+            self.clone(),
+            headers,
+            serialized,
+            true,
+            crate::context::SeqInfoPolicy::AssignNew,
+        );
+    }
+
+    /// Send a serialized message with explicit headers.
+    pub fn send_with_headers(
+        &self,
+        cx: &impl crate::context::Actor,
+        serialized: wirevalue::Any,
+        mut headers: hyperactor_config::Flattrs,
+    ) {
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
+        cx.post(
+            self.clone(),
+            headers,
+            serialized,
+            true,
+            crate::context::SeqInfoPolicy::AssignNew,
+        );
+    }
+
+    /// Split this port through a local proxy, possibly reducing messages.
+    pub fn split(
+        &self,
+        cx: &impl crate::context::Actor,
+        reducer_spec: Option<crate::accum::ReducerSpec>,
+        reducer_mode: crate::accum::ReducerMode,
+        return_undeliverable: bool,
+    ) -> anyhow::Result<PortAddr> {
+        cx.split(
+            self.clone(),
+            reducer_spec,
+            reducer_mode,
+            return_undeliverable,
+        )
     }
 }
 
