@@ -104,9 +104,9 @@ fn collect_live_children(
     for id in all_keys {
         if let Some(cell) = proc.get_instance(&id) {
             if cell.is_system() {
-                system_children.push(crate::introspect::NodeRef::Actor(id.clone().into()));
+                system_children.push(crate::introspect::NodeRef::Actor(id.clone()));
             }
-            children.push(hyperactor::introspect::IntrospectRef::Actor(id.into()));
+            children.push(hyperactor::introspect::IntrospectRef::Actor(id));
         }
     }
     (children, system_children)
@@ -116,7 +116,7 @@ fn collect_live_children(
 #[derive(Debug)]
 struct ActorInstanceState {
     create_rank: usize,
-    spawn: Result<hyperactor_reference::ActorId, anyhow::Error>,
+    spawn: Result<hyperactor_reference::ActorAddr, anyhow::Error>,
     /// True once a stop signal has been sent. This does *not* mean the actor
     /// has reached a terminal state — that is determined by observing
     /// supervision events.
@@ -370,7 +370,7 @@ impl ProcAgent {
 
     /// Send a stop signal to an actor on this proc. This is fire-and-forget;
     /// it does not wait for the actor to reach terminal status.
-    fn stop_actor_by_id(&self, actor_id: &hyperactor_reference::ActorId, reason: &str) {
+    fn stop_actor_by_id(&self, actor_id: &hyperactor_reference::ActorAddr, reason: &str) {
         tracing::info!(
             name = "StopActor",
             %actor_id,
@@ -390,8 +390,8 @@ impl ProcAgent {
         // TUI can filter/gray without per-child fetches.
         let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
         for id in self.proc.all_terminated_actor_ids() {
-            let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone().into());
-            let node_ref = crate::introspect::NodeRef::Actor(id.clone().into());
+            let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
+            let node_ref = crate::introspect::NodeRef::Actor(id.clone());
             stopped_children.push(node_ref.clone());
             if let Some(snapshot) = self.proc.terminated_snapshot(&id) {
                 let snapshot_attrs: hyperactor_config::Attrs =
@@ -509,9 +509,8 @@ impl Actor for ProcAgent {
 
                     let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
                     for id in proc.all_terminated_actor_ids() {
-                        let child_ref =
-                            hyperactor::introspect::IntrospectRef::Actor(id.clone().into());
-                        let node_ref = crate::introspect::NodeRef::Actor(id.clone().into());
+                        let child_ref = hyperactor::introspect::IntrospectRef::Actor(id.clone());
+                        let node_ref = crate::introspect::NodeRef::Actor(id.clone());
                         stopped_children.push(node_ref.clone());
                         if let Some(snapshot) = proc.terminated_snapshot(&id) {
                             let snapshot_attrs: hyperactor_config::Attrs =
@@ -598,9 +597,7 @@ impl Actor for ProcAgent {
                         serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
 
                     return IntrospectResult {
-                        identity: hyperactor::introspect::IntrospectRef::Proc(
-                            proc_ref.clone().into(),
-                        ),
+                        identity: hyperactor::introspect::IntrospectRef::Proc(proc_ref.clone()),
                         attrs: attrs_json,
                         children,
                         parent: None,
@@ -617,15 +614,9 @@ impl Actor for ProcAgent {
                     format!("child {} not found", child_ref),
                 );
                 let identity = match child_ref {
-                    Address::Proc(p) => {
-                        hyperactor::introspect::IntrospectRef::Proc(p.clone().into())
-                    }
-                    Address::Actor(a) => {
-                        hyperactor::introspect::IntrospectRef::Actor(a.clone().into())
-                    }
-                    Address::Port(p) => {
-                        hyperactor::introspect::IntrospectRef::Actor(p.actor_ref().into())
-                    }
+                    Address::Proc(p) => hyperactor::introspect::IntrospectRef::Proc(p.clone()),
+                    Address::Actor(a) => hyperactor::introspect::IntrospectRef::Actor(a.clone()),
+                    Address::Port(p) => hyperactor::introspect::IntrospectRef::Actor(p.actor_ref()),
                 };
                 IntrospectResult {
                     identity,
@@ -649,7 +640,7 @@ impl Actor for ProcAgent {
         envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         if let Some(true) = envelope.0.headers().get(STREAM_STATE_SUBSCRIBER) {
-            let dest_port_id: hyperactor_reference::PortId = envelope.0.dest().clone().into();
+            let dest_port_id: hyperactor_reference::PortAddr = envelope.0.dest().clone();
             let port = PortRef::<resource::State<ActorState>>::attest(dest_port_id);
             // Remove this subscriber from whichever actor instance holds it.
             for instance in self.actor_states.values_mut() {
@@ -796,7 +787,7 @@ wirevalue::register_type!(ActorSpec);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct ActorState {
     /// The actor's ID.
-    pub actor_id: hyperactor_reference::ActorId,
+    pub actor_id: hyperactor_reference::ActorAddr,
     /// The rank of the proc that created the actor. This is before any slicing.
     pub create_rank: usize,
     // TODO status: ActorStatus,
@@ -908,7 +899,7 @@ impl Handler<resource::StopAll> for ProcAgent {
         self.stopping_all = true;
 
         // Send stop signals to all actors that haven't been stopped yet.
-        let to_stop: Vec<hyperactor_reference::ActorId> = self
+        let to_stop: Vec<hyperactor_reference::ActorAddr> = self
             .actor_states
             .values_mut()
             .filter_map(|state| {
@@ -1161,7 +1152,7 @@ impl Handler<SelfCheck> for ProcAgent {
         let now = std::time::SystemTime::now();
 
         // Collect expired actors before mutating, since stop_actor borrows &mut self.
-        let expired: Vec<(ResourceId, hyperactor_reference::ActorId)> = self
+        let expired: Vec<(ResourceId, hyperactor_reference::ActorAddr)> = self
             .actor_states
             .iter()
             .filter_map(|(id, state)| {
@@ -1246,8 +1237,8 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id: hyperactor_reference::ActorId =
-            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
+        let agent_id: hyperactor_reference::ActorAddr =
+            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Helper: send QueryChild(Proc) and return the payload with a
@@ -1257,7 +1248,7 @@ mod tests {
             port.send(
                 client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone().into()),
+                    child_ref: hyperactor_reference::Address::Proc(proc.proc_id().clone()),
                     reply: reply_port.bind(),
                 },
             )
@@ -1354,8 +1345,8 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id: hyperactor_reference::ActorId =
-            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
+        let agent_id: hyperactor_reference::ActorAddr =
+            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Concurrent query task: send QueryChild(Proc) every 10ms.
@@ -1373,9 +1364,7 @@ mod tests {
                     .send(
                         &query_client,
                         IntrospectMessage::QueryChild {
-                            child_ref: hyperactor_reference::Reference::Proc(
-                                query_proc_id.clone().into(),
-                            ),
+                            child_ref: hyperactor_reference::Address::Proc(query_proc_id.clone()),
                             reply: reply_port.bind(),
                         },
                     )
@@ -1436,7 +1425,7 @@ mod tests {
         port.send(
             &client,
             IntrospectMessage::QueryChild {
-                child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone().into()),
+                child_ref: hyperactor_reference::Address::Proc(proc.proc_id().clone()),
                 reply: reply_port.bind(),
             },
         )
@@ -1681,8 +1670,8 @@ mod tests {
 
         // QueryChild(Proc) — same aggregation logic as mesh-admin
         // resolution.
-        let agent_id: hyperactor_reference::ActorId =
-            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME).into();
+        let agent_id: hyperactor_reference::ActorAddr =
+            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Poll until queue stats are non-zero.
@@ -1692,7 +1681,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone().into()),
+                    child_ref: hyperactor_reference::Address::Proc(proc.proc_id().clone()),
                     reply: reply_port.bind(),
                 },
             )

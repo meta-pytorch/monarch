@@ -18,7 +18,7 @@ use opentelemetry::metrics;
 use pyo3::prelude::*;
 use pyo3::types::PyTraceback;
 
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 
 /// Get the current span ID from the active span
 #[pyfunction]
@@ -254,7 +254,7 @@ struct PySpan {
 impl PySpan {
     #[new]
     #[pyo3(signature = (name, actor_id = None))]
-    fn new(name: &str, actor_id: Option<&PyActorId>) -> Self {
+    fn new(name: &str, actor_id: Option<&PyActorAddr>) -> Self {
         let mut fields = vec![("name", FieldValue::Str(name.to_string()))];
         if let Some(actor_id) = actor_id {
             fields.push(("actor_id", FieldValue::Str(actor_id.inner.to_string())));
