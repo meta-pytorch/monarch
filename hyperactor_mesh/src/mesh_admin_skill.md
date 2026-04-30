@@ -104,7 +104,7 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
 
 - `GET {base}/v1/pyspy/{proc_reference}`
   Requests a py-spy stack dump from the process hosting
-  `{proc_reference}`. The reference must be a valid ProcId
+  `{proc_reference}`. The reference must be a valid ProcAddr
   (percent-encoded in the URL path). Requires py-spy in the
   target environment and ptrace permissions.
 
@@ -141,7 +141,7 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
   - 503 — py-spy not available on target host
   - 504 — py-spy record subprocess timed out
 
-  Agent note: `{encoded_proc_ref}` is the percent-encoded ProcId
+  Agent note: `{encoded_proc_ref}` is the percent-encoded ProcAddr
   string for the target process. If you save the
   returned SVG on a remote host for browser viewing, tell the user
   the remote file path, the serving port, the exact `ssh -L`
@@ -156,7 +156,7 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
 - `GET {base}/v1/config/{proc_reference}`
   Returns the effective CONFIG-marked configuration entries from the
   process hosting `{proc_reference}`. The reference must be a valid
-  ProcId (percent-encoded in the URL path).
+  ProcAddr (percent-encoded in the URL path).
 
   Success returns a `ConfigDumpResult` JSON object:
   ```json
@@ -219,7 +219,7 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
 - `POST {base}/v1/pyspy_dump/{proc_reference}`
   Captures a py-spy stack dump from the process hosting
   `{proc_reference}` and persists the result in the telemetry
-  store. The reference must be a valid ProcId (percent-encoded
+  store. The reference must be a valid ProcAddr (percent-encoded
   in the URL path). Requires `telemetry_url` to be configured.
 
   The endpoint performs two steps:
@@ -307,8 +307,8 @@ Always round-trip references exactly as returned in `children`.
 Common examples include:
 
 - `root` — synthetic entrypoint
-- Actor references (`ActorId`)
-- Proc references (`ProcId`)
+- Actor references (`ActorAddr`)
+- Proc references (`ProcAddr`)
 
 ## Examples
 

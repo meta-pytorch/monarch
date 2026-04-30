@@ -47,7 +47,7 @@ from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PicklingState,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
 )
 from monarch._src.actor.actor_mesh import Channel
 from monarch._src.actor.shape import NDSlice
@@ -70,7 +70,7 @@ from monarch.common.client import Client
 from monarch.common.controller_api import LogMessage, MessageResult
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.future import Future as OldFuture
-from monarch.common.invocation import DeviceException, RemoteException
+from monarch.common.invocation import DeviceException
 
 logger: Logger = logging.getLogger(__name__)
 
@@ -191,7 +191,7 @@ class WriteWrapper:
 class Controller(_Controller):
     def __init__(self, instance: Instance, workers: "HyProcMesh") -> None:
         super().__init__()
-        self._pending_debugger_sessions: deque[ActorId] = deque()
+        self._pending_debugger_sessions: deque[ActorAddr] = deque()
 
     def node(
         self,
@@ -334,7 +334,9 @@ class MeshClient(Client):
     def shutdown(
         self,
         destroy_pg: bool = True,
-        error_reason: Optional[RemoteException | DeviceException | Exception] = None,
+        error_reason: Optional[
+            Union["RemoteException", DeviceException, Exception]
+        ] = None,
     ):
         # return
         if self.has_shutdown:

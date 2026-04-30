@@ -17,7 +17,7 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
-use hyperactor::ProcId;
+use hyperactor::ProcAddr;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
@@ -309,7 +309,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
                 // bind path should be idempotent and eliminate the
                 // need for attestation here.
                 subscriber: PortRef::<resource::State<ActorState>>::attest_message_port(
-                    &this.self_id().clone().into(),
+                    &this.self_id().clone(),
                 )
                 .unsplit(),
             },
@@ -352,7 +352,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
             // NOTE: The only part of the port that is used for equality checks is
             // the port id, so create a new one just for the comparison.
             let dest_port_id = envelope.0.dest().clone();
-            let port = PortRef::<Option<MeshFailure>>::attest(dest_port_id.into());
+            let port = PortRef::<Option<MeshFailure>>::attest(dest_port_id);
             let did_exist = self.health_state.subscribers.remove(&port);
             if did_exist {
                 tracing::debug!(
@@ -1014,7 +1014,7 @@ impl Actor for ProcMeshController {
         _err: Option<&ActorError>,
     ) -> Result<(), anyhow::Error> {
         // Cannot use "ProcMesh::stop" as it's only defined on ProcMesh, not ProcMeshRef.
-        let names = self.mesh.proc_ids().collect::<Vec<ProcId>>();
+        let names = self.mesh.proc_ids().collect::<Vec<ProcAddr>>();
         let region = self.mesh.region().clone();
         if let Some(hosts) = self.mesh.hosts() {
             hosts

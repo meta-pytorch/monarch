@@ -22,7 +22,7 @@ use std::fmt::Debug;
 use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
-use hyperactor::ActorId;
+use hyperactor::ActorAddr;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
@@ -114,9 +114,9 @@ struct ReceiveState {
 )]
 pub struct CommActor {
     /// Sequence numbers are maintained for each (actor mesh id, sender).
-    send_seq: HashMap<(ActorMeshId, ActorId), usize>,
+    send_seq: HashMap<(ActorMeshId, ActorAddr), usize>,
     /// Each sender is a unique stream.
-    recv_state: HashMap<(ActorMeshId, ActorId), ReceiveState>,
+    recv_state: HashMap<(ActorMeshId, ActorAddr), ReceiveState>,
 
     /// The comm actor's mesh configuration, or buffered messages if not yet configured.
     mesh_config: MeshConfigState,
@@ -282,7 +282,7 @@ impl CommActor {
         config: &CommMeshConfig,
         deliver_here: bool,
         next_steps: HashMap<usize, Vec<RoutingFrame>>,
-        sender: ActorId,
+        sender: ActorAddr,
         mut message: CastMessageEnvelope,
         seq: usize,
         last_seqs: &mut HashMap<usize, usize>,
@@ -460,7 +460,7 @@ impl Handler<CastMessage> for CommActor {
 
         let fwd_message = ForwardMessage {
             dests: vec![frame],
-            sender: cx.self_id().clone().into(),
+            sender: cx.self_id().clone(),
             message: cast_message.message,
             seq: *seq,
             last_seq,
@@ -641,7 +641,7 @@ pub mod test_utils {
     use anyhow::Result;
     use async_trait::async_trait;
     use hyperactor::Actor;
-    use hyperactor::ActorId;
+    use hyperactor::ActorAddr;
     use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
@@ -655,7 +655,7 @@ pub mod test_utils {
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Named)]
     pub struct MyReply {
-        pub sender: ActorId,
+        pub sender: ActorAddr,
         pub value: u64,
     }
 
@@ -840,7 +840,7 @@ mod tests {
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
                 actor_mesh_id,
-                client.self_id().clone().into(),
+                client.self_id().clone(),
                 shape,
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -869,7 +869,7 @@ mod tests {
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
                 actor_mesh_id,
-                client.self_id().clone().into(),
+                client.self_id().clone(),
                 shape,
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -879,7 +879,7 @@ mod tests {
             let last_seq = next_seq;
             next_seq += 1;
             multicast::ForwardMessage {
-                sender: client.self_id().clone().into(),
+                sender: client.self_id().clone(),
                 dests: vec![frame],
                 seq: next_seq,
                 last_seq,
@@ -899,7 +899,7 @@ mod tests {
             let slice = Slice::new_row_major(vec![1]);
             let region = Region::new(vec!["rank".to_string()], slice.clone());
             let cast_msg = multicast::CastMessageV1::new::<TestActor, TestMessage>(
-                client.self_id().clone().into(),
+                client.self_id().clone(),
                 actor_mesh_id,
                 region.clone(),
                 hyperactor_config::Flattrs::new(),
@@ -917,13 +917,13 @@ mod tests {
         .await;
     }
 
-    use hyperactor::ActorId;
+    use hyperactor::ActorAddr;
     use hyperactor::ActorRef;
     use hyperactor::Index;
     use hyperactor::OncePortRef;
-    use hyperactor::PortId;
+    use hyperactor::PortAddr;
     use hyperactor::PortRef;
-    use hyperactor::ProcId;
+    use hyperactor::ProcAddr;
     use hyperactor::accum::Accumulator;
     use hyperactor::accum::ReducerSpec;
     use hyperactor::context;
@@ -950,8 +950,8 @@ mod tests {
     use crate::testing;
 
     // Helper to look up the rank for a given actor ID using the rank_lookup table.
-    fn lookup_rank(actor_id: &ActorId, rank_lookup: &HashMap<ProcId, usize>) -> usize {
-        let proc_id = actor_id.proc_id();
+    fn lookup_rank(actor_id: &ActorAddr, rank_lookup: &HashMap<ProcAddr, usize>) -> usize {
+        let proc_id = actor_id.proc_ref();
         *rank_lookup
             .get(&proc_id)
             .unwrap_or_else(|| panic!("proc rank not found for {}", proc_id))
@@ -971,11 +971,11 @@ mod tests {
 
     // The relationship between original ports and split ports. The elements in
     // the tuple are (original port, split port, deliver_here).
-    static SPLIT_PORT_TREE: OnceLock<Mutex<Vec<Edge<PortId>>>> = OnceLock::new();
+    static SPLIT_PORT_TREE: OnceLock<Mutex<Vec<Edge<PortAddr>>>> = OnceLock::new();
 
     // Collect the relationships between original ports and split ports into
     // SPLIT_PORT_TREE. This is used by tests to verify that ports are split as expected.
-    pub(crate) fn collect_split_port(original: &PortId, split: &PortId, deliver_here: bool) {
+    pub(crate) fn collect_split_port(original: &PortAddr, split: &PortAddr, deliver_here: bool) {
         let mutex = SPLIT_PORT_TREE.get_or_init(|| Mutex::new(vec![]));
         let mut tree = mutex.lock().unwrap();
 
@@ -991,7 +991,7 @@ mod tests {
     // tree so it will only contain the cast we want to check.
     fn clear_collected_tree() {
         if let Some(tree) = SPLIT_PORT_TREE.get() {
-            let mut tree: std::sync::MutexGuard<'_, Vec<Edge<PortId>>> = tree.lock().unwrap();
+            let mut tree: std::sync::MutexGuard<'_, Vec<Edge<PortAddr>>> = tree.lock().unwrap();
             tree.clear();
         }
     }
@@ -1105,14 +1105,14 @@ mod tests {
     //     2 -> 0, 2
     //     3 -> 0, 2, 3
     fn get_ranks(
-        paths: PathToLeaves<PortId>,
-        client_reply: &PortId,
-        rank_lookup: &HashMap<ProcId, usize>,
+        paths: PathToLeaves<PortAddr>,
+        client_reply: &PortAddr,
+        rank_lookup: &HashMap<ProcAddr, usize>,
     ) -> PathToLeaves<Index> {
         let ranks = paths
             .0
             .into_iter()
-            .map(|(dst, mut path): (PortId, Vec<PortId>)| {
+            .map(|(dst, mut path): (PortAddr, Vec<PortAddr>)| {
                 let first = path.remove(0);
                 // The first PortId is the client's reply port.
                 assert_eq!(&first, client_reply);
@@ -1121,7 +1121,7 @@ mod tests {
                 assert!(dst.actor_id().label().unwrap().as_str().contains("comm"));
                 let actor_path = path
                     .into_iter()
-                    .map(|p: PortId| {
+                    .map(|p: PortAddr| {
                         assert!(p.actor_id().label().unwrap().as_str().contains("comm"));
                         let actor_ref = p.actor_ref();
                         lookup_rank(&actor_ref, rank_lookup)
@@ -1159,7 +1159,7 @@ mod tests {
         extent: &Extent,
         reply_port_ref1: &PortRef<u64>,
         reply_port_ref2: &PortRef<MyReply>,
-        rank_lookup: &HashMap<ProcId, usize>,
+        rank_lookup: &HashMap<ProcAddr, usize>,
     ) {
         // Get the paths used in casting
         let sel_paths = PathToLeaves(
@@ -1222,7 +1222,7 @@ mod tests {
         // be received in the same order as they were sent out.
         {
             let n = 100;
-            let mut expected2: HashMap<ActorId, Vec<MyReply>> = hashmap! {};
+            let mut expected2: HashMap<ActorAddr, Vec<MyReply>> = hashmap! {};
             for (i, (dest_actor, (_reply_to1, reply_to2))) in
                 ranks.iter().zip(reply_tos.iter()).enumerate()
             {
@@ -1245,7 +1245,7 @@ mod tests {
                 );
             }
 
-            let mut received2: HashMap<ActorId, Vec<MyReply>> = hashmap! {};
+            let mut received2: HashMap<ActorAddr, Vec<MyReply>> = hashmap! {};
 
             for _ in 0..(n * ranks.len()) {
                 let my_reply = reply2_rx.recv().await.unwrap();
@@ -1412,7 +1412,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, r)| (r.proc_id().clone(), i))
-            .collect::<HashMap<ProcId, usize>>();
+            .collect::<HashMap<ProcAddr, usize>>();
 
         // v1 always uses sel!(*) when casting to a mesh.
         let selection = sel!(*);
