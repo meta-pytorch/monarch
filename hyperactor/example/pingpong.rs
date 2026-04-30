@@ -292,7 +292,9 @@ async fn run_local_duplex(
         }
     });
 
-    let (client_tx, mut client_rx) = duplex::dial::<Message, Message>(server_addr.clone()).unwrap();
+    let mut client = duplex::dial::<Message, Message>(server_addr.clone()).unwrap();
+    let client_tx = client.tx();
+    let mut client_rx = client.take_rx().unwrap();
 
     println!("Client connected to {server_addr} (duplex)");
 
@@ -352,6 +354,11 @@ async fn run_local_duplex(
     println!("Total bytes transferred: {total_bytes} bytes");
     println!("Bandwidth: {bw_bps:.0} bytes/sec ({bw_mbps:.2} Mbps)");
 
+    // Gracefully shut the dial-side recv/send loop down via the
+    // structured-concurrency join. The application's `client_tx` /
+    // `client_rx` halves stay alive but become dead handles after
+    // the spawn task drops its peer ends.
+    client.join().await;
     server_handle.abort();
     Ok(())
 }
@@ -372,7 +379,9 @@ async fn bench_ping_pong_duplex(
         }
     });
 
-    let (client_tx, mut client_rx) = duplex::dial::<Message, Message>(server_addr).unwrap();
+    let mut client = duplex::dial::<Message, Message>(server_addr).unwrap();
+    let client_tx = client.tx();
+    let mut client_rx = client.take_rx().unwrap();
 
     let message = Message::Echo(serde_multipart::Part::from(vec![0u8; message_size]));
 
@@ -389,6 +398,7 @@ async fn bench_ping_pong_duplex(
     }
     let elapsed = start.elapsed();
 
+    client.join().await;
     server_handle.abort();
     Ok(elapsed)
 }
