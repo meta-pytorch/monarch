@@ -31,12 +31,8 @@ pub struct BenchMessage {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        BenchMessage { cast = true },
-    ],
-)]
+#[hyperactor::export(BenchMessage { cast = true })]
+#[hyperactor::spawnable]
 pub struct BenchActor {
     processing_time: Duration,
 }
