@@ -34,12 +34,8 @@ use serde::Serialize;
 use typeuri::Named;
 
 #[derive(Default, Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        TestMessage { cast = true },
-    ],
-)]
+#[hyperactor::export(TestMessage { cast = true })]
+#[hyperactor::spawnable]
 struct TestActor {}
 
 impl Actor for TestActor {}

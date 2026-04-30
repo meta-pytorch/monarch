@@ -147,6 +147,8 @@ pub use hyperactor_macros::instrument_infallible;
 pub use hyperactor_macros::observe_async;
 pub use hyperactor_macros::observe_result;
 #[doc(inline)]
+pub use hyperactor_macros::spawnable;
+#[doc(inline)]
 pub use hyperactor_macros::uid;
 pub use hyperactor_telemetry::declare_static_counter;
 pub use hyperactor_telemetry::declare_static_gauge;

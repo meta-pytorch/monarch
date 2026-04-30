@@ -38,7 +38,8 @@ wirevalue::register_type!(AutoReloadParams);
 
 /// Simple Rust Actor that wraps the Python AutoReloader class via pyo3
 #[derive(Debug)]
-#[hyperactor::export(spawn = true, handlers = [AutoReloadMessage])]
+#[hyperactor::export(handlers = [AutoReloadMessage])]
+#[hyperactor::spawnable]
 pub struct AutoReloadActor {
     state: Result<(Arc<Py<PyAny>>, Py<PyAny>), SerializablePyErr>,
 }

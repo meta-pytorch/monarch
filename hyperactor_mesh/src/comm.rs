@@ -103,15 +103,13 @@ struct ReceiveState {
 /// and result accumulation.
 #[derive(Debug, Default)]
 #[hyperactor::export(
-    spawn = true,
-    handlers = [
-        CommMeshConfig,
-        CastMessage,
-        ForwardMessage,
-        CastMessageV1,
-        ForwardMessageV1,
-    ],
+    CommMeshConfig,
+    CastMessage,
+    ForwardMessage,
+    CastMessageV1,
+    ForwardMessageV1
 )]
+#[hyperactor::spawnable]
 pub struct CommActor {
     /// Sequence numbers are maintained for each (actor mesh id, sender).
     send_seq: HashMap<(ActorMeshId, ActorId), usize>,
@@ -685,12 +683,8 @@ pub mod test_utils {
     }
 
     #[derive(Debug)]
-    #[hyperactor::export(
-        spawn = true,
-        handlers = [
-            TestMessage { cast = true },
-        ],
-    )]
+    #[hyperactor::export(TestMessage { cast = true })]
+    #[hyperactor::spawnable]
     pub struct TestActor {
         // Forward the received message to this port, so it can be inspected by
         // the unit test.

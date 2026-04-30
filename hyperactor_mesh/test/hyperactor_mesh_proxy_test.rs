@@ -56,12 +56,8 @@ struct Args {
 // -- TestActor
 
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        Echo,
-    ],
-)]
+#[hyperactor::export(Echo)]
+#[hyperactor::spawnable]
 pub struct TestActor;
 
 impl Actor for TestActor {}
@@ -89,12 +85,8 @@ impl Handler<Echo> for TestActor {
 
 // -- ProxyActor
 
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        Echo,
-    ],
-)]
+#[hyperactor::export(Echo)]
+#[hyperactor::spawnable]
 pub struct ProxyActor {
     exe_path: String,
     host_mesh: Option<HostMesh>,

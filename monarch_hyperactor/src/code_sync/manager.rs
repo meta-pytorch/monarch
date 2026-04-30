@@ -176,12 +176,12 @@ wirevalue::register_type!(CodeSyncManagerParams);
 
 #[derive(Debug)]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         CodeSyncMessage { cast = true },
         SetActorMeshMessage { cast = true }
     ],
 )]
+#[hyperactor::spawnable]
 pub struct CodeSyncManager {
     rsync: OnceCell<ActorHandle<RsyncActor>>,
     auto_reload: OnceCell<ActorHandle<AutoReloadActor>>,

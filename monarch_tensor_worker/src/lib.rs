@@ -142,8 +142,8 @@ enum Recording {
 ///
 /// See [`WorkerMessage`] for what it can do!
 #[derive(Debug)]
+#[hyperactor::spawnable]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         WorkerMessage {cast = true},
         AssignRankMessage {cast = true},
