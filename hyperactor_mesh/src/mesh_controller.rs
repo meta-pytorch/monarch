@@ -16,6 +16,7 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
@@ -26,7 +27,7 @@ use hyperactor::context;
 use hyperactor::kv_pairs;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
-use hyperactor::reference as hyperactor_reference;
+use hyperactor::reference::ProcId;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -86,15 +87,15 @@ struct HealthState {
     unhealthy_event: Option<Unhealthy>,
     crashed_ranks: HashMap<usize, ActorSupervisionEvent>,
     // The unique owner of this actor.
-    owner: Option<hyperactor_reference::PortRef<MeshFailure>>,
+    owner: Option<PortRef<MeshFailure>>,
     /// A set of subscribers to send messages to when events are encountered.
-    subscribers: HashSet<hyperactor_reference::PortRef<Option<MeshFailure>>>,
+    subscribers: HashSet<PortRef<Option<MeshFailure>>>,
 }
 
 impl HealthState {
     fn new(
         statuses: HashMap<Point, resource::Status>,
-        owner: Option<hyperactor_reference::PortRef<MeshFailure>>,
+        owner: Option<PortRef<MeshFailure>>,
     ) -> Self {
         Self {
             statuses: statuses
@@ -139,16 +140,16 @@ impl HealthState {
 /// the listener that the controller is still alive. Make sure to filter such events
 /// out as not useful.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct Subscribe(pub hyperactor_reference::PortRef<Option<MeshFailure>>);
+pub struct Subscribe(pub PortRef<Option<MeshFailure>>);
 
 /// Unsubscribe me to future updates about a mesh. Should be the same port used in
 /// the Subscribe message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct Unsubscribe(pub hyperactor_reference::PortRef<Option<MeshFailure>>);
+pub struct Unsubscribe(pub PortRef<Option<MeshFailure>>);
 
 /// Query the number of active supervision subscribers on this controller.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct GetSubscriberCount(#[binding(include)] pub hyperactor_reference::PortRef<usize>);
+pub struct GetSubscriberCount(#[binding(include)] pub PortRef<usize>);
 
 /// Check state of the actors in the mesh. This is used as a self message to
 /// periodically check.
@@ -197,7 +198,7 @@ impl<A: Referable> ActorMeshController<A> {
     pub(crate) fn new(
         mesh: ActorMeshRef<A>,
         supervision_display_name: Option<String>,
-        port: Option<hyperactor_reference::PortRef<MeshFailure>>,
+        port: Option<PortRef<MeshFailure>>,
         initial_statuses: ValueMesh<resource::Status>,
     ) -> Self {
         let supervision_display_name =
@@ -243,7 +244,7 @@ declare_attrs! {
 
 fn send_subscriber_message(
     cx: &impl context::Actor,
-    subscriber: &hyperactor_reference::PortRef<Option<MeshFailure>>,
+    subscriber: &PortRef<Option<MeshFailure>>,
     message: MeshFailure,
 ) {
     let mut headers = Flattrs::new();
@@ -307,7 +308,10 @@ impl<A: Referable> Actor for ActorMeshController<A> {
                 // but the longer-term fix is to clarify whether that
                 // bind path should be idempotent and eliminate the
                 // need for attestation here.
-                subscriber: hyperactor_reference::PortRef::<resource::State<ActorState>>::attest_message_port(&this.self_id().clone().into()).unsplit(),
+                subscriber: PortRef::<resource::State<ActorState>>::attest_message_port(
+                    &this.self_id().clone().into(),
+                )
+                .unsplit(),
             },
         )?;
 
@@ -348,8 +352,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
             // NOTE: The only part of the port that is used for equality checks is
             // the port id, so create a new one just for the comparison.
             let dest_port_id = envelope.0.dest().clone();
-            let port =
-                hyperactor_reference::PortRef::<Option<MeshFailure>>::attest(dest_port_id.into());
+            let port = PortRef::<Option<MeshFailure>>::attest(dest_port_id.into());
             let did_exist = self.health_state.subscribers.remove(&port);
             if did_exist {
                 tracing::debug!(
@@ -1011,10 +1014,7 @@ impl Actor for ProcMeshController {
         _err: Option<&ActorError>,
     ) -> Result<(), anyhow::Error> {
         // Cannot use "ProcMesh::stop" as it's only defined on ProcMesh, not ProcMeshRef.
-        let names = self
-            .mesh
-            .proc_ids()
-            .collect::<Vec<hyperactor_reference::ProcId>>();
+        let names = self.mesh.proc_ids().collect::<Vec<ProcId>>();
         let region = self.mesh.region().clone();
         if let Some(hosts) = self.mesh.hosts() {
             hosts
