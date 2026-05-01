@@ -251,6 +251,8 @@ mod tests {
             short: "my_proc".to_string(),
             lines: vec![],
             completed_at: None,
+            service_proc_ref: None,
+            provision_state: crate::ProvisionState::Idle,
         });
         assert_eq!(
             ActiveJob::footer_text(&job, &labels),

@@ -47,6 +47,8 @@ pub(crate) enum RequestOp {
     ConfigDump,
     /// `GET /v1/pyspy/{proc_reference}`.
     PySpyDump,
+    /// `POST /v1/tools_provision/{proc_reference}`.
+    ToolProvision,
 }
 
 /// All [`RequestOp`] variants, for iteration in law-based tests.
@@ -55,6 +57,7 @@ pub(crate) const ALL_REQUEST_OPS: &[RequestOp] = &[
     RequestOp::InteractiveFetch,
     RequestOp::ConfigDump,
     RequestOp::PySpyDump,
+    RequestOp::ToolProvision,
 ];
 
 /// Per-probe budgets, applied via `tokio::time::timeout` inside the
@@ -91,6 +94,7 @@ pub(crate) struct TuiTimeoutPolicy {
     interactive_fetch: Duration,
     config_dump: Duration,
     pyspy_dump: Duration,
+    tool_provision: Duration,
     diagnostics_probe: Duration,
     diagnostics_run: Duration,
 }
@@ -116,6 +120,9 @@ impl TuiTimeoutPolicy {
             pyspy_dump: hyperactor_config::global::get(
                 hyperactor_mesh::config::MESH_ADMIN_PYSPY_CLIENT_TIMEOUT,
             ),
+            tool_provision: hyperactor_config::global::get(
+                hyperactor_mesh::config::MESH_ADMIN_TOOL_PROVISION_BRIDGE_TIMEOUT,
+            ),
             diagnostics_probe: Duration::from_secs(5),
             diagnostics_run: Duration::from_secs(120),
         }
@@ -127,6 +134,7 @@ impl TuiTimeoutPolicy {
             RequestOp::InteractiveFetch => self.interactive_fetch,
             RequestOp::ConfigDump => self.config_dump,
             RequestOp::PySpyDump => self.pyspy_dump,
+            RequestOp::ToolProvision => self.tool_provision,
         }
     }
 
@@ -220,6 +228,17 @@ mod tests {
             hyperactor_mesh::config::MESH_ADMIN_PYSPY_CLIENT_TIMEOUT,
         );
         assert_eq!(policy.request_timeout(RequestOp::PySpyDump), expected);
+    }
+
+    // TP-6/TP-9: tool provisioning has its own budget and does not
+    // reuse py-spy or config dump timeouts.
+    #[test]
+    fn from_config_request_budget_tool_provision() {
+        let policy = TuiTimeoutPolicy::from_config(&default_config());
+        let expected = hyperactor_config::global::get(
+            hyperactor_mesh::config::MESH_ADMIN_TOOL_PROVISION_BRIDGE_TIMEOUT,
+        );
+        assert_eq!(policy.request_timeout(RequestOp::ToolProvision), expected);
     }
 
     // TP-6: probe budget.

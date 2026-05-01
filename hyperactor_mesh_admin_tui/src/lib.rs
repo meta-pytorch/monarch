@@ -120,6 +120,19 @@
 //!   `Diagnostics` variant (dropping any live `PySpy` receiver);
 //!   Esc calls `dismiss_job`; `recv_active_job` fires only for the
 //!   variant currently stored.
+//! - **PY-6 (service-proc-managed-provisioning):** The managed
+//!   py-spy provisioning prompt is offered only for py-spy results
+//!   from the service proc. Worker proc py-spy still goes through
+//!   `ProcAgent`, so it must not offer a host-level provisioning
+//!   action that cannot affect the retry path.
+//! - **PY-7 (explicit-provisioning-action):** Missing py-spy never
+//!   triggers automatic provisioning. The TUI preserves the failed
+//!   overlay and dispatches provisioning only when the operator
+//!   presses uppercase `P`.
+//! - **PY-8 (provisioning-overlay-continuity):** Provisioning mutates
+//!   the active py-spy overlay in place. It appends provisioning
+//!   status to the existing binary-not-found output rather than
+//!   replacing the diagnostic context.
 //!
 //! Config overlay invariants:
 //!

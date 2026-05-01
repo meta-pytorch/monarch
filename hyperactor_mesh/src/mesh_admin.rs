@@ -367,6 +367,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+use tool_fetch::ToolSpec;
 use typeuri::Named;
 
 use crate::config_dump::ConfigDump;
@@ -387,6 +388,10 @@ use crate::pyspy::PySpyProfileOpts;
 use crate::pyspy::PySpyProfileResult;
 use crate::pyspy::PySpyResult;
 use crate::pyspy::ValidatedProfileRequest;
+use crate::tool_provision::ProvisionResult;
+use crate::tool_provision::ProvisionTool;
+use crate::tool_provision::QueryToolInventory;
+use crate::tool_provision::ToolInventory;
 
 /// Send an `IntrospectMessage` to an actor and receive the reply.
 /// Encapsulates open_once_port + send + timeout + error handling.
@@ -1541,6 +1546,8 @@ impl MeshAdminAgent {
 /// - `POST /v1/pyspy_dump/{*proc_reference}` — py-spy dump + store in Datafusion.
 /// - `POST /v1/pyspy_profile_svg/{*proc_reference}` — py-spy profile → SVG flamegraph.
 /// - `GET /v1/config/{*proc_reference}` — config snapshot for a proc.
+/// - `GET /v1/tools/{*proc_reference}` — diagnostic tool inventory for a host's service proc.
+/// - `POST /v1/tools_provision/{*proc_reference}` — provision one diagnostic tool on a host's service proc.
 /// - `GET /v1/admin` — admin self-identification (`AdminInfo`).
 /// - `GET /v1/{*reference}` — JSON `NodePayload` for a single reference.
 /// - `GET /SKILL.md` — agent-facing API documentation (markdown).
@@ -1565,6 +1572,11 @@ fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
             post(pyspy_profile_svg),
         )
         .route("/v1/config/{*proc_reference}", get(config_bridge))
+        .route("/v1/tools/{*proc_reference}", get(tools_inventory_bridge))
+        .route(
+            "/v1/tools_provision/{*proc_reference}",
+            post(tools_provision_bridge),
+        )
         .route("/v1/{*reference}", get(resolve_reference_bridge))
         .with_state(bridge_state)
 }
@@ -2252,6 +2264,83 @@ impl ResolvedProcHandler {
                 details: None,
             })
     }
+
+    async fn tool_inventory(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        timeout: std::time::Duration,
+    ) -> Result<ToolInventory, ApiError> {
+        let Self::Host(host) = self else {
+            return Err(ApiError::bad_request(
+                "tool inventory requires a host service proc reference",
+                None,
+            ));
+        };
+
+        let (reply_handle, reply_rx) = open_once_port::<ToolInventory>(cx);
+        let mut reply_ref = reply_handle.bind();
+        reply_ref.return_undeliverable(false);
+        host.send(cx, QueryToolInventory { reply: reply_ref })
+            .map_err(|e| ApiError {
+                code: "internal_error".to_string(),
+                message: format!("failed to send QueryToolInventory: {}", e),
+                details: None,
+            })?;
+        tokio::time::timeout(timeout, reply_rx.recv())
+            .await
+            .map_err(|_| ApiError {
+                code: "gateway_timeout".to_string(),
+                message: "timed out waiting for tool inventory".to_string(),
+                details: None,
+            })?
+            .map_err(|e| ApiError {
+                code: "internal_error".to_string(),
+                message: format!("failed to receive ToolInventory: {}", e),
+                details: None,
+            })
+    }
+
+    async fn provision_tool(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        spec: ToolSpec,
+        timeout: std::time::Duration,
+    ) -> Result<ProvisionResult, ApiError> {
+        let Self::Host(host) = self else {
+            return Err(ApiError::bad_request(
+                "tool provisioning requires a host service proc reference",
+                None,
+            ));
+        };
+
+        let (reply_handle, reply_rx) = open_once_port::<ProvisionResult>(cx);
+        let mut reply_ref = reply_handle.bind();
+        reply_ref.return_undeliverable(false);
+        host.send(
+            cx,
+            ProvisionTool {
+                spec,
+                reply: reply_ref,
+            },
+        )
+        .map_err(|e| ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to send ProvisionTool: {}", e),
+            details: None,
+        })?;
+        tokio::time::timeout(timeout, reply_rx.recv())
+            .await
+            .map_err(|_| ApiError {
+                code: "gateway_timeout".to_string(),
+                message: "timed out waiting for tool provisioning".to_string(),
+                details: None,
+            })?
+            .map_err(|e| ApiError {
+                code: "internal_error".to_string(),
+                message: format!("failed to receive ProvisionResult: {}", e),
+                details: None,
+            })
+    }
 }
 
 /// Parse + route + attest. No probe. The single `ActorRef::attest`
@@ -2580,6 +2669,42 @@ async fn config_bridge(
     let timeout =
         hyperactor_config::global::get(crate::config::MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT);
     let result = handler.config_dump(&state.bridge_cx, timeout).await?;
+    Ok(Json(result))
+}
+
+/// HTTP bridge for diagnostic tool inventory on a host's service proc.
+///
+/// The path segment is a proc reference; the underlying actor only
+/// runs on the host's service proc, so non-service references return
+/// `bad_request`.
+async fn tools_inventory_bridge(
+    State(state): State<Arc<BridgeState>>,
+    AxumPath(proc_reference): AxumPath<String>,
+) -> Result<Json<ToolInventory>, ApiError> {
+    let handler = route_proc_handler(&proc_reference)?;
+    let timeout =
+        hyperactor_config::global::get(crate::config::MESH_ADMIN_TOOL_PROVISION_BRIDGE_TIMEOUT);
+    let result = handler.tool_inventory(&state.bridge_cx, timeout).await?;
+    Ok(Json(result))
+}
+
+/// HTTP bridge for provisioning one diagnostic tool on a host's service
+/// proc.
+///
+/// The path segment is a proc reference; the underlying actor only
+/// runs on the host's service proc, so non-service references return
+/// `bad_request`.
+async fn tools_provision_bridge(
+    State(state): State<Arc<BridgeState>>,
+    AxumPath(proc_reference): AxumPath<String>,
+    Json(spec): Json<ToolSpec>,
+) -> Result<Json<ProvisionResult>, ApiError> {
+    let handler = route_proc_handler(&proc_reference)?;
+    let timeout =
+        hyperactor_config::global::get(crate::config::MESH_ADMIN_TOOL_PROVISION_BRIDGE_TIMEOUT);
+    let result = handler
+        .provision_tool(&state.bridge_cx, spec, timeout)
+        .await?;
     Ok(Json(result))
 }
 
@@ -3201,13 +3326,23 @@ mod advertised_host {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
+    use hyperactor::actor::ActorStatus;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::id::Label;
     use hyperactor::testing::ids::test_proc_id_with_addr;
+    use sha2::Digest;
+    use sha2::Sha256;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
 
     use super::*;
+    use crate::tool_provision::ToolInventoryState;
 
     // Integration tests that spawn MeshAdminAgent must pass
     // `Some("[::]:0".parse().unwrap())` as the admin_addr to get an
@@ -3223,6 +3358,57 @@ mod tests {
     #[hyperactor::export(handlers = [])]
     struct TestIntrospectableActor;
     impl Actor for TestIntrospectableActor {}
+
+    async fn serve_bytes(bytes: Vec<u8>) -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let request_count = requests.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                request_count.fetch_add(1, Ordering::SeqCst);
+                let bytes = bytes.clone();
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 1024];
+                    let _ = socket.read(&mut buffer).await;
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        bytes.len()
+                    );
+                    socket.write_all(headers.as_bytes()).await.unwrap();
+                    socket.write_all(&bytes).await.unwrap();
+                });
+            }
+        });
+
+        (format!("http://{addr}/artifact"), requests)
+    }
+
+    fn digest(bytes: &[u8]) -> String {
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    fn plain_tool_spec(name: &str, version: &str, bytes: &[u8], url: String) -> ToolSpec {
+        ToolSpec {
+            name: name.to_string(),
+            version: version.to_string(),
+            platforms: HashMap::from([(
+                tool_fetch::current_platform().expect("test platform supported by tool_fetch"),
+                tool_fetch::PlatformEntry {
+                    size: bytes.len() as u64,
+                    hash_algorithm: tool_fetch::HashAlgorithm::Sha256,
+                    digest: digest(bytes),
+                    format: tool_fetch::ArtifactFormat::Plain,
+                    executable_path: None,
+                    providers: vec![tool_fetch::Provider::Http { url }],
+                },
+            )]),
+        }
+    }
 
     // Verifies that MeshAdminAgent::build_root_payload constructs the
     // expected root node: identity/root metadata, correct Root
@@ -4183,6 +4369,169 @@ mod tests {
         assert!(
             !admin_url.is_empty(),
             "spawn_admin ref must yield a non-empty URL"
+        );
+    }
+
+    async fn local_host_tool_handler(
+        test_name: &str,
+    ) -> (
+        ResolvedProcHandler,
+        hyperactor::Instance<()>,
+        hyperactor::ActorHandle<()>,
+    ) {
+        use hyperactor::Proc;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::host::Host;
+        use hyperactor::host::LocalProcManager;
+
+        use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
+        use crate::proc_agent::ProcAgent;
+
+        let spawn: ProcManagerSpawnFn =
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
+        let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
+        let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
+            Host::new(manager, ChannelTransport::Unix.any())
+                .await
+                .unwrap();
+        let system_proc = host.system_proc().clone();
+        let service_proc_id = system_proc.proc_id().clone();
+        let host_agent = system_proc
+            .spawn(
+                HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
+            )
+            .unwrap();
+        host_agent
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        let client_proc =
+            Proc::direct(ChannelTransport::Unix.any(), format!("{test_name}_client")).unwrap();
+        let (client, client_handle) = client_proc.instance("client").unwrap();
+        let handler = route_proc_handler(&service_proc_id.to_string()).unwrap();
+        (handler, client, client_handle)
+    }
+
+    #[tokio::test]
+    async fn managed_pyspy_dump_uses_provisioned_executable() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let log_path = temp.path().join("managed-pyspy.log");
+        let script = format!(
+            r#"#!/bin/sh
+echo "$@" >> "{}"
+echo '[]'
+exit 0
+"#,
+            log_path.display()
+        )
+        .into_bytes();
+        let (url, requests) = serve_bytes(script.clone()).await;
+        let spec = plain_tool_spec("py-spy", "mesh-admin-fake", &script, url);
+        let (handler, client, _client_handle) = local_host_tool_handler("managed_pyspy_dump").await;
+
+        let provision = handler
+            .provision_tool(&client, spec, std::time::Duration::from_secs(10))
+            .await
+            .unwrap();
+        let executable = match provision {
+            ProvisionResult::Available { executable, .. } => executable,
+            other => panic!("expected py-spy provisioned, got {other:?}"),
+        };
+
+        let result = handler
+            .pyspy_dump(
+                &client,
+                PySpyOpts {
+                    threads: false,
+                    native: false,
+                    native_all: false,
+                    nonblocking: false,
+                },
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .unwrap();
+
+        match result {
+            PySpyResult::Ok {
+                binary,
+                stack_traces,
+                ..
+            } => {
+                assert_eq!(binary, executable.display().to_string());
+                assert!(stack_traces.is_empty());
+            }
+            other => panic!("expected managed fake py-spy success, got {other:?}"),
+        }
+        let log = std::fs::read_to_string(&log_path).expect("fake py-spy must run");
+        assert!(
+            log.contains("dump") && log.contains("--json"),
+            "managed py-spy invocation log: {log:?}"
+        );
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "artifact should be fetched once by provisioning"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "downloads the real py-spy wheel and executes the managed binary"]
+    async fn provision_real_pyspy_through_mesh_admin_and_run_version() {
+        let spec = tool_fetch::bundled_pyspy_spec();
+        let (handler, client, _client_handle) = local_host_tool_handler("real_pyspy").await;
+
+        let provision = handler
+            .provision_tool(&client, spec, std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        let executable = match provision {
+            ProvisionResult::Available {
+                name,
+                version,
+                executable,
+                ..
+            } => {
+                assert_eq!(name, "py-spy");
+                assert_eq!(version, "0.4.1");
+                executable
+            }
+            other => panic!("expected real py-spy provisioned, got {other:?}"),
+        };
+
+        let inventory = handler
+            .tool_inventory(&client, std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(inventory.tools.iter().any(|entry| {
+            entry.name == "py-spy"
+                && entry.version == "0.4.1"
+                && matches!(entry.state, ToolInventoryState::Available { .. })
+        }));
+
+        let output = tokio::process::Command::new(&executable)
+            .arg("--version")
+            .output()
+            .await
+            .expect("managed py-spy should execute");
+        assert!(
+            output.status.success(),
+            "py-spy --version failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            combined.contains("py-spy") && combined.contains("0.4.1"),
+            "unexpected py-spy version output: {combined:?}"
         );
     }
 

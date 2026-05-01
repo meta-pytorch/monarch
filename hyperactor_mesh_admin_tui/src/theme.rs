@@ -152,6 +152,9 @@ pub(crate) struct Labels {
     pub(crate) footer_diag_running_help_text: &'static str,
     pub(crate) footer_diag_completed_help_text: &'static str,
     pub(crate) footer_pyspy_help_text: &'static str,
+    pub(crate) footer_pyspy_can_provision_help_text: &'static str,
+    pub(crate) footer_pyspy_provisioning_help_text: &'static str,
+    pub(crate) footer_pyspy_provisioned_help_text: &'static str,
     pub(crate) footer_config_help_text: &'static str,
 }
 
@@ -235,6 +238,9 @@ impl Labels {
             footer_diag_running_help_text: "q: quit | Esc: cancel | j/k: scroll",
             footer_diag_completed_help_text: "q: quit | Esc: back to topology | j/k: scroll | r: rerun",
             footer_pyspy_help_text: "q: quit | Esc: back to topology | j/k: scroll | p: refresh",
+            footer_pyspy_can_provision_help_text: "q: quit | Esc: back to topology | j/k: scroll | p: retry | P: provision py-spy",
+            footer_pyspy_provisioning_help_text: "q: quit | Esc: back to topology | j/k: scroll | provisioning...",
+            footer_pyspy_provisioned_help_text: "q: quit | Esc: back to topology | j/k: scroll | p: retry dump",
             footer_config_help_text: "q: quit | Esc: back to topology | j/k: scroll | C: refresh",
         }
     }
@@ -318,6 +324,9 @@ impl Labels {
             footer_diag_running_help_text: "q: 退出 | Esc: 取消 | j/k: 滚动",
             footer_diag_completed_help_text: "q: 退出 | Esc: 返回拓扑 | j/k: 滚动 | r: 重新运行",
             footer_pyspy_help_text: "q: 退出 | Esc: 返回拓扑 | j/k: 滚动 | p: 刷新",
+            footer_pyspy_can_provision_help_text: "q: 退出 | Esc: 返回拓扑 | j/k: 滚动 | p: 重试 | P: 配置 py-spy",
+            footer_pyspy_provisioning_help_text: "q: 退出 | Esc: 返回拓扑 | j/k: 滚动 | 配置中...",
+            footer_pyspy_provisioned_help_text: "q: 退出 | Esc: 返回拓扑 | j/k: 滚动 | p: 重试转储",
             footer_config_help_text: "q: 退出 | Esc: 返回拓扑 | j/k: 滚动 | C: 刷新",
         }
     }

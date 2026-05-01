@@ -15,6 +15,7 @@ use std::time::SystemTime;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor_mesh::introspect::NodeRef;
 
 use super::*;
@@ -38,12 +39,27 @@ fn test_policy() -> TuiTimeoutPolicy {
     })
 }
 
+fn pyspy_result(lines: Vec<ratatui::text::Line<'static>>) -> PySpyJobResult {
+    PySpyJobResult {
+        lines,
+        binary_not_found: false,
+    }
+}
+
 fn root() -> NodeRef {
     NodeRef::Root
 }
 
 fn test_addr() -> hyperactor::channel::ChannelAddr {
     "unix:@test".parse().unwrap()
+}
+
+/// Canonical service-proc reference string for tests, derived through
+/// the same `ProcId::Display` path that production code uses, and
+/// keyed by the same `SERVICE_PROC_NAME` constant that
+/// `Host::new` uses to spawn the service proc.
+fn service_proc_ref() -> String {
+    hyperactor::ProcAddr::from_resource_name(test_addr(), SERVICE_PROC_NAME).to_string()
 }
 
 fn host(name: &str) -> NodeRef {
@@ -1677,7 +1693,9 @@ fn pyspy_json_to_lines_ok_with_stack() {
         }]
     }});
     let scheme = ColorScheme::nord();
-    let lines = pyspy_json_to_lines(&json, &scheme);
+    let result = pyspy_json_to_lines(&json, &scheme);
+    let lines = result.lines;
+    assert!(!result.binary_not_found);
     // header + blank + thread header + frame + trailing blank
     assert_eq!(lines.len(), 5);
     assert_eq!(line_text(&lines[0]), "pid: 1  binary: py-spy");
@@ -1693,7 +1711,9 @@ fn pyspy_json_to_lines_ok_with_stack() {
 fn pyspy_json_to_lines_ok_empty_stack() {
     let json = serde_json::json!({"Ok": {"pid": 1, "binary": "py-spy", "stack_traces": []}});
     let scheme = ColorScheme::nord();
-    let lines = pyspy_json_to_lines(&json, &scheme);
+    let result = pyspy_json_to_lines(&json, &scheme);
+    let lines = result.lines;
+    assert!(!result.binary_not_found);
     assert_eq!(lines.len(), 3); // header + blank + sentinel
     assert_eq!(line_text(&lines[0]), "pid: 1  binary: py-spy");
     assert_eq!(line_text(&lines[1]), "");
@@ -1708,7 +1728,9 @@ fn pyspy_json_to_lines_binary_not_found() {
     let json =
         serde_json::json!({"BinaryNotFound": {"searched": ["PYSPY_BIN=/x", "py-spy on PATH"]}});
     let scheme = ColorScheme::nord();
-    let lines = pyspy_json_to_lines(&json, &scheme);
+    let result = pyspy_json_to_lines(&json, &scheme);
+    let lines = result.lines;
+    assert!(result.binary_not_found);
     assert_eq!(lines.len(), 3);
     assert_eq!(line_text(&lines[0]), "py-spy binary not found");
     assert_eq!(line_text(&lines[1]), "  searched: PYSPY_BIN=/x");
@@ -1721,7 +1743,9 @@ fn pyspy_json_to_lines_binary_not_found() {
 fn pyspy_json_to_lines_failed_null_exit_code() {
     let json = serde_json::json!({"Failed": {"pid": 1, "binary": "py-spy", "exit_code": null, "stderr": "ptrace denied"}});
     let scheme = ColorScheme::nord();
-    let lines = pyspy_json_to_lines(&json, &scheme);
+    let result = pyspy_json_to_lines(&json, &scheme);
+    let lines = result.lines;
+    assert!(!result.binary_not_found);
     assert_eq!(lines.len(), 4);
     assert_eq!(line_text(&lines[0]), "pid: 1");
     assert_eq!(line_text(&lines[1]), "binary: py-spy");
@@ -1737,7 +1761,9 @@ fn pyspy_json_to_lines_failed_numeric_exit_code_empty_stderr() {
     let json =
         serde_json::json!({"Failed": {"pid": 1, "binary": "py-spy", "exit_code": 1, "stderr": ""}});
     let scheme = ColorScheme::nord();
-    let lines = pyspy_json_to_lines(&json, &scheme);
+    let result = pyspy_json_to_lines(&json, &scheme);
+    let lines = result.lines;
+    assert!(!result.binary_not_found);
     assert_eq!(lines.len(), 3);
     assert_eq!(line_text(&lines[0]), "pid: 1");
     assert_eq!(line_text(&lines[1]), "binary: py-spy");
@@ -1749,7 +1775,9 @@ fn pyspy_json_to_lines_failed_numeric_exit_code_empty_stderr() {
 fn pyspy_json_to_lines_failed_no_exit_code_no_stderr() {
     let json = serde_json::json!({"Failed": {"stderr": ""}});
     let scheme = ColorScheme::nord();
-    let lines = pyspy_json_to_lines(&json, &scheme);
+    let result = pyspy_json_to_lines(&json, &scheme);
+    let lines = result.lines;
+    assert!(!result.binary_not_found);
     assert_eq!(lines.len(), 1);
     assert_eq!(line_text(&lines[0]), "(py-spy failed, no output)");
 }
@@ -1760,7 +1788,9 @@ fn pyspy_json_to_lines_failed_no_exit_code_no_stderr() {
 fn pyspy_json_to_lines_unknown_variant() {
     let json = serde_json::json!({"SomeUnknownVariant": {}});
     let scheme = ColorScheme::nord();
-    let lines = pyspy_json_to_lines(&json, &scheme);
+    let result = pyspy_json_to_lines(&json, &scheme);
+    let lines = result.lines;
+    assert!(!result.binary_not_found);
     assert_eq!(lines.len(), 1);
     assert!(
         line_text(&lines[0]).starts_with("unexpected response"),
@@ -1798,7 +1828,9 @@ fn pyspy_json_to_lines_ok_thread_name_and_flags() {
         }
     });
     let scheme = ColorScheme::nord();
-    let lines = pyspy_json_to_lines(&json, &scheme);
+    let result = pyspy_json_to_lines(&json, &scheme);
+    let lines = result.lines;
+    assert!(!result.binary_not_found);
     // header + blank + thread header + frame + trailing blank
     assert_eq!(lines.len(), 5);
     assert_eq!(line_text(&lines[0]), "pid: 123  binary: pyspy_workload");
@@ -1809,6 +1841,31 @@ fn pyspy_json_to_lines_ok_thread_name_and_flags() {
     );
     assert_eq!(line_text(&lines[3]), "  #0   foo (foo.py:1)");
     assert_eq!(line_text(&lines[4]), "");
+}
+
+// PY-8: ProvisionTool Available response yields an executable path
+// for the in-place overlay status.
+#[test]
+fn provision_json_to_outcome_available() {
+    let json = serde_json::json!({"Available": {"executable": "/tmp/tools/py-spy"}});
+    let outcome = provision_json_to_outcome(&json).unwrap();
+    match outcome {
+        ProvisionOutcome::Ok { executable } => {
+            assert_eq!(executable, "/tmp/tools/py-spy");
+        }
+        ProvisionOutcome::Err(error) => panic!("unexpected error: {error}"),
+    }
+}
+
+// PY-8: ProvisionTool Failed response keeps the backend error text.
+#[test]
+fn provision_json_to_outcome_failed() {
+    let json = serde_json::json!({"Failed": {"error": "hash mismatch"}});
+    let outcome = provision_json_to_outcome(&json).unwrap();
+    match outcome {
+        ProvisionOutcome::Ok { executable } => panic!("unexpected executable: {executable}"),
+        ProvisionOutcome::Err(error) => assert_eq!(error, "hash mismatch"),
+    }
 }
 
 // ── TUI-21 build_diag_overlay tests ────────────────────────────────────────
@@ -1929,12 +1986,14 @@ fn dismiss_job_clears_both() {
 #[test]
 fn build_overlay_pyspy_loading() {
     let theme = Theme::new(ThemeName::Nord, LangName::En);
-    let (_, rx) = tokio::sync::oneshot::channel::<Vec<ratatui::text::Line<'static>>>();
+    let (_, rx) = tokio::sync::oneshot::channel::<PySpyJobResult>();
     let job = ActiveJob::PySpy {
         rx: Some(rx),
         short: "worker[0]".to_string(),
         lines: vec![],
         completed_at: None,
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
     };
     let overlay = job.build_overlay(&theme);
     assert!(overlay.loading, "rx is Some → loading");
@@ -1958,6 +2017,8 @@ fn build_overlay_pyspy_completed() {
         short: "worker[0]".to_string(),
         lines: vec![ratatui::text::Line::from("frame 0")],
         completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
     };
     let overlay = job.build_overlay(&theme);
     assert!(!overlay.loading, "rx is None → not loading");
@@ -1983,6 +2044,8 @@ fn build_overlay_pyspy_completed_empty() {
         short: "worker[0]".to_string(),
         lines: vec![],
         completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
     };
     let overlay = job.build_overlay(&theme);
     assert!(
@@ -1990,6 +2053,82 @@ fn build_overlay_pyspy_completed_empty() {
         "empty lines with rx None is completed, not loading"
     );
     assert!(overlay.lines.is_empty());
+}
+
+// PY-8: provisioning affordance appends to the existing missing-binary output.
+#[test]
+fn build_overlay_pyspy_can_provision_appends_prompt() {
+    let theme = Theme::new(ThemeName::Nord, LangName::En);
+    let job = ActiveJob::PySpy {
+        rx: None,
+        short: "service[0]".to_string(),
+        lines: vec![ratatui::text::Line::from("py-spy binary not found")],
+        completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: Some(service_proc_ref()),
+        provision_state: ProvisionState::CanProvision,
+    };
+    let overlay = job.build_overlay(&theme);
+    assert_eq!(
+        line_text(&overlay.lines[0]),
+        "py-spy binary not found",
+        "existing diagnostic context should remain visible"
+    );
+    assert_eq!(
+        line_text(overlay.lines.last().unwrap()),
+        "press P to provision managed py-spy on this host"
+    );
+}
+
+// PY-8: successful provisioning shows the executable and retry hint.
+#[test]
+fn build_overlay_pyspy_provisioned_shows_executable_and_retry() {
+    let theme = Theme::new(ThemeName::Nord, LangName::En);
+    let job = ActiveJob::PySpy {
+        rx: None,
+        short: "service[0]".to_string(),
+        lines: vec![ratatui::text::Line::from("py-spy binary not found")],
+        completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: Some(service_proc_ref()),
+        provision_state: ProvisionState::Provisioned {
+            executable: "/tmp/tools/py-spy".to_string(),
+        },
+    };
+    let overlay = job.build_overlay(&theme);
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line_text(line) == "executable: /tmp/tools/py-spy")
+    );
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line_text(line) == "press p to retry dump")
+    );
+}
+
+// PY-8: failed provisioning renders the structured error in-place.
+#[test]
+fn build_overlay_pyspy_provision_failed_shows_error() {
+    let theme = Theme::new(ThemeName::Nord, LangName::En);
+    let job = ActiveJob::PySpy {
+        rx: None,
+        short: "service[0]".to_string(),
+        lines: vec![ratatui::text::Line::from("py-spy binary not found")],
+        completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: Some(service_proc_ref()),
+        provision_state: ProvisionState::Failed {
+            error: "hash mismatch".to_string(),
+        },
+    };
+    let overlay = job.build_overlay(&theme);
+    assert!(
+        overlay
+            .lines
+            .iter()
+            .any(|line| line_text(line) == "managed py-spy provision failed: hash mismatch")
+    );
 }
 
 // ── ActiveJob::on_event tests ──────────────────────────────────────────────
@@ -2050,15 +2189,17 @@ fn on_event_diag_stream_end() {
 // PY-2/PY-3: on_event PySpyResult populates lines, clears rx, sets timestamp.
 #[test]
 fn on_event_pyspy_result() {
-    let (_, rx) = tokio::sync::oneshot::channel::<Vec<ratatui::text::Line<'static>>>();
+    let (_, rx) = tokio::sync::oneshot::channel::<PySpyJobResult>();
     let mut job = ActiveJob::PySpy {
         rx: Some(rx),
         short: "w".to_string(),
         lines: vec![],
         completed_at: None,
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
     };
     let result_lines = vec![ratatui::text::Line::from("frame")];
-    job.on_event(ActiveJobEvent::PySpyResult(result_lines));
+    job.on_event(ActiveJobEvent::PySpyResult(pyspy_result(result_lines)));
     if let ActiveJob::PySpy {
         rx,
         lines,
@@ -2069,6 +2210,60 @@ fn on_event_pyspy_result() {
         assert!(rx.is_none(), "rx should be cleared");
         assert_eq!(lines.len(), 1);
         assert!(completed_at.is_some(), "should have a completion timestamp");
+    } else {
+        panic!("job variant changed");
+    }
+}
+
+// PY-6/PY-7: BinaryNotFound from the service proc enables explicit
+// managed provisioning.
+#[test]
+fn on_event_pyspy_binary_not_found_service_can_provision() {
+    let (_, rx) = tokio::sync::oneshot::channel::<PySpyJobResult>();
+    let mut job = ActiveJob::PySpy {
+        rx: Some(rx),
+        short: "service[0]".to_string(),
+        lines: vec![],
+        completed_at: None,
+        service_proc_ref: Some(service_proc_ref()),
+        provision_state: ProvisionState::Idle,
+    };
+    job.on_event(ActiveJobEvent::PySpyResult(PySpyJobResult {
+        lines: vec![ratatui::text::Line::from("py-spy binary not found")],
+        binary_not_found: true,
+    }));
+    if let ActiveJob::PySpy {
+        provision_state, ..
+    } = &job
+    {
+        assert!(matches!(provision_state, ProvisionState::CanProvision));
+    } else {
+        panic!("job variant changed");
+    }
+}
+
+// PY-6: BinaryNotFound from a worker proc does not expose host-level
+// provisioning because the retry still routes through ProcAgent.
+#[test]
+fn on_event_pyspy_binary_not_found_worker_stays_idle() {
+    let (_, rx) = tokio::sync::oneshot::channel::<PySpyJobResult>();
+    let mut job = ActiveJob::PySpy {
+        rx: Some(rx),
+        short: "worker[0]".to_string(),
+        lines: vec![],
+        completed_at: None,
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
+    };
+    job.on_event(ActiveJobEvent::PySpyResult(PySpyJobResult {
+        lines: vec![ratatui::text::Line::from("py-spy binary not found")],
+        binary_not_found: true,
+    }));
+    if let ActiveJob::PySpy {
+        provision_state, ..
+    } = &job
+    {
+        assert!(matches!(provision_state, ProvisionState::Idle));
     } else {
         panic!("job variant changed");
     }
@@ -2121,9 +2316,95 @@ fn overlay_rerun_key_pyspy_p() {
         short: "worker[0]".to_string(),
         lines: vec![],
         completed_at: None,
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
     });
     let key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
     assert!(matches!(app.overlay_rerun_key(key), KeyResult::RunPySpy(_)));
+}
+
+// PY-7: uppercase P dispatches provisioning only from the explicit
+// CanProvision state.
+#[test]
+fn overlay_rerun_key_pyspy_uppercase_p_provisions_when_allowed() {
+    let mut app = make_app_with_cursor(vec![proc_node("service")], 0);
+    app.active_job = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "service[0]".to_string(),
+        lines: vec![ratatui::text::Line::from("py-spy binary not found")],
+        completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: Some(service_proc_ref()),
+        provision_state: ProvisionState::CanProvision,
+    });
+    let key = KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT);
+    let result = app.overlay_rerun_key(key);
+    match result {
+        KeyResult::ProvisionPySpy(proc_ref) => {
+            assert_eq!(proc_ref, service_proc_ref());
+        }
+        other => panic!("expected ProvisionPySpy, got {other:?}"),
+    }
+}
+
+// PY-7: uppercase P is ignored when the py-spy overlay has not opted in.
+#[test]
+fn overlay_rerun_key_pyspy_uppercase_p_idle_is_noop() {
+    let mut app = make_app_with_cursor(vec![proc_node("service")], 0);
+    app.active_job = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "service[0]".to_string(),
+        lines: vec![],
+        completed_at: None,
+        service_proc_ref: Some(service_proc_ref()),
+        provision_state: ProvisionState::Idle,
+    });
+    let key = KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT);
+    assert!(matches!(app.overlay_rerun_key(key), KeyResult::None));
+}
+
+// PY-8 / recovery: a Failed provision must remain re-tryable from
+// the overlay so a transient backend failure does not force the
+// operator to rerun py-spy first to get the affordance back.
+#[test]
+fn overlay_rerun_key_pyspy_uppercase_p_failed_retries_provision() {
+    let mut app = make_app_with_cursor(vec![proc_node("service")], 0);
+    app.active_job = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "service".to_string(),
+        lines: vec![ratatui::text::Line::from("py-spy binary not found")],
+        completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: Some(service_proc_ref()),
+        provision_state: ProvisionState::Failed {
+            error: "transient backend failure".to_string(),
+        },
+    });
+    let key = KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT);
+    match app.overlay_rerun_key(key) {
+        KeyResult::ProvisionPySpy(proc_ref) => {
+            assert_eq!(proc_ref, service_proc_ref());
+        }
+        other => panic!("expected ProvisionPySpy from Failed state, got {other:?}"),
+    }
+}
+
+// PY-8: while a managed py-spy provision is in flight, lowercase
+// `p` must not start a fresh py-spy job — that would replace the
+// active overlay and drop the provisioning receiver, breaking the
+// "provisioning…" → "provisioned" / "failed" continuity.
+#[test]
+fn overlay_rerun_key_pyspy_lowercase_p_provisioning_is_noop() {
+    let mut app = make_app_with_cursor(vec![proc_node("service")], 0);
+    let (_tx, rx) = tokio::sync::oneshot::channel::<crate::job::ProvisionOutcome>();
+    app.active_job = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "service".to_string(),
+        lines: vec![ratatui::text::Line::from("py-spy binary not found")],
+        completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: Some(service_proc_ref()),
+        provision_state: ProvisionState::Provisioning { rx },
+    });
+    let key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
+    assert!(matches!(app.overlay_rerun_key(key), KeyResult::None));
 }
 
 // PY-5: PySpy overlay: unrelated key is not dispatched.
@@ -2135,6 +2416,8 @@ fn overlay_rerun_key_pyspy_unrelated() {
         short: "w".to_string(),
         lines: vec![],
         completed_at: None,
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
     });
     let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
     assert!(matches!(app.overlay_rerun_key(key), KeyResult::None));
@@ -2169,6 +2452,8 @@ fn overlay_rerun_key_pyspy_no_proc_ref() {
         short: "w".to_string(),
         lines: vec![],
         completed_at: None,
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
     });
     let key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
     assert!(
@@ -2324,9 +2609,45 @@ fn footer_text_pyspy() {
         short: "w".to_string(),
         lines: vec![],
         completed_at: None,
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
     });
     let text = ActiveJob::footer_text(&job, &labels);
     assert_eq!(text, labels.footer_pyspy_help_text);
+}
+
+// PY-7/PY-8: footer advertises provisioning and retry only in the
+// corresponding py-spy provisioning states.
+#[test]
+fn footer_text_pyspy_provisioning_states() {
+    let labels = Labels::en();
+    let can_provision = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "service[0]".to_string(),
+        lines: vec![],
+        completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: Some(service_proc_ref()),
+        provision_state: ProvisionState::CanProvision,
+    });
+    assert_eq!(
+        ActiveJob::footer_text(&can_provision, &labels),
+        labels.footer_pyspy_can_provision_help_text
+    );
+
+    let provisioned = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "service[0]".to_string(),
+        lines: vec![],
+        completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: Some(service_proc_ref()),
+        provision_state: ProvisionState::Provisioned {
+            executable: "/tmp/tools/py-spy".to_string(),
+        },
+    });
+    assert_eq!(
+        ActiveJob::footer_text(&provisioned, &labels),
+        labels.footer_pyspy_provisioned_help_text
+    );
 }
 
 // CFG-5: Footer text when no job is active.
@@ -2419,12 +2740,14 @@ fn refresh_policy_diagnostics() {
 // TP-10: py-spy in flight → Suspend.
 #[test]
 fn refresh_policy_pyspy_in_flight() {
-    let (_tx, rx) = tokio::sync::oneshot::channel::<Vec<ratatui::text::Line<'static>>>();
+    let (_tx, rx) = tokio::sync::oneshot::channel::<PySpyJobResult>();
     let job = Some(ActiveJob::PySpy {
         rx: Some(rx),
         short: "w".to_string(),
         lines: vec![],
         completed_at: None,
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
     });
     assert_eq!(refresh_policy_for_job(&job), RefreshPolicy::Suspend);
 }
@@ -2437,6 +2760,8 @@ fn refresh_policy_pyspy_completed() {
         short: "w".to_string(),
         lines: vec![],
         completed_at: Some("14:30:00".to_string()),
+        service_proc_ref: None,
+        provision_state: ProvisionState::Idle,
     });
     assert_eq!(refresh_policy_for_job(&job), RefreshPolicy::Suspend);
 }

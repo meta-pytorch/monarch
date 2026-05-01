@@ -1,0 +1,34 @@
+{
+  "name": "py-spy",
+  "version": "0.4.1",
+  "platforms": {
+    "macos-aarch64": {
+      "size": 1796395,
+      "hash_algorithm": "sha256",
+      "digest": "1fb8bf71ab8df95a95cc387deed6552934c50feef2cf6456bc06692a5508fd0c",
+      "format": "zip",
+      "executable_path": "py_spy-0.4.1.data/scripts/py-spy",
+      "providers": [
+        {
+          "Http": {
+            "url": "https://files.pythonhosted.org/packages/4f/bf/e4d280e9e0bec71d39fc646654097027d4bbe8e04af18fb68e49afcff404/py_spy-0.4.1-py2.py3-none-macosx_11_0_arm64.whl"
+          }
+        }
+      ]
+    },
+    "linux-x86_64": {
+      "size": 2763338,
+      "hash_algorithm": "sha256",
+      "digest": "6a80ec05eb8a6883863a367c6a4d4f2d57de68466f7956b6367d4edd5c61bb29",
+      "format": "zip",
+      "executable_path": "py_spy-0.4.1.data/scripts/py-spy",
+      "providers": [
+        {
+          "Http": {
+            "url": "https://files.pythonhosted.org/packages/68/fb/bc7f639aed026bca6e7beb1e33f6951e16b7d315594e7635a4f7d21d63f4/py_spy-0.4.1-py2.py3-none-manylinux_2_5_x86_64.manylinux1_x86_64.whl"
+          }
+        }
+      ]
+    }
+  }
+}
