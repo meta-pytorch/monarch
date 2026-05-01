@@ -332,3 +332,23 @@ run_test_groups() {
   fi
   set -e
 }
+
+# Stage JUnit XML test results into RUNNER_ARTIFACT_DIR so linux_job_v2.yml
+# uploads them as a workflow artifact (when the caller sets upload-artifact).
+# Picks up pytest XMLs from RUNNER_TEST_RESULTS_DIR and the cargo-nextest
+# junit.xml; safe to call from a workflow that only ran one of them.
+#
+# Removes any *.whl that download-artifact placed in RUNNER_ARTIFACT_DIR first,
+# so the test-results artifact doesn't re-upload the wheel under its own name.
+# (The build workflow uploaded the wheel under its own name; that artifact
+# remains separately downloadable on the GitHub run summary.)
+stage_test_artifacts() {
+  : "${RUNNER_ARTIFACT_DIR:?RUNNER_ARTIFACT_DIR must be set}"
+  rm -f "${RUNNER_ARTIFACT_DIR}"/*.whl
+  if [[ -d "${RUNNER_TEST_RESULTS_DIR:-test-results}" ]]; then
+    cp -v "${RUNNER_TEST_RESULTS_DIR:-test-results}"/*.xml "${RUNNER_ARTIFACT_DIR}/" 2>/dev/null || true
+  fi
+  if [[ -f target/nextest/ci/junit.xml ]]; then
+    cp -v target/nextest/ci/junit.xml "${RUNNER_ARTIFACT_DIR}/nextest-junit.xml"
+  fi
+}

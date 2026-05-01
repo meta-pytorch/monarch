@@ -18,12 +18,12 @@ path = "benches/main.rs"
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1.86"
-axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
+axum = { version = "0.8.9", features = ["macros", "multipart", "ws"] }
 base64 = { version = "0.22.1", features = ["alloc"] }
 bincode = { version = "2", features = ["serde"] }
 bitmaps = "3.2.1"
 chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
-dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
+dashmap = { version = "6.1.0", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.10"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
@@ -62,6 +62,7 @@ zbus = { version = "5.14.0", features = ["async-executor", "async-fs", "async-io
 
 [dev-dependencies]
 buck-resources = "1"
+clap = { version = "4.6.0", features = ["derive"] }
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 fastrand = "2.4.1"
 inventory = "0.3.24"

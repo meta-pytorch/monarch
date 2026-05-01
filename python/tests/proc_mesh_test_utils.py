@@ -27,14 +27,24 @@ async def stop_all_proc_meshes():
     on the Rust side, are not visible through ``actor_instance._children`` and
     must be cleaned up by their owners.
 
+    ``actor_instance._children`` is shared across the entire pytest session,
+    so we restrict teardown to ProcMeshes added during this test. Stopping
+    pre-existing children would attack ProcMeshes leaked by earlier tests
+    whose hosts may already be dead, raising spurious teardown errors.
+
     The ``configured`` scope caps actor / mesh teardown so a misbehaving test
     cannot hang the suite.
     """
     with configured(stop_actor_timeout="5s", mesh_terminate_timeout="15s"):
-        yield
         instance = context().actor_instance
+        preexisting = {id(c) for c in instance._children or []}
+        yield
         children = instance._children or []
+        remaining = []
         for child in children:
+            if id(child) in preexisting:
+                remaining.append(child)
+                continue
             if isinstance(child, ProcMesh):
                 await child.stop()
-        instance._children = None
+        instance._children = remaining or None

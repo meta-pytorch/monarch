@@ -7,10 +7,10 @@
  */
 
 use derive_more::Display;
+use hyperactor as reference;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
-use hyperactor::reference;
 use pyo3::FromPyObject;
 use pyo3::IntoPyObject;
 use pyo3::IntoPyObjectExt;
@@ -127,9 +127,9 @@ pub struct WorkerError {
     /// The message and/or stack trace of the error.
     pub backtrace: String,
 
-    /// Actor id of the worker that had the error.
+    /// Actor address of the worker that had the error.
     // TODO: arguably at this level we only care about the rank
-    pub worker_actor_id: reference::ActorId,
+    pub worker_actor_id: reference::ActorAddr,
 }
 
 /// Device operation failures.
@@ -142,9 +142,9 @@ pub struct DeviceFailure {
     /// Address of the device that had the error.
     pub address: String,
 
-    /// Actor id of the worker that had the error.
+    /// Actor address of the worker that had the error.
     // TODO: arguably at this level we only care about the rank
-    pub actor_id: reference::ActorId,
+    pub actor_id: reference::ActorAddr,
 }
 
 /// Controller messages. These define the contract that the controller has with the client
@@ -205,7 +205,7 @@ pub enum ControllerMessage {
     // TODO: T212094401 take a ActorRef
     Status {
         seq: Seq,
-        worker_actor_id: reference::ActorId,
+        worker_actor_id: reference::ActorAddr,
         controller: bool,
     },
 
@@ -230,7 +230,7 @@ pub enum ControllerMessage {
 
     /// Debugger message sent from a debugger to be forwarded back to the client.
     DebuggerMessage {
-        debugger_actor_id: reference::ActorId,
+        debugger_actor_id: reference::ActorAddr,
         action: DebuggerAction,
     },
 }
