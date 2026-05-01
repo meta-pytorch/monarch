@@ -2508,10 +2508,10 @@ mod tests {
         use async_trait::async_trait;
         use hyperactor::ActorRef;
         use hyperactor::ProcAddr;
-        use crate::host::ProcHandle;
         use hyperactor::testing::ids::test_proc_id;
 
         use super::super::*;
+        use crate::host::ProcHandle;
         use crate::proc_launcher::LaunchOptions;
         use crate::proc_launcher::LaunchResult;
         use crate::proc_launcher::ProcLauncher;

@@ -61,26 +61,36 @@ use futures::Future;
 use futures::StreamExt;
 use futures::stream;
 use hyperactor::Actor;
+use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
+use hyperactor::Address;
+use hyperactor::AttachRequest;
+use hyperactor::BootstrapAssignment;
+use hyperactor::Host2Client;
 use hyperactor::PortHandle;
 use hyperactor::Proc;
+use hyperactor::ProcAddr;
 use hyperactor::actor::Binds;
 use hyperactor::actor::Referable;
+use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
 use hyperactor::channel::ChannelRx;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
+use hyperactor::channel::ServerError;
 use hyperactor::channel::Tx;
-use hyperactor::channel;
 use hyperactor::context;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::IntoBoxedMailboxSender as _;
 use hyperactor::mailbox::MailboxClient;
+use hyperactor::mailbox::MailboxRouter;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MailboxServer;
+use hyperactor::mailbox::MailboxServerError;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
@@ -89,16 +99,6 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
-use hyperactor::ActorAddr;
-use hyperactor::ActorRef;
-use hyperactor::AttachRequest;
-use hyperactor::Address;
-use hyperactor::BootstrapAssignment;
-use hyperactor::Host2Client;
-use hyperactor::ProcAddr;
-use hyperactor::channel::ServerError;
-use hyperactor::mailbox::MailboxRouter;
-use hyperactor::mailbox::MailboxServerError;
 /// Name of the system service proc on a host — hosts the admin actor
 /// layer (HostMeshAgent, MeshAdminAgent, bridge).
 pub const SERVICE_PROC_NAME: &str = "service";
@@ -1714,8 +1714,8 @@ mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::Context;
-    use hyperactor::Instance;
     use hyperactor::Handler;
+    use hyperactor::Instance;
     use hyperactor::OncePortRef;
     use hyperactor::PortRef;
     use hyperactor::channel::ChannelTransport;
@@ -1756,11 +1756,7 @@ mod tests {
 
     #[async_trait]
     impl Handler<SendTo> for UndeliverableCollector {
-        async fn handle(
-            &mut self,
-            cx: &Context<Self>,
-            dest: SendTo,
-        ) -> Result<(), anyhow::Error> {
+        async fn handle(&mut self, cx: &Context<Self>, dest: SendTo) -> Result<(), anyhow::Error> {
             dest.send(cx, "into-the-void".to_string())?;
             Ok(())
         }
