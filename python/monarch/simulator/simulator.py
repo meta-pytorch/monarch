@@ -40,7 +40,7 @@ from typing import (
 import numpy as np
 import torch
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
 )
 from monarch._src.actor.shape import iter_ranks, NDSlice
 from monarch.common import messages
@@ -177,10 +177,9 @@ class Simulator:
             cuda_device_count = torch.cuda.device_count()
             if cuda_device_count > 0 and torch.cuda.is_available():
                 # Try a small CUDA operation and sync to verify CUDA actually works
-                test_tensor = torch.zeros(1, device="cuda")
+                torch.zeros(1, device="cuda")
                 # Force synchronization to catch any deferred CUDA errors
                 torch.cuda.synchronize()
-                del test_tensor
                 use_real_profiler = True
         except Exception:
             pass
@@ -919,7 +918,7 @@ class SimulatorController(MockController):
                     error=DeviceException(
                         e,
                         traceback.extract_tb(e.__traceback__),
-                        ActorId(
+                        ActorAddr(
                             addr="local:0", proc_name="unknown", actor_name="unknown"
                         ),
                         message="Simulator has an internal error.",

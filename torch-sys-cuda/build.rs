@@ -13,12 +13,19 @@
 #![feature(exit_status_error)]
 
 #[cfg(target_os = "macos")]
-fn main() {}
+fn main() {
+    build_utils::set_python_rpath();
+}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    // Set up Python rpath for runtime linking
+    // CPU-only tests still link libpython through pyo3.
     build_utils::set_python_rpath();
+
+    // Skip CUDA-specific setup when building without the cuda feature.
+    if std::env::var("CARGO_FEATURE_CUDA").is_err() {
+        return;
+    }
 
     // Statically link libstdc++ to avoid runtime dependency on system libstdc++
     build_utils::link_libstdcpp_static();

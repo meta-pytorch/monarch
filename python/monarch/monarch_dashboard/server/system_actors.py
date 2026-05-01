@@ -4,160 +4,112 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Discover system actors by walking the Mesh Admin API.
+"""Discover system actors from snapshot tables and name heuristics.
 
-The Mesh Admin API exposes ``system_children`` on Root/Host/Proc nodes
-and ``is_system`` on Actor nodes.  This module walks the admin tree and
-collects:
+System actor classification uses two complementary filters:
 
-  1. System actor ``full_name`` strings (actors with ``is_system: true``)
-  2. System proc/mesh names (references listed in ``system_children``)
+  1. **Snapshot flag** — the ``actor_nodes`` table (populated by periodic
+     snapshot capture) carries an ``is_system`` flag set by actors that
+     call ``set_system()`` in their ``init()`` (e.g. proc_agent, comm,
+     host_agent, mesh_admin).
+  2. **Name heuristic** — a regex catches infrastructure actors that do
+     *not* call ``set_system()`` but are still Monarch internals (e.g.
+     telemetry, setup, controller_controller).
 
-The dashboard uses these to prune entire system subtrees from the DAG,
-not just individual actors.  Results are cached with a TTL.
+Both filters are applied to the telemetry ``actors`` table, and results
+are unioned.  The root client actor (``client[0]``) is always excluded.
+
+Results are cached with a short TTL to avoid redundant queries.
 """
 
 import logging
-import os
+import re
 import time
-import urllib.parse
-from dataclasses import dataclass, field
-from typing import Optional, Set
-
-import requests
+from typing import Set
 
 logger = logging.getLogger(__name__)
 
+# Known system/infrastructure actor name patterns.
+# Applied to the leaf name (last comma-separated component of full_name),
+# matching the old admin_dag._derive_label behavior.
+_SYSTEM_NAME_PATTERNS = re.compile(
+    r"(telemetry|setup[-_]|SetupActor|comm[-_]|CommActor|"
+    r"logger[-_]|LoggerActor|log_client|MeshAdminAgent|HostAgent|ProcAgent|"
+    r"host_agent|proc_agent|mesh_admin|controller_controller|"
+    r"proc_mesh_controller|actor_mesh_controller)",
+    re.IGNORECASE,
+)
 
-@dataclass
-class SystemInfo:
-    """Collected system actor/mesh classification from the admin API."""
-
-    # Actor full_names that are system actors.
-    actor_names: Set[str] = field(default_factory=set)
-    # References (opaque strings) that appear in system_children.
-    system_refs: Set[str] = field(default_factory=set)
-
-
-# Cache.
-_cache: SystemInfo = SystemInfo()
+_cache: Set[str] = set()
 _cache_time: float = 0.0
 _CACHE_TTL_SECS = 10.0
 
+_LATEST_SNAPSHOT_SYSTEM_ACTORS_SQL = (
+    "SELECT a.node_id FROM actor_nodes a"
+    " INNER JOIN ("
+    "   SELECT snapshot_id FROM snapshots ORDER BY snapshot_ts DESC LIMIT 1"
+    " ) latest ON a.snapshot_id = latest.snapshot_id"
+    " WHERE a.is_system = true"
+)
 
-def _get_admin_url() -> Optional[str]:
-    """Read the admin URL from the environment (set by the host application)."""
-    return os.environ.get("MONARCH_ADMIN_URL")
-
-
-def _walk_admin_tree(admin_url: str) -> SystemInfo:
-    """Walk the admin API tree and collect system classification info."""
-    from .admin_dag import configure_tls
-
-    info = SystemInfo()
-    session = requests.Session()
-    configure_tls(session)
-    visited: Set[str] = set()
-    queue = ["root"]
-
-    while queue:
-        ref = queue.pop(0)
-        if ref in visited:
-            continue
-        visited.add(ref)
-
-        encoded = urllib.parse.quote(ref, safe="")
-        try:
-            resp = session.get(f"{admin_url}/v1/{encoded}", timeout=2.0)
-            if resp.status_code != 200:
-                continue
-            payload = resp.json()
-        except Exception:
-            logger.debug("Failed to fetch node %s", ref, exc_info=True)
-            continue
-
-        props = payload.get("properties", {})
-        children = payload.get("children", [])
-
-        for variant_name, variant_data in props.items():
-            if not isinstance(variant_data, dict):
-                continue
-
-            # Actor: check is_system flag.
-            if variant_name == "Actor" and variant_data.get("is_system"):
-                name = variant_data.get("full_name") or payload.get("identity", "")
-                if name:
-                    info.actor_names.add(name)
-
-            # Root/Host/Proc: collect system_children refs.
-            for sc in variant_data.get("system_children", []):
-                info.system_refs.add(sc)
-
-        # Queue children for traversal.
-        for child_ref in children:
-            queue.append(child_ref)
-
-    # Also resolve system refs to get their actor names.
-    for ref in info.system_refs:
-        if ref in visited:
-            continue
-        encoded = urllib.parse.quote(ref, safe="")
-        try:
-            resp = session.get(f"{admin_url}/v1/{encoded}", timeout=2.0)
-            if resp.status_code != 200:
-                continue
-            payload = resp.json()
-            props = payload.get("properties", {})
-            actor_data = props.get("Actor", {})
-            name = actor_data.get("full_name") or payload.get("identity", "")
-            if name:
-                info.actor_names.add(name)
-        except Exception:
-            logger.debug("Failed to resolve system ref %s", ref, exc_info=True)
-            continue
-
-    logger.debug(
-        "Admin API: %d system actors, %d system refs",
-        len(info.actor_names),
-        len(info.system_refs),
-    )
-    return info
+_ALL_TELEMETRY_ACTORS_SQL = "SELECT full_name FROM actors"
 
 
-def get_system_info() -> SystemInfo:
-    """Return system classification info, with caching.
+def get_system_actor_names() -> Set[str]:
+    """Return system actor names for DAG filtering.
 
-    Returns an empty SystemInfo if the admin URL is not configured or
-    unreachable.
+    Combines two filters:
+      1. ``is_system`` flag from snapshot ``actor_nodes`` table.
+      2. Name heuristic (``_SYSTEM_NAME_PATTERNS``) applied to the leaf
+         name of each actor in the telemetry ``actors`` table.
+
+    The root client actor (``client[0]``) is excluded — it is the
+    user's entrypoint and the source of all user-visible messages.
+
+    Returns an empty set if tables are not yet populated or queries fail.
     """
     global _cache, _cache_time
 
     now = time.monotonic()
-    if now - _cache_time < _CACHE_TTL_SECS and (
-        _cache.actor_names or _cache.system_refs
-    ):
+    if now - _cache_time < _CACHE_TTL_SECS and _cache:
         return _cache
 
-    admin_url = _get_admin_url()
-    if not admin_url:
-        return _cache
+    from . import db
 
+    names: Set[str] = set()
+
+    # Filter 1: actors with is_system=true from snapshot tables.
     try:
-        info = _walk_admin_tree(admin_url)
-        _cache = info
-        _cache_time = now
+        rows = db._query(_LATEST_SNAPSHOT_SYSTEM_ACTORS_SQL)
+        for r in rows:
+            names.add(r["node_id"])
     except Exception:
-        logger.warning("Failed to walk admin API for system actors", exc_info=True)
+        logger.debug("Could not query snapshot tables for system actors", exc_info=True)
+
+    # Filter 2: name heuristic on telemetry actors table.
+    try:
+        rows = db._query(_ALL_TELEMETRY_ACTORS_SQL)
+        for r in rows:
+            full_name = r["full_name"]
+            leaf = full_name.rsplit(",", 1)[-1]
+            if _SYSTEM_NAME_PATTERNS.search(leaf):
+                names.add(full_name)
+    except Exception:
+        logger.debug(
+            "Could not query telemetry actors for name heuristic", exc_info=True
+        )
+
+    # TODO(matthewzhang): Replace the snapshot + name heuristic approach
+    # with ``SELECT full_name FROM actors WHERE is_system = true`` once
+    # the ``is_system`` column on the telemetry ``actors`` table
+    # correctly classifies all system actors (including Python-spawned
+    # ones like setup, telemetry, controller_controller). See D102645433.
+
+    # Exclude the root client actor.
+    names = {n for n in names if not n.endswith(",client[0]")}
+
+    _cache = names
+    _cache_time = now
+    logger.debug("System actors: %d (snapshot + heuristic)", len(names))
 
     return _cache
-
-
-def get_system_actor_names() -> Set[str]:
-    """Convenience: return just the set of system actor full_names.
-
-    The root client actor (``client[0]``) is excluded even though the
-    admin API marks it ``is_system``.  It is the user's entrypoint and
-    the source of all user-visible messages; keeping it out of the
-    system set preserves message edge visibility in the DAG.
-    """
-    return {n for n in get_system_info().actor_names if not n.endswith(",client[0]")}

@@ -8,6 +8,12 @@
 
 #![feature(assert_matches)]
 
+// torch-sys-cuda is a link-only dependency on Linux to consolidate NCCL
+// linking for downstream consumers; reference it so the Rust crate does
+// not trip the `unused_crate_dependencies` lint.
+#[cfg(feature = "cuda")]
+use torch_sys_cuda as _;
+
 pub mod client;
 pub mod controller;
 pub mod debugger;
