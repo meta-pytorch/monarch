@@ -1035,6 +1035,7 @@ impl Actor for ProcMeshController {
 #[cfg(test)]
 mod tests {
     use std::ops::Deref;
+    use std::ops::DerefMut;
     use std::time::Duration;
 
     use hyperactor::actor::ActorStatus;
@@ -1053,6 +1054,39 @@ mod tests {
     use crate::test_utils::local_host_mesh;
     use crate::testactor;
     use crate::testing;
+
+    #[cfg(fbcode_build)]
+    struct TestHostMesh {
+        guard: crate::host_mesh::HostMeshShutdownGuard,
+        children: Vec<tokio::process::Child>,
+    }
+
+    #[cfg(fbcode_build)]
+    impl TestHostMesh {
+        async fn kill_hosts(&mut self) {
+            for child in &mut self.children {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+            }
+            self.children.clear();
+        }
+    }
+
+    #[cfg(fbcode_build)]
+    impl Deref for TestHostMesh {
+        type Target = crate::host_mesh::HostMeshShutdownGuard;
+
+        fn deref(&self) -> &Self::Target {
+            &self.guard
+        }
+    }
+
+    #[cfg(fbcode_build)]
+    impl DerefMut for TestHostMesh {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.guard
+        }
+    }
 
     /// Verify that actors spawned without a controller are cleaned up
     /// when their keepalive expiry lapses. We:
@@ -1130,7 +1164,7 @@ mod tests {
     /// Create a multi-process host mesh that propagates the current
     /// process's config overrides to child processes via Bootstrap.
     #[cfg(fbcode_build)]
-    async fn host_mesh_with_config(n: usize) -> crate::host_mesh::HostMeshShutdownGuard {
+    async fn host_mesh_with_config(n: usize) -> TestHostMesh {
         use hyperactor::channel::ChannelTransport;
         use hyperactor::id::Label;
         use tokio::process::Command;
@@ -1139,6 +1173,7 @@ mod tests {
 
         let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
         let mut host_addrs = vec![];
+        let mut children = Vec::new();
         for _ in 0..n {
             host_addrs.push(ChannelTransport::Unix.any());
         }
@@ -1158,20 +1193,23 @@ mod tests {
             unsafe {
                 cmd.pre_exec(crate::bootstrap::install_pdeathsig_kill);
             }
-            cmd.spawn().unwrap();
+            children.push(cmd.spawn().unwrap());
         }
 
         let host_mesh = crate::HostMeshRef::from_hosts(
             HostMeshId::unique(Label::new("test").unwrap()),
             host_addrs,
         );
-        crate::host_mesh::HostMesh::take(host_mesh).shutdown_guard()
+        TestHostMesh {
+            guard: crate::host_mesh::HostMesh::take(host_mesh).shutdown_guard(),
+            children,
+        }
     }
 
     /// Verify that actors are cleaned up via the orphan timeout when the
     /// `ActorMeshController`'s process crashes. Unlike the system-actor test
     /// above, this spawns actors through a real controller (via `WrapperActor`)
-    /// and then kills the controller's process uncleanly with `ProcessExit`.
+    /// and then kills the controller's host process uncleanly.
     /// The agents on the surviving proc mesh detect the expired keepalive
     /// and stop the actors.
     #[tokio::test]
@@ -1211,7 +1249,7 @@ mod tests {
         // Spawn WrapperActor on controller_proc_mesh. Its init() spawns
         // ActorMesh<TestActor> on actor_proc_mesh with a real
         // ActorMeshController co-located on the controller's process.
-        let wrapper_mesh: ActorMesh<testactor::WrapperActor> = controller_proc_mesh
+        let _wrapper_mesh: ActorMesh<testactor::WrapperActor> = controller_proc_mesh
             .spawn(
                 instance,
                 "wrapper",
@@ -1241,18 +1279,9 @@ mod tests {
             );
         }
 
-        // Kill the controller's process uncleanly. send_to_children: false
-        // means only the WrapperActor's process exits; the TestActors on
+        // Kill the controller's host process uncleanly. The TestActors on
         // actor_proc_mesh survive.
-        wrapper_mesh
-            .cast(
-                instance,
-                testactor::CauseSupervisionEvent {
-                    kind: testactor::SupervisionEventType::ProcessExit(1),
-                    send_to_children: false,
-                },
-            )
-            .unwrap();
+        controller_hm.kill_hosts().await;
 
         // Wait for:
         //  - keepalive expiry (2s from last CheckState)
@@ -1274,7 +1303,6 @@ mod tests {
         }
 
         let _ = actor_hm.shutdown(instance).await;
-        let _ = controller_hm.shutdown(instance).await;
     }
 
     #[test]
