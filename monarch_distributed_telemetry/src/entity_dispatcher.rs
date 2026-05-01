@@ -111,9 +111,9 @@ pub struct Message {
     pub id: u64,
     /// Timestamp in microseconds since Unix epoch
     pub timestamp_us: i64,
-    /// Hash of sender's ActorId
+    /// Hash of sender's ActorAddr
     pub from_actor_id: u64,
-    /// Hash of receiver's ActorId
+    /// Hash of receiver's ActorAddr
     pub to_actor_id: u64,
     /// Message handler type name
     pub endpoint: Option<String>,

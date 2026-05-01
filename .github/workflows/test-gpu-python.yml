@@ -25,6 +25,7 @@ jobs:
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       submodules: recursive
       download-artifact: monarch-${{ matrix.name }}-${{ github.sha }}-py3.10
+      upload-artifact: test-results-gpu-python-${{ matrix.name }}-${{ github.sha }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -61,8 +62,15 @@ jobs:
         # Each group runs separately with process cleanup in between
         pip install pytest-split
 
+        # run_test_groups disables errexit internally and leaks `set +e`,
+        # so capture its exit code before `stage_test_artifacts` runs;
+        # otherwise stage_test_artifacts's exit 0 masks a test failure.
         run_test_groups
+        rc=$?
 
         # TODO(meriksen): temporarily disabled to unblock lands while debugging
         # mock CUDA issues on the OSS setup
         # python python/tests/test_mock_cuda.py
+
+        stage_test_artifacts
+        exit $rc

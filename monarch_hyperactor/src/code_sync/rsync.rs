@@ -23,12 +23,12 @@ use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
 use futures::try_join;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Unbind;
 use hyperactor::context;
-use hyperactor::reference;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -336,7 +336,8 @@ pub struct RsyncMessage {
 wirevalue::register_type!(RsyncMessage);
 
 #[derive(Debug, Default)]
-#[hyperactor::export(spawn = true, handlers = [RsyncMessage { cast = true }])]
+#[hyperactor::export(handlers = [RsyncMessage { cast = true }])]
+#[hyperactor::spawnable]
 pub struct RsyncActor {
     //workspace: WorkspaceLocation,
 }

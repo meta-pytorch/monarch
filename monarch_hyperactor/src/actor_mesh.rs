@@ -18,7 +18,6 @@ use futures::future;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::Instance;
-use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
@@ -46,7 +45,7 @@ use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
 use crate::pickle::PendingMessage;
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
@@ -79,6 +78,22 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
         instance: &Instance<PythonActor>,
     ) -> PyResult<()>;
 
+    /// Cast a message, merging caller-supplied envelope headers into
+    /// the outbound request. Implementations that reach the real
+    /// envelope emission site override this to thread `caller_headers`
+    /// through `hyperactor_mesh::ActorMeshRef::cast_with_headers`;
+    /// the default collapses to the non-headers path for impls that
+    /// have no envelope access.
+    fn cast_with_headers(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+        _caller_headers: hyperactor_config::Flattrs,
+    ) -> PyResult<()> {
+        self.cast(message, selection, instance)
+    }
+
     /// Cast a pending message (which may contain unresolved async values) to actors.
     ///
     /// The default implementation blocks on resolving the message and then calls cast.
@@ -91,6 +106,21 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     ) -> PyResult<()> {
         let message = get_tokio_runtime().block_on(message.resolve())?;
         self.cast(message, selection, instance)
+    }
+
+    /// Async counterpart of `cast_with_headers`. The default
+    /// resolves the pending message synchronously and delegates;
+    /// `AsyncActorMesh` overrides this to resolve asynchronously
+    /// and route through `cast_with_headers`.
+    fn cast_unresolved_with_headers(
+        &self,
+        message: PendingMessage,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+        caller_headers: hyperactor_config::Flattrs,
+    ) -> PyResult<()> {
+        let message = get_tokio_runtime().block_on(message.resolve())?;
+        self.cast_with_headers(message, selection, instance, caller_headers)
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)>;
@@ -315,6 +345,21 @@ impl ActorMeshProtocol for AsyncActorMesh {
         selection: Selection,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
+        self.cast_unresolved_with_headers(
+            message,
+            selection,
+            instance,
+            hyperactor_config::Flattrs::new(),
+        )
+    }
+
+    fn cast_unresolved_with_headers(
+        &self,
+        message: PendingMessage,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+        caller_headers: hyperactor_config::Flattrs,
+    ) -> PyResult<()> {
         let mesh = self.mesh.clone();
         let instance = instance.clone_for_py();
         let port = match &message.kind {
@@ -324,7 +369,8 @@ impl ActorMeshProtocol for AsyncActorMesh {
         self.push(async move {
             let result = async {
                 let resolved = message.resolve().await?;
-                mesh.await?.cast(resolved, selection, &instance)
+                mesh.await?
+                    .cast_with_headers(resolved, selection, &instance, caller_headers)
             }
             .await;
             if let (Some(mut port_ref), Err(pyerr)) = (port, result) {
@@ -527,6 +573,22 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
         )
     }
 
+    fn cast_with_headers(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+        caller_headers: hyperactor_config::Flattrs,
+    ) -> PyResult<()> {
+        <ActorMeshRef<PythonActor> as ActorMeshProtocol>::cast_with_headers(
+            self.mesh_ref(),
+            message,
+            selection,
+            instance,
+            caller_headers,
+        )
+    }
+
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
         let (slf, instance) = monarch_with_gil_blocking(|_py| (self.clone(), instance.clone()));
         match slf {
@@ -578,9 +640,30 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         selection: Selection,
         instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
+        <Self as ActorMeshProtocol>::cast_with_headers(
+            self,
+            message,
+            selection,
+            instance,
+            hyperactor_config::Flattrs::new(),
+        )
+    }
+
+    fn cast_with_headers(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+        caller_headers: hyperactor_config::Flattrs,
+    ) -> PyResult<()> {
         if structurally_equal(&selection, &Selection::All(Box::new(Selection::True))) {
-            self.cast(instance, message.clone())
-                .map_err(cast_error_to_py_error)?;
+            ActorMeshRef::<PythonActor>::cast_with_headers(
+                self,
+                instance,
+                &caller_headers,
+                message.clone(),
+            )
+            .map_err(cast_error_to_py_error)?;
         } else if structurally_equal(&selection, &Selection::Any(Box::new(Selection::True))) {
             let region = Ranked::region(self);
             let random_rank = fastrand::usize(0..region.num_ranks());
@@ -592,9 +675,13 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
                 Vec::new(),
                 Slice::new(offset, Vec::new(), Vec::new()).map_err(anyhow::Error::from)?,
             );
-            self.sliced(singleton_region)
-                .cast(instance, message.clone())
-                .map_err(cast_error_to_py_error)?;
+            ActorMeshRef::<PythonActor>::cast_with_headers(
+                &self.sliced(singleton_region),
+                instance,
+                &caller_headers,
+                message.clone(),
+            )
+            .map_err(cast_error_to_py_error)?;
         } else {
             return Err(PyRuntimeError::new_err(format!(
                 "invalid selection: {:?}",
@@ -631,12 +718,12 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
 
 #[pymethods]
 impl PythonActorMeshImpl {
-    fn get(&self, rank: usize) -> PyResult<Option<PyActorId>> {
+    fn get(&self, rank: usize) -> PyResult<Option<PyActorAddr>> {
         Ok(self
             .mesh_ref()
             .get(rank)
-            .map(|r| reference::ActorRef::into_actor_id(r.clone()))
-            .map(PyActorId::from))
+            .map(|r| hyperactor::ActorRef::into_actor_id(r.clone()))
+            .map(PyActorAddr::from))
     }
 
     fn __repr__(&self) -> String {
@@ -670,8 +757,8 @@ impl PyActorSupervisionEvent {
     }
 
     #[getter]
-    pub(crate) fn actor_id(&self) -> PyResult<PyActorId> {
-        Ok(PyActorId::from(self.inner.actor_id.clone()))
+    pub(crate) fn actor_id(&self) -> PyResult<PyActorAddr> {
+        Ok(PyActorAddr::from(self.inner.actor_id.clone()))
     }
 
     #[getter]

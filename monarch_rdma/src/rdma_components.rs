@@ -46,9 +46,9 @@ use std::result::Result;
 use std::sync::Arc;
 use std::time::Duration;
 
+use hyperactor as reference;
 use hyperactor::ActorRef;
 use hyperactor::context;
-use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -223,7 +223,10 @@ impl RdmaRemoteBuffer {
         &self,
         client: &impl context::Actor,
     ) -> Option<Result<(reference::ActorRef<IbvManagerActor>, IbvBuffer), anyhow::Error>> {
-        let (remote_ibv_mgr, remote_ibv_buf) = self.backends.iter().find_map(|b| match b {
+        let (remote_ibv_mgr, remote_ibv_buf): (
+            &reference::ActorRef<IbvManagerActor>,
+            &Arc<tokio::sync::OnceCell<IbvBuffer>>,
+        ) = self.backends.iter().find_map(|b| match b {
             RdmaRemoteBackendContext::Ibverbs(mgr, buf) => Some((mgr, buf)),
             _ => None,
         })?;

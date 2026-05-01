@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
@@ -21,7 +22,6 @@ use hyperactor::Proc;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 
 use super::IbvBuffer;
@@ -45,11 +45,11 @@ unsafe impl Sync for SendSyncCudaContext {}
 /// Actor responsible for CUDA initialization and buffer management within its own process context.
 /// This is important because you preform CUDA operations within the same process as the RDMA operations.
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         CudaActorMessage,
     ],
 )]
+#[hyperactor::spawnable]
 #[derive(Debug)]
 pub struct CudaActor {
     device: Option<i32>,

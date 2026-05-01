@@ -181,23 +181,23 @@ mod tests {
     use std::time::Duration;
     use std::time::UNIX_EPOCH;
 
+    use hyperactor::ProcAddr;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::reference::ProcId;
     use hyperactor_mesh::introspect::NodeProperties;
 
     use super::*;
 
     // Test fixtures
 
-    fn test_proc_id() -> ProcId {
-        ProcId::from_resource_name(ChannelAddr::Local(0), "worker")
+    fn test_proc_id() -> ProcAddr {
+        ProcAddr::from_resource_name(ChannelAddr::Local(0), "worker")
     }
 
-    fn test_actor_id(name: &str) -> hyperactor::reference::ActorId {
+    fn test_actor_id(name: &str) -> hyperactor::ActorAddr {
         test_proc_id().actor_id(name)
     }
 
-    fn test_host_actor_id() -> hyperactor::reference::ActorId {
+    fn test_host_actor_id() -> hyperactor::ActorAddr {
         test_proc_id().actor_id("host_agent")
     }
 
