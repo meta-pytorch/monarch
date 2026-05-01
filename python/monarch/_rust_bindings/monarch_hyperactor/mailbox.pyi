@@ -10,12 +10,12 @@ from typing import final, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
 @final
 class PortId:
-    def __init__(self, *, actor_id: ActorId, port: int) -> None:
+    def __init__(self, *, actor_id: ActorAddr, port: int) -> None:
         """
         Create a new port id given an actor id and a port index.
         """
@@ -24,7 +24,7 @@ class PortId:
     def __hash__(self) -> int: ...
     def __eq__(self, other: object) -> bool: ...
     @property
-    def actor_id(self) -> ActorId:
+    def actor_id(self) -> ActorAddr:
         """
         The ID of the actor that owns the port.
         """
@@ -166,7 +166,7 @@ class Mailbox:
         """Open a accum port."""
         ...
 
-    def post(self, dest: ActorId, message: PythonMessage) -> None:
+    def post(self, dest: ActorAddr, message: PythonMessage) -> None:
         """
         Post a message to the provided destination. If the destination is an actor id,
         the message is sent to the default handler for `PythonMessage` on the actor.
@@ -175,7 +175,7 @@ class Mailbox:
         ...
 
     @property
-    def actor_id(self) -> ActorId: ...
+    def actor_id(self) -> ActorAddr: ...
 
 class Accumulator(Protocol):
     """
@@ -222,9 +222,9 @@ class UndeliverableMessageEnvelope:
     """
 
     def __repr__(self) -> str: ...
-    def sender(self) -> ActorId:
+    def sender(self) -> ActorAddr:
         """
-        The actor id of the sender.
+        The actor address of the sender.
         """
         ...
 

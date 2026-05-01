@@ -22,7 +22,7 @@ def init_proc(
     Helper function to bootstrap a new Proc.
 
     Arguments:
-    - `proc_id`: String representation of the ProcId eg. `"worker<2MuAHeDjLCEd>@tcp://[::1]:2345"`
+    - `proc_id`: String representation of the ProcAddr eg. `"worker<2MuAHeDjLCEd>@tcp://[::1]:2345"`
     - `bootstrap_addr`: String representation of the channel address of the system
         actor. eg. `"tcp![::1]:2345"`
     - `timeout`: Number of seconds to wait to successfully connect to the system.
@@ -41,9 +41,9 @@ class Serialized:
     ...
 
 @final
-class ActorId:
+class ActorAddr:
     """
-    A python wrapper around hyperactor ActorId. It represents a unique reference
+    A python wrapper around hyperactor ActorAddr. It represents a unique reference
     for an actor.
 
     Arguments:
@@ -93,21 +93,21 @@ class ActorId:
 
     @property
     def proc_id(self) -> str:
-        """String representation of the ProcId in Rust-compatible `proc@location` form."""
+        """String representation of the ProcAddr in Rust-compatible `proc@location` form."""
         ...
 
     @property
     def is_root(self) -> bool:
-        """Whether this actor id names a singleton root actor."""
+        """Whether this actor address names a singleton root actor."""
         ...
 
     @staticmethod
-    def from_string(actor_id_str: str) -> ActorId:
+    def from_string(actor_addr_str: str) -> ActorAddr:
         """
-        Create an ActorId from a string representation.
+        Create an ActorAddr from a string representation.
 
         Arguments:
-        - `actor_id_str`: String representation of the actor id.
+        - `actor_addr_str`: String representation of the actor address.
         """
         ...
 

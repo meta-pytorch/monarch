@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Parser;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
@@ -23,7 +24,6 @@ use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
@@ -59,12 +59,8 @@ enum ChopstickStatus {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        PhilosopherMessage { cast = true },
-    ],
-)]
+#[hyperactor::export(PhilosopherMessage { cast = true })]
+#[hyperactor::spawnable]
 struct PhilosopherActor {
     /// Status of left and right chopsticks
     chopsticks: (ChopstickStatus, ChopstickStatus),

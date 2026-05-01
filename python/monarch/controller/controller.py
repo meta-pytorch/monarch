@@ -11,10 +11,10 @@ from collections import deque
 from typing import Generator, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monarch/monarch_extension:monarch_extension
-    DebuggerMessage,
+    DebuggerMessage as RustDebuggerMessage,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
 )
 from monarch._src.actor.shape import NDSlice
 from monarch.common import messages
@@ -75,7 +75,7 @@ class Controller:
         for rank, value in self._backend.recvready(timeout):
             yield from self._handle_message(rank, value)
 
-    def drain_and_stop(self) -> List[MessageResult | LogMessage | DebuggerMessage]:
+    def drain_and_stop(self) -> List[MessageResult | LogMessage | RustDebuggerMessage]:
         messages = []
         while self._messages:
             messages.append(self._messages.popleft())
@@ -136,7 +136,7 @@ class Controller:
             error=DeviceException(
                 exception,
                 worker_frames,
-                ActorId(addr="local:0", proc_name="unknown", actor_name="unknown"),
+                ActorAddr(addr="local:0", proc_name="unknown", actor_name="unknown"),
                 message="A worker experienced an internal error.",
             ),
         )
@@ -153,7 +153,7 @@ class Controller:
             error=DeviceException(
                 exception=exception,
                 frames=frames,
-                source_actor_id=ActorId(
+                source_actor_id=ActorAddr(
                     addr="local:0", proc_name="unknown", actor_name="unknown"
                 ),
                 message="A remote generator failed.",
