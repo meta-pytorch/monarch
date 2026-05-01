@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use hyperactor::ActorAddr;
 use hyperactor::Instance;
 use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
@@ -18,7 +19,6 @@ use hyperactor::accum::ReducerFactory;
 use hyperactor::accum::ReducerSpec;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor::ref_::ActorRef;
 use hyperactor_mesh::sel;
 use hyperactor_mesh::value_mesh::ValueOverlay;
 use hyperactor_mesh::value_mesh::rle;
@@ -102,6 +102,17 @@ pub(crate) enum EndpointAdverb {
     Stream,
 }
 
+impl EndpointAdverb {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Call => "call",
+            Self::CallOne => "call_one",
+            Self::Choose => "choose",
+            Self::Stream => "stream",
+        }
+    }
+}
+
 /// RAII guard for recording endpoint call telemetry.
 ///
 /// Records latency on drop, similar to Python's `@_with_telemetry` decorator.
@@ -160,7 +171,6 @@ impl Drop for RecordEndpointGuard {
             "method" => self.method_name.clone(),
             "actor_count" => actor_count_str
         );
-        tracing::info!(message = "response received", method = self.method_name);
 
         let duration_us = self.start.elapsed().as_micros();
 
@@ -200,33 +210,67 @@ impl Drop for RecordEndpointGuard {
 
 /// Send-safe RAII guard for an OTEL-style endpoint span.
 ///
-/// `tracing::Span::enter()` returns a `!Send` `Entered<'_>` guard that cannot
-/// cross `.await` points. We need the span to open on the Python thread (at
-/// call site) and close on whatever tokio thread delivers the response. To
-/// achieve that, we drive the `Layer::on_enter`/`on_exit` callbacks directly
-/// through the global dispatcher instead of holding an `Entered` guard.
-///
-/// The perfetto sink remembers which track a span entered on and replays the
-/// matching exit on that same track, so slices render on the originating
-/// (Python) thread regardless of where `Drop` fires.
+/// We only need endpoint spans for telemetry slices, not for `tracing` context
+/// propagation. So this guard emits synthetic trace events directly into the
+/// unified telemetry dispatcher instead of holding a real `tracing::Span`
+/// across `.await` points.
 pub(crate) struct SpanGuard {
-    span: tracing::Span,
+    id: u64,
 }
 
 impl SpanGuard {
-    fn enter(span: tracing::Span) -> Self {
-        if let Some(id) = span.id() {
-            tracing::dispatcher::get_default(|d| d.enter(&id));
+    fn actor_endpoint(name: &'static str, actor_id: &ActorAddr, mesh: &str, method: &str) -> Self {
+        Self {
+            id: hyperactor_telemetry::start_user_span(
+                name,
+                hyperactor_telemetry::sinks::perfetto::ENDPOINT_TELEMETRY_TARGET,
+                [
+                    (
+                        "actor_id",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(
+                            actor_id.to_string(),
+                        ),
+                    ),
+                    (
+                        "mesh",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(mesh.to_string()),
+                    ),
+                    (
+                        "method",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(method.to_string()),
+                    ),
+                ],
+            ),
         }
-        Self { span }
+    }
+
+    fn remote(name: &'static str, actor_id: &ActorAddr, call_name: &str) -> Self {
+        Self {
+            id: hyperactor_telemetry::start_user_span(
+                name,
+                hyperactor_telemetry::sinks::perfetto::ENDPOINT_TELEMETRY_TARGET,
+                [
+                    (
+                        "actor_id",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(
+                            actor_id.to_string(),
+                        ),
+                    ),
+                    (
+                        "call_name",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(
+                            call_name.to_string(),
+                        ),
+                    ),
+                ],
+            ),
+        }
     }
 }
 
 impl Drop for SpanGuard {
     fn drop(&mut self) {
-        if let Some(id) = self.span.id() {
-            tracing::dispatcher::get_default(|d| d.exit(&id));
-        }
+        hyperactor_telemetry::end_user_span(self.id);
     }
 }
 
@@ -537,6 +581,47 @@ pub(crate) trait Endpoint {
         instance: &Instance<PythonActor>,
     ) -> PyResult<()>;
 
+    /// Like `send_message` but stamps `caller_headers` onto the
+    /// outgoing request envelope. Implementations that can carry
+    /// headers override this; the default delegates to `send_message`
+    /// and drops them.
+    fn send_message_with_headers<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+        port_ref: Option<EitherPortRef>,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+        _caller_headers: hyperactor_config::Flattrs,
+    ) -> PyResult<()> {
+        self.send_message(py, args, kwargs, port_ref, selection, instance)
+    }
+
+    /// Build the operation-context envelope headers to stamp on an
+    /// outgoing request for this endpoint invocation. The result is
+    /// empty when the endpoint cannot supply a qualified name
+    /// (e.g. `RemoteEndpoint`'s `get_qualified_name` returns `None`),
+    /// in which case callers see the unchanged dispatch surface.
+    fn build_operation_context_headers(
+        &self,
+        adverb: EndpointAdverb,
+    ) -> hyperactor_config::Flattrs {
+        let adverb_str = match adverb {
+            EndpointAdverb::Call => "call",
+            EndpointAdverb::CallOne => "call_one",
+            EndpointAdverb::Choose => "choose",
+            EndpointAdverb::Stream => "stream",
+        };
+        let attrs = crate::operation_context::build_operation_context_attrs(
+            self.get_qualified_name(),
+            Some(adverb_str),
+        );
+        let mut headers = hyperactor_config::Flattrs::new();
+        crate::operation_context::stamp_operation_context(&mut headers, &attrs);
+        headers
+    }
+
     /// Get the supervision_monitor for this endpoint (if any).
     fn get_supervision_monitor(&self) -> Option<Arc<dyn Supervisable>>;
 
@@ -549,7 +634,7 @@ pub(crate) trait Endpoint {
     /// for Remote) and route the slice to an actor-specific track. The adverb is the span name,
     /// so no formatting happens at the call site and the sink formats only when
     /// it renders the slice.
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard;
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard;
 
     fn get_current_instance(&self, py: Python<'_>) -> PyResult<Instance<PythonActor>> {
         let context = get_context(py).call0()?;
@@ -592,13 +677,15 @@ pub(crate) trait Endpoint {
         let supervision_monitor = self.get_supervision_monitor();
         let qualified_endpoint_name = self.get_qualified_name();
 
-        self.send_message(
+        let caller_headers = self.build_operation_context_headers(EndpointAdverb::Call);
+        self.send_message_with_headers(
             py,
             args,
             kwargs,
             Some(EitherPortRef::Once(port_ref)),
             sel!(*),
             &instance,
+            caller_headers,
         )?;
 
         let instance_for_task = instance.clone_for_py();
@@ -630,13 +717,15 @@ pub(crate) trait Endpoint {
         let span_guard = self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_id());
         let (port_ref, receiver) = self.open_response_port(&instance);
 
-        self.send_message(
+        let caller_headers = self.build_operation_context_headers(EndpointAdverb::Choose);
+        self.send_message_with_headers(
             py,
             args,
             kwargs,
             Some(EitherPortRef::Unbounded(port_ref)),
             sel!(?),
             &instance,
+            caller_headers,
         )?;
 
         let task = value_collector(
@@ -672,13 +761,15 @@ pub(crate) trait Endpoint {
         let span_guard = self.enter_endpoint_span(EndpointAdverb::CallOne, instance.self_id());
         let (port_ref, receiver) = self.open_response_port(&instance);
 
-        self.send_message(
+        let caller_headers = self.build_operation_context_headers(EndpointAdverb::CallOne);
+        self.send_message_with_headers(
             py,
             args,
             kwargs,
             Some(EitherPortRef::Unbounded(port_ref)),
             sel!(*),
             &instance,
+            caller_headers,
         )?;
 
         let task = value_collector(
@@ -707,13 +798,15 @@ pub(crate) trait Endpoint {
         let instance = self.get_current_instance(py)?;
         let (port_ref, receiver) = self.open_response_port(&instance);
 
-        self.send_message(
+        let caller_headers = self.build_operation_context_headers(EndpointAdverb::Stream);
+        self.send_message_with_headers(
             py,
             args,
             kwargs,
             Some(EitherPortRef::Unbounded(port_ref)),
             sel!(*),
             &instance,
+            caller_headers,
         )?;
 
         let actor_count = extent.num_ranks();
@@ -836,6 +929,21 @@ impl Endpoint for ActorEndpoint {
         self.inner.cast_unresolved(message, selection, instance)
     }
 
+    fn send_message_with_headers<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+        port_ref: Option<EitherPortRef>,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+        caller_headers: hyperactor_config::Flattrs,
+    ) -> PyResult<()> {
+        let message = self.create_message(py, args, kwargs, port_ref)?;
+        self.inner
+            .cast_unresolved_with_headers(message, selection, instance, caller_headers)
+    }
+
     fn get_supervision_monitor(&self) -> Option<Arc<dyn Supervisable>> {
         Some(self.inner.clone())
     }
@@ -844,40 +952,10 @@ impl Endpoint for ActorEndpoint {
         Some(format!("{}.{}()", self.mesh_name, self.method.name()))
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard {
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard {
         let mesh = self.mesh_name.as_str();
         let method = self.method.name();
-        let span = match adverb {
-            EndpointAdverb::Call => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::CallOne => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call_one",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Choose => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "choose",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Stream => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "stream",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-        };
-        SpanGuard::enter(span)
+        SpanGuard::actor_endpoint(adverb.as_str(), actor_id, mesh, method)
     }
 }
 
@@ -1139,7 +1217,7 @@ impl Endpoint for Remote {
         None // Remote endpoints don't have qualified names
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard {
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard {
         let call_name = Python::attach(|py| {
             self.inner
                 .call_method0(py, "_call_name")
@@ -1147,33 +1225,7 @@ impl Endpoint for Remote {
                 .and_then(|v| v.extract::<String>(py).ok())
         });
         let call_name = call_name.as_deref().unwrap_or("");
-        let span = match adverb {
-            EndpointAdverb::Call => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::CallOne => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call_one",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Choose => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "choose",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Stream => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "stream",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-        };
-        SpanGuard::enter(span)
+        SpanGuard::remote(adverb.as_str(), actor_id, call_name)
     }
 }
 
@@ -1411,5 +1463,101 @@ impl Accumulator for PythonResponseMessageAccumulator {
             typehash: <PythonResponseMessageReducer as Named>::typehash(),
             builder_params: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperactor::ActorAddr;
+    use hyperactor::mailbox::headers::OPERATION_ADVERB;
+    use hyperactor::mailbox::headers::OPERATION_ENDPOINT;
+
+    use super::*;
+
+    /// Minimal `Endpoint` impl that only serves `get_qualified_name`.
+    /// The default `build_operation_context_headers` consults no other
+    /// method, so the rest are unreachable.
+    struct TestEndpoint {
+        qualified_name: Option<String>,
+    }
+
+    impl Endpoint for TestEndpoint {
+        fn get_extent(&self, _py: Python<'_>) -> PyResult<Extent> {
+            unreachable!()
+        }
+        fn get_method_name(&self) -> &str {
+            unreachable!()
+        }
+        fn send_message<'py>(
+            &self,
+            _py: Python<'py>,
+            _args: &Bound<'py, PyTuple>,
+            _kwargs: Option<&Bound<'py, PyDict>>,
+            _port_ref: Option<EitherPortRef>,
+            _selection: Selection,
+            _instance: &Instance<PythonActor>,
+        ) -> PyResult<()> {
+            unreachable!()
+        }
+        fn get_supervision_monitor(&self) -> Option<Arc<dyn Supervisable>> {
+            None
+        }
+        fn get_qualified_name(&self) -> Option<String> {
+            self.qualified_name.clone()
+        }
+        fn enter_endpoint_span(&self, _adverb: EndpointAdverb, _actor_id: &ActorAddr) -> SpanGuard {
+            unreachable!()
+        }
+    }
+
+    /// OC-1 request-side producer: each `EndpointAdverb` maps to the
+    /// expected wire adverb string, and the qualified endpoint name
+    /// from `get_qualified_name()` flows through to `OPERATION_ENDPOINT`.
+    #[test]
+    fn test_rc1_build_operation_context_headers_stamps_each_adverb() {
+        let ep = TestEndpoint {
+            qualified_name: Some("training.Philosopher.ping()".to_string()),
+        };
+        for (adverb, expected_adverb) in [
+            (EndpointAdverb::Call, "call"),
+            (EndpointAdverb::CallOne, "call_one"),
+            (EndpointAdverb::Choose, "choose"),
+            (EndpointAdverb::Stream, "stream"),
+        ] {
+            let headers = ep.build_operation_context_headers(adverb);
+            assert_eq!(
+                headers.get(OPERATION_ENDPOINT).as_deref(),
+                Some("training.Philosopher.ping()"),
+                "adverb {:?}: OPERATION_ENDPOINT",
+                adverb,
+            );
+            assert_eq!(
+                headers.get(OPERATION_ADVERB).as_deref(),
+                Some(expected_adverb),
+                "adverb {:?}: OPERATION_ADVERB",
+                adverb,
+            );
+        }
+    }
+
+    /// OC-1 request-side producer: when the endpoint has no
+    /// qualified name (e.g. `Remote::get_qualified_name` returns
+    /// `None`), `OPERATION_ENDPOINT` is omitted while `OPERATION_ADVERB`
+    /// is still stamped.
+    #[test]
+    fn test_rc1_build_operation_context_headers_omits_endpoint_when_no_qualified_name() {
+        let ep = TestEndpoint {
+            qualified_name: None,
+        };
+        let headers = ep.build_operation_context_headers(EndpointAdverb::CallOne);
+        assert!(
+            headers.get(OPERATION_ENDPOINT).is_none(),
+            "OPERATION_ENDPOINT must be absent when endpoint has no qualified name",
+        );
+        assert_eq!(
+            headers.get(OPERATION_ADVERB).as_deref(),
+            Some("call_one"),
+            "OPERATION_ADVERB should still be stamped",
+        );
     }
 }

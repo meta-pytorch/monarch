@@ -22,10 +22,15 @@ use std::fmt::Debug;
 use anyhow::Result;
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorAddr;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::PortRef;
 use hyperactor::RemoteMessage;
+use hyperactor::UnboundPort;
+use hyperactor::UnboundPortKind;
 use hyperactor::accum::ReducerMode;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
@@ -36,7 +41,6 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -99,20 +103,18 @@ struct ReceiveState {
 /// and result accumulation.
 #[derive(Debug, Default)]
 #[hyperactor::export(
-    spawn = true,
-    handlers = [
-        CommMeshConfig,
-        CastMessage,
-        ForwardMessage,
-        CastMessageV1,
-        ForwardMessageV1,
-    ],
+    CommMeshConfig,
+    CastMessage,
+    ForwardMessage,
+    CastMessageV1,
+    ForwardMessageV1
 )]
+#[hyperactor::spawnable]
 pub struct CommActor {
     /// Sequence numbers are maintained for each (actor mesh id, sender).
-    send_seq: HashMap<(ActorMeshId, hyperactor_reference::ActorId), usize>,
+    send_seq: HashMap<(ActorMeshId, ActorAddr), usize>,
     /// Each sender is a unique stream.
-    recv_state: HashMap<(ActorMeshId, hyperactor_reference::ActorId), ReceiveState>,
+    recv_state: HashMap<(ActorMeshId, ActorAddr), ReceiveState>,
 
     /// The comm actor's mesh configuration, or buffered messages if not yet configured.
     mesh_config: MeshConfigState,
@@ -145,21 +147,18 @@ pub struct CommMeshConfig {
     /// The rank of this comm actor on the root mesh.
     rank: usize,
     /// Key is the rank of the peer on the root mesh. Value is the peer's comm actor.
-    peers: HashMap<usize, hyperactor_reference::ActorRef<CommActor>>,
+    peers: HashMap<usize, ActorRef<CommActor>>,
 }
 wirevalue::register_type!(CommMeshConfig);
 
 impl CommMeshConfig {
     /// Create a new mesh configuration with the given rank and peer mapping.
-    pub fn new(
-        rank: usize,
-        peers: HashMap<usize, hyperactor_reference::ActorRef<CommActor>>,
-    ) -> Self {
+    pub fn new(rank: usize, peers: HashMap<usize, ActorRef<CommActor>>) -> Self {
         Self { rank, peers }
     }
 
     /// Return the peer comm actor for the given rank.
-    fn peer_for_rank(&self, rank: usize) -> Result<hyperactor_reference::ActorRef<CommActor>> {
+    fn peer_for_rank(&self, rank: usize) -> Result<ActorRef<CommActor>> {
         self.peers
             .get(&rank)
             .cloned()
@@ -192,7 +191,7 @@ impl Actor for CommActor {
             message_envelope.deserialized::<ForwardMessage>()
         {
             let sender = message.sender();
-            let return_port = hyperactor_reference::PortRef::attest_message_port(sender);
+            let return_port = PortRef::attest_message_port(sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to forward the cast message; returning to origin {}",
                 cx.self_id(),
@@ -222,7 +221,7 @@ impl Actor for CommActor {
 
         // 2. Case delivery failure at a "deliver here" step.
         if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
-            let return_port = hyperactor_reference::PortRef::attest_message_port(&sender);
+            let return_port = PortRef::attest_message_port(&sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to deliver the cast message to the dest \
                 actor; returning to origin {}",
@@ -281,7 +280,7 @@ impl CommActor {
         config: &CommMeshConfig,
         deliver_here: bool,
         next_steps: HashMap<usize, Vec<RoutingFrame>>,
-        sender: hyperactor_reference::ActorId,
+        sender: ActorAddr,
         mut message: CastMessageEnvelope,
         seq: usize,
         last_seqs: &mut HashMap<usize, usize>,
@@ -358,22 +357,16 @@ fn split_ports(
     // Split ports, if any, and update message with new ports. In this
     // way, children actors will reply to this comm actor's ports, instead
     // of to the original ports provided by parent.
-    data.visit_mut::<hyperactor_reference::UnboundPort>(
-        |hyperactor_reference::UnboundPort(
-            port_id,
-            reducer_spec,
-            return_undeliverable,
-            kind,
-            unsplit,
-        )| {
+    data.visit_mut::<UnboundPort>(
+        |UnboundPort(port_id, reducer_spec, return_undeliverable, kind, unsplit)| {
             if *unsplit {
                 return Ok(());
             }
             let reducer_mode = match kind {
-                hyperactor_reference::UnboundPortKind::Streaming(opts) => {
+                UnboundPortKind::Streaming(opts) => {
                     ReducerMode::Streaming(opts.clone().unwrap_or_default())
                 }
-                hyperactor_reference::UnboundPortKind::Once if reducer_spec.is_none() => {
+                UnboundPortKind::Once if reducer_spec.is_none() => {
                     // We can only split OncePorts that have reducers.
                     // Pass this through -- if it is used multiple times,
                     // it will cause a delivery error downstream.
@@ -382,7 +375,7 @@ fn split_ports(
                     // unicast and broadcast messages.
                     return Ok(());
                 }
-                hyperactor_reference::UnboundPortKind::Once => {
+                UnboundPortKind::Once => {
                     // Compute peer count for OncePort splitting. This is the number of
                     // destinations the message will be delivered to, so that the split
                     // port can correctly accumulate responses.
@@ -391,7 +384,7 @@ fn split_ports(
                 }
             };
 
-            let split = port_id.split(
+            let split = port_id.clone().split(
                 cx,
                 reducer_spec.clone(),
                 reducer_mode,
@@ -399,7 +392,7 @@ fn split_ports(
             )?;
 
             #[cfg(test)]
-            tests::collect_split_port(port_id, &split, deliver_here);
+            tests::collect_split_port(&port_id.clone(), &split, deliver_here);
 
             *port_id = split;
             Ok(())
@@ -465,7 +458,7 @@ impl Handler<CastMessage> for CommActor {
 
         let fwd_message = ForwardMessage {
             dests: vec![frame],
-            sender: cx.self_id().clone().into(),
+            sender: cx.self_id().clone(),
             message: cast_message.message,
             seq: *seq,
             last_seq,
@@ -646,11 +639,12 @@ pub mod test_utils {
     use anyhow::Result;
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::ActorAddr;
     use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
+    use hyperactor::PortRef;
     use hyperactor::Unbind;
-    use hyperactor::reference as hyperactor_reference;
     use serde::Deserialize;
     use serde::Serialize;
     use typeuri::Named;
@@ -659,7 +653,7 @@ pub mod test_utils {
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Named)]
     pub struct MyReply {
-        pub sender: hyperactor_reference::ActorId,
+        pub sender: ActorAddr,
         pub value: u64,
     }
 
@@ -671,39 +665,35 @@ pub mod test_utils {
             // Intentionally not including 0. As a result, this port will not be
             // split.
             // #[binding(include)]
-            reply_to0: hyperactor_reference::PortRef<String>,
+            reply_to0: PortRef<String>,
             #[binding(include)]
-            reply_to1: hyperactor_reference::PortRef<u64>,
+            reply_to1: PortRef<u64>,
             #[binding(include)]
-            reply_to2: hyperactor_reference::PortRef<MyReply>,
+            reply_to2: PortRef<MyReply>,
         },
         CastAndReplyOnce {
             arg: String,
             #[binding(include)]
-            reply_to: hyperactor::reference::OncePortRef<u64>,
+            reply_to: hyperactor::OncePortRef<u64>,
         },
         CastWithUnsplitPort {
             #[binding(include)]
-            reply_to: hyperactor_reference::PortRef<u64>,
+            reply_to: PortRef<u64>,
         },
     }
 
     #[derive(Debug)]
-    #[hyperactor::export(
-        spawn = true,
-        handlers = [
-            TestMessage { cast = true },
-        ],
-    )]
+    #[hyperactor::export(TestMessage { cast = true })]
+    #[hyperactor::spawnable]
     pub struct TestActor {
         // Forward the received message to this port, so it can be inspected by
         // the unit test.
-        forward_port: hyperactor_reference::PortRef<TestMessage>,
+        forward_port: PortRef<TestMessage>,
     }
 
     #[derive(Debug, Clone, Named, Serialize, Deserialize)]
     pub struct TestActorParams {
-        pub forward_port: hyperactor_reference::PortRef<TestMessage>,
+        pub forward_port: PortRef<TestMessage>,
     }
 
     #[async_trait]
@@ -761,7 +751,7 @@ mod tests {
         (
             hyperactor::ActorHandle<()>,
             hyperactor::ActorHandle<TestActor>,
-            hyperactor_reference::ActorRef<TestActor>,
+            ActorRef<TestActor>,
         ),
     ) {
         use hyperactor::Proc;
@@ -781,7 +771,7 @@ mod tests {
             .await
             .unwrap();
         let test_handle = proc.spawn(&actor_name, test_actor).unwrap();
-        let test_ref: hyperactor_reference::ActorRef<TestActor> = test_handle.bind::<TestActor>();
+        let test_ref: ActorRef<TestActor> = test_handle.bind::<TestActor>();
 
         let comm_handle = proc.spawn("comm", CommActor::default()).unwrap();
 
@@ -844,7 +834,7 @@ mod tests {
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
                 actor_mesh_id,
-                client.self_id().clone().into(),
+                client.self_id().clone(),
                 shape,
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -873,7 +863,7 @@ mod tests {
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
                 actor_mesh_id,
-                client.self_id().clone().into(),
+                client.self_id().clone(),
                 shape,
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -883,7 +873,7 @@ mod tests {
             let last_seq = next_seq;
             next_seq += 1;
             multicast::ForwardMessage {
-                sender: client.self_id().clone().into(),
+                sender: client.self_id().clone(),
                 dests: vec![frame],
                 seq: next_seq,
                 last_seq,
@@ -903,7 +893,7 @@ mod tests {
             let slice = Slice::new_row_major(vec![1]);
             let region = Region::new(vec!["rank".to_string()], slice.clone());
             let cast_msg = multicast::CastMessageV1::new::<TestActor, TestMessage>(
-                client.self_id().clone().into(),
+                client.self_id().clone(),
                 actor_mesh_id,
                 region.clone(),
                 hyperactor_config::Flattrs::new(),
@@ -921,13 +911,19 @@ mod tests {
         .await;
     }
 
+    use hyperactor::ActorAddr;
+    use hyperactor::ActorRef;
+    use hyperactor::Index;
+    use hyperactor::OncePortRef;
+    use hyperactor::PortAddr;
+    use hyperactor::PortRef;
+    use hyperactor::ProcAddr;
     use hyperactor::accum::Accumulator;
     use hyperactor::accum::ReducerSpec;
     use hyperactor::context;
     use hyperactor::context::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
-    use hyperactor::reference as hyperactor_reference;
     use hyperactor_config;
     use hyperactor_mesh_macros::sel;
     use maplit::btreemap;
@@ -948,11 +944,8 @@ mod tests {
     use crate::testing;
 
     // Helper to look up the rank for a given actor ID using the rank_lookup table.
-    fn lookup_rank(
-        actor_id: &hyperactor::reference::ActorId,
-        rank_lookup: &HashMap<hyperactor_reference::ProcId, usize>,
-    ) -> usize {
-        let proc_id = actor_id.proc_id();
+    fn lookup_rank(actor_id: &ActorAddr, rank_lookup: &HashMap<ProcAddr, usize>) -> usize {
+        let proc_id = actor_id.proc_ref();
         *rank_lookup
             .get(&proc_id)
             .unwrap_or_else(|| panic!("proc rank not found for {}", proc_id))
@@ -972,16 +965,11 @@ mod tests {
 
     // The relationship between original ports and split ports. The elements in
     // the tuple are (original port, split port, deliver_here).
-    static SPLIT_PORT_TREE: OnceLock<Mutex<Vec<Edge<hyperactor_reference::PortId>>>> =
-        OnceLock::new();
+    static SPLIT_PORT_TREE: OnceLock<Mutex<Vec<Edge<PortAddr>>>> = OnceLock::new();
 
     // Collect the relationships between original ports and split ports into
     // SPLIT_PORT_TREE. This is used by tests to verify that ports are split as expected.
-    pub(crate) fn collect_split_port(
-        original: &hyperactor_reference::PortId,
-        split: &hyperactor_reference::PortId,
-        deliver_here: bool,
-    ) {
+    pub(crate) fn collect_split_port(original: &PortAddr, split: &PortAddr, deliver_here: bool) {
         let mutex = SPLIT_PORT_TREE.get_or_init(|| Mutex::new(vec![]));
         let mut tree = mutex.lock().unwrap();
 
@@ -997,7 +985,7 @@ mod tests {
     // tree so it will only contain the cast we want to check.
     fn clear_collected_tree() {
         if let Some(tree) = SPLIT_PORT_TREE.get() {
-            let mut tree = tree.lock().unwrap();
+            let mut tree: std::sync::MutexGuard<'_, Vec<Edge<PortAddr>>> = tree.lock().unwrap();
             tree.clear();
         }
     }
@@ -1111,14 +1099,14 @@ mod tests {
     //     2 -> 0, 2
     //     3 -> 0, 2, 3
     fn get_ranks(
-        paths: PathToLeaves<hyperactor_reference::PortId>,
-        client_reply: &hyperactor_reference::PortId,
-        rank_lookup: &HashMap<hyperactor_reference::ProcId, usize>,
-    ) -> PathToLeaves<hyperactor_reference::Index> {
+        paths: PathToLeaves<PortAddr>,
+        client_reply: &PortAddr,
+        rank_lookup: &HashMap<ProcAddr, usize>,
+    ) -> PathToLeaves<Index> {
         let ranks = paths
             .0
             .into_iter()
-            .map(|(dst, mut path)| {
+            .map(|(dst, mut path): (PortAddr, Vec<PortAddr>)| {
                 let first = path.remove(0);
                 // The first PortId is the client's reply port.
                 assert_eq!(&first, client_reply);
@@ -1127,12 +1115,14 @@ mod tests {
                 assert!(dst.actor_id().label().unwrap().as_str().contains("comm"));
                 let actor_path = path
                     .into_iter()
-                    .map(|p| {
+                    .map(|p: PortAddr| {
                         assert!(p.actor_id().label().unwrap().as_str().contains("comm"));
-                        lookup_rank(&p.actor_id(), rank_lookup)
+                        let actor_ref = p.actor_ref();
+                        lookup_rank(&actor_ref, rank_lookup)
                     })
                     .collect();
-                (lookup_rank(&dst.actor_id(), rank_lookup), actor_path)
+                let dst_actor_ref = dst.actor_ref();
+                (lookup_rank(&dst_actor_ref, rank_lookup), actor_path)
             })
             .collect();
         PathToLeaves(ranks)
@@ -1161,9 +1151,9 @@ mod tests {
     fn verify_split_port_paths(
         selection: &Selection,
         extent: &Extent,
-        reply_port_ref1: &hyperactor_reference::PortRef<u64>,
-        reply_port_ref2: &hyperactor_reference::PortRef<MyReply>,
-        rank_lookup: &HashMap<hyperactor_reference::ProcId, usize>,
+        reply_port_ref1: &PortRef<u64>,
+        reply_port_ref2: &PortRef<MyReply>,
+        rank_lookup: &HashMap<ProcAddr, usize>,
     ) {
         // Get the paths used in casting
         let sel_paths = PathToLeaves(
@@ -1182,7 +1172,7 @@ mod tests {
             let (reply1, reply2): (BTreeMap<_, _>, BTreeMap<_, _>) = build_paths(&edges)
                 .0
                 .into_iter()
-                .partition(|(_dst, path)| &path[0] == reply_port_ref1.port_id());
+                .partition(|(_dst, path)| path[0] == *reply_port_ref1.port_id());
             (
                 get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id(), rank_lookup),
                 get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id(), rank_lookup),
@@ -1195,14 +1185,11 @@ mod tests {
     }
 
     async fn execute_cast_and_reply(
-        ranks: Vec<hyperactor_reference::ActorRef<TestActor>>,
+        ranks: Vec<ActorRef<TestActor>>,
         instance: &impl context::Actor,
         mut reply1_rx: PortReceiver<u64>,
         mut reply2_rx: PortReceiver<MyReply>,
-        reply_tos: Vec<(
-            hyperactor_reference::PortRef<u64>,
-            hyperactor_reference::PortRef<MyReply>,
-        )>,
+        reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
     ) {
         // Reply from each dest actor. The replies should be received by client.
         {
@@ -1229,7 +1216,7 @@ mod tests {
         // be received in the same order as they were sent out.
         {
             let n = 100;
-            let mut expected2: HashMap<hyperactor_reference::ActorId, Vec<MyReply>> = hashmap! {};
+            let mut expected2: HashMap<ActorAddr, Vec<MyReply>> = hashmap! {};
             for (i, (dest_actor, (_reply_to1, reply_to2))) in
                 ranks.iter().zip(reply_tos.iter()).enumerate()
             {
@@ -1252,7 +1239,7 @@ mod tests {
                 );
             }
 
-            let mut received2: HashMap<hyperactor_reference::ActorId, Vec<MyReply>> = hashmap! {};
+            let mut received2: HashMap<ActorAddr, Vec<MyReply>> = hashmap! {};
 
             for _ in 0..(n * ranks.len()) {
                 let my_reply = reply2_rx.recv().await.unwrap();
@@ -1284,13 +1271,10 @@ mod tests {
     }
 
     async fn execute_cast_and_accum(
-        ranks: Vec<hyperactor_reference::ActorRef<TestActor>>,
+        ranks: Vec<ActorRef<TestActor>>,
         instance: &impl context::Actor,
         mut reply1_rx: PortReceiver<u64>,
-        reply_tos: Vec<(
-            hyperactor_reference::PortRef<u64>,
-            hyperactor_reference::PortRef<MyReply>,
-        )>,
+        reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
     ) {
         // Now send multiple replies from the dest actors. They should all be
         // received by client. Replies sent from the same dest actor should
@@ -1320,10 +1304,7 @@ mod tests {
         actor_mesh_ref: crate::ActorMeshRef<TestActor>,
         reply1_rx: PortReceiver<u64>,
         reply2_rx: PortReceiver<MyReply>,
-        reply_tos: Vec<(
-            hyperactor_reference::PortRef<u64>,
-            hyperactor_reference::PortRef<MyReply>,
-        )>,
+        reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
         // Keep the host mesh alive so comm actors aren't shut down.
         host_mesh: HostMesh,
     }
@@ -1436,7 +1417,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, r)| (r.proc_id().clone(), i))
-                .collect::<HashMap<hyperactor_reference::ProcId, usize>>();
+                .collect::<HashMap<ProcAddr, usize>>();
 
             // v1 always uses sel!(*) when casting to a mesh.
             let selection = sel!(*);
@@ -1558,8 +1539,8 @@ mod tests {
     struct OncePortMeshSetupV1 {
         instance: &'static Instance<testing::TestRootClient>,
         reply_rx: hyperactor::mailbox::OncePortReceiver<u64>,
-        reply_tos: Vec<hyperactor::reference::OncePortRef<u64>>,
-        _reply_port_ref: hyperactor::reference::OncePortRef<u64>,
+        reply_tos: Vec<OncePortRef<u64>>,
+        _reply_port_ref: OncePortRef<u64>,
         host_mesh: HostMesh,
     }
 

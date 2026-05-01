@@ -522,14 +522,10 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
     module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"
 )]
 #[derive(Clone)]
-pub struct PyMeshAdminRef(
-    hyperactor::reference::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent>,
-);
+pub struct PyMeshAdminRef(hyperactor::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent>);
 
 impl PyMeshAdminRef {
-    pub fn actor_ref(
-        &self,
-    ) -> hyperactor::reference::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent> {
+    pub fn actor_ref(&self) -> hyperactor::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent> {
         self.0.clone()
     }
 }

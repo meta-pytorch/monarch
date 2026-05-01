@@ -20,6 +20,7 @@ use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
 use futures::try_join;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Bind;
@@ -29,7 +30,6 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor::handle;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -176,12 +176,12 @@ wirevalue::register_type!(CodeSyncManagerParams);
 
 #[derive(Debug)]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         CodeSyncMessage { cast = true },
         SetActorMeshMessage { cast = true }
     ],
 )]
+#[hyperactor::spawnable]
 pub struct CodeSyncManager {
     rsync: OnceCell<ActorHandle<RsyncActor>>,
     auto_reload: OnceCell<ActorHandle<AutoReloadActor>>,
@@ -347,7 +347,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             return Ok(());
         }
         let res = async move {
-            let (tx, mut rx) = cx.open_port();
+            let (tx, mut rx) = cx.open_port::<Result<(), String>>();
             self.get_auto_reload_actor(cx)
                 .await?
                 .send(cx, AutoReloadMessage { result: tx.bind() })?;
@@ -376,7 +376,7 @@ impl Handler<SetActorMeshMessage> for CodeSyncManager {
         let mesh = self.self_mesh.get_or_init(|| msg.actor_mesh);
         self.rank.get_or_init(|| {
             mesh.iter()
-                .find(|(_, actor)| actor.actor_id() == cx.self_id())
+                .find(|(_, actor)| *actor.actor_id() == *cx.self_id())
                 .unwrap()
                 .0
                 .rank()

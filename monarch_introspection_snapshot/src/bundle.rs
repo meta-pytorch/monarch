@@ -315,8 +315,8 @@ pub async fn import_snapshot_bundle(dir: &Path) -> anyhow::Result<(TableStore, B
 mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::prelude::SessionContext;
+    use hyperactor::ProcAddr;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::reference::ProcId;
     use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
     use hyperactor_mesh::introspect::NodeRef;
 
@@ -330,8 +330,8 @@ mod tests {
     const PROC_NAME: &str = "worker";
     const ACTOR_TYPE: &str = "test_actor";
 
-    fn test_proc_id() -> ProcId {
-        ProcId::from_resource_name(ChannelAddr::Local(0), PROC_NAME)
+    fn test_proc_id() -> ProcAddr {
+        ProcAddr::from_resource_name(ChannelAddr::Local(0), PROC_NAME)
     }
 
     fn test_host_ref() -> NodeRef {
