@@ -122,6 +122,8 @@ use hyperactor_telemetry::notify_actor_status_changed;
 use hyperactor_telemetry::notify_message;
 use hyperactor_telemetry::notify_message_status;
 use hyperactor_telemetry::recorder::Recording;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -336,6 +338,57 @@ use crate::ordering::ordered_channel;
 use crate::panic_handler;
 use crate::supervision::ActorSupervisionEvent;
 
+/// Identity assignment sent by a host as the first message on a duplex
+/// attach connection. The child reads this to learn its [`ProcAddr`].
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub struct BootstrapAssignment {
+    /// The assigned proc identity.
+    pub proc_id: ProcAddr,
+}
+wirevalue::register_type!(BootstrapAssignment);
+
+/// Sentinel message sent by an attach client as its first
+/// [`MessageEnvelope`]. Hosts use this to distinguish attach requests
+/// from regular inbound [`MessageEnvelope`] connections.
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub struct AttachRequest;
+wirevalue::register_type!(AttachRequest);
+
+/// Wire protocol for the host -> client direction on a duplex attach
+/// connection.
+#[derive(Debug, Serialize, Deserialize, typeuri::Named)]
+pub enum Host2Client {
+    /// First message: identity assignment from the host.
+    Bootstrap(BootstrapAssignment),
+    /// Subsequent messages: routed envelopes.
+    Envelope(MessageEnvelope),
+}
+wirevalue::register_type!(Host2Client);
+
+/// [`Rx<MessageEnvelope>`](channel::Rx) adapter that unwraps
+/// [`Host2Client::Envelope`] from a duplex receiver.
+pub struct AttachRx(pub channel::duplex::DuplexRx<Host2Client>);
+
+#[async_trait]
+impl channel::Rx<MessageEnvelope> for AttachRx {
+    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
+        match self.0.recv().await? {
+            Host2Client::Envelope(envelope) => Ok(envelope),
+            Host2Client::Bootstrap(_) => Err(ChannelError::Other(anyhow::anyhow!(
+                "unexpected bootstrap message after handshake"
+            ))),
+        }
+    }
+
+    fn addr(&self) -> ChannelAddr {
+        self.0.addr()
+    }
+
+    async fn join(self) {
+        self.0.join().await
+    }
+}
+
 /// This is used to mint new local ranks for [`Proc::local`].
 static NEXT_LOCAL_RANK: AtomicUsize = AtomicUsize::new(0);
 
@@ -479,9 +532,6 @@ impl Proc {
     pub async fn attach_to_host(addr: ChannelAddr) -> Result<Self, anyhow::Error> {
         use crate::channel::Rx;
         use crate::channel::Tx;
-        use crate::host::AttachRequest;
-        use crate::host::AttachRx;
-        use crate::host::Host2Client;
         let mut duplex_client = channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
         let duplex_tx = duplex_client.tx();
         let mut duplex_rx = duplex_client

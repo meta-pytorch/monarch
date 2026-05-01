@@ -9,6 +9,7 @@
 //! This crate provides hyperactor's mesh abstractions.
 
 #![feature(assert_matches)]
+#![feature(associated_type_defaults)]
 #![feature(exit_status_error)]
 #![feature(impl_trait_in_bindings)]
 #![feature(get_disjoint_mut_helpers)]
@@ -29,6 +30,7 @@ pub mod config;
 pub mod config_dump;
 pub mod connect;
 pub mod global_context;
+pub mod host;
 pub mod host_mesh;
 pub mod introspect;
 pub mod logging;
@@ -77,7 +79,6 @@ pub use host_mesh::HostMeshRef;
 use hyperactor::ActorAddr;
 use hyperactor::ActorRef;
 use hyperactor::ProcAddr;
-use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
 pub use hyperactor_mesh_macros::sel;
 pub use mesh::Mesh;
@@ -88,6 +89,7 @@ pub use proc_mesh::ProcMesh;
 pub use proc_mesh::ProcMeshRef;
 pub use value_mesh::ValueMesh;
 
+use crate::host::HostError;
 use crate::host_mesh::HostAgent;
 use crate::host_mesh::HostMeshRefParseError;
 use crate::host_mesh::host_agent::ProcState;

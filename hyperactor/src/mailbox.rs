@@ -1016,7 +1016,7 @@ impl MailboxServerHandle {
     /// stop signal. The task must observe `stopped_rx` (the receiver
     /// paired with `stopped_tx`) and complete once stop is requested,
     /// so callers can join the handle to confirm shutdown.
-    pub(crate) fn from_parts(
+    pub fn from_parts(
         join_handle: JoinHandle<Result<(), MailboxServerError>>,
         stopped_tx: watch::Sender<bool>,
     ) -> Self {
