@@ -12,7 +12,7 @@ from typing import List, NamedTuple, Sequence, Tuple, Union
 from monarch._rust_bindings.monarch_extension import client
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.shape import Slice as NDSlice
 

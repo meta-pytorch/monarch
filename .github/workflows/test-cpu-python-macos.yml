@@ -61,7 +61,6 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
-          USE_TENSOR_ENGINE: "0"
         run: |
           set -eux
           python -m pip install "${{ runner.temp }}/wheel-artifact"/*.whl
@@ -74,9 +73,15 @@ jobs:
 
       - name: Run macOS CPU Python tests
         shell: bash
-        env:
-          USE_TENSOR_ENGINE: "0"
         run: |
           set -eux
           source scripts/common-setup-macos.sh
           run_test_groups
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-cpu-python-macos-${{ github.sha }}
+          path: test-results/*.xml
+          if-no-files-found: ignore

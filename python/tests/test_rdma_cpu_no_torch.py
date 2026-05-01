@@ -12,15 +12,8 @@ import pytest
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configured
-from monarch.rdma import is_ibverbs_available, RDMABuffer
-
-# TODO(slurye): Enable these tests in OSS once the shutdown hang issue is fixed.
-pytestmark = pytest.mark.oss_skip
-
-RDMA_BACKENDS = []
-if is_ibverbs_available():
-    RDMA_BACKENDS.append("ibverbs")
-RDMA_BACKENDS.append("tcp")
+from monarch.rdma import RDMABuffer
+from rdma_test_utils import RDMA_BACKENDS
 
 
 class CpuActor(Actor):

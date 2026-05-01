@@ -74,9 +74,11 @@ pub use global_context::context;
 pub use global_context::this_host;
 pub use global_context::this_proc;
 pub use host_mesh::HostMeshRef;
+use hyperactor::ActorAddr;
+use hyperactor::ActorRef;
+use hyperactor::ProcAddr;
 use hyperactor::host::HostError;
 use hyperactor::mailbox::MailboxSenderError;
-use hyperactor::reference as hyperactor_reference;
 pub use hyperactor_mesh_macros::sel;
 pub use mesh::Mesh;
 // Re-exported for internal test binaries that don't have ndslice as a direct dependency
@@ -142,7 +144,7 @@ pub enum Error {
     UnroutableMesh(),
 
     #[error("error while calling actor {0}: {1}")]
-    CallError(hyperactor_reference::ActorId, anyhow::Error),
+    CallError(ActorAddr, anyhow::Error),
 
     #[error("actor not registered for type {0}")]
     ActorTypeNotRegistered(String),
@@ -152,13 +154,13 @@ pub enum Error {
     GspawnError(mesh_id::ActorMeshId, String),
 
     #[error("error while sending message to actor {0}: {1}")]
-    SendingError(hyperactor_reference::ActorId, Box<MailboxSenderError>),
+    SendingError(ActorAddr, Box<MailboxSenderError>),
 
     #[error("error while casting message to {0}: {1}")]
     CastingError(mesh_id::ActorMeshId, anyhow::Error),
 
     #[error("error configuring host mesh agent {0}: {1}")]
-    HostMeshAgentConfigurationError(hyperactor_reference::ActorId, String),
+    HostMeshAgentConfigurationError(ActorAddr, String),
 
     #[error(
         "error creating proc (host rank {host_rank}) on host mesh agent {mesh_agent}, state: {state}"
@@ -166,7 +168,7 @@ pub enum Error {
     ProcCreationError {
         state: Box<resource::State<ProcState>>,
         host_rank: usize,
-        mesh_agent: hyperactor_reference::ActorRef<HostAgent>,
+        mesh_agent: ActorRef<HostAgent>,
     },
 
     #[error(
@@ -194,7 +196,7 @@ pub enum Error {
     ControllerActorSpawnError(mesh_id::ResourceId, anyhow::Error),
 
     #[error("proc {0} must be direct-addressable")]
-    RankedProc(hyperactor_reference::ProcId),
+    RankedProc(ProcAddr),
 
     #[error("{0}")]
     Supervision(Box<MeshFailure>),

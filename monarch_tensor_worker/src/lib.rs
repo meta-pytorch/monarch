@@ -51,6 +51,7 @@ use comm::NcclCommActor;
 use derive_more::TryInto;
 use device_mesh::DeviceMesh;
 use futures::future::try_join_all;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
@@ -58,7 +59,6 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use itertools::Itertools;
@@ -80,6 +80,8 @@ use monarch_messages::worker::StreamRef;
 use monarch_messages::worker::WorkerMessage;
 use monarch_messages::worker::WorkerMessageHandler;
 use monarch_messages::worker::WorkerParams;
+use monarch_types::ReduceOp;
+use monarch_types::UniqueId;
 use ndslice::Slice;
 use pyo3::Python;
 use pyo3::types::PyAnyMethods;
@@ -89,8 +91,6 @@ use sorted_vec::SortedVec;
 use stream::StreamActor;
 use stream::StreamMessageClient;
 use stream::StreamParams;
-use torch_sys_cuda::nccl::ReduceOp;
-use torch_sys_cuda::nccl::UniqueId;
 use torch_sys2::CudaDevice;
 use torch_sys2::DeviceIndex;
 use torch_sys2::Layout;
@@ -142,8 +142,8 @@ enum Recording {
 ///
 /// See [`WorkerMessage`] for what it can do!
 #[derive(Debug)]
+#[hyperactor::spawnable]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         WorkerMessage {cast = true},
         AssignRankMessage {cast = true},
@@ -179,6 +179,19 @@ pub struct WorkerActor {
 }
 
 impl WorkerActor {
+    fn runtime_has_cuda() -> bool {
+        Python::attach(|py| {
+            py.import("torch")
+                .expect("torch must be importable in a worker")
+                .getattr("cuda")
+                .expect("torch.cuda attribute must exist")
+                .call_method0("is_available")
+                .expect("torch.cuda.is_available() must be callable")
+                .extract::<bool>()
+                .expect("torch.cuda.is_available() must return bool")
+        })
+    }
+
     fn try_get_stream(&self, stream: StreamRef) -> Result<&Arc<ActorHandle<StreamActor>>> {
         self.streams
             .get(&stream)
@@ -233,8 +246,13 @@ impl RemoteSpawn for WorkerActor {
         Python::attach(|py| {
             py.import("monarch.safe_torch").unwrap();
         });
+        let device = if Self::runtime_has_cuda() {
+            device_index.map(|i| CudaDevice::new(DeviceIndex(i)))
+        } else {
+            None
+        };
         Ok(Self {
-            device: device_index.map(|i| CudaDevice::new(DeviceIndex(i))),
+            device,
             streams: HashMap::new(),
             device_meshes: HashMap::new(),
             world_size,
@@ -300,9 +318,9 @@ impl WorkerMessageHandler for WorkerActor {
         cx: &hyperactor::Context<Self>,
         unique_id: UniqueId,
     ) -> Result<()> {
-        let device = self
-            .device
-            .expect("tried to init backend network on a non-CUDA worker");
+        let Some(device) = self.device else {
+            return Ok(());
+        };
         let comm = NcclCommActor::new(CommParams::New {
             device,
             unique_id,
@@ -368,10 +386,9 @@ impl WorkerMessageHandler for WorkerActor {
         if !self.streams.contains_key(&to_stream) {
             bail!("invalid to_stream id: {:#?}", to_stream);
         }
-        let global_comm = self
-            .comm
-            .as_ref()
-            .context("tried to call Reduce before BackendNetworkInit")?;
+        let Some(global_comm) = self.comm.as_ref() else {
+            return Ok(());
+        };
         let comm = global_comm.split_all(cx).await?;
         self.send_recv_comms
             .insert((from_stream, to_stream), Arc::new(comm));
@@ -581,7 +598,7 @@ impl WorkerMessageHandler for WorkerActor {
             &self.controller_actor,
             cx,
             seq.next(),
-            cx.self_id().clone().into(),
+            cx.self_id().clone(),
             controller,
         )
         .await?;
@@ -647,17 +664,6 @@ impl WorkerMessageHandler for WorkerActor {
         from_stream: StreamRef,
         to_stream: StreamRef,
     ) -> Result<()> {
-        let comm = self
-            .send_recv_comms
-            .get(&(from_stream, to_stream))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "could not find stream to stream comm for: {:#?}",
-                    (from_stream, to_stream)
-                )
-            })?
-            .clone();
-
         let to_rank = from_ranks
             .index(self.rank)
             .map(|index| to_ranks.get(index).ok())
@@ -680,6 +686,21 @@ impl WorkerMessageHandler for WorkerActor {
                 Then the send stream would do the nccl op, and then sync with sending stream again."
             );
         };
+        let comm = if from_rank == to_rank {
+            None
+        } else {
+            Some(
+                self.send_recv_comms
+                    .get(&(from_stream, to_stream))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "could not find stream to stream comm for: {:#?}",
+                            (from_stream, to_stream)
+                        )
+                    })?
+                    .clone(),
+            )
+        };
 
         self.maybe_add_stream_to_recording(cx, stream_ref).await?;
 
@@ -693,7 +714,7 @@ impl WorkerMessageHandler for WorkerActor {
     async fn exit(
         &mut self,
         cx: &hyperactor::Context<Self>,
-        error: Option<(Option<reference::ActorId>, String)>,
+        error: Option<(Option<reference::ActorAddr>, String)>,
     ) -> Result<()> {
         for (_, stream) in self.streams.drain() {
             stream.drain_and_stop("tensor worker exit cleanup")?;
@@ -719,7 +740,7 @@ impl WorkerMessageHandler for WorkerActor {
                     actor_id,
                     reason
                 );
-                if *cx.self_id() == actor_id {
+                if cx.self_id() == &actor_id {
                     self_error_exit_code
                 } else {
                     peer_error_exit_code
@@ -771,7 +792,7 @@ impl WorkerMessageHandler for WorkerActor {
             .send_value(
                 cx,
                 seq,
-                cx.self_id().clone().into(),
+                cx.self_id().clone(),
                 mutates,
                 function,
                 args_kwargs,
@@ -805,10 +826,9 @@ impl WorkerMessageHandler for WorkerActor {
         device_mesh: Ref,
         stream_ref: StreamRef,
     ) -> Result<()> {
-        let global_comm = self
-            .comm
-            .as_ref()
-            .context("tried to call SplitComm before BackendNetworkInit")?;
+        let Some(global_comm) = self.comm.as_ref() else {
+            return Ok(());
+        };
         match self.device_meshes.get_mut(&device_mesh) {
             Some((device_mesh, comm_map)) => {
                 // This rank is in the group to be split off. Split a new
@@ -858,10 +878,9 @@ impl WorkerMessageHandler for WorkerActor {
             "invalid stream id: {:#?}",
             stream_ref
         );
-        let global_comm = self
-            .comm
-            .as_ref()
-            .context("tried to call SplitComm before BackendNetworkInit")?;
+        let Some(global_comm) = self.comm.as_ref() else {
+            return Ok(());
+        };
         let state = self
             .remote_process_groups
             .get_mut(&remote_process_group_ref)
@@ -1084,7 +1103,7 @@ impl WorkerMessageHandler for WorkerActor {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use std::assert_matches::assert_matches;
 
@@ -1103,6 +1122,7 @@ mod tests {
     use rand::RngExt as _;
     use rand::distr::Alphanumeric;
     use timed_test::async_timed_test;
+    use torch_sys_cuda::nccl::UniqueIdExt;
 
     use super::*;
     use crate::test_util::test_setup;
@@ -1941,7 +1961,7 @@ mod tests {
             )
             .unwrap();
 
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         worker_handle1
             .backend_network_init(&client, unique_id.clone())
             .await
