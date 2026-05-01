@@ -38,7 +38,7 @@ backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 bincode = { version = "2", features = ["serde"] }
 bytes = { version = "1.11.1", features = ["serde"] }
 clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
-dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
+dashmap = { version = "6.1.0", features = ["rayon", "serde"] }
 derivative = "2.2"
 dns-lookup = "1.0.8"
 enum-as-inner = "0.6.1"
@@ -72,7 +72,6 @@ tokio-stream = { version = "0.1.18", features = ["fs", "io-util", "net", "signal
 tokio-util = { version = "0.7.18", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
-unicode-ident = "1.0.24"
 uuid = { version = "1.23.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 

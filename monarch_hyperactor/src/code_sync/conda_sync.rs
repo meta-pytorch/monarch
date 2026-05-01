@@ -14,13 +14,13 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Unbind;
 use hyperactor::context::Mailbox;
-use hyperactor::reference;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -66,7 +66,8 @@ pub struct CondaSyncParams {}
 wirevalue::register_type!(CondaSyncParams);
 
 #[derive(Debug, Default)]
-#[hyperactor::export(spawn = true, handlers = [CondaSyncMessage { cast = true }])]
+#[hyperactor::export(handlers = [CondaSyncMessage { cast = true }])]
+#[hyperactor::spawnable]
 pub struct CondaSyncActor {}
 
 impl Actor for CondaSyncActor {}

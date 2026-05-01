@@ -24,12 +24,8 @@ use crate::host_mesh::HostMesh;
 pub struct EmptyMessage();
 
 #[derive(Debug, PartialEq, Default)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        EmptyMessage { cast = true },
-    ],
-)]
+#[hyperactor::export(EmptyMessage { cast = true })]
+#[hyperactor::spawnable]
 pub struct EmptyActor();
 
 impl Actor for EmptyActor {}

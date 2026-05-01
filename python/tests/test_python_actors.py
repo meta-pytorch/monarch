@@ -40,7 +40,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortRef,
     UndeliverableMessageEnvelope,
 )
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.future import Future
@@ -1262,7 +1262,7 @@ class UndeliverableMessageSender(Actor):
     def send_undeliverable(self) -> None:
         actor_instance = context().actor_instance
         port_id = PortId(
-            actor_id=ActorId(addr="local:0", proc_name="bogus", actor_name="bogus"),
+            actor_id=ActorAddr(addr="local:0", proc_name="bogus", actor_name="bogus"),
             port=1234,
         )
         port_ref = PortRef(port_id)
