@@ -63,6 +63,14 @@ use crate::pyspy::PySpyProfileWorker;
 use crate::pyspy::PySpyWorker;
 use crate::resource;
 use crate::resource::ProcSpec;
+use crate::tool_provision::ProvisionResult;
+use crate::tool_provision::ProvisionTool;
+use crate::tool_provision::QueryToolInventory;
+use crate::tool_provision::ResolveResult;
+use crate::tool_provision::ResolveTool;
+use crate::tool_provision::TOOL_PROVISION_ACTOR_NAME;
+use crate::tool_provision::ToolInventory;
+use crate::tool_provision::ToolProvisionActor;
 
 pub(crate) type ProcManagerSpawnFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcAgent>>> + Send>>;
@@ -277,6 +285,9 @@ impl fmt::Debug for DrainWorker {
         PySpyDump,
         PySpyProfile,
         ConfigDump,
+        ProvisionTool,
+        ResolveTool,
+        QueryToolInventory,
     ]
 )]
 pub struct HostAgent {
@@ -301,6 +312,8 @@ pub struct HostAgent {
     /// Boots on first [`GetLocalProc`] (LP-1 — see
     /// `hyperactor::host::LOCAL_PROC_NAME`).
     local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
+    /// Host-local diagnostic tool provisioner.
+    tool_provision: Option<ActorHandle<ToolProvisionActor>>,
     /// Handle to the host's frontend mailbox server, set during `init` after
     /// `this.bind::<Self>()` ensures the actor port is registered before the
     /// mailbox starts routing messages. Sent back to the bootstrap loop via
@@ -319,6 +332,7 @@ impl HostAgent {
             watching: HashSet::new(),
             proc_status_port: None,
             local_mesh_agent: OnceLock::new(),
+            tool_provision: None,
             mailbox_handle: None,
         }
     }
@@ -505,6 +519,10 @@ impl Actor for HostAgent {
             }
         };
         this.set_system();
+        self.tool_provision = Some(
+            ToolProvisionActor::with_cache(build_tool_cache()?)
+                .spawn_with_name(this, TOOL_PROVISION_ACTOR_NAME)?,
+        );
         self.publish_introspect_properties(this);
 
         // Register callback for QueryChild — resolves system procs
@@ -991,6 +1009,51 @@ impl HostAgent {
     }
 }
 
+/// Build the [`tool_fetch::ToolCache`] used by this host's
+/// [`ToolProvisionActor`].
+///
+/// Two policy decisions are resolved here:
+///
+/// 1. Cache root: an explicit non-empty
+///    `MESH_ADMIN_TOOL_FETCH_CACHE_DIR` overrides the substrate
+///    default ([`tool_fetch::ToolCache::default_dir`], which uses
+///    `$XDG_CACHE_HOME/monarch/tools` or
+///    `$HOME/.cache/monarch/tools`). The override is meant for
+///    deployments where the default path is unsuitable and for tests
+///    that need an isolated cache root.
+/// 2. HTTPS proxy: an explicit non-empty
+///    `MESH_ADMIN_TOOL_FETCH_HTTPS_PROXY` wins; otherwise inside
+///    fbcode, route through `http://fwdproxy:8080` so artifact
+///    downloads from public providers (e.g. `files.pythonhosted.org`)
+///    succeed; in OSS, no proxy.
+///
+/// Both `tool_fetch` (the substrate) and the config attrs are
+/// policy-agnostic; this is the single seam where Meta-vs-OSS policy
+/// is decided.
+fn build_tool_cache() -> anyhow::Result<tool_fetch::ToolCache> {
+    let cache_dir: String =
+        hyperactor_config::global::get_cloned(crate::config::MESH_ADMIN_TOOL_FETCH_CACHE_DIR);
+    let cache = if cache_dir.is_empty() {
+        tool_fetch::ToolCache::default()
+    } else {
+        tool_fetch::ToolCache::new(cache_dir)
+    };
+
+    let configured: String =
+        hyperactor_config::global::get_cloned(crate::config::MESH_ADMIN_TOOL_FETCH_HTTPS_PROXY);
+    let https_proxy = if !configured.is_empty() {
+        Some(configured)
+    } else if cfg!(fbcode_build) {
+        Some("http://fwdproxy:8080".to_string())
+    } else {
+        None
+    };
+    let cache = cache
+        .with_fetch_config(tool_fetch::FetchConfig { https_proxy })
+        .map_err(|e| anyhow::anyhow!("invalid tool_fetch config: {e}"))?;
+    Ok(cache)
+}
+
 /// Spawn a bridge task that watches a proc's status channel and sends
 /// `ProcStatusChanged` to the actor via the given `PortHandle`.
 fn start_proc_watch<S>(
@@ -1353,6 +1416,86 @@ impl Handler<ConfigDump> for HostAgent {
         // the once-port.  That must not crash this actor.
         if let Err(e) = message.result.send(cx, ConfigDumpResult { entries }) {
             tracing::warn!("HostAgent: ConfigDump reply undeliverable (caller timed out): {e}",);
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ProvisionTool> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: ProvisionTool,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(tool_provision) = &self.tool_provision {
+            let fallback = ProvisionResult::Failed {
+                name: message.spec.name.clone(),
+                version: message.spec.version.clone(),
+                error: "tool provision actor unavailable".to_string(),
+            };
+            let reply = message.reply.clone();
+            if let Err(err) = tool_provision.send(cx, message) {
+                tracing::warn!("HostAgent: ProvisionTool forward failed: {err}");
+                let _ = reply.send(cx, fallback);
+            }
+        } else {
+            let reply = ProvisionResult::Failed {
+                name: message.spec.name,
+                version: message.spec.version,
+                error: "tool provision actor not initialized".to_string(),
+            };
+            let _ = message.reply.send(cx, reply);
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ResolveTool> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: ResolveTool,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(tool_provision) = &self.tool_provision {
+            let fallback = ResolveResult::Failed {
+                name: message.tool.clone(),
+                version: message.version.clone().unwrap_or_default(),
+                error: "tool provision actor unavailable".to_string(),
+            };
+            let reply = message.reply.clone();
+            if let Err(err) = tool_provision.send(cx, message) {
+                tracing::warn!("HostAgent: ResolveTool forward failed: {err}");
+                let _ = reply.send(cx, fallback);
+            }
+        } else {
+            let reply = ResolveResult::Failed {
+                name: message.tool,
+                version: message.version.unwrap_or_default(),
+                error: "tool provision actor not initialized".to_string(),
+            };
+            let _ = message.reply.send(cx, reply);
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<QueryToolInventory> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: QueryToolInventory,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(tool_provision) = &self.tool_provision {
+            let reply = message.reply.clone();
+            if let Err(err) = tool_provision.send(cx, message) {
+                tracing::warn!("HostAgent: QueryToolInventory forward failed: {err}");
+                let _ = reply.send(cx, ToolInventory { tools: Vec::new() });
+            }
+        } else {
+            let _ = message.reply.send(cx, ToolInventory { tools: Vec::new() });
         }
         Ok(())
     }

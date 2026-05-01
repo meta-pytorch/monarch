@@ -368,6 +368,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+use tool_fetch::ToolSpec;
 use typeuri::Named;
 
 use crate::config_dump::ConfigDump;
@@ -387,6 +388,10 @@ use crate::pyspy::PySpyProfileOpts;
 use crate::pyspy::PySpyProfileResult;
 use crate::pyspy::PySpyResult;
 use crate::pyspy::ValidatedProfileRequest;
+use crate::tool_provision::ProvisionResult;
+use crate::tool_provision::ProvisionTool;
+use crate::tool_provision::QueryToolInventory;
+use crate::tool_provision::ToolInventory;
 
 /// Send an `IntrospectMessage` to an actor and receive the reply.
 /// Encapsulates open_once_port + send + timeout + error handling.
@@ -1541,6 +1546,8 @@ impl MeshAdminAgent {
 /// - `POST /v1/pyspy_dump/{*proc_reference}` — py-spy dump + store in Datafusion.
 /// - `POST /v1/pyspy_profile_svg/{*proc_reference}` — py-spy profile → SVG flamegraph.
 /// - `GET /v1/config/{*proc_reference}` — config snapshot for a proc.
+/// - `GET /v1/tools/{*proc_reference}` — diagnostic tool inventory for a host's service proc.
+/// - `POST /v1/tools_provision/{*proc_reference}` — provision one diagnostic tool on a host's service proc.
 /// - `GET /v1/admin` — admin self-identification (`AdminInfo`).
 /// - `GET /v1/{*reference}` — JSON `NodePayload` for a single reference.
 /// - `GET /SKILL.md` — agent-facing API documentation (markdown).
@@ -1565,6 +1572,11 @@ fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
             post(pyspy_profile_svg),
         )
         .route("/v1/config/{*proc_reference}", get(config_bridge))
+        .route("/v1/tools/{*proc_reference}", get(tools_inventory_bridge))
+        .route(
+            "/v1/tools_provision/{*proc_reference}",
+            post(tools_provision_bridge),
+        )
         .route("/v1/{*reference}", get(resolve_reference_bridge))
         .with_state(bridge_state)
 }
@@ -2252,6 +2264,83 @@ impl ResolvedProcHandler {
                 details: None,
             })
     }
+
+    async fn tool_inventory(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        timeout: std::time::Duration,
+    ) -> Result<ToolInventory, ApiError> {
+        let Self::Host(host) = self else {
+            return Err(ApiError::bad_request(
+                "tool inventory requires a host service proc reference",
+                None,
+            ));
+        };
+
+        let (reply_handle, reply_rx) = open_once_port::<ToolInventory>(cx);
+        let mut reply_ref = reply_handle.bind();
+        reply_ref.return_undeliverable(false);
+        host.send(cx, QueryToolInventory { reply: reply_ref })
+            .map_err(|e| ApiError {
+                code: "internal_error".to_string(),
+                message: format!("failed to send QueryToolInventory: {}", e),
+                details: None,
+            })?;
+        tokio::time::timeout(timeout, reply_rx.recv())
+            .await
+            .map_err(|_| ApiError {
+                code: "gateway_timeout".to_string(),
+                message: "timed out waiting for tool inventory".to_string(),
+                details: None,
+            })?
+            .map_err(|e| ApiError {
+                code: "internal_error".to_string(),
+                message: format!("failed to receive ToolInventory: {}", e),
+                details: None,
+            })
+    }
+
+    async fn provision_tool(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        spec: ToolSpec,
+        timeout: std::time::Duration,
+    ) -> Result<ProvisionResult, ApiError> {
+        let Self::Host(host) = self else {
+            return Err(ApiError::bad_request(
+                "tool provisioning requires a host service proc reference",
+                None,
+            ));
+        };
+
+        let (reply_handle, reply_rx) = open_once_port::<ProvisionResult>(cx);
+        let mut reply_ref = reply_handle.bind();
+        reply_ref.return_undeliverable(false);
+        host.send(
+            cx,
+            ProvisionTool {
+                spec,
+                reply: reply_ref,
+            },
+        )
+        .map_err(|e| ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to send ProvisionTool: {}", e),
+            details: None,
+        })?;
+        tokio::time::timeout(timeout, reply_rx.recv())
+            .await
+            .map_err(|_| ApiError {
+                code: "gateway_timeout".to_string(),
+                message: "timed out waiting for tool provisioning".to_string(),
+                details: None,
+            })?
+            .map_err(|e| ApiError {
+                code: "internal_error".to_string(),
+                message: format!("failed to receive ProvisionResult: {}", e),
+                details: None,
+            })
+    }
 }
 
 /// Parse + route + attest. No probe. The single `ActorRef::attest`
@@ -2580,6 +2669,42 @@ async fn config_bridge(
     let timeout =
         hyperactor_config::global::get(crate::config::MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT);
     let result = handler.config_dump(&state.bridge_cx, timeout).await?;
+    Ok(Json(result))
+}
+
+/// HTTP bridge for diagnostic tool inventory on a host's service proc.
+///
+/// The path segment is a proc reference; the underlying actor only
+/// runs on the host's service proc, so non-service references return
+/// `bad_request`.
+async fn tools_inventory_bridge(
+    State(state): State<Arc<BridgeState>>,
+    AxumPath(proc_reference): AxumPath<String>,
+) -> Result<Json<ToolInventory>, ApiError> {
+    let handler = route_proc_handler(&proc_reference)?;
+    let timeout =
+        hyperactor_config::global::get(crate::config::MESH_ADMIN_TOOL_PROVISION_BRIDGE_TIMEOUT);
+    let result = handler.tool_inventory(&state.bridge_cx, timeout).await?;
+    Ok(Json(result))
+}
+
+/// HTTP bridge for provisioning one diagnostic tool on a host's service
+/// proc.
+///
+/// The path segment is a proc reference; the underlying actor only
+/// runs on the host's service proc, so non-service references return
+/// `bad_request`.
+async fn tools_provision_bridge(
+    State(state): State<Arc<BridgeState>>,
+    AxumPath(proc_reference): AxumPath<String>,
+    Json(spec): Json<ToolSpec>,
+) -> Result<Json<ProvisionResult>, ApiError> {
+    let handler = route_proc_handler(&proc_reference)?;
+    let timeout =
+        hyperactor_config::global::get(crate::config::MESH_ADMIN_TOOL_PROVISION_BRIDGE_TIMEOUT);
+    let result = handler
+        .provision_tool(&state.bridge_cx, spec, timeout)
+        .await?;
     Ok(Json(result))
 }
 
