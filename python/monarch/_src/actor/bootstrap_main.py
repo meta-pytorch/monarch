@@ -15,6 +15,7 @@ import importlib.resources
 import logging
 import multiprocessing
 import os
+import platform
 import sys
 
 
@@ -90,5 +91,10 @@ def invoke_main() -> None:
 if __name__ == "__main__":
     # Ensure that processes started via `multiprocessing` are spawned, not forked.
     # forking is a terrible default, see: https://github.com/python/cpython/issues/84559
-    multiprocessing.set_start_method("spawn", force=True)
+    # forkserver is mostly as safe as spawn because it forks from a special process
+    # without threads, but it's much faster than spawn.
+    if platform.system() == "Linux":
+        multiprocessing.set_start_method("forkserver", force=True)
+    else:
+        multiprocessing.set_start_method("spawn", force=True)
     invoke_main()  # pragma: no cover

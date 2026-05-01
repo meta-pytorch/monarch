@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   build-cpu-macos:
-    name: Build CPU - No Tensor Engine (macOS)
+    name: Build CPU - Tensor Engine (macOS)
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 60
     steps:
@@ -50,7 +50,7 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
-          USE_TENSOR_ENGINE: "0"
+          USE_TENSOR_ENGINE: "1"
         run: |
           set -eux
           python -m pip install --upgrade pip

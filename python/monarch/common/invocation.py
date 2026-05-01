@@ -9,7 +9,7 @@ import traceback
 from typing import Any, List, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
 )
 
 
@@ -26,7 +26,7 @@ class DeviceException(Exception):
         self,
         exception: Exception,
         frames: List[traceback.FrameSummary],
-        source_actor_id: ActorId,
+        source_actor_id: ActorAddr,
         message: str,
     ):
         self.exception = exception
@@ -61,7 +61,7 @@ class RemoteException(Exception):
         controller_frame_index: Optional[int],
         controller_frames: Optional[List[traceback.FrameSummary]],
         worker_frames: List[traceback.FrameSummary],
-        source_actor_id: ActorId,
+        source_actor_id: ActorAddr,
         message="A remote function has failed asynchronously.",
     ):
         self.exception = exception

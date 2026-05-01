@@ -6,7 +6,10 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![allow(clippy::result_large_err)]
+
 use hyperactor::Actor;
+use hyperactor::ActorRef;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
@@ -32,9 +35,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use hyperactor::ActorAddr;
+use hyperactor::ProcAddr;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::context;
-use hyperactor::reference as hyperactor_reference;
 use ndslice::Extent;
 use ndslice::Region;
 use ndslice::ViewExt;
@@ -44,6 +48,7 @@ use ndslice::view::Ranked;
 use ndslice::view::RegionParseError;
 use serde::Deserialize;
 use serde::Serialize;
+use tracing::Instrument;
 use typeuri::Named;
 
 use crate::Bootstrap;
@@ -64,7 +69,6 @@ use crate::mesh_id::HostMeshId;
 use crate::mesh_id::ProcMeshId;
 use crate::mesh_id::ResourceId;
 use crate::proc_agent::ProcAgent;
-use crate::proc_mesh::ProcRef;
 use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
@@ -114,24 +118,24 @@ wirevalue::register_type!(HostRef);
 
 impl HostRef {
     /// The host mesh agent associated with this host.
-    fn mesh_agent(&self) -> hyperactor_reference::ActorRef<HostAgent> {
-        hyperactor_reference::ActorRef::attest(
+    fn mesh_agent(&self) -> ActorRef<HostAgent> {
+        ActorRef::attest(
             self.service_proc()
                 .actor_id(host_agent::HOST_MESH_AGENT_ACTOR_NAME),
         )
     }
 
-    /// The ProcId for the proc with name `name` on this host.
-    fn named_proc(&self, id: &ResourceId) -> hyperactor_reference::ProcId {
-        hyperactor_reference::ProcId::from_proc_ref(hyperactor::ref_::ProcRef::new(
+    /// The ProcAddr for the proc with name `name` on this host.
+    fn named_proc(&self, id: &ResourceId) -> ProcAddr {
+        ProcAddr::new(
             hyperactor::id::ProcId::new(id.uid().clone(), id.label().cloned()),
             self.0.clone().into(),
-        ))
+        )
     }
 
     /// The service proc on this host.
-    fn service_proc(&self) -> hyperactor_reference::ProcId {
-        hyperactor_reference::ProcId::from_resource_name(self.0.clone(), SERVICE_PROC_NAME)
+    fn service_proc(&self) -> ProcAddr {
+        ProcAddr::from_resource_name(self.0.clone(), SERVICE_PROC_NAME)
     }
 
     /// Request an orderly teardown of this host and all procs it
@@ -192,10 +196,10 @@ impl HostRef {
     }
 }
 
-impl TryFrom<hyperactor_reference::ActorRef<HostAgent>> for HostRef {
+impl TryFrom<ActorRef<HostAgent>> for HostRef {
     type Error = crate::Error;
 
-    fn try_from(value: hyperactor_reference::ActorRef<HostAgent>) -> Result<Self, crate::Error> {
+    fn try_from(value: ActorRef<HostAgent>) -> Result<Self, crate::Error> {
         let proc_id = value.actor_id().proc_id();
         Ok(HostRef(proc_id.addr().clone()))
     }
@@ -262,7 +266,7 @@ impl HostMesh {
         for (rank, host) in self.current_ref.hosts().iter().enumerate() {
             let actor = host.mesh_agent();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(actor.actor_id()),
+                id: hyperactor_telemetry::hash_to_u64(&actor.actor_id()),
                 timestamp: now,
                 mesh_id: mesh_id_hash,
                 rank: rank as u64,
@@ -695,31 +699,28 @@ impl Drop for HostMeshShutdownGuard {
         // Best-effort only when a Tokio runtime is available.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let mesh_id = self.0.id.clone();
+            let span = tracing::info_span!(
+                "hostmesh_drop_cleanup",
+                host_mesh = %mesh_id,
+                hosts = hosts.len(),
+            );
 
-            handle.spawn(async move {
-                let span = tracing::info_span!(
-                    "hostmesh_drop_cleanup",
-                    host_mesh = %mesh_id,
-                    hosts = hosts.len(),
-                );
-                let _g = span.enter();
-
-                // Spin up a tiny ephemeral proc+instance to get an
-                // Actor context.
-                match hyperactor::Proc::direct(
-                    ChannelTransport::Unix.any(),
-                    "hostmesh-drop".to_string(),
-                )
-                {
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "failed to construct ephemeral Proc for drop-cleanup; \
-                             relying on PDEATHSIG/manager Drop"
-                        );
-                    }
-                    Ok(proc) => {
-                        match proc.instance("drop") {
+            handle.spawn(
+                async move {
+                    // Spin up a tiny ephemeral proc+instance to get an
+                    // Actor context.
+                    match hyperactor::Proc::direct(
+                        ChannelTransport::Unix.any(),
+                        "hostmesh-drop".to_string(),
+                    ) {
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "failed to construct ephemeral Proc for drop-cleanup; \
+                                 relying on PDEATHSIG/manager Drop"
+                            );
+                        }
+                        Ok(proc) => match proc.instance("drop") {
                             Err(e) => {
                                 tracing::warn!(
                                     error = %e,
@@ -752,10 +753,11 @@ impl Drop for HostMeshShutdownGuard {
                                     "hostmesh drop-cleanup summary"
                                 );
                             }
-                        }
+                        },
                     }
                 }
-            });
+                .instrument(span),
+            );
         } else {
             // No runtime here; PDEATHSIG and manager Drop remain the
             // last-resort safety net.
@@ -870,7 +872,7 @@ impl HostMeshRef {
     /// Create a new HostMeshRef from an arbitrary set of host mesh agents.
     pub fn from_host_agents(
         id: HostMeshId,
-        agents: Vec<hyperactor_reference::ActorRef<HostAgent>>,
+        agents: Vec<ActorRef<HostAgent>>,
     ) -> crate::Result<Self> {
         Ok(Self {
             id,
@@ -886,10 +888,7 @@ impl HostMeshRef {
     }
 
     /// Create a unit HostMeshRef from a host mesh agent.
-    pub fn from_host_agent(
-        id: HostMeshId,
-        agent: hyperactor_reference::ActorRef<HostAgent>,
-    ) -> crate::Result<Self> {
+    pub fn from_host_agent(id: HostMeshId, agent: ActorRef<HostAgent>) -> crate::Result<Self> {
         Ok(Self {
             id,
             region: Extent::unity().into(),
@@ -910,7 +909,7 @@ impl HostMeshRef {
     /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.
     /// Used by `MeshAdminAgent::effective_hosts()` to merge C into the
     /// admin's host list (see CH-1 in mesh_admin module doc).
-    pub(crate) fn host_entries(&self) -> Vec<(String, hyperactor_reference::ActorRef<HostAgent>)> {
+    pub(crate) fn host_entries(&self) -> Vec<(String, ActorRef<HostAgent>)> {
         self.ranks
             .iter()
             .map(|h| (h.0.to_string(), h.mesh_agent()))
@@ -1154,11 +1153,11 @@ impl HostMeshRef {
                     %proc_id,
                     rank = create_rank,
                 );
-                procs.push(ProcRef::new(
+                procs.push(crate::proc_mesh::ProcRef::new(
                     proc_id,
                     create_rank,
                     // TODO: specify or retrieve from state instead, to avoid attestation.
-                    hyperactor_reference::ActorRef::attest(
+                    ActorRef::attest(
                         host.named_proc(&proc_name)
                             .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
                     ),
@@ -1256,14 +1255,13 @@ impl HostMeshRef {
             }
         }
 
-        let mesh =
-            ProcMesh::create_owned_unchecked(cx, proc_mesh_id, extent, self.clone(), procs).await;
+        let mesh = ProcMesh::create(cx, proc_mesh_id, extent, self.clone(), procs).await;
         if let Ok(ref mesh) = mesh {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
             let controller = ProcMeshController::new(mesh.deref().clone());
             // hyperactor::proc AI-3: controller name must include mesh
-            // identity for proc-wide ActorId uniqueness.
+            // identity for proc-wide ActorAddr uniqueness.
             let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.id());
             let controller_handle =
                 controller
@@ -1275,7 +1273,7 @@ impl HostMeshRef {
             // Undeliverable). Without this, the controller's mailbox has no
             // port entries and messages (including introspection queries)
             // are returned as undeliverable.
-            let _: hyperactor::reference::ActorRef<ProcMeshController> = controller_handle.bind();
+            let _: ActorRef<ProcMeshController> = controller_handle.bind();
         }
         mesh
     }
@@ -1295,7 +1293,7 @@ impl HostMeshRef {
         &self,
         cx: &impl hyperactor::context::Actor,
         proc_mesh_id: &ProcMeshId,
-        procs: impl IntoIterator<Item = hyperactor_reference::ProcId>,
+        procs: impl IntoIterator<Item = ProcAddr>,
         region: Region,
         reason: String,
     ) -> anyhow::Result<()> {
@@ -1411,13 +1409,13 @@ impl HostMeshRef {
     pub(crate) async fn proc_states(
         &self,
         cx: &impl context::Actor,
-        procs: impl IntoIterator<Item = hyperactor_reference::ProcId>,
+        procs: impl IntoIterator<Item = ProcAddr>,
         region: Region,
     ) -> crate::Result<ValueMesh<resource::State<ProcState>>> {
         let (tx, mut rx) = cx.mailbox().open_port();
 
         let mut num_ranks = 0;
-        let procs: Vec<hyperactor_reference::ProcId> = procs.into_iter().collect();
+        let procs: Vec<ProcAddr> = procs.into_iter().collect();
         let mut proc_names = Vec::new();
         for proc_id in procs.iter() {
             num_ranks += 1;
@@ -1432,7 +1430,12 @@ impl HostMeshRef {
             // If this proc dies or some other issue renders the reply undeliverable,
             // the reply does not need to be returned to the sender.
             reply.return_undeliverable(false);
-            host.mesh_agent()
+            let mut send_port = host.mesh_agent().port();
+            // If the message is undeliverable, the timeout below will catch the issue, and the caller
+            // can handle the error as it pleases. Set this so an undeliverable message doesn't cause
+            // a supervision crash.
+            send_port.return_undeliverable(false);
+            send_port
                 .send(
                     cx,
                     resource::GetState {
@@ -1507,16 +1510,16 @@ impl HostMeshRef {
     }
 }
 
-/// An ordered set of host entries, deduplicated by `HostAgent` `ActorId`
+/// An ordered set of host entries, deduplicated by `HostAgent` `ActorAddr`
 /// in first-seen order.
 ///
-/// Insertion is idempotent by construction — SA-3 (dedup by ActorId)
+/// Insertion is idempotent by construction — SA-3 (dedup by ActorAddr)
 /// is a property of this type, not a comment on careful control flow.
 /// First-seen order is preserved: the first occurrence of a given
-/// ActorId wins; subsequent duplicates are silently dropped.
+/// ActorAddr wins; subsequent duplicates are silently dropped.
 struct HostSet {
-    seen: HashSet<hyperactor_reference::ActorId>,
-    entries: Vec<(String, hyperactor_reference::ActorRef<HostAgent>)>,
+    seen: HashSet<ActorAddr>,
+    entries: Vec<(String, ActorRef<HostAgent>)>,
 }
 
 impl HostSet {
@@ -1527,9 +1530,9 @@ impl HostSet {
         }
     }
 
-    /// Insert a host entry. No-op if `ActorId` already present (SA-3).
+    /// Insert a host entry. No-op if `ActorAddr` already present (SA-3).
     /// First-seen order is preserved.
-    fn insert(&mut self, addr: String, agent_ref: hyperactor_reference::ActorRef<HostAgent>) {
+    fn insert(&mut self, addr: String, agent_ref: ActorRef<HostAgent>) {
         if self.seen.insert(agent_ref.actor_id().clone()) {
             self.entries.push((addr, agent_ref));
         }
@@ -1542,21 +1545,21 @@ impl HostSet {
         }
     }
 
-    fn into_vec(self) -> Vec<(String, hyperactor_reference::ActorRef<HostAgent>)> {
+    fn into_vec(self) -> Vec<(String, ActorRef<HostAgent>)> {
         self.entries
     }
 }
 
 /// Ordered union of hosts from meshes and optional client host
-/// entries, deduplicated by `HostAgent` `ActorId` in first-seen
+/// entries, deduplicated by `HostAgent` `ActorAddr` in first-seen
 /// order.
 ///
 /// SA-3 dedup and SA-6 client-host merge are structural properties
 /// of [`HostSet`], not invariants on this function's control flow.
 fn aggregate_hosts(
     meshes: &[impl AsRef<HostMeshRef>],
-    client_host_entries: Option<Vec<(String, hyperactor_reference::ActorRef<HostAgent>)>>,
-) -> Vec<(String, hyperactor_reference::ActorRef<HostAgent>)> {
+    client_host_entries: Option<Vec<(String, ActorRef<HostAgent>)>>,
+) -> Vec<(String, ActorRef<HostAgent>)> {
     let mut set = HostSet::new();
 
     // SA-3: dedup across all mesh hosts in first-seen order.
@@ -1592,7 +1595,7 @@ pub async fn spawn_admin(
     cx: &impl hyperactor::context::Actor,
     admin_addr: Option<std::net::SocketAddr>,
     telemetry_url: Option<String>,
-) -> anyhow::Result<hyperactor_reference::ActorRef<MeshAdminAgent>> {
+) -> anyhow::Result<ActorRef<MeshAdminAgent>> {
     let meshes: Vec<_> = meshes.into_iter().collect();
     anyhow::ensure!(!meshes.is_empty(), "at least one mesh is required (SA-1)");
     for (i, mesh) in meshes.iter().enumerate() {
@@ -1616,7 +1619,7 @@ pub async fn spawn_admin(
         crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
         crate::mesh_admin::MeshAdminAgent::new(
             hosts,
-            Some(root_client_id.into()),
+            Some(root_client_id),
             admin_addr,
             telemetry_url,
         ),
@@ -2020,7 +2023,7 @@ mod tests {
     }
 
     /// SA-3: `HostSet::insert` is idempotent — inserting the same
-    /// `ActorId` twice does not add a duplicate entry, and first-seen
+    /// `ActorAddr` twice does not add a duplicate entry, and first-seen
     /// order is preserved. This is a structural property of `HostSet`,
     /// not an invariant on `aggregate_hosts` control flow.
     #[test]
@@ -2041,7 +2044,7 @@ mod tests {
         assert_eq!(
             result.len(),
             2,
-            "SA-3: duplicate ActorId must not add entry"
+            "SA-3: duplicate ActorAddr must not add entry"
         );
         assert_eq!(
             result[0].0,
