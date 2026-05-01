@@ -26,6 +26,7 @@ use std::time::Instant;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::lock::Mutex;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
@@ -34,7 +35,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::RefClient;
-use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -271,7 +271,7 @@ impl IbvManagerActor {
         client: &(impl hyperactor::context::Actor + Send + Sync),
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let rdma_handle = RdmaManagerActor::local_handle(client);
-        let ibv_ref = rdma_handle
+        let ibv_ref: reference::ActorRef<IbvManagerActor> = rdma_handle
             .get_ibv_actor_ref(client)
             .await?
             .ok_or_else(|| anyhow::anyhow!("local RdmaManagerActor has no ibverbs backend"))?;
@@ -608,13 +608,15 @@ impl IbvManagerActor {
         other_device: String,
     ) -> Result<IbvQueuePair, anyhow::Error> {
         let self_ref: reference::ActorRef<IbvManagerActor> = cx.bind();
-        let other_id = other.actor_id().clone();
+        let other_id = other.actor_id().id().clone();
 
         // Use the nested map structure: local_device -> (actor_id, remote_device) -> IbvQueuePair
         let inner_key = (other_id.clone(), other_device.clone());
 
         // Check if queue pair exists in map
-        if let Some(device_map) = self.device_qps.get(&self_device) {
+        let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+            self.device_qps.get(&self_device);
+        if let Some(device_map) = device_map {
             if let Some(qp) = device_map.get(&inner_key) {
                 return Ok(qp.clone());
             }
@@ -622,7 +624,10 @@ impl IbvManagerActor {
 
         // Try to acquire lock and mark as pending (hold lock only once!)
         let pending_key = (self_device.clone(), other_id.clone(), other_device.clone());
-        let mut pending = self.pending_qp_creation.lock().await;
+        let mut pending: futures::lock::MutexGuard<
+            '_,
+            HashSet<(String, reference::ActorId, String)>,
+        > = self.pending_qp_creation.lock().await;
 
         if pending.contains(&pending_key) {
             // Another task is creating this QP, release lock and wait
@@ -637,7 +642,9 @@ impl IbvManagerActor {
                 tokio::time::sleep(Duration::from_micros(200)).await;
 
                 // Check if QP was created while we waited
-                if let Some(device_map) = self.device_qps.get(&self_device) {
+                let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+                    self.device_qps.get(&self_device);
+                if let Some(device_map) = device_map {
                     if let Some(qp) = device_map.get(&inner_key) {
                         return Ok(qp.clone());
                     }
@@ -663,7 +670,7 @@ impl IbvManagerActor {
 
         // Queue pair doesn't exist - need to create connection
         let result = async {
-            let is_loopback = other_id == *self_ref.actor_id() && self_device == other_device;
+            let is_loopback = other_id == *self_ref.actor_id().id() && self_device == other_device;
 
             if is_loopback {
                 // Loopback connection setup
@@ -742,7 +749,9 @@ impl IbvManagerActor {
             }
 
             // Now that connection is established, get and clone the queue pair
-            if let Some(device_map) = self.device_qps.get(&self_device) {
+            let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+                self.device_qps.get(&self_device);
+            if let Some(device_map) = device_map {
                 if let Some(qp) = device_map.get(&inner_key) {
                     Ok(qp.clone())
                 } else {
@@ -763,7 +772,10 @@ impl IbvManagerActor {
         .await;
 
         // Always remove from pending set when done (success or failure)
-        let mut pending = self.pending_qp_creation.lock().await;
+        let mut pending: futures::lock::MutexGuard<
+            '_,
+            HashSet<(String, reference::ActorId, String)>,
+        > = self.pending_qp_creation.lock().await;
         pending.remove(&pending_key);
         drop(pending);
 
@@ -843,11 +855,13 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         endpoint: IbvQpInfo,
     ) -> Result<(), anyhow::Error> {
         tracing::debug!("connecting with {:?}", other);
-        let other_id = other.actor_id().clone();
+        let other_id = other.actor_id().id().clone();
 
         let inner_key = (other_id.clone(), other_device.clone());
 
-        if let Some(device_map) = self.device_qps.get_mut(&self_device) {
+        let device_map: Option<&mut HashMap<(reference::ActorId, String), IbvQueuePair>> =
+            self.device_qps.get_mut(&self_device);
+        if let Some(device_map) = device_map {
             match device_map.get_mut(&inner_key) {
                 Some(qp) => {
                     qp.connect(&endpoint).map_err(|e| {
@@ -875,11 +889,13 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         self_device: String,
         other_device: String,
     ) -> Result<bool, anyhow::Error> {
-        let other_id = other.actor_id().clone();
+        let other_id = other.actor_id().id().clone();
         let inner_key = (other_id.clone(), other_device.clone());
 
         // Check if QP already exists in nested structure
-        if let Some(device_map) = self.device_qps.get(&self_device) {
+        let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+            self.device_qps.get(&self_device);
+        if let Some(device_map) = device_map {
             if device_map.contains_key(&inner_key) {
                 return Ok(true);
             }
@@ -923,11 +939,13 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         other_device: String,
     ) -> Result<IbvQpInfo, anyhow::Error> {
         tracing::debug!("getting connection info with {:?}", other);
-        let other_id = other.actor_id().clone();
+        let other_id = other.actor_id().id().clone();
 
         let inner_key = (other_id.clone(), other_device.clone());
 
-        if let Some(device_map) = self.device_qps.get_mut(&self_device) {
+        let device_map: Option<&mut HashMap<(reference::ActorId, String), IbvQueuePair>> =
+            self.device_qps.get_mut(&self_device);
+        if let Some(device_map) = device_map {
             match device_map.get_mut(&inner_key) {
                 Some(qp) => {
                     let connection_info = qp.get_qp_info()?;
@@ -964,10 +982,12 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         self_device: String,
         other_device: String,
     ) -> Result<u32, anyhow::Error> {
-        let other_id = other.actor_id().clone();
+        let other_id = other.actor_id().id().clone();
         let inner_key = (other_id.clone(), other_device.clone());
 
-        if let Some(device_map) = self.device_qps.get_mut(&self_device) {
+        let device_map: Option<&mut HashMap<(reference::ActorId, String), IbvQueuePair>> =
+            self.device_qps.get_mut(&self_device);
+        if let Some(device_map) = device_map {
             match device_map.get_mut(&inner_key) {
                 Some(qp) => qp.state(),
                 None => Err(anyhow::anyhow!(
@@ -1179,10 +1199,12 @@ impl RdmaBackend for IbvBackend {
     ) -> Result<(), anyhow::Error> {
         let mut ibv_ops = Vec::with_capacity(ops.len());
         for op in ops {
-            let (remote_ibv_mgr, remote_ibv_buffer) =
-                op.remote.resolve_ibv(cx).await.ok_or_else(|| {
-                    anyhow::anyhow!("ibverbs backend not found for buffer: {:?}", op.remote)
-                })??;
+            let (remote_ibv_mgr, remote_ibv_buffer): (
+                reference::ActorRef<IbvManagerActor>,
+                IbvBuffer,
+            ) = op.remote.resolve_ibv(cx).await.ok_or_else(|| {
+                anyhow::anyhow!("ibverbs backend not found for buffer: {:?}", op.remote)
+            })??;
 
             ibv_ops.push(IbvOp {
                 op_type: op.op_type,

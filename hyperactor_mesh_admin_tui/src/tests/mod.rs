@@ -15,7 +15,6 @@ use std::time::SystemTime;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor_mesh::introspect::NodeRef;
 
 use super::*;
@@ -48,17 +47,17 @@ fn test_addr() -> hyperactor::channel::ChannelAddr {
 }
 
 fn host(name: &str) -> NodeRef {
-    let proc_id = hyperactor_reference::ProcId::from_resource_name(test_addr(), "world");
+    let proc_id = hyperactor::ProcAddr::from_resource_name(test_addr(), "world");
     NodeRef::Host(proc_id.actor_id(name))
 }
 
 fn proc_ref(name: &str) -> NodeRef {
-    let proc_id = hyperactor_reference::ProcId::from_resource_name(test_addr(), name);
+    let proc_id = hyperactor::ProcAddr::from_resource_name(test_addr(), name);
     NodeRef::Proc(proc_id)
 }
 
 fn actor(name: &str) -> NodeRef {
-    let proc_id = hyperactor_reference::ProcId::from_resource_name(test_addr(), "world");
+    let proc_id = hyperactor::ProcAddr::from_resource_name(test_addr(), "world");
     NodeRef::Actor(proc_id.actor_id(name))
 }
 
@@ -410,7 +409,7 @@ fn high_fanout_proc_placeholder_performance() {
     assert_eq!(rows.len(), 1001);
     let actor_count = rows
         .iter()
-        .filter(|r| r.node.reference.to_string().contains("actor_"))
+        .filter(|r| matches!(r.node.reference, NodeRef::Actor(_)))
         .count();
     assert_eq!(actor_count, 1000);
     let count = fold_tree(&tree, &|_n, child_counts: Vec<usize>| {
