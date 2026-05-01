@@ -1724,6 +1724,7 @@ mod tests {
     use hyperactor_config::attrs::Attrs;
     use ndslice::ViewExt;
     use ndslice::extent;
+    use timed_test::assert_no_process_leak;
     use tokio::process::Command;
 
     use super::*;
@@ -1880,8 +1881,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
     #[cfg(fbcode_build)]
+    #[assert_no_process_leak]
+    #[tokio::test]
     async fn test_halting_proc_allocation() {
         let config = hyperactor_config::global::lock();
         let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(20));
