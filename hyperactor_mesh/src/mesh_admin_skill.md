@@ -69,12 +69,21 @@ failed), `note` (role), `phase` (AdminInfra or Mesh), and `outcome`
 
 ## Endpoints
 
-Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
+Most endpoints are read-only (`GET`). Four endpoints accept `POST`:
 `/v1/query` (SQL queries), `/v1/pyspy_dump/{proc_reference}`
-(dump-and-store), and `/v1/pyspy_profile_svg/{proc_reference}`
-(profile → SVG). All endpoints return `application/json` except
-`/SKILL.md` (`text/markdown`) and
+(dump-and-store), `/v1/pyspy_profile_svg/{proc_reference}`
+(profile → SVG), and `/v1/tools_provision/{proc_reference}`
+(install a diagnostic tool on a host's service proc). The companion
+`GET /v1/tools/{proc_reference}` returns that host's
+diagnostic-tool inventory. All endpoints return `application/json`
+except `/SKILL.md` (`text/markdown`) and
 `/v1/pyspy_profile_svg/{proc_reference}` (`image/svg+xml`).
+
+Tool provisioning is not a general remote-artifact or remote-filesystem
+access path. Use remote mount to expose arbitrary or mutable remote file
+trees through the host filesystem view. Use the tool endpoints here to
+install small, versioned, digest-pinned diagnostic binaries into a
+host-local cache.
 
 - `GET {base}/v1/admin`
   Admin self-identification: returns `AdminInfo` with `actor_id`,
@@ -105,13 +114,34 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
 - `GET {base}/v1/pyspy/{proc_reference}`
   Requests a py-spy stack dump from the process hosting
   `{proc_reference}`. The reference must be a valid ProcAddr
-  (percent-encoded in the URL path). Requires py-spy in the
-  target environment and ptrace permissions.
+  (percent-encoded in the URL path). Requires ptrace permissions
+  on the target.
 
   Success returns a `PySpyResult` JSON variant:
   - `{"Ok": {"pid": N, "binary": "...", "stack_traces": [...], "warnings": [...]}}` — structured stack dump
-  - `{"BinaryNotFound": {"searched": [...]}}` — py-spy not available
+  - `{"BinaryNotFound": {"searched": [...]}}` — no py-spy candidate resolved on the target proc
   - `{"Failed": {"pid": N, "binary": "...", "exit_code": N, "stderr": "..."}}` — py-spy error
+
+  Binary resolution depends on which proc handles the request:
+  - **Service proc (HostAgent):** managed candidate from
+    `tool_provision`, then `PYSPY_BIN` config attr (if non-empty),
+    then `"py-spy"` on `PATH`.
+  - **Worker proc (ProcAgent):** `PYSPY_BIN` config attr, then
+    `"py-spy"` on `PATH`. Worker procs do not yet consult
+    `tool_provision`; only the service proc benefits from managed
+    candidates today.
+
+  Recovery when a service-proc request returns `BinaryNotFound`:
+  1. `GET /v1/tools/{service_proc_reference}` to inspect the
+     host's tool inventory.
+  2. `POST /v1/tools_provision/{service_proc_reference}` with a
+     `ToolSpec` body. An example py-spy 0.4.1 `ToolSpec` is shown
+     under `POST /v1/tools_provision/...` below; callers can
+     copy-paste it or adapt the same shape for any other tool.
+  3. Retry the original `GET /v1/pyspy/{proc_reference}`.
+
+  Worker-proc `BinaryNotFound` is not addressable through these
+  endpoints today: the worker proc has no managed-candidate path.
 
   The endpoint supports worker procs and the service proc. A
   proc supports py-spy iff its stable handler actor is
@@ -241,6 +271,130 @@ Most endpoints are read-only (`GET`). Three endpoints accept `POST`:
   Error handling follows the same conventions as
   `GET /v1/pyspy/{proc_reference}`: `not_found` if the target
   agent is unreachable, `gateway_timeout` on timeout.
+
+- `GET {base}/v1/tools/{proc_reference}`
+  Returns the diagnostic-tool inventory for the host that owns
+  `{proc_reference}`. The `tool_provision` actor only runs on a
+  host's service proc, so non-service references return
+  `bad_request`. The reference must be percent-encoded in the URL
+  path.
+
+  Success returns a `ToolInventory` JSON object:
+  ```json
+  {
+    "tools": [
+      {
+        "name": "py-spy",
+        "version": "0.4.1",
+        "state": {
+          "Available": {
+            "executable": "<cache_dir>/extracted/<digest_prefix>/<digest>/<exec_path>",
+            "artifact_digest": "6a80ec05eb8a6883863a367c6a4d4f2d57de68466f7956b6367d4edd5c61bb29",
+            "provisioned_at": "2026-04-29T15:48:16Z"
+          }
+        }
+      }
+    ]
+  }
+  ```
+
+  Each entry's `state` is one of:
+  - `Available { executable, artifact_digest, provisioned_at }` — installed and runnable.
+  - `Fetching { started_at }` — provision attempt in flight.
+  - `Failed { error, last_attempt }` — last attempt failed; resubmit to retry.
+  - `CachedButNotRegistered { executable, artifact_digest, provisioned_at }` —
+    artifact found by cache scan but no spec has been registered for
+    it on this host yet.
+
+  Timestamps are RFC 3339 UTC. If the target agent is not reachable,
+  an immediate `not_found` error is returned. Timeout returns
+  `gateway_timeout`.
+
+- `POST {base}/v1/tools_provision/{proc_reference}`
+  Install one diagnostic tool on the host that owns
+  `{proc_reference}`. Service-proc-only; non-service references
+  return `bad_request`.
+
+  This endpoint is intentionally narrower than remote mount. Remote
+  mount is the right layer for arbitrary or mutable remote trees and
+  large artifacts you do not want to materialize eagerly. Tool
+  provisioning is for small diagnostic executables whose exact version
+  and sha256 digest must be pinned and verified before use.
+
+  Request body is a `ToolSpec` JSON object — tool name, version,
+  and a per-platform map of artifact entries (provider URL,
+  format, hash algorithm, digest, byte size, and for archive
+  formats the executable path inside the archive).
+
+  Example `ToolSpec` for py-spy 0.4.1, shown to give the JSON shape
+  concrete form. This is illustrative, not authoritative — agents
+  should treat it as a starting template and confirm digests, sizes,
+  and provider URLs against their own source before using it for a
+  production install. The version, URLs, and hashes here will drift
+  over time. (Rust consumers can obtain a live spec via
+  `tool_fetch::bundled_pyspy_spec()`.)
+  ```json
+  {
+    "name": "py-spy",
+    "version": "0.4.1",
+    "platforms": {
+      "macos-aarch64": {
+        "size": 1796395,
+        "hash_algorithm": "sha256",
+        "digest": "1fb8bf71ab8df95a95cc387deed6552934c50feef2cf6456bc06692a5508fd0c",
+        "format": "zip",
+        "executable_path": "py_spy-0.4.1.data/scripts/py-spy",
+        "providers": [
+          {
+            "Http": {
+              "url": "https://files.pythonhosted.org/packages/4f/bf/e4d280e9e0bec71d39fc646654097027d4bbe8e04af18fb68e49afcff404/py_spy-0.4.1-py2.py3-none-macosx_11_0_arm64.whl"
+            }
+          }
+        ]
+      },
+      "linux-x86_64": {
+        "size": 2763338,
+        "hash_algorithm": "sha256",
+        "digest": "6a80ec05eb8a6883863a367c6a4d4f2d57de68466f7956b6367d4edd5c61bb29",
+        "format": "zip",
+        "executable_path": "py_spy-0.4.1.data/scripts/py-spy",
+        "providers": [
+          {
+            "Http": {
+              "url": "https://files.pythonhosted.org/packages/68/fb/bc7f639aed026bca6e7beb1e33f6951e16b7d315594e7635a4f7d21d63f4/py_spy-0.4.1-py2.py3-none-manylinux_2_5_x86_64.manylinux1_x86_64.whl"
+            }
+          }
+        ]
+      }
+    }
+  }
+  ```
+
+  Success returns a `ProvisionResult` JSON variant:
+  - `{"Available": {"name": "py-spy", "version": "0.4.1", "executable": "...", "artifact_digest": "..."}}`
+  - `{"Failed": {"name": "...", "version": "...", "error": "..."}}`
+
+  Provisioning is idempotent and cache-aware: re-issuing the same
+  spec after success is a fast no-op (size + hash reverification,
+  no re-download). Failures register a `Failed` state visible
+  through `/v1/tools/{...}`. Long-running — extraction of large
+  archives can take seconds. Timeout returns `gateway_timeout`.
+
+  Example (provision py-spy 0.4.1 by piping the spec above through
+  curl; the heredoc keeps the example self-contained):
+  ```
+  curl {TLS} -X POST -H 'Content-Type: application/json' \
+    --data @- \
+    '{base}/v1/tools_provision/{encoded_service_proc_reference}' <<'EOF'
+  {
+    "name": "py-spy",
+    "version": "0.4.1",
+    "platforms": { ... }
+  }
+  EOF
+  ```
+  Replace the truncated `platforms` value with the block from the
+  example spec above before invoking.
 
 - `GET {base}/SKILL.md`
   This document.

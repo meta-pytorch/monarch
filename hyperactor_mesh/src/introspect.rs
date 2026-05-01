@@ -139,12 +139,13 @@
 //! - **PS-2 (deterministic failure shape):** Execution failures are
 //!   classified into `BinaryNotFound { searched }` vs
 //!   `Failed { pid, binary, exit_code, stderr }`, never collapsed.
-//! - **PS-3 (binary resolution order):** Resolution order is exactly:
-//!   `PYSPY_BIN` config attr (if non-empty) then `"py-spy"` on PATH.
-//!   The attr is read via `hyperactor_config::global::get_cloned`;
-//!   env var `PYSPY_BIN` feeds in through the config layer.
-//!   If the first attempt is not found, the fallback attempt is
-//!   required.
+//! - **PS-3 (binary resolution order):** Resolution order is
+//!   managed `py-spy` candidate (when HostAgent can resolve one),
+//!   then `PYSPY_BIN` config attr (if non-empty), then `"py-spy"`
+//!   on PATH. The attr is read via
+//!   `hyperactor_config::global::get_cloned`; env var `PYSPY_BIN`
+//!   feeds in through the config layer. If one attempt is not found,
+//!   the fallback attempt is required.
 //! - **PS-4 (structured JSON output):** py-spy runs with `--json`;
 //!   output is parsed into `Vec<PySpyStackTrace>`. Parse failure
 //!   maps to `PySpyResult::Failed`.
@@ -211,7 +212,11 @@
 //!   infrastructure failure). Cases (b) and (c) fast-fail
 //!   instead of waiting the full 13s
 //!   `MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT`.
-//! - **PS-14 (reachability-based capability):** A proc supports
+//! - **PS-14 (managed-candidate-best-effort):** HostAgent resolves
+//!   managed `py-spy` through `ToolProvisionActor` before spawning
+//!   `PySpyWorker`. Failure, timeout, or `NotProvisioned` produces
+//!   no managed candidate and falls back to PS-3 legacy candidates.
+//! - **PS-15 (reachability-based capability):** A proc supports
 //!   py-spy iff its stable handler actor is reachable: the
 //!   service proc requires a reachable `host_agent`; non-service
 //!   procs require a reachable `proc_agent[0]`. `PySpyWorker` is

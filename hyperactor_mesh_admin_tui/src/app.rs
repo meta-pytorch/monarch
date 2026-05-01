@@ -16,6 +16,7 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use futures::StreamExt;
+use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeProperties;
 use hyperactor_mesh::introspect::NodeRef;
@@ -33,6 +34,9 @@ use crate::FetchState;
 use crate::KeyResult;
 use crate::LangName;
 use crate::NodeType;
+use crate::ProvisionOutcome;
+use crate::ProvisionState;
+use crate::PySpyJobResult;
 use crate::Theme;
 use crate::ThemeName;
 use crate::TreeNode;
@@ -660,6 +664,14 @@ impl App {
             .label()
             .map(|l: &hyperactor::id::Label| l.as_str().to_string())
             .unwrap_or_else(|| proc_id.id().to_string());
+        // Set the managed-py-spy provision target only when the
+        // overlay's target is itself the host's service proc — that's
+        // the proc the admin endpoints route through.
+        let service_proc_ref = if proc_id.label().map(|l| l.as_str()) == Some(SERVICE_PROC_NAME) {
+            Some(proc_ref.clone())
+        } else {
+            None
+        };
         let scheme = self.theme.scheme; // ColorScheme: Copy
         let client = self.client.clone();
         let base_url = self.base_url.clone();
@@ -672,6 +684,8 @@ impl App {
             short,
             lines: vec![],
             completed_at: None,
+            service_proc_ref,
+            provision_state: ProvisionState::Idle,
         });
         // TP-9: timeout covers the full request lifecycle (send +
         // body + parse) at the operation boundary.
@@ -685,27 +699,110 @@ impl App {
                     .map_err(|e| format!("request failed: {e}"))?;
                 if !resp.status().is_success() {
                     let status = resp.status();
-                    let lines = match resp.json::<serde_json::Value>().await {
-                        Ok(json) => parse_error_envelope(&json),
-                        Err(_) => vec![Line::from(format!("HTTP {status}"))],
+                    let result = match resp.json::<serde_json::Value>().await {
+                        Ok(json) => PySpyJobResult {
+                            lines: parse_error_envelope(&json),
+                            binary_not_found: false,
+                        },
+                        Err(_) => PySpyJobResult {
+                            lines: vec![Line::from(format!("HTTP {status}"))],
+                            binary_not_found: false,
+                        },
                     };
-                    return Ok::<_, String>(lines);
+                    return Ok::<_, String>(result);
                 }
                 match resp.json::<serde_json::Value>().await {
-                    Err(e) => Ok(vec![Line::from(format!("parse error: {e}"))]),
+                    Err(e) => Ok(PySpyJobResult {
+                        lines: vec![Line::from(format!("parse error: {e}"))],
+                        binary_not_found: false,
+                    }),
                     Ok(json) => Ok(pyspy_json_to_lines(&json, &scheme)),
                 }
             })
             .await;
-            let lines: Vec<Line<'static>> = match result {
-                Err(_) => vec![Line::from(format!(
-                    "request timed out after {}s",
-                    timeout.as_secs()
-                ))],
-                Ok(Ok(l)) => l,
-                Ok(Err(e)) => vec![Line::from(e)],
+            let result = match result {
+                Err(_) => PySpyJobResult {
+                    lines: vec![Line::from(format!(
+                        "request timed out after {}s",
+                        timeout.as_secs()
+                    ))],
+                    binary_not_found: false,
+                },
+                Ok(Ok(result)) => result,
+                Ok(Err(e)) => PySpyJobResult {
+                    lines: vec![Line::from(e)],
+                    binary_not_found: false,
+                },
             };
-            let _ = tx.send(lines);
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Provision managed py-spy for the current service-proc py-spy
+    /// overlay without replacing the overlay content.
+    pub(crate) fn start_pyspy_provision(&mut self, service_proc_ref: String) {
+        let client = self.client.clone();
+        let base_url = self.base_url.clone();
+        let timeout = self
+            .policy
+            .request_timeout(crate::timeouts::RequestOp::ToolProvision);
+        let (tx, rx) = oneshot::channel();
+
+        let Some(ActiveJob::PySpy {
+            provision_state, ..
+        }) = &mut self.active_job
+        else {
+            return;
+        };
+        *provision_state = ProvisionState::Provisioning { rx };
+        self.rebuild_overlay();
+
+        tokio::spawn(async move {
+            let spec: serde_json::Value =
+                match serde_json::from_str(tool_fetch::BUNDLED_PYSPY_SPEC_JSON) {
+                    Ok(spec) => spec,
+                    Err(err) => {
+                        let _ = tx.send(ProvisionOutcome::Err(format!(
+                            "invalid bundled py-spy spec: {err}"
+                        )));
+                        return;
+                    }
+                };
+            let url = format!(
+                "{}/v1/tools_provision/{}",
+                base_url,
+                urlencoding::encode(&service_proc_ref)
+            );
+            let result = tokio::time::timeout(timeout, async {
+                let resp = client
+                    .post(&url)
+                    .json(&spec)
+                    .send()
+                    .await
+                    .map_err(|e| format!("request failed: {e}"))?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    return match resp.json::<serde_json::Value>().await {
+                        Ok(json) => Err(line_vec_text(parse_error_envelope(&json))),
+                        Err(_) => Err(format!("HTTP {status}")),
+                    };
+                }
+                let json = resp
+                    .json::<serde_json::Value>()
+                    .await
+                    .map_err(|e| format!("parse error: {e}"))?;
+                provision_json_to_outcome(&json)
+            })
+            .await;
+
+            let outcome = match result {
+                Err(_) => {
+                    ProvisionOutcome::Err(format!("request timed out after {}s", timeout.as_secs()))
+                }
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(error)) => ProvisionOutcome::Err(error),
+            };
+            let _ = tx.send(outcome);
         });
     }
 
@@ -985,13 +1082,38 @@ impl App {
                 KeyCode::Char('r') | KeyCode::Char('d') => KeyResult::RunDiagnostics,
                 _ => KeyResult::None,
             },
-            Some(ActiveJob::PySpy { .. }) => match key.code {
-                KeyCode::Char('p') => {
+            Some(ActiveJob::PySpy {
+                service_proc_ref,
+                provision_state,
+                ..
+            }) => match key.code {
+                // PY-8: while a managed-py-spy provision is in flight,
+                // do not let lowercase `p` drop the provision receiver
+                // by replacing the active py-spy job. The operator
+                // sees the in-progress overlay until the receiver
+                // resolves.
+                KeyCode::Char('p')
+                    if !matches!(provision_state, ProvisionState::Provisioning { .. }) =>
+                {
                     if let Some(proc_ref) = self.pyspy_proc_ref() {
                         KeyResult::RunPySpy(proc_ref)
                     } else {
                         KeyResult::None
                     }
+                }
+                // PY-8 / recovery: a Failed provision is recoverable —
+                // the operator can press `P` again to retry without
+                // first re-running py-spy.
+                KeyCode::Char('P')
+                    if matches!(
+                        provision_state,
+                        ProvisionState::CanProvision | ProvisionState::Failed { .. }
+                    ) =>
+                {
+                    service_proc_ref
+                        .clone()
+                        .map(KeyResult::ProvisionPySpy)
+                        .unwrap_or(KeyResult::None)
                 }
                 _ => KeyResult::None,
             },
@@ -1028,6 +1150,41 @@ pub(crate) fn parse_error_envelope(json: &serde_json::Value) -> Vec<Line<'static
     vec![Line::from(format!("{code}: {msg}"))]
 }
 
+fn line_vec_text(lines: Vec<Line<'static>>) -> String {
+    lines
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub(crate) fn provision_json_to_outcome(
+    json: &serde_json::Value,
+) -> Result<ProvisionOutcome, String> {
+    if let Some(available) = json.get("Available") {
+        let executable = available
+            .get("executable")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("unexpected provision response: {json}"))?;
+        return Ok(ProvisionOutcome::Ok {
+            executable: executable.to_string(),
+        });
+    }
+    if let Some(failed) = json.get("Failed") {
+        let error = failed
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("tool provisioning failed");
+        return Ok(ProvisionOutcome::Err(error.to_string()));
+    }
+    Err(format!("unexpected provision response: {json}"))
+}
+
 /// Format a py-spy JSON response into styled display lines.
 ///
 /// ## Ok variant
@@ -1038,7 +1195,7 @@ pub(crate) fn parse_error_envelope(json: &serde_json::Value) -> Vec<Line<'static
 pub(crate) fn pyspy_json_to_lines(
     json: &serde_json::Value,
     scheme: &ColorScheme,
-) -> Vec<Line<'static>> {
+) -> PySpyJobResult {
     if let Some(ok) = json.get("Ok") {
         let pid = ok.get("pid").and_then(|v| v.as_u64());
         let binary = ok
@@ -1075,7 +1232,10 @@ pub(crate) fn pyspy_json_to_lines(
 
         if traces.is_empty() {
             lines.push(Line::from("(empty stack)"));
-            return lines;
+            return PySpyJobResult {
+                lines,
+                binary_not_found: false,
+            };
         }
 
         for trace in traces {
@@ -1153,7 +1313,10 @@ pub(crate) fn pyspy_json_to_lines(
             }
         }
 
-        return lines;
+        return PySpyJobResult {
+            lines,
+            binary_not_found: false,
+        };
     }
     if let Some(nf) = json.get("BinaryNotFound") {
         let mut lines = vec![Line::from(Span::styled(
@@ -1170,7 +1333,10 @@ pub(crate) fn pyspy_json_to_lines(
                 }
             }
         }
-        return lines;
+        return PySpyJobResult {
+            lines,
+            binary_not_found: true,
+        };
     }
     if let Some(failed) = json.get("Failed") {
         let mut lines = vec![];
@@ -1204,9 +1370,15 @@ pub(crate) fn pyspy_json_to_lines(
         if lines.is_empty() {
             lines.push(Line::from("(py-spy failed, no output)"));
         }
-        return lines;
+        return PySpyJobResult {
+            lines,
+            binary_not_found: false,
+        };
     }
-    vec![Line::from(format!("unexpected response: {json}"))]
+    PySpyJobResult {
+        lines: vec![Line::from(format!("unexpected response: {json}"))],
+        binary_not_found: false,
+    }
 }
 
 /// Format a `ConfigDumpResult` JSON response into styled `Line`s.
@@ -1303,11 +1475,24 @@ async fn recv_active_job(job: &mut Option<ActiveJob>) -> ActiveJobEvent {
         Some(ActiveJob::PySpy {
             rx: Some(inner), ..
         }) => {
-            let lines = match inner.await {
-                Ok(l) => l,
-                Err(_) => vec![Line::from("(fetch task dropped)")],
+            let result = match inner.await {
+                Ok(result) => result,
+                Err(_) => PySpyJobResult {
+                    lines: vec![Line::from("(fetch task dropped)")],
+                    binary_not_found: false,
+                },
             };
-            ActiveJobEvent::PySpyResult(lines)
+            ActiveJobEvent::PySpyResult(result)
+        }
+        Some(ActiveJob::PySpy {
+            provision_state: ProvisionState::Provisioning { rx },
+            ..
+        }) => {
+            let outcome = match rx.await {
+                Ok(outcome) => outcome,
+                Err(_) => ProvisionOutcome::Err("(provision task dropped)".to_string()),
+            };
+            ActiveJobEvent::ProvisionResult(outcome)
         }
         Some(ActiveJob::Config {
             rx: Some(inner), ..
@@ -1418,6 +1603,9 @@ pub(crate) async fn run_app(
                             }
                             KeyResult::RunPySpy(proc_id) => {
                                 app.start_pyspy(proc_id);
+                            }
+                            KeyResult::ProvisionPySpy(service_proc_ref) => {
+                                app.start_pyspy_provision(service_proc_ref);
                             }
                             KeyResult::RunConfig(proc_id) => {
                                 app.start_config(proc_id);

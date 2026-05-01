@@ -203,6 +203,52 @@ declare_attrs! {
     ))
     pub attr MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT: Duration = Duration::from_secs(5);
 
+    /// Timeout for host-local diagnostic tool inventory/provisioning
+    /// bridge requests. This is intentionally independent from
+    /// config-dump because provisioning may perform provider I/O,
+    /// artifact verification, archive extraction, and cache locking.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_TOOL_PROVISION_BRIDGE_TIMEOUT".to_string()),
+        Some("mesh_admin_tool_provision_bridge_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_TOOL_PROVISION_BRIDGE_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// HTTPS proxy URL used by `tool_fetch` when downloading
+    /// diagnostic tool artifacts. An empty string means "no explicit
+    /// override"; the consuming code (see `host_agent`) then applies
+    /// the Meta-vs-OSS default with `cfg!(fbcode_build)` —
+    /// `fwdproxy:8080` inside fbcode, no proxy in OSS. A non-empty
+    /// value always wins over the build-config default. The `tool_fetch`
+    /// substrate itself does not read environment; this attr is the
+    /// single policy seam.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_TOOL_FETCH_HTTPS_PROXY".to_string()),
+        Some("mesh_admin_tool_fetch_https_proxy".to_string()),
+    ))
+    pub attr MESH_ADMIN_TOOL_FETCH_HTTPS_PROXY: String = String::new();
+
+    /// Filesystem root for `tool_fetch` artifacts. An empty string
+    /// means "use the substrate default" — `$XDG_CACHE_HOME/monarch/tools`
+    /// or `$HOME/.cache/monarch/tools`. A non-empty value overrides the
+    /// root entirely and is useful both for deployments where the
+    /// default location is unsuitable and for tests that need an
+    /// isolated cache so they cannot pollute the user's real cache.
+    /// The `tool_fetch` substrate does not read environment on its
+    /// own; this attr is the single policy seam for cache placement.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_TOOL_FETCH_CACHE_DIR".to_string()),
+        Some("mesh_admin_tool_fetch_cache_dir".to_string()),
+    ))
+    pub attr MESH_ADMIN_TOOL_FETCH_CACHE_DIR: String = String::new();
+
+    /// Timeout for resolving an already-provisioned diagnostic tool
+    /// before running an operator workflow such as py-spy.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_TOOL_RESOLVE_TIMEOUT".to_string()),
+        Some("mesh_admin_tool_resolve_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_TOOL_RESOLVE_TIMEOUT: Duration = Duration::from_secs(1);
+
     /// Timeout for py-spy dump requests. See PS-5 in `introspect`
     /// module doc. With `--native --native-all`, py-spy unwinds native
     /// stacks via libunwind which is significantly slower than
