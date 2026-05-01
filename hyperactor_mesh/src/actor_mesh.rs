@@ -993,6 +993,7 @@ mod tests {
     use ndslice::ViewExt;
     use ndslice::extent;
     use ndslice::view::Ranked;
+    use timed_test::assert_no_process_leak;
     use timed_test::async_timed_test;
     use tokio::time::Duration;
 
@@ -1208,8 +1209,9 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
     #[cfg(fbcode_build)]
+    #[assert_no_process_leak]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_actor_states_with_process_exit() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1423,8 +1425,9 @@ mod tests {
     ///
     /// This is the V1 version of the test from
     /// hyperactor_multiprocess/src/proc_actor.rs::test_undeliverable_message_return.
-    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
+    #[assert_no_process_leak]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_undeliverable_message_return() {
         use hyperactor::mailbox::MessageEnvelope;
         use hyperactor::mailbox::Undeliverable;

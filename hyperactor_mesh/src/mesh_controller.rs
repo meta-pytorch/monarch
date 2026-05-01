@@ -1042,6 +1042,7 @@ mod tests {
     use hyperactor::id::Label;
     use ndslice::Extent;
     use ndslice::ViewExt;
+    use timed_test::assert_no_process_leak;
 
     use super::SUPERVISION_POLL_FREQUENCY;
     use super::proc_status_to_actor_status;
@@ -1212,8 +1213,9 @@ mod tests {
     /// and then kills the controller's host process uncleanly.
     /// The agents on the surviving proc mesh detect the expired keepalive
     /// and stop the actors.
-    #[tokio::test]
     #[cfg(fbcode_build)]
+    #[assert_no_process_leak]
+    #[tokio::test]
     async fn test_orphaned_actors_cleaned_up_on_controller_crash() {
         let config = hyperactor_config::global::lock();
         let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Duration::from_secs(2));

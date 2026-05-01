@@ -1031,6 +1031,7 @@ fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
 mod tests {
     use hyperactor::Instance;
     use ndslice::extent;
+    use timed_test::assert_no_process_leak;
     use timed_test::async_timed_test;
 
     use crate::resource::RankedValues;
@@ -1038,8 +1039,9 @@ mod tests {
     use crate::testactor;
     use crate::testing;
 
-    #[async_timed_test(timeout_secs = 30)]
     #[cfg(fbcode_build)]
+    #[assert_no_process_leak]
+    #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
@@ -1056,8 +1058,9 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[tokio::test]
     #[cfg(fbcode_build)]
+    #[assert_no_process_leak]
+    #[tokio::test]
     async fn test_failing_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
