@@ -29,6 +29,7 @@ jobs:
       runner: ${{ inputs.runner }}
       docker-image: ${{ inputs.docker-image }}
       submodules: recursive
+      upload-artifact: test-results-cpu-rust-${{ github.sha }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -51,8 +52,11 @@ jobs:
 
         # Run CPU-safe Rust tests (no GPU hardware available)
         echo "Running CPU Rust tests..."
-        # Exclude crates that require GPU hardware, CUDA libraries, or
-        # torch C++ headers (libtorch) not available on CPU-only runners.
+        # Capture the test exit code so stage_test_artifacts still runs on
+        # failure (otherwise set -e would exit before any artifacts are
+        # uploaded). Exclude crates that require GPU hardware, CUDA libraries,
+        # or torch C++ headers (libtorch) not available on CPU-only runners.
+        rc=0
         timeout 12m cargo nextest run --workspace --profile ci \
           -E "$(cat .config/nextest-filter.txt)" \
           --exclude monarch_messages \
@@ -65,8 +69,11 @@ jobs:
           --exclude monarch_cpp_static_libs \
           --exclude monarch_extension \
           --exclude monarch_bench \
-          --exclude monarch_conda
+          --exclude monarch_conda || rc=$?
 
         echo "=== sccache stats ==="
         sccache --show-stats || true
         echo "=== end sccache stats ==="
+
+        stage_test_artifacts
+        exit $rc

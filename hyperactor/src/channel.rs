@@ -44,6 +44,7 @@ pub use net::try_tls_pem_bundle;
 
 /// Duplex channel API: a single connection carries messages in both directions.
 pub mod duplex {
+    pub use super::net::duplex::DuplexClient;
     pub use super::net::duplex::DuplexRx;
     pub use super::net::duplex::DuplexServer;
     pub use super::net::duplex::DuplexTx;
@@ -457,6 +458,20 @@ impl ChannelTransport {
             ChannelTransport::Tls => true,
             ChannelTransport::Local => false,
             ChannelTransport::Unix => false,
+        }
+    }
+
+    /// Returns true if this transport can carry the duplex byte-stream
+    /// protocol (see [`crate::channel::net::duplex`]). In-process
+    /// transports cannot carry a duplex wire protocol and must fall
+    /// back to a simplex channel.
+    pub fn supports_duplex(&self) -> bool {
+        match self {
+            ChannelTransport::Tcp(_) => true,
+            ChannelTransport::MetaTls(_) => true,
+            ChannelTransport::Tls => true,
+            ChannelTransport::Unix => true,
+            ChannelTransport::Local => false,
         }
     }
 }

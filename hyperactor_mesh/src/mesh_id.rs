@@ -131,7 +131,7 @@ impl ResourceId {
 
     /// Returns the actor-runtime name derived from this resource id.
     ///
-    /// This is the name passed into `ProcId::actor_id(...)` and used when
+    /// This is the name passed into `ProcAddr::actor_id(...)` and used when
     /// `ProcAgent` spawns the actor process-local runtime object. Keep this
     /// helper as the single mapping point from control-plane resource ids to
     /// actor-runtime names.

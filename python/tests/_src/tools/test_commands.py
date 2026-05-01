@@ -15,11 +15,8 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 from monarch._src.tools import commands
-from monarch._src.tools.commands import component_args_from_cli, server_ready
-from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
-    Config,
-    defaults,
-)
+from monarch._src.tools.commands import server_ready
+from monarch.tools.config import Config
 from monarch.tools.config.workspace import Workspace
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
 from torchx.specs import AppDef, AppDryRunInfo, AppState, AppStatus, Role, RoleStatus
@@ -30,23 +27,20 @@ CMD_CREATE = "monarch._src.tools.commands.create"
 CMD_KILL = "monarch._src.tools.commands.kill"
 
 
+def _appdef() -> AppDef:
+    return AppDef(
+        name="__unused__",
+        roles=[Role(name="trainer", image="__unused__", entrypoint="echo")],
+    )
+
+
 class TestCommands(unittest.TestCase):
-    def test_component_args_from_cli(self) -> None:
-        def fn(h: str, num_hosts: int) -> AppDef:
-            return AppDef("_unused_", roles=[Role("_unused_", "_unused_")])
-
-        args = component_args_from_cli(fn, ["h=gpu.medium", "num_hosts=4"])
-
-        # should be able to call the component function with **args as kwargs
-        self.assertIsNotNone(fn(**args))
-        self.assertDictEqual({"h": "gpu.medium", "num_hosts": 4}, args)
-
     def test_create_dryrun(self) -> None:
         scheduler = "slurm"
         config = Config(
             scheduler,
             dryrun=True,
-            appdef=defaults.component_fn(scheduler)(),
+            appdef=_appdef(),
         )
 
         dryrun_info = commands.create(config)
@@ -64,7 +58,7 @@ class TestCommands(unittest.TestCase):
             config = Config(
                 scheduler,
                 dryrun=True,
-                appdef=defaults.component_fn(scheduler)(),
+                appdef=_appdef(),
                 workspace=Workspace(
                     dirs=[
                         tmpdir / "github" / "torch",
@@ -90,7 +84,7 @@ class TestCommands(unittest.TestCase):
     def test_create(self, mock_schedule: mock.MagicMock) -> None:
         scheduler = "slurm"
         config = Config(scheduler)
-        config.appdef = defaults.component_fn(scheduler)()
+        config.appdef = _appdef()
         server_handle = commands.create(config)
 
         mock_schedule.assert_called_once()
@@ -357,7 +351,7 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
         config = Config(
             scheduler=scheduler,
             scheduler_args={},
-            appdef=defaults.component_fn(scheduler)(),
+            appdef=_appdef(),
         )
         server_info = await commands.get_or_create(name="123", config=config)
         self.assertEqual(server_info.server_handle, "slurm:///123")
@@ -386,7 +380,7 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
                     config = Config(
                         scheduler="slurm",
                         scheduler_args={},
-                        appdef=defaults.component_fn("slurm")(),
+                        appdef=_appdef(),
                     )
                     server_info = await commands.get_or_create(
                         name="123",
@@ -424,7 +418,7 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
         config = Config(
             scheduler="slurm",
             scheduler_args={},
-            appdef=defaults.component_fn("slurm")(),
+            appdef=_appdef(),
         )
         with self.assertRaises(RuntimeError):
             _ = await commands.get_or_create(
@@ -451,7 +445,7 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
         config = Config(
             scheduler="slurm",
             scheduler_args={},
-            appdef=defaults.component_fn("slurm")(),
+            appdef=_appdef(),
         )
         with self.assertRaises(RuntimeError):
             _ = await commands.get_or_create(
@@ -481,7 +475,7 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
             config = Config(
                 scheduler="slurm",
                 scheduler_args={},
-                appdef=defaults.component_fn("slurm")(),
+                appdef=_appdef(),
             )
             server_info = await commands.get_or_create(
                 name="123",

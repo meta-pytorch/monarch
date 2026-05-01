@@ -14,13 +14,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Parser;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
 use hyperactor::context::Mailbox;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMesh;
@@ -56,12 +56,8 @@ struct Args {
 // -- TestActor
 
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        Echo,
-    ],
-)]
+#[hyperactor::export(Echo)]
+#[hyperactor::spawnable]
 pub struct TestActor;
 
 impl Actor for TestActor {}
@@ -89,12 +85,8 @@ impl Handler<Echo> for TestActor {
 
 // -- ProxyActor
 
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        Echo,
-    ],
-)]
+#[hyperactor::export(Echo)]
+#[hyperactor::spawnable]
 pub struct ProxyActor {
     exe_path: String,
     host_mesh: Option<HostMesh>,

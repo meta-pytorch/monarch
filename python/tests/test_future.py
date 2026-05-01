@@ -10,7 +10,7 @@ from typing import Callable
 
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
 )
 from monarch.common import future
 from monarch.common.client import Client
@@ -69,7 +69,7 @@ class TestFuture:
             None,
             [],
             [],
-            ActorId(addr="local:0", proc_name="unknown", actor_name="unknown"),
+            ActorAddr(addr="local:0", proc_name="unknown", actor_name="unknown"),
         )
 
         the_messages = [(1, lambda: None), (2, lambda: f._set_result(re))]
