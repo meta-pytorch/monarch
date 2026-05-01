@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
-import inspect
 import os
 
 # required to enable RDMA support
@@ -13,73 +12,16 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import pytest
 import torch
-from monarch.actor import Actor, context, current_rank, endpoint, ProcMesh, this_host
-from monarch.config import configured
+from monarch.actor import Actor, current_rank, endpoint, this_host
 from monarch.rdma import get_rdma_backend, is_ibverbs_available, RDMAAction, RDMABuffer
-
-
-# TODO(slurye): Enable these tests in OSS once the shutdown hang issue is fixed.
-pytestmark = pytest.mark.oss_skip
+from proc_mesh_test_utils import stop_all_proc_meshes  # noqa: F401
+from rdma_test_utils import rdma_backends
 
 
 needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason="CUDA not available",
 )
-
-# Backend parametrization for tests that work on both ibverbs and TCP.
-# ibverbs tests are only collected when hardware is present; TCP tests always run.
-RDMA_BACKENDS = []
-if is_ibverbs_available():
-    RDMA_BACKENDS.append("ibverbs")
-RDMA_BACKENDS.append("tcp")
-
-
-def rdma_backends(func):
-    """Parametrize a test on RDMA backend (ibverbs, tcp).
-
-    ibverbs variant is only collected when hardware is present.
-    TCP variant sets rdma_disable_ibverbs=True so the manager
-    falls back to TCP even on RDMA-capable machines.
-    """
-
-    if inspect.iscoroutinefunction(func):
-
-        @pytest.mark.parametrize("rdma_backend", RDMA_BACKENDS)
-        async def wrapper(*args, rdma_backend, **kwargs):
-            if rdma_backend == "tcp":
-                cm = configured(rdma_disable_ibverbs=True)
-            else:
-                cm = configured(rdma_allow_tcp_fallback=False)
-            with cm:
-                return await func(*args, **kwargs)
-
-    else:
-
-        @pytest.mark.parametrize("rdma_backend", RDMA_BACKENDS)
-        def wrapper(*args, rdma_backend, **kwargs):
-            if rdma_backend == "tcp":
-                cm = configured(rdma_disable_ibverbs=True)
-            else:
-                cm = configured(rdma_allow_tcp_fallback=False)
-            with cm:
-                return func(*args, **kwargs)
-
-    wrapper.__name__ = func.__name__
-    wrapper.__module__ = func.__module__
-    return wrapper
-
-
-@pytest.fixture(autouse=True)
-async def stop_all_proc_meshes():
-    with configured(stop_actor_timeout="5s", mesh_terminate_timeout="15s"):
-        yield
-        instance = context().actor_instance
-        children = instance._children or []
-        for child in children:
-            if isinstance(child, ProcMesh):
-                await child.stop()
-        instance._children = None
 
 
 # ---------------------------------------------------------------------------

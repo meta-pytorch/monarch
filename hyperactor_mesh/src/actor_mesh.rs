@@ -21,6 +21,8 @@ use std::sync::OnceLock as OnceCell;
 use std::time::Duration;
 
 use hyperactor::ActorLocal;
+use hyperactor::ActorRef;
+use hyperactor::PortRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::ActorStatus;
@@ -30,7 +32,6 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -89,7 +90,7 @@ declare_attrs! {
 /// An ActorMesh is a collection of ranked A-typed actors.
 ///
 /// Bound note: `A: Referable` because the mesh stores/returns
-/// `hyperactor_reference::ActorRef<A>`, which is only defined for `A: Referable`.
+/// `ActorRef<A>`, which is only defined for `A: Referable`.
 #[derive(Debug)]
 pub struct ActorMesh<A: Referable> {
     proc_mesh: ProcMeshRef,
@@ -100,16 +101,15 @@ pub struct ActorMesh<A: Referable> {
     /// supervision events via subscribing.
     /// It may not be present for some types of actors, typically system actors
     /// such as ProcAgent or CommActor.
-    controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+    controller: Option<ActorRef<ActorMeshController<A>>>,
 }
 
-// `A: Referable` for the same reason as the struct: the mesh holds
-// `hyperactor_reference::ActorRef<A>`.
+// `A: Referable` for the same reason as the struct: the mesh holds `ActorRef<A>`.
 impl<A: Referable> ActorMesh<A> {
     pub(crate) fn new(
         proc_mesh: ProcMeshRef,
         id: ActorMeshId,
-        controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
     ) -> Self {
         let current_ref = ActorMeshRef::with_page_size(
             id.clone(),
@@ -130,10 +130,7 @@ impl<A: Referable> ActorMesh<A> {
         &self.id
     }
 
-    pub(crate) fn set_controller(
-        &mut self,
-        controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
-    ) {
+    pub(crate) fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
         self.controller = controller.clone();
         self.current_ref.set_controller(controller);
     }
@@ -267,7 +264,7 @@ const DEFAULT_PAGE: usize = 1024;
 
 /// A lazily materialized page of ActorRefs.
 struct Page<A: Referable> {
-    slots: Box<[OnceCell<hyperactor_reference::ActorRef<A>>]>,
+    slots: Box<[OnceCell<ActorRef<A>>]>,
 }
 
 impl<A: Referable> Page<A> {
@@ -399,7 +396,7 @@ pub struct ActorMeshRef<A: Referable> {
     /// not be stopped. If Some, the actor mesh may still be stopped, and the
     /// next_supervision_event function can be used to alert that the mesh has
     /// stopped.
-    controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+    controller: Option<ActorRef<ActorMeshController<A>>>,
 
     /// Recorded health issues with the mesh, to quickly consult before sending
     /// out any casted messages. This is a locally updated copy of the authoritative
@@ -412,7 +409,7 @@ pub struct ActorMeshRef<A: Referable> {
     receiver: ActorLocal<
         Arc<
             tokio::sync::Mutex<(
-                hyperactor_reference::PortRef<Option<MeshFailure>>,
+                PortRef<Option<MeshFailure>>,
                 watch::Receiver<MessageOrFailure<Option<MeshFailure>>>,
             )>,
         >,
@@ -423,7 +420,7 @@ pub struct ActorMeshRef<A: Referable> {
     /// - The `Vec` holds slots for multiple pages.
     /// - Each slot is itself a `OnceCell<Box<Page<A>>>`, so that each
     ///   page can be initialized on demand.
-    /// - A `Page<A>` is a boxed slice of `OnceCell<hyperactor_reference::ActorRef<A>>`,
+    /// - A `Page<A>` is a boxed slice of `OnceCell<ActorRef<A>>`,
     ///   i.e. the actual storage for actor references within that
     ///   page.
     pages: OnceCell<Vec<OnceCell<Box<Page<A>>>>>,
@@ -446,7 +443,27 @@ impl<A: Referable> ActorMeshRef<A> {
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
-        self.cast_with_selection(cx, sel!(*), message)
+        self.cast_with_selection(cx, sel!(*), message, &Flattrs::new())
+    }
+
+    /// Cast a message to all the actors in this mesh, merging
+    /// caller-supplied `caller_headers` into the per-rank envelope
+    /// headers before send. Used to propagate caller-known context
+    /// (e.g. operation-context keys marked with `OPERATION_CONTEXT_HEADER`)
+    /// onto the outgoing request so receivers can project it back
+    /// onto replies.
+    #[allow(clippy::result_large_err)]
+    pub fn cast_with_headers<M>(
+        &self,
+        cx: &impl context::Actor,
+        caller_headers: &Flattrs,
+        message: M,
+    ) -> crate::Result<()>
+    where
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage + Clone,
+    {
+        self.cast_with_selection(cx, sel!(*), message, caller_headers)
     }
 
     /// Cast a message to the actors in this mesh according to the provided selection.
@@ -464,7 +481,7 @@ impl<A: Referable> ActorMeshRef<A> {
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
-        self.cast_with_selection(cx, sel, message)
+        self.cast_with_selection(cx, sel, message, &Flattrs::new())
     }
 
     #[allow(clippy::result_large_err)]
@@ -473,6 +490,7 @@ impl<A: Referable> ActorMeshRef<A> {
         cx: &impl context::Actor,
         sel: Selection,
         message: M,
+        caller_headers: &Flattrs,
     ) -> crate::Result<()>
     where
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
@@ -504,13 +522,13 @@ impl<A: Referable> ActorMeshRef<A> {
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
             if casting::v1_casting_enabled() {
                 if Selection::is_equivalent_to_true(&sel) {
-                    self.cast_v1(cx, message, root_comm_actor);
+                    self.cast_v1(cx, message, root_comm_actor, caller_headers);
                     return Ok(());
                 }
                 // V1 does not support non-* selections yet; fall back to
                 // the iteration path below.
             } else {
-                return self.cast_v0(cx, message, sel, root_comm_actor);
+                return self.cast_v0(cx, message, sel, root_comm_actor, caller_headers);
             }
         }
 
@@ -527,7 +545,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 continue;
             }
             let create_rank = point.rank();
-            let mut headers = Flattrs::new();
+            let mut headers = caller_headers.clone();
             multicast::set_cast_info_on_headers(
                 &mut headers,
                 point,
@@ -560,7 +578,8 @@ impl<A: Referable> ActorMeshRef<A> {
         cx: &impl context::Actor,
         message: M,
         sel: Selection,
-        root_comm_actor: &hyperactor_reference::ActorRef<CommActor>,
+        root_comm_actor: &ActorRef<CommActor>,
+        caller_headers: &Flattrs,
     ) -> crate::Result<()>
     where
         A: RemoteHandles<IndexedErasedUnbound<M>>,
@@ -579,6 +598,7 @@ impl<A: Referable> ActorMeshRef<A> {
                     message,
                     &cast_mesh_shape,
                     &root_mesh_shape,
+                    caller_headers,
                 )
                 .map_err(|e| Error::CastingError(self.id.clone(), e.into()))
             }
@@ -590,6 +610,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 &cast_mesh_shape,
                 &cast_mesh_shape,
                 message,
+                caller_headers,
             )
             .map_err(|e| Error::CastingError(self.id.clone(), e.into())),
         }
@@ -599,7 +620,8 @@ impl<A: Referable> ActorMeshRef<A> {
         &self,
         cx: &impl context::Actor,
         message: M,
-        root_comm_actor: &hyperactor_reference::ActorRef<CommActor>,
+        root_comm_actor: &ActorRef<CommActor>,
+        caller_headers: &Flattrs,
     ) where
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
@@ -623,7 +645,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 seq
             });
 
-            let mut headers = Flattrs::new();
+            let mut headers = caller_headers.clone();
             headers.set(
                 multicast::CAST_ORIGINATING_SENDER,
                 cx.instance().self_id().clone().into(),
@@ -677,7 +699,7 @@ impl<A: Referable> ActorMeshRef<A> {
     pub(crate) fn new(
         id: ActorMeshId,
         proc_mesh: ProcMeshRef,
-        controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
     ) -> Self {
         Self::with_page_size(id, proc_mesh, DEFAULT_PAGE, controller)
     }
@@ -690,7 +712,7 @@ impl<A: Referable> ActorMeshRef<A> {
         id: ActorMeshId,
         proc_mesh: ProcMeshRef,
         page_size: usize,
-        controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
     ) -> Self {
         Self {
             proc_mesh,
@@ -712,14 +734,11 @@ impl<A: Referable> ActorMeshRef<A> {
         view::Ranked::region(&self.proc_mesh).num_ranks()
     }
 
-    pub fn controller(&self) -> &Option<hyperactor_reference::ActorRef<ActorMeshController<A>>> {
+    pub fn controller(&self) -> &Option<ActorRef<ActorMeshController<A>>> {
         &self.controller
     }
 
-    fn set_controller(
-        &mut self,
-        controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
-    ) {
+    fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
         self.controller = controller;
     }
 
@@ -729,7 +748,7 @@ impl<A: Referable> ActorMeshRef<A> {
             .get_or_init(|| (0..n).map(|_| OnceCell::new()).collect())
     }
 
-    fn materialize(&self, rank: usize) -> Option<&hyperactor_reference::ActorRef<A>> {
+    fn materialize(&self, rank: usize) -> Option<&ActorRef<A>> {
         let len = self.len();
         if rank >= len {
             return None;
@@ -766,10 +785,10 @@ impl<A: Referable> ActorMeshRef<A> {
     }
 
     fn init_supervision_receiver(
-        controller: &hyperactor_reference::ActorRef<ActorMeshController<A>>,
+        controller: &ActorRef<ActorMeshController<A>>,
         cx: &impl context::Actor,
     ) -> (
-        hyperactor_reference::PortRef<Option<MeshFailure>>,
+        PortRef<Option<MeshFailure>>,
         watch::Receiver<MessageOrFailure<Option<MeshFailure>>>,
     ) {
         let (tx, rx) = cx.mailbox().open_port();
@@ -990,7 +1009,7 @@ impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
         let (proc_mesh, id, controller) = <(
             ProcMeshRef,
             ActorMeshId,
-            Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+            Option<ActorRef<ActorMeshController<A>>>,
         )>::deserialize(deserializer)?;
         Ok(ActorMeshRef::with_page_size(
             id,
@@ -1002,7 +1021,7 @@ impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
 }
 
 impl<A: Referable> view::Ranked for ActorMeshRef<A> {
-    type Item = hyperactor_reference::ActorRef<A>;
+    type Item = ActorRef<A>;
 
     #[inline]
     fn region(&self) -> &Region {

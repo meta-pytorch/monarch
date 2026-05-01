@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use monarch_types::SerializablePyErr;
 use pyo3::prelude::*;
@@ -38,7 +38,8 @@ wirevalue::register_type!(AutoReloadParams);
 
 /// Simple Rust Actor that wraps the Python AutoReloader class via pyo3
 #[derive(Debug)]
-#[hyperactor::export(spawn = true, handlers = [AutoReloadMessage])]
+#[hyperactor::export(handlers = [AutoReloadMessage])]
+#[hyperactor::spawnable]
 pub struct AutoReloadActor {
     state: Result<(Arc<Py<PyAny>>, Py<PyAny>), SerializablePyErr>,
 }

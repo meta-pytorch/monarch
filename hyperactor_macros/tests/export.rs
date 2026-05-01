@@ -6,26 +6,26 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::fmt::Debug;
+
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Unbind;
 use hyperactor::port::Port;
-use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
 #[derive(Debug)]
 #[hyperactor::export(
-    handlers = [
-        TestMessage { cast = true },
-        () { cast = true },
-        MyGeneric<()> { cast = true },
-        u64,
-    ],
+    TestMessage { cast = true },
+    () { cast = true },
+    MyGeneric<()> { cast = true },
+    u64,
 )]
 struct TestActor {
     // Forward the received message to this port, so it can be inspected by
@@ -40,6 +40,48 @@ impl TestActor {
 }
 
 impl Actor for TestActor {}
+
+#[derive(Debug)]
+#[hyperactor::export(GenericMessage<T>)]
+struct GenericActor<T> {
+    forward_port: reference::PortRef<String>,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T> GenericActor<T> {
+    fn new(forward_port: reference::PortRef<String>) -> Self {
+        Self {
+            forward_port,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T> Actor for GenericActor<T>
+where
+    T: Debug + Send + Sync + Serialize + Named + 'static,
+    for<'de> T: Deserialize<'de>,
+{
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Bind, Unbind, Named)]
+struct GenericMessage<T>(T);
+
+#[async_trait]
+impl<T> Handler<GenericMessage<T>> for GenericActor<T>
+where
+    T: Debug + Send + Sync + Serialize + Named + 'static,
+    for<'de> T: Deserialize<'de>,
+{
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        GenericMessage(message): GenericMessage<T>,
+    ) -> anyhow::Result<()> {
+        self.forward_port.send(cx, format!("{message:?}"))?;
+        Ok(())
+    }
+}
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
 struct TestMessage(String);
@@ -114,8 +156,7 @@ mod tests {
             let port_id = actor_handle
                 .actor_id()
                 .port_ref(Port::from(TestMessage::port()));
-            let port_ref: reference::PortRef<TestMessage> =
-                reference::PortRef::attest(port_id.into());
+            let port_ref: reference::PortRef<TestMessage> = reference::PortRef::attest(port_id);
             port_ref
                 .send(&client, TestMessage("abc".to_string()))
                 .unwrap();
@@ -124,14 +165,14 @@ mod tests {
         {
             // () type
             let port_id = actor_handle.actor_id().port_ref(Port::from(<()>::port()));
-            let port_ref: reference::PortRef<()> = reference::PortRef::attest(port_id.into());
+            let port_ref: reference::PortRef<()> = reference::PortRef::attest(port_id);
             port_ref.send(&client, ()).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "()");
         }
         {
             // u64 type
             let port_id = actor_handle.actor_id().port_ref(Port::from(<u64>::port()));
-            let port_ref: reference::PortRef<u64> = reference::PortRef::attest(port_id.into());
+            let port_ref: reference::PortRef<u64> = reference::PortRef::attest(port_id);
             port_ref.send(&client, 987654321).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "u64: 987654321");
         }
@@ -140,8 +181,7 @@ mod tests {
             let port_id = actor_handle
                 .actor_id()
                 .port_ref(Port::from(MyGeneric::<()>::port()));
-            let port_ref: reference::PortRef<MyGeneric<()>> =
-                reference::PortRef::attest(port_id.into());
+            let port_ref: reference::PortRef<MyGeneric<()>> = reference::PortRef::attest(port_id);
             port_ref.send(&client, MyGeneric(())).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
         }
@@ -155,7 +195,7 @@ mod tests {
                 .actor_id()
                 .port_ref(Port::from(<IndexedErasedUnbound<TestMessage>>::port()));
             let port_ref: reference::PortRef<IndexedErasedUnbound<TestMessage>> =
-                reference::PortRef::attest(port_id.into());
+                reference::PortRef::attest(port_id);
             port_ref.send(&client, indexed_msg).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "efg");
         }
@@ -168,7 +208,7 @@ mod tests {
                 .actor_id()
                 .port_ref(Port::from(<IndexedErasedUnbound<()>>::port()));
             let port_ref: reference::PortRef<IndexedErasedUnbound<()>> =
-                reference::PortRef::attest(port_id.into());
+                reference::PortRef::attest(port_id);
             port_ref.send(&client, indexed_msg).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "()");
         }
@@ -181,7 +221,7 @@ mod tests {
                 .actor_id()
                 .port_ref(Port::from(<IndexedErasedUnbound<MyGeneric<()>>>::port()));
             let port_ref: reference::PortRef<IndexedErasedUnbound<MyGeneric<()>>> =
-                reference::PortRef::attest(port_id.into());
+                reference::PortRef::attest(port_id);
             port_ref.send(&client, indexed_msg).unwrap();
             assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
         }
@@ -227,5 +267,30 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap(), "()");
         assert_eq!(rx.recv().await.unwrap(), "bar");
         assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_generic_export() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = client.open_port();
+        let actor_handle = proc
+            .spawn("generic", GenericActor::<u64>::new(tx.bind()))
+            .unwrap();
+
+        actor_handle.bind::<GenericActor<u64>>();
+
+        let port_id = actor_handle
+            .actor_id()
+            .port_ref(Port::from(GenericMessage::<u64>::port()));
+        let port_ref: reference::PortRef<GenericMessage<u64>> =
+            reference::PortRef::attest(port_id.into());
+        port_ref.send(&client, GenericMessage(42)).unwrap();
+        assert_eq!(rx.recv().await.unwrap(), "42");
+
+        assert_ne!(
+            <GenericActor<u64> as Named>::typename(),
+            <GenericActor<String> as Named>::typename()
+        );
     }
 }

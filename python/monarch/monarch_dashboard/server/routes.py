@@ -11,7 +11,6 @@ actors, status events, messages, and sent messages.  Every handler returns
 JSON and uses standard HTTP status codes (200, 404).
 """
 
-import os
 from typing import Any
 
 from flask import Blueprint, jsonify, request
@@ -70,12 +69,13 @@ def summary():
 def dag():
     """Classified nodes and edges for the DAG visualization.
 
-    When the Mesh Admin API is available (MONARCH_ADMIN_URL env var),
-    uses the admin tree directly — same hierarchy as the TUI:
-    Host → Proc → Actor.  System actors are filtered using the admin
-    API's authoritative ``is_system`` flag and ``system_children``.
+    When snapshot tables are populated (periodic snapshot capture),
+    uses the 4-tier snapshot hierarchy — same structure as the TUI:
+    Host → Proc → Actor.  System actors are filtered using the
+    snapshot ``is_system`` flag and a name-based heuristic.
 
-    Falls back to the telemetry SQL layer if the admin API is unavailable.
+    Falls back to the telemetry SQL 6-tier hierarchy if snapshot
+    tables are empty.
 
     Optional: ?hide_system=true (default) to filter system actors.
     """
@@ -84,16 +84,14 @@ def dag():
     try:
 
         def _compute_dag():
-            # Prefer the admin API for a clean TUI-like hierarchy.
-            if os.environ.get("MONARCH_ADMIN_URL"):
-                result = build_admin_dag(hide_system=hide_system)
-                if result.get("nodes"):
-                    return _sanitize_for_js(
-                        {
-                            "nodes": result["nodes"],
-                            "edges": result["edges"],
-                        }
-                    )
+            result = build_admin_dag(hide_system=hide_system)
+            if result.get("nodes"):
+                return _sanitize_for_js(
+                    {
+                        "nodes": result["nodes"],
+                        "edges": result["edges"],
+                    }
+                )
 
             # Fallback: telemetry SQL layer.
             system_names = get_system_actor_names() if hide_system else set()

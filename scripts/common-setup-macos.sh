@@ -31,6 +31,8 @@ install_macos_rust_test_dependencies() {
 # between runs.
 run_test_groups() {
     set +e
+    local test_results_dir="${RUNNER_TEST_RESULTS_DIR:-test-results}"
+    mkdir -p "$test_results_dir"
     local FAILED_GROUPS=()
     local TEST_EXIT_CODE=0
     for GROUP in $(seq 1 10); do
@@ -44,6 +46,7 @@ run_test_groups() {
             --ignore-glob="**/meta/**" \
             --dist=no \
             --group="$GROUP" \
+            --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
             --splits=10
         TEST_EXIT_CODE=$?
         if [[ $TEST_EXIT_CODE -eq 0 ]]; then

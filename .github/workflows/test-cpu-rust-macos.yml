@@ -54,7 +54,6 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
           RUSTFLAGS: --cfg tracing_unstable
-          USE_TENSOR_ENGINE: "0"
         run: |
           set -eux
           cargo nextest run --workspace --profile ci \
@@ -70,3 +69,20 @@ jobs:
             --exclude monarch_extension \
             --exclude monarch_bench \
             --exclude monarch_conda
+
+      - name: Stage nextest results
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p test-results
+          if [[ -f "${{ runner.temp }}/cargo-target/nextest/ci/junit.xml" ]]; then
+            cp -v "${{ runner.temp }}/cargo-target/nextest/ci/junit.xml" test-results/nextest-junit.xml
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-cpu-rust-macos-${{ github.sha }}
+          path: test-results/nextest-junit.xml
+          if-no-files-found: ignore

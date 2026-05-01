@@ -25,6 +25,7 @@ jobs:
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       submodules: recursive
       download-artifact: monarch-${{ matrix.name }}-${{ github.sha }}-py3.10
+      upload-artifact: test-results-gpu-rust-${{ matrix.name }}-${{ github.sha }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -64,20 +65,25 @@ jobs:
         # * monarch_messages: monarch/target/debug/deps/monarch_messages-...:
         #   /lib64/libm.so.6: version `GLIBC_2.29' not found
         #   (required by /meta-pytorch/monarch/libtorch/lib/libtorch_cpu.so)
+        # Capture the test exit code so stage_test_artifacts still runs on
+        # failure (otherwise set -e would exit before any artifacts are
+        # uploaded).
+        rc=0
         timeout 12m cargo nextest run --workspace --profile ci \
           -E "$(cat .config/nextest-filter.txt)" \
           --exclude monarch_messages \
           --exclude monarch_tensor_worker \
           --exclude torch-sys-cuda \
           --exclude monarch_rdma \
-          --exclude torch-sys
+          --exclude torch-sys || rc=$?
 
         echo "=== sccache stats ==="
         sccache --show-stats || true
         echo "=== end sccache stats ==="
 
-        # Copy the test results to the expected location
-        # TODO: error in pytest-results-action, TypeError: results.testsuites.testsuite.testcase is not iterable
-        # Don't try to parse these results for now.
-        # mkdir -p "${RUNNER_TEST_RESULTS_DIR:-test-results}"
-        # cp target/nextest/ci/junit.xml "${RUNNER_TEST_RESULTS_DIR:-test-results}/junit.xml"
+        # NOTE: We deliberately do NOT copy nextest's junit.xml into
+        # RUNNER_TEST_RESULTS_DIR. pytest-results-action chokes on it with
+        # "TypeError: results.testsuites.testsuite.testcase is not iterable".
+        # stage_test_artifacts uploads it under a separate name instead.
+        stage_test_artifacts
+        exit $rc
