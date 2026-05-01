@@ -11,12 +11,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::context;
@@ -45,7 +45,8 @@ use crate::register_segment_scanner;
 /// request. Allocate and register are separate messages so that multiple senders
 /// can allocate first (making all segments visible to the scanner) before any
 /// of them trigger registration.
-#[hyperactor::export(spawn = true, handlers = [SenderMessage])]
+#[hyperactor::export(handlers = [SenderMessage])]
+#[hyperactor::spawnable]
 #[derive(Debug)]
 struct SenderActor {
     device: i32,
@@ -162,7 +163,8 @@ impl SenderMessageHandler for SenderActor {
 
 /// Runs in the receiver's child process. Allocates a CPU buffer and performs
 /// an RDMA read from the sender's GPU memory.
-#[hyperactor::export(spawn = true, handlers = [ReceiverMessage])]
+#[hyperactor::export(handlers = [ReceiverMessage])]
+#[hyperactor::spawnable]
 #[derive(Debug)]
 struct ReceiverActor;
 

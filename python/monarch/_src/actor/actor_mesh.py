@@ -65,7 +65,7 @@ from monarch._rust_bindings.monarch_hyperactor.pickle import (
     pickle,
     PicklingState,
 )
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
@@ -88,10 +88,9 @@ from monarch._src.actor.mpsc import (  # noqa: F401 - import runs @rust_struct p
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
-from monarch._src.actor.telemetry import METER
+from monarch._src.actor.telemetry import METER, span
 from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message_kind
 from opentelemetry.metrics import Counter
-from opentelemetry.trace import Tracer
 from typing_extensions import Self
 
 if TYPE_CHECKING:
@@ -112,11 +111,7 @@ if TYPE_CHECKING:
         _assert_implements_endpoint(ep)
 
 
-from monarch._src.actor.telemetry import get_monarch_tracer
-
 logger: logging.Logger = logging.getLogger(__name__)
-
-TRACER: Tracer = get_monarch_tracer()
 
 try:
     from __manifest__ import fbmake  # noqa
@@ -170,7 +165,7 @@ class Instance(abc.ABC):
         return self.actor_id.proc_id
 
     @abstractproperty
-    def actor_id(self) -> ActorId:
+    def actor_id(self) -> ActorAddr:
         """
         The actor_id of the current actor.
         """
@@ -560,14 +555,19 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
         # ChannelTransport enum
         transport_config = BindSpec(transport)
 
+    global _transport
+
     if _context.get() is not None:
+        # Context already initialized. It is only an error to enable a *different* transport;
+        # re-enabling the same transport is a no-op.
+        with _transport_lock:
+            if _transport == transport_config:
+                return
         raise RuntimeError(
             "`enable_transport()` must be called before any other calls in the monarch API. "
             "If it isn't called, we will implicitly call `monarch.enable_transport(ChannelTransport.Unix)` "
             "on the first monarch call."
         )
-
-    global _transport
     with _transport_lock:
         if _transport is not None and _transport != transport_config:
             raise RuntimeError(
@@ -858,7 +858,14 @@ class ValueMesh(MeshTrait, Generic[R]):
             # Shouldn't happen if Shape is consistent, but keep a clear
             # error.
             raise IndexError(f"rank {global_rank} not in current shape")
-        return self.get(local_idx)
+        try:
+            # pyre-ignore[21]: monarch.common only exists with tensor engine
+            from monarch.common.device_mesh import no_mesh
+        except ImportError:
+            return self.get(local_idx)
+        # pyre-ignore[16]: no_mesh type resolved at runtime
+        with no_mesh.activate():
+            return self.get(local_idx)
 
     def items(self) -> Iterable[Tuple[Point, R]]:
         """
@@ -1271,13 +1278,7 @@ class _Actor:
 
             if is_coro:
                 if should_instrument:
-                    # TODO(T12345): Replace with a lower-overhead tracing solution.
-                    # Using TRACER context manager for now to avoid thread-safety
-                    # issues with PySpan across async/await boundaries.
-                    with TRACER.start_as_current_span(
-                        method_name,
-                        attributes={"actor_id": str(ctx.actor_instance.actor_id)},
-                    ):
+                    with span(method_name):
                         result = await the_method(*args, **kwargs)
                 else:
                     result = await the_method(*args, **kwargs)
@@ -1285,13 +1286,7 @@ class _Actor:
             else:
                 with fake_sync_state():
                     if should_instrument:
-                        # TODO(T12345): Replace with a lower-overhead tracing solution.
-                        # Using TRACER context manager for now to avoid thread-safety
-                        # issues with PySpan across async/await boundaries.
-                        with TRACER.start_as_current_span(
-                            method_name,
-                            attributes={"actor_id": str(ctx.actor_instance.actor_id)},
-                        ):
+                        with span(method_name):
                             result = the_method(*args, **kwargs)
                     else:
                         result = the_method(*args, **kwargs)

@@ -32,6 +32,8 @@ use tokio::task::JoinHandle;
 use typeuri::Named;
 
 use crate as hyperactor; // for macros
+use crate::ActorAddr;
+use crate::ActorRef;
 use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
@@ -49,8 +51,6 @@ use crate::proc::Instance;
 use crate::proc::InstanceCell;
 use crate::proc::Ports;
 use crate::proc::Proc;
-use crate::ref_;
-use crate::reference;
 use crate::supervision::ActorSupervisionEvent;
 
 pub mod remote;
@@ -99,7 +99,7 @@ pub trait Actor: Sized + Send + 'static {
     }
 
     /// Spawn a named child actor. Same supervision semantics as
-    /// `spawn`, but the child gets `name` in its ActorId.
+    /// `spawn`, but the child gets `name` in its ActorAddr.
     fn spawn_with_name(
         self,
         cx: &impl context::Actor,
@@ -151,7 +151,7 @@ pub trait Actor: Sized + Send + 'static {
     }
 
     /// If overridden, we will use this name in place of the
-    /// ActorId for talking about this actor in supervision error
+    /// ActorAddr for talking about this actor in supervision error
     /// messages.
     fn display_name(&self) -> Option<String> {
         None
@@ -261,14 +261,14 @@ where
 /// - `Actor`: only actors may be remotely spawned.
 /// - `Referable`: marks the type as eligible for typed remote
 ///   references (`ActorRef<A>`); required because remote spawn
-///   ultimately hands back an `ActorId` that higher-level APIs may
+///   ultimately hands back an `ActorAddr` that higher-level APIs may
 ///   re-type as `ActorRef<A>`.
 /// - `Binds<Self>`: lets the runtime wire this actor's message ports
 ///   when it is spawned (the blanket impl calls `handle.bind::<Self>()`).
 ///
 /// `gspawn` is a type-erased entry point used by the remote
 /// spawn/registry machinery. It takes serialized params and returns
-/// the new actor's `ActorId`; application code shouldn't call it
+/// the new actor's `ActorAddr`; application code shouldn't call it
 /// directly.
 #[async_trait]
 pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
@@ -289,7 +289,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         name: &str,
         serialized_params: Data,
         environment: Flattrs,
-    ) -> Pin<Box<dyn Future<Output = Result<reference::ActorId, anyhow::Error>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<ActorAddr, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         let name = name.to_string();
         Box::pin(async move {
@@ -298,7 +298,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
                     .map(|(v, _)| v)?;
             let actor = Self::new(params, environment).await?;
             let handle = proc.spawn(&name, actor)?;
-            // We return only the ActorId, not a typed ActorRef.
+            // We return only the ActorAddr, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
             // only via the serialized/opaque messaging path, which
             // makes it safe to export across process boundaries.
@@ -309,7 +309,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
             //
             // This will be replaced by a proper export/registry
             // mechanism.
-            Ok(handle.bind::<Self>().actor_id)
+            Ok(handle.bind::<Self>().into_actor_id())
         })
     }
 
@@ -334,8 +334,8 @@ impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
 /// with the ID of the actor being served.
 #[derive(Debug)]
 pub struct ActorError {
-    /// The ActorRef for the actor that generated this error.
-    pub actor_id: Box<ref_::ActorRef>,
+    /// The ActorAddr for the actor that generated this error.
+    pub actor_id: Box<ActorAddr>,
     /// The kind of error that occurred.
     pub kind: Box<ActorErrorKind>,
 }
@@ -405,7 +405,7 @@ impl ActorErrorKind {
 
 impl ActorError {
     /// Create a new actor server error with the provided id and kind.
-    pub(crate) fn new(actor_id: &ref_::ActorRef, kind: ActorErrorKind) -> Self {
+    pub(crate) fn new(actor_id: &ActorAddr, kind: ActorErrorKind) -> Self {
         Self {
             actor_id: Box::new(actor_id.clone()),
             kind: Box::new(kind),
@@ -611,7 +611,7 @@ impl fmt::Display for ActorStatus {
 /// detached from the underlying actor instance, and there is no longer
 /// any way to join it.
 ///
-/// Correspondingly, [`crate::ActorRef`]s refer to (possibly) remote
+/// Correspondingly, [`crate::ActorAddr`]s refer to (possibly) remote
 /// actors.
 pub struct ActorHandle<A: Actor> {
     cell: InstanceCell,
@@ -630,8 +630,8 @@ impl<A: Actor> ActorHandle<A> {
         &self.cell
     }
 
-    /// The [`ActorRef`] of the actor represented by this handle.
-    pub fn actor_id(&self) -> &ref_::ActorRef {
+    /// The [`ActorAddr`] of the actor represented by this handle.
+    pub fn actor_id(&self) -> &ActorAddr {
         self.cell.actor_id()
     }
 
@@ -669,7 +669,7 @@ impl<A: Actor> ActorHandle<A> {
 
     /// TEMPORARY: bind...
     /// TODO: we shoudl also have a default binding(?)
-    pub fn bind<R: Binds<A>>(&self) -> reference::ActorRef<R> {
+    pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
         self.cell.bind(self.ports.as_ref())
     }
 }
@@ -790,7 +790,10 @@ mod tests {
     use super::*;
     use crate as hyperactor;
     use crate::Actor;
+    use crate::ActorRef;
+    use crate::Address;
     use crate::OncePortHandle;
+    use crate::PortRef;
     use crate::config;
     use crate::context::Mailbox as _;
     use crate::introspect::IntrospectMessage;
@@ -808,7 +811,7 @@ mod tests {
     use crate::testing::proc_supervison::ProcSupervisionCoordinator; // for macros
 
     #[derive(Debug)]
-    struct EchoActor(reference::PortRef<u64>);
+    struct EchoActor(PortRef<u64>);
 
     #[async_trait]
     impl Actor for EchoActor {}
@@ -1030,7 +1033,7 @@ mod tests {
         test.sync().await;
         assert_eq!(test.get_values(), (123u64, "foo".to_string()));
 
-        let myref: reference::ActorRef<MultiActor> = test.handle.bind();
+        let myref: ActorRef<MultiActor> = test.handle.bind();
 
         myref.port().send(&test.client, 321u64).unwrap();
         test.sync().await;
@@ -1050,7 +1053,7 @@ mod tests {
 
         hyperactor::behavior!(MyActorBehavior, u64, String);
 
-        let myref: reference::ActorRef<MyActorBehavior> = test.handle.bind();
+        let myref: ActorRef<MyActorBehavior> = test.handle.bind();
         myref.port().send(&test.client, "biz".to_string()).unwrap();
         myref.port().send(&test.client, 999u64).unwrap();
 
@@ -1082,7 +1085,7 @@ mod tests {
     // Returning the sequence number assigned to the message.
     #[derive(Debug)]
     #[hyperactor::export(handlers = [String, Callback])]
-    struct GetSeqActor(reference::PortRef<(String, SeqInfo)>);
+    struct GetSeqActor(PortRef<(String, SeqInfo)>);
 
     #[async_trait]
     impl Actor for GetSeqActor {}
@@ -1106,7 +1109,7 @@ mod tests {
     // handler will reply that port with its own callback port. Then sender can
     // send the string message through this callback port.
     #[derive(Clone, Debug, Serialize, Deserialize, Named)]
-    struct Callback(reference::PortRef<reference::PortRef<String>>);
+    struct Callback(PortRef<PortRef<String>>);
 
     #[async_trait]
     impl Handler<Callback> for GetSeqActor {
@@ -1138,7 +1141,7 @@ mod tests {
             ("unbound".to_string(), SeqInfo::Direct)
         );
 
-        let actor_ref: reference::ActorRef<GetSeqActor> = actor_handle.bind();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         let session_id = client.sequencer().session_id();
         let mut expected_seq = 0;
@@ -1187,7 +1190,7 @@ mod tests {
         let (non_actor_tx, mut non_actor_rx) = mpsc::unbounded_channel::<Option<SeqInfo>>();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(actor_tx.bind())).unwrap();
-        let actor_ref: reference::ActorRef<GetSeqActor> = actor_handle.bind();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         // Create a non-actor port using open_enqueue_port
         let non_actor_tx_clone = non_actor_tx.clone();
@@ -1264,7 +1267,7 @@ mod tests {
         let (tx, mut rx) = client1.open_port();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
-        let actor_ref: reference::ActorRef<GetSeqActor> = actor_handle.bind();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         // Each client should have a different session_id
         let session_id_1 = client1.sequencer().session_id();
@@ -1373,7 +1376,7 @@ mod tests {
         let (tx, mut rx) = client.open_port();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
-        let actor_ref: reference::ActorRef<GetSeqActor> = actor_handle.bind();
+        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         let (callback_tx, mut callback_rx) = client.open_port();
         // Client sends the 1st message
@@ -1461,7 +1464,7 @@ mod tests {
         let (tx, mut rx) = client.open_port();
 
         let handle = local_proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
-        let actor_ref: reference::ActorRef<GetSeqActor> = handle.bind();
+        let actor_ref: ActorRef<GetSeqActor> = handle.bind();
 
         let remote_proc = Proc::configured(
             test_proc_id("remote_0"),
@@ -1574,22 +1577,20 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_introspect", actor).unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(&handle.actor_id().clone())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
         let payload = reply_rx.recv().await.unwrap();
 
         assert_eq!(
             payload.identity,
-            crate::introspect::IntrospectRef::Actor(handle.actor_id().clone().into())
+            crate::introspect::IntrospectRef::Actor(handle.actor_id().clone())
         );
         assert_valid_attrs(&payload);
         assert_has_attr(&payload, "status");
@@ -1749,19 +1750,17 @@ mod tests {
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
 
-        let child_ref = reference::Reference::Actor(test_proc_id("nonexistent").actor_id("child"));
+        let child_ref = crate::Address::Actor(test_proc_id("nonexistent").actor_ref("child"));
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::QueryChild {
-                child_ref,
-                reply: reply_port.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+            .send(
+                &client,
+                IntrospectMessage::QueryChild {
+                    child_ref,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
         let payload = reply_rx.recv().await.unwrap();
 
         assert_eq!(
@@ -1801,17 +1800,15 @@ mod tests {
             .unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(&handle.actor_id().clone())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
         let payload = reply_rx.recv().await.unwrap();
 
         // The runtime task returns actor attrs (with status), NOT
@@ -1844,22 +1841,20 @@ mod tests {
 
         // Query the child — supervisor should be the parent.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &child_handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(&child_handle.actor_id().clone())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
         let child_payload = reply_rx.recv().await.unwrap();
 
         assert_eq!(
             child_payload.identity,
-            crate::introspect::IntrospectRef::Actor(child_handle.actor_id().clone().into()),
+            crate::introspect::IntrospectRef::Actor(child_handle.actor_id().clone()),
         );
         // Verify it has actor attrs (status present).
         assert!(
@@ -1869,23 +1864,21 @@ mod tests {
         assert_eq!(
             child_payload.parent,
             Some(crate::introspect::IntrospectRef::Actor(
-                parent_handle.actor_id().clone().into()
+                parent_handle.actor_id().clone()
             )),
         );
 
         // Query the parent — children should include the child.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &parent_handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(&parent_handle.actor_id().clone())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
         let parent_payload = reply_rx.recv().await.unwrap();
 
         assert!(parent_payload.parent.is_none());
@@ -1893,7 +1886,7 @@ mod tests {
             parent_payload
                 .children
                 .contains(&crate::introspect::IntrospectRef::Actor(
-                    child_handle.actor_id().clone().into()
+                    child_handle.actor_id().clone()
                 )),
         );
 
@@ -1923,17 +1916,15 @@ mod tests {
             .unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(&handle.actor_id().clone())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
         let payload = reply_rx.recv().await.unwrap();
 
         assert_status(&payload, "idle");
@@ -1960,17 +1951,15 @@ mod tests {
         let _ = rx.recv().await.unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(&handle.actor_id().clone())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
         let payload = reply_rx.recv().await.unwrap();
 
         assert_status(&payload, "idle");
@@ -2001,32 +1990,28 @@ mod tests {
 
         // First introspect query.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(&handle.actor_id().clone())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
         let payload1 = reply_rx.recv().await.unwrap();
 
         // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port2.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(&handle.actor_id().clone())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port2.bind(),
+                },
+            )
+            .unwrap();
         let payload2 = reply_rx2.recv().await.unwrap();
 
         // Neither should show IntrospectMessage as the handler.
@@ -2098,17 +2083,16 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
 
         // Before registering, query_child returns None.
-        let test_ref: ref_::Reference =
-            reference::Reference::Actor(test_proc_id("test").actor_id("child")).into();
+        let test_ref = Address::Actor(test_proc_id("test").actor_ref("child"));
         assert!(handle.cell().query_child(&test_ref).is_none());
 
         // Register a callback.
         handle.cell().set_query_child_handler(|child_ref| {
             use crate::introspect::IntrospectRef;
             let identity = match child_ref {
-                ref_::Reference::Proc(p) => IntrospectRef::Proc(p.clone().into()),
-                ref_::Reference::Actor(a) => IntrospectRef::Actor(a.clone().into()),
-                ref_::Reference::Port(p) => IntrospectRef::Actor(p.actor_ref().into()),
+                Address::Proc(p) => IntrospectRef::Proc(p.clone()),
+                Address::Actor(a) => IntrospectRef::Actor(a.clone()),
+                Address::Port(p) => IntrospectRef::Actor(p.actor_ref()),
             };
             IntrospectResult {
                 identity,
@@ -2130,7 +2114,7 @@ mod tests {
             .expect("callback should produce a payload");
         assert_eq!(
             payload.identity,
-            crate::introspect::IntrospectRef::Actor(test_proc_id("test").actor_id("child"))
+            crate::introspect::IntrospectRef::Actor(test_proc_id("test").actor_ref("child"))
         );
         let attrs: serde_json::Value =
             serde_json::from_str(&payload.attrs).expect("attrs must be valid JSON");
@@ -2190,17 +2174,15 @@ mod tests {
 
         // Send introspect query via the dedicated introspect port.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(&handle.actor_id().clone())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
 
         // Must not hang — the introspect task runs independently.
         let payload = tokio::time::timeout(Duration::from_secs(5), reply_rx.recv())
@@ -2237,32 +2219,28 @@ mod tests {
 
         // First introspect query.
         let (reply_port1, reply_rx1) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port1.bind(),
-            },
-        )
-        .unwrap();
+        PortRef::<IntrospectMessage>::attest_message_port(&handle.actor_id().clone())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port1.bind(),
+                },
+            )
+            .unwrap();
         let payload1 = reply_rx1.recv().await.unwrap();
 
         // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(
-            &handle.actor_id().clone().into(),
-        )
-        .send(
-            &client,
-            IntrospectMessage::Query {
-                view: IntrospectView::Actor,
-                reply: reply_port2.bind(),
-            },
-        )
-        .unwrap();
+        crate::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port2.bind(),
+                },
+            )
+            .unwrap();
         let payload2 = reply_rx2.recv().await.unwrap();
 
         // Both should report the user message handler, not IntrospectMessage.
@@ -2288,10 +2266,10 @@ mod tests {
     async fn test_introspectable_instance_responds_to_query() {
         let proc = Proc::local();
         let (bridge, handle) = proc.introspectable_instance("bridge").unwrap();
-        let actor_id: reference::ActorId = handle.actor_id().clone().into();
+        let actor_id: crate::ActorAddr = handle.actor_id().clone();
 
         let (reply_port, reply_rx) = bridge.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(&actor_id)
+        PortRef::<IntrospectMessage>::attest_message_port(&actor_id)
             .send(
                 &bridge,
                 IntrospectMessage::Query {
@@ -2327,10 +2305,10 @@ mod tests {
         let proc = Proc::local();
         let (client, _client_handle) = proc.instance("client").unwrap();
         let (_mailbox, mailbox_handle) = proc.instance("mailbox").unwrap();
-        let mailbox_id: reference::ActorId = mailbox_handle.actor_id().clone().into();
+        let mailbox_id: crate::ActorAddr = mailbox_handle.actor_id().clone();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        reference::PortRef::<IntrospectMessage>::attest_message_port(&mailbox_id)
+        PortRef::<IntrospectMessage>::attest_message_port(&mailbox_id)
             .send(
                 &client,
                 IntrospectMessage::Query {
