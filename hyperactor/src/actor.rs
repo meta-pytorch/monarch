@@ -790,7 +790,7 @@ mod tests {
     use crate as hyperactor;
     use crate::Actor;
     use crate::ActorRef;
-    use crate::Address;
+    use crate::Addr;
     use crate::OncePortHandle;
     use crate::PortRef;
     use crate::config;
@@ -1749,7 +1749,7 @@ mod tests {
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
 
-        let child_ref = crate::Address::Actor(test_proc_id("nonexistent").actor_ref("child"));
+        let child_ref = crate::Addr::Actor(test_proc_id("nonexistent").actor_ref("child"));
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
         PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
@@ -2082,16 +2082,16 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
 
         // Before registering, query_child returns None.
-        let test_ref = Address::Actor(test_proc_id("test").actor_ref("child"));
+        let test_ref = Addr::Actor(test_proc_id("test").actor_ref("child"));
         assert!(handle.cell().query_child(&test_ref).is_none());
 
         // Register a callback.
         handle.cell().set_query_child_handler(|child_ref| {
             use crate::introspect::IntrospectRef;
             let identity = match child_ref {
-                Address::Proc(p) => IntrospectRef::Proc(p.clone()),
-                Address::Actor(a) => IntrospectRef::Actor(a.clone()),
-                Address::Port(p) => IntrospectRef::Actor(p.actor_ref()),
+                Addr::Proc(p) => IntrospectRef::Proc(p.clone()),
+                Addr::Actor(a) => IntrospectRef::Actor(a.clone()),
+                Addr::Port(p) => IntrospectRef::Actor(p.actor_ref()),
             };
             IntrospectResult {
                 identity,

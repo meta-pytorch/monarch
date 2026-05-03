@@ -42,6 +42,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use smol_str::SmolStr;
 
+use crate::addr::ActorAddr;
+use crate::addr::Addr;
+use crate::addr::Location;
+use crate::addr::PortAddr;
+use crate::addr::ProcAddr;
 use crate::parse::id::encode_base58_uid;
 use crate::port::Port;
 
@@ -682,6 +687,56 @@ impl FromStr for PortId {
     }
 }
 
+/// A Hyperactor id.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Id {
+    /// A process id.
+    Proc(ProcId),
+    /// An actor id.
+    Actor(ActorId),
+    /// A port id.
+    Port(PortId),
+}
+
+impl Id {
+    /// Pair this id with a network location.
+    pub fn addr(self, location: Location) -> Addr {
+        match self {
+            Self::Proc(id) => Addr::Proc(ProcAddr::new(id, location)),
+            Self::Actor(id) => Addr::Actor(ActorAddr::new(id, location)),
+            Self::Port(id) => Addr::Port(PortAddr::new(id, location)),
+        }
+    }
+}
+
+impl fmt::Display for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Proc(id) => fmt::Display::fmt(id, f),
+            Self::Actor(id) => fmt::Display::fmt(id, f),
+            Self::Port(id) => fmt::Display::fmt(id, f),
+        }
+    }
+}
+
+impl fmt::Debug for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Proc(id) => fmt::Debug::fmt(id, f),
+            Self::Actor(id) => fmt::Debug::fmt(id, f),
+            Self::Port(id) => fmt::Debug::fmt(id, f),
+        }
+    }
+}
+
+impl FromStr for Id {
+    type Err = IdParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        crate::parse::id::parse_id(s).map_err(|_| legacy_parse_id(s))
+    }
+}
+
 fn legacy_parse_id_component(s: &str) -> Result<(Uid, Option<Label>), UidParseError> {
     if let Some(inner) = s
         .strip_prefix('<')
@@ -701,6 +756,19 @@ fn legacy_parse_id_component(s: &str) -> Result<(Uid, Option<Label>), UidParseEr
 
     let label = Label::new(s)?;
     Ok((Uid::Singleton(label.clone()), Some(label)))
+}
+
+fn legacy_parse_id(s: &str) -> IdParseError {
+    if s.contains(':') {
+        legacy_port_parse_error(s)
+    } else if s.contains('.') {
+        legacy_parse_actor_id(s)
+    } else {
+        legacy_parse_id_component(s)
+            .err()
+            .map(IdParseError::InvalidProcId)
+            .unwrap_or(IdParseError::InvalidActorIdFormat)
+    }
 }
 
 fn legacy_parse_actor_id(s: &str) -> IdParseError {

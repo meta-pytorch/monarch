@@ -14,21 +14,17 @@
 //! token-aware errors at the id/address boundary.
 
 use crate::addr::ActorAddr;
-use crate::addr::Address;
+use crate::addr::Addr;
 use crate::addr::Location;
 use crate::addr::PortAddr;
 use crate::addr::ProcAddr;
-use crate::id::ActorId;
-use crate::id::PortId;
-use crate::id::ProcId;
 use crate::parse::error::ParseError;
 use crate::parse::id::Parser;
 use crate::parse::id::parse_actor_id_with_parser;
+use crate::parse::id::parse_id_with_parser;
 use crate::parse::id::parse_port_id_with_parser;
 use crate::parse::id::parse_proc_id_with_parser;
-use crate::parse::id::parse_uid;
 use crate::parse::lex::TokenKind;
-use crate::port::Port;
 
 pub(crate) fn parse_proc_addr(input: &str) -> Result<ProcAddr, ParseError> {
     let mut parser = Parser::new(input);
@@ -51,43 +47,11 @@ pub(crate) fn parse_port_addr(input: &str) -> Result<PortAddr, ParseError> {
     Ok(PortAddr::new(id, location))
 }
 
-pub(crate) fn parse_address(input: &str) -> Result<Address, ParseError> {
+pub(crate) fn parse_addr(input: &str) -> Result<Addr, ParseError> {
     let mut parser = Parser::new(input);
-    let first = parse_uid(&mut parser)?;
-    match parser.peek().kind {
-        TokenKind::At => Ok(Address::Proc(ProcAddr::new(
-            ProcId::new(first, None),
-            parse_location(&mut parser)?,
-        ))),
-        TokenKind::Dot => {
-            parser.bump();
-            let proc_id = parse_proc_id_with_parser(&mut parser)?;
-            let actor = ActorId::new(first, proc_id, None);
-            match parser.peek().kind {
-                TokenKind::At => Ok(Address::Actor(ActorAddr::new(
-                    actor,
-                    parse_location(&mut parser)?,
-                ))),
-                TokenKind::Colon => {
-                    parser.bump();
-                    let port = parser.expect_text("decimal port")?;
-                    if !port.text.bytes().all(|ch| ch.is_ascii_digit()) {
-                        return Err(ParseError::invalid_port(port));
-                    }
-                    let port: u64 = port
-                        .text
-                        .parse()
-                        .map_err(|_| ParseError::invalid_port(port))?;
-                    Ok(Address::Port(PortAddr::new(
-                        PortId::new(actor, Port::from(port)),
-                        parse_location(&mut parser)?,
-                    )))
-                }
-                _ => Err(ParseError::expected(parser.peek(), "\"@\" or \":\"")),
-            }
-        }
-        _ => Err(ParseError::expected(parser.peek(), "\"@\" or \".\"")),
-    }
+    let id = parse_id_with_parser(&mut parser)?;
+    let location = parse_location(&mut parser)?;
+    Ok(id.addr(location))
 }
 
 fn parse_location(parser: &mut Parser<'_>) -> Result<Location, ParseError> {
@@ -132,55 +96,52 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_address_specificity() {
+    fn test_parse_addr_specificity() {
         assert!(matches!(
-            parse_address("local@inproc://0").unwrap(),
-            Address::Proc(_)
+            parse_addr("local@inproc://0").unwrap(),
+            Addr::Proc(_)
         ));
         assert!(matches!(
-            parse_address("local.local@inproc://0").unwrap(),
-            Address::Actor(_)
+            parse_addr("local.local@inproc://0").unwrap(),
+            Addr::Actor(_)
         ));
         assert!(matches!(
-            parse_address("local.local:7@inproc://0").unwrap(),
-            Address::Port(_)
+            parse_addr("local.local:7@inproc://0").unwrap(),
+            Addr::Port(_)
         ));
     }
 
     #[test]
-    fn test_parse_address_reports_invalid_location() {
-        let err = parse_address("local@tcp://").unwrap_err();
+    fn test_parse_addr_reports_invalid_location() {
+        let err = parse_addr("local@tcp://").unwrap_err();
         assert!(err.to_string().starts_with("invalid location: "));
         assert_eq!(err.span, Span::new(6, 12));
     }
 
     #[test]
-    fn test_parse_address_reports_missing_separator() {
-        let err = parse_address("local").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "expected \"@\" or \".\", found end of input"
-        );
+    fn test_parse_addr_reports_missing_separator() {
+        let err = parse_addr("local").unwrap_err();
+        assert_eq!(err.to_string(), "expected \"@\", found end of input");
         assert_eq!(err.span, Span::new(5, 5));
     }
 
     #[test]
-    fn test_parse_address_reports_missing_location() {
-        let err = parse_address("local@").unwrap_err();
+    fn test_parse_addr_reports_missing_location() {
+        let err = parse_addr("local@").unwrap_err();
         assert_eq!(err.to_string(), "expected location, found end of input");
         assert_eq!(err.span, Span::new(5, 6));
     }
 
     #[test]
-    fn test_parse_address_does_not_downcast_malformed_port_addr() {
-        let err = parse_address("local.local:not-a-port@inproc://0").unwrap_err();
+    fn test_parse_addr_does_not_downcast_malformed_port_addr() {
+        let err = parse_addr("local.local:not-a-port@inproc://0").unwrap_err();
         assert_eq!(err.to_string(), "invalid port \"not-a-port\"");
         assert_eq!(err.span, Span::new(12, 22));
     }
 
     #[test]
-    fn test_parse_address_does_not_downcast_malformed_actor_addr() {
-        let err = parse_address("local.@inproc://0").unwrap_err();
+    fn test_parse_addr_does_not_downcast_malformed_actor_addr() {
+        let err = parse_addr("local.@inproc://0").unwrap_err();
         assert_eq!(err.to_string(), "expected \"label\" or \"<\", found \"@\"");
         assert_eq!(err.span, Span::new(6, 7));
     }

@@ -13,6 +13,7 @@
 //! available.
 
 use crate::id::ActorId;
+use crate::id::Id;
 use crate::id::Label;
 use crate::id::PortId;
 use crate::id::ProcId;
@@ -32,6 +33,13 @@ pub(crate) fn parse_uid_str(input: &str) -> Result<Uid, ParseError> {
     let uid = parse_uid(&mut parser)?;
     parser.finish()?;
     Ok(uid)
+}
+
+pub(crate) fn parse_id(input: &str) -> Result<Id, ParseError> {
+    let mut parser = Parser::new(input);
+    let id = parse_id_with_parser(&mut parser)?;
+    parser.finish()?;
+    Ok(id)
 }
 
 pub(crate) fn parse_proc_id(input: &str) -> Result<ProcId, ParseError> {
@@ -59,6 +67,25 @@ pub(crate) fn parse_uid(parser: &mut Parser<'_>) -> Result<Uid, ParseError> {
     parse_id_component(parser)
 }
 
+pub(crate) fn parse_id_with_parser(parser: &mut Parser<'_>) -> Result<Id, ParseError> {
+    let first = parse_uid(parser)?;
+    match parser.peek().kind {
+        TokenKind::Dot => {
+            parser.bump();
+            let proc_id = parse_proc_id_with_parser(parser)?;
+            let actor_id = ActorId::new(first, proc_id, None);
+            if parser.peek().kind == TokenKind::Colon {
+                parser.bump();
+                let port = parse_port(parser)?;
+                Ok(Id::Port(PortId::new(actor_id, port)))
+            } else {
+                Ok(Id::Actor(actor_id))
+            }
+        }
+        _ => Ok(Id::Proc(ProcId::new(first, None))),
+    }
+}
+
 pub(crate) fn parse_proc_id_with_parser(parser: &mut Parser<'_>) -> Result<ProcId, ParseError> {
     Ok(ProcId::new(parse_uid(parser)?, None))
 }
@@ -73,6 +100,11 @@ pub(crate) fn parse_actor_id_with_parser(parser: &mut Parser<'_>) -> Result<Acto
 pub(crate) fn parse_port_id_with_parser(parser: &mut Parser<'_>) -> Result<PortId, ParseError> {
     let actor_id = parse_actor_id_with_parser(parser)?;
     parser.expect_kind(TokenKind::Colon)?;
+    let port = parse_port(parser)?;
+    Ok(PortId::new(actor_id, port))
+}
+
+fn parse_port(parser: &mut Parser<'_>) -> Result<Port, ParseError> {
     let port = parser.expect_text("decimal port")?;
     if !port.text.bytes().all(|ch| ch.is_ascii_digit()) {
         return Err(ParseError::invalid_port(port));
@@ -81,7 +113,7 @@ pub(crate) fn parse_port_id_with_parser(parser: &mut Parser<'_>) -> Result<PortI
         .text
         .parse()
         .map_err(|_| ParseError::invalid_port(port))?;
-    Ok(PortId::new(actor_id, Port::from(port)))
+    Ok(Port::from(port))
 }
 
 pub(crate) fn parse_id_component(parser: &mut Parser<'_>) -> Result<Uid, ParseError> {
@@ -260,6 +292,19 @@ mod tests {
             parse_port_id("controller.local:7").unwrap().to_string(),
             "controller.local:7"
         );
+    }
+
+    #[test]
+    fn test_parse_id_specificity() {
+        assert!(matches!(parse_id("local").unwrap(), Id::Proc(_)));
+        assert!(matches!(
+            parse_id("controller.local").unwrap(),
+            Id::Actor(_)
+        ));
+        assert!(matches!(
+            parse_id("controller.local:7").unwrap(),
+            Id::Port(_)
+        ));
     }
 
     #[test]

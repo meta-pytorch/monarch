@@ -140,7 +140,7 @@ use tokio_util::sync::CancellationToken;
 use typeuri::Named;
 
 use crate::ActorAddr;
-use crate::Address;
+use crate::Addr;
 // for macros
 use crate::OncePortRef;
 use crate::PortAddr;
@@ -2685,7 +2685,7 @@ impl MailboxSender for MailboxMuxer {
 /// nearest prefix.
 #[derive(Clone)]
 pub struct MailboxRouter {
-    entries: Arc<RwLock<BTreeMap<Address, Arc<dyn MailboxSender + Send + Sync>>>>,
+    entries: Arc<RwLock<BTreeMap<Addr, Arc<dyn MailboxSender + Send + Sync>>>>,
 }
 
 impl Default for MailboxRouter {
@@ -2721,7 +2721,7 @@ impl MailboxRouter {
     /// Bind the provided sender to the given reference. The destination
     /// is treated as a prefix to which messages can be routed, and
     /// messages are routed to their longest matching prefix.
-    pub fn bind(&self, dest: impl Into<Address>, sender: impl MailboxSender + 'static) {
+    pub fn bind(&self, dest: impl Into<Addr>, sender: impl MailboxSender + 'static) {
         let dest = dest.into();
         let mut w = self.entries.write().unwrap();
         w.insert(dest, Arc::new(sender));
@@ -2730,13 +2730,13 @@ impl MailboxRouter {
     /// Remove the binding for the given reference. Only the exact
     /// point is removed; other bindings under the same prefix are
     /// unaffected.
-    pub fn unbind(&self, dest: &Address) {
+    pub fn unbind(&self, dest: &Addr) {
         let mut w = self.entries.write().unwrap();
         w.remove(dest);
     }
 
     fn sender(&self, actor_ref: &ActorAddr) -> Option<Arc<dyn MailboxSender + Send + Sync>> {
-        let reference = Address::from(actor_ref.clone());
+        let reference = Addr::from(actor_ref.clone());
         match self
             .entries
             .read()
@@ -2824,7 +2824,7 @@ impl MailboxSender for FallbackMailboxRouter {
 /// the granularity of each entry. Possibly the router should allow weak references
 /// on a per-entry basis.
 #[derive(Debug, Clone)]
-pub struct WeakMailboxRouter(Weak<RwLock<BTreeMap<Address, Arc<dyn MailboxSender + Send + Sync>>>>);
+pub struct WeakMailboxRouter(Weak<RwLock<BTreeMap<Addr, Arc<dyn MailboxSender + Send + Sync>>>>);
 
 impl WeakMailboxRouter {
     /// Upgrade the weak router to a strong reference router.
@@ -2872,7 +2872,7 @@ impl MailboxSender for WeakMailboxRouter {
 /// sender, if present.
 #[derive(Clone)]
 pub struct DialMailboxRouter {
-    address_book: Arc<RwLock<BTreeMap<Address, ChannelAddr>>>,
+    address_book: Arc<RwLock<BTreeMap<Addr, ChannelAddr>>>,
     sender_cache: Arc<DashMap<ChannelAddr, Arc<MailboxClient>>>,
 
     // The default sender, to which messages for unknown recipients
@@ -2922,12 +2922,12 @@ impl DialMailboxRouter {
         }
     }
 
-    /// Binds a [`Address`] to a [`ChannelAddr`], replacing any
+    /// Binds a [`Addr`] to a [`ChannelAddr`], replacing any
     /// existing binding.
     ///
     /// If the address changes, the old sender is evicted from the
     /// cache to ensure fresh routing on next use.
-    pub fn bind(&self, dest: impl Into<Address>, addr: ChannelAddr) {
+    pub fn bind(&self, dest: impl Into<Addr>, addr: ChannelAddr) {
         let dest = dest.into();
         if let Ok(mut w) = self.address_book.write() {
             if let Some(old_addr) = w.insert(dest.clone(), addr.clone())
@@ -2946,9 +2946,9 @@ impl DialMailboxRouter {
     ///
     /// Also evicts any corresponding cached senders to prevent reuse
     /// of stale connections.
-    pub fn unbind(&self, dest: &Address) {
+    pub fn unbind(&self, dest: &Addr) {
         if let Ok(mut w) = self.address_book.write() {
-            let to_remove: Vec<(Address, ChannelAddr)> = w
+            let to_remove: Vec<(Addr, ChannelAddr)> = w
                 .range(dest..)
                 .take_while(|(key, _)| dest.is_prefix_of(key))
                 .map(|(key, addr)| (key.clone(), addr.clone()))
@@ -2967,7 +2967,7 @@ impl DialMailboxRouter {
     /// Lookup an actor's channel in the router's address bok.
     pub fn lookup_addr(&self, actor_ref: &ActorAddr) -> Option<ChannelAddr> {
         let address_book = self.address_book.read().unwrap();
-        let reference = Address::from(actor_ref.clone());
+        let reference = Addr::from(actor_ref.clone());
         let found = address_book.lower_bound(Excluded(&reference)).prev();
 
         // First try to look up the address in our address book; failing that,
@@ -2988,9 +2988,9 @@ impl DialMailboxRouter {
 
     /// Return all covering prefixes of this router. That is, all references that are not
     /// prefixed by another reference in the routing table
-    pub fn prefixes(&self) -> BTreeSet<Address> {
+    pub fn prefixes(&self) -> BTreeSet<Addr> {
         let addrs = self.address_book.read().unwrap();
-        let mut prefixes: BTreeSet<Address> = BTreeSet::new();
+        let mut prefixes: BTreeSet<Addr> = BTreeSet::new();
         for (reference, _) in addrs.iter() {
             match prefixes.lower_bound(Excluded(reference)).peek_prev() {
                 Some(candidate) if candidate.is_prefix_of(reference) => (),
@@ -3105,12 +3105,12 @@ mod tests {
     use crate::testing::ids::test_port_id;
     use crate::testing::ids::test_proc_id;
 
-    fn test_proc_ref(name: &str) -> Address {
-        Address::Proc(test_proc_id(name))
+    fn test_proc_ref(name: &str) -> Addr {
+        Addr::Proc(test_proc_id(name))
     }
 
-    fn test_actor_ref(proc_name: &str, actor_name: &str) -> Address {
-        Address::Actor(test_actor_id(proc_name, actor_name))
+    fn test_actor_ref(proc_name: &str, actor_name: &str) -> Addr {
+        Addr::Actor(test_actor_id(proc_name, actor_name))
     }
 
     #[test]
@@ -3527,7 +3527,7 @@ mod tests {
             ProcAddr::from_resource_name("unix:@4".parse().unwrap(), "my_proc")
                 .actor_id("my_actor");
         router.bind(
-            Address::Actor(direct_actor_ref.clone()),
+            Addr::Actor(direct_actor_ref.clone()),
             "unix:@5".parse().unwrap(),
         );
 
@@ -3613,9 +3613,9 @@ mod tests {
                 .label()
                 .is_some_and(|l| l.as_str().starts_with("world0"))
             {
-                world0_router.bind(Address::from(mbox.actor_id().clone()), addr);
+                world0_router.bind(Addr::from(mbox.actor_id().clone()), addr);
             } else {
-                world1_router.bind(Address::from(mbox.actor_id().clone()), addr);
+                world1_router.bind(Addr::from(mbox.actor_id().clone()), addr);
             }
         }
 
@@ -4291,7 +4291,7 @@ mod tests {
         let router = DialMailboxRouter::new();
         router.bind(test_proc_ref("world0"), "unix!@1".parse().unwrap());
 
-        let prefixes: Vec<Address> = router.prefixes().into_iter().collect();
+        let prefixes: Vec<Addr> = router.prefixes().into_iter().collect();
         assert_eq!(prefixes.len(), 1);
         assert_eq!(prefixes[0], test_proc_ref("world0"));
     }
@@ -4303,7 +4303,7 @@ mod tests {
         router.bind(test_proc_ref("world1"), "unix!@2".parse().unwrap());
         router.bind(test_proc_ref("world2"), "unix!@3".parse().unwrap());
 
-        let mut prefixes: Vec<Address> = router.prefixes().into_iter().collect();
+        let mut prefixes: Vec<Addr> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         let mut expected = vec![
@@ -4326,7 +4326,7 @@ mod tests {
         router.bind(test_proc_ref("world1"), "unix!@4".parse().unwrap());
         router.bind(test_proc_ref("world1_0"), "unix!@5".parse().unwrap());
 
-        let mut prefixes: Vec<Address> = router.prefixes().into_iter().collect();
+        let mut prefixes: Vec<Addr> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         let mut expected = vec![
@@ -4358,7 +4358,7 @@ mod tests {
             "unix!@6".parse().unwrap(),
         );
 
-        let mut prefixes: Vec<Address> = router.prefixes().into_iter().collect();
+        let mut prefixes: Vec<Addr> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         // Covering prefixes:
@@ -4386,7 +4386,7 @@ mod tests {
         router.bind(test_proc_ref("world0_1"), "unix!@2".parse().unwrap());
         router.bind(test_proc_ref("world0_2"), "unix!@3".parse().unwrap());
 
-        let mut prefixes: Vec<Address> = router.prefixes().into_iter().collect();
+        let mut prefixes: Vec<Addr> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         // All should be covering prefixes since none is a prefix of another

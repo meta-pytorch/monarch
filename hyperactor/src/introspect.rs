@@ -132,8 +132,8 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::ActorAddr;
+use crate::Addr;
 use crate::AddrParseError;
-use crate::Address;
 use crate::InstanceCell;
 use crate::OncePortRef;
 use crate::ProcAddr;
@@ -158,7 +158,7 @@ hyperactor_config::impl_attrvalue!(IntrospectRef);
 pub enum IntrospectRefParseError {
     /// The address text could not be parsed.
     #[error(transparent)]
-    Address(#[from] AddrParseError),
+    Addr(#[from] AddrParseError),
     /// Port references are not introspectable.
     #[error("port references are not valid introspection references")]
     PortNotAllowed,
@@ -177,11 +177,11 @@ impl FromStr for IntrospectRef {
     type Err = IntrospectRefParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let r: Address = s.parse()?;
+        let r: Addr = s.parse()?;
         match r {
-            Address::Proc(id) => Ok(Self::Proc(id)),
-            Address::Actor(id) => Ok(Self::Actor(id)),
-            Address::Port(_) => Err(IntrospectRefParseError::PortNotAllowed),
+            Addr::Proc(id) => Ok(Self::Proc(id)),
+            Addr::Actor(id) => Ok(Self::Actor(id)),
+            Addr::Port(_) => Err(IntrospectRefParseError::PortNotAllowed),
         }
     }
 }
@@ -592,7 +592,7 @@ impl ActorAttrsView {
 /// (with `NodeProperties`) lives in `hyperactor_mesh::introspect`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct IntrospectResult {
-    /// Address identifying this node.
+    /// Addr identifying this node.
     pub identity: IntrospectRef,
     /// JSON-serialized `Attrs` bag containing introspection attributes.
     pub attrs: String,
@@ -645,8 +645,8 @@ pub enum IntrospectMessage {
     },
     /// "Describe one of your children."
     QueryChild {
-        /// Address identifying the child to describe.
-        child_ref: Address,
+        /// Addr identifying the child to describe.
+        child_ref: Addr,
         /// Reply port receiving the child's description.
         reply: OncePortRef<IntrospectResult>,
     },
@@ -917,7 +917,7 @@ pub(crate) async fn serve_introspect(
                 )
             }
             IntrospectMessage::QueryChild { child_ref, reply } => {
-                let child_ref_: Address = child_ref.clone();
+                let child_ref_: Addr = child_ref.clone();
                 let payload = cell.query_child(&child_ref_).unwrap_or_else(|| {
                     let mut error_attrs = hyperactor_config::Attrs::new();
                     error_attrs.set(ERROR_CODE, "not_found".to_string());
@@ -927,9 +927,9 @@ pub(crate) async fn serve_introspect(
                     );
                     // Use the queried child_ref as identity for the error node.
                     let identity = match &child_ref {
-                        Address::Proc(id) => IntrospectRef::Proc(id.clone()),
-                        Address::Actor(id) => IntrospectRef::Actor(id.clone()),
-                        Address::Port(id) => IntrospectRef::Actor(id.actor_ref()),
+                        Addr::Proc(id) => IntrospectRef::Proc(id.clone()),
+                        Addr::Actor(id) => IntrospectRef::Actor(id.clone()),
+                        Addr::Port(id) => IntrospectRef::Actor(id.actor_ref()),
                     };
                     IntrospectResult {
                         identity,

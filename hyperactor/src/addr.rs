@@ -628,7 +628,7 @@ impl FromStr for PortAddr {
 /// [`DialMailboxRouter`]. Ordering is lexicographic by
 /// (proc, actor uid, port).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Address {
+pub enum Addr {
     /// A process reference.
     Proc(ProcAddr),
     /// An actor reference.
@@ -637,7 +637,7 @@ pub enum Address {
     Port(PortAddr),
 }
 
-impl Address {
+impl Addr {
     /// Whether `self` is a prefix of `other`.
     ///
     /// - Proc is a prefix of any Actor or Port on the same proc.
@@ -664,13 +664,13 @@ impl Address {
     }
 }
 
-impl PartialOrd for Address {
+impl PartialOrd for Addr {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for Address {
+impl Ord for Addr {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Order by: proc, then actor uid (None < Some), then port (None < Some).
         let proc_ord = self.proc_ref().cmp(&other.proc_ref());
@@ -703,7 +703,7 @@ impl Ord for Address {
     }
 }
 
-impl fmt::Display for Address {
+impl fmt::Display for Addr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Proc(p) => fmt::Display::fmt(p, f),
@@ -713,11 +713,11 @@ impl fmt::Display for Address {
     }
 }
 
-impl FromStr for Address {
+impl FromStr for Addr {
     type Err = AddrParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse::addr::parse_address(s).map_err(|_| legacy_parse_reference(s))
+        parse::addr::parse_addr(s).map_err(|_| legacy_parse_reference(s))
     }
 }
 
@@ -813,19 +813,19 @@ fn legacy_parse_reference(s: &str) -> AddrParseError {
     AddrParseError::InvalidId(proc_result.unwrap_err())
 }
 
-impl From<ProcAddr> for Address {
+impl From<ProcAddr> for Addr {
     fn from(p: ProcAddr) -> Self {
         Self::Proc(p)
     }
 }
 
-impl From<ActorAddr> for Address {
+impl From<ActorAddr> for Addr {
     fn from(a: ActorAddr) -> Self {
         Self::Actor(a)
     }
 }
 
-impl From<PortAddr> for Address {
+impl From<PortAddr> for Addr {
     fn from(p: PortAddr) -> Self {
         Self::Port(p)
     }
@@ -1227,9 +1227,9 @@ mod tests {
         let actor_ref = proc_ref.actor_ref("host_agent");
         let port_ref = actor_ref.port_ref(Port::from(7u64));
 
-        assert!(Address::Proc(proc_ref.clone()).is_prefix_of(&Address::Actor(actor_ref.clone())));
-        assert!(Address::Proc(proc_ref.clone()).is_prefix_of(&Address::Port(port_ref.clone())));
-        assert!(Address::Actor(actor_ref.clone()).is_prefix_of(&Address::Port(port_ref)));
+        assert!(Addr::Proc(proc_ref.clone()).is_prefix_of(&Addr::Actor(actor_ref.clone())));
+        assert!(Addr::Proc(proc_ref.clone()).is_prefix_of(&Addr::Port(port_ref.clone())));
+        assert!(Addr::Actor(actor_ref.clone()).is_prefix_of(&Addr::Port(port_ref)));
     }
 
     #[test]
@@ -1453,31 +1453,27 @@ mod tests {
 
     #[test]
     fn test_reference_fromstr_specificity() {
-        let parsed: Address = "local@inproc://0".parse().unwrap();
-        assert!(matches!(parsed, Address::Proc(_)));
+        let parsed: Addr = "local@inproc://0".parse().unwrap();
+        assert!(matches!(parsed, Addr::Proc(_)));
 
-        let parsed: Address = "local.local@inproc://0".parse().unwrap();
-        assert!(matches!(parsed, Address::Actor(_)));
+        let parsed: Addr = "local.local@inproc://0".parse().unwrap();
+        assert!(matches!(parsed, Addr::Actor(_)));
 
-        let parsed: Address = "local.local:7@inproc://0".parse().unwrap();
-        assert!(matches!(parsed, Address::Port(_)));
+        let parsed: Addr = "local.local:7@inproc://0".parse().unwrap();
+        assert!(matches!(parsed, Addr::Port(_)));
     }
 
     #[test]
     fn test_reference_fromstr_rejects_malformed_specific_forms() {
-        assert!(
-            "local.local:not-a-port@inproc://0"
-                .parse::<Address>()
-                .is_err()
-        );
-        assert!("local.<bad!>@inproc://0".parse::<Address>().is_err());
-        assert!("local@tcp://".parse::<Address>().is_err());
+        assert!("local.local:not-a-port@inproc://0".parse::<Addr>().is_err());
+        assert!("local.<bad!>@inproc://0".parse::<Addr>().is_err());
+        assert!("local@tcp://".parse::<Addr>().is_err());
     }
 
     #[test]
     fn test_reference_fromstr_does_not_downcast_malformed_port_ref() {
         let err = "local.local:not-a-port@inproc://0"
-            .parse::<Address>()
+            .parse::<Addr>()
             .unwrap_err();
         assert!(matches!(
             err,
@@ -1487,7 +1483,7 @@ mod tests {
 
     #[test]
     fn test_reference_fromstr_does_not_downcast_malformed_actor_ref() {
-        let err = "local.<bad!>@inproc://0".parse::<Address>().unwrap_err();
+        let err = "local.<bad!>@inproc://0".parse::<Addr>().unwrap_err();
         assert!(matches!(
             err,
             AddrParseError::InvalidId(IdParseError::InvalidActorProcUid(_))
