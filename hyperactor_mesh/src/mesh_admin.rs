@@ -357,7 +357,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RefClient;
 use hyperactor::channel::try_tls_acceptor;
-use hyperactor::id::Uid;
 use hyperactor::introspect::IntrospectMessage;
 use hyperactor::introspect::IntrospectResult;
 use hyperactor::introspect::IntrospectView;
@@ -2259,8 +2258,10 @@ impl ResolvedProcHandler {
 /// the probe (CFG-4).
 fn route_proc_handler(raw_proc_reference: &str) -> Result<ResolvedProcHandler, ApiError> {
     let (_proc_reference, proc_id) = parse_proc_reference(raw_proc_reference)?;
-    let is_service =
-        matches!(proc_id.uid(), Uid::Singleton(label) if label.as_str() == SERVICE_PROC_NAME);
+    let is_service = proc_id
+        .uid()
+        .as_singleton()
+        .is_some_and(|label| label.as_str() == SERVICE_PROC_NAME);
     if is_service {
         let agent_id = proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME);
         Ok(ResolvedProcHandler::Host(

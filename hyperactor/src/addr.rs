@@ -33,6 +33,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use enum_as_inner::EnumAsInner;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -388,7 +389,7 @@ impl ActorAddr {
 
     /// Whether this is a root actor (singleton uid).
     pub fn is_root(&self) -> bool {
-        matches!(self.id.uid(), Uid::Singleton(_))
+        self.id.uid().is_singleton()
     }
 
     /// A human-readable name for logging.
@@ -627,7 +628,7 @@ impl FromStr for PortAddr {
 /// Used for prefix-based routing in [`MailboxRouter`] and
 /// [`DialMailboxRouter`]. Ordering is lexicographic by
 /// (proc, actor uid, port).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, EnumAsInner, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Addr {
     /// A process reference.
     Proc(ProcAddr),
@@ -1454,13 +1455,13 @@ mod tests {
     #[test]
     fn test_reference_fromstr_specificity() {
         let parsed: Addr = "local@inproc://0".parse().unwrap();
-        assert!(matches!(parsed, Addr::Proc(_)));
+        assert!(parsed.is_proc());
 
         let parsed: Addr = "local.local@inproc://0".parse().unwrap();
-        assert!(matches!(parsed, Addr::Actor(_)));
+        assert!(parsed.is_actor());
 
         let parsed: Addr = "local.local:7@inproc://0".parse().unwrap();
-        assert!(matches!(parsed, Addr::Port(_)));
+        assert!(parsed.is_port());
     }
 
     #[test]

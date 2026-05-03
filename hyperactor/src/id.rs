@@ -38,6 +38,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::str::FromStr;
 
+use enum_as_inner::EnumAsInner;
 use serde::Deserialize;
 use serde::Serialize;
 use smol_str::SmolStr;
@@ -191,7 +192,7 @@ impl<'de> Deserialize<'de> for Label {
 ///
 /// Singleton labels are identity. Instance labels are supplemental metadata
 /// and do not participate in equality, hashing, or ordering.
-#[derive(Clone)]
+#[derive(Clone, EnumAsInner)]
 pub enum Uid {
     /// A singleton identified by label.
     Singleton(Label),
@@ -688,7 +689,17 @@ impl FromStr for PortId {
 }
 
 /// A Hyperactor id.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    EnumAsInner,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize
+)]
 pub enum Id {
     /// A process id.
     Proc(ProcId),
@@ -1177,7 +1188,7 @@ mod tests {
     fn test_proc_id_instance() {
         let label = Label::new("my-proc").unwrap();
         let pid = ProcId::instance(label.clone());
-        assert!(matches!(pid.uid(), Uid::Instance(_, Some(_))));
+        assert!(pid.uid().is_instance());
         assert_eq!(pid.label(), Some(&label));
         let pid2 = ProcId::instance(label);
         assert_ne!(pid, pid2);
@@ -1197,7 +1208,7 @@ mod tests {
     fn test_actor_id_instance() {
         let proc_id = ProcId::singleton(Label::new("my-proc").unwrap());
         let aid = ActorId::instance(proc_id.clone());
-        assert!(matches!(aid.uid(), Uid::Instance(_, None)));
+        assert!(aid.uid().is_instance());
         assert_eq!(aid.proc_id(), &proc_id);
         assert_eq!(aid.label(), None);
         let aid2 = ActorId::instance(proc_id);
@@ -1209,7 +1220,7 @@ mod tests {
         let label = Label::new("my-actor").unwrap();
         let proc_id = ProcId::singleton(Label::new("my-proc").unwrap());
         let aid = ActorId::instance_labeled(label.clone(), proc_id.clone());
-        assert!(matches!(aid.uid(), Uid::Instance(_, Some(_))));
+        assert!(aid.uid().is_instance());
         assert_eq!(aid.proc_id(), &proc_id);
         assert_eq!(aid.label(), Some(&label));
         let aid2 = ActorId::instance_labeled(label, proc_id);

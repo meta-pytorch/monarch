@@ -97,18 +97,9 @@ mod tests {
 
     #[test]
     fn test_parse_addr_specificity() {
-        assert!(matches!(
-            parse_addr("local@inproc://0").unwrap(),
-            Addr::Proc(_)
-        ));
-        assert!(matches!(
-            parse_addr("local.local@inproc://0").unwrap(),
-            Addr::Actor(_)
-        ));
-        assert!(matches!(
-            parse_addr("local.local:7@inproc://0").unwrap(),
-            Addr::Port(_)
-        ));
+        assert!(parse_addr("local@inproc://0").unwrap().is_proc());
+        assert!(parse_addr("local.local@inproc://0").unwrap().is_actor());
+        assert!(parse_addr("local.local:7@inproc://0").unwrap().is_port());
     }
 
     #[test]
