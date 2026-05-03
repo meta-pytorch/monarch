@@ -13,46 +13,47 @@
 //! keeps URL punctuation out of the Hyperactor lexer while still giving
 //! token-aware errors at the id/address boundary.
 
+use crate::id::ActorId;
+use crate::id::PortId;
+use crate::id::ProcId;
 use crate::parse::error::ParseError;
-use crate::parse::id::ActorIdParts;
 use crate::parse::id::Parser;
-use crate::parse::id::PortIdParts;
-use crate::parse::id::ProcIdParts;
-use crate::parse::id::parse_actor_id_parts;
-use crate::parse::id::parse_id_component;
-use crate::parse::id::parse_port_id_parts;
-use crate::parse::id::parse_proc_id_parts;
+use crate::parse::id::parse_actor_id_with_parser;
+use crate::parse::id::parse_port_id_with_parser;
+use crate::parse::id::parse_proc_id_with_parser;
+use crate::parse::id::parse_uid;
 use crate::parse::lex::TokenKind;
+use crate::port::Port;
 
 /// A parsed proc address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProcAddrParts<'a> {
     /// The proc id.
-    pub(crate) id: ProcIdParts<'a>,
+    pub(crate) id: ProcId,
     /// The raw location tail.
     pub(crate) location: &'a str,
 }
 
 /// A parsed actor address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ActorAddrParts<'a> {
     /// The actor id.
-    pub(crate) id: ActorIdParts<'a>,
+    pub(crate) id: ActorId,
     /// The raw location tail.
     pub(crate) location: &'a str,
 }
 
 /// A parsed port address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PortAddrParts<'a> {
     /// The port id.
-    pub(crate) id: PortIdParts<'a>,
+    pub(crate) id: PortId,
     /// The raw location tail.
     pub(crate) location: &'a str,
 }
 
 /// A parsed polymorphic address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AddressParts<'a> {
     /// A proc address.
     Proc(ProcAddrParts<'a>),
@@ -64,40 +65,37 @@ pub(crate) enum AddressParts<'a> {
 
 pub(crate) fn parse_proc_addr(input: &str) -> Result<ProcAddrParts<'_>, ParseError> {
     let mut parser = Parser::new(input);
-    let id = parse_proc_id_parts(&mut parser)?;
+    let id = parse_proc_id_with_parser(&mut parser)?;
     let location = parse_location(&mut parser)?;
     Ok(ProcAddrParts { id, location })
 }
 
 pub(crate) fn parse_actor_addr(input: &str) -> Result<ActorAddrParts<'_>, ParseError> {
     let mut parser = Parser::new(input);
-    let id = parse_actor_id_parts(&mut parser)?;
+    let id = parse_actor_id_with_parser(&mut parser)?;
     let location = parse_location(&mut parser)?;
     Ok(ActorAddrParts { id, location })
 }
 
 pub(crate) fn parse_port_addr(input: &str) -> Result<PortAddrParts<'_>, ParseError> {
     let mut parser = Parser::new(input);
-    let id = parse_port_id_parts(&mut parser)?;
+    let id = parse_port_id_with_parser(&mut parser)?;
     let location = parse_location(&mut parser)?;
     Ok(PortAddrParts { id, location })
 }
 
 pub(crate) fn parse_address(input: &str) -> Result<AddressParts<'_>, ParseError> {
     let mut parser = Parser::new(input);
-    let first = parse_id_component(&mut parser)?;
+    let first = parse_uid(&mut parser)?;
     match parser.peek().kind {
         TokenKind::At => Ok(AddressParts::Proc(ProcAddrParts {
-            id: ProcIdParts { component: first },
+            id: ProcId::new(first, None),
             location: parse_location(&mut parser)?,
         })),
         TokenKind::Dot => {
             parser.bump();
-            let proc_ = parse_id_component(&mut parser)?;
-            let actor = ActorIdParts {
-                actor: first,
-                proc_,
-            };
+            let proc_id = parse_proc_id_with_parser(&mut parser)?;
+            let actor = ActorId::new(first, proc_id, None);
             match parser.peek().kind {
                 TokenKind::At => Ok(AddressParts::Actor(ActorAddrParts {
                     id: actor,
@@ -109,11 +107,12 @@ pub(crate) fn parse_address(input: &str) -> Result<AddressParts<'_>, ParseError>
                     if !port.text.bytes().all(|ch| ch.is_ascii_digit()) {
                         return Err(ParseError::invalid_port(port));
                     }
+                    let port: u64 = port
+                        .text
+                        .parse()
+                        .map_err(|_| ParseError::invalid_port(port))?;
                     Ok(AddressParts::Port(PortAddrParts {
-                        id: PortIdParts {
-                            actor,
-                            port: port.text,
-                        },
+                        id: PortId::new(actor, Port::from(port)),
                         location: parse_location(&mut parser)?,
                     }))
                 }
@@ -138,66 +137,27 @@ fn parse_location<'a>(parser: &mut Parser<'a>) -> Result<&'a str, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::id::IdComponent;
     use crate::parse::lex::Span;
 
     #[test]
     fn test_parse_proc_addr() {
-        assert_eq!(
-            parse_proc_addr("local@inproc://0").unwrap(),
-            ProcAddrParts {
-                id: ProcIdParts {
-                    component: IdComponent::Singleton {
-                        label: "local",
-                        span: Span::new(0, 5),
-                    },
-                },
-                location: "inproc://0",
-            }
-        );
+        let parsed = parse_proc_addr("local@inproc://0").unwrap();
+        assert_eq!(parsed.id.to_string(), "local");
+        assert_eq!(parsed.location, "inproc://0");
     }
 
     #[test]
     fn test_parse_actor_addr() {
-        assert_eq!(
-            parse_actor_addr("controller.local@tcp://[::1]:2345").unwrap(),
-            ActorAddrParts {
-                id: ActorIdParts {
-                    actor: IdComponent::Singleton {
-                        label: "controller",
-                        span: Span::new(0, 10),
-                    },
-                    proc_: IdComponent::Singleton {
-                        label: "local",
-                        span: Span::new(11, 16),
-                    },
-                },
-                location: "tcp://[::1]:2345",
-            }
-        );
+        let parsed = parse_actor_addr("controller.local@tcp://[::1]:2345").unwrap();
+        assert_eq!(parsed.id.to_string(), "controller.local");
+        assert_eq!(parsed.location, "tcp://[::1]:2345");
     }
 
     #[test]
     fn test_parse_port_addr() {
-        assert_eq!(
-            parse_port_addr("controller.local:7@inproc://0").unwrap(),
-            PortAddrParts {
-                id: PortIdParts {
-                    actor: ActorIdParts {
-                        actor: IdComponent::Singleton {
-                            label: "controller",
-                            span: Span::new(0, 10),
-                        },
-                        proc_: IdComponent::Singleton {
-                            label: "local",
-                            span: Span::new(11, 16),
-                        },
-                    },
-                    port: "7",
-                },
-                location: "inproc://0",
-            }
-        );
+        let parsed = parse_port_addr("controller.local:7@inproc://0").unwrap();
+        assert_eq!(parsed.id.to_string(), "controller.local:7");
+        assert_eq!(parsed.location, "inproc://0");
     }
 
     #[test]

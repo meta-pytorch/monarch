@@ -49,6 +49,20 @@ impl ParseError {
         }
     }
 
+    pub(crate) fn invalid_label(span: Span, error: impl Into<String>) -> Self {
+        Self {
+            span,
+            kind: ParseErrorKind::InvalidLabel(error.into()),
+        }
+    }
+
+    pub(crate) fn invalid_base58_uid(token: Token<'_>) -> Self {
+        Self {
+            span: token.span,
+            kind: ParseErrorKind::InvalidBase58Uid(token.text.to_string()),
+        }
+    }
+
     pub(crate) fn missing_location(at: Token<'_>) -> Self {
         Self {
             span: at.span,
@@ -67,6 +81,10 @@ pub(crate) enum ParseErrorKind {
     Expected { expected: String, found: String },
     /// Input remained after a full parse.
     TrailingInput { found: String },
+    /// A label failed semantic validation.
+    InvalidLabel(String),
+    /// A base58 uid failed semantic validation.
+    InvalidBase58Uid(String),
     /// A non-decimal port was encountered.
     InvalidPort(String),
 }
@@ -84,6 +102,8 @@ impl fmt::Display for ParseErrorKind {
                 write!(f, "expected {expected}, found {found}")
             }
             Self::TrailingInput { found } => write!(f, "expected end of input, found {found}"),
+            Self::InvalidLabel(error) => write!(f, "invalid label: {error}"),
+            Self::InvalidBase58Uid(uid) => write!(f, "invalid base58 uid: {uid}"),
             Self::InvalidPort(port) => write!(f, "invalid port {port:?}"),
         }
     }

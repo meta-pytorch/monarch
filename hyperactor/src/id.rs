@@ -42,18 +42,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use smol_str::SmolStr;
 
-use crate::parse::id::ActorIdParts;
-use crate::parse::id::IdComponent;
-use crate::parse::id::PortIdParts;
-use crate::parse::id::ProcIdParts;
-use crate::parse::id::UidParts;
+use crate::parse::id::encode_base58_uid;
 use crate::port::Port;
 
 /// Maximum length of an RFC 1035 label.
 const MAX_LABEL_LEN: usize = 63;
-
-/// Flickr base58 alphabet.
-const BASE58_FLICKR: &[u8; 58] = b"123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
 
 /// An RFC 1035-style label: 1–63 chars, lowercase ASCII alphanumeric plus `-`
 /// or `_`,
@@ -242,6 +235,14 @@ impl Uid {
         }
     }
 
+    /// Returns the raw base58 uid for instances, without display delimiters.
+    pub fn instance_uid_base58(&self) -> Option<String> {
+        match self {
+            Uid::Singleton(_) => None,
+            Uid::Instance(uid, _) => Some(encode_base58_uid(*uid)),
+        }
+    }
+
     /// Returns this uid with the provided instance label.
     ///
     /// Singleton labels are identity and are not replaced.
@@ -322,42 +323,13 @@ impl FromStr for Uid {
     type Err = UidParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = crate::parse::id::parse_uid(s)
-            .map_err(|err| UidParseError::InvalidSyntax(err.to_string()))?;
-        Self::try_from(parts)
+        crate::parse::id::parse_uid_str(s)
+            .map_err(|err| UidParseError::InvalidSyntax(err.to_string()))
     }
-}
-
-fn encode_base58_uid(mut uid: u64) -> String {
-    if uid == 0 {
-        return "1".to_string();
-    }
-
-    let mut digits = Vec::new();
-    while uid > 0 {
-        digits.push(BASE58_FLICKR[(uid % 58) as usize] as char);
-        uid /= 58;
-    }
-    digits.iter().rev().collect()
 }
 
 fn parse_base58_uid(s: &str) -> Result<u64, UidParseError> {
-    if s.is_empty() {
-        return Err(UidParseError::InvalidBase58(s.to_string()));
-    }
-
-    let mut uid = 0u64;
-    for ch in s.bytes() {
-        let digit = BASE58_FLICKR
-            .iter()
-            .position(|candidate| *candidate == ch)
-            .ok_or_else(|| UidParseError::InvalidBase58(s.to_string()))? as u64;
-        uid = uid
-            .checked_mul(58)
-            .and_then(|value| value.checked_add(digit))
-            .ok_or_else(|| UidParseError::InvalidBase58(s.to_string()))?;
-    }
-    Ok(uid)
+    crate::parse::id::decode_base58_uid(s).map_err(|_| UidParseError::InvalidBase58(s.to_string()))
 }
 
 impl Serialize for Uid {
@@ -482,9 +454,9 @@ impl FromStr for ProcId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = crate::parse::id::parse_proc_id(s)
-            .map_err(|_| legacy_parse_id_component(s).unwrap_err())?;
-        Self::try_from(parts).map_err(IdParseError::InvalidProcId)
+        crate::parse::id::parse_proc_id(s).map_err(|err| {
+            IdParseError::InvalidProcId(UidParseError::InvalidSyntax(err.to_string()))
+        })
     }
 }
 
@@ -609,8 +581,7 @@ impl FromStr for ActorId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = crate::parse::id::parse_actor_id(s).map_err(|_| legacy_parse_actor_id(s))?;
-        Self::try_from(parts)
+        crate::parse::id::parse_actor_id(s).map_err(|_| legacy_parse_actor_id(s))
     }
 }
 
@@ -707,66 +678,7 @@ impl FromStr for PortId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = crate::parse::id::parse_port_id(s).map_err(|_| legacy_port_parse_error(s))?;
-        Self::try_from(parts)
-    }
-}
-
-fn convert_id_component(component: IdComponent<'_>) -> Result<(Uid, Option<Label>), UidParseError> {
-    match component {
-        IdComponent::Singleton { label, .. } => {
-            let label = Label::new(label)?;
-            Ok((Uid::Singleton(label.clone()), Some(label)))
-        }
-        IdComponent::Instance { label, uid, .. } => {
-            let label = label.map(Label::new).transpose()?;
-            let uid = Uid::Instance(parse_base58_uid(uid)?, label.clone());
-            Ok((uid, label))
-        }
-    }
-}
-
-impl TryFrom<ProcIdParts<'_>> for ProcId {
-    type Error = UidParseError;
-
-    fn try_from(parts: ProcIdParts<'_>) -> Result<Self, Self::Error> {
-        let (uid, label) = convert_id_component(parts.component)?;
-        Ok(Self::new(uid, label))
-    }
-}
-
-impl TryFrom<UidParts<'_>> for Uid {
-    type Error = UidParseError;
-
-    fn try_from(parts: UidParts<'_>) -> Result<Self, Self::Error> {
-        convert_id_component(parts.component).map(|(uid, _)| uid)
-    }
-}
-
-impl TryFrom<ActorIdParts<'_>> for ActorId {
-    type Error = IdParseError;
-
-    fn try_from(parts: ActorIdParts<'_>) -> Result<Self, Self::Error> {
-        let (uid, label) =
-            convert_id_component(parts.actor).map_err(IdParseError::InvalidActorUid)?;
-        let proc_id = ProcId::try_from(ProcIdParts {
-            component: parts.proc_,
-        })
-        .map_err(IdParseError::InvalidActorProcUid)?;
-        Ok(Self::new(uid, proc_id, label))
-    }
-}
-
-impl TryFrom<PortIdParts<'_>> for PortId {
-    type Error = IdParseError;
-
-    fn try_from(parts: PortIdParts<'_>) -> Result<Self, Self::Error> {
-        let actor_id = ActorId::try_from(parts.actor)?;
-        let port = parts
-            .port
-            .parse()
-            .map_err(|_| IdParseError::InvalidPort(parts.port.to_string()))?;
-        Ok(Self { actor_id, port })
+        crate::parse::id::parse_port_id(s).map_err(|_| legacy_port_parse_error(s))
     }
 }
 
@@ -921,8 +833,18 @@ mod tests {
         let uid = Uid::Instance(0xd5d54d7201103869, None);
         let s = uid.to_string();
         assert_eq!(s, format!("<{}>", encode_base58_uid(0xd5d54d7201103869)));
+        assert_eq!(
+            uid.instance_uid_base58(),
+            Some(encode_base58_uid(0xd5d54d7201103869))
+        );
         let parsed: Uid = s.parse().unwrap();
         assert_eq!(uid, parsed);
+    }
+
+    #[test]
+    fn test_singleton_has_no_instance_base58() {
+        let uid = Uid::singleton(Label::new("my-actor").unwrap());
+        assert_eq!(uid.instance_uid_base58(), None);
     }
 
     #[test]
@@ -1143,18 +1065,18 @@ mod tests {
     fn test_proc_id_fromstr_errors_are_stable() {
         assert_eq!(
             "".parse::<ProcId>().unwrap_err().to_string(),
-            "invalid proc id: invalid label: label must not be empty"
+            "invalid proc id: invalid uid syntax: expected \"label\" or \"<\", found end of input"
         );
         assert_eq!(
             "controller<2MuAHeDjLCEd"
                 .parse::<ProcId>()
                 .unwrap_err()
                 .to_string(),
-            "invalid proc id: invalid label: label contains invalid character '<'"
+            "invalid proc id: invalid uid syntax: expected \">\", found end of input"
         );
         assert_eq!(
             "controller@tcp".parse::<ProcId>().unwrap_err().to_string(),
-            "invalid proc id: invalid label: label contains invalid character '@'"
+            "invalid proc id: invalid uid syntax: expected end of input, found \"@\""
         );
     }
 
