@@ -286,18 +286,17 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     // TODO: consider making this 'private' -- by moving it into a non-public trait as in [`cap`].
     fn gspawn(
         proc: &Proc,
-        name: &str,
+        uid: crate::id::Uid,
         serialized_params: Data,
         environment: Flattrs,
     ) -> Pin<Box<dyn Future<Output = Result<ActorAddr, anyhow::Error>> + Send>> {
         let proc = proc.clone();
-        let name = name.to_string();
         Box::pin(async move {
             let params =
                 bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
                     .map(|(v, _)| v)?;
             let actor = Self::new(params, environment).await?;
-            let handle = proc.spawn(&name, actor)?;
+            let handle = proc.spawn_with_uid(uid, actor)?;
             // We return only the ActorAddr, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
             // only via the serialized/opaque messaging path, which

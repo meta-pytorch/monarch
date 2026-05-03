@@ -32,6 +32,13 @@ pub(crate) enum IdComponent<'a> {
     },
 }
 
+/// A parsed uid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UidParts<'a> {
+    /// The uid component.
+    pub(crate) component: IdComponent<'a>,
+}
+
 /// A parsed proc id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ProcIdParts<'a> {
@@ -57,6 +64,13 @@ pub(crate) struct PortIdParts<'a> {
     pub(crate) port: &'a str,
 }
 
+pub(crate) fn parse_uid(input: &str) -> Result<UidParts<'_>, ParseError> {
+    let mut parser = Parser::new(input);
+    let parts = parse_uid_parts(&mut parser)?;
+    parser.finish()?;
+    Ok(parts)
+}
+
 pub(crate) fn parse_proc_id(input: &str) -> Result<ProcIdParts<'_>, ParseError> {
     let mut parser = Parser::new(input);
     let parts = parse_proc_id_parts(&mut parser)?;
@@ -76,6 +90,12 @@ pub(crate) fn parse_port_id(input: &str) -> Result<PortIdParts<'_>, ParseError> 
     let parts = parse_port_id_parts(&mut parser)?;
     parser.finish()?;
     Ok(parts)
+}
+
+pub(crate) fn parse_uid_parts<'a>(parser: &mut Parser<'a>) -> Result<UidParts<'a>, ParseError> {
+    Ok(UidParts {
+        component: parse_id_component(parser)?,
+    })
 }
 
 pub(crate) fn parse_proc_id_parts<'a>(
@@ -214,6 +234,39 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_uid_forms() {
+        assert_eq!(
+            parse_uid("local").unwrap(),
+            UidParts {
+                component: IdComponent::Singleton {
+                    label: "local",
+                    span: Span::new(0, 5),
+                },
+            }
+        );
+        assert_eq!(
+            parse_uid("controller<abc>").unwrap(),
+            UidParts {
+                component: IdComponent::Instance {
+                    label: Some("controller"),
+                    uid: "abc",
+                    span: Span::new(0, 15),
+                },
+            }
+        );
+        assert_eq!(
+            parse_uid("<abc>").unwrap(),
+            UidParts {
+                component: IdComponent::Instance {
+                    label: None,
+                    uid: "abc",
+                    span: Span::new(0, 5),
+                },
+            }
+        );
+    }
 
     #[test]
     fn test_parse_proc_id_forms() {

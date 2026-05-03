@@ -740,6 +740,19 @@ impl Proc {
         self.spawn_inner(actor_id, actor, None)
     }
 
+    /// Spawn a root actor on this proc using an explicit uid.
+    ///
+    /// The uid must be unique among root actors on this proc. Instance labels,
+    /// if present, are descriptive only and do not affect uniqueness.
+    pub fn spawn_with_uid<A: Actor>(
+        &self,
+        uid: crate::id::Uid,
+        actor: A,
+    ) -> Result<ActorHandle<A>, anyhow::Error> {
+        let actor_id: ActorAddr = self.allocate_root_uid(uid)?;
+        self.spawn_inner(actor_id, actor, None)
+    }
+
     /// Common spawn logic for both root and child actors.
     #[hyperactor::instrument(fields(subject = actor_id.subject().to_string()))]
     fn spawn_inner<A: Actor>(
@@ -1272,6 +1285,16 @@ impl Proc {
     /// Uses `reserved_roots` to prevent races between concurrent callers.
     fn allocate_root_id(&self, name: &str) -> Result<ActorAddr, anyhow::Error> {
         let actor_ref = self.state().proc_id.actor_ref(name);
+        self.reserve_root(actor_ref, name)
+    }
+
+    /// Create a root allocation in the proc from an explicit uid.
+    fn allocate_root_uid(&self, uid: crate::id::Uid) -> Result<ActorAddr, anyhow::Error> {
+        let actor_ref = ActorAddr::new_from_uid(self.state().proc_id.clone(), uid.clone());
+        self.reserve_root(actor_ref, &uid.to_string())
+    }
+
+    fn reserve_root(&self, actor_ref: ActorAddr, name: &str) -> Result<ActorAddr, anyhow::Error> {
         let uid = actor_ref.uid().clone();
         if !self.state().reserved_roots.insert(uid) {
             anyhow::bail!("an actor with name '{}' has already been spawned", name)
