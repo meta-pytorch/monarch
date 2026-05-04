@@ -166,7 +166,6 @@ use crate::introspect::IntrospectResult;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
-use crate::mailbox::HandlerPortControl;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::Mailbox;
 use crate::mailbox::MailboxClient;
@@ -1886,7 +1885,7 @@ impl<A: Actor> Instance<A> {
 
     /// Close handler ingress for this actor.
     pub fn close(&self) {
-        self.inner.ports.close_handler_ports_for_drain();
+        self.inner.mailbox.drain();
     }
 
     /// Request immediate actor exit with the provided stop reason.
@@ -3295,8 +3294,6 @@ impl WeakInstanceCell {
 /// actor.
 pub struct HandlerPorts<A: Actor> {
     ports: DashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
-    controls: DashMap<TypeId, Arc<dyn HandlerPortControl>>,
-    closed_for_drain: AtomicBool,
     bound: DashMap<u64, &'static str>,
     mailbox: Mailbox,
     workq: OrderedSender<WorkCell<A>>,
@@ -3315,8 +3312,6 @@ impl<A: Actor> HandlerPorts<A> {
     ) -> Self {
         Self {
             ports: DashMap::new(),
-            controls: DashMap::new(),
-            closed_for_drain: AtomicBool::new(false),
             bound: DashMap::new(),
             mailbox,
             workq,
@@ -3411,25 +3406,14 @@ impl<A: Actor> HandlerPorts<A> {
                     }
                     result
                 };
-                let (port, control) = self.mailbox.open_handler_enqueue_port(enqueue);
-                if self.closed_for_drain.load(Ordering::Relaxed) {
-                    control.close_for_drain();
-                }
+                let port = self.mailbox.open_handler_enqueue_port(enqueue);
                 entry.insert(Box::new(port.clone()));
-                self.controls.insert(key, control);
                 port
             }
             Entry::Occupied(entry) => {
                 let port = entry.get();
                 port.downcast_ref::<PortHandle<M>>().unwrap().clone()
             }
-        }
-    }
-
-    pub(crate) fn close_handler_ports_for_drain(&self) {
-        self.closed_for_drain.store(true, Ordering::Relaxed);
-        for entry in self.controls.iter() {
-            entry.value().close_for_drain();
         }
     }
 
