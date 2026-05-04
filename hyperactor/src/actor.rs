@@ -232,15 +232,6 @@ pub trait Handler<M>: Actor {
     async fn handle(&mut self, cx: &Context<Self>, message: M) -> Result<(), anyhow::Error>;
 }
 
-/// We provide this handler to indicate that actors can handle the [`Signal`] message.
-/// Its actual handler is implemented by the runtime.
-#[async_trait]
-impl<A: Actor> Handler<Signal> for A {
-    async fn handle(&mut self, _cx: &Context<Self>, _message: Signal) -> Result<(), anyhow::Error> {
-        unimplemented!("signal handler should not be called directly")
-    }
-}
-
 /// This handler provides a default behavior when a message sent by
 /// the actor to another is returned due to delivery failure.
 #[async_trait]
