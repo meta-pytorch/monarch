@@ -286,18 +286,17 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     // TODO: consider making this 'private' -- by moving it into a non-public trait as in [`cap`].
     fn gspawn(
         proc: &Proc,
-        name: &str,
+        uid: crate::id::Uid,
         serialized_params: Data,
         environment: Flattrs,
     ) -> Pin<Box<dyn Future<Output = Result<ActorAddr, anyhow::Error>> + Send>> {
         let proc = proc.clone();
-        let name = name.to_string();
         Box::pin(async move {
             let params =
                 bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
                     .map(|(v, _)| v)?;
             let actor = Self::new(params, environment).await?;
-            let handle = proc.spawn(&name, actor)?;
+            let handle = proc.spawn_with_uid(uid, actor)?;
             // We return only the ActorAddr, not a typed ActorRef.
             // Callers that hold this ID can interact with the actor
             // only via the serialized/opaque messaging path, which
@@ -791,7 +790,7 @@ mod tests {
     use crate as hyperactor;
     use crate::Actor;
     use crate::ActorRef;
-    use crate::Address;
+    use crate::Addr;
     use crate::OncePortHandle;
     use crate::PortRef;
     use crate::config;
@@ -1750,7 +1749,7 @@ mod tests {
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
 
-        let child_ref = crate::Address::Actor(test_proc_id("nonexistent").actor_ref("child"));
+        let child_ref = crate::Addr::Actor(test_proc_id("nonexistent").actor_ref("child"));
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
         PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
@@ -2083,16 +2082,16 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
 
         // Before registering, query_child returns None.
-        let test_ref = Address::Actor(test_proc_id("test").actor_ref("child"));
+        let test_ref = Addr::Actor(test_proc_id("test").actor_ref("child"));
         assert!(handle.cell().query_child(&test_ref).is_none());
 
         // Register a callback.
         handle.cell().set_query_child_handler(|child_ref| {
             use crate::introspect::IntrospectRef;
             let identity = match child_ref {
-                Address::Proc(p) => IntrospectRef::Proc(p.clone()),
-                Address::Actor(a) => IntrospectRef::Actor(a.clone()),
-                Address::Port(p) => IntrospectRef::Actor(p.actor_ref()),
+                Addr::Proc(p) => IntrospectRef::Proc(p.clone()),
+                Addr::Actor(a) => IntrospectRef::Actor(a.clone()),
+                Addr::Port(p) => IntrospectRef::Actor(p.actor_ref()),
             };
             IntrospectResult {
                 identity,
