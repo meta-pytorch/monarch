@@ -276,9 +276,9 @@ mod tests {
 
     fn make_actor_ref(actor_label: Option<&str>, proc_label: Option<&str>) -> ActorAddr {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
+            Uid::Instance(0xabc123, None),
             ProcId::new(
-                Uid::Instance(0xdef456),
+                Uid::Instance(0xdef456, None),
                 proc_label.map(|l| Label::new(l).unwrap()),
             ),
             actor_label.map(|l| Label::new(l).unwrap()),
@@ -289,9 +289,9 @@ mod tests {
 
     fn make_port_ref(actor_label: Option<&str>, proc_label: Option<&str>) -> PortAddr {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
+            Uid::Instance(0xabc123, None),
             ProcId::new(
-                Uid::Instance(0xdef456),
+                Uid::Instance(0xdef456, None),
                 proc_label.map(|l| Label::new(l).unwrap()),
             ),
             actor_label.map(|l| Label::new(l).unwrap()),

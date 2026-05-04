@@ -122,6 +122,8 @@ use hyperactor_telemetry::notify_actor_status_changed;
 use hyperactor_telemetry::notify_message;
 use hyperactor_telemetry::notify_message_status;
 use hyperactor_telemetry::recorder::Recording;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -135,7 +137,7 @@ use crate as hyperactor;
 use crate::Actor;
 use crate::ActorAddr;
 use crate::ActorRef;
-use crate::Address;
+use crate::Addr;
 use crate::Handler;
 use crate::Message;
 use crate::PortAddr;
@@ -336,6 +338,57 @@ use crate::ordering::ordered_channel;
 use crate::panic_handler;
 use crate::supervision::ActorSupervisionEvent;
 
+/// Identity assignment sent by a host as the first message on a duplex
+/// attach connection. The child reads this to learn its [`ProcAddr`].
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub struct BootstrapAssignment {
+    /// The assigned proc identity.
+    pub proc_id: ProcAddr,
+}
+wirevalue::register_type!(BootstrapAssignment);
+
+/// Sentinel message sent by an attach client as its first
+/// [`MessageEnvelope`]. Hosts use this to distinguish attach requests
+/// from regular inbound [`MessageEnvelope`] connections.
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub struct AttachRequest;
+wirevalue::register_type!(AttachRequest);
+
+/// Wire protocol for the host -> client direction on a duplex attach
+/// connection.
+#[derive(Debug, Serialize, Deserialize, typeuri::Named)]
+pub enum Host2Client {
+    /// First message: identity assignment from the host.
+    Bootstrap(BootstrapAssignment),
+    /// Subsequent messages: routed envelopes.
+    Envelope(MessageEnvelope),
+}
+wirevalue::register_type!(Host2Client);
+
+/// [`Rx<MessageEnvelope>`](channel::Rx) adapter that unwraps
+/// [`Host2Client::Envelope`] from a duplex receiver.
+pub struct AttachRx(pub channel::duplex::DuplexRx<Host2Client>);
+
+#[async_trait]
+impl channel::Rx<MessageEnvelope> for AttachRx {
+    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
+        match self.0.recv().await? {
+            Host2Client::Envelope(envelope) => Ok(envelope),
+            Host2Client::Bootstrap(_) => Err(ChannelError::Other(anyhow::anyhow!(
+                "unexpected bootstrap message after handshake"
+            ))),
+        }
+    }
+
+    fn addr(&self) -> ChannelAddr {
+        self.0.addr()
+    }
+
+    async fn join(self) {
+        self.0.join().await
+    }
+}
+
 /// This is used to mint new local ranks for [`Proc::local`].
 static NEXT_LOCAL_RANK: AtomicUsize = AtomicUsize::new(0);
 
@@ -479,9 +532,6 @@ impl Proc {
     pub async fn attach_to_host(addr: ChannelAddr) -> Result<Self, anyhow::Error> {
         use crate::channel::Rx;
         use crate::channel::Tx;
-        use crate::host::AttachRequest;
-        use crate::host::AttachRx;
-        use crate::host::Host2Client;
         let mut duplex_client = channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
         let duplex_tx = duplex_client.tx();
         let mut duplex_rx = duplex_client
@@ -687,6 +737,19 @@ impl Proc {
     /// unique.
     pub fn spawn<A: Actor>(&self, name: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id: ActorAddr = self.allocate_root_id(name)?;
+        self.spawn_inner(actor_id, actor, None)
+    }
+
+    /// Spawn a root actor on this proc using an explicit uid.
+    ///
+    /// The uid must be unique among root actors on this proc. Instance labels,
+    /// if present, are descriptive only and do not affect uniqueness.
+    pub fn spawn_with_uid<A: Actor>(
+        &self,
+        uid: crate::id::Uid,
+        actor: A,
+    ) -> Result<ActorHandle<A>, anyhow::Error> {
+        let actor_id: ActorAddr = self.allocate_root_uid(uid)?;
         self.spawn_inner(actor_id, actor, None)
     }
 
@@ -1222,6 +1285,17 @@ impl Proc {
     /// Uses `reserved_roots` to prevent races between concurrent callers.
     fn allocate_root_id(&self, name: &str) -> Result<ActorAddr, anyhow::Error> {
         let actor_ref = self.state().proc_id.actor_ref(name);
+        self.reserve_root(actor_ref, name)
+    }
+
+    /// Create a root allocation in the proc from an explicit uid.
+    fn allocate_root_uid(&self, uid: crate::id::Uid) -> Result<ActorAddr, anyhow::Error> {
+        let name = uid.to_string();
+        let actor_ref = ActorAddr::new_from_uid(self.state().proc_id.clone(), uid);
+        self.reserve_root(actor_ref, &name)
+    }
+
+    fn reserve_root(&self, actor_ref: ActorAddr, name: &str) -> Result<ActorAddr, anyhow::Error> {
         let uid = actor_ref.uid().clone();
         if !self.state().reserved_roots.insert(uid) {
             anyhow::bail!("an actor with name '{}' has already been spawned", name)
@@ -1761,7 +1835,7 @@ impl<A: Actor> Instance<A> {
     /// procs that have no independent `ProcAgent`.
     pub fn set_query_child_handler(
         &self,
-        handler: impl (Fn(&Address) -> IntrospectResult) + Send + Sync + 'static,
+        handler: impl (Fn(&Addr) -> IntrospectResult) + Send + Sync + 'static,
     ) {
         self.inner.cell.set_query_child_handler(handler);
     }
@@ -2639,7 +2713,7 @@ struct InstanceCellState {
     /// `None` means `QueryChild` returns a "not_found" error.
     ///
     /// See S7 in `introspect` module doc.
-    query_child_handler: RwLock<Option<Box<dyn (Fn(&Address) -> IntrospectResult) + Send + Sync>>>,
+    query_child_handler: RwLock<Option<Box<dyn (Fn(&Addr) -> IntrospectResult) + Send + Sync>>>,
 
     /// The supervision event for this actor's failure, if any.
     /// See FI-1, FI-2 in `introspect` module doc.
@@ -3007,13 +3081,13 @@ impl InstanceCell {
     /// Capture cloned `Proc` references, not `&mut self`.
     pub fn set_query_child_handler(
         &self,
-        handler: impl (Fn(&Address) -> IntrospectResult) + Send + Sync + 'static,
+        handler: impl (Fn(&Addr) -> IntrospectResult) + Send + Sync + 'static,
     ) {
         *self.inner.query_child_handler.write().unwrap() = Some(Box::new(handler));
     }
 
     /// Invoke the registered QueryChild handler, if any.
-    pub fn query_child(&self, child_ref: &Address) -> Option<IntrospectResult> {
+    pub fn query_child(&self, child_ref: &Addr) -> Option<IntrospectResult> {
         let guard = self.inner.query_child_handler.read().unwrap();
         guard.as_ref().map(|handler| handler(child_ref))
     }

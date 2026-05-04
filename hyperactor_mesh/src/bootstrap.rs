@@ -46,11 +46,6 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::context;
-use hyperactor::host::Host;
-use hyperactor::host::HostError;
-use hyperactor::host::ProcHandle;
-use hyperactor::host::ProcManager;
-use hyperactor::host::TerminateSummary;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
@@ -71,6 +66,16 @@ use tracing::Level;
 use typeuri::Named;
 
 use crate::config::MESH_PROC_LAUNCHER_KIND;
+use crate::host::BulkTerminate;
+use crate::host::Host;
+use crate::host::HostError;
+use crate::host::ProcHandle;
+use crate::host::ProcManager;
+use crate::host::ReadyError as HostReadyError;
+use crate::host::SingleTerminate;
+use crate::host::TerminateError;
+use crate::host::TerminateSummary;
+use crate::host::WaitError;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::logging::OutputTarget;
@@ -313,7 +318,7 @@ pub enum Bootstrap {
         /// The ProcAddr of the proc to be bootstrapped.
         proc_id: ProcAddr,
         /// The backend address to which messages are forwarded.
-        /// See [`hyperactor::host`] for channel topology details.
+        /// See [`crate::host`] for channel topology details.
         backend_addr: ChannelAddr,
         /// The callback address used to indicate successful spawning.
         callback_addr: ChannelAddr,
@@ -1220,7 +1225,7 @@ impl BootstrapProcHandle {
 }
 
 #[async_trait]
-impl hyperactor::host::ProcHandle for BootstrapProcHandle {
+impl ProcHandle for BootstrapProcHandle {
     type Agent = ProcAgent;
     type TerminalStatus = ProcStatus;
 
@@ -1255,13 +1260,11 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     ///
     /// If the internal status watch closes unexpectedly before
     /// `Ready` is observed, returns `Err(ReadyError::ChannelClosed)`.
-    async fn ready(&self) -> Result<(), hyperactor::host::ReadyError<Self::TerminalStatus>> {
+    async fn ready(&self) -> Result<(), HostReadyError<Self::TerminalStatus>> {
         match self.ready_inner().await {
             Ok(()) => Ok(()),
-            Err(ReadyError::Terminal(status)) => {
-                Err(hyperactor::host::ReadyError::Terminal(status))
-            }
-            Err(ReadyError::ChannelClosed) => Err(hyperactor::host::ReadyError::ChannelClosed),
+            Err(ReadyError::Terminal(status)) => Err(HostReadyError::Terminal(status)),
+            Err(ReadyError::ChannelClosed) => Err(HostReadyError::ChannelClosed),
         }
     }
 
@@ -1272,12 +1275,12 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     ///
     /// If the internal status watch closes before any terminal state
     /// is seen, returns `Err(WaitError::ChannelClosed)`.
-    async fn wait(&self) -> Result<Self::TerminalStatus, hyperactor::host::WaitError> {
+    async fn wait(&self) -> Result<Self::TerminalStatus, WaitError> {
         let status = self.wait_inner().await;
         if status.is_exit() {
             Ok(status)
         } else {
-            Err(hyperactor::host::WaitError::ChannelClosed)
+            Err(WaitError::ChannelClosed)
         }
     }
 
@@ -1306,12 +1309,12 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         cx: &impl context::Actor,
         timeout: Duration,
         reason: &str,
-    ) -> Result<ProcStatus, hyperactor::host::TerminateError<Self::TerminalStatus>> {
+    ) -> Result<ProcStatus, TerminateError<Self::TerminalStatus>> {
         // If already terminal, return that.
         let st0 = self.status();
         if st0.is_exit() {
             tracing::debug!(?st0, "terminate(): already terminal");
-            return Err(hyperactor::host::TerminateError::AlreadyTerminated(st0));
+            return Err(TerminateError::AlreadyTerminated(st0));
         }
 
         // Before signaling, try to close actors normally. Only works if
@@ -1340,7 +1343,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         if let Some(launcher) = self.launcher.upgrade() {
             if let Err(e) = launcher.terminate(&ref_proc_id, timeout).await {
                 tracing::warn!(proc_id = %self.proc_id, error=%e, "terminate(): launcher termination failed");
-                return Err(hyperactor::host::TerminateError::Io(anyhow::anyhow!(
+                return Err(TerminateError::Io(anyhow::anyhow!(
                     "launcher termination failed: {}",
                     e
                 )));
@@ -1356,7 +1359,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
             tracing::info!(proc_id = %self.proc_id, ?st, "terminate(): exited");
             Ok(st)
         } else {
-            Err(hyperactor::host::TerminateError::ChannelClosed)
+            Err(TerminateError::ChannelClosed)
         }
     }
 
@@ -1377,13 +1380,11 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     /// - `Ok(ProcStatus)` if the process exited after kill.
     /// - `Err(TerminateError)` if already exited, signaling failed,
     ///   or the channel was lost.
-    async fn kill(
-        &self,
-    ) -> Result<ProcStatus, hyperactor::host::TerminateError<Self::TerminalStatus>> {
+    async fn kill(&self) -> Result<ProcStatus, TerminateError<Self::TerminalStatus>> {
         // If already terminal, return that.
         let st0 = self.status();
         if st0.is_exit() {
-            return Err(hyperactor::host::TerminateError::AlreadyTerminated(st0));
+            return Err(TerminateError::AlreadyTerminated(st0));
         }
 
         // Delegate to launcher for kill.
@@ -1392,7 +1393,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         if let Some(launcher) = self.launcher.upgrade() {
             if let Err(e) = launcher.kill(&ref_proc_id).await {
                 tracing::warn!(proc_id = %self.proc_id, error=%e, "kill(): launcher kill failed");
-                return Err(hyperactor::host::TerminateError::Io(anyhow::anyhow!(
+                return Err(TerminateError::Io(anyhow::anyhow!(
                     "launcher kill failed: {}",
                     e
                 )));
@@ -1407,7 +1408,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
         if st.is_exit() {
             Ok(st)
         } else {
-            Err(hyperactor::host::TerminateError::ChannelClosed)
+            Err(TerminateError::ChannelClosed)
         }
     }
 }
@@ -2065,7 +2066,7 @@ impl ProcManager for BootstrapProcManager {
 }
 
 #[async_trait]
-impl hyperactor::host::SingleTerminate for BootstrapProcManager {
+impl SingleTerminate for BootstrapProcManager {
     /// Attempt to gracefully terminate one child procs managed by
     /// this `BootstrapProcManager`.
     ///
@@ -2100,7 +2101,7 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
 }
 
 #[async_trait]
-impl hyperactor::host::BulkTerminate for BootstrapProcManager {
+impl BulkTerminate for BootstrapProcManager {
     /// Attempt to gracefully terminate all child procs managed by
     /// this `BootstrapProcManager`.
     ///
@@ -2133,7 +2134,7 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
 
         let results = stream::iter(handles.into_iter().map(|h| async move {
             match h.terminate(cx, timeout, reason).await {
-                Ok(_) | Err(hyperactor::host::TerminateError::AlreadyTerminated(_)) => {
+                Ok(_) | Err(TerminateError::AlreadyTerminated(_)) => {
                     // Treat "already terminal" as success.
                     true
                 }
@@ -2310,7 +2311,6 @@ mod tests {
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::TcpMode;
-    use hyperactor::host::ProcHandle;
     use hyperactor::testing::ids::test_proc_id;
     use hyperactor::testing::ids::test_proc_id_with_addr;
     use hyperactor_config::Flattrs;
@@ -2508,10 +2508,10 @@ mod tests {
         use async_trait::async_trait;
         use hyperactor::ActorRef;
         use hyperactor::ProcAddr;
-        use hyperactor::host::ProcHandle;
         use hyperactor::testing::ids::test_proc_id;
 
         use super::super::*;
+        use crate::host::ProcHandle;
         use crate::proc_launcher::LaunchOptions;
         use crate::proc_launcher::LaunchResult;
         use crate::proc_launcher::ProcLauncher;
@@ -2915,7 +2915,7 @@ mod tests {
         assert!(handle.mark_ready(addr, agent));
 
         // Call the trait method (not ready_inner).
-        let r = <BootstrapProcHandle as hyperactor::host::ProcHandle>::ready(&handle).await;
+        let r = <BootstrapProcHandle as ProcHandle>::ready(&handle).await;
         assert!(r.is_ok(), "expected Ok(()), got {r:?}");
     }
 
@@ -2928,7 +2928,7 @@ mod tests {
         assert!(handle.mark_stopped(0, Vec::new()));
 
         // Call the trait method (not wait_inner)
-        let st = <BootstrapProcHandle as hyperactor::host::ProcHandle>::wait(&handle)
+        let st = <BootstrapProcHandle as ProcHandle>::wait(&handle)
             .await
             .expect("wait should return Ok(terminal)");
 
@@ -2945,11 +2945,9 @@ mod tests {
 
         assert!(handle.mark_stopped(7, Vec::new()));
 
-        match <BootstrapProcHandle as hyperactor::host::ProcHandle>::ready(&handle).await {
+        match <BootstrapProcHandle as ProcHandle>::ready(&handle).await {
             Ok(()) => panic!("expected Err"),
-            Err(hyperactor::host::ReadyError::Terminal(ProcStatus::Stopped {
-                exit_code, ..
-            })) => {
+            Err(HostReadyError::Terminal(ProcStatus::Stopped { exit_code, .. })) => {
                 assert_eq!(exit_code, 7);
             }
             Err(e) => panic!("unexpected error: {e:?}"),
