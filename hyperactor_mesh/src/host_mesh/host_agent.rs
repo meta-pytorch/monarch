@@ -666,7 +666,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         let created = match host {
             HostAgentMode::Process { host, .. } => {
                 host.spawn(
-                    super::resource_proc_name(&create_or_update.id),
+                    create_or_update.id.proc_id().to_string(),
                     BootstrapProcConfig {
                         create_rank: create_or_update.rank.unwrap(),
                         client_config_override: create_or_update
@@ -680,7 +680,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                 .await
             }
             HostAgentMode::Local(host) => {
-                host.spawn(super::resource_proc_name(&create_or_update.id), ())
+                host.spawn(create_or_update.id.proc_id().to_string(), ())
                     .await
             }
         };
@@ -1427,8 +1427,8 @@ mod tests {
                 }),
                 ..
             } if id == resource_id
-              && proc_id == hyperactor_reference::ProcAddr::from_resource_name(host_addr.clone(), id.to_string())
-              && mesh_agent == hyperactor_reference::ActorRef::attest(hyperactor_reference::ProcAddr::from_resource_name(host_addr.clone(), id.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
+              && proc_id == id.proc_addr(host_addr.clone())
+              && mesh_agent == hyperactor_reference::ActorRef::attest(id.proc_addr(host_addr.clone()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }

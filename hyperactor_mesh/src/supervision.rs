@@ -125,9 +125,10 @@ mod tests {
     use hyperactor::channel::ChannelAddr;
 
     use super::*;
+    use crate::mesh_id::ResourceId;
 
     fn test_event(name: &str, display_name: Option<String>) -> ActorSupervisionEvent {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(ChannelAddr::Local(0), "test_proc");
+        let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "test_proc");
         ActorSupervisionEvent::new(
             proc_id.actor_id(name),
             display_name,
@@ -200,8 +201,7 @@ mod tests {
     // (`hyperactor_mesh/src/global_context.rs:278`): display_name =
     // None, actor_status = generic_failure("message not delivered: ...").
     fn undeliverable_synthesized_event() -> ActorSupervisionEvent {
-        let proc_id =
-            hyperactor::ProcAddr::from_resource_name(ChannelAddr::Local(0), "worker_proc");
+        let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "worker_proc");
         ActorSupervisionEvent::new(
             proc_id.actor_id("dead_actor"),
             None, // synthesized site has no PythonActor context; display_name stays None
@@ -276,8 +276,7 @@ mod tests {
     #[test]
     fn proof_direct_actor_handled_panic() {
         let panicked_event = {
-            let proc_id =
-                hyperactor::ProcAddr::from_resource_name(ChannelAddr::Local(0), "worker_proc");
+            let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "worker_proc");
             ActorSupervisionEvent::new(
                 proc_id.actor_id("philosopher_1"),
                 // `Proc::stop_actor` populates this via
@@ -325,8 +324,7 @@ mod tests {
     #[test]
     fn proof_controller_unreachable() {
         let controller_timeout_event = {
-            let proc_id =
-                hyperactor::ProcAddr::from_resource_name(ChannelAddr::Local(0), "controller_proc");
+            let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "controller_proc");
             ActorSupervisionEvent::new(
                 proc_id.actor_id("training_controller"),
                 None,

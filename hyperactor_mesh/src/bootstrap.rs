@@ -80,6 +80,7 @@ use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
+use crate::mesh_id::ResourceId;
 use crate::proc_agent::ProcAgent;
 use crate::proc_launcher::LaunchOptions;
 use crate::proc_launcher::NativeProcLauncher;
@@ -476,7 +477,9 @@ impl Bootstrap {
                 // TODO provide a direct way to construct these
                 let serve_addr = format!(
                     "unix:{}",
-                    socket_dir_path.join(proc_id.resource_name()).display()
+                    socket_dir_path
+                        .join(ResourceId::from(&proc_id).to_string())
+                        .display()
                 );
                 let serve_addr = serve_addr.parse().unwrap();
 

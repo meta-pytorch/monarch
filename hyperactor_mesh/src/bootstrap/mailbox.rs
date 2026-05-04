@@ -22,6 +22,8 @@ use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 
+use crate::mesh_id::ResourceId;
+
 /// LocalProcDialer dials local procs directly through a configured socket
 /// directory.
 #[derive(Debug)]
@@ -65,7 +67,7 @@ impl MailboxSender for LocalProcDialer {
             // reachable through the backend address.
             && proc_ref.uid().is_instance()
         {
-            let key = proc_ref.resource_name();
+            let key = ResourceId::from(proc_ref.id()).to_string();
             let senders = self.local_senders.read().unwrap();
             let senders = if senders.contains_key(&key) {
                 senders
@@ -150,15 +152,9 @@ mod tests {
         // These proc names must match the socket file names on disk, so we
         // construct the IDs directly rather than via test_proc_id.
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
-        let first_actor_id =
-            hyperactor::ProcAddr::from_resource_name(local_addr.clone(), first.to_string())
-                .actor_id("actor");
-        let second_actor_id =
-            hyperactor::ProcAddr::from_resource_name(local_addr.clone(), second.to_string())
-                .actor_id("actor");
-        let third_notexist_actor_id =
-            hyperactor::ProcAddr::from_resource_name(local_addr.clone(), third.to_string())
-                .actor_id("actor");
+        let first_actor_id = first.proc_addr(local_addr.clone()).actor_id("actor");
+        let second_actor_id = second.proc_addr(local_addr.clone()).actor_id("actor");
+        let third_notexist_actor_id = third.proc_addr(local_addr.clone()).actor_id("actor");
         let proc_dialer = LocalProcDialer::new(
             local_addr.clone(),
             dir.path().to_owned(),
@@ -207,8 +203,7 @@ mod tests {
 
         // System proc on the host (name must be exactly "system"):
         let system_actor_id =
-            hyperactor::ProcAddr::from_resource_name(local_addr.clone(), "system")
-                .actor_id("actor");
+            ResourceId::proc_addr_from_name(local_addr.clone(), "system").actor_id("actor");
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             system_actor_id.port_ref(0.into()),

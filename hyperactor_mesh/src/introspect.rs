@@ -1181,6 +1181,7 @@ pub fn to_node_payload_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh_id::ResourceId;
 
     /// Enforces MK-1 (metadata completeness) for all mesh-topology
     /// introspection keys.
@@ -1254,10 +1255,10 @@ mod tests {
     }
 
     fn test_actor_ref(proc_name: &str, actor_name: &str) -> NodeRef {
-        use hyperactor::ProcAddr;
         use hyperactor::channel::ChannelAddr;
+
         NodeRef::Actor(
-            ProcAddr::from_resource_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name),
+            ResourceId::proc_addr_from_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name),
         )
     }
 
@@ -1649,7 +1650,6 @@ mod tests {
     /// SC-3: real payloads validate against the generated schema.
     #[test]
     fn test_payloads_validate_against_schema() {
-        use hyperactor::ProcAddr;
         use hyperactor::channel::ChannelAddr;
 
         let schema = schemars::schema_for!(dto::NodePayloadDto);
@@ -1657,7 +1657,7 @@ mod tests {
         let compiled = jsonschema::JSONSchema::compile(&schema_value).expect("schema must compile");
 
         let epoch = std::time::UNIX_EPOCH;
-        let proc_id = ProcAddr::from_resource_name(ChannelAddr::Local(0), "worker");
+        let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "worker");
         let actor_id = proc_id.actor_id("actor");
 
         let samples = [

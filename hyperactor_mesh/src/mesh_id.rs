@@ -38,12 +38,10 @@
 //!
 //! - Singleton: `label`
 //! - Labeled instance: `label-uid58`
-//! - Unlabeled instance: `<instance_uid>`
+//! - Unlabeled instance: `<uid58>`
 //!
 //! Here `uid58` is the base58 instance component produced by [`Uid::Instance`],
-//! without angle brackets. Parsing accepts the display forms above. For
-//! backwards compatibility, instance uids wrapped in angle brackets are also
-//! accepted when parsing.
+//! without angle brackets.
 //!
 //! Identity is uid-only: labels are descriptive metadata and do not
 //! participate in `Eq`, `Hash`, or `Ord`.
@@ -54,6 +52,11 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::str::FromStr;
 
+use hyperactor::ActorAddr;
+use hyperactor::ActorId;
+use hyperactor::Location;
+use hyperactor::ProcAddr;
+use hyperactor::ProcId;
 use hyperactor::id::Label;
 use hyperactor::id::LabelError;
 use hyperactor::id::Uid;
@@ -97,6 +100,16 @@ impl ResourceId {
         Self(Uid::instance_labeled(label))
     }
 
+    /// Create a resource id from a resource-name string.
+    ///
+    /// This accepts the mesh resource-id grammar, falling back to a stripped
+    /// singleton label for legacy call sites that pass arbitrary names.
+    pub fn from_name(name: impl AsRef<str>) -> Self {
+        name.as_ref()
+            .parse()
+            .unwrap_or_else(|_| Self::singleton(Label::strip(name.as_ref())))
+    }
+
     /// Returns the uid.
     pub fn uid(&self) -> &Uid {
         &self.0
@@ -121,6 +134,63 @@ impl ResourceId {
     /// Returns the legacy actor-runtime name derived from this resource id.
     pub fn actor_name(&self) -> String {
         self.to_string()
+    }
+
+    /// Converts this resource id into a hyperactor proc id.
+    pub fn proc_id(&self) -> ProcId {
+        ProcId::new(self.0.clone(), None)
+    }
+
+    /// Converts this resource id into a hyperactor proc addr at `location`.
+    pub fn proc_addr(&self, location: impl Into<Location>) -> ProcAddr {
+        ProcAddr::new(self.proc_id(), location.into())
+    }
+
+    /// Creates a hyperactor proc addr from a mesh resource-name string.
+    pub fn proc_addr_from_name(location: impl Into<Location>, name: impl AsRef<str>) -> ProcAddr {
+        Self::from_name(name).proc_addr(location)
+    }
+}
+
+impl From<ResourceId> for Uid {
+    fn from(id: ResourceId) -> Self {
+        id.0
+    }
+}
+
+impl From<&ResourceId> for Uid {
+    fn from(id: &ResourceId) -> Self {
+        id.0.clone()
+    }
+}
+
+impl From<ResourceId> for ProcId {
+    fn from(id: ResourceId) -> Self {
+        Self::new(id.0, None)
+    }
+}
+
+impl From<&ResourceId> for ProcId {
+    fn from(id: &ResourceId) -> Self {
+        id.proc_id()
+    }
+}
+
+impl From<ProcId> for ResourceId {
+    fn from(id: ProcId) -> Self {
+        Self(id.uid().clone())
+    }
+}
+
+impl From<&ProcId> for ResourceId {
+    fn from(id: &ProcId) -> Self {
+        Self(id.uid().clone())
+    }
+}
+
+impl From<&ProcAddr> for ResourceId {
+    fn from(addr: &ProcAddr) -> Self {
+        Self::from(addr.id())
     }
 }
 
@@ -152,23 +222,12 @@ impl Ord for ResourceId {
 
 fn fmt_instance_uid(uid: u64) -> String {
     Uid::Instance(uid, None)
-        .to_string()
-        .trim_start_matches('<')
-        .trim_end_matches('>')
-        .to_string()
+        .instance_uid_base58()
+        .expect("instance uid should have base58 representation")
 }
 
 fn parse_instance_uid(s: &str) -> Result<u64, UidParseError> {
-    let mut last_err = None;
-    for candidate in [s.to_string(), format!("<{s}>")] {
-        match Uid::from_str(&candidate) {
-            Ok(Uid::Instance(uid, _)) => return Ok(uid),
-            Ok(Uid::Singleton(_)) => {}
-            Err(err) => last_err = Some(err),
-        }
-    }
-    Err(last_err
-        .expect("instance uid parse should yield an error when it does not yield an instance"))
+    Uid::parse_instance_uid_base58(s)
 }
 
 fn fmt_id_component(f: &mut fmt::Formatter<'_>, uid: &Uid, label: Option<&Label>) -> fmt::Result {
@@ -176,7 +235,7 @@ fn fmt_id_component(f: &mut fmt::Formatter<'_>, uid: &Uid, label: Option<&Label>
         Uid::Singleton(singleton) => write!(f, "{singleton}"),
         Uid::Instance(uid, _) => match label {
             Some(label) => write!(f, "{label}-{}", fmt_instance_uid(*uid)),
-            None => write!(f, "{}", fmt_instance_uid(*uid)),
+            None => write!(f, "{}", Uid::Instance(*uid, None)),
         },
     }
 }
@@ -204,13 +263,29 @@ impl fmt::Debug for ResourceId {
 }
 
 fn parse_id_component(s: &str) -> Result<Uid, ResourceIdParseError> {
-    if let Ok(uid) = parse_instance_uid(s) {
+    if let Some(inner) = s
+        .strip_prefix('<')
+        .and_then(|inner| inner.strip_suffix('>'))
+    {
+        let uid = parse_instance_uid(inner)?;
         return Ok(Uid::Instance(uid, None));
     }
 
     if let Some(split) = s.rfind('-') {
         let label_part = &s[..split];
         let uid_part = &s[split + 1..];
+        if uid_part.len() >= 8
+            && let (Ok(label), Ok(uid)) = (Label::new(label_part), parse_instance_uid(uid_part))
+        {
+            return Ok(Uid::Instance(uid, Some(label)));
+        }
+    }
+
+    if let Some(open) = s.find('<')
+        && s.ends_with('>')
+    {
+        let label_part = &s[..open];
+        let uid_part = &s[open + 1..s.len() - 1];
         if let (Ok(label), Ok(uid)) = (Label::new(label_part), parse_instance_uid(uid_part)) {
             return Ok(Uid::Instance(uid, Some(label)));
         }
@@ -228,11 +303,8 @@ impl FromStr for ResourceId {
     ///
     /// Accepted inputs are:
     /// - `label` for singletons
-    /// - `label-<instance_uid>` for labeled instances
-    /// - `<instance_uid>` for unlabeled instances
-    ///
-    /// For backwards compatibility, `<instance_uid>` may also be wrapped in
-    /// angle brackets.
+    /// - `label-uid58` for labeled instances
+    /// - `<uid58>` for unlabeled instances
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(Self(parse_id_component(s)?))
     }
@@ -340,6 +412,30 @@ define_mesh_id!(
     ActorMeshId
 );
 
+impl ProcMeshId {
+    /// Converts this mesh id into a hyperactor proc id.
+    pub fn proc_id(&self) -> ProcId {
+        self.resource_id().proc_id()
+    }
+
+    /// Converts this mesh id into a hyperactor proc addr at `location`.
+    pub fn proc_addr(&self, location: impl Into<Location>) -> ProcAddr {
+        self.resource_id().proc_addr(location)
+    }
+}
+
+impl ActorMeshId {
+    /// Converts this mesh id into a hyperactor actor id within `proc_id`.
+    pub fn actor_id(&self, proc_id: ProcId) -> ActorId {
+        ActorId::new(self.uid().clone(), proc_id, None)
+    }
+
+    /// Converts this mesh id into a hyperactor actor addr within `proc_addr`.
+    pub fn actor_addr(&self, proc_addr: ProcAddr) -> ActorAddr {
+        ActorAddr::new_from_uid(proc_addr, self.uid().clone())
+    }
+}
+
 impl hyperactor_config::AttrValue for ActorMeshId {
     fn display(&self) -> String {
         self.to_string()
@@ -435,7 +531,10 @@ mod tests {
     #[test]
     fn test_resource_id_display_unlabeled_instance() {
         let id = ResourceId::new(Uid::Instance(0xd5d54d7201103869, None), None);
-        assert_eq!(id.to_string(), fmt_instance_uid(0xd5d54d7201103869));
+        assert_eq!(
+            id.to_string(),
+            format!("<{}>", fmt_instance_uid(0xd5d54d7201103869))
+        );
     }
 
     #[test]
@@ -459,7 +558,10 @@ mod tests {
     #[test]
     fn test_resource_id_actor_name_unlabeled_instance() {
         let id = ResourceId::new(Uid::Instance(0xd5d54d7201103869, None), None);
-        assert_eq!(id.actor_name(), fmt_instance_uid(0xd5d54d7201103869));
+        assert_eq!(
+            id.actor_name(),
+            format!("<{}>", fmt_instance_uid(0xd5d54d7201103869))
+        );
     }
 
     #[test]
@@ -491,6 +593,26 @@ mod tests {
     }
 
     #[test]
+    fn test_resource_id_fromstr_base58_like_singleton() {
+        let parsed: ResourceId = "service".parse().unwrap();
+        assert_eq!(
+            *parsed.uid(),
+            Uid::Singleton(Label::new("service").unwrap())
+        );
+        assert_eq!(parsed.label(), None);
+    }
+
+    #[test]
+    fn test_resource_id_fromstr_short_suffix_singleton() {
+        let parsed: ResourceId = "env-vars".parse().unwrap();
+        assert_eq!(
+            *parsed.uid(),
+            Uid::Singleton(Label::new("env-vars").unwrap())
+        );
+        assert_eq!(parsed.label(), None);
+    }
+
+    #[test]
     fn test_resource_id_fromstr_labeled_instance() {
         let parsed: ResourceId = format!("workers-{}", fmt_instance_uid(0xd5d54d7201103869))
             .parse()
@@ -504,7 +626,9 @@ mod tests {
 
     #[test]
     fn test_resource_id_fromstr_unlabeled_instance() {
-        let parsed: ResourceId = fmt_instance_uid(0xd5d54d7201103869).parse().unwrap();
+        let parsed: ResourceId = format!("<{}>", fmt_instance_uid(0xd5d54d7201103869))
+            .parse()
+            .unwrap();
         assert_eq!(*parsed.uid(), Uid::Instance(0xd5d54d7201103869, None));
         assert_eq!(parsed.label(), None);
     }
@@ -534,7 +658,10 @@ mod tests {
                 Uid::Instance(0xd5d54d7201103869, None),
                 Some(Label::new("my-service").unwrap()),
             ),
-            ResourceId::new(Uid::Instance(1, None), Some(Label::new("a").unwrap())),
+            ResourceId::new(
+                Uid::Instance(0xd5d54d7201103869, None),
+                Some(Label::new("a").unwrap()),
+            ),
         ];
         for id in cases {
             let s = id.to_string();
