@@ -1651,7 +1651,12 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_cast_p2p() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        let _guard = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
         execute_cast(&config).await;
     }
     /// Test that undeliverable messages are properly returned to the

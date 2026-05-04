@@ -1659,7 +1659,12 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_reply_once_v1_p2p() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
         execute_cast_and_reply_once_v1().await
     }
 
@@ -1691,7 +1696,12 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_accum_once_v1_p2p() {
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
         execute_cast_and_accum_once_v1().await
     }
 
