@@ -803,7 +803,7 @@ mod tests {
     }
 
     fn mock_host_ref() -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
@@ -813,7 +813,7 @@ mod tests {
     }
 
     fn mock_proc_ref() -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
