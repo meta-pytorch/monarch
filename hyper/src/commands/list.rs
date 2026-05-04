@@ -8,8 +8,8 @@
 
 use hyperactor as reference;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor_mesh::context;
+use hyperactor_mesh::host::SERVICE_PROC_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::resource::ListClient;
