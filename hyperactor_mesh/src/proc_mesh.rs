@@ -113,7 +113,7 @@ impl ProcRef {
     }
 
     pub(crate) fn actor_id(&self, id: &ActorMeshId) -> hyperactor_reference::ActorAddr {
-        self.proc_id.actor_id(id.actor_name())
+        self.proc_id.actor_ref_uid(id.uid().clone())
     }
 
     /// Generic bound: `A: Referable` - required because we return
@@ -165,8 +165,7 @@ impl ProcMesh {
             ranks
                 .first()
                 .expect("root mesh cannot be empty")
-                .actor_id(&comm_actor_name)
-                .into(),
+                .actor_id(&comm_actor_name),
         );
         let current_ref = ProcMeshRef::new(
             id.clone(),

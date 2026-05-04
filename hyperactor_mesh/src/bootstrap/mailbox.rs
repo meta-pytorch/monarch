@@ -64,7 +64,7 @@ impl MailboxSender for LocalProcDialer {
         if addr == &self.local_addr
             // ...and only non-system procs on that address; the rest are directly
             // reachable through the backend address.
-            && matches!(proc_ref.uid(), Uid::Instance(_))
+            && matches!(proc_ref.uid(), Uid::Instance(_, _))
         {
             let key = proc_ref.resource_name();
             let senders = self.local_senders.read().unwrap();

@@ -842,7 +842,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                     .gspawn(
                         &self.proc,
                         &actor_type,
-                        &create_or_update.id.actor_name(),
+                        create_or_update.id.uid().clone(),
                         params_data,
                         cx.headers().clone(),
                     )

@@ -18,6 +18,7 @@ use hyperactor_config::Flattrs;
 
 use crate::Actor;
 use crate::Data;
+use crate::id::Uid;
 use crate::proc::Proc;
 
 /// The offset of user-defined ports (i.e., arbitrarily bound).
@@ -67,7 +68,7 @@ pub struct SpawnableActor {
     /// Type-erased spawn function. This is the type's [`RemoteSpawn::gspawn`].
     pub gspawn: fn(
         &Proc,
-        &str,
+        Uid,
         Data,
         Flattrs,
     )
@@ -118,14 +119,14 @@ impl Remote {
             .map(|entry| **entry.name)
     }
 
-    /// Spawns the named actor with the provided sender, actor id,
+    /// Spawns the actor with the provided sender, actor uid,
     /// and serialized parameters. Returns an error if the actor is not
     /// registered, or if the actor's spawn fails.
     pub async fn gspawn(
         &self,
         proc: &Proc,
         actor_type: &str,
-        actor_name: &str,
+        actor_uid: Uid,
         params: Data,
         environment: Flattrs,
     ) -> Result<crate::ActorAddr, anyhow::Error> {
@@ -133,7 +134,7 @@ impl Remote {
             .by_name
             .get(actor_type)
             .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
-        (entry.gspawn)(proc, actor_name, params, environment).await
+        (entry.gspawn)(proc, actor_uid, params, environment).await
     }
 }
 
@@ -149,6 +150,7 @@ mod tests {
     use crate::Context;
     use crate::Handler;
     use crate::RemoteSpawn;
+    use crate::id::Label;
 
     #[derive(Debug)]
     #[hyperactor::export(())]
@@ -220,7 +222,7 @@ mod tests {
             .gspawn(
                 &Proc::local(),
                 "hyperactor::actor::remote::tests::MyActor",
-                "actor",
+                Uid::instance_labeled(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
                 Flattrs::default(),
             )
@@ -231,7 +233,7 @@ mod tests {
             .gspawn(
                 &Proc::local(),
                 "hyperactor::actor::remote::tests::MyActor",
-                "actor",
+                Uid::instance_labeled(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(false, bincode::config::legacy()).unwrap(),
                 Flattrs::default(),
             )
