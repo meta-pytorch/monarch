@@ -1311,7 +1311,7 @@ impl PythonActor {
 
         // Spawn a child actor to await the Python handler method.
         tokio::spawn(handle_async_endpoint_panic(
-            cx.port(),
+            cx.signal_port(),
             PythonTask::new(future)?,
             receiver,
             cx.self_id().to_string(),
