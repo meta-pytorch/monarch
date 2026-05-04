@@ -137,7 +137,7 @@ use crate as hyperactor;
 use crate::Actor;
 use crate::ActorAddr;
 use crate::ActorRef;
-use crate::Address;
+use crate::Addr;
 use crate::Handler;
 use crate::Message;
 use crate::PortAddr;
@@ -1835,7 +1835,7 @@ impl<A: Actor> Instance<A> {
     /// procs that have no independent `ProcAgent`.
     pub fn set_query_child_handler(
         &self,
-        handler: impl (Fn(&Address) -> IntrospectResult) + Send + Sync + 'static,
+        handler: impl (Fn(&Addr) -> IntrospectResult) + Send + Sync + 'static,
     ) {
         self.inner.cell.set_query_child_handler(handler);
     }
@@ -2713,7 +2713,7 @@ struct InstanceCellState {
     /// `None` means `QueryChild` returns a "not_found" error.
     ///
     /// See S7 in `introspect` module doc.
-    query_child_handler: RwLock<Option<Box<dyn (Fn(&Address) -> IntrospectResult) + Send + Sync>>>,
+    query_child_handler: RwLock<Option<Box<dyn (Fn(&Addr) -> IntrospectResult) + Send + Sync>>>,
 
     /// The supervision event for this actor's failure, if any.
     /// See FI-1, FI-2 in `introspect` module doc.
@@ -3081,13 +3081,13 @@ impl InstanceCell {
     /// Capture cloned `Proc` references, not `&mut self`.
     pub fn set_query_child_handler(
         &self,
-        handler: impl (Fn(&Address) -> IntrospectResult) + Send + Sync + 'static,
+        handler: impl (Fn(&Addr) -> IntrospectResult) + Send + Sync + 'static,
     ) {
         *self.inner.query_child_handler.write().unwrap() = Some(Box::new(handler));
     }
 
     /// Invoke the registered QueryChild handler, if any.
-    pub fn query_child(&self, child_ref: &Address) -> Option<IntrospectResult> {
+    pub fn query_child(&self, child_ref: &Addr) -> Option<IntrospectResult> {
         let guard = self.inner.query_child_handler.read().unwrap();
         guard.as_ref().map(|handler| handler(child_ref))
     }

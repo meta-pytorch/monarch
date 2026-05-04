@@ -112,7 +112,7 @@
 //!
 //! **Routable** — an entity is routable if the system can address it
 //! via the routing layer and successfully deliver a message to it
-//! using a `Address` / `ActorAddr` (i.e., there exists a live mailbox
+//! using a `Addr` / `ActorAddr` (i.e., there exists a live mailbox
 //! sender reachable through normal routing). Practical test: "can I
 //! send `IntrospectMessage::Query` to it and get a reply?"
 //!
@@ -418,7 +418,7 @@ async fn query_introspect(
 async fn query_child_introspect(
     cx: &hyperactor::Context<'_, MeshAdminAgent>,
     actor_id: &hyperactor::ActorAddr,
-    child_ref: hyperactor::Address,
+    child_ref: hyperactor::Addr,
     timeout: Duration,
     err_ctx: &str,
 ) -> Result<IntrospectResult, anyhow::Error> {
@@ -592,7 +592,7 @@ pub enum ResolveReferenceMessage {
     /// On success the reply contains `payload=Some(..), error=None`; on failure
     /// it contains `payload=None, error=Some(..)`.
     Resolve {
-        /// Address string from the HTTP path, parsed into a typed
+        /// Addr string from the HTTP path, parsed into a typed
         /// `NodeRef` at the resolve boundary.
         reference_string: String,
         /// Reply port receiving the resolution result.
@@ -796,7 +796,7 @@ impl AdminInfo {
 /// resolution happens inside the actor message loop (with access to
 /// actor messaging, timeouts, and indices).
 struct BridgeState {
-    /// Address to the `MeshAdminAgent` actor that performs
+    /// Addr to the `MeshAdminAgent` actor that performs
     /// reference resolution.
     admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent>,
     /// Dedicated client mailbox on system_proc for HTTP bridge reply
@@ -1269,7 +1269,7 @@ impl MeshAdminAgent {
     /// `HostAgent` (which recognizes service and local procs). If
     /// that returns an error payload, falls back to `ProcAgent` for
     /// user procs by querying
-    /// `QueryChild(hyperactor::Address::Proc(proc_id))`
+    /// `QueryChild(hyperactor::Addr::Proc(proc_id))`
     /// on `<proc_id>/proc_agent[0]`.
     ///
     /// See PA-1 in module doc.
@@ -1289,7 +1289,7 @@ impl MeshAdminAgent {
         let result = query_child_introspect(
             cx,
             agent.actor_id(),
-            hyperactor::Address::Proc(proc_id.clone()),
+            hyperactor::Addr::Proc(proc_id.clone()),
             hyperactor_config::global::get(crate::config::MESH_ADMIN_QUERY_CHILD_TIMEOUT),
             "querying proc details",
         )
@@ -1312,7 +1312,7 @@ impl MeshAdminAgent {
         let result = query_child_introspect(
             cx,
             &mesh_agent_id,
-            hyperactor::Address::Proc(proc_id.clone()),
+            hyperactor::Addr::Proc(proc_id.clone()),
             hyperactor_config::global::get(crate::config::MESH_ADMIN_RESOLVE_ACTOR_TIMEOUT),
             "querying proc mesh agent",
         )
@@ -1476,7 +1476,7 @@ impl MeshAdminAgent {
             let terminated = query_child_introspect(
                 cx,
                 &mesh_agent_id,
-                hyperactor::Address::Actor(actor_id.clone()),
+                hyperactor::Addr::Actor(actor_id.clone()),
                 hyperactor_config::global::get(crate::config::MESH_ADMIN_QUERY_CHILD_TIMEOUT),
                 "querying terminated snapshot",
             )
@@ -4278,7 +4278,7 @@ mod tests {
 
         // Resolve the user proc via MeshAdminAgent. HostMeshAgent
         // returns Error for QueryChild → fallback to proc_agent[0]
-        // QueryChild(Address::Proc) → live NodeProperties::Proc.
+        // QueryChild(Addr::Proc) → live NodeProperties::Proc.
         let user_proc_ref = user_proc.proc_id().to_string();
         let resp = admin_ref
             .resolve(&client, user_proc_ref.clone())

@@ -64,7 +64,7 @@ use hyperactor::Actor;
 use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
-use hyperactor::Address;
+use hyperactor::Addr;
 use hyperactor::AttachRequest;
 use hyperactor::BootstrapAssignment;
 use hyperactor::Host2Client;
@@ -179,7 +179,7 @@ pub struct Host<M> {
     backend_addr: ChannelAddr,
     /// Routes messages to known procs (local, attached) by prefix.
     router: MailboxRouter,
-    /// Address-based routing for dialed connections (child procs,
+    /// Addr-based routing for dialed connections (child procs,
     /// remote hosts); used as the fallback when the prefix router
     /// has no match.
     dial_router: DialMailboxRouter,
@@ -263,11 +263,11 @@ impl<M: ProcManager> Host<M> {
         // avoid a flush cycle: Proc.forwarder → MailboxRouter → Proc →
         // Proc.forwarder → …
         router.bind(
-            Address::from(service_proc_id.clone()),
+            Addr::from(service_proc_id.clone()),
             service_proc.muxer().clone(),
         );
         router.bind(
-            Address::from(local_proc_id.clone()),
+            Addr::from(local_proc_id.clone()),
             local_proc.muxer().clone(),
         );
 
@@ -383,7 +383,7 @@ impl<M: ProcManager> Host<M> {
         })?;
 
         self.dial_router
-            .bind(Address::from(proc_id.clone()), ready.addr().clone());
+            .bind(Addr::from(proc_id.clone()), ready.addr().clone());
         self.procs.insert(name.clone());
 
         Ok((proc_id, ready.agent_ref().clone()))
@@ -538,7 +538,7 @@ async fn duplex_accept_loop(
             );
             duplex_tx.post(Host2Client::Bootstrap(assignment));
 
-            router.bind(Address::from(proc_id.clone()), AttachSender(duplex_tx));
+            router.bind(Addr::from(proc_id.clone()), AttachSender(duplex_tx));
 
             let mut handle = forwarder.clone().serve(duplex_rx);
             let cleanup_router = router.clone();
@@ -551,7 +551,7 @@ async fn duplex_accept_loop(
                         let _ = handle.await;
                     }
                 }
-                cleanup_router.unbind(&Address::from(proc_id.clone()));
+                cleanup_router.unbind(&Addr::from(proc_id.clone()));
                 tracing::info!(
                     proc_id = proc_id.to_string(),
                     "attach connection closed, removed route"
@@ -824,7 +824,7 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
         // names, they can use the same slot.
         for name in self.procs.drain() {
             let proc_ref = ProcAddr::from_resource_name(self.frontend_addr.clone(), &name);
-            self.dial_router.unbind(&Address::from(proc_ref));
+            self.dial_router.unbind(&Addr::from(proc_ref));
         }
         summary
     }
@@ -2382,7 +2382,7 @@ mod tests {
 
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            Address::from(host.system_proc().proc_id().clone()),
+            Addr::from(host.system_proc().proc_id().clone()),
             host.addr().clone(),
         );
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -2493,7 +2493,7 @@ mod tests {
             let system_proc_id = system_proc_id.clone();
             client_tasks.push(tokio::spawn(async move {
                 let dial_router = DialMailboxRouter::new();
-                dial_router.bind(Address::from(system_proc_id.clone()), host_addr);
+                dial_router.bind(Addr::from(system_proc_id.clone()), host_addr);
                 let client_addr = ChannelAddr::any(ChannelTransport::Unix);
                 let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
                 let client_proc_id =
@@ -2568,7 +2568,7 @@ mod tests {
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            Address::from(host.system_proc().proc_id().clone()),
+            Addr::from(host.system_proc().proc_id().clone()),
             host.addr().clone(),
         );
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();

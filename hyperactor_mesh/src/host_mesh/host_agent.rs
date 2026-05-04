@@ -25,7 +25,7 @@ use enum_as_inner::EnumAsInner;
 use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::Address;
+use hyperactor::Addr;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
@@ -517,7 +517,7 @@ impl Actor for HostAgent {
             use hyperactor::introspect::IntrospectResult;
 
             let proc = match child_ref {
-                Address::Proc(proc_ref) => {
+                Addr::Proc(proc_ref) => {
                     if *proc_ref == *system_proc.proc_id() {
                         Some((&system_proc, SERVICE_PROC_NAME))
                     } else if *proc_ref == *local_proc.proc_id() {
@@ -607,11 +607,9 @@ impl Actor for HostAgent {
                         format!("child {} not found", child_ref),
                     );
                     let identity = match child_ref {
-                        Address::Proc(p) => hyperactor::introspect::IntrospectRef::Proc(p.clone()),
-                        Address::Actor(a) => {
-                            hyperactor::introspect::IntrospectRef::Actor(a.clone())
-                        }
-                        Address::Port(p) => {
+                        Addr::Proc(p) => hyperactor::introspect::IntrospectRef::Proc(p.clone()),
+                        Addr::Actor(a) => hyperactor::introspect::IntrospectRef::Actor(a.clone()),
+                        Addr::Port(p) => {
                             hyperactor::introspect::IntrospectRef::Actor(p.actor_ref())
                         }
                     };
@@ -1838,7 +1836,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Address::Proc(system_proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Addr::Proc(system_proc.proc_id().clone()),
                     reply: reply_port.bind(),
                 },
             )
