@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use hyperactor::PortHandle;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
-use hyperactor::id::Uid;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxSender;
@@ -64,7 +63,7 @@ impl MailboxSender for LocalProcDialer {
         if addr == &self.local_addr
             // ...and only non-system procs on that address; the rest are directly
             // reachable through the backend address.
-            && matches!(proc_ref.uid(), Uid::Instance(_, _))
+            && proc_ref.uid().is_instance()
         {
             let key = proc_ref.resource_name();
             let senders = self.local_senders.read().unwrap();

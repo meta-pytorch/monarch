@@ -296,15 +296,9 @@ mod tests {
 
     #[test]
     fn test_parse_id_specificity() {
-        assert!(matches!(parse_id("local").unwrap(), Id::Proc(_)));
-        assert!(matches!(
-            parse_id("controller.local").unwrap(),
-            Id::Actor(_)
-        ));
-        assert!(matches!(
-            parse_id("controller.local:7").unwrap(),
-            Id::Port(_)
-        ));
+        assert!(parse_id("local").unwrap().is_proc());
+        assert!(parse_id("controller.local").unwrap().is_actor());
+        assert!(parse_id("controller.local:7").unwrap().is_port());
     }
 
     #[test]

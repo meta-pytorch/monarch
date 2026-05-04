@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn test_resource_id_unique() {
         let id = ResourceId::unique(Label::new("workers").unwrap());
-        assert!(matches!(id.uid(), Uid::Instance(_, Some(_))));
+        assert!(id.uid().is_instance());
         assert_eq!(id.label().map(|l| l.as_str()), Some("workers"));
     }
 
@@ -572,11 +572,11 @@ mod tests {
         assert_eq!(*host.uid(), Uid::Singleton(Label::new("local").unwrap()));
 
         let proc_ = ProcMeshId::unique(Label::new("workers").unwrap());
-        assert!(matches!(proc_.uid(), Uid::Instance(_, Some(_))));
+        assert!(proc_.uid().is_instance());
         assert_eq!(proc_.label().map(|l| l.as_str()), Some("workers"));
 
         let actor = ActorMeshId::unique(Label::new("trainers").unwrap());
-        assert!(matches!(actor.uid(), Uid::Instance(_, Some(_))));
+        assert!(actor.uid().is_instance());
         assert_eq!(actor.label().map(|l| l.as_str()), Some("trainers"));
     }
 
