@@ -3346,6 +3346,16 @@ impl<A: Actor> HandlerPorts<A> {
                 let actor_id = self.mailbox.actor_id().to_string();
                 let enqueue_depth = Arc::clone(&self.queue_depth);
                 let enqueue_proc_stats = Arc::clone(&self.proc_stats);
+                // Handler-port draining holds an ingress guard while this
+                // closure runs. Therefore, the drain guarantee depends on this
+                // closure synchronously finishing all work that it admits into
+                // the actor work queue before it returns. That includes the
+                // ordered path: `OrderedSender::send` delivers the current item
+                // and synchronously flushes any consecutive buffered items that
+                // the current item unblocks. Messages already held in the
+                // reorder buffer but still waiting on a future sequence are not
+                // considered drainable accepted work; after draining begins,
+                // that missing future sequence is rejected.
                 let enqueue = move |headers: Flattrs, msg: M| {
                     let seq_info = headers.get(SEQ_INFO);
 

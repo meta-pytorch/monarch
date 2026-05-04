@@ -112,11 +112,11 @@ use std::future::Future;
 use std::ops::Bound::Excluded;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Condvar;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::Weak;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -1505,7 +1505,7 @@ impl Mailbox {
         let enqueue = Arc::new(enqueue);
         let sender = Arc::new(HandlerPortSender::new(
             UnboundedPortSender::Func(enqueue),
-            self.inner.draining.clone(),
+            self.inner.handler_ingress.clone(),
         ));
         PortHandle {
             mailbox: self.clone(),
@@ -1698,14 +1698,21 @@ impl Mailbox {
     ///
     /// Draining is a mailbox lifecycle property, but it is enforced
     /// only by runtime-dispatched handler ports. New handler work is
-    /// rejected at the handler-port sender, while runtime/control
-    /// ports and ordinary mailbox ports remain usable so shutdown can
-    /// continue and already accepted work can flush.
+    /// rejected at the handler-port sender. Work that already entered
+    /// a handler-port sender before draining began is allowed to finish
+    /// enqueueing, and this method waits for those in-flight enqueue
+    /// attempts before it returns. After this method returns, no handler
+    /// work can still be entering the actor queue through a handler
+    /// port.
+    ///
+    /// Runtime/control ports and ordinary mailbox ports remain usable
+    /// while draining, so shutdown can continue and already accepted
+    /// work can flush.
     ///
     /// This is distinct from [`Mailbox::close`], which marks the
     /// mailbox terminal and rejects all subsequent local delivery.
     pub(crate) fn drain(&self) {
-        self.inner.draining.store(true, Ordering::Release);
+        self.inner.handler_ingress.drain();
     }
 }
 
@@ -2395,20 +2402,112 @@ impl<M: Message> Debug for UnboundedPortSender<M> {
     }
 }
 
+const HANDLER_INGRESS_DRAINING: usize = 1usize << (usize::BITS as usize - 1);
+const HANDLER_INGRESS_ACTIVE_MASK: usize = !HANDLER_INGRESS_DRAINING;
+
+struct HandlerIngressGate {
+    state: AtomicUsize,
+    wait_lock: Mutex<()>,
+    drained: Condvar,
+}
+
+struct HandlerIngressGuard {
+    gate: Arc<HandlerIngressGate>,
+}
+
+impl HandlerIngressGate {
+    fn new() -> Self {
+        Self {
+            state: AtomicUsize::new(0),
+            wait_lock: Mutex::new(()),
+            drained: Condvar::new(),
+        }
+    }
+
+    fn try_enter(self: &Arc<Self>) -> Result<HandlerIngressGuard, HandlerPortClosedError> {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & HANDLER_INGRESS_DRAINING != 0 {
+                return Err(HandlerPortClosedError);
+            }
+
+            let active = state & HANDLER_INGRESS_ACTIVE_MASK;
+            assert!(
+                active < HANDLER_INGRESS_ACTIVE_MASK,
+                "too many active handler ingress sends"
+            );
+
+            match self.state.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(HandlerIngressGuard {
+                        gate: Arc::clone(self),
+                    });
+                }
+                Err(next_state) => state = next_state,
+            }
+        }
+    }
+
+    fn drain(&self) {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & HANDLER_INGRESS_DRAINING != 0 {
+                break;
+            }
+            match self.state.compare_exchange_weak(
+                state,
+                state | HANDLER_INGRESS_DRAINING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(next_state) => state = next_state,
+            }
+        }
+
+        let mut wait_guard = self.wait_lock.lock().unwrap();
+        while self.state.load(Ordering::Acquire) & HANDLER_INGRESS_ACTIVE_MASK != 0 {
+            wait_guard = self.drained.wait(wait_guard).unwrap();
+        }
+    }
+}
+
+impl Drop for HandlerIngressGuard {
+    fn drop(&mut self) {
+        let previous = self.gate.state.fetch_sub(1, Ordering::AcqRel);
+        assert!(
+            previous & HANDLER_INGRESS_ACTIVE_MASK != 0,
+            "handler ingress active count underflow"
+        );
+        if previous & HANDLER_INGRESS_DRAINING != 0 && previous & HANDLER_INGRESS_ACTIVE_MASK == 1 {
+            // Pair only the final active-count decrement during drain
+            // with the drain waiter's condvar mutex. Ordinary send
+            // completion stays on the atomic fast path, but the final
+            // sender still cannot notify between the waiter's state
+            // check and its transition to sleep.
+            let _wait_guard = self.gate.wait_lock.lock().unwrap();
+            self.gate.drained.notify_all();
+        }
+    }
+}
+
 struct HandlerPortSender<M: Message> {
     sender: UnboundedPortSender<M>,
-    draining: Arc<AtomicBool>,
+    gate: Arc<HandlerIngressGate>,
 }
 
 impl<M: Message> HandlerPortSender<M> {
-    fn new(sender: UnboundedPortSender<M>, draining: Arc<AtomicBool>) -> Self {
-        Self { sender, draining }
+    fn new(sender: UnboundedPortSender<M>, gate: Arc<HandlerIngressGate>) -> Self {
+        Self { sender, gate }
     }
 
     fn send(&self, headers: Flattrs, message: M) -> Result<(), anyhow::Error> {
-        if self.draining.load(Ordering::Acquire) {
-            return Err(HandlerPortClosedError.into());
-        }
+        let _guard = self.gate.try_enter()?;
         self.sender.send(headers, message)
     }
 }
@@ -2616,8 +2715,8 @@ struct State {
     /// status, and any subsequent `Mailbox::post_unchecked` calls will fail.
     closed: RwLock<Option<ActorStatus>>,
 
-    /// Whether the mailbox is draining handler ingress.
-    draining: Arc<AtomicBool>,
+    /// Gate that closes and drains runtime-dispatched handler ingress.
+    handler_ingress: Arc<HandlerIngressGate>,
 }
 
 impl State {
@@ -2631,7 +2730,7 @@ impl State {
             next_port: AtomicU64::new(USER_PORT_OFFSET),
             forwarder,
             closed: RwLock::new(None),
-            draining: Arc::new(AtomicBool::new(false)),
+            handler_ingress: Arc::new(HandlerIngressGate::new()),
         }
     }
 
@@ -4854,6 +4953,66 @@ mod tests {
 
         serve_handle.stop("test done");
         serve_handle.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn test_drain_waits_for_active_handler_enqueue() {
+        let mailbox = Mailbox::new_detached(test_actor_id("drain", "actor"));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let delivered = Arc::new(AtomicUsize::new(0));
+
+        let port = mailbox.open_handler_enqueue_port({
+            let release = Arc::clone(&release);
+            let delivered = Arc::clone(&delivered);
+            move |_headers, _message: u64| {
+                entered_tx.send(()).unwrap();
+                let (lock, cvar) = &*release;
+                let mut released = lock.lock().unwrap();
+                while !*released {
+                    released = cvar.wait(released).unwrap();
+                }
+                delivered.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+
+        let sender = port.sender.clone();
+        let sender_thread = std::thread::spawn(move || sender.send(Flattrs::new(), 1u64).unwrap());
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let (drained_tx, drained_rx) = std::sync::mpsc::channel();
+        let drain_thread = std::thread::spawn({
+            let mailbox = mailbox.clone();
+            move || {
+                mailbox.drain();
+                drained_tx.send(()).unwrap();
+            }
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while mailbox.inner.handler_ingress.state.load(Ordering::Acquire) & HANDLER_INGRESS_DRAINING
+            == 0
+        {
+            assert!(std::time::Instant::now() < deadline, "drain did not start");
+            std::thread::yield_now();
+        }
+        assert_matches!(
+            drained_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        let (lock, cvar) = &*release;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+
+        sender_thread.join().unwrap();
+        drained_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        drain_thread.join().unwrap();
+        assert_eq!(delivered.load(Ordering::SeqCst), 1);
+
+        let err = port.sender.send(Flattrs::new(), 2u64).unwrap_err();
+        assert!(err.is::<HandlerPortClosedError>());
     }
 
     /// Helper: build a `MessageEnvelope` with a recognizable payload
