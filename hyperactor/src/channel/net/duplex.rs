@@ -14,14 +14,15 @@
 //! ## Wire protocol
 //!
 //! Each connection starts with a unified `LinkInit` header (13 bytes,
-//! unframed) containing only the `session_id`:
+//! unframed) carrying the protocol kind, session id, and stream id:
 //!
 //! ```text
-//! [magic: 4B "LNK\0"] [session_id: 8B u64 BE]
+//! [magic: 4B ("SMP\0" | "DPX\0")] [session_id: 8B u64 BE] [stream_id: 1B u8]
 //! ```
 //!
-//! After the init, the standard tagged frame format is used. The tag
-//! byte in the 8-byte header distinguishes logical channels:
+//! Duplex servers expect `DPX\0`; mismatched magics are rejected at
+//! handshake. After the init, the standard tagged frame format is used.
+//! The tag byte in the 8-byte header distinguishes logical channels:
 //!
 //! - `INITIATOR_TO_ACCEPTOR = 0x00`
 //! - `ACCEPTOR_TO_INITIATOR = 0x01`
@@ -44,6 +45,7 @@ use super::LinkStatus;
 use super::ServerError;
 use super::SessionId;
 use super::log_send_error;
+#[cfg(test)]
 use super::read_link_init;
 use super::server::AcceptorLink;
 use super::server::ServerHandle;
@@ -53,14 +55,11 @@ use super::session::Session;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
-use crate::channel::ChannelTransport;
 use crate::channel::Rx;
 use crate::channel::SendError;
 use crate::channel::Tx;
 use crate::channel::TxStatus;
 use crate::channel::net::Stream;
-use crate::channel::net::meta;
-use crate::channel::net::tls;
 use crate::metrics;
 
 /// Public duplex server that yields `(DuplexRx<In>, DuplexTx<Out>)` pairs.
@@ -92,6 +91,30 @@ impl<In: RemoteMessage, Out: RemoteMessage> DuplexServer<In, Out> {
             self.addr
         ));
         let _ = (&mut self.handle).await;
+    }
+
+    /// Build a [`DuplexServer`] from an accept channel, server handle,
+    /// and bind address. Used by the muxed-listener path where the
+    /// accept queue is driven by a shared accept loop.
+    pub(super) fn from_parts(
+        accept_rx: mpsc::Receiver<(DuplexRx<In>, DuplexTx<Out>)>,
+        handle: ServerHandle,
+        addr: ChannelAddr,
+    ) -> Self {
+        Self {
+            accept_rx,
+            handle,
+            addr,
+        }
+    }
+}
+
+impl<In: RemoteMessage, Out: RemoteMessage> Drop for DuplexServer<In, Out> {
+    fn drop(&mut self) {
+        self.handle.stop(&format!(
+            "DuplexServer dropped; channel address: {}",
+            self.addr
+        ));
     }
 }
 
@@ -247,33 +270,7 @@ pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
     let cancel_token = CancellationToken::new();
     let child_token = cancel_token.child_token();
 
-    let is_tls = matches!(
-        channel_addr.transport(),
-        ChannelTransport::Tls | ChannelTransport::MetaTls(_)
-    );
-    let dest = channel_addr.clone();
-    let prepare = move |stream: Box<dyn Stream>, source: ChannelAddr| {
-        let dest = dest.clone();
-        async move {
-            if is_tls {
-                let tls_acceptor = match dest.transport() {
-                    ChannelTransport::Tls => tls::tls_acceptor()?,
-                    _ => meta::tls_acceptor(true)?,
-                };
-                let mut tls_stream = tls_acceptor.accept(stream).await?;
-                let link_init = read_link_init(&mut tls_stream)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                Ok((link_init, Box::new(tls_stream) as Box<dyn Stream>))
-            } else {
-                let mut stream = stream;
-                let link_init = read_link_init(&mut stream)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                Ok((link_init, stream))
-            }
-        }
-    };
+    let prepare = super::preparer_for(channel_addr.clone(), Some(super::ProtocolKind::Duplex));
 
     let sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>> =
         Arc::new(DashMap::new());
@@ -341,6 +338,13 @@ where
         let link_init = read_link_init(&mut boxed)
             .await
             .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+        if link_init.kind != super::ProtocolKind::Duplex {
+            return Err(anyhow::anyhow!(
+                "duplex server received {:?} client from {}",
+                link_init.kind,
+                source
+            ));
+        }
         Ok((link_init, boxed))
     };
 
@@ -401,7 +405,7 @@ enum Either {
 /// joins every dispatch in its `connections` `JoinSet`, so it
 /// finishes only after every recv/send loop has finished — same
 /// contract as the simplex [`dispatch_stream`](super::server::dispatch_stream).
-async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
+pub(super) async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
     session_id: SessionId,
     stream: Box<dyn Stream>,
     sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>>,
@@ -831,7 +835,12 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
 pub fn dial<Out: RemoteMessage, In: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<DuplexClient<Out, In>, ClientError> {
-    Ok(spawn(super::link(addr, super::SessionId::random(), 0)?))
+    Ok(spawn(super::link(
+        addr,
+        super::SessionId::random(),
+        0,
+        super::ProtocolKind::Duplex,
+    )?))
 }
 
 #[cfg(test)]

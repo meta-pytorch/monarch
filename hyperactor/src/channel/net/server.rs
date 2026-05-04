@@ -26,18 +26,16 @@ use tokio_util::sync::CancellationToken;
 use super::ClientError;
 use super::Link;
 use super::SessionId;
+#[cfg(test)]
 use super::read_link_init;
 use super::session;
 use super::session::Next;
 use super::session::Session;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
-use crate::channel::ChannelTransport;
 use crate::channel::net::NetRx;
 use crate::channel::net::ServerError;
 use crate::channel::net::Stream;
-use crate::channel::net::meta;
-use crate::channel::net::tls;
 use crate::config;
 use crate::metrics;
 
@@ -126,7 +124,7 @@ impl<S: Stream> StreamState<S> {
 /// If `link_init` is for a multi-stream connection (`stream_id > 0`),
 /// resolve (or create) the shared per-session state and return
 /// `Some((stream_id, state))`. Otherwise return `None`.
-fn resolve_stream<S: Stream>(
+pub(super) fn resolve_stream<S: Stream>(
     stream_state: &std::sync::Mutex<HashMap<SessionId, Arc<StreamState<S>>>>,
     link_init: &super::LinkInit,
 ) -> Option<(u8, Arc<StreamState<S>>)> {
@@ -479,7 +477,7 @@ pub(super) async fn accept_loop<S, L, F, Fut, D, DFut>(
     dispatch: D,
 ) -> Result<(), ServerError>
 where
-    S: Stream,
+    S: Send + 'static,
     L: super::Listener,
     F: Fn(L::Stream, ChannelAddr) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<(super::LinkInit, S), anyhow::Error>> + Send + 'static,
@@ -651,33 +649,7 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
     let cancel_token = CancellationToken::new();
     let child_token = cancel_token.child_token();
 
-    let is_tls = matches!(
-        channel_addr.transport(),
-        ChannelTransport::Tls | ChannelTransport::MetaTls(_)
-    );
-    let dest = channel_addr.clone();
-    let prepare = move |stream: Box<dyn Stream>, source: ChannelAddr| {
-        let dest = dest.clone();
-        async move {
-            if is_tls {
-                let tls_acceptor = match dest.transport() {
-                    ChannelTransport::Tls => tls::tls_acceptor()?,
-                    _ => meta::tls_acceptor(true)?,
-                };
-                let mut tls_stream = tls_acceptor.accept(stream).await?;
-                let link_init = read_link_init(&mut tls_stream)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                Ok((link_init, Box::new(tls_stream) as Box<dyn Stream>))
-            } else {
-                let mut stream = stream;
-                let link_init = read_link_init(&mut stream)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                Ok((link_init, stream))
-            }
-        }
-    };
+    let prepare = super::preparer_for(channel_addr.clone(), Some(super::ProtocolKind::Simplex));
 
     let sessions: Arc<DashMap<SessionId, mpsc::UnboundedSender<Box<dyn Stream>>>> =
         Arc::new(DashMap::new());
@@ -730,7 +702,7 @@ pub(in crate::channel) fn serve<M: RemoteMessage>(
 }
 
 /// Test-only variant that accepts an arbitrary `Listener`. Used by
-/// mock-link tests that cannot go through `net::listen()`.
+/// mock-link tests that cannot go through `net::listen_with_prebound`.
 #[cfg(test)]
 pub(super) fn serve_with_listener<M, L>(
     mut listener: L,
@@ -749,6 +721,13 @@ where
         let link_init = read_link_init(&mut stream)
             .await
             .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+        if link_init.kind != super::ProtocolKind::Simplex {
+            return Err(anyhow::anyhow!(
+                "simplex server received {:?} client from {}",
+                link_init.kind,
+                source
+            ));
+        }
         Ok((link_init, stream))
     };
 

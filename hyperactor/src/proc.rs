@@ -529,39 +529,24 @@ impl Proc {
     /// over the duplex channel; inbound messages are served into the
     /// proc's muxer. Mirrors [`Proc::direct`] but the identity and
     /// routing are managed by the remote host.
+    ///
+    /// Dialing as duplex is itself the attach request — the host's
+    /// muxed frontend demultiplexes simplex and duplex connections at
+    /// the link layer, so a duplex connection to the host's frontend
+    /// address always means "attach me". The host responds with a
+    /// [`Host2Client::Bootstrap`] carrying the assigned identity;
+    /// subsequent traffic is regular [`MessageEnvelope`] routing.
     pub async fn attach_to_host(addr: ChannelAddr) -> Result<Self, anyhow::Error> {
         use crate::channel::Rx;
-        use crate::channel::Tx;
         let mut duplex_client = channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
         let duplex_tx = duplex_client.tx();
         let mut duplex_rx = duplex_client
             .take_rx()
             .expect("dial returns a fresh DuplexClient with rx present");
-        // Send an AttachRequest envelope to signal attach intent.
-        // The host deserializes the first message and enters the
-        // attach protocol when it finds an AttachRequest. The
-        // sender/dest ids are placeholders — on the happy path the
-        // host consumes the envelope without routing it. Clearing
-        // `return_undeliverable` closes the hazard path in case the
-        // envelope ever escapes into the forwarder: it should be
-        // dropped, not bounced to the fake sender.
-        let signal_actor_id = ActorAddr::root(
-            ProcAddr::from_resource_name(
-                ChannelAddr::any(channel::ChannelTransport::Local),
-                "attach",
-            ),
-            crate::id::Label::strip("attach"),
-        );
-        let signal_port = signal_actor_id.port_ref(crate::port::Port::from(0u64));
-        let mut envelope = MessageEnvelope::serialize(
-            signal_actor_id,
-            signal_port,
-            &AttachRequest,
-            Default::default(),
-        )?;
-        envelope.set_return_undeliverable(false);
-        duplex_tx.post(envelope);
-        // Wait for the host to assign an identity.
+        // Wait for the host to assign an identity. Dialing as duplex
+        // is itself the attach request — the host's muxed frontend
+        // demultiplexes simplex and duplex connections at the link
+        // layer, so a duplex connection always means "attach me".
         let assignment = match duplex_rx.recv().await? {
             Host2Client::Bootstrap(a) => a,
             Host2Client::Envelope(_) => {
