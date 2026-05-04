@@ -252,7 +252,7 @@ mod tests {
     use super::*;
 
     fn mock_actor_ref(name: &str) -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
@@ -262,7 +262,7 @@ mod tests {
     }
 
     fn mock_proc_ref(name: &str) -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
@@ -272,7 +272,7 @@ mod tests {
     }
 
     fn mock_host_ref(name: &str) -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn derive_label_actor_standard_actor_id() {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
