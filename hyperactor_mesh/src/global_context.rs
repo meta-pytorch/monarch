@@ -64,8 +64,6 @@ use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
-use hyperactor::host::Host;
-use hyperactor::host::LocalProcManager;
 use hyperactor::id::Label;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MessageEnvelope;
@@ -78,6 +76,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::HostMeshRef;
+use crate::host::Host;
+use crate::host::LocalProcManager;
 use crate::host_mesh::host_agent::GetLocalProcClient;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;

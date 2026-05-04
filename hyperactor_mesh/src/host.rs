@@ -60,44 +60,45 @@ use async_trait::async_trait;
 use futures::Future;
 use futures::StreamExt;
 use futures::stream;
-use serde::Deserialize;
-use serde::Serialize;
+use hyperactor::Actor;
+use hyperactor::ActorAddr;
+use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
+use hyperactor::Addr;
+use hyperactor::AttachRequest;
+use hyperactor::BootstrapAssignment;
+use hyperactor::Host2Client;
+use hyperactor::PortHandle;
+use hyperactor::Proc;
+use hyperactor::ProcAddr;
+use hyperactor::actor::Binds;
+use hyperactor::actor::Referable;
+use hyperactor::channel;
+use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelError;
+use hyperactor::channel::ChannelRx;
+use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::Rx;
+use hyperactor::channel::ServerError;
+use hyperactor::channel::Tx;
+use hyperactor::context;
+use hyperactor::mailbox::BoxableMailboxSender;
+use hyperactor::mailbox::BoxedMailboxSender;
+use hyperactor::mailbox::DialMailboxRouter;
+use hyperactor::mailbox::IntoBoxedMailboxSender as _;
+use hyperactor::mailbox::MailboxClient;
+use hyperactor::mailbox::MailboxRouter;
+use hyperactor::mailbox::MailboxSender;
+use hyperactor::mailbox::MailboxServer;
+use hyperactor::mailbox::MailboxServerError;
+use hyperactor::mailbox::MailboxServerHandle;
+use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::Undeliverable;
 use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
-
-use crate as hyperactor;
-use crate::Actor;
-use crate::ActorAddr;
-use crate::ActorHandle;
-use crate::ActorRef;
-use crate::Address;
-use crate::Proc;
-use crate::ProcAddr;
-use crate::actor::Binds;
-use crate::actor::Referable;
-use crate::channel;
-use crate::channel::ChannelAddr;
-use crate::channel::ChannelError;
-use crate::channel::ChannelRx;
-use crate::channel::ChannelTransport;
-use crate::channel::Rx;
-use crate::channel::Tx;
-use crate::channel::net::ServerError;
-use crate::context;
-use crate::mailbox::BoxableMailboxSender as _;
-use crate::mailbox::BoxedMailboxSender;
-use crate::mailbox::DialMailboxRouter;
-use crate::mailbox::IntoBoxedMailboxSender as _;
-use crate::mailbox::MailboxClient;
-use crate::mailbox::MailboxRouter;
-use crate::mailbox::MailboxServer;
-use crate::mailbox::MailboxServerError;
-use crate::mailbox::MailboxServerHandle;
-use crate::mailbox::MessageEnvelope;
-
 /// Name of the system service proc on a host — hosts the admin actor
 /// layer (HostMeshAgent, MeshAdminAgent, bridge).
 pub const SERVICE_PROC_NAME: &str = "service";
@@ -112,44 +113,6 @@ pub const SERVICE_PROC_NAME: &str = "service";
 /// proc's actors must not assume they exist.
 pub const LOCAL_PROC_NAME: &str = "local";
 
-/// Identity assignment sent by the host as the first message on a duplex
-/// connection during proc bootstrap. The child reads this to learn its
-/// [`ProcAddr`].
-#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct BootstrapAssignment {
-    /// The assigned proc identity.
-    pub proc_id: ProcAddr,
-}
-wirevalue::register_type!(BootstrapAssignment);
-
-/// Sentinel message sent by an attach client as its first
-/// [`MessageEnvelope`]. The host's accept loop tries to deserialize
-/// the first message as this type to distinguish attach requests
-/// from regular inbound [`MessageEnvelope`] connections (e.g. a
-/// [`Proc::direct`](Proc::direct) dialing the host's frontend).
-///
-/// TODO: an alternative design, suggested during review, would be
-/// to surface the attach/simplex distinction at the link layer
-/// (e.g. via a dedicated frame tag or channel mode) so the host
-/// does not have to peek at an application-level payload. That
-/// requires framing-layer changes and is tracked as a follow-up.
-#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct AttachRequest;
-wirevalue::register_type!(AttachRequest);
-
-/// Wire protocol for the host -> client direction on a duplex attach
-/// connection. The host sends [`Bootstrap`](Host2Client::Bootstrap)
-/// in response to an [`AttachRequest`], followed by
-/// [`Envelope`](Host2Client::Envelope) for all subsequent traffic.
-#[derive(Debug, Serialize, Deserialize, typeuri::Named)]
-pub enum Host2Client {
-    /// First message: identity assignment from the host.
-    Bootstrap(BootstrapAssignment),
-    /// Subsequent messages: routed envelopes.
-    Envelope(MessageEnvelope),
-}
-wirevalue::register_type!(Host2Client);
-
 /// [`MailboxSender`] adapter that wraps outbound [`MessageEnvelope`]s
 /// in [`Host2Client::Envelope`] before posting to a
 /// [`DuplexTx<Host2Client>`]. Used on the host side to send messages
@@ -158,39 +121,13 @@ wirevalue::register_type!(Host2Client);
 struct AttachSender(channel::duplex::DuplexTx<Host2Client>);
 
 #[async_trait]
-impl crate::mailbox::MailboxSender for AttachSender {
+impl MailboxSender for AttachSender {
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
-        _return_handle: crate::mailbox::PortHandle<crate::mailbox::Undeliverable<MessageEnvelope>>,
+        _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         self.0.post(Host2Client::Envelope(envelope));
-    }
-}
-
-/// [`Rx<MessageEnvelope>`](channel::Rx) adapter that unwraps
-/// [`Host2Client::Envelope`] from a
-/// [`DuplexRx<Host2Client>`](channel::duplex::DuplexRx). Used on the
-/// client side to receive messages from the host.
-pub struct AttachRx(pub channel::duplex::DuplexRx<Host2Client>);
-
-#[async_trait]
-impl channel::Rx<MessageEnvelope> for AttachRx {
-    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
-        match self.0.recv().await? {
-            Host2Client::Envelope(e) => Ok(e),
-            Host2Client::Bootstrap(_) => Err(ChannelError::Other(anyhow::anyhow!(
-                "unexpected bootstrap message after handshake"
-            ))),
-        }
-    }
-
-    fn addr(&self) -> ChannelAddr {
-        self.0.addr()
-    }
-
-    async fn join(self) {
-        self.0.join().await
     }
 }
 
@@ -242,7 +179,7 @@ pub struct Host<M> {
     backend_addr: ChannelAddr,
     /// Routes messages to known procs (local, attached) by prefix.
     router: MailboxRouter,
-    /// Address-based routing for dialed connections (child procs,
+    /// Addr-based routing for dialed connections (child procs,
     /// remote hosts); used as the fallback when the prefix router
     /// has no match.
     dial_router: DialMailboxRouter,
@@ -280,7 +217,7 @@ impl<M: ProcManager> Host<M> {
     /// Unknown destinations are forwarded to the default sender.
     /// When `listener` is `Some`, it is used as the frontend listening socket
     /// instead of binding a new one.
-    #[crate::instrument(fields(addr=addr.to_string()))]
+    #[hyperactor::instrument(fields(addr=addr.to_string()))]
     pub async fn new_with_default(
         manager: M,
         addr: ChannelAddr,
@@ -326,11 +263,11 @@ impl<M: ProcManager> Host<M> {
         // avoid a flush cycle: Proc.forwarder → MailboxRouter → Proc →
         // Proc.forwarder → …
         router.bind(
-            Address::from(service_proc_id.clone()),
+            Addr::from(service_proc_id.clone()),
             service_proc.muxer().clone(),
         );
         router.bind(
-            Address::from(local_proc_id.clone()),
+            Addr::from(local_proc_id.clone()),
             local_proc.muxer().clone(),
         );
 
@@ -431,7 +368,8 @@ impl<M: ProcManager> Host<M> {
             .await?;
 
         // Await readiness (config-driven; 0s disables timeout).
-        let to: Duration = hyperactor_config::global::get(crate::config::HOST_SPAWN_READY_TIMEOUT);
+        let to: Duration =
+            hyperactor_config::global::get(hyperactor::config::HOST_SPAWN_READY_TIMEOUT);
         let ready = if to == Duration::from_secs(0) {
             ReadyProc::ensure(&handle).await
         } else {
@@ -445,7 +383,7 @@ impl<M: ProcManager> Host<M> {
         })?;
 
         self.dial_router
-            .bind(Address::from(proc_id.clone()), ready.addr().clone());
+            .bind(Addr::from(proc_id.clone()), ready.addr().clone());
         self.procs.insert(name.clone());
 
         Ok((proc_id, ready.agent_ref().clone()))
@@ -600,7 +538,7 @@ async fn duplex_accept_loop(
             );
             duplex_tx.post(Host2Client::Bootstrap(assignment));
 
-            router.bind(Address::from(proc_id.clone()), AttachSender(duplex_tx));
+            router.bind(Addr::from(proc_id.clone()), AttachSender(duplex_tx));
 
             let mut handle = forwarder.clone().serve(duplex_rx);
             let cleanup_router = router.clone();
@@ -613,7 +551,7 @@ async fn duplex_accept_loop(
                         let _ = handle.await;
                     }
                 }
-                cleanup_router.unbind(&Address::from(proc_id.clone()));
+                cleanup_router.unbind(&Addr::from(proc_id.clone()));
                 tracing::info!(
                     proc_id = proc_id.to_string(),
                     "attach connection closed, removed route"
@@ -886,7 +824,7 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
         // names, they can use the same slot.
         for name in self.procs.drain() {
             let proc_ref = ProcAddr::from_resource_name(self.frontend_addr.clone(), &name);
-            self.dial_router.unbind(&Address::from(proc_ref));
+            self.dial_router.unbind(&Addr::from(proc_ref));
         }
         summary
     }
@@ -1426,7 +1364,7 @@ where
         ChannelTransport::Local
     }
 
-    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
+    #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcAddr,
@@ -1607,7 +1545,7 @@ where
         ChannelTransport::Unix
     }
 
-    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
+    #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
         proc_id: ProcAddr,
@@ -1701,7 +1639,7 @@ where
 /// forwarding messages to the provided `backend_addr`,
 /// and returning the proc's address and agent actor on
 /// the provided `callback_addr`.
-#[crate::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string(), callback_addr=callback_addr.to_string()))]
+#[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string(), callback_addr=callback_addr.to_string()))]
 pub async fn spawn_proc<A, S, F>(
     proc_id: ProcAddr,
     backend_addr: ChannelAddr,
@@ -1742,13 +1680,11 @@ where
 /// as it is needed by an external binary.
 pub mod testing {
     use async_trait::async_trait;
-
-    use crate as hyperactor;
-    use crate::Actor;
-    use crate::ActorAddr;
-    use crate::Context;
-    use crate::Handler;
-    use crate::OncePortRef;
+    use hyperactor::Actor;
+    use hyperactor::ActorAddr;
+    use hyperactor::Context;
+    use hyperactor::Handler;
+    use hyperactor::OncePortRef;
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
     #[derive(Debug, Default)]
@@ -1776,18 +1712,27 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
+    use hyperactor::Actor;
+    use hyperactor::Context;
+    use hyperactor::Handler;
+    use hyperactor::Instance;
+    use hyperactor::OncePortRef;
+    use hyperactor::PortRef;
+    use hyperactor::channel::ChannelTransport;
+    use hyperactor::channel::Tx;
+    use hyperactor::channel::TxStatus;
+    use hyperactor::context::Mailbox;
+    use hyperactor::mailbox::Undeliverable;
+    use hyperactor::port::Port;
     use tokio::sync::mpsc;
 
     use super::testing::EchoActor;
     use super::*;
-    use crate::channel::ChannelTransport;
-    use crate::context::Mailbox;
-    use crate::mailbox::Undeliverable;
 
     /// A PortRef<String> targeting a nonexistent actor. When the
     /// collector receives this, it sends a message to the dest; the
     /// resulting Undeliverable is captured.
-    type SendTo = crate::PortRef<String>;
+    type SendTo = PortRef<String>;
 
     /// Test actor that sends a message to a provided destination and
     /// collects the resulting Undeliverable.
@@ -1798,10 +1743,10 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::Actor for UndeliverableCollector {
+    impl Actor for UndeliverableCollector {
         async fn handle_undeliverable_message(
             &mut self,
-            _cx: &crate::Instance<Self>,
+            _cx: &Instance<Self>,
             message: Undeliverable<MessageEnvelope>,
         ) -> Result<(), anyhow::Error> {
             let _ = self.tx.send(message);
@@ -1810,12 +1755,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::Handler<SendTo> for UndeliverableCollector {
-        async fn handle(
-            &mut self,
-            cx: &crate::Context<Self>,
-            dest: SendTo,
-        ) -> Result<(), anyhow::Error> {
+    impl Handler<SendTo> for UndeliverableCollector {
+        async fn handle(&mut self, cx: &Context<Self>, dest: SendTo) -> Result<(), anyhow::Error> {
             dest.send(cx, "into-the-void".to_string())?;
             Ok(())
         }
@@ -1892,7 +1833,7 @@ mod tests {
 
         // EchoActor is "host_agent" used to test connectivity.
         let process_manager = ProcessProcManager::<EchoActor>::new(
-            buck_resources::get("monarch/hyperactor/bootstrap").unwrap(),
+            buck_resources::get("monarch/hyperactor_mesh/host_bootstrap").unwrap(),
         );
         let mut host = Host::new(process_manager, ChannelAddr::any(ChannelTransport::Unix))
             .await
@@ -2120,7 +2061,7 @@ mod tests {
     async fn host_spawn_times_out_when_configured() {
         let cfg = hyperactor_config::global::lock();
         let _g = cfg.override_key(
-            crate::config::HOST_SPAWN_READY_TIMEOUT,
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_millis(10),
         );
 
@@ -2139,7 +2080,7 @@ mod tests {
     async fn host_spawn_timeout_zero_disables_and_succeeds() {
         let cfg = hyperactor_config::global::lock();
         let _g = cfg.override_key(
-            crate::config::HOST_SPAWN_READY_TIMEOUT,
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(0),
         );
 
@@ -2295,8 +2236,8 @@ mod tests {
         // Tell the collector to send to a nonexistent actor on the
         // host's service proc.
         let bogus_actor = host.system_proc().proc_id().actor_ref("no-such-actor");
-        let bogus_port = bogus_actor.port_ref(crate::port::Port::from(0u64));
-        let bogus_dest = crate::PortRef::<String>::attest(bogus_port);
+        let bogus_port = bogus_actor.port_ref(Port::from(0u64));
+        let bogus_dest = PortRef::<String>::attest(bogus_port);
 
         let (trigger_inst, _h) = remote_proc.instance("trigger").unwrap();
         collector_ref
@@ -2343,8 +2284,8 @@ mod tests {
         // Tell the collector to send to a nonexistent actor on the
         // attached remote proc.
         let bogus_actor = remote_proc.proc_id().actor_ref("ghost-actor");
-        let bogus_port = bogus_actor.port_ref(crate::port::Port::from(0u64));
-        let bogus_dest = crate::PortRef::<String>::attest(bogus_port);
+        let bogus_port = bogus_actor.port_ref(Port::from(0u64));
+        let bogus_dest = PortRef::<String>::attest(bogus_port);
 
         let (trigger_inst, _h) = host.system_proc().instance("trigger").unwrap();
         collector_ref
@@ -2419,9 +2360,6 @@ mod tests {
     /// well under `MESSAGE_DELIVERY_TIMEOUT`.
     #[tokio::test]
     async fn test_simplex_peer_sees_clean_close_on_host_shutdown() {
-        use crate::channel::Tx;
-        use crate::channel::TxStatus;
-
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
             proc.spawn::<EchoActor>("host_agent", EchoActor)
         });
@@ -2444,7 +2382,7 @@ mod tests {
 
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            Address::from(host.system_proc().proc_id().clone()),
+            Addr::from(host.system_proc().proc_id().clone()),
             host.addr().clone(),
         );
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -2457,7 +2395,7 @@ mod tests {
         let (reply_port, reply_handle) = client_inst.mailbox().open_once_port::<ActorAddr>();
         let reply_port = reply_port.bind();
         echo_ref
-            .port::<crate::OncePortRef<ActorAddr>>()
+            .port::<OncePortRef<ActorAddr>>()
             .send(&client_inst, reply_port)
             .unwrap();
         let _ = tokio::time::timeout(Duration::from_secs(5), reply_handle.recv())
@@ -2472,7 +2410,7 @@ mod tests {
             .system_proc()
             .proc_id()
             .actor_ref("noop")
-            .port_ref(crate::port::Port::from(0u64));
+            .port_ref(Port::from(0u64));
         let envelope = MessageEnvelope::serialize(
             client_inst.self_id().clone(),
             dummy_dest,
@@ -2555,7 +2493,7 @@ mod tests {
             let system_proc_id = system_proc_id.clone();
             client_tasks.push(tokio::spawn(async move {
                 let dial_router = DialMailboxRouter::new();
-                dial_router.bind(Address::from(system_proc_id.clone()), host_addr);
+                dial_router.bind(Addr::from(system_proc_id.clone()), host_addr);
                 let client_addr = ChannelAddr::any(ChannelTransport::Unix);
                 let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
                 let client_proc_id =
@@ -2563,7 +2501,7 @@ mod tests {
                 let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
                 let _client_handle = client_proc.clone().serve(client_rx);
 
-                let echo_ref = crate::ActorRef::<EchoActor>::attest(echo_actor_id.into());
+                let echo_ref = ActorRef::<EchoActor>::attest(echo_actor_id.into());
 
                 for ri in 0..M_REQUESTS {
                     let (client_inst, _h) = client_proc.instance(&format!("req-{}", ri)).unwrap();
@@ -2571,7 +2509,7 @@ mod tests {
                         client_inst.mailbox().open_once_port::<ActorAddr>();
                     let reply_port = reply_port.bind();
                     echo_ref
-                        .port::<crate::OncePortRef<ActorAddr>>()
+                        .port::<OncePortRef<ActorAddr>>()
                         .send(&client_inst, reply_port)
                         .unwrap();
                     let received =
@@ -2630,7 +2568,7 @@ mod tests {
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            Address::from(host.system_proc().proc_id().clone()),
+            Addr::from(host.system_proc().proc_id().clone()),
             host.addr().clone(),
         );
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
@@ -2646,7 +2584,7 @@ mod tests {
         let (reply_port, reply_handle) = client_inst.mailbox().open_once_port::<ActorAddr>();
         let reply_port = reply_port.bind();
         echo_ref
-            .port::<crate::OncePortRef<ActorAddr>>()
+            .port::<OncePortRef<ActorAddr>>()
             .send(&client_inst, reply_port)
             .unwrap();
 

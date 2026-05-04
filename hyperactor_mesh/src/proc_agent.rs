@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::Address;
+use hyperactor::Addr;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Data;
@@ -490,7 +490,7 @@ impl Actor for ProcAgent {
         this.set_query_child_handler(move |child_ref| {
             use hyperactor::introspect::IntrospectResult;
 
-            if let Address::Actor(actor_ref) = child_ref {
+            if let Addr::Actor(actor_ref) = child_ref {
                 if let Some(snapshot) = proc.terminated_snapshot(actor_ref) {
                     return snapshot;
                 }
@@ -500,10 +500,10 @@ impl Actor for ProcAgent {
             // admin/TUI must be computed from live proc state at query
             // time, not solely from cached published_properties.
             // Therefore a direct proc.spawn() actor must appear on the
-            // next QueryChild(Address::Proc) response without an
+            // next QueryChild(Addr::Proc) response without an
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
-            if let Address::Proc(proc_ref) = child_ref {
+            if let Addr::Proc(proc_ref) = child_ref {
                 if *proc_ref == *proc.proc_id() {
                     let (mut children, mut system_children) = collect_live_children(&proc);
 
@@ -614,9 +614,9 @@ impl Actor for ProcAgent {
                     format!("child {} not found", child_ref),
                 );
                 let identity = match child_ref {
-                    Address::Proc(p) => hyperactor::introspect::IntrospectRef::Proc(p.clone()),
-                    Address::Actor(a) => hyperactor::introspect::IntrospectRef::Actor(a.clone()),
-                    Address::Port(p) => hyperactor::introspect::IntrospectRef::Actor(p.actor_ref()),
+                    Addr::Proc(p) => hyperactor::introspect::IntrospectRef::Proc(p.clone()),
+                    Addr::Actor(a) => hyperactor::introspect::IntrospectRef::Actor(a.clone()),
+                    Addr::Port(p) => hyperactor::introspect::IntrospectRef::Actor(p.actor_ref()),
                 };
                 IntrospectResult {
                     identity,
@@ -842,7 +842,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                     .gspawn(
                         &self.proc,
                         &actor_type,
-                        &create_or_update.id.actor_name(),
+                        create_or_update.id.uid().clone(),
                         params_data,
                         cx.headers().clone(),
                     )
@@ -1201,7 +1201,7 @@ mod tests {
     struct ExtraActor;
     impl hyperactor::Actor for ExtraActor {}
     hyperactor::register_spawnable!(ExtraActor);
-    // Verifies that QueryChild(Address::Proc) on a ProcAgent returns
+    // Verifies that QueryChild(Addr::Proc) on a ProcAgent returns
     // a live IntrospectResult whose children reflect actors spawned
     // directly on the proc — i.e. via proc.spawn(), which bypasses the
     // gspawn message handler and therefore never triggers
@@ -1248,7 +1248,7 @@ mod tests {
             port.send(
                 client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Address::Proc(proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Addr::Proc(proc.proc_id().clone()),
                     reply: reply_port.bind(),
                 },
             )
@@ -1316,7 +1316,7 @@ mod tests {
 
     // Exercises S12 (see introspect module doc): introspection must
     // not impair actor liveness. Rapidly spawns and stops
-    // actors while concurrently querying QueryChild(Address::Proc).
+    // actors while concurrently querying QueryChild(Addr::Proc).
     // The spawn/stop loop must complete within the timeout and the
     // iteration count must match -- if DashMap convoy starvation
     // blocks the proc, the timeout fires and the test fails.
@@ -1364,7 +1364,7 @@ mod tests {
                     .send(
                         &query_client,
                         IntrospectMessage::QueryChild {
-                            child_ref: hyperactor_reference::Address::Proc(query_proc_id.clone()),
+                            child_ref: hyperactor_reference::Addr::Proc(query_proc_id.clone()),
                             reply: reply_port.bind(),
                         },
                     )
@@ -1425,7 +1425,7 @@ mod tests {
         port.send(
             &client,
             IntrospectMessage::QueryChild {
-                child_ref: hyperactor_reference::Address::Proc(proc.proc_id().clone()),
+                child_ref: hyperactor_reference::Addr::Proc(proc.proc_id().clone()),
                 reply: reply_port.bind(),
             },
         )
@@ -1681,7 +1681,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Address::Proc(proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Addr::Proc(proc.proc_id().clone()),
                     reply: reply_port.bind(),
                 },
             )

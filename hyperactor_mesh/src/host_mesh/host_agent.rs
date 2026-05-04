@@ -25,7 +25,7 @@ use enum_as_inner::EnumAsInner;
 use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::Address;
+use hyperactor::Addr;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
@@ -35,12 +35,6 @@ use hyperactor::Proc;
 use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::context;
-use hyperactor::host::Host;
-use hyperactor::host::HostError;
-use hyperactor::host::LOCAL_PROC_NAME;
-use hyperactor::host::LocalProcManager;
-use hyperactor::host::SERVICE_PROC_NAME;
-use hyperactor::host::SingleTerminate;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
@@ -54,6 +48,12 @@ use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
+use crate::host::Host;
+use crate::host::HostError;
+use crate::host::LOCAL_PROC_NAME;
+use crate::host::LocalProcManager;
+use crate::host::SERVICE_PROC_NAME;
+use crate::host::SingleTerminate;
 use crate::mesh_id::HostMeshId;
 use crate::mesh_id::ResourceId;
 use crate::proc_agent::ProcAgent;
@@ -150,8 +150,8 @@ impl HostAgentMode {
             },
             HostAgentMode::Local(host) => {
                 let status = match host.manager().local_proc_status(proc_id).await {
-                    Some(hyperactor::host::LocalProcStatus::Stopping) => resource::Status::Stopping,
-                    Some(hyperactor::host::LocalProcStatus::Stopped) => resource::Status::Stopped,
+                    Some(crate::host::LocalProcStatus::Stopping) => resource::Status::Stopping,
+                    Some(crate::host::LocalProcStatus::Stopped) => resource::Status::Stopped,
                     None => resource::Status::Running,
                 };
                 (status, None)
@@ -299,7 +299,7 @@ pub struct HostAgent {
     proc_status_port: Option<PortHandle<ProcStatusChanged>>,
     /// Lazily initialized ProcAgent on the host's local proc.
     /// Boots on first [`GetLocalProc`] (LP-1 — see
-    /// `hyperactor::host::LOCAL_PROC_NAME`).
+    /// `crate::host::LOCAL_PROC_NAME`).
     local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
     /// Handle to the host's frontend mailbox server, set during `init` after
     /// `this.bind::<Self>()` ensures the actor port is registered before the
@@ -517,7 +517,7 @@ impl Actor for HostAgent {
             use hyperactor::introspect::IntrospectResult;
 
             let proc = match child_ref {
-                Address::Proc(proc_ref) => {
+                Addr::Proc(proc_ref) => {
                     if *proc_ref == *system_proc.proc_id() {
                         Some((&system_proc, SERVICE_PROC_NAME))
                     } else if *proc_ref == *local_proc.proc_id() {
@@ -607,11 +607,9 @@ impl Actor for HostAgent {
                         format!("child {} not found", child_ref),
                     );
                     let identity = match child_ref {
-                        Address::Proc(p) => hyperactor::introspect::IntrospectRef::Proc(p.clone()),
-                        Address::Actor(a) => {
-                            hyperactor::introspect::IntrospectRef::Actor(a.clone())
-                        }
-                        Address::Port(p) => {
+                        Addr::Proc(p) => hyperactor::introspect::IntrospectRef::Proc(p.clone()),
+                        Addr::Actor(a) => hyperactor::introspect::IntrospectRef::Actor(a.clone()),
+                        Addr::Port(p) => {
                             hyperactor::introspect::IntrospectRef::Actor(p.actor_ref())
                         }
                     };
@@ -1289,7 +1287,7 @@ impl Handler<SetClientConfig> for HostAgent {
 /// `monarch_hyperactor::bootstrap_host` when setting up the Python
 /// `this_proc()` singleton.
 ///
-/// See also: `hyperactor::host::LOCAL_PROC_NAME`.
+/// See also: `crate::host::LOCAL_PROC_NAME`.
 #[derive(Debug, hyperactor::Handler, hyperactor::HandleClient)]
 pub struct GetLocalProc {
     #[reply]
@@ -1838,7 +1836,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Address::Proc(system_proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Addr::Proc(system_proc.proc_id().clone()),
                     reply: reply_port.bind(),
                 },
             )
