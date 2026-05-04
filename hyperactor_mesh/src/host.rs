@@ -65,7 +65,6 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Addr;
-use hyperactor::AttachRequest;
 use hyperactor::BootstrapAssignment;
 use hyperactor::Host2Client;
 use hyperactor::PortHandle;
@@ -90,7 +89,6 @@ use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxRouter;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MailboxServer;
-use hyperactor::mailbox::MailboxServerError;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
@@ -99,6 +97,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+
 /// Name of the system service proc on a host — hosts the admin actor
 /// layer (HostMeshAgent, MeshAdminAgent, bridge).
 pub const SERVICE_PROC_NAME: &str = "service";
@@ -191,17 +190,20 @@ pub struct Host<M> {
 }
 
 /// The frontend server that accepts inbound messages on the host's
-/// frontend address. The duplex variant additionally supports remote
-/// procs attaching via [`Proc::attach_to_host`]; the simplex variant
-/// is used when the transport cannot carry the duplex wire protocol
-/// (see [`ChannelTransport::supports_duplex`]).
+/// frontend address. Transports that carry the duplex protocol use
+/// a muxed listener, where simplex clients (e.g. `Proc::direct`
+/// dialing the frontend) and duplex clients (remote procs attaching
+/// via [`Proc::attach_to_host`]) share a single address and are
+/// demultiplexed at the link layer by the
+/// [`ProtocolKind`](channel::net::ProtocolKind) byte in `LinkInit`.
+/// Transports that cannot carry a duplex wire protocol (currently
+/// only [`ChannelTransport::Local`]) fall back to a simplex-only
+/// receiver.
 enum Frontend {
-    /// Duplex server for transports that support bidirectional links.
-    /// Accepts both attach connections and regular inbound message
-    /// connections.
-    Duplex(channel::duplex::DuplexServer<MessageEnvelope, Host2Client>),
-    /// Simplex receiver for transports that do not support the duplex
-    /// wire protocol (currently only [`ChannelTransport::Local`]).
+    /// Muxed listener: simplex and duplex clients on one address.
+    Muxed(channel::MuxServer<MessageEnvelope, MessageEnvelope, Host2Client>),
+    /// Simplex-only receiver for transports that do not support the
+    /// duplex wire protocol.
     Simplex(ChannelRx<MessageEnvelope>),
 }
 
@@ -228,9 +230,10 @@ impl<M: ProcManager> Host<M> {
         // (currently only `Local`) have no way to support attach and
         // fall back to a simplex channel.
         let (frontend_addr, frontend) = if addr.transport().supports_duplex() {
-            let server = channel::duplex::serve::<MessageEnvelope, Host2Client>(addr, listener)?;
-            let frontend_addr = server.addr().clone();
-            (frontend_addr, Frontend::Duplex(server))
+            let mux = channel::serve_mux::<MessageEnvelope, MessageEnvelope, Host2Client>(
+                addr, listener,
+            )?;
+            (mux.addr().clone(), Frontend::Muxed(mux))
         } else {
             let (frontend_addr, frontend_rx) = channel::serve_with_listener(addr, listener)?;
             (frontend_addr, Frontend::Simplex(frontend_rx))
@@ -314,8 +317,8 @@ impl<M: ProcManager> Host<M> {
         let frontend = self.frontend.take().ok_or(HostError::AlreadyServing)?;
         let forwarder = self.forwarder();
         Ok(match frontend {
-            Frontend::Duplex(server) => spawn_duplex_accept_loop(
-                server,
+            Frontend::Muxed(mux) => spawn_muxed_accept_loop(
+                mux,
                 self.frontend_addr.clone(),
                 self.router.clone(),
                 forwarder,
@@ -397,22 +400,24 @@ impl<M: ProcManager> Host<M> {
     }
 }
 
-/// Spawn the duplex accept loop and wrap it in a
-/// [`MailboxServerHandle`] so callers can stop and join it as part of
-/// orderly shutdown. The stop signal is observed directly by the
-/// accept loop and its per-connection tasks.
-fn spawn_duplex_accept_loop(
-    server: channel::duplex::DuplexServer<MessageEnvelope, Host2Client>,
+/// Spawn the muxed frontend accept loop and wrap it in a
+/// [`MailboxServerHandle`]. The simplex half is served through the
+/// standard [`MailboxServer::serve`] path; the duplex half runs an
+/// attach-accept loop. Both observe the same stop signal so orderly
+/// shutdown drains both.
+fn spawn_muxed_accept_loop(
+    mux: channel::MuxServer<MessageEnvelope, MessageEnvelope, Host2Client>,
     frontend_addr: ChannelAddr,
     router: MailboxRouter,
     forwarder: BoxedMailboxSender,
 ) -> MailboxServerHandle {
-    let (stopped_tx, stopped_rx) = watch::channel(false);
-    let join_handle = tokio::spawn(async move {
-        duplex_accept_loop(server, frontend_addr, router, forwarder, stopped_rx).await;
-        Ok::<(), MailboxServerError>(())
-    });
-    MailboxServerHandle::from_parts(join_handle, stopped_tx)
+    let simplex_forwarder = forwarder.clone();
+    mux.serve(
+        |rx| simplex_forwarder.serve(rx),
+        move |duplex_server, duplex_stop| async move {
+            duplex_accept_loop(duplex_server, frontend_addr, router, forwarder, duplex_stop).await;
+        },
+    )
 }
 
 /// Wait until `stopped_rx` observes a `true` value, then return. If
@@ -426,65 +431,15 @@ async fn wait_for_stop(mut stopped_rx: watch::Receiver<bool>) {
     }
 }
 
-/// [`Rx<MessageEnvelope>`] adapter that yields a single pre-read
-/// envelope before delegating to an inner receiver. Used to re-inject
-/// the first message consumed during connection-type dispatch.
-struct PrependRx<R> {
-    first: Option<MessageEnvelope>,
-    inner: R,
-}
-
-#[async_trait]
-impl<R: channel::Rx<MessageEnvelope> + Send> channel::Rx<MessageEnvelope> for PrependRx<R> {
-    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
-        if let Some(msg) = self.first.take() {
-            return Ok(msg);
-        }
-        self.inner.recv().await
-    }
-
-    fn addr(&self) -> ChannelAddr {
-        self.inner.addr()
-    }
-
-    async fn join(self) {
-        self.inner.join().await
-    }
-}
-
-/// Accept loop for the host's frontend duplex server.
-///
-/// Each accepted connection is dispatched based on its first message:
-///
-/// - **[`AttachRequest`]**: the client wants to attach as a remote
-///   proc. The host assigns a [`ProcId`], sends a
-///   [`BootstrapAssignment`], and establishes bidirectional routing.
-/// - **Regular [`MessageEnvelope`]**: a normal inbound connection
-///   (e.g., from another host or proc). Messages are routed through
-///   the forwarder. The outbound (tag 0x01) channel is unused.
-///
-/// The attach protocol proceeds as follows:
-///
-/// 1. The remote proc dials the host address.
-/// 2. The host accepts the connection and reads the first message.
-/// 3. The host assigns a unique [`ProcId`] of the form `remote_<uid>`
-///    and sends a [`BootstrapAssignment`] back on the channel.
-/// 4. The host registers the duplex sender in the router so that
-///    outbound messages addressed to the remote proc are forwarded
-///    over the duplex channel.
-/// 5. A per-connection task reads inbound messages from the duplex
-///    channel and routes them through the host's router. Undeliverable
-///    messages are bounced back to the original sender.
+/// Accept loop for the host's frontend duplex server. The muxed
+/// listener only hands duplex connections here, so each accepted
+/// connection is treated as an attach: assign a [`ProcId`], send a
+/// [`BootstrapAssignment`], register the route, and serve inbound
+/// [`MessageEnvelope`]s through the forwarder.
 ///
 /// When a connection closes or the stop signal fires, the route
 /// entry is removed. All per-connection tasks are joined before this
 /// function returns.
-///
-/// TODO: see [`AttachRequest`] — the attach/simplex discrimination
-/// currently happens by attempting to deserialize the first envelope
-/// as [`AttachRequest`]. A cleaner design, suggested during review,
-/// would be to surface the distinction at the link layer rather than
-/// peek at application-level payloads.
 async fn duplex_accept_loop(
     mut duplex_server: channel::duplex::DuplexServer<MessageEnvelope, Host2Client>,
     frontend_addr: ChannelAddr,
@@ -498,7 +453,7 @@ async fn duplex_accept_loop(
             result = duplex_server.accept() => result,
             () = wait_for_stop(stopped_rx.clone()) => break,
         };
-        let (mut duplex_rx, duplex_tx) = match accept {
+        let (duplex_rx, duplex_tx) = match accept {
             Ok(pair) => pair,
             Err(e) => {
                 tracing::info!(
@@ -510,78 +465,41 @@ async fn duplex_accept_loop(
             }
         };
 
-        // Read the first message to determine connection type.
-        let first_msg = match duplex_rx.recv().await {
-            Ok(msg) => msg,
-            Err(e) => {
-                tracing::info!(error = %e, "duplex connection closed before first message");
-                continue;
-            }
+        // Attach protocol: assign an identity and set up
+        // bidirectional routing. Use a fresh random uid under the
+        // `remote` label so procs attached to different host
+        // generations sharing a frontend address (e.g., after
+        // restart on the same ip:port) cannot collide.
+        let proc_id = ProcAddr::unique(frontend_addr.clone(), "remote");
+
+        let assignment = BootstrapAssignment {
+            proc_id: proc_id.clone(),
         };
+        tracing::info!(
+            proc_id = proc_id.to_string(),
+            "duplex accepted attach connection"
+        );
+        duplex_tx.post(Host2Client::Bootstrap(assignment));
 
-        let is_attach = first_msg.deserialized::<AttachRequest>().is_ok();
+        router.bind(Addr::from(proc_id.clone()), AttachSender(duplex_tx));
 
-        if is_attach {
-            // Attach protocol: assign an identity and set up
-            // bidirectional routing. Use a fresh random uid under the
-            // `remote` label so procs attached to different host
-            // generations sharing a frontend address (e.g., after
-            // restart on the same ip:port) cannot collide.
-            let proc_id = ProcAddr::unique(frontend_addr.clone(), "remote");
-
-            let assignment = BootstrapAssignment {
-                proc_id: proc_id.clone(),
-            };
+        let mut handle = forwarder.clone().serve(duplex_rx);
+        let cleanup_router = router.clone();
+        let conn_stop = stopped_rx.clone();
+        tasks.spawn(async move {
+            tokio::select! {
+                _ = &mut handle => {}
+                () = wait_for_stop(conn_stop) => {
+                    handle.stop("host duplex cancel");
+                    let _ = handle.await;
+                }
+            }
+            cleanup_router.unbind(&Addr::from(proc_id.clone()));
             tracing::info!(
                 proc_id = proc_id.to_string(),
-                "duplex accepted attach connection"
+                "attach connection closed, removed route"
             );
-            duplex_tx.post(Host2Client::Bootstrap(assignment));
-
-            router.bind(Addr::from(proc_id.clone()), AttachSender(duplex_tx));
-
-            let mut handle = forwarder.clone().serve(duplex_rx);
-            let cleanup_router = router.clone();
-            let conn_stop = stopped_rx.clone();
-            tasks.spawn(async move {
-                tokio::select! {
-                    _ = &mut handle => {}
-                    () = wait_for_stop(conn_stop) => {
-                        handle.stop("host duplex cancel");
-                        let _ = handle.await;
-                    }
-                }
-                cleanup_router.unbind(&Addr::from(proc_id.clone()));
-                tracing::info!(
-                    proc_id = proc_id.to_string(),
-                    "attach connection closed, removed route"
-                );
-            });
-        } else {
-            // Regular inbound connection: route messages, no
-            // outbound tag-0x01 traffic. The DuplexTx is held for
-            // the lifetime of the connection: dropping it closes
-            // the session's outbound channel, which causes the
-            // session task to exit and the inbound receiver to
-            // close after a single message.
-            let fwd = forwarder.clone();
-            let conn_stop = stopped_rx.clone();
-            tasks.spawn(async move {
-                let _keep_alive = duplex_tx;
-                let rx = PrependRx {
-                    first: Some(first_msg),
-                    inner: duplex_rx,
-                };
-                let mut handle = fwd.serve(rx);
-                tokio::select! {
-                    _ = &mut handle => {}
-                    () = wait_for_stop(conn_stop) => {
-                        handle.stop("host frontend cancel");
-                        let _ = handle.await;
-                    }
-                }
-            });
-        }
+        });
     }
 
     while tasks.join_next().await.is_some() {}
