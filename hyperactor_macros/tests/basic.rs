@@ -202,6 +202,6 @@ mod tests {
     #[test]
     fn test_uid_macro_instance() {
         let id = uid!(d5d54d7201103869);
-        assert_eq!(id, Uid::Instance(0xd5d54d7201103869));
+        assert_eq!(id, Uid::Instance(0xd5d54d7201103869, None));
     }
 }

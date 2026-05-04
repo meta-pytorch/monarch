@@ -13,6 +13,7 @@ use syn::ItemFn;
 use syn::Lit;
 use syn::MetaNameValue;
 use syn::parse_macro_input;
+use syn::parse_quote;
 
 /// A test macro that wraps tokio::test and adds a configurable timeout.
 ///
@@ -116,4 +117,24 @@ pub fn async_timed_test(attr: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     output.into()
+}
+
+/// Wrap a test body with a Linux child process leak guard.
+///
+/// The crate using this macro must define
+/// `crate::testing::ChildProcessGuard` on Linux.
+#[proc_macro_attribute]
+pub fn assert_no_process_leak(attr: TokenStream, input: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return quote!(compile_error!("assert_no_process_leak does not accept arguments");).into();
+    }
+
+    let mut input_fn = parse_macro_input!(input as ItemFn);
+    let fn_block = input_fn.block;
+    input_fn.block = Box::new(parse_quote!({
+        #[cfg(target_os = "linux")]
+        let _child_process_guard = crate::testing::ChildProcessGuard::new();
+        #fn_block
+    }));
+    quote!(#input_fn).into()
 }
