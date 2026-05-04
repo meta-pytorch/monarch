@@ -7,8 +7,8 @@
  */
 
 use hyperactor as reference;
-use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor_mesh::context;
+use hyperactor_mesh::host::SERVICE_PROC_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::resource::GetStateClient;
@@ -17,13 +17,13 @@ use hyperactor_mesh::resource::GetStateClient;
 pub struct ShowCommand {
     /// The string repsentation of what we want to show, such as world, proc,
     /// actor, etc.
-    reference: reference::Address,
+    reference: reference::Addr,
 }
 
 impl ShowCommand {
     pub async fn run(self) -> anyhow::Result<()> {
         match self.reference {
-            reference::Address::Proc(proc_id) => {
+            reference::Addr::Proc(proc_id) => {
                 let host = proc_id.addr().clone();
                 let proc = proc_id.id().to_string();
                 let cx = context().await;
@@ -42,9 +42,9 @@ impl ShowCommand {
 
             ref_ => {
                 let kind = match &ref_ {
-                    reference::Address::Actor(_) => "actor",
-                    reference::Address::Port(_) => "port",
-                    reference::Address::Proc(_) => "proc",
+                    reference::Addr::Actor(_) => "actor",
+                    reference::Addr::Port(_) => "port",
+                    reference::Addr::Proc(_) => "proc",
                 };
                 anyhow::bail!(
                     "cannot show reference {}: unsupported reference kind '{}'",
