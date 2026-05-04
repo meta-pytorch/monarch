@@ -3,6 +3,8 @@
 fail-fast = false
 # Cap parallelism to reduce contention-induced timeouts on shared CI runners.
 test-threads = 4
+# Retry failures to distinguish flaky tests from genuine breakage.
+retries = 2
 
 [profile.ci.junit]
 path = "junit.xml"
