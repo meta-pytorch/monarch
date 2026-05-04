@@ -168,7 +168,7 @@ mod tests {
     const ACTOR_NAME: &str = "test_actor";
 
     fn test_proc_id() -> ProcAddr {
-        ProcAddr::from_resource_name(ChannelAddr::Local(0), PROC_NAME)
+        hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(ChannelAddr::Local(0), PROC_NAME)
     }
 
     fn test_host_ref() -> NodeRef {
