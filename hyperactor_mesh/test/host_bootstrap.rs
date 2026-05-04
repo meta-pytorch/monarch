@@ -8,20 +8,19 @@
 
 use std::future;
 
-use hyperactor::host::ProcessProcManager;
+use hyperactor_mesh::host::ProcessProcManager;
 
-/// This is a bootstrap process to test `hyperactor::host::ProcessProcManager`.
-/// It just boots a proc with `hyperactor::host::testing::EchoActor`.
+/// This is a bootstrap process to test `hyperactor_mesh::host::ProcessProcManager`.
+/// It just boots a proc with `hyperactor_mesh::host::testing::EchoActor`.
 #[tokio::main]
 async fn main() {
     hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
-    let proc =
-        ProcessProcManager::<hyperactor::host::testing::EchoActor>::boot_proc(|proc| async move {
-            proc.spawn("echo", hyperactor::host::testing::EchoActor)
-        })
-        .await
-        .unwrap();
+    let proc = ProcessProcManager::<hyperactor_mesh::host::testing::EchoActor>::boot_proc(
+        |proc| async move { proc.spawn("echo", hyperactor_mesh::host::testing::EchoActor) },
+    )
+    .await
+    .unwrap();
 
     tracing::info!("booted proc {}", proc.proc_id());
 
