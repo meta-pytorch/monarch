@@ -19,6 +19,7 @@ use crate::id::ProcId;
 use crate::id::Uid;
 use crate::parse::error::ParseError;
 use crate::parse::lex::Lexer;
+use crate::parse::lex::Span;
 use crate::parse::lex::Token;
 use crate::parse::lex::TokenKind;
 use crate::port::Port;
@@ -206,6 +207,10 @@ impl<'a> Parser<'a> {
         &self.input[self.peek().span.start..]
     }
 
+    pub(crate) fn rest_span(&self) -> Span {
+        Span::new(self.peek().span.start, self.input.len())
+    }
+
     pub(crate) fn take_rest(&mut self) -> &'a str {
         let rest = self.rest();
         self.lookahead = Token::eof(self.input.len());
@@ -216,7 +221,6 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::lex::Span;
 
     #[test]
     fn test_parse_uid_forms() {

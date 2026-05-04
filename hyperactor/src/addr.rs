@@ -46,9 +46,6 @@ use crate::id::PortId;
 use crate::id::ProcId;
 use crate::id::Uid;
 use crate::parse;
-use crate::parse::addr::ActorAddrParts;
-use crate::parse::addr::PortAddrParts;
-use crate::parse::addr::ProcAddrParts;
 use crate::port::Port;
 
 /// A network location, wrapping a [`ChannelAddr`].
@@ -300,8 +297,7 @@ impl FromStr for ProcAddr {
     type Err = AddrParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = parse::addr::parse_proc_addr(s).map_err(|_| legacy_parse_proc_ref(s))?;
-        Self::try_from((s, parts))
+        parse::addr::parse_proc_addr(s).map_err(|_| legacy_parse_proc_ref(s))
     }
 }
 
@@ -463,8 +459,7 @@ impl FromStr for ActorAddr {
     type Err = AddrParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = parse::addr::parse_actor_addr(s).map_err(|_| legacy_parse_actor_ref(s))?;
-        Self::try_from((s, parts))
+        parse::addr::parse_actor_addr(s).map_err(|_| legacy_parse_actor_ref(s))
     }
 }
 
@@ -623,8 +618,7 @@ impl FromStr for PortAddr {
     type Err = AddrParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = parse::addr::parse_port_addr(s).map_err(|_| legacy_parse_port_ref(s))?;
-        Self::try_from((s, parts))
+        parse::addr::parse_port_addr(s).map_err(|_| legacy_parse_port_ref(s))
     }
 }
 
@@ -723,62 +717,7 @@ impl FromStr for Address {
     type Err = AddrParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match parse::addr::parse_address(s).map_err(|_| legacy_parse_reference(s))? {
-            parse::addr::AddressParts::Proc(parts) => {
-                Ok(Self::Proc(ProcAddr::try_from((s, parts))?))
-            }
-            parse::addr::AddressParts::Actor(parts) => {
-                Ok(Self::Actor(ActorAddr::try_from((s, parts))?))
-            }
-            parse::addr::AddressParts::Port(parts) => {
-                Ok(Self::Port(PortAddr::try_from((s, parts))?))
-            }
-        }
-    }
-}
-
-impl<'a> TryFrom<(&'a str, ProcAddrParts<'a>)> for ProcAddr {
-    type Error = AddrParseError;
-
-    fn try_from((_, parts): (&'a str, ProcAddrParts<'a>)) -> Result<Self, Self::Error> {
-        let location: Location = parts
-            .location
-            .parse()
-            .map_err(AddrParseError::InvalidLocation)?;
-        Ok(Self {
-            id: parts.id,
-            location,
-        })
-    }
-}
-
-impl<'a> TryFrom<(&'a str, ActorAddrParts<'a>)> for ActorAddr {
-    type Error = AddrParseError;
-
-    fn try_from((_, parts): (&'a str, ActorAddrParts<'a>)) -> Result<Self, Self::Error> {
-        let location: Location = parts
-            .location
-            .parse()
-            .map_err(AddrParseError::InvalidLocation)?;
-        Ok(Self {
-            id: parts.id,
-            location,
-        })
-    }
-}
-
-impl<'a> TryFrom<(&'a str, PortAddrParts<'a>)> for PortAddr {
-    type Error = AddrParseError;
-
-    fn try_from((_, parts): (&'a str, PortAddrParts<'a>)) -> Result<Self, Self::Error> {
-        let location: Location = parts
-            .location
-            .parse()
-            .map_err(AddrParseError::InvalidLocation)?;
-        Ok(Self {
-            id: parts.id,
-            location,
-        })
+        parse::addr::parse_address(s).map_err(|_| legacy_parse_reference(s))
     }
 }
 

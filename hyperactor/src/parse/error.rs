@@ -72,6 +72,13 @@ impl ParseError {
             },
         }
     }
+
+    pub(crate) fn invalid_location(span: Span, error: impl Into<String>) -> Self {
+        Self {
+            span,
+            kind: ParseErrorKind::InvalidLocation(error.into()),
+        }
+    }
 }
 
 /// Shared parse error kinds.
@@ -87,6 +94,8 @@ pub(crate) enum ParseErrorKind {
     InvalidBase58Uid(String),
     /// A non-decimal port was encountered.
     InvalidPort(String),
+    /// A location failed semantic validation.
+    InvalidLocation(String),
 }
 
 impl fmt::Display for ParseError {
@@ -105,6 +114,7 @@ impl fmt::Display for ParseErrorKind {
             Self::InvalidLabel(error) => write!(f, "invalid label: {error}"),
             Self::InvalidBase58Uid(uid) => write!(f, "invalid base58 uid: {uid}"),
             Self::InvalidPort(port) => write!(f, "invalid port {port:?}"),
+            Self::InvalidLocation(error) => write!(f, "invalid location: {error}"),
         }
     }
 }
