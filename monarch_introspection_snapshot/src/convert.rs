@@ -337,7 +337,7 @@ mod tests {
     // Test fixtures
 
     fn test_proc_id() -> ProcAddr {
-        ProcAddr::from_resource_name(ChannelAddr::Local(0), "worker")
+        hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "worker")
     }
 
     fn test_actor_id() -> hyperactor::ActorAddr {
