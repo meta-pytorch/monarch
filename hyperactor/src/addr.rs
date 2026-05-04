@@ -179,18 +179,15 @@ impl ProcAddr {
     /// The ResourceId text form: `label` (singleton), `label-uid58`
     /// (labeled instance), or `<uid58>` (unlabeled instance).
     pub fn resource_name(&self) -> String {
-        fn uid_no_brackets(uid: &Uid) -> String {
-            uid.to_string()
-                .trim_start_matches('<')
-                .trim_end_matches('>')
-                .to_string()
-        }
-
         match self.id.uid() {
             Uid::Singleton(label) => label.to_string(),
-            Uid::Instance(uid, Some(label)) => {
-                let uid = Uid::Instance(*uid, None);
-                format!("{label}-{}", uid_no_brackets(&uid))
+            Uid::Instance(_, Some(label)) => {
+                let uid = self
+                    .id
+                    .uid()
+                    .instance_uid_base58()
+                    .expect("instance uid should have base58 text");
+                format!("{label}-{uid}")
             }
             Uid::Instance(uid, None) => Uid::Instance(*uid, None).to_string(),
         }
@@ -727,56 +724,61 @@ impl FromStr for Address {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match parse::addr::parse_address(s).map_err(|_| legacy_parse_reference(s))? {
-            parse::addr::AddressParts::Proc(_) => Ok(Self::Proc(s.parse()?)),
-            parse::addr::AddressParts::Actor(_) => Ok(Self::Actor(s.parse()?)),
-            parse::addr::AddressParts::Port(_) => Ok(Self::Port(s.parse()?)),
+            parse::addr::AddressParts::Proc(parts) => {
+                Ok(Self::Proc(ProcAddr::try_from((s, parts))?))
+            }
+            parse::addr::AddressParts::Actor(parts) => {
+                Ok(Self::Actor(ActorAddr::try_from((s, parts))?))
+            }
+            parse::addr::AddressParts::Port(parts) => {
+                Ok(Self::Port(PortAddr::try_from((s, parts))?))
+            }
         }
     }
-}
-
-fn id_text_from_ref_input<'a>(input: &'a str, location: &str) -> &'a str {
-    &input[..input.len() - location.len() - 1]
 }
 
 impl<'a> TryFrom<(&'a str, ProcAddrParts<'a>)> for ProcAddr {
     type Error = AddrParseError;
 
-    fn try_from((input, parts): (&'a str, ProcAddrParts<'a>)) -> Result<Self, Self::Error> {
-        let id_text = id_text_from_ref_input(input, parts.location);
-        let id: ProcId = id_text.parse()?;
+    fn try_from((_, parts): (&'a str, ProcAddrParts<'a>)) -> Result<Self, Self::Error> {
         let location: Location = parts
             .location
             .parse()
             .map_err(AddrParseError::InvalidLocation)?;
-        Ok(Self { id, location })
+        Ok(Self {
+            id: parts.id,
+            location,
+        })
     }
 }
 
 impl<'a> TryFrom<(&'a str, ActorAddrParts<'a>)> for ActorAddr {
     type Error = AddrParseError;
 
-    fn try_from((input, parts): (&'a str, ActorAddrParts<'a>)) -> Result<Self, Self::Error> {
-        let id_text = id_text_from_ref_input(input, parts.location);
-        let id: ActorId = id_text.parse()?;
+    fn try_from((_, parts): (&'a str, ActorAddrParts<'a>)) -> Result<Self, Self::Error> {
         let location: Location = parts
             .location
             .parse()
             .map_err(AddrParseError::InvalidLocation)?;
-        Ok(Self { id, location })
+        Ok(Self {
+            id: parts.id,
+            location,
+        })
     }
 }
 
 impl<'a> TryFrom<(&'a str, PortAddrParts<'a>)> for PortAddr {
     type Error = AddrParseError;
 
-    fn try_from((input, parts): (&'a str, PortAddrParts<'a>)) -> Result<Self, Self::Error> {
-        let id_text = id_text_from_ref_input(input, parts.location);
-        let id: PortId = id_text.parse()?;
+    fn try_from((_, parts): (&'a str, PortAddrParts<'a>)) -> Result<Self, Self::Error> {
         let location: Location = parts
             .location
             .parse()
             .map_err(AddrParseError::InvalidLocation)?;
-        Ok(Self { id, location })
+        Ok(Self {
+            id: parts.id,
+            location,
+        })
     }
 }
 
