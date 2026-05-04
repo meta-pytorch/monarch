@@ -1502,10 +1502,6 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #(#handles)*
 
-        // Always export the `Signal` type.
-        impl #named_impl_generics hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name #named_ty_generics #named_where_clause {}
-        impl #named_impl_generics hyperactor::remote::Accepts<hyperactor::actor::Signal> for #data_type_name #named_ty_generics #named_where_clause {}
-
         // Always export the `IntrospectMessage` type.
         impl #named_impl_generics hyperactor::actor::RemoteHandles<hyperactor::introspect::IntrospectMessage> for #data_type_name #named_ty_generics #named_where_clause {}
         impl #named_impl_generics hyperactor::remote::Accepts<hyperactor::introspect::IntrospectMessage> for #data_type_name #named_ty_generics #named_where_clause {}
