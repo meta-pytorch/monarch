@@ -468,11 +468,11 @@ mod tests {
     }
 
     fn test_actor_id() -> hyperactor::ActorAddr {
-        test_proc_id().actor_id("actor")
+        test_proc_id().actor_addr("actor")
     }
 
     fn test_host_actor_id() -> hyperactor::ActorAddr {
-        test_proc_id().actor_id("host_agent")
+        test_proc_id().actor_addr("host_agent")
     }
 
     fn test_time() -> SystemTime {

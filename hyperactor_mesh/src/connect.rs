@@ -414,7 +414,7 @@ mod tests {
             cx: &Context<Self>,
             message: Connect,
         ) -> Result<(), anyhow::Error> {
-            let (mut rd, mut wr) = accept(cx, cx.self_id().clone(), message)
+            let (mut rd, mut wr) = accept(cx, cx.self_addr().clone(), message)
                 .await?
                 .into_split();
             tokio::io::copy(&mut rd, &mut wr).await?;
@@ -427,7 +427,7 @@ mod tests {
     async fn test_simple_connection() -> Result<()> {
         let proc = Proc::local();
         let (client, _) = proc.instance("client")?;
-        let (connect, completer) = Connect::allocate(client.self_id().clone(), client);
+        let (connect, completer) = Connect::allocate(client.self_addr().clone(), client);
         let actor = proc.spawn("actor", EchoActor {})?;
         actor.send(&completer.caps, connect)?;
         let (mut rd, mut wr) = completer.complete().await?.into_split();
@@ -454,8 +454,8 @@ mod tests {
         let (client, _client_handle) = proc.instance("client")?;
 
         let (connect, completer) =
-            Connect::allocate(client.self_id().clone(), client.clone_for_py());
-        let (mut rd, _) = accept(client.clone_for_py(), client.self_id().clone(), connect)
+            Connect::allocate(client.self_addr().clone(), client.clone_for_py());
+        let (mut rd, _) = accept(client.clone_for_py(), client.self_addr().clone(), connect)
             .await?
             .into_split();
         let (_, mut wr) = completer.complete().await?.into_split();
@@ -481,8 +481,8 @@ mod tests {
         let (client, _client_handle) = proc.instance("client")?;
 
         let (connect, completer) =
-            Connect::allocate(client.self_id().clone(), client.clone_for_py());
-        let (mut rd, _) = accept(client.clone_for_py(), client.self_id().clone(), connect)
+            Connect::allocate(client.self_addr().clone(), client.clone_for_py());
+        let (mut rd, _) = accept(client.clone_for_py(), client.self_addr().clone(), connect)
             .await?
             .into_split();
         let (_, mut wr) = completer.complete().await?.into_split();

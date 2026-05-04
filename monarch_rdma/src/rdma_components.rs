@@ -129,7 +129,7 @@ impl RdmaRemoteBuffer {
         self.tcp_fallback_or_bail(
             &format!(
                 "no ibverbs backend on the remote side (owner={})",
-                self.owner.actor_id()
+                self.owner.actor_addr()
             ),
             client,
         )

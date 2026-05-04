@@ -879,9 +879,9 @@ impl<'a, H: ProcHandle> ReadyProc<'a, H> {
         })
     }
 
-    /// The proc's logical identity.
-    pub fn proc_id(&self) -> &ProcAddr {
-        self.handle.proc_id()
+    /// The proc's logical address.
+    pub fn proc_addr(&self) -> &ProcAddr {
+        self.handle.proc_addr()
     }
 
     /// The proc's address (guaranteed available after ready).
@@ -946,8 +946,8 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     /// [`ProcHandle::wait`] and carried by [`ReadyError::Terminal`].
     type TerminalStatus: std::fmt::Debug + Clone + Send + Sync + 'static;
 
-    /// The proc's logical identity on this host.
-    fn proc_id(&self) -> &ProcAddr;
+    /// The proc's logical address on this host.
+    fn proc_addr(&self) -> &ProcAddr;
 
     /// The proc's address (the one callers bind into the host
     /// router). May return `None` before `ready()` completes.
@@ -1111,7 +1111,7 @@ impl<S> LocalProcManager<S> {
             }
         };
 
-        let proc_ref: ProcAddr = proc_handle.proc_id().clone();
+        let proc_ref: ProcAddr = proc_handle.proc_addr().clone();
         let (tx, _) = tokio::sync::watch::channel(LocalProcStatus::Stopping);
         self.stopping.lock().await.insert(proc_ref.clone(), tx);
 
@@ -1267,7 +1267,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
     type Agent = A;
     type TerminalStatus = ();
 
-    fn proc_id(&self) -> &ProcAddr {
+    fn proc_addr(&self) -> &ProcAddr {
         &self.proc_id
     }
 
@@ -1299,7 +1299,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
     ) -> Result<(), TerminateError<Self::TerminalStatus>> {
         let mut proc = {
             let guard = self.procs.lock().await;
-            match guard.get(self.proc_id()) {
+            match guard.get(self.proc_addr()) {
                 Some(p) => p.clone(),
                 None => {
                     // The proc was already removed; treat as already
@@ -1324,7 +1324,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         // immediately abort remaining actors and return.
         let mut proc = {
             let guard = self.procs.lock().await;
-            match guard.get(self.proc_id()) {
+            match guard.get(self.proc_addr()) {
                 Some(p) => p.clone(),
                 None => return Err(TerminateError::AlreadyTerminated(())),
             }
@@ -1496,7 +1496,7 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
     type Agent = A;
     type TerminalStatus = ();
 
-    fn proc_id(&self) -> &ProcAddr {
+    fn proc_addr(&self) -> &ProcAddr {
         &self.proc_id
     }
 
@@ -1702,7 +1702,7 @@ pub mod testing {
             cx: &Context<Self>,
             reply: OncePortRef<ActorAddr>,
         ) -> Result<(), anyhow::Error> {
-            reply.send(cx, cx.self_id().clone())?;
+            reply.send(cx, cx.self_addr().clone())?;
             Ok(())
         }
     }
@@ -1849,8 +1849,8 @@ mod tests {
         assert!(matches!(host.addr().transport(), ChannelTransport::Unix));
         let (proc1, echo1) = host.spawn("proc1".to_string(), ()).await.unwrap();
         let (proc2, echo2) = host.spawn("proc2".to_string(), ()).await.unwrap();
-        assert_eq!(echo1.actor_id().proc_id(), proc1);
-        assert_eq!(echo2.actor_id().proc_id(), proc2);
+        assert_eq!(echo1.actor_addr().proc_addr(), proc1);
+        assert_eq!(echo2.actor_addr().proc_addr(), proc2);
 
         // (2) Duplicate name rejection.
         let dup = host.spawn("proc1".to_string(), ()).await;
@@ -1874,7 +1874,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(id, *echo1.actor_id());
+        assert_eq!(id, *echo1.actor_addr());
 
         // (4) Child <-> external client request -> reply:
         // Request: client proc (standalone via `Proc::direct`) ->
@@ -1889,7 +1889,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(id2, *echo2.actor_id());
+        assert_eq!(id2, *echo2.actor_addr());
 
         // (5) System -> child request -> cross-proc reply:
         // Request: system proc -> host router (frontend) -> echo1
@@ -1908,7 +1908,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(id3, *echo1.actor_id());
+        assert_eq!(id3, *echo1.actor_addr());
     }
 
     #[tokio::test]
@@ -1916,7 +1916,7 @@ mod tests {
         // Build a LocalHandle directly.
         let addr = ChannelAddr::any(ChannelTransport::Local);
         let proc_ref = ResourceId::proc_addr_from_name(addr.clone(), "p");
-        let actor_ref = proc_ref.actor_ref("host_agent");
+        let actor_ref = proc_ref.actor_addr("host_agent");
         let agent_ref = ActorRef::<()>::attest(actor_ref);
         let h = LocalHandle::<()> {
             proc_id: proc_ref,
@@ -1961,7 +1961,7 @@ mod tests {
         type Agent = ();
         type TerminalStatus = ();
 
-        fn proc_id(&self) -> &ProcAddr {
+        fn proc_addr(&self) -> &ProcAddr {
             &self.id
         }
 
@@ -2047,7 +2047,7 @@ mod tests {
             forwarder_addr: ChannelAddr,
             _config: (),
         ) -> Result<Self::Handle, HostError> {
-            let agent = ActorRef::<()>::attest(proc_id.actor_ref("host_agent"));
+            let agent = ActorRef::<()>::attest(proc_id.actor_addr("host_agent"));
             Ok(TestHandle {
                 id: proc_id,
                 addr: forwarder_addr,
@@ -2094,7 +2094,7 @@ mod tests {
         .unwrap();
 
         let (pid, agent) = host.spawn("ok".into(), ()).await.expect("must succeed");
-        assert_eq!(agent.actor_id().proc_id(), pid);
+        assert_eq!(agent.actor_addr().proc_addr(), pid);
         assert!(host.procs.contains("ok"));
     }
 
@@ -2172,7 +2172,7 @@ mod tests {
         host.serve().unwrap();
 
         let remote_proc = Proc::attach_to_host(host.addr().clone()).await.unwrap();
-        assert_eq!(remote_proc.proc_id().addr(), host.addr());
+        assert_eq!(remote_proc.proc_addr().addr(), host.addr());
 
         // (1) Host -> remote: open a port on the remote proc, send from
         //     the system instance.
@@ -2237,8 +2237,8 @@ mod tests {
 
         // Tell the collector to send to a nonexistent actor on the
         // host's service proc.
-        let bogus_actor = host.system_proc().proc_id().actor_ref("no-such-actor");
-        let bogus_port = bogus_actor.port_ref(Port::from(0u64));
+        let bogus_actor = host.system_proc().proc_addr().actor_addr("no-such-actor");
+        let bogus_port = bogus_actor.port_addr(Port::from(0u64));
         let bogus_dest = PortRef::<String>::attest(bogus_port);
 
         let (trigger_inst, _h) = remote_proc.instance("trigger").unwrap();
@@ -2285,8 +2285,8 @@ mod tests {
 
         // Tell the collector to send to a nonexistent actor on the
         // attached remote proc.
-        let bogus_actor = remote_proc.proc_id().actor_ref("ghost-actor");
-        let bogus_port = bogus_actor.port_ref(Port::from(0u64));
+        let bogus_actor = remote_proc.proc_addr().actor_addr("ghost-actor");
+        let bogus_port = bogus_actor.port_addr(Port::from(0u64));
         let bogus_dest = PortRef::<String>::attest(bogus_port);
 
         let (trigger_inst, _h) = host.system_proc().instance("trigger").unwrap();
@@ -2384,7 +2384,7 @@ mod tests {
 
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            Addr::from(host.system_proc().proc_id().clone()),
+            Addr::from(host.system_proc().proc_addr().clone()),
             host.addr().clone(),
         );
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
@@ -2410,11 +2410,11 @@ mod tests {
         // Push one message so the lazy-connect kicks in.
         let dummy_dest = host
             .system_proc()
-            .proc_id()
-            .actor_ref("noop")
-            .port_ref(Port::from(0u64));
+            .proc_addr()
+            .actor_addr("noop")
+            .port_addr(Port::from(0u64));
         let envelope = MessageEnvelope::serialize(
-            client_inst.self_id().clone(),
+            client_inst.self_addr().clone(),
             dummy_dest,
             &"warmup".to_string(),
             Default::default(),
@@ -2481,8 +2481,8 @@ mod tests {
             .unwrap();
         let echo_ref = echo_handle.bind::<EchoActor>();
         let host_addr = host.addr().clone();
-        let echo_actor_id = echo_ref.actor_id().clone();
-        let system_proc_id = host.system_proc().proc_id().clone();
+        let echo_actor_id = echo_ref.actor_addr().clone();
+        let system_proc_id = host.system_proc().proc_addr().clone();
 
         // Spawn N clients, each sending M requests.
         const N_CLIENTS: usize = 4;
@@ -2519,7 +2519,7 @@ mod tests {
                             .await
                             .expect("timeout waiting for reply")
                             .expect("recv failed");
-                    assert_eq!(received, *echo_ref.actor_id());
+                    assert_eq!(received, *echo_ref.actor_addr());
                 }
             }));
         }
@@ -2570,7 +2570,7 @@ mod tests {
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            Addr::from(host.system_proc().proc_id().clone()),
+            Addr::from(host.system_proc().proc_addr().clone()),
             host.addr().clone(),
         );
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
@@ -2594,6 +2594,6 @@ mod tests {
             .await
             .expect("timed out waiting for reply")
             .expect("recv failed");
-        assert_eq!(received, *echo_ref.actor_id());
+        assert_eq!(received, *echo_ref.actor_addr());
     }
 }

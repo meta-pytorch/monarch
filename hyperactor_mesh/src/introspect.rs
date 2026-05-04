@@ -1258,7 +1258,8 @@ mod tests {
         use hyperactor::channel::ChannelAddr;
 
         NodeRef::Actor(
-            ResourceId::proc_addr_from_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name),
+            ResourceId::proc_addr_from_name(ChannelAddr::Local(0), proc_name)
+                .actor_addr(actor_name),
         )
     }
 
@@ -1658,7 +1659,7 @@ mod tests {
 
         let epoch = std::time::UNIX_EPOCH;
         let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "worker");
-        let actor_id = proc_id.actor_id("actor");
+        let actor_id = proc_id.actor_addr("actor");
 
         let samples = [
             NodePayload {

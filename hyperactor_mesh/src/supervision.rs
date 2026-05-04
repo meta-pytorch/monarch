@@ -65,7 +65,7 @@ impl MeshFailure {
         // If an actor spawned by this one fails, we can't handle it. We fail
         // ourselves with a chained error and bubble up to the next owner.
         let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
-            cx.instance().self_id().clone(),
+            cx.instance().self_addr().clone(),
             None,
             ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(
                 self.event.clone(),
@@ -130,7 +130,7 @@ mod tests {
     fn test_event(name: &str, display_name: Option<String>) -> ActorSupervisionEvent {
         let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "test_proc");
         ActorSupervisionEvent::new(
-            proc_id.actor_id(name),
+            proc_id.actor_addr(name),
             display_name,
             ActorStatus::Failed(ActorErrorKind::Generic("boom".to_string())),
             None,
@@ -203,7 +203,7 @@ mod tests {
     fn undeliverable_synthesized_event() -> ActorSupervisionEvent {
         let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "worker_proc");
         ActorSupervisionEvent::new(
-            proc_id.actor_id("dead_actor"),
+            proc_id.actor_addr("dead_actor"),
             None, // synthesized site has no PythonActor context; display_name stays None
             ActorStatus::generic_failure(
                 "message not delivered: undeliverable message error: ... \
@@ -278,7 +278,7 @@ mod tests {
         let panicked_event = {
             let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "worker_proc");
             ActorSupervisionEvent::new(
-                proc_id.actor_id("philosopher_1"),
+                proc_id.actor_addr("philosopher_1"),
                 // `Proc::stop_actor` populates this via
                 // `actor.display_name()` on a PythonActor — which
                 // returns the Python-class-bearing `str(PyInstance)`.
@@ -326,7 +326,7 @@ mod tests {
         let controller_timeout_event = {
             let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "controller_proc");
             ActorSupervisionEvent::new(
-                proc_id.actor_id("training_controller"),
+                proc_id.actor_addr("training_controller"),
                 None,
                 ActorStatus::generic_failure(
                     "timed out reaching controller ... Assuming controller's proc is dead"

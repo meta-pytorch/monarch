@@ -768,7 +768,7 @@ fn build_actor_attrs(cell: &crate::InstanceCell, snap: &ActorSnapshot) -> String
 /// the cell. Used by the introspect task (which runs outside
 /// the actor's message loop) and by `Instance::introspect_payload`.
 pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
-    let actor_id = cell.actor_id();
+    let actor_id = cell.actor_addr();
     let status = cell.status().borrow().clone();
     let last_handler = cell.last_message_handler();
 
@@ -799,7 +799,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 
     let supervisor = cell
         .parent()
-        .map(|p| IntrospectRef::Actor(p.actor_id().clone()));
+        .map(|p| IntrospectRef::Actor(p.actor_addr().clone()));
 
     // FI-3: failure_info is computed from the same status value as
     // actor_status, ensuring they agree on whether the actor failed.
@@ -897,12 +897,12 @@ pub(crate) async fn serve_introspect(
                             let children: Vec<IntrospectRef> =
                                 published.get(CHILDREN).cloned().unwrap_or_default();
                             IntrospectResult {
-                                identity: IntrospectRef::Actor(cell.actor_id().clone()),
+                                identity: IntrospectRef::Actor(cell.actor_addr().clone()),
                                 attrs: attrs_json,
                                 children,
                                 parent: cell
                                     .parent()
-                                    .map(|p| IntrospectRef::Actor(p.actor_id().clone())),
+                                    .map(|p| IntrospectRef::Actor(p.actor_addr().clone())),
                                 as_of: SystemTime::now(),
                             }
                         }
@@ -929,7 +929,7 @@ pub(crate) async fn serve_introspect(
                     let identity = match &child_ref {
                         Addr::Proc(id) => IntrospectRef::Proc(id.clone()),
                         Addr::Actor(id) => IntrospectRef::Actor(id.clone()),
-                        Addr::Port(id) => IntrospectRef::Actor(id.actor_ref()),
+                        Addr::Port(id) => IntrospectRef::Actor(id.actor_addr()),
                     };
                     IntrospectResult {
                         identity,
@@ -952,7 +952,7 @@ pub(crate) async fn serve_introspect(
         }
     }
     tracing::debug!(
-        actor_id = %cell.actor_id(),
+        actor_id = %cell.actor_addr(),
         "introspect task exiting"
     );
 }
@@ -1067,7 +1067,7 @@ mod tests {
     }
 
     fn test_actor_id(proc_name: &str, actor_name: &str) -> ActorAddr {
-        ProcAddr::named(ChannelAddr::Local(0), proc_name).actor_ref(actor_name)
+        ProcAddr::named(ChannelAddr::Local(0), proc_name).actor_addr(actor_name)
     }
 
     fn failed_actor_attrs() -> Attrs {
@@ -1204,8 +1204,8 @@ mod tests {
     #[test]
     fn test_fi7_fi8_propagated_stopped_child() {
         let proc_id = ProcAddr::named(ChannelAddr::Local(0), "test_proc");
-        let child_id = proc_id.actor_id("proc_agent");
-        let parent_id = proc_id.actor_id("mesh_actor");
+        let child_id = proc_id.actor_addr("proc_agent");
+        let parent_id = proc_id.actor_addr("mesh_actor");
 
         let child_event = ActorSupervisionEvent::new(
             child_id.clone(),

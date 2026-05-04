@@ -165,9 +165,9 @@ impl RdmaManagerActor {
         let actor_ref = reference::ActorRef::attest(
             client
                 .mailbox()
-                .actor_id()
-                .proc_ref()
-                .actor_id("rdma_manager"),
+                .actor_addr()
+                .proc_addr()
+                .actor_addr("rdma_manager"),
         );
         actor_ref
             .downcast_handle(client)

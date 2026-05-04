@@ -448,10 +448,10 @@ impl HostAgent {
         // local appear as regular children; 's' in the TUI toggles
         // actor visibility, not proc visibility.
         children.push(hyperactor::introspect::IntrospectRef::Proc(
-            host.system_proc().proc_id().clone(),
+            host.system_proc().proc_addr().clone(),
         ));
         children.push(hyperactor::introspect::IntrospectRef::Proc(
-            host.local_proc().proc_id().clone(),
+            host.local_proc().proc_addr().clone(),
         ));
 
         // User procs.
@@ -512,15 +512,15 @@ impl Actor for HostAgent {
         let host = self.host().expect("host present");
         let system_proc = host.system_proc().clone();
         let local_proc = host.local_proc().clone();
-        let self_id = this.self_id().clone();
+        let self_id = this.self_addr().clone();
         this.set_query_child_handler(move |child_ref| {
             use hyperactor::introspect::IntrospectResult;
 
             let proc = match child_ref {
                 Addr::Proc(proc_ref) => {
-                    if *proc_ref == *system_proc.proc_id() {
+                    if *proc_ref == *system_proc.proc_addr() {
                         Some((&system_proc, SERVICE_PROC_NAME))
-                    } else if *proc_ref == *local_proc.proc_id() {
+                    } else if *proc_ref == *local_proc.proc_addr() {
                         Some((&local_proc, LOCAL_PROC_NAME))
                     } else {
                         None
@@ -589,7 +589,7 @@ impl Actor for HostAgent {
 
                     IntrospectResult {
                         identity: hyperactor::introspect::IntrospectRef::Proc(
-                            proc.proc_id().clone(),
+                            proc.proc_addr().clone(),
                         ),
                         attrs: attrs_json,
                         children: actors,
@@ -610,7 +610,7 @@ impl Actor for HostAgent {
                         Addr::Proc(p) => hyperactor::introspect::IntrospectRef::Proc(p.clone()),
                         Addr::Actor(a) => hyperactor::introspect::IntrospectRef::Actor(a.clone()),
                         Addr::Port(p) => {
-                            hyperactor::introspect::IntrospectRef::Actor(p.actor_ref())
+                            hyperactor::introspect::IntrospectRef::Actor(p.actor_addr())
                         }
                     };
                     IntrospectResult {
@@ -824,9 +824,9 @@ impl Handler<resource::GetRankStatus> for HostAgent {
         // some actor that requested the rank status failed to receive it.
         if let Err(e) = result {
             tracing::warn!(
-                actor = %cx.self_id(),
+                actor = %cx.self_addr(),
                 "failed to send GetRankStatus reply to {} due to error: {}",
-                get_rank_status.reply.port_id().actor_id(),
+                get_rank_status.reply.port_addr().actor_addr(),
                 e
             );
         }
@@ -1143,8 +1143,8 @@ impl Handler<ShutdownHost> for HostAgent {
                 ..
             }) => {
                 tracing::info!(
-                    proc_id = %cx.self_id().proc_ref(),
-                    actor_id = %cx.self_id(),
+                    proc_id = %cx.self_addr().proc_addr(),
+                    actor_id = %cx.self_addr(),
                     "host is shut down, sending mailbox handle to bootstrap for draining"
                 );
                 if let Some(handle) = self.mailbox_handle.take() {
@@ -1227,9 +1227,9 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
         // some actor that requested the state of a proc failed to receive it.
         if let Err(e) = result {
             tracing::warn!(
-                actor = %cx.self_id(),
+                actor = %cx.self_addr(),
                 "failed to send GetState reply to {} due to error: {}",
-                get_state.reply.port_id().actor_id(),
+                get_state.reply.port_addr().actor_addr(),
                 e
             );
         }
@@ -1428,7 +1428,7 @@ mod tests {
                 ..
             } if id == resource_id
               && proc_id == id.proc_addr(host_addr.clone())
-              && mesh_agent == hyperactor_reference::ActorRef::attest(id.proc_addr(host_addr.clone()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
+              && mesh_agent == hyperactor_reference::ActorRef::attest(id.proc_addr(host_addr.clone()).actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }
@@ -1823,7 +1823,9 @@ mod tests {
 
         // The host_agent has now processed messages on the service
         // proc. Query the service proc's introspection.
-        let agent_ref = system_proc.proc_id().actor_ref(HOST_MESH_AGENT_ACTOR_NAME);
+        let agent_ref = system_proc
+            .proc_addr()
+            .actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
         let agent_id: hyperactor_reference::ActorAddr = agent_ref;
         let port =
             hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
@@ -1836,7 +1838,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Addr::Proc(system_proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Addr::Proc(system_proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
             )

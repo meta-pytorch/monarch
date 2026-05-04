@@ -324,7 +324,7 @@ impl PyRdmaBuffer {
     }
 
     fn owner_actor_id(&self) -> String {
-        self.buffer.owner.actor_id().to_string()
+        self.buffer.owner.actor_addr().to_string()
     }
 }
 
