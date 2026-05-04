@@ -49,7 +49,7 @@ use crate::metrics;
 
 /// Returns true if native V1 casting is enabled. Panics if V1 casting
 /// is on but the required dest actor reordering buffer is not.
-pub fn v1_casting_enabled() -> bool {
+pub(crate) fn v1_casting_enabled() -> bool {
     let enabled = hyperactor_config::global::get(ENABLE_NATIVE_V1_CASTING);
     if enabled {
         assert!(
