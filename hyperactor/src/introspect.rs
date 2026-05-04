@@ -878,9 +878,16 @@ pub(crate) async fn serve_introspect(
                     }
                 }
             }
-            _ = status.wait_for(ActorStatus::is_terminal) => {
-                // Snapshot for post-mortem introspection before
-                // dropping our InstanceCell reference.
+            status_ref = status.wait_for(ActorStatus::is_terminal) => {
+                // Explicitly drop the Ref before calling live_actor_payload.
+                // wait_for returns a Ref that holds a read lock on the watch
+                // channel's RwLock<ActorStatus>. tokio select! uses a match
+                // internally, so the scrutinee (and its read lock) stays alive
+                // through the arm body. live_actor_payload also calls borrow(),
+                // and parking_lot's write-preferring RwLock blocks new readers
+                // once a writer is queued — causing a deadlock if InstanceState
+                // ::drop tries to write between wait_for and live_actor_payload.
+                drop(status_ref);
                 let snapshot = live_actor_payload(&cell);
                 cell.store_terminated_snapshot(snapshot);
                 break;
