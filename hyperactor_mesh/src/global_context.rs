@@ -542,7 +542,7 @@ mod tests {
         // Target the global root client's well-known Undeliverable port.
         let client_actor_id: hyperactor::ActorAddr = client.self_id().clone();
         let undeliverable_port =
-            PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(&client_actor_id);
+            PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&client_actor_id);
         undeliverable_port
             .send(client, Undeliverable(env))
             .expect("inject_undeliverable: send failed");

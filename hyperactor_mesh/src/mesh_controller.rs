@@ -301,14 +301,14 @@ impl<A: Referable> Actor for ActorMeshController<A> {
                 // TODO(SF, 2026-03-32, T261106175): follow up in
                 // hyperactor on bind semantics here. `cx.port()` plus
                 // later actor-ref export currently hits `bind()` ->
-                // `bind_actor_port()` on the same handle, and
-                // `bind_actor_port()` still panics on an
+                // `bind_handler_port()` on the same handle, and
+                // `bind_handler_port()` still panics on an
                 // already-bound handle. This workaround uses
-                // `attest_message_port(...)` to avoid the eager bind,
+                // `attest_handler_port(...)` to avoid the eager bind,
                 // but the longer-term fix is to clarify whether that
                 // bind path should be idempotent and eliminate the
                 // need for attestation here.
-                subscriber: PortRef::<resource::State<ActorState>>::attest_message_port(
+                subscriber: PortRef::<resource::State<ActorState>>::attest_handler_port(
                     &this.self_id().clone(),
                 )
                 .unsplit(),

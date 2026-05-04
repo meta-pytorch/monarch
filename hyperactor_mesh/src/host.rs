@@ -1344,7 +1344,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
 ///   - `Actor`: the agent actually runs inside the proc.
 ///   - `Referable`: callers hold `ActorRef<A>` to the agent; this
 ///     bound is required for typed remote refs.
-///   - `Binds<A>`: lets the runtime wire the agent's message ports.
+///   - `Binds<A>`: lets the runtime wire the agent's handler ports.
 /// - `F: Future<Output = anyhow::Result<ActorHandle<A>>> + Send`:
 ///   the spawn closure returns a Send future (we `tokio::spawn` it).
 /// - `S: Fn(Proc) -> F + Sync`: the factory can be called from
@@ -2501,7 +2501,7 @@ mod tests {
                 let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
                 let _client_handle = client_proc.clone().serve(client_rx);
 
-                let echo_ref = ActorRef::<EchoActor>::attest(echo_actor_id.into());
+                let echo_ref = ActorRef::<EchoActor>::attest(echo_actor_id);
 
                 for ri in 0..M_REQUESTS {
                     let (client_inst, _h) = client_proc.instance(&format!("req-{}", ri)).unwrap();

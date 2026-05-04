@@ -27,7 +27,7 @@ Returns the globally unique, fully-qualified type name for the type. This should
 
 #### `typehash() -> u64`
 
-Returns a stable hash derived from `typename()`. This value is used for message port derivation.
+Returns a stable hash derived from `typename()`. This value is used for handler port derivation.
 ```rust
 cityhasher::hash(Self::typename())
 ```

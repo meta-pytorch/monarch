@@ -191,7 +191,7 @@ impl Actor for CommActor {
             message_envelope.deserialized::<ForwardMessage>()
         {
             let sender = message.sender();
-            let return_port = PortRef::attest_message_port(sender);
+            let return_port = PortRef::attest_handler_port(sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to forward the cast message; returning to origin {}",
                 cx.self_id(),
@@ -221,7 +221,7 @@ impl Actor for CommActor {
 
         // 2. Case delivery failure at a "deliver here" step.
         if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
-            let return_port = PortRef::attest_message_port(&sender);
+            let return_port = PortRef::attest_handler_port(&sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to deliver the cast message to the dest \
                 actor; returning to origin {}",
@@ -1081,7 +1081,7 @@ mod tests {
 
     //  Given a port tree,
     //     * remove the client port, i.e. the 1st element of the path;
-    //     * verify all remaining ports are comm actor ports;
+    //     * verify all remaining ports are comm handler ports;
     //     * remove the actor information and return a rank-based tree representation.
     //
     //  The rank-based tree representation is what [collect_commactor_routing_tree] returns.

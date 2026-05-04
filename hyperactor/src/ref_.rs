@@ -236,8 +236,8 @@ pub struct PortRef<M> {
 }
 
 impl<M: RemoteMessage> PortRef<M> {
-    /// The caller attests that the provided PortId can be
-    /// converted to a reachable, typed port reference.
+    /// The caller attests that the provided actor exposes a reachable handler
+    /// port for message type `M`.
     pub fn attest(port_addr: PortAddr) -> Self {
         Self {
             port_addr,
@@ -249,8 +249,8 @@ impl<M: RemoteMessage> PortRef<M> {
         }
     }
 
-    /// The caller attests that the provided PortId can be
-    /// converted to a reachable, typed port reference.
+    /// The caller attests that the provided actor exposes a reachable handler
+    /// port for message type `M`.
     pub fn attest_reducible(
         port_addr: PortAddr,
         reducer_spec: Option<ReducerSpec>,
@@ -274,7 +274,7 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed port reference.
-    pub fn attest_message_port(actor: &ActorAddr) -> Self {
+    pub fn attest_handler_port(actor: &ActorAddr) -> Self {
         PortRef::<M>::attest(actor.port_ref(Port::from(<M as Named>::port())))
     }
 

@@ -1239,7 +1239,7 @@ mod tests {
 
         let agent_id: hyperactor_reference::ActorAddr =
             proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME);
-        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
 
         // Helper: send QueryChild(Proc) and return the payload with a
         // timeout so a misrouted reply fails fast rather than hanging.
@@ -1347,7 +1347,7 @@ mod tests {
 
         let agent_id: hyperactor_reference::ActorAddr =
             proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME);
-        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
 
         // Concurrent query task: send QueryChild(Proc) every 10ms.
         let query_client_proc =
@@ -1672,7 +1672,7 @@ mod tests {
         // resolution.
         let agent_id: hyperactor_reference::ActorAddr =
             proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME);
-        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
 
         // Poll until queue stats are non-zero.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
