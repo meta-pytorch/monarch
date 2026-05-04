@@ -13,9 +13,6 @@ use hyperactor::ActorRef;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::host::Host;
-use hyperactor::host::LocalProcManager;
-use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::id::Label;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -57,6 +54,9 @@ use crate::ValueMesh;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
 use crate::bootstrap::ProcBind;
+use crate::host::Host;
+use crate::host::LocalProcManager;
+use crate::host::SERVICE_PROC_NAME;
 use crate::host_mesh::host_agent::DrainHostClient;
 pub use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
@@ -1724,6 +1724,7 @@ mod tests {
     use hyperactor_config::attrs::Attrs;
     use ndslice::ViewExt;
     use ndslice::extent;
+    use timed_test::assert_no_process_leak;
     use tokio::process::Command;
 
     use super::*;
@@ -1880,8 +1881,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
     #[cfg(fbcode_build)]
+    #[assert_no_process_leak]
+    #[tokio::test]
     async fn test_halting_proc_allocation() {
         let config = hyperactor_config::global::lock();
         let _guard1 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(20));

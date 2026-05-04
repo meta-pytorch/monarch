@@ -212,7 +212,7 @@ impl GlogSink {
 
                 for (k, v) in fields.iter() {
                     if *k != "message" && *k != crate::SUBJECT_KEY {
-                        write!(&mut self.line_buffer, ", {}:", k)?;
+                        write!(&mut self.line_buffer, "\n    {}: ", k)?;
                         match v {
                             FieldValue::Bool(b) => write!(&mut self.line_buffer, "{}", b)?,
                             FieldValue::I64(i) => write!(&mut self.line_buffer, "{}", i)?,

@@ -30,7 +30,7 @@
 //! alphanumeric.
 //!
 //! [`Uid`] is either a singleton (identified by label) or an instance
-//! (identified by a random `u64`).
+//! (identified by a random `u64`, with an optional label for display).
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -38,21 +38,21 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::str::FromStr;
 
+use enum_as_inner::EnumAsInner;
 use serde::Deserialize;
 use serde::Serialize;
 use smol_str::SmolStr;
 
-use crate::parse::id::ActorIdParts;
-use crate::parse::id::IdComponent;
-use crate::parse::id::PortIdParts;
-use crate::parse::id::ProcIdParts;
+use crate::addr::ActorAddr;
+use crate::addr::Addr;
+use crate::addr::Location;
+use crate::addr::PortAddr;
+use crate::addr::ProcAddr;
+use crate::parse::id::encode_base58_uid;
 use crate::port::Port;
 
 /// Maximum length of an RFC 1035 label.
 const MAX_LABEL_LEN: usize = 63;
-
-/// Flickr base58 alphabet.
-const BASE58_FLICKR: &[u8; 58] = b"123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
 
 /// An RFC 1035-style label: 1–63 chars, lowercase ASCII alphanumeric plus `-`
 /// or `_`,
@@ -188,18 +188,24 @@ impl<'de> Deserialize<'de> for Label {
     }
 }
 
-/// A unique identifier: either a labeled singleton or a random instance.
-#[derive(Clone)]
+/// A unique identifier.
+///
+/// Singleton labels are identity. Instance labels are supplemental metadata
+/// and do not participate in equality, hashing, or ordering.
+#[derive(Clone, EnumAsInner)]
 pub enum Uid {
     /// A singleton identified by label.
     Singleton(Label),
-    /// An instance identified by a random u64.
-    Instance(u64),
+    /// An instance identified by a random u64, with an optional display label.
+    Instance(u64, Option<Label>),
 }
 
 /// Errors that can occur when parsing a [`Uid`] from a string.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum UidParseError {
+    /// Error parsing the uid syntax.
+    #[error("invalid uid syntax: {0}")]
+    InvalidSyntax(String),
     /// Error parsing the label component.
     #[error("invalid label: {0}")]
     InvalidLabel(#[from] LabelError),
@@ -211,12 +217,46 @@ pub enum UidParseError {
 impl Uid {
     /// Create a fresh instance with a random uid.
     pub fn instance() -> Self {
-        Uid::Instance(rand::random())
+        Uid::Instance(rand::random(), None)
+    }
+
+    /// Create a fresh instance with a random uid and display label.
+    pub fn instance_labeled(label: Label) -> Self {
+        Uid::Instance(rand::random(), Some(label))
     }
 
     /// Create a singleton with the given label.
     pub fn singleton(label: Label) -> Self {
         Uid::Singleton(label)
+    }
+
+    /// Returns the display label for this uid, if present.
+    ///
+    /// For singletons, the label is the identity. For instances, the label is
+    /// supplemental metadata.
+    pub fn label(&self) -> Option<&Label> {
+        match self {
+            Uid::Singleton(label) => Some(label),
+            Uid::Instance(_, label) => label.as_ref(),
+        }
+    }
+
+    /// Returns the raw base58 uid for instances, without display delimiters.
+    pub fn instance_uid_base58(&self) -> Option<String> {
+        match self {
+            Uid::Singleton(_) => None,
+            Uid::Instance(uid, _) => Some(encode_base58_uid(*uid)),
+        }
+    }
+
+    /// Returns this uid with the provided instance label.
+    ///
+    /// Singleton labels are identity and are not replaced.
+    pub fn with_label(self, label: Option<Label>) -> Self {
+        match self {
+            Uid::Singleton(label) => Uid::Singleton(label),
+            Uid::Instance(uid, existing) => Uid::Instance(uid, label.or(existing)),
+        }
     }
 }
 
@@ -224,7 +264,7 @@ impl PartialEq for Uid {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Uid::Singleton(a), Uid::Singleton(b)) => a == b,
-            (Uid::Instance(a), Uid::Instance(b)) => a == b,
+            (Uid::Instance(a, _), Uid::Instance(b, _)) => a == b,
             _ => false,
         }
     }
@@ -237,7 +277,7 @@ impl Hash for Uid {
         std::mem::discriminant(self).hash(state);
         match self {
             Uid::Singleton(label) => label.hash(state),
-            Uid::Instance(uid) => uid.hash(state),
+            Uid::Instance(uid, _) => uid.hash(state),
         }
     }
 }
@@ -252,19 +292,23 @@ impl Ord for Uid {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Uid::Singleton(a), Uid::Singleton(b)) => a.cmp(b),
-            (Uid::Singleton(_), Uid::Instance(_)) => Ordering::Less,
-            (Uid::Instance(_), Uid::Singleton(_)) => Ordering::Greater,
-            (Uid::Instance(a), Uid::Instance(b)) => a.cmp(b),
+            (Uid::Singleton(_), Uid::Instance(_, _)) => Ordering::Less,
+            (Uid::Instance(_, _), Uid::Singleton(_)) => Ordering::Greater,
+            (Uid::Instance(a, _), Uid::Instance(b, _)) => a.cmp(b),
         }
     }
 }
 
-/// Displays as `label` (singleton) or `<base58>` (instance).
+/// Displays as `label` (singleton), `label<base58>` (labeled instance), or
+/// `<base58>` (unlabeled instance).
 impl fmt::Debug for Uid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Uid::Singleton(label) => write!(f, "Uid({})", label),
-            Uid::Instance(uid) => write!(f, "Uid(<{}>)", encode_base58_uid(*uid)),
+            Uid::Instance(uid, Some(label)) => {
+                write!(f, "Uid({}<{}>)", label, encode_base58_uid(*uid))
+            }
+            Uid::Instance(uid, None) => write!(f, "Uid(<{}>)", encode_base58_uid(*uid)),
         }
     }
 }
@@ -273,67 +317,25 @@ impl fmt::Display for Uid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Uid::Singleton(label) => write!(f, "{label}"),
-            Uid::Instance(uid) => write!(f, "<{}>", encode_base58_uid(*uid)),
+            Uid::Instance(uid, Some(label)) => write!(f, "{}<{}>", label, encode_base58_uid(*uid)),
+            Uid::Instance(uid, None) => write!(f, "<{}>", encode_base58_uid(*uid)),
         }
     }
 }
 
-/// Parses `label` as singleton, `<base58>` as instance.
+/// Parses `label` as singleton, `<base58>` as an unlabeled instance, and
+/// `label<base58>` as a labeled instance.
 impl FromStr for Uid {
     type Err = UidParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(inner) = s
-            .strip_prefix('<')
-            .and_then(|inner| inner.strip_suffix('>'))
-        {
-            let uid = parse_base58_uid(inner)?;
-            return Ok(Uid::Instance(uid));
-        }
-        Ok(Uid::Singleton(Label::new(s)?))
+        crate::parse::id::parse_uid_str(s)
+            .map_err(|err| UidParseError::InvalidSyntax(err.to_string()))
     }
-}
-
-fn encode_base58_uid(mut uid: u64) -> String {
-    if uid == 0 {
-        return "1".to_string();
-    }
-
-    let mut digits = Vec::new();
-    while uid > 0 {
-        digits.push(BASE58_FLICKR[(uid % 58) as usize] as char);
-        uid /= 58;
-    }
-    digits.iter().rev().collect()
 }
 
 fn parse_base58_uid(s: &str) -> Result<u64, UidParseError> {
-    if s.is_empty() {
-        return Err(UidParseError::InvalidBase58(s.to_string()));
-    }
-
-    let mut uid = 0u64;
-    for ch in s.bytes() {
-        let digit = BASE58_FLICKR
-            .iter()
-            .position(|candidate| *candidate == ch)
-            .ok_or_else(|| UidParseError::InvalidBase58(s.to_string()))? as u64;
-        uid = uid
-            .checked_mul(58)
-            .and_then(|value| value.checked_add(digit))
-            .ok_or_else(|| UidParseError::InvalidBase58(s.to_string()))?;
-    }
-    Ok(uid)
-}
-
-fn fmt_id_component(f: &mut fmt::Formatter<'_>, uid: &Uid, label: Option<&Label>) -> fmt::Result {
-    match uid {
-        Uid::Singleton(singleton) => write!(f, "{}", singleton),
-        Uid::Instance(uid) => match label {
-            Some(label) => write!(f, "{}<{}>", label, encode_base58_uid(*uid)),
-            None => write!(f, "<{}>", encode_base58_uid(*uid)),
-        },
-    }
+    crate::parse::id::decode_base58_uid(s).map_err(|_| UidParseError::InvalidBase58(s.to_string()))
 }
 
 impl Serialize for Uid {
@@ -374,33 +376,31 @@ pub enum IdParseError {
 
 /// Identifies a process in the actor system.
 ///
-/// Identity (Eq, Hash, Ord) is determined solely by `uid`; `label` is
-/// informational and excluded from comparisons.
+/// Identity (Eq, Hash, Ord) is determined by `uid`.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ProcId {
     uid: Uid,
-    label: Option<Label>,
 }
 
 impl ProcId {
     /// Create a new [`ProcId`].
     pub fn new(uid: Uid, label: Option<Label>) -> Self {
-        Self { uid, label }
+        Self {
+            uid: uid.with_label(label),
+        }
     }
 
     /// Create a singleton [`ProcId`] identified by the given label.
     pub fn singleton(label: Label) -> Self {
         Self {
-            uid: Uid::Singleton(label.clone()),
-            label: Some(label),
+            uid: Uid::Singleton(label),
         }
     }
 
     /// Create an instance [`ProcId`] with a random uid and the given label.
     pub fn instance(label: Label) -> Self {
         Self {
-            uid: Uid::instance(),
-            label: Some(label),
+            uid: Uid::instance_labeled(label),
         }
     }
 
@@ -411,7 +411,7 @@ impl ProcId {
 
     /// Returns the label.
     pub fn label(&self) -> Option<&Label> {
-        self.label.as_ref()
+        self.uid.label()
     }
 }
 
@@ -443,13 +443,13 @@ impl Ord for ProcId {
 
 impl fmt::Display for ProcId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_id_component(f, &self.uid, self.label.as_ref())
+        fmt::Display::fmt(&self.uid, f)
     }
 }
 
 impl fmt::Debug for ProcId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.label {
+        match self.label() {
             Some(label) => write!(f, "<'{}' {}>", label, self.uid),
             None => write!(f, "<{}>", self.uid),
         }
@@ -460,39 +460,35 @@ impl FromStr for ProcId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = crate::parse::id::parse_proc_id(s)
-            .map_err(|_| legacy_parse_id_component(s).unwrap_err())?;
-        Self::try_from(parts).map_err(IdParseError::InvalidProcId)
+        crate::parse::id::parse_proc_id(s).map_err(|err| {
+            IdParseError::InvalidProcId(UidParseError::InvalidSyntax(err.to_string()))
+        })
     }
 }
 
 /// Identifies an actor within a process.
 ///
-/// Identity (Eq, Hash, Ord) is determined by `(proc_id, uid)`; `label` is
-/// informational and excluded from comparisons.
+/// Identity (Eq, Hash, Ord) is determined by `(proc_id, uid)`.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ActorId {
     uid: Uid,
     proc_id: ProcId,
-    label: Option<Label>,
 }
 
 impl ActorId {
     /// Create a new [`ActorId`].
     pub fn new(uid: Uid, proc_id: ProcId, label: Option<Label>) -> Self {
         Self {
-            uid,
+            uid: uid.with_label(label),
             proc_id,
-            label,
         }
     }
 
     /// Create a singleton [`ActorId`] identified by the given label.
     pub fn singleton(label: Label, proc_id: ProcId) -> Self {
         Self {
-            uid: Uid::Singleton(label.clone()),
+            uid: Uid::Singleton(label),
             proc_id,
-            label: Some(label),
         }
     }
 
@@ -501,16 +497,14 @@ impl ActorId {
         Self {
             uid: Uid::instance(),
             proc_id,
-            label: None,
         }
     }
 
     /// Create an instance [`ActorId`] with a random uid and the given label.
     pub fn instance_labeled(label: Label, proc_id: ProcId) -> Self {
         Self {
-            uid: Uid::instance(),
+            uid: Uid::instance_labeled(label),
             proc_id,
-            label: Some(label),
         }
     }
 
@@ -526,7 +520,7 @@ impl ActorId {
 
     /// Returns the label.
     pub fn label(&self) -> Option<&Label> {
-        self.label.as_ref()
+        self.uid.label()
     }
 }
 
@@ -561,14 +555,14 @@ impl Ord for ActorId {
 
 impl fmt::Display for ActorId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_id_component(f, &self.uid, self.label.as_ref())?;
+        fmt::Display::fmt(&self.uid, f)?;
         write!(f, ".{}", self.proc_id)
     }
 }
 
 impl fmt::Debug for ActorId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (&self.label, &self.proc_id.label) {
+        match (self.label(), self.proc_id.label()) {
             (Some(actor_label), Some(proc_label)) => {
                 write!(
                     f,
@@ -593,8 +587,7 @@ impl FromStr for ActorId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = crate::parse::id::parse_actor_id(s).map_err(|_| legacy_parse_actor_id(s))?;
-        Self::try_from(parts)
+        crate::parse::id::parse_actor_id(s).map_err(|_| legacy_parse_actor_id(s))
     }
 }
 
@@ -691,62 +684,67 @@ impl FromStr for PortId {
     type Err = IdParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = crate::parse::id::parse_port_id(s).map_err(|_| legacy_port_parse_error(s))?;
-        Self::try_from(parts)
+        crate::parse::id::parse_port_id(s).map_err(|_| legacy_port_parse_error(s))
     }
 }
 
-fn convert_id_component(component: IdComponent<'_>) -> Result<(Uid, Option<Label>), UidParseError> {
-    match component {
-        IdComponent::Singleton { label, .. } => {
-            let label = Label::new(label)?;
-            Ok((Uid::Singleton(label.clone()), Some(label)))
+/// A Hyperactor id.
+#[derive(
+    Clone,
+    EnumAsInner,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize
+)]
+pub enum Id {
+    /// A process id.
+    Proc(ProcId),
+    /// An actor id.
+    Actor(ActorId),
+    /// A port id.
+    Port(PortId),
+}
+
+impl Id {
+    /// Pair this id with a network location.
+    pub fn addr(self, location: Location) -> Addr {
+        match self {
+            Self::Proc(id) => Addr::Proc(ProcAddr::new(id, location)),
+            Self::Actor(id) => Addr::Actor(ActorAddr::new(id, location)),
+            Self::Port(id) => Addr::Port(PortAddr::new(id, location)),
         }
-        IdComponent::Instance { label, uid, .. } => {
-            let uid = Uid::Instance(parse_base58_uid(uid)?);
-            let label = label.map(Label::new).transpose()?;
-            Ok((uid, label))
+    }
+}
+
+impl fmt::Display for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Proc(id) => fmt::Display::fmt(id, f),
+            Self::Actor(id) => fmt::Display::fmt(id, f),
+            Self::Port(id) => fmt::Display::fmt(id, f),
         }
     }
 }
 
-impl TryFrom<ProcIdParts<'_>> for ProcId {
-    type Error = UidParseError;
-
-    fn try_from(parts: ProcIdParts<'_>) -> Result<Self, Self::Error> {
-        let (uid, label) = convert_id_component(parts.component)?;
-        Ok(Self { uid, label })
+impl fmt::Debug for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Proc(id) => fmt::Debug::fmt(id, f),
+            Self::Actor(id) => fmt::Debug::fmt(id, f),
+            Self::Port(id) => fmt::Debug::fmt(id, f),
+        }
     }
 }
 
-impl TryFrom<ActorIdParts<'_>> for ActorId {
-    type Error = IdParseError;
+impl FromStr for Id {
+    type Err = IdParseError;
 
-    fn try_from(parts: ActorIdParts<'_>) -> Result<Self, Self::Error> {
-        let (uid, label) =
-            convert_id_component(parts.actor).map_err(IdParseError::InvalidActorUid)?;
-        let proc_id = ProcId::try_from(ProcIdParts {
-            component: parts.proc_,
-        })
-        .map_err(IdParseError::InvalidActorProcUid)?;
-        Ok(Self {
-            uid,
-            proc_id,
-            label,
-        })
-    }
-}
-
-impl TryFrom<PortIdParts<'_>> for PortId {
-    type Error = IdParseError;
-
-    fn try_from(parts: PortIdParts<'_>) -> Result<Self, Self::Error> {
-        let actor_id = ActorId::try_from(parts.actor)?;
-        let port = parts
-            .port
-            .parse()
-            .map_err(|_| IdParseError::InvalidPort(parts.port.to_string()))?;
-        Ok(Self { actor_id, port })
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        crate::parse::id::parse_id(s).map_err(|_| legacy_parse_id(s))
     }
 }
 
@@ -756,7 +754,7 @@ fn legacy_parse_id_component(s: &str) -> Result<(Uid, Option<Label>), UidParseEr
         .and_then(|inner| inner.strip_suffix('>'))
     {
         let uid = parse_base58_uid(inner)?;
-        return Ok((Uid::Instance(uid), None));
+        return Ok((Uid::Instance(uid, None), None));
     }
 
     if let Some(open) = s.find('<')
@@ -764,11 +762,24 @@ fn legacy_parse_id_component(s: &str) -> Result<(Uid, Option<Label>), UidParseEr
     {
         let label = Label::new(&s[..open])?;
         let uid = parse_base58_uid(&s[open + 1..s.len() - 1])?;
-        return Ok((Uid::Instance(uid), Some(label)));
+        return Ok((Uid::Instance(uid, Some(label.clone())), Some(label)));
     }
 
     let label = Label::new(s)?;
     Ok((Uid::Singleton(label.clone()), Some(label)))
+}
+
+fn legacy_parse_id(s: &str) -> IdParseError {
+    if s.contains(':') {
+        legacy_port_parse_error(s)
+    } else if s.contains('.') {
+        legacy_parse_actor_id(s)
+    } else {
+        legacy_parse_id_component(s)
+            .err()
+            .map(IdParseError::InvalidProcId)
+            .unwrap_or(IdParseError::InvalidActorIdFormat)
+    }
 }
 
 fn legacy_parse_actor_id(s: &str) -> IdParseError {
@@ -898,17 +909,58 @@ mod tests {
 
     #[test]
     fn test_instance_display_parse() {
-        let uid = Uid::Instance(0xd5d54d7201103869);
+        let uid = Uid::Instance(0xd5d54d7201103869, None);
         let s = uid.to_string();
         assert_eq!(s, format!("<{}>", encode_base58_uid(0xd5d54d7201103869)));
+        assert_eq!(
+            uid.instance_uid_base58(),
+            Some(encode_base58_uid(0xd5d54d7201103869))
+        );
         let parsed: Uid = s.parse().unwrap();
         assert_eq!(uid, parsed);
     }
 
     #[test]
+    fn test_singleton_has_no_instance_base58() {
+        let uid = Uid::singleton(Label::new("my-actor").unwrap());
+        assert_eq!(uid.instance_uid_base58(), None);
+    }
+
+    #[test]
+    fn test_labeled_instance_display_parse() {
+        let label = Label::new("my-actor").unwrap();
+        let uid = Uid::Instance(0xd5d54d7201103869, Some(label.clone()));
+        let s = uid.to_string();
+        assert_eq!(
+            s,
+            format!("my-actor<{}>", encode_base58_uid(0xd5d54d7201103869))
+        );
+        let parsed: Uid = s.parse().unwrap();
+        assert_eq!(parsed, uid);
+        assert_eq!(parsed.label(), Some(&label));
+    }
+
+    #[test]
+    fn test_labeled_instance_identity_ignores_label() {
+        let a = Uid::Instance(0x42, Some(Label::new("alpha").unwrap()));
+        let b = Uid::Instance(0x42, Some(Label::new("beta").unwrap()));
+        assert_eq!(a, b);
+        assert_eq!(a.cmp(&b), Ordering::Equal);
+
+        use std::collections::hash_map::DefaultHasher;
+
+        let hash = |uid: &Uid| {
+            let mut h = DefaultHasher::new();
+            uid.hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(hash(&a), hash(&b));
+    }
+
+    #[test]
     fn test_ordering_singleton_lt_instance() {
         let singleton = Uid::singleton(Label::new("zzz").unwrap());
-        let instance = Uid::Instance(0);
+        let instance = Uid::Instance(0, None);
         assert!(singleton < instance);
     }
 
@@ -921,8 +973,8 @@ mod tests {
 
     #[test]
     fn test_ordering_instances() {
-        let a = Uid::Instance(1);
-        let b = Uid::Instance(2);
+        let a = Uid::Instance(1, None);
+        let b = Uid::Instance(2, None);
         assert!(a < b);
     }
 
@@ -930,8 +982,8 @@ mod tests {
     fn test_uid_serde_roundtrip() {
         let uids = vec![
             Uid::singleton(Label::new("my-actor").unwrap()),
-            Uid::Instance(0xabcdef0123456789),
-            Uid::Instance(1),
+            Uid::Instance(0xabcdef0123456789, None),
+            Uid::Instance(1, None),
         ];
         for uid in uids {
             let json = serde_json::to_string(&uid).unwrap();
@@ -949,7 +1001,10 @@ mod tests {
         // Invalid base58.
         assert!("<0>".parse::<Uid>().is_err());
         // Missing closing delimiter.
-        assert!("<abc".parse::<Uid>().is_err());
+        assert_eq!(
+            "<abc".parse::<Uid>().unwrap_err().to_string(),
+            "invalid uid syntax: expected \">\", found end of input"
+        );
     }
 
     #[test]
@@ -962,12 +1017,12 @@ mod tests {
     #[test]
     fn test_short_hex_parse() {
         let parsed: Uid = "<2>".parse().unwrap();
-        assert_eq!(parsed, Uid::Instance(1));
+        assert_eq!(parsed, Uid::Instance(1, None));
     }
 
     #[test]
     fn test_proc_id_construction_and_accessors() {
-        let uid = Uid::Instance(0xabc);
+        let uid = Uid::Instance(0xabc, None);
         let label = Label::new("my-proc").unwrap();
         let pid = ProcId::new(uid.clone(), Some(label.clone()));
         assert_eq!(pid.uid(), &uid);
@@ -976,7 +1031,7 @@ mod tests {
 
     #[test]
     fn test_proc_id_eq_ignores_label() {
-        let uid = Uid::Instance(0x42);
+        let uid = Uid::Instance(0x42, None);
         let a = ProcId::new(uid.clone(), Some(Label::new("alpha").unwrap()));
         let b = ProcId::new(uid, Some(Label::new("beta").unwrap()));
         assert_eq!(a, b);
@@ -986,7 +1041,7 @@ mod tests {
     fn test_proc_id_hash_ignores_label() {
         use std::collections::hash_map::DefaultHasher;
 
-        let uid = Uid::Instance(0x42);
+        let uid = Uid::Instance(0x42, None);
         let a = ProcId::new(uid.clone(), Some(Label::new("alpha").unwrap()));
         let b = ProcId::new(uid, Some(Label::new("beta").unwrap()));
 
@@ -1000,15 +1055,15 @@ mod tests {
 
     #[test]
     fn test_proc_id_ord_ignores_label() {
-        let a = ProcId::new(Uid::Instance(1), Some(Label::new("zzz").unwrap()));
-        let b = ProcId::new(Uid::Instance(2), Some(Label::new("aaa").unwrap()));
+        let a = ProcId::new(Uid::Instance(1, None), Some(Label::new("zzz").unwrap()));
+        let b = ProcId::new(Uid::Instance(2, None), Some(Label::new("aaa").unwrap()));
         assert!(a < b);
     }
 
     #[test]
     fn test_proc_id_display() {
         let pid = ProcId::new(
-            Uid::Instance(0xd5d54d7201103869),
+            Uid::Instance(0xd5d54d7201103869, None),
             Some(Label::new("my-proc").unwrap()),
         );
         assert_eq!(
@@ -1026,15 +1081,18 @@ mod tests {
     #[test]
     fn test_proc_id_debug() {
         let pid = ProcId::new(
-            Uid::Instance(0xd5d54d7201103869),
+            Uid::Instance(0xd5d54d7201103869, None),
             Some(Label::new("my-proc").unwrap()),
         );
         assert_eq!(
             format!("{:?}", pid),
-            format!("<'my-proc' <{}>>", encode_base58_uid(0xd5d54d7201103869))
+            format!(
+                "<'my-proc' my-proc<{}>>",
+                encode_base58_uid(0xd5d54d7201103869)
+            )
         );
 
-        let pid_no_label = ProcId::new(Uid::Instance(0xd5d54d7201103869), None);
+        let pid_no_label = ProcId::new(Uid::Instance(0xd5d54d7201103869, None), None);
         assert_eq!(
             format!("{:?}", pid_no_label),
             format!("<<{}>>", encode_base58_uid(0xd5d54d7201103869))
@@ -1044,7 +1102,7 @@ mod tests {
     #[test]
     fn test_proc_id_fromstr_roundtrip() {
         let pid = ProcId::new(
-            Uid::Instance(0xd5d54d7201103869),
+            Uid::Instance(0xd5d54d7201103869, None),
             Some(Label::new("my-proc").unwrap()),
         );
         let s = pid.to_string();
@@ -1065,7 +1123,7 @@ mod tests {
 
     #[test]
     fn test_proc_id_fromstr_unlabeled_instance() {
-        let expected_uid = Uid::Instance(0xabc123);
+        let expected_uid = Uid::Instance(0xabc123, None);
         let parsed: ProcId = expected_uid.to_string().parse().unwrap();
         assert_eq!(parsed.uid(), &expected_uid);
         assert_eq!(parsed.label(), None);
@@ -1073,7 +1131,7 @@ mod tests {
 
     #[test]
     fn test_proc_id_fromstr_labeled_instance_with_underscore() {
-        let expected_uid = Uid::Instance(0xabc123);
+        let expected_uid = Uid::Instance(0xabc123, None);
         let parsed: ProcId = format!("proc_agent{}", expected_uid).parse().unwrap();
         assert_eq!(parsed.uid(), &expected_uid);
         assert_eq!(
@@ -1086,25 +1144,25 @@ mod tests {
     fn test_proc_id_fromstr_errors_are_stable() {
         assert_eq!(
             "".parse::<ProcId>().unwrap_err().to_string(),
-            "invalid proc id: invalid label: label must not be empty"
+            "invalid proc id: invalid uid syntax: expected \"label\" or \"<\", found end of input"
         );
         assert_eq!(
             "controller<2MuAHeDjLCEd"
                 .parse::<ProcId>()
                 .unwrap_err()
                 .to_string(),
-            "invalid proc id: invalid label: label contains invalid character '<'"
+            "invalid proc id: invalid uid syntax: expected \">\", found end of input"
         );
         assert_eq!(
             "controller@tcp".parse::<ProcId>().unwrap_err().to_string(),
-            "invalid proc id: invalid label: label contains invalid character '@'"
+            "invalid proc id: invalid uid syntax: expected end of input, found \"@\""
         );
     }
 
     #[test]
     fn test_proc_id_serde_roundtrip() {
         let pid = ProcId::new(
-            Uid::Instance(0xabcdef),
+            Uid::Instance(0xabcdef, None),
             Some(Label::new("my-proc").unwrap()),
         );
         let json = serde_json::to_string(&pid).unwrap();
@@ -1112,7 +1170,7 @@ mod tests {
         assert_eq!(pid, parsed);
         assert_eq!(parsed.label().map(|l| l.as_str()), Some("my-proc"));
 
-        let pid_none = ProcId::new(Uid::Instance(0xabcdef), None);
+        let pid_none = ProcId::new(Uid::Instance(0xabcdef, None), None);
         let json_none = serde_json::to_string(&pid_none).unwrap();
         let parsed_none: ProcId = serde_json::from_str(&json_none).unwrap();
         assert_eq!(parsed_none.label(), None);
@@ -1130,7 +1188,7 @@ mod tests {
     fn test_proc_id_instance() {
         let label = Label::new("my-proc").unwrap();
         let pid = ProcId::instance(label.clone());
-        assert!(matches!(pid.uid(), Uid::Instance(_)));
+        assert!(pid.uid().is_instance());
         assert_eq!(pid.label(), Some(&label));
         let pid2 = ProcId::instance(label);
         assert_ne!(pid, pid2);
@@ -1150,7 +1208,7 @@ mod tests {
     fn test_actor_id_instance() {
         let proc_id = ProcId::singleton(Label::new("my-proc").unwrap());
         let aid = ActorId::instance(proc_id.clone());
-        assert!(matches!(aid.uid(), Uid::Instance(_)));
+        assert!(aid.uid().is_instance());
         assert_eq!(aid.proc_id(), &proc_id);
         assert_eq!(aid.label(), None);
         let aid2 = ActorId::instance(proc_id);
@@ -1162,7 +1220,7 @@ mod tests {
         let label = Label::new("my-actor").unwrap();
         let proc_id = ProcId::singleton(Label::new("my-proc").unwrap());
         let aid = ActorId::instance_labeled(label.clone(), proc_id.clone());
-        assert!(matches!(aid.uid(), Uid::Instance(_)));
+        assert!(aid.uid().is_instance());
         assert_eq!(aid.proc_id(), &proc_id);
         assert_eq!(aid.label(), Some(&label));
         let aid2 = ActorId::instance_labeled(label, proc_id);
@@ -1171,8 +1229,11 @@ mod tests {
 
     #[test]
     fn test_actor_id_construction_and_accessors() {
-        let actor_uid = Uid::Instance(0xabc);
-        let proc_id = ProcId::new(Uid::Instance(0xdef), Some(Label::new("my-proc").unwrap()));
+        let actor_uid = Uid::Instance(0xabc, None);
+        let proc_id = ProcId::new(
+            Uid::Instance(0xdef, None),
+            Some(Label::new("my-proc").unwrap()),
+        );
         let label = Label::new("my-actor").unwrap();
         let aid = ActorId::new(actor_uid.clone(), proc_id.clone(), Some(label.clone()));
         assert_eq!(aid.uid(), &actor_uid);
@@ -1182,8 +1243,8 @@ mod tests {
 
     #[test]
     fn test_actor_id_eq_ignores_label() {
-        let actor_uid = Uid::Instance(0x42);
-        let proc_id = ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap()));
+        let actor_uid = Uid::Instance(0x42, None);
+        let proc_id = ProcId::new(Uid::Instance(0x99, None), Some(Label::new("proc").unwrap()));
         let a = ActorId::new(
             actor_uid.clone(),
             proc_id.clone(),
@@ -1195,9 +1256,9 @@ mod tests {
 
     #[test]
     fn test_actor_id_neq_different_proc() {
-        let actor_uid = Uid::Instance(0x42);
-        let proc_a = ProcId::new(Uid::Instance(1), Some(Label::new("proc").unwrap()));
-        let proc_b = ProcId::new(Uid::Instance(2), Some(Label::new("proc").unwrap()));
+        let actor_uid = Uid::Instance(0x42, None);
+        let proc_a = ProcId::new(Uid::Instance(1, None), Some(Label::new("proc").unwrap()));
+        let proc_b = ProcId::new(Uid::Instance(2, None), Some(Label::new("proc").unwrap()));
         let a = ActorId::new(
             actor_uid.clone(),
             proc_a,
@@ -1211,8 +1272,8 @@ mod tests {
     fn test_actor_id_hash_ignores_label() {
         use std::collections::hash_map::DefaultHasher;
 
-        let actor_uid = Uid::Instance(0x42);
-        let proc_id = ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap()));
+        let actor_uid = Uid::Instance(0x42, None);
+        let proc_id = ProcId::new(Uid::Instance(0x99, None), Some(Label::new("proc").unwrap()));
         let a = ActorId::new(
             actor_uid.clone(),
             proc_id.clone(),
@@ -1231,13 +1292,13 @@ mod tests {
     #[test]
     fn test_actor_id_ord_proc_first() {
         let a = ActorId::new(
-            Uid::Instance(0xff),
-            ProcId::new(Uid::Instance(1), Some(Label::new("p").unwrap())),
+            Uid::Instance(0xff, None),
+            ProcId::new(Uid::Instance(1, None), Some(Label::new("p").unwrap())),
             Some(Label::new("a").unwrap()),
         );
         let b = ActorId::new(
-            Uid::Instance(0x01),
-            ProcId::new(Uid::Instance(2), Some(Label::new("p").unwrap())),
+            Uid::Instance(0x01, None),
+            ProcId::new(Uid::Instance(2, None), Some(Label::new("p").unwrap())),
             Some(Label::new("a").unwrap()),
         );
         assert!(a < b, "proc_id should be compared first");
@@ -1245,22 +1306,26 @@ mod tests {
 
     #[test]
     fn test_actor_id_ord_then_uid() {
-        let proc_id = ProcId::new(Uid::Instance(1), Some(Label::new("p").unwrap()));
+        let proc_id = ProcId::new(Uid::Instance(1, None), Some(Label::new("p").unwrap()));
         let a = ActorId::new(
-            Uid::Instance(1),
+            Uid::Instance(1, None),
             proc_id.clone(),
             Some(Label::new("a").unwrap()),
         );
-        let b = ActorId::new(Uid::Instance(2), proc_id, Some(Label::new("a").unwrap()));
+        let b = ActorId::new(
+            Uid::Instance(2, None),
+            proc_id,
+            Some(Label::new("a").unwrap()),
+        );
         assert!(a < b);
     }
 
     #[test]
     fn test_actor_id_display() {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
+            Uid::Instance(0xabc123, None),
             ProcId::new(
-                Uid::Instance(0xdef456),
+                Uid::Instance(0xdef456, None),
                 Some(Label::new("my-proc").unwrap()),
             ),
             Some(Label::new("my-actor").unwrap()),
@@ -1278,9 +1343,9 @@ mod tests {
     #[test]
     fn test_actor_id_debug() {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
+            Uid::Instance(0xabc123, None),
             ProcId::new(
-                Uid::Instance(0xdef456),
+                Uid::Instance(0xdef456, None),
                 Some(Label::new("my-proc").unwrap()),
             ),
             Some(Label::new("my-actor").unwrap()),
@@ -1288,15 +1353,15 @@ mod tests {
         assert_eq!(
             format!("{:?}", aid),
             format!(
-                "<'my-actor.my-proc' <{}>.<{}>>",
+                "<'my-actor.my-proc' my-actor<{}>.my-proc<{}>>",
                 encode_base58_uid(0xabc123),
                 encode_base58_uid(0xdef456)
             )
         );
 
         let aid_no_labels = ActorId::new(
-            Uid::Instance(0xabc123),
-            ProcId::new(Uid::Instance(0xdef456), None),
+            Uid::Instance(0xabc123, None),
+            ProcId::new(Uid::Instance(0xdef456, None), None),
             None,
         );
         assert_eq!(
@@ -1312,9 +1377,9 @@ mod tests {
     #[test]
     fn test_actor_id_fromstr_roundtrip() {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
+            Uid::Instance(0xabc123, None),
             ProcId::new(
-                Uid::Instance(0xdef456),
+                Uid::Instance(0xdef456, None),
                 Some(Label::new("my-proc").unwrap()),
             ),
             Some(Label::new("my-actor").unwrap()),
@@ -1349,7 +1414,7 @@ mod tests {
 
     #[test]
     fn test_actor_id_fromstr_mixed_examples() {
-        let proc_uid = Uid::Instance(0xabc123);
+        let proc_uid = Uid::Instance(0xabc123, None);
         let parsed: ActorId = format!("controller.some-proc-123{}", proc_uid)
             .parse()
             .unwrap();
@@ -1367,8 +1432,8 @@ mod tests {
             Some("some-proc-123")
         );
 
-        let expected_actor_uid = Uid::Instance(0xabc123);
-        let expected_proc_uid = Uid::Instance(0xdef456);
+        let expected_actor_uid = Uid::Instance(0xabc123, None);
+        let expected_proc_uid = Uid::Instance(0xdef456, None);
         let parsed: ActorId = format!("{}.{}", expected_actor_uid, expected_proc_uid)
             .parse()
             .unwrap();
@@ -1377,7 +1442,7 @@ mod tests {
         assert_eq!(parsed.label(), None);
         assert_eq!(parsed.proc_id().label(), None);
 
-        let expected_actor_uid = Uid::Instance(0xabc123);
+        let expected_actor_uid = Uid::Instance(0xabc123, None);
         let parsed: ActorId = format!("controller{}.local", expected_actor_uid)
             .parse()
             .unwrap();
@@ -1427,9 +1492,9 @@ mod tests {
     #[test]
     fn test_actor_id_serde_roundtrip() {
         let aid = ActorId::new(
-            Uid::Instance(0xabcdef),
+            Uid::Instance(0xabcdef, None),
             ProcId::new(
-                Uid::Instance(0x123456),
+                Uid::Instance(0x123456, None),
                 Some(Label::new("my-proc").unwrap()),
             ),
             Some(Label::new("my-actor").unwrap()),
@@ -1446,8 +1511,11 @@ mod tests {
 
     #[test]
     fn test_port_id_construction_and_accessors() {
-        let actor_uid = Uid::Instance(0xabc);
-        let proc_id = ProcId::new(Uid::Instance(0xdef), Some(Label::new("my-proc").unwrap()));
+        let actor_uid = Uid::Instance(0xabc, None);
+        let proc_id = ProcId::new(
+            Uid::Instance(0xdef, None),
+            Some(Label::new("my-proc").unwrap()),
+        );
         let actor_id = ActorId::new(
             actor_uid,
             proc_id.clone(),
@@ -1463,8 +1531,8 @@ mod tests {
     #[test]
     fn test_port_id_eq() {
         let actor_id = ActorId::new(
-            Uid::Instance(0x42),
-            ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap())),
+            Uid::Instance(0x42, None),
+            ProcId::new(Uid::Instance(0x99, None), Some(Label::new("proc").unwrap())),
             Some(Label::new("actor").unwrap()),
         );
         let a = PortId::new(actor_id.clone(), Port::from(10));
@@ -1475,8 +1543,8 @@ mod tests {
     #[test]
     fn test_port_id_neq_different_port() {
         let actor_id = ActorId::new(
-            Uid::Instance(0x42),
-            ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap())),
+            Uid::Instance(0x42, None),
+            ProcId::new(Uid::Instance(0x99, None), Some(Label::new("proc").unwrap())),
             Some(Label::new("actor").unwrap()),
         );
         let a = PortId::new(actor_id.clone(), Port::from(10));
@@ -1489,8 +1557,8 @@ mod tests {
         use std::collections::hash_map::DefaultHasher;
 
         let actor_id = ActorId::new(
-            Uid::Instance(0x42),
-            ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap())),
+            Uid::Instance(0x42, None),
+            ProcId::new(Uid::Instance(0x99, None), Some(Label::new("proc").unwrap())),
             Some(Label::new("actor").unwrap()),
         );
         let a = PortId::new(actor_id.clone(), Port::from(10));
@@ -1506,8 +1574,8 @@ mod tests {
     #[test]
     fn test_port_id_ord() {
         let actor_id = ActorId::new(
-            Uid::Instance(0x42),
-            ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap())),
+            Uid::Instance(0x42, None),
+            ProcId::new(Uid::Instance(0x99, None), Some(Label::new("proc").unwrap())),
             Some(Label::new("actor").unwrap()),
         );
         let a = PortId::new(actor_id.clone(), Port::from(1));
@@ -1519,16 +1587,16 @@ mod tests {
     fn test_port_id_ord_actor_first() {
         let a = PortId::new(
             ActorId::new(
-                Uid::Instance(0x01),
-                ProcId::new(Uid::Instance(1), Some(Label::new("p").unwrap())),
+                Uid::Instance(0x01, None),
+                ProcId::new(Uid::Instance(1, None), Some(Label::new("p").unwrap())),
                 Some(Label::new("a").unwrap()),
             ),
             Port::from(99),
         );
         let b = PortId::new(
             ActorId::new(
-                Uid::Instance(0x02),
-                ProcId::new(Uid::Instance(1), Some(Label::new("p").unwrap())),
+                Uid::Instance(0x02, None),
+                ProcId::new(Uid::Instance(1, None), Some(Label::new("p").unwrap())),
                 Some(Label::new("a").unwrap()),
             ),
             Port::from(1),
@@ -1539,9 +1607,9 @@ mod tests {
     #[test]
     fn test_port_id_display() {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
+            Uid::Instance(0xabc123, None),
             ProcId::new(
-                Uid::Instance(0xdef456),
+                Uid::Instance(0xdef456, None),
                 Some(Label::new("my-proc").unwrap()),
             ),
             Some(Label::new("my-actor").unwrap()),
@@ -1570,7 +1638,7 @@ mod tests {
         );
         assert_eq!(parsed.port(), Port::from(0));
 
-        let expected_actor_uid = Uid::Instance(0xabc123);
+        let expected_actor_uid = Uid::Instance(0xabc123, None);
         let parsed: PortId = format!("controller{}.local:42", expected_actor_uid)
             .parse()
             .unwrap();
@@ -1585,8 +1653,8 @@ mod tests {
         );
         assert_eq!(parsed.port(), Port::from(42));
 
-        let expected_actor_uid = Uid::Instance(0xabc123);
-        let expected_proc_uid = Uid::Instance(0xdef456);
+        let expected_actor_uid = Uid::Instance(0xabc123, None);
+        let expected_proc_uid = Uid::Instance(0xdef456, None);
         let parsed: PortId = format!("{}.{}:7", expected_actor_uid, expected_proc_uid)
             .parse()
             .unwrap();
@@ -1598,9 +1666,9 @@ mod tests {
     #[test]
     fn test_port_id_debug_all_labels() {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
+            Uid::Instance(0xabc123, None),
             ProcId::new(
-                Uid::Instance(0xdef456),
+                Uid::Instance(0xdef456, None),
                 Some(Label::new("my-proc").unwrap()),
             ),
             Some(Label::new("my-actor").unwrap()),
@@ -1619,8 +1687,8 @@ mod tests {
     #[test]
     fn test_port_id_debug_no_labels() {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
-            ProcId::new(Uid::Instance(0xdef456), None),
+            Uid::Instance(0xabc123, None),
+            ProcId::new(Uid::Instance(0xdef456, None), None),
             None,
         );
         let pid = PortId::new(aid, Port::from(42));
@@ -1637,8 +1705,8 @@ mod tests {
     #[test]
     fn test_port_id_debug_actor_label_only() {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
-            ProcId::new(Uid::Instance(0xdef456), None),
+            Uid::Instance(0xabc123, None),
+            ProcId::new(Uid::Instance(0xdef456, None), None),
             Some(Label::new("my-actor").unwrap()),
         );
         let pid = PortId::new(aid, Port::from(42));
@@ -1655,9 +1723,9 @@ mod tests {
     #[test]
     fn test_port_id_debug_proc_label_only() {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
+            Uid::Instance(0xabc123, None),
             ProcId::new(
-                Uid::Instance(0xdef456),
+                Uid::Instance(0xdef456, None),
                 Some(Label::new("my-proc").unwrap()),
             ),
             None,
@@ -1676,9 +1744,9 @@ mod tests {
     #[test]
     fn test_port_id_fromstr_roundtrip() {
         let aid = ActorId::new(
-            Uid::Instance(0xabc123),
+            Uid::Instance(0xabc123, None),
             ProcId::new(
-                Uid::Instance(0xdef456),
+                Uid::Instance(0xdef456, None),
                 Some(Label::new("my-proc").unwrap()),
             ),
             Some(Label::new("my-actor").unwrap()),
@@ -1734,9 +1802,9 @@ mod tests {
     #[test]
     fn test_port_id_serde_roundtrip() {
         let aid = ActorId::new(
-            Uid::Instance(0xabcdef),
+            Uid::Instance(0xabcdef, None),
             ProcId::new(
-                Uid::Instance(0x123456),
+                Uid::Instance(0x123456, None),
                 Some(Label::new("my-proc").unwrap()),
             ),
             Some(Label::new("my-actor").unwrap()),
