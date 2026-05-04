@@ -1847,7 +1847,7 @@ impl<A: Actor> Instance<A> {
         tracing::info!(
             actor_id = %self.inner.cell.actor_id(),
             reason,
-            "Instance::stop called",
+            "instance stop called",
         );
         self.inner.cell.signal(Signal::Stop(reason.to_string()))
     }
@@ -1857,7 +1857,7 @@ impl<A: Actor> Instance<A> {
         tracing::info!(
             actor_id = %self.inner.cell.actor_id(),
             reason,
-            "Instance::drain_and_stop called",
+            "instance drain_and_stop called",
         );
         self.inner
             .cell
@@ -1869,7 +1869,7 @@ impl<A: Actor> Instance<A> {
         tracing::info!(
             actor_id = %self.inner.cell.actor_id(),
             reason,
-            "Instance::kill called",
+            "instance kill called",
         );
         self.inner.cell.signal(Signal::Kill(reason.to_string()))
     }
@@ -1879,7 +1879,7 @@ impl<A: Actor> Instance<A> {
         tracing::info!(
             actor_id = %self.inner.cell.actor_id(),
             reason,
-            "Instance::abort called",
+            "instance abort called",
         );
         self.kill(reason)
     }
@@ -2298,7 +2298,7 @@ impl<A: Actor> Instance<A> {
                 biased;
                 signal = signal_receiver.recv() => {
                     let signal = signal.map_err(ActorError::from);
-                    tracing::debug!("Received signal {signal:?}");
+                    tracing::debug!("received signal {signal:?}");
                     match signal? {
                         Signal::Stop(reason) => {
                             self.change_status(ActorStatus::Stopping);

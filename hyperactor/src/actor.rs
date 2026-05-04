@@ -687,13 +687,13 @@ impl<A: Actor> ActorHandle<A> {
     /// Signal the actor to stop without draining ordinary queued
     /// work first.
     pub fn stop(&self, reason: &str) -> Result<(), ActorError> {
-        tracing::info!("ActorHandle::stop called: {}", self.actor_id());
+        tracing::info!("actor handle stop called: {}", self.actor_id());
         self.cell.signal(Signal::Stop(reason.to_string()))
     }
 
     /// Signal the actor to terminate immediately.
     pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
-        tracing::info!("ActorHandle::kill called: {}", self.actor_id());
+        tracing::info!("actor handle kill called: {}", self.actor_id());
         self.cell.signal(Signal::Kill(reason.to_string()))
     }
 
