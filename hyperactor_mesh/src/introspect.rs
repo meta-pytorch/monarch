@@ -875,11 +875,11 @@ impl FromStr for NodeRef {
                 rest.parse().map_err(NodeRefParseError::InvalidHost)?;
             return Ok(Self::Host(actor_id));
         }
-        let r: hyperactor::Address = s.parse()?;
+        let r: hyperactor::Addr = s.parse()?;
         match r {
-            hyperactor::Address::Proc(id) => Ok(Self::Proc(id)),
-            hyperactor::Address::Actor(id) => Ok(Self::Actor(id)),
-            hyperactor::Address::Port(_) => Err(NodeRefParseError::PortNotAllowed),
+            hyperactor::Addr::Proc(id) => Ok(Self::Proc(id)),
+            hyperactor::Addr::Actor(id) => Ok(Self::Actor(id)),
+            hyperactor::Addr::Port(_) => Err(NodeRefParseError::PortNotAllowed),
         }
     }
 }

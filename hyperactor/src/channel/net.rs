@@ -1009,12 +1009,16 @@ impl<M: RemoteMessage> Drop for NetRx<M> {
 /// Error returned during server operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
+    /// An I/O error occurred while operating on the server at the given address.
     #[error("io: {1}")]
     Io(ChannelAddr, #[source] std::io::Error),
+    /// Listening on the given address failed.
     #[error("listen: {0} {1}")]
     Listen(ChannelAddr, #[source] std::io::Error),
+    /// Resolving the given address failed.
     #[error("resolve: {0} {1}")]
     Resolve(ChannelAddr, #[source] std::io::Error),
+    /// An internal server error occurred for the given address.
     #[error("internal: {0} {1}")]
     Internal(ChannelAddr, #[source] anyhow::Error),
 }
