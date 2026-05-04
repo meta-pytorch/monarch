@@ -1290,8 +1290,9 @@ impl Proc {
 
     /// Create a root allocation in the proc from an explicit uid.
     fn allocate_root_uid(&self, uid: crate::id::Uid) -> Result<ActorAddr, anyhow::Error> {
-        let actor_ref = ActorAddr::new_from_uid(self.state().proc_id.clone(), uid.clone());
-        self.reserve_root(actor_ref, &uid.to_string())
+        let name = uid.to_string();
+        let actor_ref = ActorAddr::new_from_uid(self.state().proc_id.clone(), uid);
+        self.reserve_root(actor_ref, &name)
     }
 
     fn reserve_root(&self, actor_ref: ActorAddr, name: &str) -> Result<ActorAddr, anyhow::Error> {
