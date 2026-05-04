@@ -116,6 +116,7 @@ use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -1494,6 +1495,28 @@ impl Mailbox {
         }
     }
 
+    /// Open a runtime-dispatched handler port that accepts M-typed
+    /// messages using the provided enqueue function.
+    pub(crate) fn open_handler_enqueue_port<M: Message>(
+        &self,
+        enqueue: impl Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
+    ) -> (PortHandle<M>, Arc<dyn HandlerPortControl>) {
+        let port_index = self.inner.allocate_port();
+        let enqueue = Arc::new(enqueue);
+        let sender = Arc::new(HandlerPortSender::new(UnboundedPortSender::Func(enqueue)));
+        (
+            PortHandle {
+                mailbox: self.clone(),
+                port_index,
+                sender: UnboundedPortSender::Handler(sender.clone()),
+                bound: Arc::new(RwLock::new(None)),
+                reducer_spec: None,
+                streaming_opts: StreamingReducerOpts::default(),
+            },
+            sender,
+        )
+    }
+
     /// Open a new one-shot port that accepts M-typed messages. The
     /// returned port may be used to send a single message; ditto the
     /// receiver may receive a single message.
@@ -1924,7 +1947,6 @@ impl<M: Message> PortHandle<M> {
                 MailboxSenderErrorKind::Mailbox(err),
             ));
         }
-
         let mut headers = Flattrs::new();
 
         crate::mailbox::headers::set_send_timestamp(&mut headers);
@@ -1959,7 +1981,7 @@ impl<M: Message> PortHandle<M> {
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),
-                MailboxSenderErrorKind::Other(err),
+                classify_sender_error(err),
             )
         })
     }
@@ -2299,12 +2321,30 @@ trait SerializedSender: Send + Sync {
     ) -> Result<SerializedSendDisposition, SerializedSendFailure>;
 }
 
+pub(crate) trait HandlerPortControl: Send + Sync {
+    fn close_for_drain(&self);
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("handler port closed")]
+struct HandlerPortClosedError;
+
+fn classify_sender_error(err: anyhow::Error) -> MailboxSenderErrorKind {
+    if err.is::<HandlerPortClosedError>() {
+        MailboxSenderErrorKind::Closed
+    } else {
+        MailboxSenderErrorKind::Other(err)
+    }
+}
+
 /// A sender to an M-typed unbounded port.
 enum UnboundedPortSender<M: Message> {
     /// Send directly to the mpsc queue.
     Mpsc(mpsc::UnboundedSender<M>),
     /// Use the provided function to enqueue the item.
     Func(Arc<dyn Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync>),
+    /// A runtime-dispatched handler port that can be closed during drain.
+    Handler(Arc<HandlerPortSender<M>>),
 }
 
 impl<M: Message> UnboundedPortSender<M> {
@@ -2312,6 +2352,7 @@ impl<M: Message> UnboundedPortSender<M> {
         match self {
             Self::Mpsc(sender) => sender.send(message).map_err(anyhow::Error::from),
             Self::Func(func) => func(headers, message),
+            Self::Handler(sender) => sender.send(headers, message),
         }
     }
 }
@@ -2323,6 +2364,7 @@ impl<M: Message> Clone for UnboundedPortSender<M> {
         match self {
             Self::Mpsc(sender) => Self::Mpsc(sender.clone()),
             Self::Func(func) => Self::Func(func.clone()),
+            Self::Handler(sender) => Self::Handler(sender.clone()),
         }
     }
 }
@@ -2335,7 +2377,38 @@ impl<M: Message> Debug for UnboundedPortSender<M> {
                 .debug_tuple("UnboundedPortSender::Func")
                 .field(&"..")
                 .finish(),
+            Self::Handler(_) => f
+                .debug_tuple("UnboundedPortSender::Handler")
+                .field(&"..")
+                .finish(),
         }
+    }
+}
+
+struct HandlerPortSender<M: Message> {
+    sender: UnboundedPortSender<M>,
+    closed: AtomicBool,
+}
+
+impl<M: Message> HandlerPortSender<M> {
+    fn new(sender: UnboundedPortSender<M>) -> Self {
+        Self {
+            sender,
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    fn send(&self, headers: Flattrs, message: M) -> Result<(), anyhow::Error> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(HandlerPortClosedError.into());
+        }
+        self.sender.send(headers, message)
+    }
+}
+
+impl<M: Message> HandlerPortControl for HandlerPortSender<M> {
+    fn close_for_drain(&self) {
+        self.closed.store(true, Ordering::SeqCst);
     }
 }
 
@@ -2354,7 +2427,7 @@ impl<M: Message> UnboundedSender<M> {
     #[allow(dead_code)]
     fn send(&self, headers: Flattrs, message: M) -> Result<(), MailboxSenderError> {
         self.sender.send(headers, message).map_err(|err| {
-            MailboxSenderError::new_bound(self.port_id.clone(), MailboxSenderErrorKind::Other(err))
+            MailboxSenderError::new_bound(self.port_id.clone(), classify_sender_error(err))
         })
     }
 }
@@ -2387,33 +2460,23 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
         // to provide type indexing, specifically in `IndexedErasedUnbound` which is used to
         // support port aggregation.
         match serialized.deserialized_unchecked() {
-            Ok(message) => {
-                match &self.sender {
-                    UnboundedPortSender::Mpsc(sender) => {
-                        sender
-                            .send(message)
-                            .map_err(anyhow::Error::from)
-                            .map_err(|_| SerializedSendFailure::Dead {
-                                data: serialized,
-                                headers,
-                            })?;
-                    }
-                    UnboundedPortSender::Func(func) => {
-                        func(headers.clone(), message).map_err(|err| {
-                            SerializedSendFailure::Error(SerializedSendError {
-                                data: serialized,
-                                error: MailboxSenderError::new_bound(
-                                    self.port_id.clone(),
-                                    MailboxSenderErrorKind::Other(err),
-                                ),
-                                headers,
-                            })
-                        })?;
-                    }
+            Ok(message) => match self.sender.send(headers.clone(), message) {
+                Ok(()) => Ok(SerializedSendDisposition::Delivered),
+                Err(_) if matches!(&self.sender, UnboundedPortSender::Mpsc(_)) => {
+                    Err(SerializedSendFailure::Dead {
+                        data: serialized,
+                        headers,
+                    })
                 }
-
-                Ok(SerializedSendDisposition::Delivered)
-            }
+                Err(err) => Err(SerializedSendFailure::Error(SerializedSendError {
+                    data: serialized,
+                    error: MailboxSenderError::new_bound(
+                        self.port_id.clone(),
+                        classify_sender_error(err),
+                    ),
+                    headers,
+                })),
+            },
             Err(err) => Err(SerializedSendFailure::Error(SerializedSendError {
                 data: serialized,
                 error: MailboxSenderError::new_bound(
@@ -3300,7 +3363,7 @@ mod tests {
         let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
         let port_index = mbox.allocate_port();
         let port_id = mbox.actor_id().port_ref(Port::from(port_index));
-        let port = crate::PortRef::attest(port_id.clone().into());
+        let port = crate::PortRef::attest(port_id.clone());
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
         let (sender, receiver) = mpsc::unbounded_channel::<u64>();
