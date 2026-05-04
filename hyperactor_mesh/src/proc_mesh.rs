@@ -113,7 +113,7 @@ impl ProcRef {
     }
 
     pub(crate) fn actor_id(&self, id: &ActorMeshId) -> hyperactor_reference::ActorAddr {
-        self.proc_id.actor_id(id.actor_name())
+        self.proc_id.actor_ref_uid(id.uid().clone())
     }
 
     /// Generic bound: `A: Referable` - required because we return
@@ -165,8 +165,7 @@ impl ProcMesh {
             ranks
                 .first()
                 .expect("root mesh cannot be empty")
-                .actor_id(&comm_actor_name)
-                .into(),
+                .actor_id(&comm_actor_name),
         );
         let current_ref = ProcMeshRef::new(
             id.clone(),
@@ -1039,7 +1038,7 @@ mod tests {
     #[cfg(fbcode_build)]
     use ndslice::ViewExt as _;
     use ndslice::extent;
-    #[cfg(fbcode_build)]
+    use timed_test::assert_no_process_leak;
     use timed_test::async_timed_test;
     #[cfg(fbcode_build)]
     use uuid::Uuid;
@@ -1055,8 +1054,6 @@ mod tests {
 
     #[cfg(fbcode_build)]
     async fn execute_spawn_actor() {
-        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
-
         let instance = testing::instance();
 
         let mut hm = testing::host_mesh(4).await;
@@ -1112,7 +1109,7 @@ mod tests {
             .proc()
             .instance(&format!("random_casts_{}", Uuid::now_v7()))
             .unwrap();
-        let n = fastrand::u64(3..10);
+        let n = 5;
         for _ in 0..n {
             actor_mesh.cast(&instance, ()).unwrap();
         }
@@ -1277,8 +1274,9 @@ mod tests {
         let _ = hm.shutdown(&instance).await;
     }
 
-    #[tokio::test]
     #[cfg(fbcode_build)]
+    #[assert_no_process_leak]
+    #[tokio::test]
     async fn test_failing_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 

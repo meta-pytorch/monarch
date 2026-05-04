@@ -2357,7 +2357,7 @@ pub fn uid(input: TokenStream) -> TokenStream {
     // Instance: bare hex
     match validate_hex_uid(&combined) {
         Ok(uid_val) => TokenStream::from(quote! {
-            hyperactor::id::Uid::Instance(#uid_val)
+            hyperactor::id::Uid::Instance(#uid_val, None)
         }),
         Err(e) => {
             let msg = format!("invalid uid: {e}");

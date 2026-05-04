@@ -1049,8 +1049,16 @@ async def test_supervision_with_sending_error() -> None:
     # This would require Undeliverable to know about a specific return channel.
     assert "MeshFailure" in error_msg
     assert "RootClientActor" in error_msg
+    # Top line is one of:
+    #   `undeliverable message to {dest}` (DeliveryFailure, no
+    #     OPERATION_ENDPOINT — see UE-3 in
+    #     hyperactor/src/mailbox/undeliverable.rs).
+    #   `undeliverable message for {operation} ({adverb})`
+    #     (when OPERATION_ENDPOINT is present).
+    # Both are valid here: pending messages of mixed shapes flush back
+    # to the client when the receiver session breaks. Match either.
     assert re.search(
-        "undeliverable message error.*client.*",
+        r"undeliverable message (to|for) .*client",
         error_msg,
         flags=re.DOTALL,
     )
