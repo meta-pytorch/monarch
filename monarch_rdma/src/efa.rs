@@ -64,16 +64,17 @@ fn is_efa_device_impl() -> bool {
 /// P5/P5en EFA supports RDMA read+write via SRD.
 /// P4d EFA only supports send/recv — RDMA read/write will fail.
 ///
-/// When this returns `false` on an EFA device, the ibverbs backend cannot
-/// be used for data transfer and should fall back to TCP transport.
+/// Only meaningful when `is_efa_device()` is true. On non-EFA hardware,
+/// returns `false` — callers should gate on `is_efa_device()` first and
+/// treat RC/UD RDMA capability as an independent concern.
 pub fn efa_supports_rdma() -> bool {
     *EFA_RDMA_CAPABLE_CACHE.get_or_init(efa_supports_rdma_impl)
 }
 
 fn efa_supports_rdma_impl() -> bool {
     if !is_efa_device() {
-        // Not EFA — RDMA capability is determined by the device type (RC/UD)
-        return true;
+        // Function is EFA-specific; defer RC/UD capability to their own path.
+        return false;
     }
     // SAFETY: We are calling C functions from libibverbs and libefa.
     unsafe {

@@ -673,24 +673,35 @@ int rdmaxcel_is_efa_dev(struct ibv_context* ctx) {
 // P5/P5en EFA supports RDMA read+write via SRD.
 // P4d EFA only supports send/recv — RDMA read/write will fail.
 // Returns 1 if RDMA read/write is supported, 0 if not.
+//
+// The authoritative EFA signal is `efadv_device_attr.device_caps`, which
+// carries the `EFADV_DEVICE_ATTR_CAPS_RDMA_READ` / `..._RDMA_WRITE` bits
+// set by the driver for RDMA-capable instances (P5/P5en). P4d reports
+// neither bit. We also gate on `max_qp_rd_atom > 0` from the standard
+// `ibv_query_device` so that we notice when the IBV layer disagrees
+// (e.g., on a device where the driver advertises the EFA cap but the
+// verbs layer won't actually accept RDMA WRs).
 int rdmaxcel_efa_supports_rdma(struct ibv_context* ctx) {
   if (!ctx || !ctx->device) {
     return 0;
   }
 
-  // Query device capabilities to check for RDMA read/write support.
-  // The reliable way is to check ibv_query_device_ex for max_rdma read/write
-  // Work Requests. If max_sq_rdma > 0, the device supports RDMA operations.
   struct ibv_device_attr dev_attr = {};
-  int ret = ibv_query_device(ctx, &dev_attr);
-  if (ret != 0) {
+  if (ibv_query_device(ctx, &dev_attr) != 0) {
+    return 0;
+  }
+  if (dev_attr.max_qp_rd_atom == 0) {
     return 0;
   }
 
-  // If the device reports max_qp_rd_atom > 0, it supports RDMA read/atomic.
-  // P4d EFA reports max_qp_rd_atom = 0 (no RDMA read/write).
-  // P5 EFA reports max_qp_rd_atom > 0.
-  return (dev_attr.max_qp_rd_atom > 0) ? 1 : 0;
+  struct efadv_device_attr efa_attr = {};
+  if (efadv_query_device(ctx, &efa_attr, sizeof(efa_attr)) != 0) {
+    return 0;
+  }
+
+  const uint32_t rdma_caps =
+      EFADV_DEVICE_ATTR_CAPS_RDMA_READ | EFADV_DEVICE_ATTR_CAPS_RDMA_WRITE;
+  return ((efa_attr.device_caps & rdma_caps) == rdma_caps) ? 1 : 0;
 }
 
 // ============================================================================

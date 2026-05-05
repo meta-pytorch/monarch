@@ -126,26 +126,21 @@ instances. The actor-ID check misses this case. Known solutions:
 
 ## 3. Memory Registration
 
-### 3.1 CPU tensors: allocator can pull the rug
+### 3.1 CPU tensors: MR registration vs buffer sizing
 
-PyTorch's caching allocator may reclaim and reallocate the underlying memory between
-`ibv_reg_mr` and the RDMA operation. This causes `IBV_WC_LOC_LEN_ERR` (status=1,
-vendor_err=104) on large tensors (≥10 MB) under memory pressure.
+The failure mode worth flagging on EFA is `IBV_WC_LOC_LEN_ERR` (status=1, vendor_err=104).
+Per the NVIDIA verbs docs, this fires when the receive buffer is smaller than the
+incoming message — it is **not** primarily an allocator-lifetime issue.
 
-The MR was registered pointing at virtual address X with size S. By the time the RDMA
-write executes, the allocator freed and reused that memory. The NIC tries to DMA from
-an address that no longer holds the expected data — or worse, the MR itself was
-invalidated.
+Monarch's current path (`RdmaBuffer` holds a strong reference to the underlying tensor
+until the operation completes, unless `RdmaBuffer.drop()` is called explicitly) is
+already sufficient on the lifetime side. What still matters:
 
-**Mitigations**:
-
-- Hold a strong reference to the tensor for the entire RDMA operation lifetime
-- Use `torch.Tensor.pin_memory()` for buffers involved in RDMA
-- Re-register the MR immediately before the operation if the tensor might have moved
-- Enable `expandable_segments` so the caching allocator uses stable large blocks
-
-> *I202 [confidence 7, hypothesis]*: Monarch #1136 large tensor flakiness likely stems
-> from MR/allocator mismatch under memory pressure.
+- The MR size must exactly match the largest expected message; do not under-size.
+- Use `torch.Tensor.pin_memory()` for buffers involved in RDMA so the OS doesn't
+  relocate pages underneath a registered MR.
+- On EFA specifically, `expandable_segments` in the PyTorch caching allocator tends
+  to produce stable large blocks that are better candidates for registration.
 
 ### 3.2 GPU memory: DMA-BUF constraints
 
@@ -171,31 +166,42 @@ this path in `register_mr` via `ibv_reg_dmabuf_mr`. Constraints discovered throu
 
 ### 3.3 GPU L2 cache coherence after RDMA
 
-GPU L2 cache is **not** coherent with incoming RDMA writes. After remote data arrives
-via RDMA, the GPU must call `cuFlushGPUDirectRDMAWrites` before reading it. Without the
-flush, the GPU may read stale L2-cached data from before the RDMA transfer.
+GPU L2 cache is **not** coherent with incoming RDMA writes. Per the NVIDIA docs on
+GPUDirect RDMA, only CPU-initiated CUDA APIs provide ordering of GPUDirect memory
+operations as observed by the GPU. A GPU kernel reading the destination buffer
+immediately after remote RDMA may see stale L2-cached data.
 
 > *I129 [confidence 11, ground-truth]*: cuFlushGPUDirectRDMAWrites required after RDMA
 > data arrives, before GPU reads.
 
-**Monarch impact**: If Monarch adds GPU tensor RDMA support, the completion path must
-insert a GPU-side flush before returning the buffer to the caller.
+**Scope of responsibility** (future work — not fixed by this PR): Monarch has not yet
+defined CUDA stream semantics for `RDMABuffer` events, so it is not yet the right
+layer to call `cuFlushGPUDirectRDMAWrites`. Once that synchronization contract is
+defined, we will need to choose between (a) inserting a host flush as part of the
+completion path, or (b) relying on a local GPU flush-read as a side effect of
+stream-synchronized reads. Callers that issue GPU RDMA today should assume this gap
+exists and perform their own flush before the first GPU-kernel read of the buffer.
 
 ---
 
 ## 4. Completion Queue Polling
 
-### 4.1 Never skip CQ polls
+### 4.1 Never stop polling the CQ
 
-On EFA (via libfabric), `fi_cq_read` is not just a status check — it drives the
-provider's internal progress engine. Skipping polls when you think nothing is pending
-prevents the provider from completing other in-flight operations.
+On the libfabric EFA path, `fi_cq_read` is not just a status check — it drives the
+provider's internal progress engine. Code that stops calling `fi_cq_read` when it
+believes nothing is pending will prevent the provider from completing other in-flight
+operations.
 
-Monarch's `wait_for_completion` (poll every 1ms) is correct. Do not "optimize" by
-reducing poll frequency or skipping empty polls.
+"Adaptive polling" in this PR does **not** skip polls. Every iteration still calls
+`ibv_poll_cq` (or `fi_cq_read` on the libfabric path); only the sleep duration between
+polls is tuned. On the ibverbs backend there is no provider progress engine to starve
+because we are posting directly to the NIC, so adjusting the sleep has bounded impact
+on throughput. The warning below is specifically about skipping polls entirely or
+dropping poll frequency to zero, which is a different thing.
 
-> *I020 [confidence 8, ground-truth]*: Adaptive CQ polling breaks dispatch by starving
-> the progress engine.
+> *I020 [confidence 8, ground-truth]*: Skipping `fi_cq_read` entirely breaks dispatch
+> by starving the libfabric progress engine.
 
 ### 4.2 CQ iteration sweet spot
 
