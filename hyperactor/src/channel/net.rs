@@ -2189,7 +2189,7 @@ pub fn try_tls_connector() -> Option<tokio_rustls::TlsConnector> {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
     use std::collections::VecDeque;
     use std::marker::PhantomData;
     use std::sync::Arc;
