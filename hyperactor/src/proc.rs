@@ -138,6 +138,7 @@ use crate::Actor;
 use crate::ActorAddr;
 use crate::ActorRef;
 use crate::Addr;
+use crate::Data;
 use crate::Handler;
 use crate::Message;
 use crate::PortAddr;
@@ -147,6 +148,7 @@ use crate::actor::ActorError;
 use crate::actor::ActorErrorKind;
 use crate::actor::ActorHandle;
 use crate::actor::ActorStatus;
+use crate::actor::AnyActorHandle;
 use crate::actor::Binds;
 use crate::actor::HandlerInfo;
 use crate::actor::Referable;
@@ -993,6 +995,17 @@ impl Proc {
         self.spawn_inner(actor_id, actor, Some(parent))
     }
 
+    /// Spawn a child actor from the provided parent using an explicit uid.
+    pub(crate) fn spawn_child_with_uid<A: Actor>(
+        &self,
+        parent: InstanceCell,
+        uid: crate::id::Uid,
+        actor: A,
+    ) -> Result<ActorHandle<A>, anyhow::Error> {
+        let actor_id = self.ensure_child_uid(parent.actor_id(), uid)?;
+        self.spawn_inner(actor_id, actor, Some(parent))
+    }
+
     /// Spawn a named child actor. Same as `spawn_child` but the child
     /// gets a descriptive name instead of inheriting the parent's.
     /// Supervision linkage to parent is preserved.
@@ -1318,6 +1331,21 @@ impl Proc {
     ) -> Result<ActorAddr, anyhow::Error> {
         assert_eq!(parent_id.proc_ref(), self.state().proc_id);
         Ok(parent_id.unique_child())
+    }
+
+    /// Ensure that the requested child uid is available in this proc.
+    fn ensure_child_uid(
+        &self,
+        parent_id: &ActorAddr,
+        uid: crate::id::Uid,
+    ) -> Result<ActorAddr, anyhow::Error> {
+        assert_eq!(parent_id.proc_ref(), self.state().proc_id);
+        let actor_id = crate::id::ActorId::new(uid, self.state().proc_id.id().clone(), None);
+        let actor_addr = ActorAddr::new(actor_id, self.state().proc_id.location().clone());
+        if self.state().instances.contains_key(&actor_addr) {
+            anyhow::bail!("an actor with id {} has already been spawned", actor_addr);
+        }
+        Ok(actor_addr)
     }
 
     /// Allocate an actor ID with a custom name on this proc.
@@ -2527,6 +2555,37 @@ impl<A: Actor> Instance<A> {
     /// Create a new direct child instance.
     pub fn child(&self) -> anyhow::Result<(Instance<()>, ActorHandle<()>)> {
         self.inner.proc.child_instance(self.inner.cell.clone())
+    }
+
+    /// Spawn a registered actor as this instance's child.
+    ///
+    /// The actor type is resolved through the remote spawn registry. The child
+    /// receives an empty environment.
+    pub async fn gspawn(&self, actor_type: &str, params: Data) -> anyhow::Result<AnyActorHandle> {
+        self.gspawn_uid(actor_type, crate::id::Uid::instance(), params)
+            .await
+    }
+
+    /// Spawn a registered actor as this instance's child using an explicit uid.
+    ///
+    /// The actor type is resolved through the remote spawn registry. The child
+    /// receives an empty environment.
+    pub async fn gspawn_uid(
+        &self,
+        actor_type: &str,
+        uid: crate::id::Uid,
+        params: Data,
+    ) -> anyhow::Result<AnyActorHandle> {
+        crate::actor::remote::Remote::global()
+            .gspawn_child(
+                &self.inner.proc,
+                self.inner.cell.clone(),
+                actor_type,
+                uid,
+                params,
+                Flattrs::default(),
+            )
+            .await
     }
 
     /// Return a handler port handle representing the actor's message
