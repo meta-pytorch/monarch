@@ -235,7 +235,7 @@ fn fmt_id_component(f: &mut fmt::Formatter<'_>, uid: &Uid, label: Option<&Label>
         Uid::Singleton(singleton) => write!(f, "{singleton}"),
         Uid::Instance(uid, _) => match label {
             Some(label) => write!(f, "{label}-{}", fmt_instance_uid(*uid)),
-            None => write!(f, "{}", Uid::Instance(*uid, None)),
+            None => write!(f, "{}", fmt_instance_uid(*uid)),
         },
     }
 }
