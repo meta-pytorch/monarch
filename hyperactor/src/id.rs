@@ -33,9 +33,12 @@
 //! (identified by a random `u64`, with an optional label for display).
 
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::path::Path;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use enum_as_inner::EnumAsInner;
@@ -417,6 +420,44 @@ impl ProcId {
     /// Returns the label.
     pub fn label(&self) -> Option<&Label> {
         self.uid.label()
+    }
+
+    /// Returns a unique path for this proc in the given directory. This is stable
+    /// over the lifetime of the ProcId.
+    ///
+    /// The basename is `proc_id.pseudo_uid()` rendered in base58, which keeps the
+    /// path short and host-unique. Both ends of a local link compute the same
+    /// pseudo uid, so the path is consistent without coordination. The
+    /// returned [`PathBuf`] is the on-disk socket path, which callers may use to
+    /// pre-flight existence before dialing.
+    pub fn to_path_elem(&self, base_dir: &Path) -> PathBuf {
+        let pseudo_id = self.pseudo_uid();
+        let tag = match pseudo_id {
+            Uid::Singleton(label) => {
+                panic!("pseudo uid should never be a singleton, but got: {}", label)
+            }
+            Uid::Instance(uid, _) => encode_base58_uid(uid).to_string(),
+        };
+        base_dir.join(tag)
+    }
+
+    /// A `Uid` suitable as a short, host-unique identifier — for example,
+    /// as a basename in a filesystem path.
+    ///
+    /// For an instance proc, this is the proc's actual uid. For a singleton,
+    /// it is `Uid::Instance(hash(label))`, a stable value derived from the
+    /// singleton's name. Singletons are host-unique by name, so this remains
+    /// host-unique. We call it "pseudo" because in the singleton case it does
+    /// not match the proc's true uid.
+    pub fn pseudo_uid(&self) -> Uid {
+        match &self.uid {
+            Uid::Instance(_, _) => self.uid.clone(),
+            Uid::Singleton(label) => {
+                let mut h = DefaultHasher::new();
+                label.hash(&mut h);
+                Uid::Instance(h.finish(), None)
+            }
+        }
     }
 }
 
@@ -1201,6 +1242,42 @@ mod tests {
         assert_eq!(pid.label(), Some(&label));
         let pid2 = ProcId::instance(label);
         assert_ne!(pid, pid2);
+    }
+
+    #[test]
+    fn test_proc_id_pseudo_uid_instance_returns_real_uid() {
+        let uid = Uid::Instance(0xd5d54d7201103869, None);
+        let pid = ProcId::new(uid.clone(), Some(Label::new("my-proc").unwrap()));
+        assert_eq!(pid.pseudo_uid(), uid);
+    }
+
+    #[test]
+    fn test_proc_id_pseudo_uid_singleton_is_instance_form() {
+        let pid = ProcId::singleton(Label::new("my-proc").unwrap());
+        assert!(matches!(pid.pseudo_uid(), Uid::Instance(_, _)));
+    }
+
+    #[test]
+    fn test_proc_id_pseudo_uid_singleton_is_deterministic() {
+        let a = ProcId::singleton(Label::new("my-proc").unwrap());
+        let b = ProcId::singleton(Label::new("my-proc").unwrap());
+        assert_eq!(a.pseudo_uid(), b.pseudo_uid());
+    }
+
+    #[test]
+    fn test_proc_id_pseudo_uid_singleton_distinct_labels_differ() {
+        let a = ProcId::singleton(Label::new("alpha").unwrap());
+        let b = ProcId::singleton(Label::new("beta").unwrap());
+        assert_ne!(a.pseudo_uid(), b.pseudo_uid());
+    }
+
+    #[test]
+    fn test_proc_id_pseudo_uid_displays_as_short_base58() {
+        let pid = ProcId::singleton(Label::new("my-proc").unwrap());
+        let s = pid.pseudo_uid().to_string();
+        assert!(s.starts_with('<') && s.ends_with('>'), "got: {s}");
+        // base58 of u64 fits in 11 chars, plus the two delimiters.
+        assert!(s.len() <= 13, "expected short base58 form, got: {s}");
     }
 
     #[test]

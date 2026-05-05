@@ -1358,7 +1358,7 @@ impl Handler<ConfigDump> for HostAgent {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
 
     use hyperactor::Proc;
     use hyperactor::channel::ChannelTransport;

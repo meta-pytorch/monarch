@@ -1242,7 +1242,7 @@ pub fn serve_local<M: RemoteMessage>() -> (ChannelAddr, ChannelRx<M>) {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
     use std::collections::HashSet;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
