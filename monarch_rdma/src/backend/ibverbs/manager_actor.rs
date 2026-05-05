@@ -1057,6 +1057,11 @@ impl IbvBackend {
         let mut remaining: std::collections::HashSet<u64> =
             expected_wr_ids.iter().copied().collect();
 
+        // Adaptive polling: spin for the first 100us (covers typical RDMA
+        // completion latency), then yield with increasing backoff to avoid
+        // burning CPU on slow transfers.
+        let mut poll_count: u32 = 0;
+
         while start_time.elapsed() < timeout {
             if remaining.is_empty() {
                 return Ok(());
@@ -1071,7 +1076,17 @@ impl IbvBackend {
                     if remaining.is_empty() {
                         return Ok(());
                     }
-                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    poll_count += 1;
+                    if poll_count < 100 {
+                        // Spin-poll for first ~100 iterations (~50-100us)
+                        tokio::task::yield_now().await;
+                    } else if poll_count < 1000 {
+                        // Short sleep after initial spin phase
+                        tokio::time::sleep(Duration::from_micros(100)).await;
+                    } else {
+                        // Long sleep for slow transfers
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
                 }
                 Err(e) => {
                     // When the returned error is WR_FLUSH_ERR, which is generally a
@@ -1120,6 +1135,60 @@ impl IbvBackend {
         ))
     }
 
+    /// EFA SRD silently drops same-node loopback. For CPU memory we can
+    /// short-circuit into a direct memcpy and skip the RDMA path entirely.
+    /// CUDA device memory is not eligible because `std::ptr::copy` would
+    /// touch device addresses from the host.
+    ///
+    /// Returns `Ok(true)` when the loopback was satisfied, `Ok(false)` when
+    /// the caller should fall through to the RDMA path.
+    fn try_loopback_memcpy(op: &IbvOp) -> bool {
+        let local_addr = op.local_memory.addr();
+        let remote_addr = op.remote_buffer.addr;
+        let size = op.local_memory.size();
+
+        if crate::local_memory::is_device_ptr(local_addr)
+            || crate::local_memory::is_device_ptr(remote_addr)
+        {
+            tracing::warn!(
+                "EFA loopback with CUDA memory detected; \
+                 SRD does not support same-node loopback and this operation may hang"
+            );
+            return false;
+        }
+
+        tracing::debug!(
+            "[ibv] EFA same-node loopback detected, using memcpy \
+             (op={:?}, local=0x{:x}, remote=0x{:x}, size={})",
+            op.op_type,
+            local_addr,
+            remote_addr,
+            size,
+        );
+
+        // SAFETY: addresses point to caller-owned host buffers whose lifetime
+        // is guaranteed by the surrounding RDMA request; sizes match.
+        unsafe {
+            match op.op_type {
+                RdmaOpType::WriteFromLocal => {
+                    std::ptr::copy_nonoverlapping(
+                        local_addr as *const u8,
+                        remote_addr as *mut u8,
+                        size,
+                    );
+                }
+                RdmaOpType::ReadIntoLocal => {
+                    std::ptr::copy_nonoverlapping(
+                        remote_addr as *const u8,
+                        local_addr as *mut u8,
+                        size,
+                    );
+                }
+            }
+        }
+        true
+    }
+
     /// Core submit logic: registers local MR via actor message, resolves remote
     /// IbvBuffer lazily, executes the op locally, and deregisters local MR.
     async fn execute_op(
@@ -1128,6 +1197,18 @@ impl IbvBackend {
         op: IbvOp,
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
+        // EFA SRD silently drops same-node loopback RDMA traffic. When both
+        // the local and remote buffers are managed by the same IbvManagerActor
+        // (same process) and the hardware is EFA, fall back to a direct memcpy
+        // for CPU buffers. This mirrors how libfabric uses SHM for same-node
+        // transfers.
+        if crate::efa::is_efa_device()
+            && self.actor_id() == op.remote_manager.actor_id()
+            && Self::try_loopback_memcpy(&op)
+        {
+            return Ok(());
+        }
+
         // Register the local memory via actor message
         let (local_mrv, local_device_name) = self
             .register_mr(cx, op.local_memory.addr(), op.local_memory.size())

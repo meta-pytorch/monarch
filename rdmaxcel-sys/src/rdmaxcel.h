@@ -351,6 +351,10 @@ int rdmaxcel_qp_post_op(
 // EFA device detection
 int rdmaxcel_is_efa_dev(struct ibv_context* ctx);
 
+// Query whether EFA supports RDMA read/write (P5/P5en) or only send/recv (P4d).
+// Returns 1 if RDMA read/write is supported, 0 if not.
+int rdmaxcel_efa_supports_rdma(struct ibv_context* ctx);
+
 // Create an EFA SRD queue pair via efadv_create_qp_ex
 struct ibv_qp* create_efa_qp(
     struct ibv_context* context,

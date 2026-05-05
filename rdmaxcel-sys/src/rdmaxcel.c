@@ -669,6 +669,41 @@ int rdmaxcel_is_efa_dev(struct ibv_context* ctx) {
   return (ret == 0) ? 1 : 0;
 }
 
+// Query whether the EFA device supports RDMA read/write operations.
+// P5/P5en EFA supports RDMA read+write via SRD.
+// P4d EFA only supports send/recv — RDMA read/write will fail.
+// Returns 1 if RDMA read/write is supported, 0 if not.
+//
+// The authoritative EFA signal is `efadv_device_attr.device_caps`, which
+// carries the `EFADV_DEVICE_ATTR_CAPS_RDMA_READ` / `..._RDMA_WRITE` bits
+// set by the driver for RDMA-capable instances (P5/P5en). P4d reports
+// neither bit. We also gate on `max_qp_rd_atom > 0` from the standard
+// `ibv_query_device` so that we notice when the IBV layer disagrees
+// (e.g., on a device where the driver advertises the EFA cap but the
+// verbs layer won't actually accept RDMA WRs).
+int rdmaxcel_efa_supports_rdma(struct ibv_context* ctx) {
+  if (!ctx || !ctx->device) {
+    return 0;
+  }
+
+  struct ibv_device_attr dev_attr = {};
+  if (ibv_query_device(ctx, &dev_attr) != 0) {
+    return 0;
+  }
+  if (dev_attr.max_qp_rd_atom == 0) {
+    return 0;
+  }
+
+  struct efadv_device_attr efa_attr = {};
+  if (efadv_query_device(ctx, &efa_attr, sizeof(efa_attr)) != 0) {
+    return 0;
+  }
+
+  const uint32_t rdma_caps =
+      EFADV_DEVICE_ATTR_CAPS_RDMA_READ | EFADV_DEVICE_ATTR_CAPS_RDMA_WRITE;
+  return ((efa_attr.device_caps & rdma_caps) == rdma_caps) ? 1 : 0;
+}
+
 // ============================================================================
 // EFA QP Creation
 // ============================================================================
@@ -683,6 +718,17 @@ struct ibv_qp* create_efa_qp(
     int max_send_sge,
     int max_recv_sge) {
   // EFA SRD queue pair via efadv_create_qp_ex
+  // Detect RDMA read/write capability. P5/P5en supports RDMA; P4d does not.
+  int has_rdma = rdmaxcel_efa_supports_rdma(context);
+  uint64_t send_ops = IBV_QP_EX_WITH_SEND;
+  if (has_rdma) {
+    send_ops |= IBV_QP_EX_WITH_RDMA_WRITE | IBV_QP_EX_WITH_RDMA_READ;
+  } else {
+    fprintf(stderr,
+        "INFO: EFA device does not support RDMA read/write (P4d-class). "
+        "Using send/recv transport only.\n");
+  }
+
   struct ibv_qp_init_attr_ex initAttributes = {
       .qp_context = NULL,
       .send_cq = send_cq,
@@ -700,8 +746,7 @@ struct ibv_qp* create_efa_qp(
       .sq_sig_all = 0,
       .pd = pd,
       .comp_mask = IBV_QP_INIT_ATTR_PD | IBV_QP_INIT_ATTR_SEND_OPS_FLAGS,
-      .send_ops_flags = IBV_QP_EX_WITH_RDMA_WRITE | IBV_QP_EX_WITH_RDMA_READ |
-          IBV_QP_EX_WITH_SEND,
+      .send_ops_flags = send_ops,
       .create_flags = 0,
   };
 
