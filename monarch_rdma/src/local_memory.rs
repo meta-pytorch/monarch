@@ -233,6 +233,8 @@ unsafe fn write_gpu(addr: usize, offset: usize, src: &[u8]) -> Result<(), anyhow
 /// remain valid.
 pub trait Keepalive: Send + Sync {}
 
+impl Keepalive for Box<[u8]> {}
+
 /// Local memory handle that keeps its backing allocation alive via an
 /// [`Arc<dyn Keepalive>`].
 ///
@@ -398,9 +400,7 @@ mod tests {
 
     // -- KeepaliveLocalMemory (host) --
 
-    impl Keepalive for Vec<u8> {}
-
-    fn host_keepalive_mem(data: Vec<u8>) -> KeepaliveLocalMemory {
+    fn host_keepalive_mem(data: Box<[u8]>) -> KeepaliveLocalMemory {
         let addr = data.as_ptr() as usize;
         let size = data.len();
         KeepaliveLocalMemory::new(addr, size, Arc::new(data))
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn keepalive_host_read_at() {
-        let mem = host_keepalive_mem(vec![1, 2, 3, 4, 5]);
+        let mem = host_keepalive_mem(Box::from([1, 2, 3, 4, 5]));
         let mut buf = [0u8; 3];
         mem.read_at(1, &mut buf).unwrap();
         assert_eq!(buf, [2, 3, 4]);
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn keepalive_host_write_then_read() {
-        let mem = host_keepalive_mem(vec![0; 5]);
+        let mem = host_keepalive_mem(vec![0; 5].into_boxed_slice());
         mem.write_at(1, &[7, 8, 9]).unwrap();
         let mut buf = [0u8; 5];
         mem.read_at(0, &mut buf).unwrap();
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn keepalive_host_out_of_bounds() {
-        let mem = host_keepalive_mem(vec![0; 3]);
+        let mem = host_keepalive_mem(vec![0; 3].into_boxed_slice());
         let mut buf = [0u8; 3];
         assert!(mem.read_at(1, &mut buf).is_err());
         assert!(mem.write_at(1, &[7, 8, 9]).is_err());

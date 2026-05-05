@@ -21,8 +21,8 @@ needs_tensor_engine = pytest.mark.skipif(
     reason="tensor_engine was not built",
 )
 needs_cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="cross-rank tensor transport currently requires CUDA",
+    not torch.cuda.is_available() or torch.version.hip,
+    reason="cross-rank tensor transport requires CUDA+NCCL (not ROCm/HIP)",
 )
 
 
