@@ -30,6 +30,7 @@ use std::sync::Weak;
 use std::time::Duration;
 use std::time::SystemTime;
 
+use anyhow::Context;
 use async_trait::async_trait;
 use base64::prelude::*;
 use futures::StreamExt;
@@ -80,7 +81,6 @@ use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
-use crate::mesh_id::ResourceId;
 use crate::proc_agent::ProcAgent;
 use crate::proc_launcher::LaunchOptions;
 use crate::proc_launcher::NativeProcLauncher;
@@ -474,14 +474,7 @@ impl Bootstrap {
                 }
 
                 let local_addr = proc_id.addr().clone();
-                // TODO provide a direct way to construct these
-                let serve_addr = format!(
-                    "unix:{}",
-                    socket_dir_path
-                        .join(ResourceId::from(&proc_id).to_string())
-                        .display()
-                );
-                let serve_addr = serve_addr.parse().unwrap();
+                let (serve_addr, _) = local_proc_addr(&socket_dir_path, proc_id.id())?;
 
                 // The following is a modified host::spawn_proc to support direct
                 // dialing between local procs: 1) we bind each proc to a deterministic
@@ -2291,6 +2284,26 @@ impl Write for Debug {
         }
         res
     }
+}
+
+/// Build the bind/dial [`ChannelAddr`] for a local proc within `socket_dir`.
+pub(crate) fn local_proc_addr(
+    socket_dir: &Path,
+    proc_id: &hyperactor::id::ProcId,
+) -> anyhow::Result<(ChannelAddr, PathBuf)> {
+    let path = proc_id.to_path_elem(socket_dir);
+    let addr = std::os::unix::net::SocketAddr::from_pathname(path.clone())
+        .with_context(|| {
+            format!(
+                "constructing unix socket address for proc {proc_id} \
+            at {} ({} bytes); path must fit within SUN_LEN \
+             (108 on Linux, 104 on macOS)",
+                path.display(),
+                path.as_os_str().len()
+            )
+        })?
+        .into();
+    Ok((addr, path))
 }
 
 /// Create a new runtime [`TempDir`]. The directory is created in

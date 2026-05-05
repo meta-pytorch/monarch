@@ -25,6 +25,7 @@
 - Do NOT add headers (e.g., in comments) to denote different sections of code; only use modules, structs, impl blocks, etc. for organization.
 - Use "that" for restrictive clauses (essential to meaning, no commas) and "which" for non-restrictive clauses (additional info, set off by commas). "The actor that crashed must be restarted" (identifies a specific actor) vs "The actor, which was created yesterday, is still running" (adds extra detail about an already-identified actor).
 - In Rust code, error messages are concise lowercase sentences without trailing punctuation
+- The same is true for all *log* (tracing) messages: they should begin with a lowercase letter, and be concise sentences without trailing punctuation; use ":" to denote context, e.g., "operation xyz: disk i/o error"; use structured logging whenever possible
 - In Rust, avoid creating type aliases in `use` statements; prefer to use qualified identifiers to disambiguate
 
 
