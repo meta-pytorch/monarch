@@ -350,7 +350,7 @@ macro_rules! define_mesh_id {
 
             /// Returns the actor-runtime name derived from this mesh id.
             pub fn actor_name(&self) -> String {
-                self.0.actor_name()
+                self.to_string()
             }
 
             /// Returns the inner [`ResourceId`].
@@ -763,6 +763,15 @@ mod tests {
         );
         assert_eq!(
             ActorMeshId::new(uid, None).to_string(),
+            format!("actor-{}", fmt_instance_uid(0xd5d54d7201103869))
+        );
+    }
+
+    #[test]
+    fn test_typed_mesh_id_actor_name_uses_type_default_label() {
+        let actor = ActorMeshId::new(Uid::Instance(0xd5d54d7201103869, None), None);
+        assert_eq!(
+            actor.actor_name(),
             format!("actor-{}", fmt_instance_uid(0xd5d54d7201103869))
         );
     }
