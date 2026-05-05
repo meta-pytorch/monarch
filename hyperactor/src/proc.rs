@@ -1055,26 +1055,32 @@ impl Proc {
         actor_id: &ActorAddr,
         reason: String,
     ) -> Option<watch::Receiver<ActorStatus>> {
-        if let Some(entry) = self.state().instances.get(actor_id) {
-            match entry.value().upgrade() {
-                None => None, // the actor's cell has been dropped
-                Some(cell) => {
-                    tracing::info!("sending stop signal to {}", cell.actor_id());
-                    if let Err(err) = cell.signal(Signal::DrainAndStop(reason)) {
-                        tracing::error!(
-                            "failed to send stop signal to uid {}: {:?}",
-                            cell.uid(),
-                            err
-                        );
-                        None
-                    } else {
-                        Some(cell.status().clone())
-                    }
+        // Upgrade the weak ref and immediately drop the DashMap entry (read
+        // guard) before doing anything with `cell`. InstanceCellState::drop
+        // calls instances.remove(), which needs a write lock on the same shard.
+        // Holding the read guard while cell drops would self-deadlock.
+        let cell = match self.state().instances.get(actor_id) {
+            None => {
+                tracing::error!(subject = %self.proc_id().subject(), "no actor {} found", actor_id);
+                return None;
+            }
+            Some(entry) => entry.value().upgrade(),
+        }; // entry (shard read lock) dropped here
+        match cell {
+            None => None, // the actor's cell has been dropped
+            Some(cell) => {
+                tracing::info!("sending stop signal to {}", cell.actor_id());
+                if let Err(err) = cell.signal(Signal::DrainAndStop(reason)) {
+                    tracing::error!(
+                        "failed to send stop signal to uid {}: {:?}",
+                        cell.uid(),
+                        err
+                    );
+                    None
+                } else {
+                    Some(cell.status().clone())
                 }
             }
-        } else {
-            tracing::error!(subject = %self.proc_id().subject(), "no actor {} found", actor_id);
-            None
         }
     }
 
@@ -3444,7 +3450,7 @@ impl<A: Actor> HandlerPorts<A> {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
     use std::sync::atomic::AtomicBool;
 
     use hyperactor_macros::export;
