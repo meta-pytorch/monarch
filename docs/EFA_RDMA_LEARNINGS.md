@@ -7,6 +7,69 @@
 
 ---
 
+## How we arrived at this — our debug setup
+
+### Hardware / environment
+
+- 2× AWS **P5.48xlarge** (H100 × 8, EFA × 32 per node) on SageMaker HyperPod EKS.
+  Primary target for every finding below.
+- 1× **P4d.24xlarge** (A100 × 8, EFA × 4) as a capability-delta reference —
+  `ibv_query_device` reports `max_qp_rd_atom = 0` on P4d, which confirmed that
+  "no RDMA atomics" is an EFA property, not a P4d quirk.
+- Host: Ubuntu 24.04, EFA installer 1.43+, libfabric 2.x, aws-ofi-nccl 1.17+,
+  kernel ≥ 6.17 with `efa_nv_peermem` loaded.
+
+### Starting harness: `fi_pingpong`
+
+`fi_pingpong` ships with libfabric and is the simplest test that exercises the
+full provider stack without any application code. It surfaced provider
+selection, MR registration, and loopback issues before we ever touched Monarch:
+
+```
+FI_PROVIDER=efa FI_LOG_LEVEL=debug FI_EFA_USE_DEVICE_RDMA=1 fi_pingpong -e rdm
+```
+
+Running server and client on the *same* host is what first exposed the
+silent-loopback drop — handshake completes, no data completion ever arrives.
+
+### Incremental `fi_write` / `fi_writemsg` experiments
+
+A small C harness on top of `fi_write` / `fi_writemsg` exercises one
+hypothesis per run: plain RDMA write, write-with-immediate, fetch-add/CAS,
+multi-rail fan-out, shared-QP. Rules:
+
+- One env var or code change per run; stdout + stderr captured under
+  `logs/<experiment>/<UTC-timestamp>.log`.
+- Before and after each run, read
+  `/sys/class/infiniband/rdmap*/ports/1/hw_counters/tx_pkts` and `rx_pkts` to
+  confirm packets left and arrived. Counter delta is ground truth;
+  `ibv_post_send` return code is not.
+
+### Observability
+
+- `bpftrace` on `fi_cq_read`, `fi_writemsg`, `ibv_post_send`, and the EFA
+  provider entry points (uprobes on `libfabric.so:efa_*`) for call counts and
+  latency histograms without recompiling.
+- `FI_LOG_LEVEL=trace` for the hardest bugs — verbose, but it is the ground
+  truth for what the provider decided.
+- `efa-info` and `show_gids` before every test to confirm device, GID index 0,
+  and link state. Catching a wrong GID up front saved hours.
+
+### The unlock moments
+
+1. **Same-node loopback silently drops.** `fi_pingpong -e rdm` with server and
+   client on one host completed the handshake, then hung; `rx_pkts` never
+   incremented. Led directly to §2.
+2. **SG egress self-reference required.** On a fresh HyperPod setup `tx_pkts`
+   climbed but cross-node `rx_pkts` stayed at 0. Adding a self-referencing
+   egress rule on the EFA security group — and only then — brought `rx_pkts`
+   off zero.
+3. **P4d vs P5 capability gap.** `max_qp_rd_atom = 0` on P4d and the same
+   value on P5 made clear that "no RDMA read/write atomics" is a provider
+   property, not a P4d-only limitation.
+
+---
+
 ## 1. SRD Is Not InfiniBand — What Breaks
 
 EFA uses the Scalable Reliable Datagram (SRD) protocol. Three InfiniBand assumptions
