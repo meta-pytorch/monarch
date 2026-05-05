@@ -42,3 +42,6 @@ pub use token::RendezvousLike;
 pub use token::Token;
 pub use token::TokenPeer;
 pub use token::create;
+
+#[cfg(test)]
+mod token_supervision_tests;
