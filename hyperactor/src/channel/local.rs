@@ -175,7 +175,7 @@ pub fn serve<M: RemoteMessage>() -> (u64, LocalRx<M>) {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
 
     use super::*;
 
