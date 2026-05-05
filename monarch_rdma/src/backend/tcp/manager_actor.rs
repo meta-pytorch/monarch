@@ -1578,7 +1578,7 @@ mod tests {
                     .ok_or_else(|| anyhow::anyhow!("tcp actor not local"))?,
             );
 
-            let alloc = CudaAllocator::get().allocate(device, buffer_size);
+            let alloc = CudaAllocator::get().allocate(device, buffer_size, buffer_size);
             let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
                 alloc.ptr(),
                 buffer_size,

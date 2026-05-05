@@ -145,6 +145,43 @@ pub enum IbvManagerLocalMessage {
     },
 }
 
+/// Look up `(addr, size)` in a slice of registered CUDA segments
+/// and return a view into the matching mkey.
+///
+/// Bounded by `mr_size` (what the mkey actually covers), NOT by
+/// `phys_size` (the scanner-reported extent). They diverge when
+/// `register_segments` hits `max_sge` and stops growing the binding.
+/// Returning a view based on `phys_size` would hand out an
+/// `(lkey, offset)` past the bound and the WR would fail with
+/// `IBV_WC_LOC_PROT_ERR`; bounding by `mr_size` makes the gap a
+/// miss so the caller falls back to per-buffer dmabuf.
+///
+/// Free function so the boundary can be unit-tested without an actor.
+pub(super) fn lookup_segment_for_address(
+    segments: &[rdmaxcel_sys::rdma_segment_info_t],
+    addr: usize,
+    size: usize,
+    id: usize,
+) -> Option<IbvMemoryRegionView> {
+    for segment in segments {
+        let start_addr = segment.phys_address;
+        let end_addr = start_addr + segment.mr_size;
+        if start_addr <= addr && addr + size <= end_addr {
+            let offset = addr - start_addr;
+            let rdma_addr = segment.mr_addr + offset;
+            return Some(IbvMemoryRegionView {
+                id,
+                virtual_addr: addr,
+                rdma_addr,
+                size,
+                lkey: segment.lkey,
+                rkey: segment.rkey,
+            });
+        }
+    }
+    None
+}
+
 /// Manages all ibverbs-specific RDMA resources and operations.
 ///
 /// This struct handles memory registration, queue pair management,
@@ -417,26 +454,10 @@ impl IbvManagerActor {
         pd: *mut rdmaxcel_sys::ibv_pd,
     ) -> Option<IbvMemoryRegionView> {
         let registered_segments = get_registered_cuda_segments(pd);
-        for segment in registered_segments {
-            let start_addr = segment.phys_address;
-            let end_addr = start_addr + segment.phys_size;
-            if start_addr <= addr && addr + size <= end_addr {
-                let offset = addr - start_addr;
-                let rdma_addr = segment.mr_addr + offset;
-
-                let mrv = IbvMemoryRegionView {
-                    id: self.mrv_id,
-                    virtual_addr: addr,
-                    rdma_addr,
-                    size,
-                    lkey: segment.lkey,
-                    rkey: segment.rkey,
-                };
-                self.mrv_id += 1;
-                return Some(mrv);
-            }
-        }
-        None
+        let id = self.mrv_id;
+        let mrv = lookup_segment_for_address(&registered_segments, addr, size, id)?;
+        self.mrv_id += 1;
+        Some(mrv)
     }
 
     fn register_mr_impl(
@@ -515,6 +536,7 @@ impl IbvManagerActor {
                             pds.as_mut_ptr(),
                             qps.as_mut_ptr(),
                             pds.len() as i32,
+                            self.config.max_sge_override,
                         );
                         // Only retry if register_segments succeeded
                         // If it fails (e.g., scanner returns 0 segments), we'll fall back to dmabuf
