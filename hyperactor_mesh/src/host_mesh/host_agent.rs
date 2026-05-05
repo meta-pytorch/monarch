@@ -666,7 +666,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         let created = match host {
             HostAgentMode::Process { host, .. } => {
                 host.spawn(
-                    create_or_update.id.proc_id().to_string(),
+                    create_or_update.id.to_string(),
                     BootstrapProcConfig {
                         create_rank: create_or_update.rank.unwrap(),
                         client_config_override: create_or_update
@@ -679,10 +679,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                 )
                 .await
             }
-            HostAgentMode::Local(host) => {
-                host.spawn(create_or_update.id.proc_id().to_string(), ())
-                    .await
-            }
+            HostAgentMode::Local(host) => host.spawn(create_or_update.id.to_string(), ()).await,
         };
 
         let rank = create_or_update.rank.unwrap();
