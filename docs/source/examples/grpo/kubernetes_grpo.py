@@ -167,6 +167,7 @@ monarch.configure(
     actor_spawn_max_idle="10m",
     get_proc_state_max_idle="10m",
     supervision_watchdog_timeout="10m",
+    enable_log_forwarding=True,
 )
 
 # %%
