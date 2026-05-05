@@ -34,7 +34,7 @@ cd examples/k8s_ddp_cnn/deployment_files/nvidia
 # or
 cd examples/k8s_ddp_cnn/deployment_files/amd
 
-k apply -f provision.yaml
+kubectl apply -f provision.yaml
 ```
 
 ### Deploy Controller App
@@ -46,7 +46,8 @@ cd examples/k8s_ddp_cnn/deployment_files/nvidia
 # or
 cd examples/k8s_ddp_cnn/deployment_files/amd
 
-k cp controller.py monarch-tests/monarch-controller:/tmp/controller.py
+kubectl cp controller.py monarch-tests/monarch-controller:/tmp/controller.py
+kubectl cp ../train.py monarch-tests/monarch-controller:/tmp/train.py
 ```
 
 **RDMA scenario (for NVIDIA):**
@@ -58,13 +59,14 @@ Step 2: Copy [controller script (with additional RDMA configuration)](deployment
 ```bash
 cd examples/k8s_ddp_cnn/deployment_files/nvidia
 
-k cp controller-rdma.py monarch-tests/monarch-controller:/tmp/controller.py
+kubectl cp controller-rdma.py monarch-tests/monarch-controller:/tmp/controller.py
+kubectl cp ../train.py monarch-tests/monarch-controller:/tmp/train.py
 ```
 
 ## Launch Controller
 
 ```bash
-k exec -it monarch-controller -n monarch-tests -- \
+kubectl exec -it monarch-controller -n monarch-tests -- \
     python /tmp/controller.py --provision --num_hosts 4 --gpus_per_host 4
 ```
 
@@ -132,7 +134,7 @@ DDP example completed successfully!
 ## Cleanup
 
 ```bash
-k delete -f provision.yaml
+kubectl delete -f provision.yaml
 
 helm uninstall monarch-operator monarch-operator/monarch-operator --namespace monarch-system
 ```
