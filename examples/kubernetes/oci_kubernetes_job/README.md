@@ -30,9 +30,9 @@ The files have been tested with A100 Nvidia GPUs and Mi300X AMD GPUs, but they s
 ### Provision Controller Infra
 
 ```bash
-cd examples/k8s_ddp_cnn/deployment_files/nvidia
+cd deployment_files/nvidia
 # or
-cd examples/k8s_ddp_cnn/deployment_files/amd
+cd deployment_files/amd
 
 kubectl apply -f provision.yaml
 ```
@@ -42,9 +42,9 @@ kubectl apply -f provision.yaml
 **Non-RDMA scenario (for AMD and NVIDIA):**
 
 ```bash
-cd examples/k8s_ddp_cnn/deployment_files/nvidia
+cd deployment_files/nvidia
 # or
-cd examples/k8s_ddp_cnn/deployment_files/amd
+cd deployment_files/amd
 
 kubectl cp controller.py monarch-tests/monarch-controller:/tmp/controller.py
 kubectl cp ../train.py monarch-tests/monarch-controller:/tmp/train.py
@@ -57,7 +57,7 @@ Step 1: Install SRIOV Plugin.
 Step 2: Copy [controller script (with additional RDMA configuration)](deployment_files/nvidia/controller-rdma.py) to the pod.
 
 ```bash
-cd examples/k8s_ddp_cnn/deployment_files/nvidia
+cd deployment_files/nvidia
 
 kubectl cp controller-rdma.py monarch-tests/monarch-controller:/tmp/controller.py
 kubectl cp ../train.py monarch-tests/monarch-controller:/tmp/train.py
@@ -67,68 +67,65 @@ kubectl cp ../train.py monarch-tests/monarch-controller:/tmp/train.py
 
 ```bash
 kubectl exec -it monarch-controller -n monarch-tests -- \
-    python /tmp/controller.py --provision --num_hosts 4 --gpus_per_host 4
+    python /tmp/controller.py --provision --num_hosts 2 --gpus_per_host 8
 ```
 
 ## Expected output
 
 ```bash
-Unable to use a TTY - input is not a terminal or the right kind of file
-No cached job found at path: .monarch/job_state.pkl
-Applying current job
-Created MonarchMesh 'monarchmesh'
-Job has started, connecting to current state
-Monarch internal logs are being written to /tmp/root/monarch_log.log; execution id root_Apr-28_21:20_550
-Saving job to cache at .monarch/job_state.pkl
-[monarchmesh-1 tcp:10.244.2.84:26600,anon_0-1eBKi4fpAzpf] [4] [GPU4] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-1 tcp:10.244.2.84:26600,anon_1-1cehXApChcYq] [5] [GPU5] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-3 tcp:10.244.2.85:26600,anon_3-1buhuxgi6hp9] [15] [GPU15] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-3 tcp:10.244.2.85:26600,anon_0-1JpmNBwbcq6Y] [12] [GPU12] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-3 tcp:10.244.2.85:26600,anon_2-1tNT7w8ovs9a] [14] [GPU14] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-3 tcp:10.244.2.85:26600,anon_1-133cwrtPNsbu] [13] [GPU13] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-2 tcp:10.244.2.226:26600,anon_2-1vJFZEe8WL5E] [10] [GPU10] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_1-1F54eeEDTeT1] [1] [GPU1] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_2-1xUwtuscTQi2] [2] [GPU2] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_3-1ci25vnP8q7X] [3] [GPU3] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-2 tcp:10.244.2.226:26600,anon_0-1vKgEAdkLx7C] [8] [GPU8] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-1 tcp:10.244.2.84:26600,anon_2-1evnAhXrSPN8] [6] [GPU6] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-1 tcp:10.244.2.84:26600,anon_3-1vtKxYf75b57] [7] [GPU7] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-2 tcp:10.244.2.226:26600,anon_3-14gwqD6P9BVP] [11] [GPU11] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-2 tcp:10.244.2.226:26600,anon_1-1FbY9eLqiZJW] [9] [GPU9] Epoch 0 | Batchsize: 32 | Steps: 15
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_0-1Etr1u4B8H6v] [0] [GPU0] Epoch 0 | Batchsize: 32 | Steps: 15
-...
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_2-1xUwtuscTQi2] [2] [GPU2] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-3 tcp:10.244.2.85:26600,anon_2-1tNT7w8ovs9a] [14] [GPU14] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-3 tcp:10.244.2.85:26600,anon_1-133cwrtPNsbu] [13] [GPU13] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-1 tcp:10.244.2.84:26600,anon_1-1cehXApChcYq] [5] [GPU5] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_1-1F54eeEDTeT1] [1] [GPU1] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-2 tcp:10.244.2.226:26600,anon_1-1FbY9eLqiZJW] [9] [GPU9] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-3 tcp:10.244.2.85:26600,anon_3-1buhuxgi6hp9] [15] [GPU15] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_3-1ci25vnP8q7X] [3] [GPU3] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-1 tcp:10.244.2.84:26600,anon_2-1evnAhXrSPN8] [6] [GPU6] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-1 tcp:10.244.2.84:26600,anon_3-1vtKxYf75b57] [7] [GPU7] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-2 tcp:10.244.2.226:26600,anon_3-14gwqD6P9BVP] [11] [GPU11] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-2 tcp:10.244.2.226:26600,anon_2-1vJFZEe8WL5E] [10] [GPU10] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-2 tcp:10.244.2.226:26600,anon_0-1vKgEAdkLx7C] [8] Epoch 48 | Training checkpoint saved at snapshot.pt
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_0-1Etr1u4B8H6v] [0] Epoch 48 | Training checkpoint saved at snapshot.pt
-[monarchmesh-3 tcp:10.244.2.85:26600,anon_0-1JpmNBwbcq6Y] [12] Epoch 48 | Training checkpoint saved at snapshot.pt
-[monarchmesh-2 tcp:10.244.2.226:26600,anon_0-1vKgEAdkLx7C] [8] [GPU8] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_0-1Etr1u4B8H6v] [0] [GPU0] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-1 tcp:10.244.2.84:26600,anon_0-1eBKi4fpAzpf] [4] Epoch 48 | Training checkpoint saved at snapshot.pt
-[monarchmesh-3 tcp:10.244.2.85:26600,anon_0-1JpmNBwbcq6Y] [12] [GPU12] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-1 tcp:10.244.2.84:26600,anon_0-1eBKi4fpAzpf] [4] [GPU4] Epoch 49 | Batchsize: 32 | Steps: 15
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_0-1Etr1u4B8H6v] [0] Accuracy:  0.9000
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_0-1Etr1u4B8H6v] [0] Precision: 0.9323
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_0-1Etr1u4B8H6v] [0] Recall:    0.9000
-[monarchmesh-0 tcp:10.244.2.225:26600,anon_0-1Etr1u4B8H6v] [0] F1 Score:  0.8891
-Deleted MonarchMesh 'monarchmesh'
 ============================================================
 Kubernetes DDP Example
 Configuration: 4 hosts, 4 GPUs/host
 ============================================================
+No cached job found at path: .monarch/job_state.pkl
+Applying current job
+Created MonarchMesh 'monarchmesh'
+Job has started, connecting to current state
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_7-15h6ggB5ZxfV] [7] [GPU7] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_6-1fsNJRrGS5qH] [6] [GPU6] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_3-1D7r8Pte4Sty] [3] [GPU3] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_1-1swFu757FPah] [1] [GPU1] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_2-1GewzfC3tKnz] [2] [GPU2] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_1-1bWDXCme1XVR] [9] [GPU9] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_6-1tMsumG8kx56] [14] [GPU14] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_2-1u8M2piD571X] [10] [GPU10] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_4-1c22fJNPmmPi] [12] [GPU12] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_5-1tqcv6vsgDrP] [13] [GPU13] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_3-12wHDrSHkow5] [11] [GPU11] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_7-1ARnnUk5Wo39] [15] [GPU15] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_4-1wNCWQvfpsDJ] [4] [GPU4] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_5-1F5kjiukThXU] [5] [GPU5] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_0-1enEvfCXmBdp] [0] monarchmesh-0:263:5786 [0] NCCL INFO ChEpoch 0 | Training checkpoint saved at snapshot.pt
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_0-1Asx99KrGXA2] [8] Epoch 0 | Training checkpoint saved at snapshot.pt
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_0-1enEvfCXmBdp] [0] [GPU0] Epoch 1 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_0-1Asx99KrGXA2] [8] [GPU8] Epoch 1 | Batchsize: 32 | Steps: 15
+...
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_5-1tqcv6vsgDrP] [13] [GPU13] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_6-1tMsumG8kx56] [14] [GPU14] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_3-12wHDrSHkow5] [11] [GPU11] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_2-1u8M2piD571X] [10] [GPU10] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_2-1GewzfC3tKnz] [2] [GPU2] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_1-1swFu757FPah] [1] [GPU1] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_4-1wNCWQvfpsDJ] [4] [GPU4] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_7-1ARnnUk5Wo39] [15] [GPU15] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_5-1F5kjiukThXU] [5] [GPU5] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_1-1bWDXCme1XVR] [9] [GPU9] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_4-1c22fJNPmmPi] [12] [GPU12] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_7-15h6ggB5ZxfV] [7] [GPU7] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_3-1D7r8Pte4Sty] [3] [GPU3] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_6-1fsNJRrGS5qH] [6] [GPU6] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_0-1Asx99KrGXA2] [8] Epoch 48 | Training checkpoint saved at snapshot.pt
+[monarchmesh-1 tcp:10.244.2.16:26600,anon_0-1Asx99KrGXA2] [8] [GPU8] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_0-1enEvfCXmBdp] [0] Epoch 48 | Training checkpoint saved at snapshot.pt
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_0-1enEvfCXmBdp] [0] [GPU0] Epoch 49 | Batchsize: 32 | Steps: 15
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_0-1enEvfCXmBdp] [0] Accuracy:  0.8100
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_0-1enEvfCXmBdp] [0] Precision: 0.8669
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_0-1enEvfCXmBdp] [0] Recall:    0.8100
+[monarchmesh-0 tcp:10.244.1.230:26600,anon_0-1enEvfCXmBdp] [0] F1 Score:  0.8018
 ============================================================
 DDP example completed successfully!
 ============================================================
+Deleted MonarchMesh 'monarchmesh'
 ```
 
 ## Cleanup

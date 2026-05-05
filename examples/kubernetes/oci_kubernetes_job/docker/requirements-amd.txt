@@ -1,0 +1,7 @@
+torchmonarch==0.4.1
+kubernetes
+timm
+scikit-learn
+Pillow
+numpy
+kagglehub

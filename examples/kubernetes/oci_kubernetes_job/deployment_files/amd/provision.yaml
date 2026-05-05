@@ -73,7 +73,7 @@ spec:
       effect: "NoSchedule"
   containers:
     - name: controller
-      image: ghcr.io/dochakov-oci/monarch-oci:monarch0.4.0-rocm7.2.1-01
+      image: ghcr.io/dochakov-oci/monarch-oci:monarch0.4.1-rocm7.2.1-02
       command: ["sleep"]
       args: ["infinity"]
       volumeMounts:

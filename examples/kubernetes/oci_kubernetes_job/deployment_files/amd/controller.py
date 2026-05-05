@@ -34,7 +34,7 @@ _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent("""\
     run_worker_loop_forever(address=address, ca="trust_all_connections")
 """)
 
-IMAGE = "ghcr.io/dochakov-oci/monarch-oci:monarch0.4.0-rocm7.2.1-01"
+IMAGE = "ghcr.io/dochakov-oci/monarch-oci:monarch0.4.1-rocm7.2.1-02"
 
 # Path to train.py on worker pods
 TRAIN_SCRIPT = "/tmp/train.py"

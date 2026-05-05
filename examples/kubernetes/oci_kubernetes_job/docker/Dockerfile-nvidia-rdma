@@ -21,9 +21,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ldconfig
 
-RUN pip install torchmonarch==0.4.0rc1 kubernetes --break-system-packages
-
-COPY examples/k8s_ddp_cnn/vanilla_cnn/requirements.txt /tmp/requirements.txt
+COPY requirements-nvidia.txt /tmp/requirements.txt
 
 RUN pip install -r /tmp/requirements.txt --break-system-packages
 
