@@ -1718,7 +1718,7 @@ impl FromStr for HostMeshRef {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
 
     use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
     use hyperactor_config::attrs::Attrs;
