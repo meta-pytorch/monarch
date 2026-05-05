@@ -25,6 +25,9 @@ use std::time::Instant;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use backoff::ExponentialBackoff;
+use backoff::ExponentialBackoffBuilder;
+use backoff::backoff::Backoff;
 use futures::lock::Mutex;
 use hyperactor as reference;
 use hyperactor::Actor;
@@ -143,6 +146,69 @@ pub enum IbvManagerLocalMessage {
         #[reply]
         reply: OncePortHandle<Result<(), String>>,
     },
+}
+
+/// Adaptive wait between completion polls.
+///
+/// While the elapsed time since [`Self::yield_now`] was first called
+/// is below `yield_window`, the policy yields cooperatively
+/// (`tokio::task::yield_now`) — keeping latency tight when the WR
+/// completes shortly after being posted. `tokio::time::sleep` has a
+/// minimum resolution of ~1ms (the timer wheel tick), so even a
+/// `sleep(Duration::from_micros(100))` would block that long; `yield_now` is
+/// sub-millisecond and lets the next poll fire as soon as the runtime
+/// schedules us. Past `yield_window` the policy switches to an
+/// exponential backoff (1ms initial, doubling, capped at 10ms) so
+/// long-running operations don't keep the runtime spinning.
+///
+/// `yield_window` is read from
+/// [`crate::config::RDMA_CQ_BUSY_POLL_WINDOW`]. When it's `None`
+/// (the default) the policy disables the cutoff and only ever
+/// yields, never sleeps.
+struct PollSleepPolicy {
+    yield_window: Option<Duration>,
+    started_at: Option<Instant>,
+    backoff: Option<ExponentialBackoff>,
+}
+
+impl PollSleepPolicy {
+    fn new() -> Self {
+        let yield_window = hyperactor_config::global::get(crate::config::RDMA_CQ_BUSY_POLL_WINDOW);
+        Self {
+            yield_window,
+            started_at: None,
+            backoff: None,
+        }
+    }
+
+    /// Suspend the current task before the next poll. If no yield
+    /// window is configured (the default), always yields. Otherwise,
+    /// yields while within the window and then walks an exponential
+    /// backoff up to 10ms past it.
+    async fn yield_now(&mut self) {
+        let Some(window) = self.yield_window else {
+            tokio::task::yield_now().await;
+            return;
+        };
+        let started = *self.started_at.get_or_insert_with(Instant::now);
+        if started.elapsed() < window {
+            tokio::task::yield_now().await;
+            return;
+        }
+        let backoff = self.backoff.get_or_insert_with(|| {
+            ExponentialBackoffBuilder::new()
+                .with_initial_interval(Duration::from_millis(1))
+                .with_max_interval(Duration::from_millis(10))
+                .with_multiplier(2.0)
+                .with_randomization_factor(0.0)
+                .with_max_elapsed_time(None)
+                .build()
+        });
+        match backoff.next_backoff() {
+            Some(delay) => tokio::time::sleep(delay).await,
+            None => tokio::task::yield_now().await,
+        }
+    }
 }
 
 /// Look up `(addr, size)` in a slice of registered CUDA segments
@@ -1078,6 +1144,7 @@ impl IbvBackend {
 
         let mut remaining: std::collections::HashSet<u64> =
             expected_wr_ids.iter().copied().collect();
+        let mut poll_policy = PollSleepPolicy::new();
 
         while start_time.elapsed() < timeout {
             if remaining.is_empty() {
@@ -1093,7 +1160,7 @@ impl IbvBackend {
                     if remaining.is_empty() {
                         return Ok(());
                     }
-                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    poll_policy.yield_now().await;
                 }
                 Err(e) => {
                     // When the returned error is WR_FLUSH_ERR, which is generally a
