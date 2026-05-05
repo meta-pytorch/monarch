@@ -763,14 +763,15 @@ mod tests {
         let (client, client_handle) = proc.instance("client").unwrap();
 
         let actor_mesh_id = crate::mesh_id::ActorMeshId::unique(Label::new("test").unwrap());
-        let actor_name = actor_mesh_id.actor_name();
 
         let (tx, rx) = open_port(&client);
         let forward_port = tx.bind();
         let test_actor = TestActor::new(TestActorParams { forward_port }, Default::default())
             .await
             .unwrap();
-        let test_handle = proc.spawn(&actor_name, test_actor).unwrap();
+        let test_handle = proc
+            .spawn_with_uid(actor_mesh_id.uid().clone(), test_actor)
+            .unwrap();
         let test_ref: ActorRef<TestActor> = test_handle.bind::<TestActor>();
 
         let comm_handle = proc.spawn("comm", CommActor::default()).unwrap();
