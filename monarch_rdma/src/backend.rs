@@ -8,8 +8,8 @@
 
 //! RDMA backend implementations.
 
-#[cfg(test)]
-pub(crate) mod cuda_test_utils;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod cuda_test_utils;
 pub mod ibverbs;
 pub mod tcp;
 
