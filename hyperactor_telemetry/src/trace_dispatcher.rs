@@ -170,13 +170,7 @@ fn get_thread_info() -> (&'static str, &'static str) {
         };
         #[cfg(not(target_os = "linux"))]
         let thread_id: &'static str = {
-            let tid = std::thread::current().id();
-            // SAFETY: ThreadId is a newtype wrapper around a u64 counter.
-            // This transmute relies on the internal representation of ThreadId,
-            // which is stable in practice but not guaranteed by Rust's API.
-            // On non-Linux platforms this is a best-effort approximation.
-            // See: https://doc.rust-lang.org/std/thread/struct.ThreadId.html
-            let tid_num = unsafe { std::mem::transmute::<std::thread::ThreadId, u64>(tid) };
+            let tid_num = std::thread::current().id().as_u64().get();
             Box::leak(tid_num.to_string().into_boxed_str())
         };
 

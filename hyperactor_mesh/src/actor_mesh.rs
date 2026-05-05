@@ -33,6 +33,7 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
+use hyperactor::port::Port;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -643,8 +644,8 @@ impl<A: Referable> ActorMeshRef<A> {
         {
             let sequencer = cx.instance().sequencer();
             let seqs = actor_ids.map_into(|actor_id| {
-                let hyperactor::ordering::SeqInfo::Session { seq, .. } =
-                    sequencer.assign_seq(&actor_id.port_id(<M as typeuri::Named>::port()))
+                let hyperactor::ordering::SeqInfo::Session { seq, .. } = sequencer
+                    .assign_seq(&actor_id.port_ref(Port::from(<M as typeuri::Named>::port())))
                 else {
                     unreachable!("assign_seq always returns SeqInfo::Session")
                 };

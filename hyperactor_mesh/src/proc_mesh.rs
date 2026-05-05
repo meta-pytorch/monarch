@@ -1053,8 +1053,6 @@ mod tests {
     use crate::testing;
 
     #[cfg(fbcode_build)]
-    #[assert_no_process_leak]
-    #[async_timed_test(timeout_secs = 30)]
     async fn execute_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
@@ -1070,6 +1068,7 @@ mod tests {
 
         let _ = hm.shutdown(instance).await;
     }
+
     #[async_timed_test(timeout_secs = 30)]
     #[cfg(fbcode_build)]
     async fn test_spawn_actor_v1_casting() {

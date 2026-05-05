@@ -1441,7 +1441,7 @@ macro_rules! sel_from_shape {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
     use std::collections::BTreeSet;
 
     use super::EvalOpts;
