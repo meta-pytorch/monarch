@@ -10,9 +10,17 @@
 
 #![deny(missing_docs)]
 
+pub mod keepalive;
 pub mod link;
 pub mod proto;
 
+pub use keepalive::Keepalive;
+pub use keepalive::KeepaliveAck;
+pub use keepalive::KeepaliveLink;
+pub use keepalive::KeepaliveSupervisor;
+pub use keepalive::KeepaliveSupervisorParams;
+pub use keepalive::KeepaliveWorker;
+pub use keepalive::KeepaliveWorkerParams;
 pub use link::LinkSpec;
 pub use proto::Link;
 pub use proto::LinkOptions;
