@@ -132,21 +132,29 @@ async fn test_multi_pd_segment_registration() -> Result<(), anyhow::Error> {
 
     // Both senders allocate first, so the scanner sees both segments before
     // either triggers registration.
-    sender_a.allocate(instance, BUF_SIZE).await?;
-    sender_b.allocate(instance, BUF_SIZE).await?;
+    let alloc_a = sender_a.allocate(instance, BUF_SIZE, BUF_SIZE).await?;
+    let alloc_b = sender_b.allocate(instance, BUF_SIZE, BUF_SIZE).await?;
 
     // Now register — each triggers segment scanning and gets its own PD
     // based on the NIC closest to its device.
+    const PATTERN_A: u8 = 0xa1;
+    const PATTERN_B: u8 = 0xb1;
     let remotes_a = sender_a
-        .register(instance, vec![(0, BUF_SIZE)], rdma_ref.clone())
+        .register(
+            instance,
+            alloc_a,
+            vec![(0, BUF_SIZE)],
+            PATTERN_A,
+            rdma_ref.clone(),
+        )
         .await?;
     let remotes_b = sender_b
-        .register(instance, vec![(0, BUF_SIZE)], rdma_ref)
+        .register(instance, alloc_b, vec![(0, BUF_SIZE)], PATTERN_B, rdma_ref)
         .await?;
 
     // Each receiver reads using a QP on the matching NIC/subnet.
     let result_a = receiver_a
-        .read_remote(instance, remotes_a[0].clone(), BUF_SIZE, 10)
+        .read_remote(instance, remotes_a[0].clone(), BUF_SIZE, PATTERN_A, 10)
         .await?;
     assert!(
         result_a.is_ok(),
@@ -157,7 +165,7 @@ async fn test_multi_pd_segment_registration() -> Result<(), anyhow::Error> {
     // On the base revision (address-only key), B's segment would never be
     // registered with the correct PD, causing this read to fail.
     let result_b = receiver_b
-        .read_remote(instance, remotes_b[0].clone(), BUF_SIZE, 10)
+        .read_remote(instance, remotes_b[0].clone(), BUF_SIZE, PATTERN_B, 10)
         .await?;
     assert!(
         result_b.is_ok(),
@@ -166,8 +174,8 @@ async fn test_multi_pd_segment_registration() -> Result<(), anyhow::Error> {
     );
 
     // Clean up allocations.
-    sender_a.free_allocation(instance).await?;
-    sender_b.free_allocation(instance).await?;
+    sender_a.free_allocations(instance).await?;
+    sender_b.free_allocations(instance).await?;
 
     let _ = host_mesh.shutdown(instance).await;
     Ok(())
