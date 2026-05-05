@@ -40,10 +40,13 @@ use std::str::FromStr;
 
 use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
+use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
+use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::Instance;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
@@ -181,6 +184,26 @@ pub struct Join<C: TokenPeer, J: TokenPeer> {
 
 hyperactor::behavior!(RendezvousLike<C, J>, Join<C, J>);
 
+/// Create a rendezvous token owned by `this`.
+///
+/// The token is backed by a child actor, so it is supervised by the creator.
+/// The creator receives [`Joined`] notifications on `creator_joined`; joiners
+/// receive [`JoinResult`] on the result port they pass to [`Token::join`].
+pub fn create<A, C, J>(
+    this: &Instance<A>,
+    creator: C,
+    creator_joined: PortRef<Joined<J>>,
+    options: Options,
+) -> anyhow::Result<Token<C, J>>
+where
+    A: Actor,
+    C: TokenPeer + Clone,
+    J: TokenPeer,
+{
+    let rendezvous = this.spawn(Rendezvous::new(creator, creator_joined, options))?;
+    Ok(Token::new(rendezvous.bind::<RendezvousLike<C, J>>()))
+}
+
 /// Opaque rendezvous token.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token<C: TokenPeer, J: TokenPeer> {
@@ -289,6 +312,71 @@ where
         let token = self.encode().map_err(|_| fmt::Error)?;
         let json = self.compact_json().map_err(|_| fmt::Error)?;
         write!(f, "{}#{}", token, json)
+    }
+}
+
+#[derive(Debug)]
+struct Rendezvous<C: TokenPeer, J: TokenPeer> {
+    creator: C,
+    creator_joined: PortRef<Joined<J>>,
+    options: Options,
+    joined: bool,
+}
+
+impl<C: TokenPeer, J: TokenPeer> Rendezvous<C, J> {
+    fn new(creator: C, creator_joined: PortRef<Joined<J>>, options: Options) -> Self {
+        Self {
+            creator,
+            creator_joined,
+            options,
+            joined: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<C: TokenPeer, J: TokenPeer> Actor for Rendezvous<C, J> {}
+
+#[async_trait::async_trait]
+impl<C: TokenPeer + Clone, J: TokenPeer> Handler<Join<C, J>> for Rendezvous<C, J> {
+    async fn handle(&mut self, cx: &Context<Self>, message: Join<C, J>) -> anyhow::Result<()> {
+        if self.options.policy == Policy::Once && self.joined {
+            message.result.send(
+                cx,
+                JoinResult::Rejected {
+                    reason: "token already joined".to_string(),
+                },
+            )?;
+            return Ok(());
+        }
+
+        if self
+            .creator_joined
+            .send(
+                cx,
+                Joined {
+                    peer: message.joiner,
+                },
+            )
+            .is_err()
+        {
+            message.result.send(
+                cx,
+                JoinResult::Rejected {
+                    reason: "token creator unavailable".to_string(),
+                },
+            )?;
+            return Ok(());
+        }
+
+        message.result.send(
+            cx,
+            JoinResult::Joined {
+                peer: self.creator.clone(),
+            },
+        )?;
+        self.joined = true;
+        Ok(())
     }
 }
 
@@ -417,6 +505,66 @@ mod tests {
         Unbind
     )]
     struct OtherJoinerRef;
+
+    #[tokio::test]
+    async fn test_create_delivers_join_to_both_sides() {
+        let proc = Proc::local();
+        let (creator, _creator_handle) = proc.instance("creator").unwrap();
+        let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<JoinerRef>>();
+        let token = create(
+            &creator,
+            CreatorRef,
+            creator_joined.bind(),
+            Options::default(),
+        )
+        .unwrap();
+        let (joiner, _joiner_handle) = proc.instance("joiner").unwrap();
+        let (join_result, mut join_result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
+
+        token.join(&joiner, JoinerRef, join_result.bind()).unwrap();
+
+        assert_eq!(creator_joined_rx.recv().await.unwrap().peer, JoinerRef);
+        assert_eq!(
+            join_result_rx.recv().await.unwrap(),
+            JoinResult::Joined { peer: CreatorRef }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_once_token_rejects_later_joins() {
+        let proc = Proc::local();
+        let (creator, _creator_handle) = proc.instance("creator").unwrap();
+        let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<JoinerRef>>();
+        let token = create(
+            &creator,
+            CreatorRef,
+            creator_joined.bind(),
+            Options {
+                policy: Policy::Once,
+            },
+        )
+        .unwrap();
+        let (joiner, _joiner_handle) = proc.instance("joiner").unwrap();
+        let (first_result, mut first_result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
+        let (second_result, mut second_result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
+
+        token.join(&joiner, JoinerRef, first_result.bind()).unwrap();
+        token
+            .join(&joiner, JoinerRef, second_result.bind())
+            .unwrap();
+
+        assert_eq!(creator_joined_rx.recv().await.unwrap().peer, JoinerRef);
+        assert_eq!(
+            first_result_rx.recv().await.unwrap(),
+            JoinResult::Joined { peer: CreatorRef }
+        );
+        assert_eq!(
+            second_result_rx.recv().await.unwrap(),
+            JoinResult::Rejected {
+                reason: "token already joined".to_string()
+            }
+        );
+    }
 
     #[tokio::test]
     async fn test_token_serializes_as_single_base64_json_string() {
