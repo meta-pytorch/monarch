@@ -335,7 +335,7 @@ impl CommActor {
         cx.post_with_external_seq_info(
             cx.self_id()
                 .proc_ref()
-                .actor_ref(message.dest_port().actor_name())
+                .actor_ref_uid(message.dest_port().actor_uid().clone())
                 .port_ref(hyperactor::port::Port::from(message.dest_port().port())),
             headers,
             wirevalue::Any::serialize(message.data())?,
