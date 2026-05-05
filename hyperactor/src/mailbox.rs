@@ -3148,7 +3148,7 @@ impl MailboxSender for UnroutableMailboxSender {
 #[cfg(test)]
 mod tests {
 
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
     use std::mem::drop;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
