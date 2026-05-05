@@ -1105,7 +1105,7 @@ impl WorkerMessageHandler for WorkerActor {
 
 #[cfg(all(test, fbcode_build))]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
 
     use anyhow::Result;
     use hyperactor::RemoteSpawn;

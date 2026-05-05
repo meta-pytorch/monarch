@@ -953,13 +953,10 @@ mod tests {
     use crate::RdmaOp;
     use crate::RdmaOpType;
     use crate::backend::RdmaBackend;
-    use crate::local_memory::Keepalive;
     use crate::local_memory::KeepaliveLocalMemory;
     use crate::local_memory::RdmaLocalMemory;
     use crate::rdma_manager_actor::GetTcpActorRefClient;
     use crate::rdma_manager_actor::RdmaManagerActor;
-
-    impl Keepalive for Box<[u8]> {}
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
