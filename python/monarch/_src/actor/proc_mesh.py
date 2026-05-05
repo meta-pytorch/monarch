@@ -663,9 +663,9 @@ class ProcMesh(MeshTrait):
 
         Args:
             stream_to_client (bool): If True, logs from the remote processes will be streamed to the client.
-            Defaults to True.
+            Defaults to False.
             aggregate_window_sec (Optional[int]): If not None, logs from the remote processes will be aggregated
-            and sent to the client every aggregate_window_sec seconds. Defaults to 3 seconds, meaning no aggregation.
+            and sent to the client every aggregate_window_sec seconds. Defaults to None, meaning no aggregation.
             Error will be thrown if aggregate_window_sec is set and stream_to_client is False.
             level (int): The logging level of the logger. Defaults to logging.INFO.
 
