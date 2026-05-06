@@ -3300,7 +3300,7 @@ mod tests {
         let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
         let port_index = mbox.allocate_port();
         let port_id = mbox.actor_addr().port_addr(Port::from(port_index));
-        let port = crate::PortRef::attest(port_id.clone().into());
+        let port = crate::PortRef::attest(port_id.clone());
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
         let (sender, receiver) = mpsc::unbounded_channel::<u64>();
