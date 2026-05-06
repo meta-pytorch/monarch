@@ -101,6 +101,7 @@ class KubernetesJob(JobTrait):
         self,
         namespace: str,
         timeout: int | None = None,
+        env: Dict[str, str] | None = None,
     ) -> None:
         """
         Initialize a KubernetesJob.
@@ -108,12 +109,14 @@ class KubernetesJob(JobTrait):
         Args:
             namespace: Kubernetes namespace for all meshes
             timeout: Maximum seconds to wait for pods to be ready for each mesh (default: None, wait indefinitely)
+            env: Extra environment variables for provisioned worker pods.
         """
+        super().__init__()
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._namespace = namespace
         self._timeout = timeout
+        self._env: Dict[str, str] = self._env_with_overrides(env)
         self._meshes: Dict[str, Dict[str, Any]] = {}
-        super().__init__()
 
     # TODO: Consider adding monarch-rank label instead of relying on StatefulSet index by default if using MonarchMesh CRD.
     def add_mesh(
@@ -283,8 +286,8 @@ class KubernetesJob(JobTrait):
                 else:
                     raise
 
-    @staticmethod
     def _build_worker_pod_spec(
+        self,
         image_spec: ImageSpec,
         port: int,
     ) -> client.V1PodSpec:
@@ -308,11 +311,15 @@ class KubernetesJob(JobTrait):
                 requests=k8s_resources,
                 limits=k8s_resources,
             )
+        worker_env = {**self._env, "MONARCH_PORT": str(port)}
         container = client.V1Container(
             name="worker",
             image=image_spec.image,
             command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
-            env=[client.V1EnvVar(name="MONARCH_PORT", value=str(port))],
+            env=[
+                client.V1EnvVar(name=key, value=value)
+                for key, value in worker_env.items()
+            ],
             resources=resources,
         )
         return client.V1PodSpec(containers=[container])
@@ -550,6 +557,7 @@ class KubernetesJob(JobTrait):
             isinstance(spec, KubernetesJob)
             and spec._namespace == self._namespace
             and spec._meshes == self._meshes
+            and spec._env == self._env
             and self.active
         ):
             return False

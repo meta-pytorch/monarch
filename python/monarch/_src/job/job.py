@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
+from monarch._rust_bindings.monarch_hyperactor.telemetry import get_execution_id
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.host_mesh import _spawn_admin
 from monarch._src.job.mount_config import Mounts
@@ -445,6 +446,14 @@ class JobTrait(ABC):
         # Per-mesh python executable overrides.  None key means "all meshes".
         self._python_executables: Dict[str, str] = {}
         self._default_python_exe: Optional[str] = None
+
+    @staticmethod
+    def _default_env() -> Dict[str, str]:
+        return {"HYPERACTOR_EXECUTION_ID": get_execution_id()}
+
+    @staticmethod
+    def _env_with_overrides(env: Optional[Dict[str, str]]) -> Dict[str, str]:
+        return {**JobTrait._default_env(), **(env or {})}
 
     def _start_telemetry_if_configured(self) -> None:
         """Start telemetry if configured and not already running."""
@@ -1133,7 +1142,7 @@ class LocalJob(JobTrait):
         stderr_log = os.path.join(log_dir, "stderr.log")
 
         # Create environment with MONARCH_BATCH_JOB=1
-        env = os.environ.copy()
+        env = {**os.environ, **self._default_env()}
         env["MONARCH_BATCH_JOB"] = "1"
 
         # Open log files
@@ -1278,6 +1287,7 @@ class SSHJob(LoginJob):
         transport: Transport type for worker communication. Supported
             values are "tcp", "metatls" and "metatls-hostname"
             (see enable_transport).
+        env: Extra environment variables for SSH worker processes.
     """
 
     def __init__(
@@ -1286,26 +1296,33 @@ class SSHJob(LoginJob):
         ssh_args: Sequence[str] = (),
         monarch_port: int = 22222,
         transport: str = "tcp",
+        env: Optional[Dict[str, str]] = None,
     ):
         if transport not in ("tcp", "metatls", "metatls-hostname"):
             raise ValueError(
                 f"SSHJob only supports tcp, metatls, and metatls-hostname transport types, got {transport!r}"
             )
+        super().__init__()
         enable_transport(transport)
         self._python_exe = python_exe
         self._ssh_args = ssh_args
         self._port = monarch_port
         self._transport = transport
+        self._env = self._env_with_overrides(env)
         self._scheme = (
             "metatls" if transport in ("metatls", "metatls-hostname") else "tcp"
         )
-        super().__init__()
 
     def _start_host(self, host: str) -> ProcessState:
         addr = f"{self._scheme}://{host}:{self._port}"
         startup = f'from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(address={repr(addr)}, ca="trust_all_connections")'
 
+        env_prefix = " ".join(
+            f"{key}={shlex.quote(value)}" for key, value in self._env.items()
+        )
         command = f"{shlex.quote(self._python_exe)} -c {shlex.quote(startup)}"
+        if env_prefix:
+            command = f"{env_prefix} {command}"
         proc = subprocess.Popen(
             ["ssh", *self._ssh_args, host, "-n", command],
             start_new_session=True,
@@ -1319,5 +1336,6 @@ class SSHJob(LoginJob):
             and self._port == spec._port
             and self._ssh_args == spec._ssh_args
             and self._transport == spec._transport
+            and self._env == spec._env
             and super().can_run(spec)
         )
