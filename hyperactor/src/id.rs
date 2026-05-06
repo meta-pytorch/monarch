@@ -44,6 +44,11 @@ use std::str::FromStr;
 use enum_as_inner::EnumAsInner;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::EnumAccess;
+use serde::de::SeqAccess;
+use serde::de::VariantAccess;
+use serde::de::Visitor;
+use serde::ser::SerializeTupleVariant;
 use smol_str::SmolStr;
 
 use crate::addr::ActorAddr;
@@ -348,14 +353,86 @@ fn parse_base58_uid(s: &str) -> Result<u64, UidParseError> {
 
 impl Serialize for Uid {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&self.to_string())
+        } else {
+            match self {
+                Uid::Singleton(label) => {
+                    serializer.serialize_newtype_variant("Uid", 0, "Singleton", label)
+                }
+                Uid::Instance(uid, label) => {
+                    let mut variant =
+                        serializer.serialize_tuple_variant("Uid", 1, "Instance", 2)?;
+                    variant.serialize_field(uid)?;
+                    variant.serialize_field(label)?;
+                    variant.end()
+                }
+            }
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for Uid {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        Uid::from_str(&s).map_err(serde::de::Error::custom)
+        if deserializer.is_human_readable() {
+            let s = String::deserialize(deserializer)?;
+            Uid::from_str(&s).map_err(serde::de::Error::custom)
+        } else {
+            deserializer.deserialize_enum("Uid", &["Singleton", "Instance"], UidVisitor)
+        }
+    }
+}
+
+struct UidVisitor;
+
+impl<'de> Visitor<'de> for UidVisitor {
+    type Value = Uid;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a uid enum")
+    }
+
+    fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+    where
+        A: EnumAccess<'de>,
+    {
+        match data.variant()? {
+            (UidVariant::Singleton, variant) => variant.newtype_variant().map(Uid::Singleton),
+            (UidVariant::Instance, variant) => {
+                let (uid, label) = variant.tuple_variant(2, UidInstanceVisitor)?;
+                Ok(Uid::Instance(uid, label))
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(field_identifier)]
+enum UidVariant {
+    Singleton,
+    Instance,
+}
+
+struct UidInstanceVisitor;
+
+impl<'de> Visitor<'de> for UidInstanceVisitor {
+    type Value = (u64, Option<Label>);
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a uid instance tuple")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let uid = seq
+            .next_element()?
+            .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+        let label = seq
+            .next_element()?
+            .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+        Ok((uid, label))
     }
 }
 
@@ -1034,10 +1111,18 @@ mod tests {
             Uid::singleton(Label::new("my-actor").unwrap()),
             Uid::Instance(0xabcdef0123456789, None),
             Uid::Instance(1, None),
+            Uid::Instance(0xd5d54d7201103869, Some(Label::new("my-actor").unwrap())),
         ];
         for uid in uids {
             let json = serde_json::to_string(&uid).unwrap();
+            assert_eq!(json, format!("\"{}\"", uid));
             let parsed: Uid = serde_json::from_str(&json).unwrap();
+            assert_eq!(uid, parsed);
+
+            let encoded = bincode::serde::encode_to_vec(&uid, bincode::config::legacy()).unwrap();
+            let (parsed, len): (Uid, usize) =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::legacy()).unwrap();
+            assert_eq!(len, encoded.len());
             assert_eq!(uid, parsed);
         }
     }
