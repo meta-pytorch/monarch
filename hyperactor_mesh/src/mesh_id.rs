@@ -34,14 +34,15 @@
 //!
 //! # String formats
 //!
-//! `ResourceId` has three externally visible string forms:
+//! `ResourceId` has two externally visible string forms:
 //!
 //! - Singleton: `label`
 //! - Labeled instance: `label-uid58`
-//! - Unlabeled instance: `<uid58>`
 //!
 //! Here `uid58` is the base58 instance component produced by [`Uid::Instance`],
-//! without angle brackets.
+//! without angle brackets. Instances always render with a label. When an
+//! instance has no explicit label metadata, the formatter uses the id type's
+//! default label, such as `proc`, `actor`, or `resource`.
 //!
 //! Identity is uid-only: labels are descriptive metadata and do not
 //! participate in `Eq`, `Hash`, or `Ord`.
@@ -64,6 +65,11 @@ use hyperactor::id::UidParseError;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
+
+const RESOURCE_ID_DEFAULT_LABEL: &str = "resource";
+const HOST_MESH_ID_DEFAULT_LABEL: &str = "host";
+const PROC_MESH_ID_DEFAULT_LABEL: &str = "proc";
+const ACTOR_MESH_ID_DEFAULT_LABEL: &str = "actor";
 
 /// Errors that can occur when parsing a [`ResourceId`] from a string.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -230,12 +236,17 @@ fn parse_instance_uid(s: &str) -> Result<u64, UidParseError> {
     Uid::parse_instance_uid_base58(s)
 }
 
-fn fmt_id_component(f: &mut fmt::Formatter<'_>, uid: &Uid, label: Option<&Label>) -> fmt::Result {
+fn fmt_id_component(
+    f: &mut fmt::Formatter<'_>,
+    uid: &Uid,
+    label: Option<&Label>,
+    default_instance_label: &str,
+) -> fmt::Result {
     match uid {
         Uid::Singleton(singleton) => write!(f, "{singleton}"),
         Uid::Instance(uid, _) => match label {
             Some(label) => write!(f, "{label}-{}", fmt_instance_uid(*uid)),
-            None => write!(f, "{}", fmt_instance_uid(*uid)),
+            None => write!(f, "{}-{}", default_instance_label, fmt_instance_uid(*uid)),
         },
     }
 }
@@ -246,7 +257,7 @@ impl fmt::Display for ResourceId {
     /// This string is used for resource message keys, proc names on hosts,
     /// and telemetry `full_name`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_id_component(f, &self.0, self.label())
+        fmt_id_component(f, &self.0, self.label(), RESOURCE_ID_DEFAULT_LABEL)
     }
 }
 
@@ -262,31 +273,16 @@ impl fmt::Debug for ResourceId {
     }
 }
 
-fn parse_id_component(s: &str) -> Result<Uid, ResourceIdParseError> {
-    if let Some(inner) = s
-        .strip_prefix('<')
-        .and_then(|inner| inner.strip_suffix('>'))
-    {
-        let uid = parse_instance_uid(inner)?;
-        return Ok(Uid::Instance(uid, None));
-    }
-
+fn parse_id_component(s: &str, default_instance_label: &str) -> Result<Uid, ResourceIdParseError> {
     if let Some(split) = s.rfind('-') {
         let label_part = &s[..split];
         let uid_part = &s[split + 1..];
         if uid_part.len() >= 8
             && let (Ok(label), Ok(uid)) = (Label::new(label_part), parse_instance_uid(uid_part))
         {
-            return Ok(Uid::Instance(uid, Some(label)));
-        }
-    }
-
-    if let Some(open) = s.find('<')
-        && s.ends_with('>')
-    {
-        let label_part = &s[..open];
-        let uid_part = &s[open + 1..s.len() - 1];
-        if let (Ok(label), Ok(uid)) = (Label::new(label_part), parse_instance_uid(uid_part)) {
+            if label.as_str() == default_instance_label {
+                return Ok(Uid::Instance(uid, None));
+            }
             return Ok(Uid::Instance(uid, Some(label)));
         }
     }
@@ -304,14 +300,15 @@ impl FromStr for ResourceId {
     /// Accepted inputs are:
     /// - `label` for singletons
     /// - `label-uid58` for labeled instances
-    /// - `<uid58>` for unlabeled instances
+    ///
+    /// `resource-uid58` parses as an instance without explicit label metadata.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(parse_id_component(s)?))
+        Ok(Self(parse_id_component(s, RESOURCE_ID_DEFAULT_LABEL)?))
     }
 }
 
 macro_rules! define_mesh_id {
-    ($(#[$meta:meta])* $name:ident) => {
+    ($(#[$meta:meta])* $name:ident, $default_label:expr) => {
         $(#[$meta])*
         #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Named)]
         #[serde(transparent)]
@@ -353,12 +350,17 @@ macro_rules! define_mesh_id {
 
             /// Returns the actor-runtime name derived from this mesh id.
             pub fn actor_name(&self) -> String {
-                self.0.actor_name()
+                self.to_string()
             }
 
             /// Returns the inner [`ResourceId`].
             pub fn resource_id(&self) -> &ResourceId {
                 &self.0
+            }
+
+            /// Returns the default instance label for this mesh id type.
+            pub fn default_instance_label() -> &'static str {
+                $default_label
             }
         }
 
@@ -377,7 +379,7 @@ macro_rules! define_mesh_id {
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                fmt::Display::fmt(&self.0, f)
+                fmt_id_component(f, self.uid(), self.label(), Self::default_instance_label())
             }
         }
 
@@ -391,7 +393,10 @@ macro_rules! define_mesh_id {
             type Err = ResourceIdParseError;
 
             fn from_str(s: &str) -> Result<Self, Self::Err> {
-                Ok(Self(s.parse()?))
+                Ok(Self(ResourceId(parse_id_component(
+                    s,
+                    Self::default_instance_label(),
+                )?)))
             }
         }
     };
@@ -399,17 +404,20 @@ macro_rules! define_mesh_id {
 
 define_mesh_id!(
     /// Identifies a host mesh.
-    HostMeshId
+    HostMeshId,
+    HOST_MESH_ID_DEFAULT_LABEL
 );
 
 define_mesh_id!(
     /// Identifies a proc mesh.
-    ProcMeshId
+    ProcMeshId,
+    PROC_MESH_ID_DEFAULT_LABEL
 );
 
 define_mesh_id!(
     /// Identifies an actor mesh.
-    ActorMeshId
+    ActorMeshId,
+    ACTOR_MESH_ID_DEFAULT_LABEL
 );
 
 impl ProcMeshId {
@@ -470,7 +478,10 @@ mod tests {
     #[test]
     fn test_resource_id_unlabeled() {
         let id = ResourceId::new(Uid::Instance(0xabcdef, None), None);
-        assert_eq!(id.to_string(), fmt_instance_uid(0xabcdef));
+        assert_eq!(
+            id.to_string(),
+            format!("resource-{}", fmt_instance_uid(0xabcdef))
+        );
         assert_eq!(id.label(), None);
     }
 
@@ -533,7 +544,7 @@ mod tests {
         let id = ResourceId::new(Uid::Instance(0xd5d54d7201103869, None), None);
         assert_eq!(
             id.to_string(),
-            format!("<{}>", fmt_instance_uid(0xd5d54d7201103869))
+            format!("resource-{}", fmt_instance_uid(0xd5d54d7201103869))
         );
     }
 
@@ -560,7 +571,7 @@ mod tests {
         let id = ResourceId::new(Uid::Instance(0xd5d54d7201103869, None), None);
         assert_eq!(
             id.actor_name(),
-            format!("<{}>", fmt_instance_uid(0xd5d54d7201103869))
+            format!("resource-{}", fmt_instance_uid(0xd5d54d7201103869))
         );
     }
 
@@ -625,12 +636,19 @@ mod tests {
     }
 
     #[test]
-    fn test_resource_id_fromstr_unlabeled_instance() {
-        let parsed: ResourceId = format!("<{}>", fmt_instance_uid(0xd5d54d7201103869))
+    fn test_resource_id_fromstr_default_labeled_instance() {
+        let parsed: ResourceId = format!("resource-{}", fmt_instance_uid(0xd5d54d7201103869))
             .parse()
             .unwrap();
         assert_eq!(*parsed.uid(), Uid::Instance(0xd5d54d7201103869, None));
         assert_eq!(parsed.label(), None);
+    }
+
+    #[test]
+    fn test_resource_id_fromstr_rejects_unlabeled_instance() {
+        let result: Result<ResourceId, _> =
+            format!("<{}>", fmt_instance_uid(0xd5d54d7201103869)).parse();
+        assert!(result.is_err());
     }
 
     #[test]
@@ -730,6 +748,59 @@ mod tests {
             let parsed: HostMeshId = s.parse().unwrap();
             assert_eq!(id, parsed, "round-trip failed for {s}");
         }
+    }
+
+    #[test]
+    fn test_typed_mesh_id_display_uses_type_default_label() {
+        let uid = Uid::Instance(0xd5d54d7201103869, None);
+        assert_eq!(
+            HostMeshId::new(uid.clone(), None).to_string(),
+            format!("host-{}", fmt_instance_uid(0xd5d54d7201103869))
+        );
+        assert_eq!(
+            ProcMeshId::new(uid.clone(), None).to_string(),
+            format!("proc-{}", fmt_instance_uid(0xd5d54d7201103869))
+        );
+        assert_eq!(
+            ActorMeshId::new(uid, None).to_string(),
+            format!("actor-{}", fmt_instance_uid(0xd5d54d7201103869))
+        );
+    }
+
+    #[test]
+    fn test_typed_mesh_id_actor_name_uses_type_default_label() {
+        let actor = ActorMeshId::new(Uid::Instance(0xd5d54d7201103869, None), None);
+        assert_eq!(
+            actor.actor_name(),
+            format!("actor-{}", fmt_instance_uid(0xd5d54d7201103869))
+        );
+    }
+
+    #[test]
+    fn test_typed_mesh_id_parse_omits_type_default_label() {
+        let proc: ProcMeshId = format!("proc-{}", fmt_instance_uid(0xd5d54d7201103869))
+            .parse()
+            .unwrap();
+        assert_eq!(*proc.uid(), Uid::Instance(0xd5d54d7201103869, None));
+        assert_eq!(proc.label(), None);
+
+        let actor: ActorMeshId = format!("actor-{}", fmt_instance_uid(0xd5d54d7201103869))
+            .parse()
+            .unwrap();
+        assert_eq!(*actor.uid(), Uid::Instance(0xd5d54d7201103869, None));
+        assert_eq!(actor.label(), None);
+    }
+
+    #[test]
+    fn test_typed_mesh_id_parse_preserves_non_default_label() {
+        let proc: ProcMeshId = format!("worker-{}", fmt_instance_uid(0xd5d54d7201103869))
+            .parse()
+            .unwrap();
+        assert_eq!(
+            *proc.uid(),
+            Uid::Instance(0xd5d54d7201103869, Some(Label::new("worker").unwrap()))
+        );
+        assert_eq!(proc.label().map(|l| l.as_str()), Some("worker"));
     }
 
     #[test]
