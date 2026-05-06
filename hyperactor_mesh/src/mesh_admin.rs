@@ -3209,6 +3209,7 @@ mod tests {
     use hyperactor::testing::ids::test_proc_id_with_addr;
 
     use super::*;
+    use crate::mesh_id::ResourceId;
 
     // Integration tests that spawn MeshAdminAgent must pass
     // `Some("[::]:0".parse().unwrap())` as the admin_addr to get an
@@ -3471,7 +3472,6 @@ mod tests {
         use crate::host::LocalProcManager;
         use crate::host_mesh::host_agent::HostAgentMode;
         use crate::host_mesh::host_agent::ProcManagerSpawnFn;
-        use crate::mesh_id::ResourceId;
         use crate::proc_agent::ProcAgent;
         use crate::resource;
         use crate::resource::ProcSpec;
@@ -3588,14 +3588,12 @@ mod tests {
     #[test]
     fn test_build_root_payload_with_root_client() {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
-        let proc1 =
-            hyperactor_reference::ProcAddr::from_resource_name(ChannelAddr::Tcp(addr1), "host1");
+        let proc1 = ResourceId::proc_addr_from_name(ChannelAddr::Tcp(addr1), "host1");
         let actor_id1 = hyperactor::ActorAddr::root(proc1, Label::new("mesh_agent").unwrap());
         let ref1: hyperactor_reference::ActorRef<HostAgent> =
             hyperactor_reference::ActorRef::attest(actor_id1.clone());
 
-        let client_proc_id =
-            hyperactor_reference::ProcAddr::from_resource_name(ChannelAddr::Tcp(addr1), "local");
+        let client_proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Tcp(addr1), "local");
         let client_actor_id = client_proc_id.actor_id("client");
 
         let agent = MeshAdminAgent::new(
@@ -4399,11 +4397,8 @@ mod tests {
     /// PS-12: service proc routes to HostAgent.
     #[test]
     fn route_proc_handler_service_proc_yields_host() {
-        use hyperactor::ProcAddr;
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-        // Use ProcAddr::from_resource_name directly — test_proc_id_with_addr
-        // prepends "test_" which would not match SERVICE_PROC_NAME.
-        let proc_id = ProcAddr::from_resource_name(ChannelAddr::Tcp(addr), SERVICE_PROC_NAME);
+        let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Tcp(addr), SERVICE_PROC_NAME);
         let handler = route_proc_handler(&proc_id.to_string()).unwrap();
         assert!(
             matches!(handler, ResolvedProcHandler::Host(_)),
@@ -4426,10 +4421,9 @@ mod tests {
     /// PS-12: a labeled instance named "service" is still a normal proc.
     #[test]
     fn route_proc_handler_service_instance_yields_proc() {
-        use hyperactor::ProcAddr;
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         let proc_id =
-            ProcAddr::from_resource_name(ChannelAddr::Tcp(addr), "service-deadbeefdeadbeef");
+            ResourceId::proc_addr_from_name(ChannelAddr::Tcp(addr), "service-deadbeefdeadbeef");
         let handler = route_proc_handler(&proc_id.to_string()).unwrap();
         assert!(
             matches!(handler, ResolvedProcHandler::Proc(_)),

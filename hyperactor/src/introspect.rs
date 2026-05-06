@@ -1074,7 +1074,7 @@ mod tests {
     }
 
     fn test_actor_id(proc_name: &str, actor_name: &str) -> ActorAddr {
-        ProcAddr::from_resource_name(ChannelAddr::Local(0), proc_name).actor_ref(actor_name)
+        ProcAddr::named(ChannelAddr::Local(0), proc_name).actor_ref(actor_name)
     }
 
     fn failed_actor_attrs() -> Attrs {
@@ -1210,7 +1210,7 @@ mod tests {
     /// integration coverage.
     #[test]
     fn test_fi7_fi8_propagated_stopped_child() {
-        let proc_id = ProcAddr::from_resource_name(ChannelAddr::Local(0), "test_proc");
+        let proc_id = ProcAddr::named(ChannelAddr::Local(0), "test_proc");
         let child_id = proc_id.actor_id("proc_agent");
         let parent_id = proc_id.actor_id("mesh_actor");
 

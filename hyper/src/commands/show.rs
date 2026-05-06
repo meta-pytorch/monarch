@@ -11,6 +11,7 @@ use hyperactor_mesh::context;
 use hyperactor_mesh::host::SERVICE_PROC_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HostAgent;
+use hyperactor_mesh::mesh_id::ResourceId;
 use hyperactor_mesh::resource::GetStateClient;
 
 #[derive(clap::Args, Debug)]
@@ -31,9 +32,8 @@ impl ShowCommand {
 
                 // Codify obtaining a proc's agent in `hyperactor_mesh` somewhere.
                 let agent: reference::ActorRef<HostAgent> = reference::ActorRef::attest(
-                    reference::ProcAddr::from_resource_name(host, SERVICE_PROC_NAME)
-                        .actor_id(HOST_MESH_AGENT_ACTOR_NAME)
-                        .into(),
+                    ResourceId::proc_addr_from_name(host, SERVICE_PROC_NAME)
+                        .actor_id(HOST_MESH_AGENT_ACTOR_NAME),
                 );
 
                 let state = agent.get_state(&client, proc.parse().unwrap()).await?;

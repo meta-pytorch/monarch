@@ -124,6 +124,7 @@ mod tests {
 
     use super::*;
     use crate::bootstrap::local_proc_addr;
+    use crate::mesh_id::ResourceId;
 
     #[tokio::test]
     async fn test_proc_dialer() {
@@ -192,8 +193,7 @@ mod tests {
 
         // System proc on the host (name must be exactly "system"):
         let system_actor_id =
-            hyperactor::ProcAddr::from_resource_name(local_addr.clone(), "system")
-                .actor_id("actor");
+            ResourceId::proc_addr_from_name(local_addr.clone(), "system").actor_id("actor");
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             system_actor_id.port_ref(0.into()),

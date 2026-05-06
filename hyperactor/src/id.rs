@@ -252,6 +252,11 @@ impl Uid {
         }
     }
 
+    /// Parses a raw base58 uid for instances, without display delimiters.
+    pub fn parse_instance_uid_base58(s: &str) -> Result<u64, UidParseError> {
+        parse_base58_uid(s)
+    }
+
     /// Returns this uid with the provided instance label.
     ///
     /// Singleton labels are identity and are not replaced.
@@ -956,6 +961,10 @@ mod tests {
         assert_eq!(
             uid.instance_uid_base58(),
             Some(encode_base58_uid(0xd5d54d7201103869))
+        );
+        assert_eq!(
+            Uid::parse_instance_uid_base58(&encode_base58_uid(0xd5d54d7201103869)),
+            Ok(0xd5d54d7201103869)
         );
         let parsed: Uid = s.parse().unwrap();
         assert_eq!(uid, parsed);

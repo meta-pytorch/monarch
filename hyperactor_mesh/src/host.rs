@@ -99,6 +99,8 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+
+use crate::mesh_id::ResourceId;
 /// Name of the system service proc on a host — hosts the admin actor
 /// layer (HostMeshAgent, MeshAdminAgent, bridge).
 pub const SERVICE_PROC_NAME: &str = "service";
@@ -252,8 +254,8 @@ impl<M: ProcManager> Host<M> {
         // guaranteed by the ChannelAddr component, and the Name type's
         // '-' delimiter must not collide with a hash suffix.
         let service_proc_id =
-            ProcAddr::from_resource_name(frontend_addr.clone(), SERVICE_PROC_NAME);
-        let local_proc_id = ProcAddr::from_resource_name(frontend_addr.clone(), LOCAL_PROC_NAME);
+            ResourceId::proc_addr_from_name(frontend_addr.clone(), SERVICE_PROC_NAME);
+        let local_proc_id = ResourceId::proc_addr_from_name(frontend_addr.clone(), LOCAL_PROC_NAME);
         let combined = router.fallback(dial_router.boxed());
         let service_proc = Proc::configured(service_proc_id.clone(), combined.clone());
         let local_proc = Proc::configured(local_proc_id.clone(), combined);
@@ -361,7 +363,7 @@ impl<M: ProcManager> Host<M> {
             return Err(HostError::ProcExists(name));
         }
 
-        let proc_id = ProcAddr::from_resource_name(self.frontend_addr.clone(), &name);
+        let proc_id = ResourceId::proc_addr_from_name(self.frontend_addr.clone(), &name);
         let handle = self
             .manager
             .spawn(proc_id.clone(), self.backend_addr.clone(), config)
@@ -823,7 +825,7 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
         // Unbind procs from the router so if new procs are made with the same
         // names, they can use the same slot.
         for name in self.procs.drain() {
-            let proc_ref = ProcAddr::from_resource_name(self.frontend_addr.clone(), &name);
+            let proc_ref = ResourceId::proc_addr_from_name(self.frontend_addr.clone(), &name);
             self.dial_router.unbind(&Addr::from(proc_ref));
         }
         summary
@@ -1774,7 +1776,7 @@ mod tests {
         let (proc_id1, _ref) = host.spawn("proc1".to_string(), ()).await.unwrap();
         assert_eq!(
             proc_id1,
-            ProcAddr::from_resource_name(host.addr().clone(), "proc1")
+            ResourceId::proc_addr_from_name(host.addr().clone(), "proc1")
         );
         assert!(procs.lock().await.contains_key(&proc_id1));
 
@@ -1913,7 +1915,7 @@ mod tests {
     async fn local_ready_and_wait_are_immediate() {
         // Build a LocalHandle directly.
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_ref = ProcAddr::from_resource_name(addr.clone(), "p");
+        let proc_ref = ResourceId::proc_addr_from_name(addr.clone(), "p");
         let actor_ref = proc_ref.actor_ref("host_agent");
         let agent_ref = ActorRef::<()>::attest(actor_ref);
         let h = LocalHandle::<()> {
@@ -2387,7 +2389,7 @@ mod tests {
         );
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-        let client_proc_id = ProcAddr::from_resource_name(client_listen_addr, "client");
+        let client_proc_id = ResourceId::proc_addr_from_name(client_listen_addr, "client");
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
@@ -2497,7 +2499,7 @@ mod tests {
                 let client_addr = ChannelAddr::any(ChannelTransport::Unix);
                 let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
                 let client_proc_id =
-                    ProcAddr::from_resource_name(client_listen_addr, format!("client-{}", ci));
+                    ResourceId::proc_addr_from_name(client_listen_addr, format!("client-{}", ci));
                 let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
                 let _client_handle = client_proc.clone().serve(client_rx);
 
@@ -2572,7 +2574,7 @@ mod tests {
             host.addr().clone(),
         );
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-        let client_proc_id = ProcAddr::from_resource_name(client_listen_addr, "external-client");
+        let client_proc_id = ResourceId::proc_addr_from_name(client_listen_addr, "external-client");
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 

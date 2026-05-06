@@ -517,7 +517,7 @@ impl Proc {
     /// Create a new direct-addressed proc.
     pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
-        let proc_id = ProcAddr::from_resource_name(addr, name);
+        let proc_id = ProcAddr::named(addr, name);
         let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
         let handle = proc.clone().serve(rx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
@@ -546,10 +546,7 @@ impl Proc {
         // envelope ever escapes into the forwarder: it should be
         // dropped, not bounced to the fake sender.
         let signal_actor_id = ActorAddr::root(
-            ProcAddr::from_resource_name(
-                ChannelAddr::any(channel::ChannelTransport::Local),
-                "attach",
-            ),
+            ProcAddr::named(ChannelAddr::any(channel::ChannelTransport::Local), "attach"),
             crate::id::Label::strip("attach"),
         );
         let signal_port = signal_actor_id.port_ref(crate::port::Port::from(0u64));
@@ -1327,11 +1324,7 @@ impl Proc {
     ) -> Result<ActorAddr, anyhow::Error> {
         assert_eq!(parent_id.proc_ref(), self.state().proc_id);
         let proc_id = self.state().proc_id.id().clone();
-        let (_uid, label) = crate::addr::parse_resource_name(name);
-        let actor_id = match label {
-            Some(label) => crate::id::ActorId::instance_labeled(label, proc_id),
-            None => crate::id::ActorId::instance(proc_id),
-        };
+        let actor_id = crate::id::ActorId::instance_labeled(crate::id::Label::strip(name), proc_id);
         Ok(ActorAddr::new(
             actor_id,
             self.state().proc_id.location().clone(),

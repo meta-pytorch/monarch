@@ -145,18 +145,18 @@ impl ProcAddr {
         Self::new(id::ProcId::instance(label), Location::from(addr))
     }
 
-    /// Create a ProcAddr by parsing a name string in ResourceId format.
-    ///
-    /// Recognizes: `label` (singleton), `label<uid58>` (labeled instance),
-    /// `<uid58>` (unlabeled instance). Falls back to singleton from stripped name.
-    pub fn from_resource_name(addr: ChannelAddr, name: impl AsRef<str>) -> Self {
-        let (uid, label) = parse_resource_name(name.as_ref());
-        Self::new(id::ProcId::new(uid, label), Location::from(addr))
+    /// Create a ProcAddr singleton with a label stripped from the given name.
+    pub fn named(addr: ChannelAddr, name: impl AsRef<str>) -> Self {
+        Self::new(
+            id::ProcId::singleton(Label::strip(name.as_ref())),
+            Location::from(addr),
+        )
     }
 
-    /// Create an ActorAddr with the provided name within this proc.
+    /// Create an ActorAddr singleton with the provided name within this proc.
     pub fn actor_ref(&self, name: impl AsRef<str>) -> ActorAddr {
-        ActorAddr::new_from_name(self.clone(), name)
+        let uid = Uid::singleton(Label::strip(name.as_ref()));
+        self.actor_ref_uid(uid)
     }
 
     /// Create an ActorAddr with the provided uid within this proc.
@@ -173,81 +173,6 @@ impl ProcAddr {
     pub fn log_name(&self) -> &str {
         self.label().map(|l| l.as_str()).unwrap_or("?")
     }
-
-    /// The ResourceId text form: `label` (singleton), `label-uid58`
-    /// (labeled instance), or `<uid58>` (unlabeled instance).
-    pub fn resource_name(&self) -> String {
-        match self.id.uid() {
-            Uid::Singleton(label) => label.to_string(),
-            Uid::Instance(_, Some(label)) => {
-                let uid = self
-                    .id
-                    .uid()
-                    .instance_uid_base58()
-                    .expect("instance uid should have base58 text");
-                format!("{label}-{uid}")
-            }
-            Uid::Instance(uid, None) => Uid::Instance(*uid, None).to_string(),
-        }
-    }
-}
-
-/// Parse a name in ResourceId format into a (Uid, Option<Label>) pair.
-///
-/// Formats: `label` (singleton), `label<uid58>` (labeled instance),
-/// `<uid58>` (unlabeled instance). Falls back to singleton from stripped name.
-pub(crate) fn parse_resource_name(s: &str) -> (Uid, Option<Label>) {
-    fn parse_wrapped_instance_uid(s: &str) -> Option<u64> {
-        let wrapped = format!("<{s}>");
-        match Uid::from_str(&wrapped) {
-            Ok(Uid::Instance(uid, _)) => Some(uid),
-            _ => None,
-        }
-    }
-
-    if let Some(inner) = s
-        .strip_prefix('<')
-        .and_then(|inner| inner.strip_suffix('>'))
-    {
-        if let Ok(uid) = Uid::from_str(&format!("<{inner}>")) {
-            return (uid, None);
-        }
-    }
-
-    if let Some((label_part, uid_part)) = s.rsplit_once('-')
-        && uid_part.len() >= 8
-    {
-        if let (Ok(label), Ok(Uid::Instance(uid, _))) = (
-            Label::new(label_part),
-            Uid::from_str(&format!("<{uid_part}>")),
-        ) {
-            return (Uid::Instance(uid, Some(label.clone())), Some(label));
-        }
-        if let (Ok(label), Some(uid)) =
-            (Label::new(label_part), parse_wrapped_instance_uid(uid_part))
-        {
-            return (Uid::Instance(uid, Some(label.clone())), Some(label));
-        }
-    }
-
-    if let Some(open) = s.find('<') {
-        if s.ends_with('>') {
-            let label_part = &s[..open];
-            let uid_part = &s[open..];
-            if let (Ok(Uid::Instance(uid, _)), Ok(label)) =
-                (Uid::from_str(uid_part), Label::new(label_part))
-            {
-                return (Uid::Instance(uid, Some(label.clone())), Some(label));
-            }
-        }
-    }
-
-    if let Ok(label) = Label::new(s) {
-        return (Uid::Singleton(label.clone()), Some(label));
-    }
-
-    let label = Label::strip(s);
-    (Uid::Singleton(label.clone()), Some(label))
 }
 
 impl PartialEq for ProcAddr {
@@ -315,13 +240,6 @@ impl ActorAddr {
     /// Create a new [`ActorAddr`].
     pub fn new(id: ActorId, location: Location) -> Self {
         Self { id, location }
-    }
-
-    /// Create an ActorAddr from a ProcAddr and name string (parsed in ResourceId format).
-    pub fn new_from_name(proc_ref: ProcAddr, name: impl AsRef<str>) -> Self {
-        let (uid, label) = parse_resource_name(name.as_ref());
-        let actor_id = id::ActorId::new(uid, proc_ref.id.clone(), label);
-        Self::new(actor_id, proc_ref.location)
     }
 
     /// Create an ActorAddr from a ProcAddr and actor uid.
@@ -1172,59 +1090,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_resource_name_formats() {
-        assert_eq!(
-            parse_resource_name("service"),
-            (
-                Uid::Singleton(Label::new("service").unwrap()),
-                Some(Label::new("service").unwrap())
-            )
-        );
-        assert_eq!(
-            parse_resource_name(&format!("worker{}", Uid::Instance(0xabc123, None))),
-            (
-                Uid::Instance(0xabc123, Some(Label::new("worker").unwrap())),
-                Some(Label::new("worker").unwrap())
-            )
-        );
-        assert_eq!(
-            parse_resource_name(&Uid::Instance(0xabc123, None).to_string()),
-            (Uid::Instance(0xabc123, None), None)
-        );
-        assert_eq!(
-            parse_resource_name("dead"),
-            (
-                Uid::Singleton(Label::new("dead").unwrap()),
-                Some(Label::new("dead").unwrap())
-            )
-        );
-    }
-
-    #[test]
-    fn test_proc_resource_name_uses_legacy_labeled_instance_format() {
-        let proc_ref = ProcAddr::new(
-            ProcId::new(
-                Uid::Instance(0xabc123, None),
-                Some(Label::new("worker").unwrap()),
-            ),
-            ChannelAddr::Local(42).into(),
-        );
-
-        assert_eq!(
-            proc_ref.resource_name(),
-            format!(
-                "worker-{}",
-                Uid::Instance(0xabc123, None)
-                    .to_string()
-                    .trim_start_matches('<')
-                    .trim_end_matches('>')
-            )
-        );
-    }
-
-    #[test]
     fn test_reference_prefix_relationships() {
-        let proc_ref = ProcAddr::from_resource_name(ChannelAddr::Local(42), "service");
+        let proc_ref = ProcAddr::named(ChannelAddr::Local(42), "service");
         let actor_ref = proc_ref.actor_ref("host_agent");
         let port_ref = actor_ref.port_ref(Port::from(7u64));
 

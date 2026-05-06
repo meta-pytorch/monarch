@@ -3524,8 +3524,7 @@ mod tests {
         // The actor must be on unix:@4 so that after unbinding, the prefix
         // route for world1_1 (unix!@3) is the fallback, not world1_1/actor1 (unix!@4).
         let direct_actor_ref: ActorAddr =
-            ProcAddr::from_resource_name("unix:@4".parse().unwrap(), "my_proc")
-                .actor_id("my_actor");
+            ProcAddr::named("unix:@4".parse().unwrap(), "my_proc").actor_id("my_actor");
         router.bind(
             Addr::Actor(direct_actor_ref.clone()),
             "unix:@5".parse().unwrap(),
