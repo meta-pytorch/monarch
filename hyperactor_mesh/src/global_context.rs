@@ -557,7 +557,7 @@ mod tests {
         let instance = testing::instance();
         let mut hm = testing::host_mesh(2).await;
         let _mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         assert!(

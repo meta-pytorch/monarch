@@ -63,6 +63,7 @@ async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> 
             "mkey_test_procs",
             hyperactor_mesh::extent!(procs = 2),
             None,
+            None,
         )
         .await?;
 

@@ -613,7 +613,7 @@ mod tests {
         .expect("failed to bootstrap HostMesh");
 
         let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity(), None)
+            .spawn(&instance, "p0", Extent::unity(), None, None)
             .await
             .expect("failed to spawn ProcMesh");
 

@@ -82,6 +82,7 @@ async fn test_multi_pd_segment_registration() -> Result<(), anyhow::Error> {
             "multi_pd_procs",
             hyperactor_mesh::extent!(procs = 3),
             None,
+            None,
         )
         .await?;
 
