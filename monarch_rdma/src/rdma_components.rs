@@ -62,7 +62,6 @@ use crate::backend::RdmaRemoteBackendContext;
 use crate::backend::ibverbs::IbvBuffer;
 use crate::backend::ibverbs::manager_actor::IbvBackend;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
-use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use crate::backend::tcp::manager_actor::TcpBackend;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::RdmaLocalMemory;
@@ -213,42 +212,18 @@ impl RdmaRemoteBuffer {
             .any(|b| matches!(b, RdmaRemoteBackendContext::Ibverbs(..)))
     }
 
-    /// Resolve the ibverbs backend context for this buffer.
+    /// Extract the ibverbs backend context for this buffer.
     ///
-    /// Returns `None` if the buffer has no ibverbs backend context (i.e.,
-    /// the remote side was created without ibverbs). Returns `Some(Err(...))`
-    /// if the context exists but lazy MR resolution fails. Returns
-    /// `Some(Ok(...))` on success.
-    pub async fn resolve_ibv(
-        &self,
-        client: &impl context::Actor,
-    ) -> Option<Result<(reference::ActorRef<IbvManagerActor>, IbvBuffer), anyhow::Error>> {
-        let (remote_ibv_mgr, remote_ibv_buf): (
-            &reference::ActorRef<IbvManagerActor>,
-            &Arc<tokio::sync::OnceCell<IbvBuffer>>,
-        ) = self.backends.iter().find_map(|b| match b {
-            RdmaRemoteBackendContext::Ibverbs(mgr, buf) => Some((mgr, buf)),
+    /// Returns `None` if the buffer has no ibverbs backend context
+    /// (i.e., the remote side was created without ibverbs).
+    pub fn resolve_ibv(&self) -> Option<(reference::ActorRef<IbvManagerActor>, IbvBuffer)> {
+        self.backends.iter().find_map(|b| match b {
+            RdmaRemoteBackendContext::Ibverbs(mgr, buf) => Some((mgr.clone(), buf.clone())),
             _ => None,
-        })?;
-
-        Some(
-            remote_ibv_buf
-                .get_or_try_init(async || {
-                    remote_ibv_mgr
-                        .request_buffer(client, self.id)
-                        .await?
-                        .ok_or_else(|| anyhow::anyhow!("buffer {} not found", self.id))
-                })
-                .await
-                .cloned()
-                .map(|buf| (remote_ibv_mgr.clone(), buf)),
-        )
+        })
     }
 
     /// Extract the TCP backend context from this buffer.
-    ///
-    /// Unlike [`resolve_ibv`], no lazy initialization is needed -- the
-    /// TCP backend only needs the remote actor ref and the buffer id.
     pub fn resolve_tcp(&self) -> Result<(ActorRef<TcpManagerActor>, usize), anyhow::Error> {
         self.backends
             .iter()
