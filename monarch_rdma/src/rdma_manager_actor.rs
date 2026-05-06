@@ -42,11 +42,11 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::OnceCell;
 use typeuri::Named;
 
 use crate::backend::RdmaRemoteBackendContext;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
+use crate::backend::ibverbs::manager_actor::IbvManagerLocalMessageClient;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
@@ -289,16 +289,21 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         self.next_remote_buf_id += 1;
         let size = local.size();
 
-        self.buffers.insert(remote_buf_id, local);
-
         let mut backends = Vec::new();
 
         if let Some(ibv) = &self.ibverbs {
+            let ibv_buffer = ibv
+                .handle()
+                .register_remote_buffer(cx, remote_buf_id, local.clone())
+                .await?
+                .map_err(|e| anyhow::anyhow!(e))?;
             backends.push(RdmaRemoteBackendContext::Ibverbs(
                 ibv.handle().bind(),
-                Arc::new(OnceCell::new()),
+                ibv_buffer,
             ));
         }
+
+        self.buffers.insert(remote_buf_id, local);
 
         backends.push(RdmaRemoteBackendContext::Tcp(self.tcp.handle().bind()));
 

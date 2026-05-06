@@ -8,7 +8,6 @@
 
 //! Tests for mlx5dv-specific functionality (indirect mkeys, segment scanning).
 
-use hyperactor::context as actor_context;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
@@ -127,17 +126,11 @@ async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> 
     Ok(())
 }
 
-/// Resolve the ibverbs `(lkey, rkey)` of a remote buffer. Async
-/// because the `IbvBuffer` is lazily fetched from the owning
-/// `IbvManagerActor`.
-async fn ibv_keys_of(
-    cx: &(impl actor_context::Actor + Send + Sync),
-    remote: &crate::RdmaRemoteBuffer,
-) -> Result<(u32, u32), anyhow::Error> {
+/// Extract the ibverbs `(lkey, rkey)` from a remote buffer.
+fn ibv_keys_of(remote: &crate::RdmaRemoteBuffer) -> Result<(u32, u32), anyhow::Error> {
     let (_mgr, buf) = remote
-        .resolve_ibv(cx)
-        .await
-        .ok_or_else(|| anyhow::anyhow!("remote buffer has no ibverbs backend context"))??;
+        .resolve_ibv()
+        .ok_or_else(|| anyhow::anyhow!("remote buffer has no ibverbs backend context"))?;
     Ok((buf.lkey, buf.rkey))
 }
 
@@ -229,8 +222,8 @@ async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow
         .next()
         .expect("buf B");
 
-    let (lkey_a, rkey_a) = ibv_keys_of(instance, &buf_a).await?;
-    let (lkey_b, rkey_b) = ibv_keys_of(instance, &buf_b).await?;
+    let (lkey_a, rkey_a) = ibv_keys_of(&buf_a)?;
+    let (lkey_b, rkey_b) = ibv_keys_of(&buf_b)?;
     assert_ne!(
         (lkey_a, rkey_a),
         (lkey_b, rkey_b),
@@ -247,7 +240,7 @@ async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow
         .next()
         .expect("buf C");
 
-    let (lkey_c, rkey_c) = ibv_keys_of(instance, &buf_c).await?;
+    let (lkey_c, rkey_c) = ibv_keys_of(&buf_c)?;
     assert_eq!(
         (lkey_c, rkey_c),
         (lkey_a, rkey_a),
@@ -418,9 +411,9 @@ async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_max_sge() -> Result<(
     // indirect mkey — sanity check that the override took effect.
     // Buf C lands at an address inside the [mr_size, phys_size) gap;
     // it must also fall through to dmabuf and get a distinct lkey.
-    let (lkey_a, _) = ibv_keys_of(instance, &buf_a).await?;
-    let (lkey_b, _) = ibv_keys_of(instance, &buf_b).await?;
-    let (lkey_c, _) = ibv_keys_of(instance, &buf_c).await?;
+    let (lkey_a, _) = ibv_keys_of(&buf_a)?;
+    let (lkey_b, _) = ibv_keys_of(&buf_b)?;
+    let (lkey_c, _) = ibv_keys_of(&buf_c)?;
     assert_ne!(
         lkey_a, lkey_b,
         "buf B should be registered via the dmabuf fallback after \

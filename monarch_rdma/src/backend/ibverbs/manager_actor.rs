@@ -59,33 +59,18 @@ use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
+use crate::local_memory::RdmaLocalMemory;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::GetIbvActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
-use crate::rdma_manager_actor::RdmaManagerMessageClient;
 use crate::rdma_manager_actor::get_rdmaxcel_error_message;
 use crate::validate_execution_context;
 
 /// Messages handled by [`IbvManagerActor`].
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub enum IbvManagerMessage {
-    /// Register the MR for a buffer identified by `remote_buf_id`. Resolves
-    /// the local memory via the parent [`RdmaManagerActor`]'s
-    /// `RequestLocalMemory`, registers it as an ibverbs MR, and returns
-    /// the resulting [`IbvBuffer`].
-    ///
-    /// Returns `None` if the buffer has already been released or does not
-    /// exist.
-    RequestBuffer {
-        remote_buf_id: usize,
-        #[reply]
-        reply: reference::OncePortRef<Option<IbvBuffer>>,
-    },
-    /// Release a buffer registration by `remote_buf_id`.
-    /// IMPORTANT: This needs to be fire-and-forget (no reply port)
-    /// to avoid a circular deadlock where RdmaManagerActor waits for
-    /// IbvManagerMessage::ReleaseBuffer while IbvManagerActor waits for
-    /// RdmaManagerMessage::RequestLocalMemory.
+    /// Release a buffer registration by `remote_buf_id`. Fire-and-forget
+    /// (no reply port) to avoid blocking the caller during teardown.
     ReleaseBuffer { remote_buf_id: usize },
     RequestQueuePair {
         other: reference::ActorRef<IbvManagerActor>,
@@ -145,6 +130,19 @@ pub enum IbvManagerLocalMessage {
         id: usize,
         #[reply]
         reply: OncePortHandle<Result<(), String>>,
+    },
+    /// Register a remote-facing buffer's MR and return its
+    /// [`IbvBuffer`]. Called by
+    /// [`crate::rdma_manager_actor::RdmaManagerActor::request_buffer`]
+    /// at buffer-creation time.
+    ///
+    /// The MR lives in [`IbvManagerActor::buffer_registrations`] and
+    /// is deregistered on [`IbvManagerMessage::ReleaseBuffer`].
+    RegisterRemoteBuffer {
+        remote_buf_id: usize,
+        local: Arc<dyn RdmaLocalMemory>,
+        #[reply]
+        reply: OncePortHandle<Result<IbvBuffer, String>>,
     },
 }
 
@@ -874,41 +872,6 @@ impl IbvManagerActor {
 #[async_trait]
 #[hyperactor::handle(IbvManagerMessage)]
 impl IbvManagerMessageHandler for IbvManagerActor {
-    async fn request_buffer(
-        &mut self,
-        cx: &Context<Self>,
-        remote_buf_id: usize,
-    ) -> Result<Option<IbvBuffer>, anyhow::Error> {
-        // If already registered, return it
-        if let Some(buf) = self.buffer_registrations.get(&remote_buf_id) {
-            return Ok(Some(buf.clone()));
-        }
-
-        // Resolve local memory from the parent RdmaManagerActor.
-        // Returns None if the buffer has already been released or does
-        // not exist.
-        let owner = self.owner.get().unwrap();
-        let mem = match owner.request_local_memory(cx, remote_buf_id).await? {
-            Some(mem) => mem,
-            None => return Ok(None),
-        };
-
-        let (mrv, device_name) = self.register_mr_impl(mem.addr(), mem.size())?;
-
-        let buf = IbvBuffer {
-            mr_id: mrv.id,
-            lkey: mrv.lkey,
-            rkey: mrv.rkey,
-            addr: mrv.rdma_addr,
-            size: mrv.size,
-            device_name,
-        };
-
-        self.buffer_registrations.insert(remote_buf_id, buf.clone());
-
-        Ok(Some(buf))
-    }
-
     async fn release_buffer(
         &mut self,
         _cx: &Context<Self>,
@@ -990,8 +953,8 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         }
 
         // The domain is guaranteed to exist here: register_mr is always called before
-        // initialize_qp, either in execute_op (for the local actor) or via resolve_ibv
-        // (for the remote actor), and register_mr always calls get_or_create_device_domain.
+        // initialize_qp, either in execute_op or in register_remote_buffer at
+        // buffer-creation time, and register_mr always calls get_or_create_device_domain.
         let (domain, _) = self.device_domains.get(&self_device).ok_or_else(|| {
             anyhow::anyhow!(
                 "device domain for '{}' not found; register_mr must be called before initialize_qp",
@@ -1111,6 +1074,31 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
         id: usize,
     ) -> Result<Result<(), String>, anyhow::Error> {
         Ok(self.deregister_mr_impl(id).map_err(|e| e.to_string()))
+    }
+
+    async fn register_remote_buffer(
+        &mut self,
+        _cx: &Context<Self>,
+        remote_buf_id: usize,
+        local: Arc<dyn RdmaLocalMemory>,
+    ) -> Result<Result<IbvBuffer, String>, anyhow::Error> {
+        if let Some(buf) = self.buffer_registrations.get(&remote_buf_id) {
+            return Ok(Ok(buf.clone()));
+        }
+        let (mrv, device_name) = match self.register_mr_impl(local.addr(), local.size()) {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e.to_string())),
+        };
+        let buf = IbvBuffer {
+            mr_id: mrv.id,
+            lkey: mrv.lkey,
+            rkey: mrv.rkey,
+            addr: mrv.rdma_addr,
+            size: mrv.size,
+            device_name,
+        };
+        self.buffer_registrations.insert(remote_buf_id, buf.clone());
+        Ok(Ok(buf))
     }
 }
 
@@ -1288,18 +1276,14 @@ impl RdmaBackend for IbvBackend {
     ) -> Result<(), anyhow::Error> {
         let mut ibv_ops = Vec::with_capacity(ops.len());
         for op in ops {
-            let (remote_ibv_mgr, remote_ibv_buffer): (
-                reference::ActorRef<IbvManagerActor>,
-                IbvBuffer,
-            ) = op.remote.resolve_ibv(cx).await.ok_or_else(|| {
+            let (remote_manager, remote_buffer) = op.remote.resolve_ibv().ok_or_else(|| {
                 anyhow::anyhow!("ibverbs backend not found for buffer: {:?}", op.remote)
-            })??;
-
+            })?;
             ibv_ops.push(IbvOp {
                 op_type: op.op_type,
                 local_memory: op.local.clone(),
-                remote_buffer: remote_ibv_buffer,
-                remote_manager: remote_ibv_mgr,
+                remote_buffer,
+                remote_manager,
             });
         }
 
