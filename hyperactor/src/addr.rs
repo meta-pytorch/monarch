@@ -154,19 +154,14 @@ impl ProcAddr {
     }
 
     /// Create an ActorAddr singleton with the provided name within this proc.
-    pub fn actor_ref(&self, name: impl AsRef<str>) -> ActorAddr {
+    pub fn actor_addr(&self, name: impl AsRef<str>) -> ActorAddr {
         let uid = Uid::singleton(Label::strip(name.as_ref()));
-        self.actor_ref_uid(uid)
+        self.actor_addr_uid(uid)
     }
 
     /// Create an ActorAddr with the provided uid within this proc.
-    pub fn actor_ref_uid(&self, uid: Uid) -> ActorAddr {
+    pub fn actor_addr_uid(&self, uid: Uid) -> ActorAddr {
         ActorAddr::new_from_uid(self.clone(), uid)
-    }
-
-    /// Compatibility alias for callers still using `actor_id` naming.
-    pub fn actor_id(&self, name: impl AsRef<str>) -> ActorAddr {
-        self.actor_ref(name)
     }
 
     /// A human-readable name for logging.
@@ -275,17 +270,12 @@ impl ActorAddr {
     }
 
     /// Reconstruct the parent ProcAddr (with location preserved).
-    pub fn proc_ref(&self) -> ProcAddr {
+    pub fn proc_addr(&self) -> ProcAddr {
         ProcAddr::new(self.id.proc_id().clone(), self.location.clone())
     }
 
-    /// Compatibility alias for callers still using `proc_id` naming.
-    pub fn proc_id(&self) -> ProcAddr {
-        self.proc_ref()
-    }
-
     /// Create a PortAddr for a port on this actor.
-    pub fn port_ref(&self, port: Port) -> PortAddr {
+    pub fn port_addr(&self, port: Port) -> PortAddr {
         PortAddr::new(
             id::PortId::new(self.id.clone(), port),
             self.location.clone(),
@@ -421,8 +411,13 @@ impl PortAddr {
     }
 
     /// Reconstruct the parent ActorAddr (with location preserved).
-    pub fn actor_ref(&self) -> ActorAddr {
+    pub fn actor_addr(&self) -> ActorAddr {
         ActorAddr::new(self.id.actor_id().clone(), self.location.clone())
+    }
+
+    /// Reconstruct the parent ActorAddr (with location preserved).
+    pub fn actor_ref(&self) -> ActorAddr {
+        self.actor_addr()
     }
 
     /// Send a serialized message to this port, provided a sending capability.
@@ -563,9 +558,9 @@ impl Addr {
     /// - Actor is a prefix of any Port on the same actor.
     pub fn is_prefix_of(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Proc(p), Self::Actor(a)) => *p == a.proc_ref(),
-            (Self::Proc(p), Self::Port(pt)) => *p == pt.actor_ref().proc_ref(),
-            (Self::Actor(a), Self::Port(pt)) => *a == pt.actor_ref(),
+            (Self::Proc(p), Self::Actor(a)) => *p == a.proc_addr(),
+            (Self::Proc(p), Self::Port(pt)) => *p == pt.actor_addr().proc_addr(),
+            (Self::Actor(a), Self::Port(pt)) => *a == pt.actor_addr(),
             (Self::Proc(p1), Self::Proc(p2)) => p1 == p2,
             (Self::Actor(a1), Self::Actor(a2)) => a1 == a2,
             (Self::Port(p1), Self::Port(p2)) => p1 == p2,
@@ -573,12 +568,12 @@ impl Addr {
         }
     }
 
-    /// The proc ref of this reference.
-    pub fn proc_ref(&self) -> ProcAddr {
+    /// The proc addr of this reference.
+    pub fn proc_addr(&self) -> ProcAddr {
         match self {
             Self::Proc(p) => p.clone(),
-            Self::Actor(a) => a.proc_ref(),
-            Self::Port(p) => p.actor_ref().proc_ref(),
+            Self::Actor(a) => a.proc_addr(),
+            Self::Port(p) => p.actor_addr().proc_addr(),
         }
     }
 }
@@ -592,7 +587,7 @@ impl PartialOrd for Addr {
 impl Ord for Addr {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Order by: proc, then actor uid (None < Some), then port (None < Some).
-        let proc_ord = self.proc_ref().cmp(&other.proc_ref());
+        let proc_ord = self.proc_addr().cmp(&other.proc_addr());
         if proc_ord != std::cmp::Ordering::Equal {
             return proc_ord;
         }
@@ -1092,8 +1087,8 @@ mod tests {
     #[test]
     fn test_reference_prefix_relationships() {
         let proc_ref = ProcAddr::named(ChannelAddr::Local(42), "service");
-        let actor_ref = proc_ref.actor_ref("host_agent");
-        let port_ref = actor_ref.port_ref(Port::from(7u64));
+        let actor_ref = proc_ref.actor_addr("host_agent");
+        let port_ref = actor_ref.port_addr(Port::from(7u64));
 
         assert!(Addr::Proc(proc_ref.clone()).is_prefix_of(&Addr::Actor(actor_ref.clone())));
         assert!(Addr::Proc(proc_ref.clone()).is_prefix_of(&Addr::Port(port_ref.clone())));

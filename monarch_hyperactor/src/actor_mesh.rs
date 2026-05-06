@@ -377,7 +377,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
                 let _ = monarch_with_gil(|py: Python<'_>| {
                     let exception_str = crate::logging::format_traceback(py, &pyerr);
                     tracing::error!(
-                        actor_id = instance.self_id().to_string(),
+                        actor_id = instance.self_addr().to_string(),
                         "error occurred during cast unresolved: {}",
                         exception_str
                     );
@@ -722,7 +722,7 @@ impl PythonActorMeshImpl {
         Ok(self
             .mesh_ref()
             .get(rank)
-            .map(|r| hyperactor::ActorRef::into_actor_id(r.clone()))
+            .map(|r| hyperactor::ActorRef::into_actor_addr(r.clone()))
             .map(PyActorAddr::from))
     }
 

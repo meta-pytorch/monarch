@@ -60,7 +60,7 @@ mod tests {
                 .unwrap(),
             "world",
         )
-        .actor_id("a")
+        .actor_addr("a")
     }
 
     fn actor_props(status: &str) -> NodeProperties {

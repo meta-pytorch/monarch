@@ -809,7 +809,7 @@ mod tests {
                 .unwrap(),
             "world",
         );
-        NodeRef::Host(proc_id.actor_id("host_agent"))
+        NodeRef::Host(proc_id.actor_addr("host_agent"))
     }
 
     fn mock_proc_ref() -> NodeRef {

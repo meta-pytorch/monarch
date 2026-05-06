@@ -548,7 +548,7 @@ mod tests {
                 .unwrap(),
             "world",
         );
-        NodeRef::Actor(proc_id.actor_id(name))
+        NodeRef::Actor(proc_id.actor_addr(name))
     }
 
     fn mock_payload(identity: NodeRef) -> NodePayload {

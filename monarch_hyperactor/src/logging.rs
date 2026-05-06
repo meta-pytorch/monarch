@@ -636,8 +636,8 @@ mod tests {
             "should spawn exactly one proc"
         );
         assert_eq!(
-            instance.self_id().proc_ref(),
-            proc.proc_id().clone(),
+            instance.self_addr().proc_addr(),
+            proc.proc_addr().clone(),
             "returned Instance<()> should be bound to the root Proc"
         );
 

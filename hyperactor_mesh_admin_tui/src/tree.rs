@@ -301,7 +301,7 @@ mod tests {
                 .unwrap(),
             "world",
         );
-        NodeRef::Host(proc_id.actor_id(name))
+        NodeRef::Host(proc_id.actor_addr(name))
     }
 
     fn proc_ref(name: &str) -> NodeRef {
@@ -321,7 +321,7 @@ mod tests {
                 .unwrap(),
             "world",
         );
-        NodeRef::Actor(proc_id.actor_id(name))
+        NodeRef::Actor(proc_id.actor_addr(name))
     }
 
     // Helper to find a node by reference using algebraic fold.

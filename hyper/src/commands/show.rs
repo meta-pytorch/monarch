@@ -33,7 +33,7 @@ impl ShowCommand {
                 // Codify obtaining a proc's agent in `hyperactor_mesh` somewhere.
                 let agent: reference::ActorRef<HostAgent> = reference::ActorRef::attest(
                     ResourceId::proc_addr_from_name(host, SERVICE_PROC_NAME)
-                        .actor_id(HOST_MESH_AGENT_ACTOR_NAME),
+                        .actor_addr(HOST_MESH_AGENT_ACTOR_NAME),
                 );
 
                 let state = agent.get_state(&client, proc.parse().unwrap()).await?;

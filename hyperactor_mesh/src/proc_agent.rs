@@ -202,7 +202,7 @@ impl ActorInstanceState {
             if let Err(e) = subscriber.send_with_headers(cx, headers, state.clone()) {
                 tracing::warn!(
                     "failed to send state update to subscriber {}: {}",
-                    subscriber.port_id(),
+                    subscriber.port_addr(),
                     e,
                 );
             }
@@ -426,10 +426,10 @@ impl ProcAgent {
         attrs.set(
             crate::introspect::PROC_NAME,
             self.proc
-                .proc_id()
+                .proc_addr()
                 .label()
                 .map(|l| l.as_str().to_string())
-                .unwrap_or_else(|| self.proc.proc_id().id().to_string()),
+                .unwrap_or_else(|| self.proc.proc_addr().id().to_string()),
         );
         attrs.set(crate::introspect::NUM_ACTORS, num_live);
         attrs.set(hyperactor::introspect::CHILDREN, children);
@@ -486,7 +486,7 @@ impl Actor for ProcAgent {
         // Resolve terminated actor snapshots via QueryChild so that
         // dead actors remain directly queryable by reference.
         let proc = self.proc.clone();
-        let self_id = this.self_id().clone();
+        let self_id = this.self_addr().clone();
         this.set_query_child_handler(move |child_ref| {
             use hyperactor::introspect::IntrospectResult;
 
@@ -504,7 +504,7 @@ impl Actor for ProcAgent {
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
             if let Addr::Proc(proc_ref) = child_ref {
-                if *proc_ref == *proc.proc_id() {
+                if *proc_ref == *proc.proc_addr() {
                     let (mut children, mut system_children) = collect_live_children(&proc);
 
                     let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
@@ -616,7 +616,7 @@ impl Actor for ProcAgent {
                 let identity = match child_ref {
                     Addr::Proc(p) => hyperactor::introspect::IntrospectRef::Proc(p.clone()),
                     Addr::Actor(a) => hyperactor::introspect::IntrospectRef::Actor(a.clone()),
-                    Addr::Port(p) => hyperactor::introspect::IntrospectRef::Actor(p.actor_ref()),
+                    Addr::Port(p) => hyperactor::introspect::IntrospectRef::Actor(p.actor_addr()),
                 };
                 IntrospectResult {
                     identity,
@@ -664,14 +664,14 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
             if event.is_error() {
                 tracing::warn!(
                     name = "SupervisionEvent",
-                    proc_id = %self.proc.proc_id(),
+                    proc_id = %self.proc.proc_addr(),
                     %event,
                     "recording supervision error",
                 );
             } else {
                 tracing::debug!(
                     name = "SupervisionEvent",
-                    proc_id = %self.proc.proc_id(),
+                    proc_id = %self.proc.proc_addr(),
                     %event,
                     "recording non-error supervision event",
                 );
@@ -710,7 +710,7 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
             // the whole process on error events.
             tracing::error!(
                 name = "supervision_event_transmit_failed",
-                proc_id = %cx.self_id().proc_ref(),
+                proc_id = %cx.self_addr().proc_addr(),
                 %event,
                 "could not propagate supervision event, crashing",
             );
@@ -953,9 +953,9 @@ impl Handler<resource::GetRankStatus> for ProcAgent {
         // This only means some actor that requested the state of an actor failed to receive it.
         if let Err(e) = result {
             tracing::warn!(
-                actor = %cx.self_id(),
+                actor = %cx.self_addr(),
                 "failed to send GetRankStatus reply to {} due to error: {}",
-                get_rank_status.reply.port_id().actor_id(),
+                get_rank_status.reply.port_addr().actor_addr(),
                 e
             );
         }
@@ -1020,9 +1020,9 @@ impl Handler<resource::GetState<ActorState>> for ProcAgent {
         let result = get_state.reply.send(cx, state);
         if let Err(e) = result {
             tracing::warn!(
-                actor = %cx.self_id(),
+                actor = %cx.self_addr(),
                 "failed to send GetState reply to {} due to error: {}",
-                get_state.reply.port_id().actor_id(),
+                get_state.reply.port_addr().actor_addr(),
                 e
             );
         }
@@ -1060,9 +1060,9 @@ impl Handler<resource::StreamState<ActorState>> for ProcAgent {
             .send_with_headers(cx, headers, state)
         {
             tracing::warn!(
-                actor = %cx.self_id(),
+                actor = %cx.self_addr(),
                 "failed to send initial StreamState to {}: {}",
-                stream_state.subscriber.port_id().actor_id(),
+                stream_state.subscriber.port_addr().actor_addr(),
                 e,
             );
         }
@@ -1238,7 +1238,7 @@ mod tests {
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
         let agent_id: hyperactor_reference::ActorAddr =
-            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME);
+            proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Helper: send QueryChild(Proc) and return the payload with a
@@ -1248,7 +1248,7 @@ mod tests {
             port.send(
                 client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Addr::Proc(proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Addr::Proc(proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
             )
@@ -1346,7 +1346,7 @@ mod tests {
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
         let agent_id: hyperactor_reference::ActorAddr =
-            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME);
+            proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Concurrent query task: send QueryChild(Proc) every 10ms.
@@ -1354,7 +1354,7 @@ mod tests {
             Proc::direct(ChannelTransport::Unix.any(), "query_client".to_string()).unwrap();
         let (query_client, _qc_handle) = query_client_proc.instance("qc").unwrap();
         let query_port = port.clone();
-        let query_proc_id = proc.proc_id().clone();
+        let query_proc_id = proc.proc_addr().clone();
         let query_count = Arc::new(AtomicUsize::new(0));
         let query_count_clone = query_count.clone();
         let query_task = tokio::spawn(async move {
@@ -1390,7 +1390,7 @@ mod tests {
             for i in 0..ITERATIONS {
                 let name = format!("churn_{}", i);
                 let handle = proc.spawn(&name, ExtraActor).unwrap();
-                let actor_id = handle.actor_id().clone();
+                let actor_id = handle.actor_addr().clone();
                 if let Some(mut status) = proc.stop_actor(&actor_id, "churn".to_string()) {
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(5),
@@ -1425,7 +1425,7 @@ mod tests {
         port.send(
             &client,
             IntrospectMessage::QueryChild {
-                child_ref: hyperactor_reference::Addr::Proc(proc.proc_id().clone()),
+                child_ref: hyperactor_reference::Addr::Proc(proc.proc_addr().clone()),
                 reply: reply_port.bind(),
             },
         )
@@ -1671,7 +1671,7 @@ mod tests {
         // QueryChild(Proc) — same aggregation logic as mesh-admin
         // resolution.
         let agent_id: hyperactor_reference::ActorAddr =
-            proc.proc_id().actor_ref(PROC_AGENT_ACTOR_NAME);
+            proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Poll until queue stats are non-zero.
@@ -1681,7 +1681,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Addr::Proc(proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Addr::Proc(proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
             )

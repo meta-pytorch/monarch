@@ -194,8 +194,8 @@ impl Actor for CommActor {
             let return_port = PortRef::attest_message_port(sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to forward the cast message; returning to origin {}",
-                cx.self_id(),
-                return_port.port_id(),
+                cx.self_addr(),
+                return_port.port_addr(),
             )));
 
             // Needed so that the receiver of the undeliverable message can easily find the
@@ -208,7 +208,7 @@ impl Actor for CommActor {
                     let error = DeliveryError::BrokenLink(format!(
                         "error occured when returning ForwardMessage to the original \
                         sender's port {}; error is: {}",
-                        return_port.port_id(),
+                        return_port.port_addr(),
                         err,
                     ));
                     message_envelope.set_error(error);
@@ -225,8 +225,8 @@ impl Actor for CommActor {
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to deliver the cast message to the dest \
                 actor; returning to origin {}",
-                cx.self_id(),
-                return_port.port_id(),
+                cx.self_addr(),
+                return_port.port_addr(),
             )));
             return_port
                 .send(cx, Undeliverable(message_envelope.clone()))
@@ -234,7 +234,7 @@ impl Actor for CommActor {
                     let error = DeliveryError::BrokenLink(format!(
                         "error occured when returning cast message to the origin \
                         sender {}; error is: {}",
-                        return_port.port_id(),
+                        return_port.port_addr(),
                         err,
                     ));
                     message_envelope.set_error(error);
@@ -333,10 +333,10 @@ impl CommActor {
 
         set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
         cx.post_with_external_seq_info(
-            cx.self_id()
-                .proc_ref()
-                .actor_ref_uid(message.dest_port().actor_uid().clone())
-                .port_ref(hyperactor::port::Port::from(message.dest_port().port())),
+            cx.self_addr()
+                .proc_addr()
+                .actor_addr_uid(message.dest_port().actor_uid().clone())
+                .port_addr(hyperactor::port::Port::from(message.dest_port().port())),
             headers,
             wirevalue::Any::serialize(message.data())?,
         );
@@ -458,7 +458,7 @@ impl Handler<CastMessage> for CommActor {
 
         let fwd_message = ForwardMessage {
             dests: vec![frame],
-            sender: cx.self_id().clone(),
+            sender: cx.self_addr().clone(),
             message: cast_message.message,
             seq: *seq,
             last_seq,
@@ -835,7 +835,7 @@ mod tests {
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
                 actor_mesh_id,
-                client.self_id().clone(),
+                client.self_addr().clone(),
                 shape,
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -864,7 +864,7 @@ mod tests {
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
                 actor_mesh_id,
-                client.self_id().clone(),
+                client.self_addr().clone(),
                 shape,
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -874,7 +874,7 @@ mod tests {
             let last_seq = next_seq;
             next_seq += 1;
             multicast::ForwardMessage {
-                sender: client.self_id().clone(),
+                sender: client.self_addr().clone(),
                 dests: vec![frame],
                 seq: next_seq,
                 last_seq,
@@ -894,7 +894,7 @@ mod tests {
             let slice = Slice::new_row_major(vec![1]);
             let region = Region::new(vec!["rank".to_string()], slice.clone());
             let cast_msg = multicast::CastMessageV1::new::<TestActor, TestMessage>(
-                client.self_id().clone(),
+                client.self_addr().clone(),
                 actor_mesh_id,
                 region.clone(),
                 hyperactor_config::Flattrs::new(),
@@ -946,7 +946,7 @@ mod tests {
 
     // Helper to look up the rank for a given actor ID using the rank_lookup table.
     fn lookup_rank(actor_id: &ActorAddr, rank_lookup: &HashMap<ProcAddr, usize>) -> usize {
-        let proc_id = actor_id.proc_ref();
+        let proc_id = actor_id.proc_addr();
         *rank_lookup
             .get(&proc_id)
             .unwrap_or_else(|| panic!("proc rank not found for {}", proc_id))
@@ -1113,16 +1113,16 @@ mod tests {
                 assert_eq!(&first, client_reply);
                 // Other ports's actor ID must be dest[?].comm[0], where ? is
                 // the rank we want to extract here.
-                assert!(dst.actor_id().label().unwrap().as_str().contains("comm"));
+                assert!(dst.actor_addr().label().unwrap().as_str().contains("comm"));
                 let actor_path = path
                     .into_iter()
                     .map(|p: PortAddr| {
-                        assert!(p.actor_id().label().unwrap().as_str().contains("comm"));
-                        let actor_ref = p.actor_ref();
+                        assert!(p.actor_addr().label().unwrap().as_str().contains("comm"));
+                        let actor_ref = p.actor_addr();
                         lookup_rank(&actor_ref, rank_lookup)
                     })
                     .collect();
-                let dst_actor_ref = dst.actor_ref();
+                let dst_actor_ref = dst.actor_addr();
                 (lookup_rank(&dst_actor_ref, rank_lookup), actor_path)
             })
             .collect();
@@ -1173,10 +1173,18 @@ mod tests {
             let (reply1, reply2): (BTreeMap<_, _>, BTreeMap<_, _>) = build_paths(&edges)
                 .0
                 .into_iter()
-                .partition(|(_dst, path)| path[0] == *reply_port_ref1.port_id());
+                .partition(|(_dst, path)| path[0] == *reply_port_ref1.port_addr());
             (
-                get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id(), rank_lookup),
-                get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id(), rank_lookup),
+                get_ranks(
+                    PathToLeaves(reply1),
+                    reply_port_ref1.port_addr(),
+                    rank_lookup,
+                ),
+                get_ranks(
+                    PathToLeaves(reply2),
+                    reply_port_ref2.port_addr(),
+                    rank_lookup,
+                ),
             )
         };
 
@@ -1200,7 +1208,7 @@ mod tests {
                 let rank_u64 = rank as u64;
                 reply_to1.send(instance, rank_u64).unwrap();
                 let my_reply = MyReply {
-                    sender: dest_actor.actor_id().clone(),
+                    sender: dest_actor.actor_addr().clone(),
                     value: rank_u64,
                 };
                 reply_to2.send(instance, my_reply.clone()).unwrap();
@@ -1225,7 +1233,7 @@ mod tests {
                 for j in 0..n {
                     let value = (i * 100 + j) as u64;
                     let my_reply = MyReply {
-                        sender: dest_actor.actor_id().clone(),
+                        sender: dest_actor.actor_addr().clone(),
                         value,
                     };
                     reply_to2.send(instance, my_reply.clone()).unwrap();
@@ -1233,10 +1241,10 @@ mod tests {
                 }
                 assert!(
                     expected2
-                        .insert(dest_actor.actor_id().clone(), sent2)
+                        .insert(dest_actor.actor_addr().clone(), sent2)
                         .is_none(),
                     "duplicate actor_id {} in map",
-                    dest_actor.actor_id()
+                    dest_actor.actor_addr()
                 );
             }
 
@@ -1375,8 +1383,8 @@ mod tests {
                     assert_ne!(reply_to1, reply_port_ref1);
                     assert!(
                         reply_to1
-                            .port_id()
-                            .actor_id()
+                            .port_addr()
+                            .actor_addr()
                             .label()
                             .unwrap()
                             .as_str()
@@ -1385,8 +1393,8 @@ mod tests {
                     assert_ne!(reply_to2, reply_port_ref2);
                     assert!(
                         reply_to2
-                            .port_id()
-                            .actor_id()
+                            .port_addr()
+                            .actor_addr()
                             .label()
                             .unwrap()
                             .as_str()
@@ -1406,7 +1414,7 @@ mod tests {
             .ranks()
             .iter()
             .enumerate()
-            .map(|(i, r)| (r.proc_id().clone(), i))
+            .map(|(i, r)| (r.proc_addr().clone(), i))
             .collect::<HashMap<ProcAddr, usize>>();
 
         // v1 always uses sel!(*) when casting to a mesh.
@@ -1561,8 +1569,8 @@ mod tests {
                         assert_ne!(reply_to, reply_port_ref);
                         assert!(
                             reply_to
-                                .port_id()
-                                .actor_id()
+                                .port_addr()
+                                .actor_addr()
                                 .label()
                                 .unwrap()
                                 .as_str()
@@ -1668,8 +1676,8 @@ mod tests {
             match msg {
                 TestMessage::CastWithUnsplitPort { reply_to } => {
                     assert_eq!(
-                        reply_to.port_id(),
-                        reply_port_ref.port_id(),
+                        reply_to.port_addr(),
+                        reply_port_ref.port_addr(),
                         "unsplit port should not be replaced by a comm actor split port"
                     );
                 }

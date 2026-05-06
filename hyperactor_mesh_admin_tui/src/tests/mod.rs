@@ -48,7 +48,7 @@ fn test_addr() -> hyperactor::channel::ChannelAddr {
 
 fn host(name: &str) -> NodeRef {
     let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(test_addr(), "world");
-    NodeRef::Host(proc_id.actor_id(name))
+    NodeRef::Host(proc_id.actor_addr(name))
 }
 
 fn proc_ref(name: &str) -> NodeRef {
@@ -58,7 +58,7 @@ fn proc_ref(name: &str) -> NodeRef {
 
 fn actor(name: &str) -> NodeRef {
     let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(test_addr(), "world");
-    NodeRef::Actor(proc_id.actor_id(name))
+    NodeRef::Actor(proc_id.actor_addr(name))
 }
 
 // Empty tree all operations are noops.

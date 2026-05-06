@@ -258,7 +258,7 @@ mod tests {
                 .unwrap(),
             "world",
         );
-        NodeRef::Actor(proc_id.actor_id(name))
+        NodeRef::Actor(proc_id.actor_addr(name))
     }
 
     fn mock_proc_ref(name: &str) -> NodeRef {
@@ -278,7 +278,7 @@ mod tests {
                 .unwrap(),
             "world",
         );
-        NodeRef::Host(proc_id.actor_id(name))
+        NodeRef::Host(proc_id.actor_addr(name))
     }
 
     fn proc_payload(proc_name: &str, props: NodeProperties) -> NodePayload {
@@ -574,7 +574,7 @@ mod tests {
                 .unwrap(),
             "myworld",
         );
-        let actor_id = proc_id.actor_id("worker");
+        let actor_id = proc_id.actor_addr("worker");
         let payload = NodePayload {
             identity: NodeRef::Actor(actor_id),
             properties: NodeProperties::Actor {

@@ -22,7 +22,7 @@
 //! # tokio_test::block_on(async {
 //! # let proc = Proc::local();
 //! # let (client, _) = proc.instance("client").unwrap();
-//! # let actor_id = proc.proc_id().actor_ref("actor");
+//! # let actor_id = proc.proc_addr().actor_addr("actor");
 //! let mbox = Mailbox::new_detached(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
 //!
@@ -41,7 +41,7 @@
 //! # tokio_test::block_on(async {
 //! # let proc = Proc::local();
 //! # let (client, _) = proc.instance("client").unwrap();
-//! # let actor_id = proc.proc_id().actor_ref("actor");
+//! # let actor_id = proc.proc_addr().actor_addr("actor");
 //! let mbox = Mailbox::new_detached(actor_id);
 //!
 //! let (port, receiver) = mbox.open_once_port::<u64>();
@@ -601,8 +601,8 @@ impl MailboxError {
         }
     }
 
-    /// The ID of the mailbox producing this error.
-    pub fn actor_id(&self) -> &ActorAddr {
+    /// The address of the mailbox producing this error.
+    pub fn actor_addr(&self) -> &ActorAddr {
         &self.actor_id
     }
 
@@ -646,11 +646,11 @@ impl PortLocation {
         PortLocation::Unbound(actor_id, ty)
     }
 
-    /// The actor id of the location.
-    pub fn actor_id(&self) -> ActorAddr {
+    /// The actor address of the location.
+    pub fn actor_addr(&self) -> ActorAddr {
         match self {
-            PortLocation::Bound(port_ref) => port_ref.actor_ref(),
-            PortLocation::Unbound(actor_ref, _) => actor_ref.clone(),
+            PortLocation::Bound(port_addr) => port_addr.actor_addr(),
+            PortLocation::Unbound(actor_addr, _) => actor_addr.clone(),
         }
     }
 }
@@ -812,12 +812,12 @@ pub trait PortSender: MailboxSender {
         // TODO: convert this to a undeliverable error also
         let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
-                port.port_id().clone(),
+                port.port_addr().clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
         self.post(
-            MessageEnvelope::new_unknown(port.port_id().clone(), serialized),
+            MessageEnvelope::new_unknown(port.port_addr().clone(), serialized),
             return_handle,
         );
         Ok(())
@@ -833,12 +833,12 @@ pub trait PortSender: MailboxSender {
     ) -> Result<(), MailboxSenderError> {
         let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
-                once_port.port_id().clone(),
+                once_port.port_addr().clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
         self.post(
-            MessageEnvelope::new_unknown(once_port.port_id().clone(), serialized),
+            MessageEnvelope::new_unknown(once_port.port_addr().clone(), serialized),
             return_handle,
         );
         Ok(())
@@ -1304,7 +1304,7 @@ impl MailboxSender for MailboxClient {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.actor_id(), "port"= envelope.dest.index(), "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
+        tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.actor_addr(), "port"= envelope.dest.index(), "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
         if let Err(err) = self.buffer.send((envelope, return_handle)) {
             let mpsc::error::SendError((envelope, return_handle)) = *err;
             let err = DeliveryError::BrokenLink(
@@ -1388,8 +1388,8 @@ impl Mailbox {
         }
     }
 
-    /// The actor id associated with this mailbox.
-    pub fn actor_id(&self) -> &ActorAddr {
+    /// The actor address associated with this mailbox.
+    pub fn actor_addr(&self) -> &ActorAddr {
         &self.inner.actor_id
     }
 
@@ -1400,7 +1400,7 @@ impl Mailbox {
     pub fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
         let port_index = self.inner.allocate_port();
         let (sender, receiver) = mpsc::unbounded_channel::<M>();
-        let port_id = self.inner.actor_id.port_ref(Port::from(port_index));
+        let port_id = self.inner.actor_id.port_addr(Port::from(port_index));
         tracing::trace!(
             name = "open_port",
             "opening port for {} at {}",
@@ -1455,7 +1455,7 @@ impl Mailbox {
     {
         let port_index = self.inner.allocate_port();
         let (sender, receiver) = mpsc::unbounded_channel::<A::State>();
-        let port_id = self.inner.actor_id.port_ref(Port::from(port_index));
+        let port_id = self.inner.actor_id.port_addr(Port::from(port_index));
         let state = Mutex::new(A::State::default());
         let reducer_spec = accum.reducer_spec();
         let enqueue = move |_, update: A::Update| {
@@ -1499,7 +1499,7 @@ impl Mailbox {
     /// receiver may receive a single message.
     pub fn open_once_port<M: Message>(&self) -> (OncePortHandle<M>, OncePortReceiver<M>) {
         let port_index = self.inner.allocate_port();
-        let port_id = self.inner.actor_id.port_ref(Port::from(port_index));
+        let port_id = self.inner.actor_id.port_addr(Port::from(port_index));
         let (sender, receiver) = oneshot::channel::<M>();
         (
             OncePortHandle {
@@ -1540,7 +1540,7 @@ impl Mailbox {
     {
         let port_index = self.inner.allocate_port();
         let (sender, receiver) = oneshot::channel::<T>();
-        let port_id = self.inner.actor_id.port_ref(Port::from(port_index));
+        let port_id = self.inner.actor_id.port_addr(Port::from(port_index));
         let reducer_spec = accum.reducer_spec();
         assert!(
             reducer_spec.is_some(),
@@ -1577,7 +1577,7 @@ impl Mailbox {
                 .map(|s| {
                     assert_eq!(
                         s.port_id,
-                        self.actor_id().port_ref(Port::from(port_index)),
+                        self.actor_addr().port_addr(Port::from(port_index)),
                         "port_id mismatch in downcasted UnboundedSender"
                     );
                     s.sender.clone()
@@ -1597,14 +1597,14 @@ impl Mailbox {
 
     fn bind<M: RemoteMessage>(&self, handle: &PortHandle<M>) -> PortRef<M> {
         assert_eq!(
-            handle.mailbox.actor_id(),
-            self.actor_id(),
+            handle.mailbox.actor_addr(),
+            self.actor_addr(),
             "port does not belong to mailbox"
         );
 
         // TODO: don't even allocate a port until the port is bound. Possibly
         // have handles explicitly staged (unbound, bound).
-        let port_ref = self.actor_id().port_ref(Port::from(handle.port_index));
+        let port_ref = self.actor_addr().port_addr(Port::from(handle.port_index));
         match self.inner.ports.entry(handle.port_index) {
             Entry::Vacant(entry) => {
                 entry.insert(Arc::new(UnboundedSender::new(
@@ -1620,13 +1620,13 @@ impl Mailbox {
 
     fn bind_to_actor_port<M: RemoteMessage>(&self, handle: &PortHandle<M>) {
         assert_eq!(
-            handle.mailbox.actor_id(),
-            self.actor_id(),
+            handle.mailbox.actor_addr(),
+            self.actor_addr(),
             "port does not belong to mailbox"
         );
 
         let port_index = M::port();
-        let port_ref = self.actor_id().port_ref(Port::from(port_index));
+        let port_ref = self.actor_addr().port_addr(Port::from(port_index));
         match self.inner.ports.entry(port_index) {
             Entry::Vacant(entry) => {
                 entry.insert(Arc::new(UnboundedSender::new(
@@ -1639,7 +1639,7 @@ impl Mailbox {
     }
 
     fn bind_once<M: RemoteMessage>(&self, handle: OncePortHandle<M>) {
-        let port_id = handle.port_id().clone();
+        let port_id = handle.port_addr().clone();
         match self.inner.ports.entry(handle.port_index) {
             Entry::Vacant(entry) => {
                 entry.insert(Arc::new(OnceSender::new(handle.sender, port_id.clone())));
@@ -1650,8 +1650,8 @@ impl Mailbox {
 
     pub(crate) fn bind_untyped(&self, port_id: &PortAddr, sender: UntypedUnboundedSender) {
         assert_eq!(
-            port_id.actor_ref(),
-            *self.actor_id(),
+            port_id.actor_addr(),
+            *self.actor_addr(),
             "port does not belong to mailbox"
         );
 
@@ -1666,7 +1666,7 @@ impl Mailbox {
     pub(crate) fn close(&self, status: ActorStatus) {
         let mut closed = self.inner.closed.write().unwrap();
         if closed.is_some() {
-            panic!("mailbox with owner {} already closed", self.actor_id());
+            panic!("mailbox with owner {} already closed", self.actor_addr());
         }
         let _ = closed.insert(status);
     }
@@ -1707,7 +1707,7 @@ impl MailboxSender for Mailbox {
             1,
             hyperactor_telemetry::kv_pairs!(
                 "actor_id" => envelope.sender.to_string(),
-                "dest_actor_id" => envelope.dest.actor_id().to_string(),
+                "dest_actor_id" => envelope.dest.actor_addr().to_string(),
             ),
         );
         tracing::trace!(
@@ -1718,7 +1718,7 @@ impl MailboxSender for Mailbox {
             envelope.dest
         );
 
-        if envelope.dest().actor_ref() != self.inner.actor_id {
+        if envelope.dest().actor_addr() != self.inner.actor_id {
             return self.inner.forwarder.post(envelope, return_handle);
         }
 
@@ -1906,7 +1906,7 @@ impl<M: Message> PortHandle<M> {
     pub(crate) fn location(&self) -> PortLocation {
         match self.bound.read().unwrap().as_ref() {
             Some(port_id) => PortLocation::Bound(port_id.clone()),
-            None => PortLocation::new_unbound::<M>(self.mailbox.actor_id().clone()),
+            None => PortLocation::new_unbound::<M>(self.mailbox.actor_addr().clone()),
         }
     }
 
@@ -1916,11 +1916,11 @@ impl<M: Message> PortHandle<M> {
 
         if let Some(status) = &*closed {
             let err = MailboxError {
-                actor_id: self.mailbox.actor_id().clone(),
+                actor_id: self.mailbox.actor_addr().clone(),
                 kind: MailboxErrorKind::OwnerTerminated(status.clone()),
             };
             return Err(MailboxSenderError::new_unbound::<M>(
-                self.mailbox.actor_id().clone(),
+                self.mailbox.actor_addr().clone(),
                 MailboxSenderErrorKind::Mailbox(err),
             ));
         }
@@ -1958,7 +1958,7 @@ impl<M: Message> PortHandle<M> {
         // deadlock scenario should not happen.
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
-                self.mailbox.actor_id().clone(),
+                self.mailbox.actor_addr().clone(),
                 MailboxSenderErrorKind::Other(err),
             )
         })
@@ -2005,7 +2005,7 @@ impl<M: RemoteMessage> PortHandle<M> {
     /// This is used by [`actor::Binder`] implementations to bind actor refs.
     /// This is not intended for general use.
     pub(crate) fn bind_actor_port(&self) {
-        let port_id = self.mailbox.actor_id().port_ref(Port::from(M::port()));
+        let port_id = self.mailbox.actor_addr().port_addr(Port::from(M::port()));
         {
             let mut guard = self.bound.write().unwrap();
             if guard.is_some() {
@@ -2050,9 +2050,9 @@ pub struct OncePortHandle<M: Message> {
 }
 
 impl<M: Message> OncePortHandle<M> {
-    /// This port's ID.
+    /// This port's address.
     // TODO: make value
-    pub fn port_id(&self) -> &PortAddr {
+    pub fn port_addr(&self) -> &PortAddr {
         &self.port_id
     }
 
@@ -2062,13 +2062,13 @@ impl<M: Message> OncePortHandle<M> {
         // TODO: Assign seq to the message if the port is bound to an actor port
         // in the future.
         assert!(
-            !self.port_id().is_actor_port(),
+            !self.port_addr().is_actor_port(),
             "OncePortHandle currently does not support actor ports; a \
             prerequisite of that support is to assign seq to messages \
             if the port is actor port."
         );
 
-        let actor_id = self.mailbox.actor_id().clone();
+        let actor_id = self.mailbox.actor_addr().clone();
         self.sender.send(message).map_err(|_| {
             // Here, the value is returned when the port is
             // closed.  We should consider having a similar
@@ -2086,7 +2086,7 @@ impl<M: RemoteMessage> OncePortHandle<M> {
     /// ref to send a message to the port. Creating a ref also
     /// binds the port, so that it is remotely writable.
     pub fn bind(self) -> OncePortRef<M> {
-        let port_id: PortAddr = self.port_id().clone();
+        let port_id: PortAddr = self.port_addr().clone();
         let reducer_spec = self.reducer_spec.clone();
         self.mailbox.clone().bind_once(self);
         OncePortRef::attest_reducible(port_id, reducer_spec)
@@ -2095,7 +2095,7 @@ impl<M: RemoteMessage> OncePortHandle<M> {
 
 impl<M: Message> fmt::Display for OncePortHandle<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.port_id(), f)
+        fmt::Display::fmt(&self.port_addr(), f)
     }
 }
 
@@ -2144,7 +2144,7 @@ impl<M> PortReceiver<M> {
             Ok(msg) => Ok(Some(msg)),
             Err(mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(mpsc::error::TryRecvError::Disconnected) => Err(MailboxError::new(
-                self.actor_id().clone(),
+                self.actor_addr().clone(),
                 MailboxErrorKind::Closed,
             )),
         }
@@ -2162,7 +2162,7 @@ impl<M> PortReceiver<M> {
             next = Some(latest);
         }
         next.ok_or(MailboxError::new(
-            self.actor_id().clone(),
+            self.actor_addr().clone(),
             MailboxErrorKind::Closed,
         ))
     }
@@ -2184,8 +2184,8 @@ impl<M> PortReceiver<M> {
         self.port_id.index()
     }
 
-    fn actor_id(&self) -> ActorAddr {
-        self.port_id.actor_ref()
+    fn actor_addr(&self) -> ActorAddr {
+        self.port_id.actor_addr()
     }
 }
 
@@ -2226,7 +2226,7 @@ impl<M> OncePortReceiver<M> {
             .await
             .map_err(|err| {
                 MailboxError::new(
-                    self.actor_id().clone(),
+                    self.actor_addr().clone(),
                     MailboxErrorKind::Recv(self.port_id.clone(), err.into()),
                 )
             })
@@ -2236,8 +2236,8 @@ impl<M> OncePortReceiver<M> {
         self.port_id.index()
     }
 
-    fn actor_id(&self) -> ActorAddr {
-        self.port_id.actor_ref()
+    fn actor_addr(&self) -> ActorAddr {
+        self.port_id.actor_addr()
     }
 }
 
@@ -2629,7 +2629,7 @@ impl MailboxMuxer {
 
     /// Convenience function to bind a mailbox.
     pub fn bind_mailbox(&self, mailbox: Mailbox) -> bool {
-        self.bind(mailbox.actor_id().clone(), mailbox)
+        self.bind(mailbox.actor_addr().clone(), mailbox)
     }
 
     /// Unbind the sender associated with the provided actor ID. After
@@ -2653,7 +2653,7 @@ impl MailboxSender for MailboxMuxer {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let dest_actor_ref = envelope.dest().actor_ref();
+        let dest_actor_ref = envelope.dest().actor_addr();
         match self.mailboxes.get(&dest_actor_ref) {
             None => {
                 let err = format!(
@@ -2758,7 +2758,7 @@ impl MailboxSender for MailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let dest_actor_ref = envelope.dest().actor_ref();
+        let dest_actor_ref = envelope.dest().actor_addr();
         match self.sender(&dest_actor_ref) {
             None => envelope.undeliverable(
                 DeliveryError::Unroutable(
@@ -2800,7 +2800,7 @@ impl MailboxSender for FallbackMailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let dest_actor_ref = envelope.dest().actor_ref();
+        let dest_actor_ref = envelope.dest().actor_addr();
         match self.router.sender(&dest_actor_ref) {
             Some(sender) => sender.post(envelope, return_handle),
             None => self.default.post(envelope, return_handle),
@@ -3035,7 +3035,7 @@ impl MailboxSender for DialMailboxRouter {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        let dest_actor_ref = envelope.dest().actor_ref();
+        let dest_actor_ref = envelope.dest().actor_addr();
         let Some(addr) = self.lookup_addr(&dest_actor_ref) else {
             self.default.post(envelope, return_handle);
             return;
@@ -3148,7 +3148,7 @@ mod tests {
 
         let serialized = wirevalue::Any::serialize(&999u64).unwrap();
         mbox.post(
-            MessageEnvelope::new_unknown(port.port_id().clone(), serialized),
+            MessageEnvelope::new_unknown(port.port_addr().clone(), serialized),
             monitored_return_handle(),
         );
         assert_eq!(receiver.recv().await.unwrap(), 999u64);
@@ -3217,7 +3217,7 @@ mod tests {
 
         let (port, receiver) = client.open_once_port::<u64>();
 
-        // let port_id = port.port_id().clone();
+        // let port_id = port.port_addr().clone();
 
         port.send(&client, 123u64).unwrap();
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
@@ -3258,13 +3258,13 @@ mod tests {
         let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
         let (port, mut receiver) = mbox.open_port::<u64>();
         let port = port.bind();
-        let port_index = port.port_id().index();
+        let port_index = port.port_addr().index();
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
 
         let wrong_message = wirevalue::Any::serialize(&TestMessage).unwrap();
         mbox.post(
-            MessageEnvelope::new_unknown(port.port_id().clone(), wrong_message),
+            MessageEnvelope::new_unknown(port.port_addr().clone(), wrong_message),
             return_handle.clone(),
         );
 
@@ -3299,7 +3299,7 @@ mod tests {
     async fn test_mailbox_closed_unbounded_port_is_removed_after_send_failure() {
         let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
         let port_index = mbox.allocate_port();
-        let port_id = mbox.actor_id().port_ref(Port::from(port_index));
+        let port_id = mbox.actor_addr().port_addr(Port::from(port_index));
         let port = crate::PortRef::attest(port_id.clone().into());
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
@@ -3352,13 +3352,13 @@ mod tests {
         let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
         let (port, receiver) = mbox.open_once_port::<u64>();
         let port = port.bind();
-        let port_index = port.port_id().index();
+        let port_index = port.port_addr().index();
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
 
         let wrong_message = wirevalue::Any::serialize(&TestMessage).unwrap();
         mbox.post(
-            MessageEnvelope::new_unknown(port.port_id().clone(), wrong_message),
+            MessageEnvelope::new_unknown(port.port_addr().clone(), wrong_message),
             return_handle.clone(),
         );
 
@@ -3419,8 +3419,8 @@ mod tests {
         let mbox0 = Mailbox::new_detached(test_actor_id("0", "actor1"));
         let mbox1 = Mailbox::new_detached(test_actor_id("0", "actor2"));
 
-        muxer.bind(mbox0.actor_id().clone(), mbox0.clone());
-        muxer.bind(mbox1.actor_id().clone(), mbox1.clone());
+        muxer.bind(mbox0.actor_addr().clone(), mbox0.clone());
+        muxer.bind(mbox1.actor_addr().clone(), mbox1.clone());
 
         let (port, receiver) = mbox0.open_once_port::<u64>();
 
@@ -3434,10 +3434,10 @@ mod tests {
         let (tx, rx) = channel::local::new::<u64>();
         let (port, _) = mbox0.open_port::<u64>();
         let handle = muxer.clone().serve_port(port, rx).unwrap();
-        muxer.unbind(mbox0.actor_id());
+        muxer.unbind(mbox0.actor_addr());
         tx.send(123u64).await.unwrap();
         let Ok(Err(err)) = handle.await else { panic!() };
-        assert_eq!(err.actor_id(), &actor_id(0));
+        assert_eq!(err.actor_addr(), &actor_id(0));
         */
     }
 
@@ -3524,7 +3524,7 @@ mod tests {
         // The actor must be on unix:@4 so that after unbinding, the prefix
         // route for world1_1 (unix!@3) is the fallback, not world1_1/actor1 (unix!@4).
         let direct_actor_ref: ActorAddr =
-            ProcAddr::named("unix:@4".parse().unwrap(), "my_proc").actor_id("my_actor");
+            ProcAddr::named("unix:@4".parse().unwrap(), "my_proc").actor_addr("my_actor");
         router.bind(
             Addr::Actor(direct_actor_ref.clone()),
             "unix:@5".parse().unwrap(),
@@ -3605,16 +3605,16 @@ mod tests {
             let handle = (*mbox).clone().serve(rx);
             handles.push(handle);
 
-            eprintln!("{}: {}", mbox.actor_id(), addr);
+            eprintln!("{}: {}", mbox.actor_addr(), addr);
             if mbox
-                .actor_id()
-                .proc_ref()
+                .actor_addr()
+                .proc_addr()
                 .label()
                 .is_some_and(|l| l.as_str().starts_with("world0"))
             {
-                world0_router.bind(Addr::from(mbox.actor_id().clone()), addr);
+                world0_router.bind(Addr::from(mbox.actor_addr().clone()), addr);
             } else {
-                world1_router.bind(Addr::from(mbox.actor_id().clone()), addr);
+                world1_router.bind(Addr::from(mbox.actor_addr().clone()), addr);
             }
         }
 
@@ -3716,7 +3716,7 @@ mod tests {
         let foo = proc.spawn("foo", Foo).unwrap();
         let return_handle = foo.port::<Undeliverable<MessageEnvelope>>();
         let message = MessageEnvelope::new(
-            foo.actor_id().clone(),
+            foo.actor_addr().clone(),
             test_port_id("corge_0", "bar", 9999),
             wirevalue::Any::serialize(&1u64).unwrap(),
             Flattrs::new(),
@@ -3801,7 +3801,7 @@ mod tests {
                 dummy_actor_ref.clone(),
                 BOXED_PANICKING_MAILBOX_SENDER.clone(),
             );
-            let dummy_port_id = dummy_actor_ref.port_ref(Port::from(0));
+            let dummy_port_id = dummy_actor_ref.port_addr(Port::from(0));
             let (sender, receiver) = mpsc::unbounded_channel::<M>();
             let receiver = PortReceiver {
                 receiver,
@@ -3964,7 +3964,7 @@ mod tests {
 
         // Open a port on actor0
         let (port_handle, receiver) = actor0.open_port::<u64>();
-        let port_id = port_handle.bind().port_id().clone();
+        let port_id = port_handle.bind().port_addr().clone();
 
         // Split it twice on actor1
         let port_id1 = port_id
@@ -4092,7 +4092,7 @@ mod tests {
         let proc = Proc::local();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
-        let port_id = port_handle.bind().port_id().clone();
+        let port_id = port_handle.bind().port_addr().clone();
         // Split it
         let reducer_spec = accum::sum::<u64>().reducer_spec();
         let split_port_id = port_id
@@ -4215,7 +4215,7 @@ mod tests {
         let proc = Proc::local();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
-        let port_id = port_handle.bind().port_id().clone();
+        let port_id = port_handle.bind().port_addr().clone();
 
         // Split with Once(3) mode - accumulate 3 values then emit
         let reducer_spec = accum::sum::<u64>().reducer_spec();
@@ -4243,7 +4243,7 @@ mod tests {
         let proc = Proc::local();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
-        let port_id = port_handle.bind().port_id().clone();
+        let port_id = port_handle.bind().port_addr().clone();
 
         // Set up an undeliverable receiver to capture messages sent to torn-down ports
         let (undeliverable_handle, mut undeliverable_receiver) =
@@ -4267,7 +4267,7 @@ mod tests {
         // Now send another message - it should fail because the port is torn down
         let serialized = wirevalue::Any::serialize(&100u64).unwrap();
         let envelope = MessageEnvelope::new(
-            actor.mailbox().actor_id().clone(),
+            actor.mailbox().actor_addr().clone(),
             split_port_id.clone(),
             serialized,
             Flattrs::new(),
@@ -4442,7 +4442,7 @@ mod tests {
         // Create a destination not owned by this mailbox to force
         // forwarding.
         let remote_actor = test_actor_id("remote_world_1", "remote");
-        let dest = remote_actor.port_ref(4242.into());
+        let dest = remote_actor.port_addr(4242.into());
 
         // Build an envelope (TTL is seeded in `MessageEnvelope::new` /
         // `::serialize`).
@@ -4485,7 +4485,7 @@ mod tests {
         let payload = 0xC0FFEE_u64;
         let envelope = MessageEnvelope::serialize(
             actor_id.clone(),
-            user_port.bind().port_id().clone(),
+            user_port.bind().port_addr().clone(),
             &payload,
             Flattrs::new(),
         )
@@ -4539,7 +4539,7 @@ mod tests {
     #[test]
     fn test_bind_port_handle_to_actor_port() {
         let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
-        let default_port = mbox.actor_id().port_ref(Port::from(String::port()));
+        let default_port = mbox.actor_addr().port_addr(Port::from(String::port()));
         let (handle, _rx) = mbox.open_port::<String>();
         // Handle's port index is allocated by mailbox, not the actor port.
         assert_ne!(default_port.index(), handle.port_index);
@@ -4583,7 +4583,7 @@ mod tests {
 
         let envelope = MessageEnvelope::serialize(
             actor_id.clone(),
-            user_port.bind().port_id().clone(),
+            user_port.bind().port_addr().clone(),
             &42u64,
             Flattrs::new(),
         )
@@ -4627,7 +4627,7 @@ mod tests {
 
         let envelope = MessageEnvelope::serialize(
             actor_id.clone(),
-            user_port.bind().port_id().clone(),
+            user_port.bind().port_addr().clone(),
             &42u64,
             Flattrs::new(),
         )

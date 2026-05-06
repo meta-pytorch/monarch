@@ -349,7 +349,7 @@ mod tests {
                 .unwrap(),
             "world",
         );
-        NodeRef::Actor(proc_id.actor_id(name))
+        NodeRef::Actor(proc_id.actor_addr(name))
     }
 
     fn mock_proc_ref(name: &str) -> NodeRef {
@@ -692,7 +692,7 @@ mod tests {
                     .unwrap(),
                 "world",
             )
-            .actor_id("worker")
+            .actor_addr("worker")
         };
         let payload = NodePayload {
             identity: r.clone(),
