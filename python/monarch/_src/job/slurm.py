@@ -9,6 +9,7 @@
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence
@@ -56,6 +57,7 @@ class SlurmJob(JobTrait):
         cpus_per_task: Optional[int] = None,
         mem: Optional[str] = None,
         job_start_timeout: Optional[int] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> None:
         """
         Args:
@@ -74,7 +76,9 @@ class SlurmJob(JobTrait):
             gpus_per_node: Number of GPUs to request per node. If None, no GPU resources are requested.
             job_start_timeout: Maximum time in seconds to wait for the SLURM job to start running.
                       This should account for potential queueing delays. If None (default), waits indefinitely.
+            env: Extra environment variables for SLURM worker processes.
         """
+        super().__init__()
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._meshes = meshes
         self._python_exe = python_exe
@@ -90,10 +94,10 @@ class SlurmJob(JobTrait):
         self._cpus_per_task = cpus_per_task
         self._mem = mem
         self._job_start_timeout = job_start_timeout
+        self._env: Dict[str, str] = self._env_with_overrides(env)
         # Track the single SLURM job ID and all allocated hostnames
         self._slurm_job_id: Optional[str] = None
         self._all_hostnames: List[str] = []
-        super().__init__()
 
     def add_mesh(self, name: str, num_nodes: int) -> None:
         self._meshes[name] = num_nodes
@@ -167,6 +171,8 @@ class SlurmJob(JobTrait):
                 sbatch_directives.append(f"#SBATCH {arg}")
 
         batch_script = "\n".join(sbatch_directives)
+        for key, value in self._env.items():
+            batch_script += f"\nexport {key}={shlex.quote(value)}"
         batch_script += f"\nsrun {self._python_exe} -c '{python_command}'\n"
 
         logger.info(f"Submitting SLURM job with {num_nodes} nodes")
@@ -329,6 +335,7 @@ class SlurmJob(JobTrait):
             and spec._cpus_per_task == self._cpus_per_task
             and spec._mem == self._mem
             and spec._job_start_timeout == self._job_start_timeout
+            and spec._env == self._env
             and self._jobs_active()
         )
 

@@ -420,10 +420,16 @@ class TestCreate(unittest.TestCase):
 class TestBuildWorkerPodSpec(unittest.TestCase):
     """Tests for KubernetesJob._build_worker_pod_spec."""
 
+    @patch("monarch._src.job.job.get_execution_id", return_value="test-exec-id")
+    @patch("monarch._src.job.kubernetes.configure")
+    def _make_job(
+        self, mock_configure: MagicMock, mock_exec_id: MagicMock
+    ) -> KubernetesJob:
+        return KubernetesJob(namespace="default")
+
     def test_basic_pod_spec(self) -> None:
-        spec = KubernetesJob._build_worker_pod_spec(
-            ImageSpec("myimage:latest"), port=26600
-        )
+        job = self._make_job()
+        spec = job._build_worker_pod_spec(ImageSpec("myimage:latest"), port=26600)
         self.assertEqual(len(spec.containers), 1)
         container = spec.containers[0]
         self.assertEqual(container.name, "worker")
@@ -431,17 +437,20 @@ class TestBuildWorkerPodSpec(unittest.TestCase):
         self.assertEqual(
             container.command, ["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT]
         )
-        self.assertEqual(len(container.env), 1)
-        self.assertEqual(container.env[0].name, "MONARCH_PORT")
-        self.assertEqual(container.env[0].value, "26600")
+        env_dict = {e.name: e.value for e in container.env}
+        self.assertEqual(env_dict["MONARCH_PORT"], "26600")
+        self.assertEqual(env_dict["HYPERACTOR_EXECUTION_ID"], "test-exec-id")
         self.assertIsNone(container.resources)
 
     def test_custom_port_in_env(self) -> None:
-        spec = KubernetesJob._build_worker_pod_spec(ImageSpec("img"), port=9999)
-        self.assertEqual(spec.containers[0].env[0].value, "9999")
+        job = self._make_job()
+        spec = job._build_worker_pod_spec(ImageSpec("img"), port=9999)
+        env_dict = {e.name: e.value for e in spec.containers[0].env}
+        self.assertEqual(env_dict["MONARCH_PORT"], "9999")
 
     def test_resources_set(self) -> None:
-        spec = KubernetesJob._build_worker_pod_spec(
+        job = self._make_job()
+        spec = job._build_worker_pod_spec(
             ImageSpec(
                 "img",
                 resources={"cpu": "4", "memory": "8Gi", "nvidia.com/gpu": 2},

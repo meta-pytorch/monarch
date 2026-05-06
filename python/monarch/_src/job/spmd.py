@@ -201,6 +201,7 @@ def serve(
     appdef: AppDef | List[str],
     scheduler: str = "mast_conda",
     scheduler_cfg: Optional[Dict[str, Any]] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> "SPMDJob":
     """
     Launch SPMD job using an AppDef or a single-node torchrun command.
@@ -230,6 +231,8 @@ def serve(
             entrypoint and the rest are arguments.
         scheduler: Scheduler name (e.g., 'mast_conda', 'local_cwd')
         scheduler_cfg: Scheduler configuration dict
+        env: Extra environment variables for launched worker roles. These
+            override framework-provided defaults.
 
     Returns:
         SPMDJob instance
@@ -319,15 +322,18 @@ def serve(
 
     # Cache original entrypoints before modifying
     original_roles = []
+    role_env = JobTrait._env_with_overrides(env)
     scheme = "metatls" if scheduler.startswith("mast") else "tcp"
     for role in appdef.roles:
         original_roles.append(
             {
                 "entrypoint": role.entrypoint,
                 "args": role.args,
+                "env": role.env,
             }
         )
 
+        role.env = {**role_env, **(role.env or {})}
         role.args = [
             "python",
             "-X",
@@ -360,6 +366,7 @@ def serve(
         scheduler=scheduler,
         workspace=workspace,
         original_roles=original_roles,
+        env=env,
     )
 
     return job
@@ -378,12 +385,14 @@ class SPMDJob(JobTrait):
         scheduler: str,
         workspace: Optional[str] = None,
         original_roles: Optional[List[Dict[str, Any]]] = None,
+        env: Optional[Dict[str, str]] = None,
     ):
         super().__init__()
         self._app_handle = handle
         self._scheduler = scheduler
         self._workspace = workspace
         self._original_roles = original_roles or []
+        self._env = self._env_with_overrides(env)
         self._hostnames: Optional[List[str]] = None
 
     def _get_runner(self) -> Runner:
@@ -402,7 +411,9 @@ class SPMDJob(JobTrait):
 
         # Check if job is still running
         status = self._get_runner().status(self._app_handle)
-        return status is not None and not status.is_terminal()
+        return (
+            status is not None and not status.is_terminal() and spec._env == self._env
+        )
 
     def _check_job_ready(self) -> bool | str:
         """

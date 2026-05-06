@@ -59,7 +59,7 @@ class ProcessJob(JobTrait):
         """
         super().__init__()
         self._meshes = meshes
-        self._env = env
+        self._env = self._env_with_overrides(env)
         self._host_to_pid: Dict[str, ProcessState] = {}
         self._tmpdir: Optional[str] = None
 
@@ -75,8 +75,7 @@ class ProcessJob(JobTrait):
                     host_key = f"{mesh_name}_{i}"
                     addr = f"ipc://{self._tmpdir}/{host_key}"
                     env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
-                    if self._env is not None:
-                        env.update(self._env)
+                    env.update(self._env)
                     if _IN_PAR:
                         # In PAR/XAR mode, sys.executable is the bare
                         # Python interpreter which cannot import modules
@@ -181,6 +180,7 @@ class ProcessJob(JobTrait):
         return (
             isinstance(spec, ProcessJob)
             and spec._meshes == self._meshes
+            and spec._env == self._env
             and self._pids_active()
         )
 
