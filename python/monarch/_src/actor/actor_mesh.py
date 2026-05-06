@@ -641,6 +641,7 @@ def _create_endpoint_message(
     kwargs: Dict[str, Any],
     port_ref: "Optional[PortRef | OncePortRef]",
     proc_mesh: "Optional[ProcMesh]",
+    correlation_id: int | None = None,
 ) -> PendingMessage:
     """
     Create a PythonMessage for sending to an actor endpoint.
@@ -657,7 +658,9 @@ def _create_endpoint_message(
     )
     objects = pickling_state.tensor_engine_references()
     if not objects:
-        message_kind = PythonMessageKind.CallMethod(method_name, port_ref)
+        message_kind = PythonMessageKind.CallMethod(
+            method_name, port_ref, correlation_id
+        )
     else:
         message_kind = create_actor_message_kind(
             method_name, proc_mesh, objects, port_ref
@@ -1189,6 +1192,7 @@ class _Actor:
         panic_flag: PanicFlag,
         local_state: List[Any],
         response_port: "PortProtocol[Any]",
+        correlation_id: int | None = None,
     ) -> None:
         MESSAGES_HANDLED.add(1)
 
@@ -1278,7 +1282,7 @@ class _Actor:
 
             if is_coro:
                 if should_instrument:
-                    with span(method_name):
+                    with span(method_name, correlation_id):
                         result = await the_method(*args, **kwargs)
                 else:
                     result = await the_method(*args, **kwargs)
@@ -1286,7 +1290,7 @@ class _Actor:
             else:
                 with fake_sync_state():
                     if should_instrument:
-                        with span(method_name):
+                        with span(method_name, correlation_id):
                             result = the_method(*args, **kwargs)
                     else:
                         result = the_method(*args, **kwargs)
@@ -1465,6 +1469,7 @@ class _Actor:
             panic_flag,  # pyre-ignore[6]: QueuePanicFlag implements PanicFlag protocol
             msg.local_state,
             msg.response_port,
+            msg.correlation_id,
         )
         # If a panic was signaled, re-raise it after handle() has cleaned up
         if panic_flag.panic_exception is not None:

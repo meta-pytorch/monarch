@@ -33,8 +33,8 @@ def _current_actor_id() -> ActorAddr | None:
     return None if ctx is None else ctx.actor_instance.actor_id
 
 
-def span(name: str) -> PySpan:
-    return PySpan(name, _current_actor_id())
+def span(name: str, correlation_id: int | None = None) -> PySpan:
+    return PySpan(name, _current_actor_id(), correlation_id)
 
 
 class TracingForwarder(logging.Handler):

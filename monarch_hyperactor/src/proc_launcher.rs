@@ -695,6 +695,7 @@ impl ProcLauncher for ActorProcLauncher {
                     name: "launch".into(),
                 },
                 response_port: Some(EitherPortRef::Once(PythonOncePortRef::from(bound_port))),
+                correlation_id: None,
             },
             message: pickled_args.into(),
         };
@@ -779,6 +780,7 @@ impl ProcLauncher for ActorProcLauncher {
                     name: "terminate".into(),
                 },
                 response_port: None,
+                correlation_id: None,
             },
             message: pickled.into(),
         };
@@ -820,6 +822,7 @@ impl ProcLauncher for ActorProcLauncher {
                     name: "kill".into(),
                 },
                 response_port: None,
+                correlation_id: None,
             },
             message: pickled.into(),
         };

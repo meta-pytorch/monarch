@@ -55,12 +55,17 @@ class Exception(PythonMessageKind):
 
 class CallMethod(PythonMessageKind):
     def __init__(
-        self, name: MethodSpecifier, response_port: PortRef | OncePortRef | None
+        self,
+        name: MethodSpecifier,
+        response_port: PortRef | OncePortRef | None,
+        correlation_id: int | None = None,
     ) -> None: ...
     @property
     def name(self) -> MethodSpecifier: ...
     @property
     def response_port(self) -> PortRef | OncePortRef | None: ...
+    @property
+    def correlation_id(self) -> int | None: ...
 
 class MethodSpecifier:
     @classmethod
@@ -202,6 +207,7 @@ class Actor(Protocol):
         panic_flag: PanicFlag,
         local_state: List[Any],
         response_port: PortProtocol[Any],
+        correlation_id: int | None = None,
     ) -> None: ...
 
 @final
@@ -234,4 +240,9 @@ class QueuedMessage:
     @property
     def response_port(self) -> PortProtocol[Any]:
         """The response port for this message."""
+        ...
+
+    @property
+    def correlation_id(self) -> int | None:
+        """The correlation ID for RPC flow tracing."""
         ...

@@ -82,6 +82,7 @@ class MyActor:
         panic_flag: PanicFlag,
         local_state: Iterable[Any],
         response_port: "PortProtocol[Any]",
+        correlation_id: int | None = None,
     ) -> None:
         match method:
             case MethodSpecifier.Init():

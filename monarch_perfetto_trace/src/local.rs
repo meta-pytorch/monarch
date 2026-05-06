@@ -21,6 +21,8 @@
 //! │   └── latest -> {execution_id}/   # symlink to most recent
 //! ```
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::io::Write;
@@ -34,7 +36,9 @@ use prost::Message;
 use tracing::info;
 use tracing_perfetto_sdk_schema::Trace;
 use tracing_perfetto_sdk_schema::TracePacket;
+use tracing_perfetto_sdk_schema::TrackEvent;
 use tracing_perfetto_sdk_schema::trace_packet::Data;
+use tracing_perfetto_sdk_schema::track_event::Type as TrackEventType;
 
 use crate::Sink;
 
@@ -314,9 +318,130 @@ pub fn merge_to_file(
     let edir = execution_dir(&tdir, Some(&exec_id))?;
     info!("Reading from execution: {}", edir.display());
 
+    let mut buffer = VecSink::default();
+    merge_traces_from_dir(&edir, &mut buffer)?;
+    inject_correlation_flows(&mut buffer.packets);
+
     let mut sink = Collector::new(output);
-    merge_traces_from_dir(&edir, &mut sink)?;
+    for packet in buffer.packets {
+        sink.consume(packet);
+    }
     sink.flush()?;
 
     Ok(exec_id)
+}
+
+/// Collects packets into a Vec for post-processing before writing.
+#[derive(Default)]
+struct VecSink {
+    packets: Vec<TracePacket>,
+}
+
+impl Sink for VecSink {
+    fn consume(&mut self, packet: TracePacket) {
+        self.packets.push(packet);
+    }
+}
+
+const CORRELATION_ID_ANNOTATION: &str = "correlation_id";
+
+fn build_annotation_name_table(packets: &[TracePacket]) -> HashMap<u64, String> {
+    let mut table = HashMap::new();
+    for packet in packets {
+        if let Some(ref interned) = packet.interned_data {
+            for dan in &interned.debug_annotation_names {
+                if let (Some(iid), Some(name)) = (dan.iid, &dan.name) {
+                    table.insert(iid, name.clone());
+                }
+            }
+        }
+    }
+    table
+}
+
+fn get_annotation_u64(
+    te: &TrackEvent,
+    name: &str,
+    interned_names: &HashMap<u64, String>,
+) -> Option<u64> {
+    te.debug_annotations.iter().find_map(|ann| {
+        let matches = match &ann.name_field {
+            Some(tracing_perfetto_sdk_schema::debug_annotation::NameField::Name(n)) => n == name,
+            Some(tracing_perfetto_sdk_schema::debug_annotation::NameField::NameIid(iid)) => {
+                interned_names.get(iid).is_some_and(|n| n == name)
+            }
+            _ => false,
+        };
+        if matches {
+            match &ann.value {
+                Some(tracing_perfetto_sdk_schema::debug_annotation::Value::IntValue(v)) => {
+                    Some(*v as u64)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })
+}
+
+fn is_slice_begin(te: &TrackEvent) -> bool {
+    te.r#type == Some(TrackEventType::SliceBegin as i32)
+}
+
+/// Scans merged trace packets for correlation_id annotations and injects
+/// Perfetto flow events to draw arrows from sender to receiver spans.
+///
+/// A "sender" is a SliceBegin with a correlation_id that appears exactly
+/// once for that ID (the endpoint span). All other SliceBegins sharing
+/// that correlation_id are "receivers".
+///
+/// Pass 1: count how many receivers exist per correlation_id.
+/// Pass 2: stamp `flow_ids` on senders (one per receiver) and
+///          `terminating_flow_ids` on receivers (sequential offset).
+fn inject_correlation_flows(packets: &mut [TracePacket]) {
+    let interned_names = build_annotation_name_table(packets);
+
+    let mut counts: HashMap<u64, usize> = HashMap::new();
+    let mut sender_cids: HashSet<u64> = HashSet::new();
+
+    for packet in packets.iter() {
+        let Some(Data::TrackEvent(te)) = &packet.data else {
+            continue;
+        };
+        if !is_slice_begin(te) {
+            continue;
+        }
+        let Some(cid) = get_annotation_u64(te, CORRELATION_ID_ANNOTATION, &interned_names) else {
+            continue;
+        };
+        *counts.entry(cid).or_insert(0) += 1;
+    }
+
+    let mut receiver_counters: HashMap<u64, u64> = HashMap::new();
+
+    for packet in packets.iter_mut() {
+        let Some(Data::TrackEvent(te)) = &mut packet.data else {
+            continue;
+        };
+        if !is_slice_begin(te) {
+            continue;
+        }
+        let Some(cid) = get_annotation_u64(te, CORRELATION_ID_ANNOTATION, &interned_names) else {
+            continue;
+        };
+
+        let total = match counts.get(&cid) {
+            Some(&n) if n > 1 => n - 1,
+            _ => continue,
+        };
+
+        if sender_cids.insert(cid) {
+            te.flow_ids = (0..total).map(|i| cid.wrapping_add(i as u64)).collect();
+        } else {
+            let idx = receiver_counters.entry(cid).or_insert(0);
+            te.terminating_flow_ids = vec![cid.wrapping_add(*idx)];
+            *idx += 1;
+        }
+    }
 }
