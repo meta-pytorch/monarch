@@ -953,9 +953,8 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         }
 
         // The domain is guaranteed to exist here: register_mr is always called before
-        // initialize_qp, either in execute_op (for the local actor) or in
-        // register_remote_buffer at buffer-creation time (for the remote actor),
-        // and register_mr always calls get_or_create_device_domain.
+        // initialize_qp, either in execute_op or in register_remote_buffer at
+        // buffer-creation time, and register_mr always calls get_or_create_device_domain.
         let (domain, _) = self.device_domains.get(&self_device).ok_or_else(|| {
             anyhow::anyhow!(
                 "device domain for '{}' not found; register_mr must be called before initialize_qp",
