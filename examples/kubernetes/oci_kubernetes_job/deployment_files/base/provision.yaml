@@ -4,14 +4,18 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# Controller manifest for Python-native MonarchMesh provisioning.
+# Base manifests for Python-native MonarchMesh provisioning.
 #
 # The Python script creates MonarchMesh CRDs via the K8s API using --provision.
 # No worker pod YAML manifests are needed.
 #
+# This base is consumed by GPU-vendor-specific overlays (amd/, nvidia/),
+# which patch the controller Pod with the appropriate node affinity,
+# toleration, and container image.
+#
 # Prerequisites:
 # - Kubernetes cluster with Monarch operator installed
-# - GPU nodes with nvidia.com/gpu resources available
+# - GPU nodes with amd.com/gpu or nvidia.com/gpu resources available
 ---
 apiVersion: v1
 kind: Namespace
@@ -57,24 +61,9 @@ metadata:
   name: monarch-controller
   namespace: monarch-tests
 spec:
-  affinity:
-    nodeAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        nodeSelectorTerms:
-          - matchExpressions:
-              - key: node.kubernetes.io/instance-type
-                operator: In
-                values:
-                  - BM.GPU.H100.8
-                  - BM.GPU.A100-v2.8
-  tolerations:
-    - key: "nvidia.com/gpu"
-      operator: "Equal"
-      value: "present"
-      effect: "NoSchedule"
+  # affinity, tolerations, and containers[0].image are supplied by overlays.
   containers:
     - name: controller
-      image: ghcr.io/dochakov-oci/monarch-oci:monarch0.4.1-cuda12.8-rdma-01
       command: ["sleep"]
       args: ["infinity"]
       volumeMounts:

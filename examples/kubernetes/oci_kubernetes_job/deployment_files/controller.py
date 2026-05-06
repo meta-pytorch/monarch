@@ -8,11 +8,14 @@ import asyncio
 import textwrap
 
 from kubernetes.client import (
+    V1Capabilities,
     V1Container,
     V1EmptyDirVolumeSource,
     V1EnvVar,
+    V1HostPathVolumeSource,
     V1PodSpec,
     V1ResourceRequirements,
+    V1SecurityContext,
     V1Volume,
     V1VolumeMount,
 )
@@ -34,8 +37,6 @@ _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent("""\
     run_worker_loop_forever(address=address, ca="trust_all_connections")
 """)
 
-IMAGE = "ghcr.io/dochakov-oci/monarch-oci:monarch0.4.1-cuda12.8-rdma-01"
-
 # Path to train.py on worker pods
 TRAIN_SCRIPT = "/tmp/train.py"
 
@@ -45,11 +46,25 @@ with open(TRAIN_SCRIPT, "r") as _f:
     _TRAIN_SCRIPT_CONTENT = _f.read()
 
 
-def build_gpu_pod_spec(gpus_per_host: int) -> V1PodSpec:
-    """Build a V1PodSpec with GPU resources and shared memory for NCCL.
-    The bootstrap command writes train.py to the worker filesystem
-    before starting the Monarch worker loop, so the SPMDActor can
-    find and execute it.
+def build_gpu_pod_spec(
+    image: str, gpus_per_host: int, gpu_vendor: str, rdma: bool
+) -> V1PodSpec:
+    """Build a V1PodSpec for a MonarchMesh worker pod.
+
+    Without ``rdma``: GPU resources and shared memory for NCCL.
+
+    With ``rdma`` (NVIDIA only): adds RDMA/InfiniBand access for NCCL collectives
+    across pods. IPC_LOCK plus privileged mode are required to pin memory for
+    RDMA. RDMA is provided via SR-IOV: requesting ``nvidia.com/sriov-rdma-vf``
+    triggers the monarch-sriov-vf-injector webhook, which adds the Multus
+    annotation ``k8s.v1.cni.cncf.io/networks=sriov-rdma-vf`` so a Mellanox VF
+    netdev is plumbed into the pod netns for NCCL. hostNetwork is deliberately
+    NOT set on worker pods — the Monarch K8s operator discovers workers via
+    pod DNS, and hostNetwork breaks that (socket.getfqdn() resolves to the
+    node FQDN, not the pod DNS name).
+
+    The bootstrap command writes train.py to the worker filesystem before
+    starting the Monarch worker loop, so the SPMDActor can find and execute it.
     """
     # Write train.py then start the worker loop
     bootstrap = (
@@ -57,29 +72,67 @@ def build_gpu_pod_spec(gpus_per_host: int) -> V1PodSpec:
         f"pathlib.Path({TRAIN_SCRIPT!r}).write_text({_TRAIN_SCRIPT_CONTENT!r})\n"
         + _WORKER_BOOTSTRAP_SCRIPT
     )
-    gpu_resources = {"amd.com/gpu": str(gpus_per_host)}
+
+    env = [V1EnvVar(name="MONARCH_PORT", value="26600")]
+    volume_mounts = [V1VolumeMount(name="dshm", mount_path="/dev/shm")]
+    volumes = [
+        V1Volume(
+            name="dshm",
+            empty_dir=V1EmptyDirVolumeSource(medium="Memory", size_limit="16Gi"),
+        )
+    ]
+    security_context = None
+
+    if rdma:
+        gpu_resources = {
+            "nvidia.com/gpu": str(gpus_per_host),
+            # Request one VF per physical RDMA port on the node (16 CX-6 data-plane
+            # ports per a100-sriov-policy.yaml), not one per GPU. Requires one
+            # Monarch pod per node since each pod consumes the node's full VF pool.
+            "nvidia.com/sriov-rdma-vf": "16",
+        }
+        env.extend([
+            V1EnvVar(name="NCCL_IB_DISABLE", value="0"),
+            V1EnvVar(name="NCCL_IB_HCA", value="mlx5"),
+            V1EnvVar(name="NCCL_IB_GID_INDEX", value="3"),
+            V1EnvVar(name="NCCL_IB_TC", value="41"),
+            V1EnvVar(name="NCCL_IB_SL", value="0"),
+            V1EnvVar(name="NCCL_IB_QPS_PER_CONNECTION", value="4"),
+            V1EnvVar(name="NCCL_NET_GDR_LEVEL", value="PHB"),
+            V1EnvVar(name="NCCL_DEBUG", value="INFO"),
+        ])
+        security_context = V1SecurityContext(
+            privileged=True,
+            capabilities=V1Capabilities(add=["IPC_LOCK"]),
+        )
+        volume_mounts.append(
+            V1VolumeMount(name="infiniband", mount_path="/dev/infiniband")
+        )
+        volumes.append(
+            V1Volume(
+                name="infiniband",
+                host_path=V1HostPathVolumeSource(path="/dev/infiniband"),
+            )
+        )
+    else:
+        gpu_resources = {f"{gpu_vendor}.com/gpu": str(gpus_per_host)}
+
     return V1PodSpec(
         containers=[
             V1Container(
                 name="worker",
-                image=IMAGE,
+                image=image,
                 command=["python", "-u", "-c", bootstrap],
-                env=[V1EnvVar(name="MONARCH_PORT", value="26600")],
+                env=env,
+                security_context=security_context,
                 resources=V1ResourceRequirements(
                     limits=gpu_resources,
                     requests=gpu_resources,
                 ),
-                volume_mounts=[
-                    V1VolumeMount(name="dshm", mount_path="/dev/shm"),
-                ],
+                volume_mounts=volume_mounts,
             )
         ],
-        volumes=[
-            V1Volume(
-                name="dshm",
-                empty_dir=V1EmptyDirVolumeSource(medium="Memory", size_limit="16Gi"),
-            )
-        ],
+        volumes=volumes,
     )
 
 
@@ -91,18 +144,24 @@ def build_gpu_pod_spec(gpus_per_host: int) -> V1PodSpec:
 
 
 async def main(
+    image: str,
+    gpu_vendor: str,
     num_hosts: int = 2,
     gpus_per_host: int = 8,
     mesh_name: str = "monarchmesh",
     provision: bool = False,
+    rdma: bool = False,
 ) -> None:
     """Run DDP training on Kubernetes.
 
     Args:
+        image: Worker container image (e.g. NVIDIA CUDA or AMD ROCm build)
+        gpu_vendor: "nvidia" or "amd" — selects the K8s GPU resource key
         num_hosts: Number of worker pods (must match MonarchMesh replicas)
-        gpus_per_host: GPUs per pod (must match amd.com/gpu in MonarchMesh)
+        gpus_per_host: GPUs per pod (must match the GPU resource in MonarchMesh)
         mesh_name: Name of the MonarchMesh resource
         provision: If True, create MonarchMesh CRDs from Python
+        rdma: If True, provision worker pods with RDMA/InfiniBand (NVIDIA only)
     """
     print("=" * 60)
     print("Kubernetes DDP Example")
@@ -123,7 +182,7 @@ async def main(
         k8s_job.add_mesh(
             mesh_name,
             num_replicas=num_hosts,
-            pod_spec=build_gpu_pod_spec(gpus_per_host),
+            pod_spec=build_gpu_pod_spec(image, gpus_per_host, gpu_vendor, rdma),
         )
     else:
         k8s_job.add_mesh(mesh_name, num_replicas=num_hosts)
@@ -177,13 +236,29 @@ async def main(
 #
 # Command-line Arguments
 # ~~~~~~~~~~~~~~~~~~~~~~
+# - ``--image``: Worker container image (e.g. NVIDIA CUDA or AMD ROCm build)
+# - ``--gpu-vendor``: "nvidia" or "amd" — selects the K8s GPU resource key
 # - ``--provision``: Create MonarchMesh CRDs from Python (no worker YAML needed)
+# - ``--rdma``: Provision worker pods with RDMA/InfiniBand (NVIDIA only)
 # - ``--num_hosts``: Number of worker pods
 # - ``--gpus_per_host``: GPUs per pod
 # - ``--mesh_name``: Name of the MonarchMesh resource
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run DDP training on Kubernetes")
+    parser.add_argument(
+        "--image",
+        type=str,
+        required=True,
+        help="Worker container image",
+    )
+    parser.add_argument(
+        "--gpu-vendor",
+        type=str,
+        choices=["nvidia", "amd"],
+        required=True,
+        help="GPU vendor — selects nvidia.com/gpu or amd.com/gpu",
+    )
     parser.add_argument(
         "--num_hosts",
         type=int,
@@ -207,7 +282,22 @@ if __name__ == "__main__":
         action="store_true",
         help="Provision MonarchMesh CRDs from Python (no YAML manifests needed)",
     )
+    parser.add_argument(
+        "--rdma",
+        action="store_true",
+        help="Provision worker pods with RDMA/InfiniBand (NVIDIA only)",
+    )
     args = parser.parse_args()
+    if args.rdma and args.gpu_vendor != "nvidia":
+        parser.error("--rdma is only supported with --gpu-vendor nvidia")
     asyncio.run(
-        main(args.num_hosts, args.gpus_per_host, args.mesh_name, args.provision)
+        main(
+            args.image,
+            args.gpu_vendor,
+            args.num_hosts,
+            args.gpus_per_host,
+            args.mesh_name,
+            args.provision,
+            args.rdma,
+        )
     )

@@ -21,53 +21,61 @@ helm install monarch-operator monarch-operator/monarch-operator \
 
 ## Install Controller
 
-There are 2 sets of files in this example:
-- [Files for AMD](./deployment_files/amd/)
-- [Files for NVIDA](./deployment_files/nvidia/)
+The controller manifests are managed via Kustomize. A shared [base](./deployment_files/base/) defines the common manifests (Namespace, ServiceAccounts, Role, RoleBindings, controller Pod skeleton), and two overlays patch the controller Pod with GPU-vendor-specific node affinity, toleration, and image:
 
-The files have been tested with A100 Nvidia GPUs and Mi300X AMD GPUs, but they should also work with other GPU shapes in OCI.
+- [AMD overlay](./deployment_files/amd/)
+- [NVIDIA overlay](./deployment_files/nvidia/)
+
+The overlays have been tested with A100 Nvidia GPUs and Mi300X AMD GPUs, but they should also work with other GPU shapes in OCI — adjust the `nodeSelectorTerms` in the relevant overlay's `patch.yaml`.
 
 ### Provision Controller Infra
 
 ```bash
-cd deployment_files/nvidia
-# or
-cd deployment_files/amd
+cd deployment_files
 
-kubectl apply -f provision.yaml
+kubectl apply -k nvidia
+# or
+kubectl apply -k amd
 ```
 
 ### Deploy Controller App
 
+A single [controller script](deployment_files/controller.py) is shared between AMD and NVIDIA. The worker container image is passed via `--image`, the K8s GPU resource key is selected via `--gpu-vendor` (`nvidia` or `amd`), and `--rdma` enables RDMA/InfiniBand on NVIDIA worker pods.
+
+```bash
+cd deployment_files
+
+kubectl cp controller.py monarch-tests/monarch-controller:/tmp/controller.py
+kubectl cp train.py monarch-tests/monarch-controller:/tmp/train.py
+```
+
+For the **RDMA scenario (NVIDIA only)**, install the SRIOV plugin before launching the controller.
+
+## Launch Controller
+
 **Non-RDMA scenario (for AMD and NVIDIA):**
 
 ```bash
-cd deployment_files/nvidia
-# or
-cd deployment_files/amd
+# For Nvidia:
+kubectl exec -it monarch-controller -n monarch-tests -- \
+    python /tmp/controller.py --provision --num_hosts 2 --gpus_per_host 8 \
+    --gpu-vendor nvidia \
+    --image ghcr.io/dochakov-oci/monarch-oci:monarch0.4.1-cuda12.8-rdma-01
 
-kubectl cp controller.py monarch-tests/monarch-controller:/tmp/controller.py
-kubectl cp ../train.py monarch-tests/monarch-controller:/tmp/train.py
+# For AMD:
+kubectl exec -it monarch-controller -n monarch-tests -- \
+    python /tmp/controller.py --provision --num_hosts 2 --gpus_per_host 8 \
+    --gpu-vendor amd \
+    --image ghcr.io/dochakov-oci/monarch-oci:monarch0.4.1-rocm7.2.1-02
 ```
 
 **RDMA scenario (for NVIDIA):**
 
-Step 1: Install SRIOV Plugin.
-
-Step 2: Copy [controller script (with additional RDMA configuration)](deployment_files/nvidia/controller-rdma.py) to the pod.
-
-```bash
-cd deployment_files/nvidia
-
-kubectl cp controller-rdma.py monarch-tests/monarch-controller:/tmp/controller.py
-kubectl cp ../train.py monarch-tests/monarch-controller:/tmp/train.py
-```
-
-## Launch Controller
-
 ```bash
 kubectl exec -it monarch-controller -n monarch-tests -- \
-    python /tmp/controller.py --provision --num_hosts 2 --gpus_per_host 8
+    python /tmp/controller.py --provision --rdma --num_hosts 2 --gpus_per_host 8 \
+    --gpu-vendor nvidia \
+    --image ghcr.io/dochakov-oci/monarch-oci:monarch0.4.1-cuda12.8-rdma-01
 ```
 
 ## Expected output
@@ -131,7 +139,9 @@ Deleted MonarchMesh 'monarchmesh'
 ## Cleanup
 
 ```bash
-kubectl delete -f provision.yaml
+kubectl delete -k deployment_files/nvidia
+# or
+kubectl delete -k deployment_files/amd
 
 helm uninstall monarch-operator monarch-operator/monarch-operator --namespace monarch-system
 ```
