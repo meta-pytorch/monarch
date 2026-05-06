@@ -201,7 +201,7 @@ impl GlobalClientActor {
                             }
                             let kind = ActorErrorKind::processing(err);
                             break ActorError {
-                                actor_id: Box::new(instance.self_id().clone()),
+                                actor_id: Box::new(instance.self_addr().clone()),
                                 kind: Box::new(kind),
                             };
                         }
@@ -220,7 +220,7 @@ impl GlobalClientActor {
                 _ => {
                     let status = ActorStatus::generic_failure(err.kind.to_string());
                     ActorSupervisionEvent::new(
-                        instance.self_id().clone(),
+                        instance.self_addr().clone(),
                         Some("testclient".into()),
                         status,
                         None,
@@ -272,7 +272,7 @@ impl Actor for GlobalClientActor {
         env.set_error(DeliveryError::BrokenLink(
             "message returned to global root client".to_string(),
         ));
-        let actor_ref = env.dest().actor_ref();
+        let actor_ref = env.dest().actor_addr();
         let headers = env.headers().clone();
         let event = ActorSupervisionEvent::new(
             actor_ref.clone(),
@@ -396,7 +396,7 @@ async fn bootstrap_host() -> GlobalState {
     let proc_mesh = ProcMeshRef::new_singleton(
         ProcMeshId::singleton(Label::new("local").unwrap()),
         ProcRef::new(
-            local_proc_agent.actor_id().proc_ref(),
+            local_proc_agent.actor_addr().proc_addr(),
             0,
             local_proc_agent.bind(),
         ),
@@ -534,13 +534,13 @@ mod tests {
         dest_actor: hyperactor::ActorAddr,
     ) {
         let env = MessageEnvelope::new(
-            client.self_id().clone(),
-            dest_actor.port_ref(0.into()),
+            client.self_addr().clone(),
+            dest_actor.port_addr(0.into()),
             wirevalue::Any::serialize(&0u64).unwrap(),
             Flattrs::new(),
         );
         // Target the global root client's well-known Undeliverable port.
-        let client_actor_id: hyperactor::ActorAddr = client.self_id().clone();
+        let client_actor_id: hyperactor::ActorAddr = client.self_addr().clone();
         let undeliverable_port =
             PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(&client_actor_id);
         undeliverable_port

@@ -74,9 +74,9 @@ impl Borrow {
         to_stream: Arc<ActorHandle<StreamActor>>,
     ) -> Result<Borrow> {
         let (first_use_sender, first_use_receiver) =
-            Mailbox::new_detached(to_stream.actor_id().clone()).open_port();
+            Mailbox::new_detached(to_stream.actor_addr().clone()).open_port();
         let (last_use_sender, last_use_receiver) =
-            Mailbox::new_detached(from_stream.actor_id().clone()).open_port();
+            Mailbox::new_detached(from_stream.actor_addr().clone()).open_port();
 
         from_stream
             .borrow_create(cx, borrow_id, tensor_ref, first_use_sender)

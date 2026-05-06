@@ -55,7 +55,7 @@ impl<A: Referable> ActorRef<A> {
     where
         A: RemoteHandles<M>,
     {
-        PortRef::attest(self.actor_addr.port_ref(Port::from(<M as Named>::port())))
+        PortRef::attest(self.actor_addr.port_addr(Port::from(<M as Named>::port())))
     }
 
     /// Send an [`M`]-typed message to the referenced actor.
@@ -102,16 +102,6 @@ impl<A: Referable> ActorRef<A> {
 
     /// Convert this actor reference into its corresponding actor address.
     pub fn into_actor_addr(self) -> ActorAddr {
-        self.actor_addr
-    }
-
-    /// The actor address corresponding with this reference.
-    pub fn actor_id(&self) -> &ActorAddr {
-        &self.actor_addr
-    }
-
-    /// Convert this actor reference into its corresponding actor address.
-    pub fn into_actor_id(self) -> ActorAddr {
         self.actor_addr
     }
 
@@ -275,7 +265,7 @@ impl<M: RemoteMessage> PortRef<M> {
     /// The caller attests that the provided PortId can be
     /// converted to a reachable, typed port reference.
     pub fn attest_message_port(actor: &ActorAddr) -> Self {
-        PortRef::<M>::attest(actor.port_ref(Port::from(<M as Named>::port())))
+        PortRef::<M>::attest(actor.port_addr(Port::from(<M as Named>::port())))
     }
 
     /// The typehash of this port's reducer, if any. Reducers
@@ -291,16 +281,6 @@ impl<M: RemoteMessage> PortRef<M> {
 
     /// Convert this PortRef into its corresponding port address.
     pub fn into_port_addr(self) -> PortAddr {
-        self.port_addr
-    }
-
-    /// This port's address.
-    pub fn port_id(&self) -> &PortAddr {
-        &self.port_addr
-    }
-
-    /// Convert this PortRef into its corresponding port address.
-    pub fn into_port_id(self) -> PortAddr {
         self.port_addr
     }
 
@@ -512,16 +492,6 @@ impl<M: RemoteMessage> OncePortRef<M> {
 
     /// Convert this OncePortRef into its corresponding port address.
     pub fn into_port_addr(self) -> PortAddr {
-        self.port_addr
-    }
-
-    /// This port's address.
-    pub fn port_id(&self) -> &PortAddr {
-        &self.port_addr
-    }
-
-    /// Convert this PortRef into its corresponding port address.
-    pub fn into_port_id(self) -> PortAddr {
         self.port_addr
     }
 

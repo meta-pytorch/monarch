@@ -347,7 +347,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         let proc_mesh = ProcMeshRef::new_singleton(
             ProcMeshId::singleton(Label::new("local").unwrap()),
             ProcRef::new(
-                local_proc_agent.actor_id().proc_ref().into(),
+                local_proc_agent.actor_addr().proc_addr(),
                 0,
                 local_proc_agent.bind(),
             ),
@@ -385,7 +385,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 parent_view_json: None,
             });
 
-            let host_agent_id = host_mesh_agent.actor_id();
+            let host_agent_id = host_mesh_agent.actor_addr();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
                 id: hyperactor_telemetry::hash_to_u64(host_agent_id),
                 timestamp: now,
@@ -413,7 +413,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 parent_view_json: None,
             });
 
-            let proc_agent_id = local_proc_agent.actor_id();
+            let proc_agent_id = local_proc_agent.actor_addr();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
                 id: hyperactor_telemetry::hash_to_u64(proc_agent_id),
                 timestamp: now,
@@ -437,11 +437,11 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             });
 
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(instance.self_id()),
+                id: hyperactor_telemetry::hash_to_u64(instance.self_addr()),
                 timestamp: now,
                 mesh_id: client_mesh_id,
                 rank: 0,
-                full_name: instance.self_id().to_string(),
+                full_name: instance.self_addr().to_string(),
                 display_name: Some("<root>".to_string()),
             });
         }
@@ -479,7 +479,7 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
 
         tracing::info!(
             "sending shutdown_host request to agent {}",
-            agent.actor_id()
+            agent.actor_addr()
         );
         // Use same defaults as HostMesh::shutdown():
         // - MESH_TERMINATE_TIMEOUT = 10 seconds

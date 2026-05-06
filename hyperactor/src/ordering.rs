@@ -258,7 +258,7 @@ impl Sequencer {
     /// - Non-actor ports: get individual sequence schemes (keyed by PortAddr)
     pub fn assign_seq(&self, port_id: &PortAddr) -> SeqInfo {
         let key = if port_id.is_actor_port() {
-            SeqKey::Actor(port_id.actor_ref().clone())
+            SeqKey::Actor(port_id.actor_addr().clone())
         } else {
             SeqKey::Port(port_id.clone())
         };
@@ -477,7 +477,7 @@ mod tests {
         };
 
         let actor_ref: ActorAddr = test_actor_id("test_0", "test");
-        let port_ref = actor_ref.port_ref(Port::from(1));
+        let port_ref = actor_ref.port_addr(Port::from(1));
 
         // Modify original sequencer
         sequencer.assign_seq(&port_ref);
@@ -498,8 +498,8 @@ mod tests {
 
         let actor_ref: ActorAddr = test_actor_id("worker_0", "worker");
         // Two different actor ports for the same actor (using Named::port())
-        let actor_port_1 = actor_ref.port_ref(Port::from(TestMsg1::port()));
-        let actor_port_2 = actor_ref.port_ref(Port::from(TestMsg2::port()));
+        let actor_port_1 = actor_ref.port_addr(Port::from(TestMsg1::port()));
+        let actor_port_2 = actor_ref.port_addr(Port::from(TestMsg2::port()));
 
         // Actor ports should share a sequence (keyed by ActorAddr)
         assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 1);
@@ -508,7 +508,7 @@ mod tests {
 
         // Actor ports from a different actor get their own shared sequence
         let actor_ref_2: ActorAddr = test_actor_id("worker_1", "worker");
-        let actor_port_3 = actor_ref_2.port_ref(Port::from(TestMsg1::port()));
+        let actor_port_3 = actor_ref_2.port_addr(Port::from(TestMsg1::port()));
         assert_eq!(get_seq(sequencer.assign_seq(&actor_port_3)), 1); // independent from actor_ref
     }
 
@@ -523,8 +523,8 @@ mod tests {
         let actor_ref_1: ActorAddr = test_actor_id("worker_1", "worker");
 
         // Non-actor ports from the same actor (without ACTOR_PORT_BIT)
-        let port_1 = actor_ref_0.port_ref(Port::from(1));
-        let port_2 = actor_ref_0.port_ref(Port::from(2));
+        let port_1 = actor_ref_0.port_addr(Port::from(1));
+        let port_2 = actor_ref_0.port_addr(Port::from(2));
 
         // Non-actor ports should have independent sequences (keyed by PortAddr)
         assert_eq!(get_seq(sequencer.assign_seq(&port_1)), 1);
@@ -533,7 +533,7 @@ mod tests {
         assert_eq!(get_seq(sequencer.assign_seq(&port_2)), 2);
 
         // Non-actor ports from different actors are also independent
-        let port_3 = actor_ref_1.port_ref(Port::from(1));
+        let port_3 = actor_ref_1.port_addr(Port::from(1));
         assert_eq!(get_seq(sequencer.assign_seq(&port_3)), 1); // independent from port_1
         assert_eq!(get_seq(sequencer.assign_seq(&port_1)), 3);
         assert_eq!(get_seq(sequencer.assign_seq(&port_3)), 2);
@@ -549,12 +549,12 @@ mod tests {
         let actor_ref: ActorAddr = test_actor_id("worker_0", "worker");
 
         // Actor ports (share sequence per actor)
-        let actor_port_1 = actor_ref.port_ref(Port::from(TestMsg1::port()));
-        let actor_port_2 = actor_ref.port_ref(Port::from(TestMsg2::port()));
+        let actor_port_1 = actor_ref.port_addr(Port::from(TestMsg1::port()));
+        let actor_port_2 = actor_ref.port_addr(Port::from(TestMsg2::port()));
 
         // Non-actor ports (independent sequences per port)
-        let non_actor_port_1 = actor_ref.port_ref(Port::from(1));
-        let non_actor_port_2 = actor_ref.port_ref(Port::from(2));
+        let non_actor_port_1 = actor_ref.port_addr(Port::from(1));
+        let non_actor_port_2 = actor_ref.port_addr(Port::from(2));
 
         // Interleave sends to all port types
         assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 1);

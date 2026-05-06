@@ -503,15 +503,13 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
         }
 
-        // Resolve IbvManagerActor refs and IbvBuffers from backends
+        // Extract IbvManagerActor refs and IbvBuffers from backends
         let (local_ibv_manager, local_ibv) = local_buffer
-            .resolve_ibv(cx)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for local buffer"))??;
+            .resolve_ibv()
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for local buffer"))?;
         let (remote_ibv_manager, remote_ibv) = remote_buffer
-            .resolve_ibv(cx)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for remote buffer"))??;
+            .resolve_ibv()
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for remote buffer"))?;
 
         let qp = local_ibv_manager
             .request_queue_pair(
