@@ -12,6 +12,7 @@
 #![feature(mpmc_channel)]
 #![feature(cfg_version)]
 #![feature(formatting_options)]
+#![feature(thread_id_value)]
 #![recursion_limit = "256"]
 
 // Environment variable for job name (used for environment detection)
