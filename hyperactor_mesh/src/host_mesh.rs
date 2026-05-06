@@ -117,10 +117,6 @@ use crate::transport::DEFAULT_TRANSPORT;
 /// Actor name for `ProcMeshController` when spawned as a named child.
 pub const PROC_MESH_CONTROLLER_NAME: &str = "proc_mesh_controller";
 
-fn resource_proc_name(id: &ResourceId) -> String {
-    hyperactor::id::ProcId::new(id.uid().clone(), id.label().cloned()).to_string()
-}
-
 declare_attrs! {
     /// The maximum idle time between updates while spawning proc
     /// meshes.
@@ -157,21 +153,18 @@ impl HostRef {
     fn mesh_agent(&self) -> ActorRef<HostAgent> {
         ActorRef::attest(
             self.service_proc()
-                .actor_id(host_agent::HOST_MESH_AGENT_ACTOR_NAME),
+                .actor_addr(host_agent::HOST_MESH_AGENT_ACTOR_NAME),
         )
     }
 
     /// The ProcAddr for the proc with name `name` on this host.
     fn named_proc(&self, id: &ResourceId) -> ProcAddr {
-        ProcAddr::new(
-            hyperactor::id::ProcId::new(id.uid().clone(), id.label().cloned()),
-            self.0.clone().into(),
-        )
+        id.proc_addr(self.0.clone())
     }
 
     /// The service proc on this host.
     fn service_proc(&self) -> ProcAddr {
-        ProcAddr::from_resource_name(self.0.clone(), SERVICE_PROC_NAME)
+        ResourceId::proc_addr_from_name(self.0.clone(), SERVICE_PROC_NAME)
     }
 
     /// Request an orderly teardown of this host and all procs it
@@ -236,7 +229,7 @@ impl TryFrom<ActorRef<HostAgent>> for HostRef {
     type Error = crate::Error;
 
     fn try_from(value: ActorRef<HostAgent>) -> Result<Self, crate::Error> {
-        let proc_id = value.actor_id().proc_id();
+        let proc_id = value.actor_addr().proc_addr();
         Ok(HostRef(proc_id.addr().clone()))
     }
 }
@@ -412,11 +405,11 @@ impl HostMesh {
         for (rank, host) in self.current_ref.hosts().iter().enumerate() {
             let actor = host.mesh_agent();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(&actor.actor_id()),
+                id: hyperactor_telemetry::hash_to_u64(&actor.actor_addr()),
                 timestamp: now,
                 mesh_id: mesh_id_hash,
                 rank: rank as u64,
-                full_name: actor.actor_id().to_string(),
+                full_name: actor.actor_addr().to_string(),
                 display_name: None,
             });
         }
@@ -1277,7 +1270,7 @@ impl HostMeshRef {
                     .await
                     .map_err(|e| {
                         crate::Error::HostMeshAgentConfigurationError(
-                            host.mesh_agent().actor_id().clone(),
+                            host.mesh_agent().actor_addr().clone(),
                             format!("failed while creating proc: {}", e),
                         )
                     })?;
@@ -1290,7 +1283,7 @@ impl HostMeshRef {
                     .await
                     .map_err(|e| {
                         crate::Error::HostMeshAgentConfigurationError(
-                            host.mesh_agent().actor_id().clone(),
+                            host.mesh_agent().actor_addr().clone(),
                             format!("failed while querying proc status: {}", e),
                         )
                     })?;
@@ -1307,7 +1300,7 @@ impl HostMeshRef {
                     // TODO: specify or retrieve from state instead, to avoid attestation.
                     ActorRef::attest(
                         host.named_proc(&proc_name)
-                            .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
+                            .actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
                     ),
                 ));
             }
@@ -1350,7 +1343,7 @@ impl HostMeshRef {
                             },
                         )
                         .map_err(|e| {
-                            crate::Error::SendingError(mesh_agent.actor_id().clone(), e.into())
+                            crate::Error::SendingError(mesh_agent.actor_addr().clone(), e.into())
                         })?;
                     let state = match tokio::time::timeout(
                         hyperactor_config::global::get(PROC_SPAWN_MAX_IDLE),
@@ -1592,7 +1585,7 @@ impl HostMeshRef {
                     },
                 )
                 .map_err(|e| {
-                    crate::Error::CallError(host.mesh_agent().actor_id().clone(), e.into())
+                    crate::Error::CallError(host.mesh_agent().actor_addr().clone(), e.into())
                 })?;
         }
 
@@ -1681,7 +1674,7 @@ impl HostSet {
     /// Insert a host entry. No-op if `ActorAddr` already present (SA-3).
     /// First-seen order is preserved.
     fn insert(&mut self, addr: String, agent_ref: ActorRef<HostAgent>) {
-        if self.seen.insert(agent_ref.actor_id().clone()) {
+        if self.seen.insert(agent_ref.actor_addr().clone()) {
             self.entries.push((addr, agent_ref));
         }
     }
@@ -1758,7 +1751,7 @@ pub async fn spawn_admin(
         crate::global_context::try_this_host().map(|client_host| client_host.host_entries());
     let hosts = aggregate_hosts(&meshes, client_entries);
 
-    let root_client_id = cx.mailbox().actor_id().clone();
+    let root_client_id = cx.mailbox().actor_addr().clone();
 
     // Spawn the admin on the caller's local proc. Placement now
     // follows the caller context rather than mesh topology.

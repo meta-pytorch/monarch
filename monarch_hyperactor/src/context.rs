@@ -79,7 +79,7 @@ impl PyInstance {
 
     #[getter]
     pub fn actor_id(&self) -> PyActorAddr {
-        let actor_id: hyperactor::ActorAddr = self.inner.self_id().clone();
+        let actor_id: hyperactor::ActorAddr = self.inner.self_addr().clone();
         actor_id.into()
     }
 
@@ -91,7 +91,7 @@ impl PyInstance {
 
     #[pyo3(signature = (reason = None))]
     fn stop(&self, reason: Option<&str>) -> PyResult<()> {
-        tracing::info!(actor_id = %self.inner.self_id(), "stopping PyInstance");
+        tracing::info!(actor_id = %self.inner.self_addr(), "stopping PyInstance");
         let reason = reason.unwrap_or("(no reason provided)");
         self.inner
             .stop(reason)
@@ -104,7 +104,7 @@ impl PyInstance {
     #[pyo3(signature = (reason = None))]
     fn stop_and_wait(&self, reason: Option<&str>) -> PyResult<crate::pytokio::PyPythonTask> {
         let reason = reason.unwrap_or("shutdown").to_string();
-        let actor_id = self.inner.self_id().clone();
+        let actor_id = self.inner.self_addr().clone();
         let proc = self.inner.proc().clone();
         crate::pytokio::PyPythonTask::new(async move {
             let status_rx = proc.stop_actor(&actor_id, reason);

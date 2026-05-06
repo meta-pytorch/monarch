@@ -93,7 +93,7 @@ impl PdbActor {
     fn send<'py>(&self, py: Python<'py>, action: DebuggerAction) -> PyResult<()> {
         let controller_actor_ref = self.controller_actor_ref.clone();
         let instance = self.instance.clone();
-        let actor_id = instance.blocking_lock().actor_id().clone();
+        let actor_id = instance.blocking_lock().actor_addr().clone();
         signal_safe_block_on(py, async move {
             let (instance, handle) = instance
                 .lock()
@@ -220,10 +220,10 @@ mod tests {
         let worker = proc.attach("worker").unwrap();
         PROC.with(|cell| cell.set(proc.clone()).ok());
         CONTROLLER_ACTOR_REF.with(|cell| cell.set(controller_ref.clone()).ok());
-        ROOT_ACTOR_ID.with(|cell| cell.set(worker.actor_id().clone()).ok());
+        ROOT_ACTOR_ID.with(|cell| cell.set(worker.actor_addr().clone()).ok());
 
         let mut actor = PdbActor::new().unwrap();
-        let debugger_actor_id = actor.instance.blocking_lock().actor_id().clone();
+        let debugger_actor_id = actor.instance.blocking_lock().actor_addr().clone();
 
         monarch_with_gil_blocking(|py| actor.send(py, DebuggerAction::Paused()).unwrap());
 
