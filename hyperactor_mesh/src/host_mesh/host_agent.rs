@@ -1251,8 +1251,9 @@ impl Handler<resource::List> for HostAgent {
 /// the layer wholesale.
 ///
 /// Request-reply: the reply acts as a barrier confirming the config
-/// is installed. The caller should await with a timeout and treat
-/// timeout as best-effort (log warning, continue).
+/// is installed. The fatal-on-failure / best-effort policy is the
+/// caller's contract, not this message's; for the canonical
+/// attach-time contract see the HM-* invariants in `host_mesh.rs`.
 #[derive(Debug, Named, Handler, RefClient, HandleClient, Serialize, Deserialize)]
 pub struct SetClientConfig {
     pub attrs: Attrs,

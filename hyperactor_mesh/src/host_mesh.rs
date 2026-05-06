@@ -6,6 +6,43 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! Host-mesh attach and lifecycle.
+//!
+//! ## Host-mesh invariants (HM-*)
+//!
+//! These are the load-bearing semantic contracts of `HostMesh::attach()`
+//! and `HostMeshRef::push_config()`. They describe what callers may
+//! rely on; they do not pin specific mechanisms (the current
+//! implementation chooses a particular send path, error taxonomy, and
+//! timeout shape — those are not invariants and may evolve).
+//!
+//! - **HM-1 (attach-config-complete).** If `HostMesh::attach()` returns
+//!   `Ok`, every attached host has installed the client's propagatable
+//!   config snapshot.
+//!
+//! - **HM-2 (attach-config-fails-closed).** If config push fails on
+//!   any attached host, `HostMesh::attach()` returns `Err`. It must
+//!   not return a partially-configured mesh as success.
+//!
+//! - **HM-3 (in-band-request-failure-surface).** Attach-time
+//!   config-push *request* failure must surface through `attach()` /
+//!   `push_config()` as a structured error. It must not bypass that
+//!   result path by returning the outbound request on the caller's
+//!   `Undeliverable<MessageEnvelope>` channel. The invariant names a
+//!   specific prohibited bypass; what a caller chooses to do with the
+//!   returned `Err` (escalate, retry, abort) is outside scope.
+//!   Cross-cutting: depends on hyperactor undeliverable semantics in
+//!   `hyperactor::reference` and `hyperactor::actor`; the invariant
+//!   still belongs here because the attach contract is owned here.
+//!
+//! - **HM-4 (host-scoped-error-reporting).** Config-push failure
+//!   reported from `push_config()` identifies the failing host(s)
+//!   individually, so callers can act per-host. The contract commits
+//!   to per-host *identity*; the failure-mode taxonomy carried
+//!   alongside it (the `ConfigPushFailure` variant set) is
+//!   implementation detail and may evolve without changing the
+//!   contract.
+
 #![allow(clippy::result_large_err)]
 
 use hyperactor::Actor;
@@ -62,7 +99,6 @@ pub use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::host_mesh::host_agent::ProcState;
-use crate::host_mesh::host_agent::SetClientConfigClient;
 use crate::host_mesh::host_agent::ShutdownHostClient;
 use crate::mesh_controller::ProcMeshController;
 use crate::mesh_id::HostMeshId;
@@ -209,6 +245,116 @@ impl FromStr for HostRef {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(HostRef(ChannelAddr::from_str(s)?))
+    }
+}
+
+/// Per-host failure modes for the attach-time config push.
+///
+/// **Implementation detail of [`ConfigPushError`].** The variant
+/// taxonomy is *not* part of HM-4 or any other invariant — HM-4
+/// commits to per-host *identity* in the error, not to a specific
+/// menu of failure subtypes. The variant set may grow, shrink, or be
+/// reshaped without changing the contract; tests should not pin to a
+/// specific variant unless the fixture deterministically guarantees
+/// it.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigPushFailure {
+    /// Synchronous send failure (e.g. the request port refused the
+    /// post). The error is preserved for triage.
+    #[error("send failed: {0}")]
+    SendFailed(#[source] Box<hyperactor::mailbox::MailboxSenderError>),
+
+    /// The awaited reply did not arrive within
+    /// `MESH_ATTACH_CONFIG_TIMEOUT`. With request-bounce suppression
+    /// (HM-3 mechanism), this is the dominant failure mode for an
+    /// unreachable host: the channel-side `BrokenLink` is logged at
+    /// debug from `MailboxClient`'s buffer task; the contract surface
+    /// is just "did not reply in time".
+    #[error("reply timed out after MESH_ATTACH_CONFIG_TIMEOUT")]
+    ReplyTimedOut,
+
+    /// The reply receiver closed before any value arrived (sender
+    /// side dropped, or the local mailbox tore down).
+    #[error("reply channel closed before reply")]
+    ReplyChannelClosed,
+}
+
+/// Aggregated `attach()` config-push failure surface — one entry per
+/// host that didn't acknowledge installation.
+///
+/// HM-4: per-host identity is preserved so callers can act per-host.
+/// The host-identity key is `HostRef` (the iteration unit in
+/// `push_config()`); the per-host cause is a `ConfigPushFailure`
+/// (taxonomy is implementation-detail; see the type's doc).
+#[derive(Debug)]
+pub struct ConfigPushError {
+    /// One entry per host whose config push didn't succeed.
+    pub failures: Vec<(HostRef, ConfigPushFailure)>,
+}
+
+impl std::fmt::Display for ConfigPushError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "config push failed during attach on {} host(s):",
+            self.failures.len()
+        )?;
+        for (host, failure) in &self.failures {
+            write!(f, "\n  - {}: {}", host, failure)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ConfigPushError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // Per-host causes are surfaced through `Display`. A single
+        // top-level `source()` would arbitrarily pick one host's
+        // cause and obscure the others.
+        None
+    }
+}
+
+/// Push the propagatable client config to a single host, awaiting
+/// the host's installation acknowledgement.
+///
+/// HM-3 mechanism: the outbound request envelope is constructed
+/// manually (rather than via the `RefClient`-derived
+/// `set_client_config` shortcut) so the per-call
+/// `return_undeliverable(false)` setter can suppress the request
+/// bounce. With suppression, the only failure surface is the awaited
+/// reply path — exactly what `push_config()` wants in-band.
+async fn push_config_to_host(
+    cx: &impl context::Actor,
+    host: &HostRef,
+    attrs: hyperactor_config::attrs::Attrs,
+    per_host_timeout: Duration,
+) -> Result<(), ConfigPushFailure> {
+    use crate::host_mesh::host_agent::SetClientConfig;
+
+    let (reply_handle, mut reply_receiver) = hyperactor::mailbox::open_port::<()>(cx);
+    let reply_ref = reply_handle.bind();
+    let msg = SetClientConfig {
+        attrs,
+        done: reply_ref,
+    };
+
+    let mut request_port = host.mesh_agent().port::<SetClientConfig>();
+    // HM-3: bypass the default `return_undeliverable: true` from
+    // `PortRef::attest`. Without this, a transient session failure
+    // (e.g. "never connected") would bounce the request back through
+    // the caller's `Undeliverable<MessageEnvelope>` handler — the
+    // exact bypass HM-3 prohibits.
+    request_port.return_undeliverable(false);
+
+    if let Err(send_err) = request_port.send(cx, msg) {
+        return Err(ConfigPushFailure::SendFailed(Box::new(send_err)));
+    }
+
+    match tokio::time::timeout(per_host_timeout, reply_receiver.recv()).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_recv_err)) => Err(ConfigPushFailure::ReplyChannelClosed),
+        Err(_elapsed) => Err(ConfigPushFailure::ReplyTimedOut),
     }
 }
 
@@ -464,10 +610,13 @@ impl HostMesh {
     /// 1. Wraps the provided addresses into a `HostMeshRef`.
     /// 2. Snapshots `propagatable_attrs()` from the client's global config.
     /// 3. Pushes the config to each host agent as `Source::ClientOverride`,
-    ///    with a barrier to confirm installation.
+    ///    awaiting per-host installation acknowledgement.
     /// 4. Returns the owned `HostMesh`.
     ///
-    /// After this returns, host agents have the client's config.
+    /// HM-1 / HM-2 / HM-3 / HM-4 (see module docs): if config push
+    /// fails on any host, this returns `Err`. A successful return
+    /// means every attached host installed the propagatable config
+    /// snapshot.
     pub async fn attach(
         cx: &impl context::Actor,
         id: HostMeshId,
@@ -475,7 +624,7 @@ impl HostMesh {
     ) -> crate::Result<Self> {
         let mesh_ref = HostMeshRef::from_hosts(id, addresses);
         let config = hyperactor_config::global::propagatable_attrs();
-        mesh_ref.push_config(cx, config).await;
+        mesh_ref.push_config(cx, config).await?;
         Ok(Self::take(mesh_ref))
     }
 
@@ -914,58 +1063,57 @@ impl HostMeshRef {
     /// Each host installs the attrs as `Source::ClientOverride`.
     /// Idempotent: sending the same attrs twice replaces the layer.
     ///
-    /// Sends request-reply to each host and barriers on all replies.
-    /// Best-effort: on timeout or error, logs a warning and continues.
-    /// Timeout controlled by `MESH_ATTACH_CONFIG_TIMEOUT` (default 10s).
+    /// Implements HM-1, HM-2, HM-3, and HM-4 (see module docs):
+    /// returns `Err(ConfigPushError)` if any host's push didn't
+    /// succeed, naming each failing host individually. The outbound
+    /// request envelope is sent with `return_undeliverable: false` to
+    /// keep failure in-band on the awaited reply (HM-3 mechanism);
+    /// per-host wait is bounded by `MESH_ATTACH_CONFIG_TIMEOUT`.
     pub(crate) async fn push_config(
         &self,
         cx: &impl context::Actor,
         attrs: hyperactor_config::attrs::Attrs,
-    ) {
+    ) -> Result<(), ConfigPushError> {
         let timeout = hyperactor_config::global::get(crate::config::MESH_ATTACH_CONFIG_TIMEOUT);
         let hosts: Vec<_> = self.values().collect();
-        let num_hosts = hosts.len();
 
-        let barrier = futures::future::join_all(hosts.into_iter().map(|host| {
+        let per_host = hosts.into_iter().map(|host| {
             let attrs = attrs.clone();
-            let agent_id = host.mesh_agent().actor_addr().clone();
             async move {
-                match host.mesh_agent().set_client_config(cx, attrs).await {
-                    Ok(()) => {
-                        tracing::debug!(host = %agent_id, "host agent config installed");
-                        true
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            host = %agent_id,
-                            error = %e,
-                            "failed to push client config to host agent, \
-                             continuing without it",
-                        );
-                        false
-                    }
+                (
+                    host.clone(),
+                    push_config_to_host(cx, &host, attrs, timeout).await,
+                )
+            }
+        });
+
+        let results = futures::future::join_all(per_host).await;
+
+        let mut failures = Vec::new();
+        let mut success = 0_usize;
+        for (host, outcome) in results {
+            match outcome {
+                Ok(()) => {
+                    success += 1;
+                    tracing::debug!(host = %host, "host agent config installed");
+                }
+                Err(failure) => {
+                    tracing::warn!(host = %host, error = %failure, "config push failed");
+                    failures.push((host, failure));
                 }
             }
-        }));
+        }
 
-        match tokio::time::timeout(timeout, barrier).await {
-            Ok(results) => {
-                let success = results.iter().filter(|&&r| r).count();
-                let failed = num_hosts - success;
-                tracing::info!(
-                    success = success,
-                    failed = failed,
-                    "push_config barrier complete",
-                );
-            }
-            Err(_) => {
-                tracing::warn!(
-                    num_hosts = num_hosts,
-                    timeout_secs = timeout.as_secs(),
-                    "push_config barrier timed out, some hosts may not \
-                     have received client config",
-                );
-            }
+        if failures.is_empty() {
+            tracing::info!(success, "push_config complete");
+            Ok(())
+        } else {
+            tracing::info!(
+                success,
+                failed = failures.len(),
+                "push_config complete with failures",
+            );
+            Err(ConfigPushError { failures })
         }
     }
 
@@ -1997,7 +2145,74 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    // ---- SA-* invariant tests ----
+    // ---- HM-* invariant tests ----
+    //
+    // HM-1 (attach-config-complete) is covered by
+    // `test_client_config_override` above: a successful end-to-end
+    // attach + per-host config-override observation.
+    //
+    // The tests below cover HM-2, HM-3, and HM-4 in a single fixture
+    // — `attach()` against a host address with no listener. Because
+    // `testing::TestRootClient::handle::<MeshFailure>` panics on any
+    // supervision event, a passing test is itself the HM-3
+    // observation: no `Undeliverable<MessageEnvelope>` reached the
+    // root client (had the bounce escaped, the test would panic).
+
+    /// HM-2 / HM-3 / HM-4: `attach()` against an unreachable host
+    /// returns a structured `Err` that names the failing host, and
+    /// the calling actor stays alive (no supervision crash from a
+    /// bounce on the request path).
+    #[tokio::test]
+    async fn test_attach_fails_closed_on_unreachable_host() {
+        let config = hyperactor_config::global::lock();
+        // Tighten the per-host timeout so the test doesn't sit on
+        // the 10 s default.
+        let _guard = config.override_key(
+            crate::config::MESH_ATTACH_CONFIG_TIMEOUT,
+            Duration::from_millis(500),
+        );
+
+        let instance = testing::instance();
+
+        // `free_localhost_addr` binds a TCP port and immediately
+        // drops the listener. SO_REUSEADDR + no further bind means
+        // sends to this address never connect — exactly the
+        // production-shape failure mode.
+        let unreachable = free_localhost_addr();
+
+        let id = HostMeshId::unique(Label::new("hm_test").unwrap());
+        let result = HostMesh::attach(instance, id, vec![unreachable.clone()]).await;
+
+        // HM-2: attach returns Err on any failed config push.
+        let err = match result {
+            Ok(_) => panic!("HM-2: attach must fail when a host is unreachable"),
+            Err(e) => e,
+        };
+
+        // HM-4: the structured error names the failing host.
+        let push_err = match err {
+            crate::Error::ConfigPushFailed(e) => e,
+            other => panic!("expected ConfigPushFailed, got: {other:?}"),
+        };
+        assert_eq!(push_err.failures.len(), 1);
+        let (failed_host, _failure) = &push_err.failures[0];
+        assert_eq!(
+            failed_host,
+            &HostRef(unreachable),
+            "HM-4: failure entry must identify the unreachable host"
+        );
+        // Intentionally do NOT pin the `_failure` variant — the
+        // contract commits to per-host identity, not to a specific
+        // failure-mode subtype (see ConfigPushFailure's doc).
+
+        // HM-3: the test process getting here without panicking is
+        // itself the assertion. `TestRootClient::handle::<MeshFailure>`
+        // panics on supervision events; if the request bounce had
+        // escaped through `Undeliverable<MessageEnvelope>`, the
+        // root-client's default `handle_undeliverable_message` would
+        // bail with `UndeliverableMessageError::DeliveryFailure`,
+        // supervision would fire, and we wouldn't be here.
+    }
 
     #[tokio::test]
     async fn test_sa1_empty_mesh_set_rejected() {
