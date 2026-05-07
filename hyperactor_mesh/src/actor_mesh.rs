@@ -27,7 +27,6 @@ use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
-use hyperactor::config;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
@@ -57,7 +56,6 @@ use crate::Error;
 use crate::ProcMeshRef;
 use crate::ValueMesh;
 use crate::casting;
-use crate::comm::ENABLE_NATIVE_V1_CASTING;
 use crate::comm::multicast;
 use crate::comm::multicast::CastMessageV1;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
@@ -523,11 +521,7 @@ impl<A: Referable> ActorMeshRef<A> {
 
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            if hyperactor_config::global::get(ENABLE_NATIVE_V1_CASTING) {
-                assert!(
-                    hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
-                    "native V1 casting requires ENABLE_DEST_ACTOR_REORDERING_BUFFER to be enabled",
-                );
+            if casting::v1_casting_enabled() {
                 if Selection::is_equivalent_to_true(&sel) {
                     self.cast_v1(cx, message, root_comm_actor, caller_headers);
                     return Ok(());
