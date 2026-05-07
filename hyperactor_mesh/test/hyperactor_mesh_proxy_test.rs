@@ -126,7 +126,7 @@ impl Actor for ProxyActor {
         let host_mesh = HostMesh::process(extent! { hosts = 1 }, command).await?;
         let proc_mesh = Arc::new(
             host_mesh
-                .spawn(this, "proxy", extent! { replica = 1 }, None)
+                .spawn(this, "proxy", extent! { replica = 1 }, None, None)
                 .await?,
         );
         self.actor_mesh = Some(proc_mesh.spawn(this, "echo", &()).await?);
@@ -190,7 +190,7 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
 
     let mut host_mesh = HostMesh::process(extent! { hosts = 1 }, command).await?;
     let proc_mesh = host_mesh
-        .spawn(instance, "client", extent! { replica = 1 }, None)
+        .spawn(instance, "client", extent! { replica = 1 }, None, None)
         .await?;
     let actor_mesh: ActorMesh<ProxyActor> = proc_mesh
         .spawn(instance, "proxy", &exe_path.to_str().unwrap().to_string())

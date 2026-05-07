@@ -403,7 +403,7 @@ impl ClientActor {
     /// Attach the client to a controller actor. This will block until the controller responds.
     fn attach(&mut self, py: Python, controller_id: PyActorAddr) -> PyResult<()> {
         let instance_wrapper = self.instance.blocking_lock();
-        let actor_id = instance_wrapper.actor_id().clone();
+        let actor_id = instance_wrapper.actor_addr().clone();
         let (instance, _handler) = instance_wrapper
             .instance()
             .child()
@@ -413,7 +413,7 @@ impl ClientActor {
             reference::ActorRef::<ControllerActor>::attest(reference::ActorAddr::from(
                 &controller_id,
             ))
-            .attach(&instance, reference::ActorRef::attest(actor_id.into()))
+            .attach(&instance, reference::ActorRef::attest(actor_id))
             .await
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))
         })?
@@ -504,7 +504,7 @@ impl ClientActor {
 
     fn actor_id(&self) -> PyResult<PyActorAddr> {
         let instance = self.instance.blocking_lock();
-        Ok(PyActorAddr::from(instance.actor_id().clone()))
+        Ok(PyActorAddr::from(instance.actor_addr().clone()))
     }
 }
 
