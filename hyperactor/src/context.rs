@@ -109,7 +109,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         seq_info_policy: SeqInfoPolicy,
     ) {
         let return_handle = self.mailbox().bound_return_handle().unwrap_or_else(|| {
-            let actor_id = self.mailbox().actor_id();
+            let actor_id = self.mailbox().actor_addr();
             if CAN_SEND_WARNED_MAILBOXES
                 .get_or_init(DashSet::new)
                 .insert(actor_id.clone())
@@ -138,7 +138,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         }
 
         let mut envelope =
-            MessageEnvelope::new(self.mailbox().actor_id().clone(), dest, data, headers);
+            MessageEnvelope::new(self.mailbox().actor_addr().clone(), dest, data, headers);
         envelope.set_return_undeliverable(return_undeliverable);
         MailboxSender::post(self.mailbox(), envelope, return_handle);
     }
@@ -157,7 +157,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             return_undeliverable: bool,
         ) {
             let mut envelope =
-                MessageEnvelope::new(mailbox.actor_id().clone(), port_id, msg, Flattrs::new());
+                MessageEnvelope::new(mailbox.actor_addr().clone(), port_id, msg, Flattrs::new());
             envelope.set_return_undeliverable(return_undeliverable);
             mailbox::MailboxSender::post(
                 mailbox,
@@ -171,7 +171,10 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         }
 
         let port_index = self.mailbox().allocate_port();
-        let split_port = self.mailbox().actor_id().port_ref(Port::from(port_index));
+        let split_port = self
+            .mailbox()
+            .actor_addr()
+            .port_addr(Port::from(port_index));
         let mailbox = self.mailbox().clone();
         let reducer = reducer_spec
             .map(

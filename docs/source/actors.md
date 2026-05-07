@@ -10,7 +10,8 @@
 7. [Error Handling in Meshes](#error-handling-in-meshes)
 8. [Advanced Patterns](#advanced-patterns)
 9. [CPU/NUMA Binding](#cpunuma-binding)
-10. [Best Practices](#best-practices)
+10. [Bootstrap Command Customization](#bootstrap-command-customization)
+11. [Best Practices](#best-practices)
 
 ---
 
@@ -941,6 +942,137 @@ procs = host.spawn_procs(per_host={"gpus": 4}, proc_bind=bindings)
 - Custom proc launchers receive the binding configuration in
   `LaunchOptions.proc_bind` and may apply it using backend-appropriate
   mechanisms (e.g., systemd unit properties, Docker `--cpuset-cpus`).
+
+---
+
+## Bootstrap Command Customization
+
+When spawning processes, you can customize the bootstrap command used to launch each proc using the `bootstrap_command` parameter on `HostMesh.spawn_procs()`. This is useful for setting environment variables like `CUDA_VISIBLE_DEVICES`, `RANK`, `LOCAL_RANK`, or customizing the program and arguments.
+
+### Uniform BootstrapCommand
+
+Pass a `BootstrapCommand` to use the same command for all spawned processes:
+
+```python
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import BootstrapCommand
+from monarch.actor import this_host
+
+host = this_host()
+
+# Custom BootstrapCommand for all procs
+cmd = BootstrapCommand(
+    program="/custom/python",
+    arg0=None,
+    args=["-m", "monarch._src.actor.bootstrap_main"],
+    env={"CUDA_VISIBLE_DEVICES": "0,1,2,3", "MY_VAR": "value"},
+)
+procs = host.spawn_procs(
+    per_host={"gpus": 4},
+    bootstrap_command=cmd
+)
+```
+
+### Per-Coordinate BootstrapCommand
+
+Pass a callable to customize the bootstrap command per process. The callable receives a `Point` representing the combined coordinate across host and per_host dimensions:
+
+```python
+from monarch.actor import this_host
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import BootstrapCommand
+
+host = this_host()
+
+# Set CUDA_VISIBLE_DEVICES based on coordinate
+def make_bootstrap(point):
+    return BootstrapCommand(
+        program="/usr/bin/python3",
+        arg0=None,
+        args=["-m", "monarch._src.actor.bootstrap_main"],
+        env={"CUDA_VISIBLE_DEVICES": str(point["gpus"])},
+    )
+
+procs = host.spawn_procs(
+    per_host={"gpus": 4},
+    bootstrap_command=make_bootstrap
+)
+
+# point["gpus"] is the GPU index within each host
+# point["hosts"] is the host index (if host mesh has multiple hosts)
+```
+
+This is particularly useful for:
+- Setting `CUDA_VISIBLE_DEVICES` to restrict each proc to specific GPUs
+- Configuring `RANK` and `LOCAL_RANK` for distributed training
+- Assigning different configurations based on host or device position
+- Using different Python executables or arguments per coordinate
+
+### Using with_env for Ergonomic Customization
+
+The `BootstrapCommand.with_env()` method makes it easy to create modified copies of a base command with additional environment variables. Use `default_bootstrap_cmd()` to get the default command for the current environment:
+
+```python
+from monarch.actor import this_host
+from monarch._src.actor.host_mesh import default_bootstrap_cmd
+
+host = this_host()
+
+# Start with the default bootstrap command
+base = default_bootstrap_cmd()
+
+# Customize per coordinate using with_env
+def make_bootstrap(point):
+    return base.with_env({
+        "CUDA_VISIBLE_DEVICES": str(point["gpus"]),
+        "RANK": str(point["hosts"] * 4 + point["gpus"]),
+    })
+
+procs = host.spawn_procs(
+    per_host={"gpus": 4},
+    bootstrap_command=make_bootstrap
+)
+```
+
+> **Note:** `default_bootstrap_cmd()` returns the default for the *local* (client) environment. It is not guaranteed to match the bootstrap command that the actual remote hosts would use on their own — those may differ in program path, args, or env. When you pass the result of `default_bootstrap_cmd().with_env(...)` as `bootstrap_command`, the client-side default is what gets sent to the hosts, replacing whatever default they would have used. In most setups the client and host environments are equivalent, so this is usually what you want; if your hosts run with a different default, supply an explicit `BootstrapCommand` instead of starting from `default_bootstrap_cmd()`.
+
+### Non-Mutating Behavior
+
+The `bootstrap_command` parameter only affects the specific `spawn_procs` call. The original `HostMesh` is not modified, so subsequent spawns on the same mesh use the original bootstrap command:
+
+```python
+host = this_host()
+
+# First spawn with custom bootstrap command
+cmd1 = BootstrapCommand(...)
+procs1 = host.spawn_procs(
+    per_host={"gpus": 2},
+    bootstrap_command=cmd1
+)
+
+# Second spawn without bootstrap_command uses the mesh's default
+procs2 = host.spawn_procs(per_host={"gpus": 2})
+# procs2 uses the default bootstrap command
+```
+
+### Combining with with_python_executable
+
+Bootstrap commands work with other HostMesh customization methods:
+
+```python
+host = this_host()
+
+# Customize Python executable and bootstrap command
+custom_host = host.with_python_executable("/path/to/python")
+cmd = BootstrapCommand(
+    program="/path/to/python",
+    arg0=None,
+    args=["-m", "monarch._src.actor.bootstrap_main"],
+    env={"CUDA_VISIBLE_DEVICES": "0,1,2,3"},
+)
+procs = custom_host.spawn_procs(
+    per_host={"gpus": 4},
+    bootstrap_command=cmd
+)
+```
 
 ---
 
