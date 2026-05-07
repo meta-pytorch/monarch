@@ -409,9 +409,9 @@ mod tests {
 
         // Modify the port in the erased
         let new_port_id0 = test_port_id("world_0", "comm", 680);
-        assert_ne!(&new_port_id0, original_port0.port_id());
+        assert_ne!(&new_port_id0, original_port0.port_addr());
         let new_port_id1 = test_port_id("world_1", "comm", 257);
-        assert_ne!(&new_port_id1, original_port1.port_id());
+        assert_ne!(&new_port_id1, original_port1.port_addr());
 
         let mut new_ports = vec![&new_port_id0, &new_port_id1].into_iter();
         erased

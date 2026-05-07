@@ -76,7 +76,7 @@ impl Actor for Parent {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         let token = token::create(
             this,
-            this.self_id().clone(),
+            this.self_addr().clone(),
             this.port::<token::Joined<ActorRef<WorkerLike>>>().bind(),
             TokenOptions::default(),
         )?;
@@ -102,7 +102,7 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
         cx: &Context<Self>,
         message: token::Joined<ActorRef<WorkerLike>>,
     ) -> anyhow::Result<()> {
-        self.linked.send(cx, message.peer.actor_id().clone())?;
+        self.linked.send(cx, message.peer.actor_addr().clone())?;
         cx.spawn(Supervisor::new(
             message.peer,
             KeepaliveLink::new(Duration::from_millis(100), Duration::from_millis(300)),
@@ -172,7 +172,7 @@ struct SupervisedChild {
 #[async_trait]
 impl Actor for SupervisedChild {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-        self.ready.send(this, this.self_id().clone())?;
+        self.ready.send(this, this.self_addr().clone())?;
         if let Some(ChildAction::StopAfter(delay)) = self.action.take() {
             this.self_message_with_delay(ChildControl::Stop, delay)?;
         }
