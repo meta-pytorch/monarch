@@ -7,36 +7,64 @@
 """
 Pytest plugin for crash-safe sequential test execution.
 
-Spawns one persistent worker subprocess. The worker overrides pytest_runtestloop
-to replace the normal test loop with an IPC loop: it builds a nodeid->item dict
-after collection, signals ready, then runs whatever test the controller asks for
-by node ID.  Order and collection sync between controller and worker are never
-assumed.
+Spawns one persistent worker subprocess inside a fresh PID namespace
+(via unshare --user --pid --fork --mount-proc).  The worker overrides
+pytest_runtestloop to replace the normal test loop with an IPC loop: it
+builds a nodeid->item dict after collection, signals ready, then runs
+whatever test the controller requests by node ID.
 
-Worker stdout/stderr are inherited from the controller (same fds), so -s output
-and direct Rust/C writes go straight to the terminal with no buffering or IPC
-in the way.
+When the worker exits (crash or graceful stop), the kernel kills every
+other process in its PID namespace, cleaning up any leaked subprocesses.
+
+Worker stdout/stderr are inherited from the controller (same fds), so -s
+output and direct Rust/C writes go straight to the terminal.
 
 Usage:
-    pytest --crash-recovery [--max-crashes=N] ...
+    pytest --crash-recovery [--max-crashes=N] [--max-leaked-procs=N] ...
 """
 
 from __future__ import annotations
 
+import ctypes
 import os
 import pickle
+import signal
 import subprocess
 import sys
 from typing import NamedTuple
 
+import _pytest.runner as runner
 import pytest
+from _pytest.outcomes import OutcomeException
 from _pytest.reports import TestReport
 
 _in_worker = False
 
+# Whether unshare --user is available (i.e. user namespaces can be created).
+# Checked once at import time so _spawn_worker can fall back gracefully when
+# running inside an existing user namespace (where nesting is not permitted).
+_unshare_user_available: bool = (
+    subprocess.run(
+        ["unshare", "--user", "true"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode
+    == 0
+)
+
+# prctl(PR_SET_PDEATHSIG, SIGKILL): tell the kernel to deliver SIGKILL to this
+# process when its parent exits.  Used to chain kills through the unshare →
+# Python worker hierarchy without needing process groups.
+_libc = ctypes.CDLL("libc.so.6", use_errno=True)
+_PR_SET_PDEATHSIG = 1
+
+
+def _set_pdeathsig() -> None:
+    _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+
 
 # ---------------------------------------------------------------------------
-# Wire protocol: pickle's own framing on buffered file objects
+# Wire protocol: pickle framing on buffered file objects
 # ---------------------------------------------------------------------------
 
 
@@ -78,6 +106,8 @@ class NotFoundMsg(NamedTuple):
 
 class PickleReportsMsg(NamedTuple):
     reports: list  # list[TestReport]
+    proc_count: int
+    newly_leaked: int  # PIDs that appeared during this test
 
 
 class WorkerCrashedMsg(NamedTuple):
@@ -103,9 +133,8 @@ class _WorkerPlugin:
         no assumed ordering and no synchronisation needed between controller
         and worker collections.
         """
-        import _pytest.runner as runner
-
         items: dict[str, pytest.Item] = {item.nodeid: item for item in session.items}
+        known_pids = {int(e.name) for e in os.scandir("/proc") if e.name.isdigit()}
         _send(self._wf, ReadyMsg())
 
         while True:
@@ -121,7 +150,19 @@ class _WorkerPlugin:
                     # PASSED/FAILED markers don't appear from the worker;
                     # the controller fires them after receiving the reports.
                     reports = runner.runtestprotocol(item, log=False, nextitem=None)
-                    _send(self._wf, PickleReportsMsg(reports=reports))
+                    after = {
+                        int(e.name) for e in os.scandir("/proc") if e.name.isdigit()
+                    }
+                    newly_leaked = len(after - known_pids)
+                    known_pids = after
+                    _send(
+                        self._wf,
+                        PickleReportsMsg(
+                            reports=reports,
+                            proc_count=len(after),
+                            newly_leaked=newly_leaked,
+                        ),
+                    )
 
         return True  # handled; skip the default test loop
 
@@ -130,6 +171,8 @@ def _worker_main() -> None:
     """Entry point when this file is run directly as the worker subprocess."""
     global _in_worker
     _in_worker = True
+    # Die when our parent (unshare) exits for any reason.
+    _set_pdeathsig()
 
     from _pytest.config import _prepareconfig
 
@@ -145,7 +188,7 @@ def _worker_main() -> None:
         a
         for a in raw_args
         if a not in {"-v", "--verbose"} and not a.startswith("--verbose=")
-    ] + ["-p", "no:terminal", "-p", "no:cacheprovider"]
+    ] + ["-p", "no:terminal", "-p", "no:logging", "-p", "no:cacheprovider"]
 
     config = _prepareconfig(args)
     config.pluginmanager.register(_WorkerPlugin(rf, wf), "crash-worker")
@@ -162,8 +205,11 @@ def _worker_main() -> None:
 
 
 class CrashRecoveryPlugin:
-    def __init__(self, max_crashes: int, config: pytest.Config) -> None:
+    def __init__(
+        self, max_crashes: int, max_leaked_procs: int, config: pytest.Config
+    ) -> None:
         self._max_crashes = max_crashes
+        self._max_leaked_procs = max_leaked_procs
         self._config = config
         self._crashes = 0
         self._crashed: list[str] = []
@@ -186,7 +232,24 @@ class CrashRecoveryPlugin:
 
         _send(self._wf, RunMsg(nodeid=item.nodeid))
 
-        match _recv(self._rf):
+        try:
+            msg = _recv(self._rf)
+        except OutcomeException:
+            # A pytest plugin (e.g. pytest-timeout) interrupted the wait.
+            # SIGKILL the worker first so its PID namespace is cleaned up and
+            # both pipe ends are definitely closed before we touch them.
+            # (Re-raising the OutcomeException is not an option: it would
+            # propagate out of pytest_runtest_protocol with no CallInfo to
+            # catch it, causing INTERNALERROR.)
+            self._kill_worker()
+            if self._crashes < self._max_crashes:
+                self._spawn_worker()
+            self._emit_reports(
+                item, _crash_reports(item, "timed out waiting for worker")
+            )
+            return True
+
+        match msg:
             case WorkerCrashedMsg():
                 self._on_crash(item)
             case NotFoundMsg(nodeid=nodeid):
@@ -196,18 +259,32 @@ class CrashRecoveryPlugin:
                         item, f"worker could not find {nodeid!r} in its collection"
                     ),
                 )
-            case PickleReportsMsg(reports=reports):
+            case PickleReportsMsg(
+                reports=reports, proc_count=proc_count, newly_leaked=newly_leaked
+            ):
                 self._emit_reports(item, reports)
+                if newly_leaked:
+                    print(
+                        f"[crash-recovery] {item.nodeid} leaked {newly_leaked} process(es)"
+                        f" ({proc_count} total in namespace)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                if proc_count > self._max_leaked_procs:
+                    print(
+                        f"[crash-recovery] {proc_count} processes exceeds threshold"
+                        f" {self._max_leaked_procs}, restarting worker",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    self._reap_worker()
+                    self._spawn_worker()
 
         return True
 
     def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
         if self._worker is not None:
-            try:
-                _send(self._wf, StopMsg())
-            except OSError:
-                pass
-            self._reap_worker()
+            self._reap_worker()  # graceful: worker is alive, send StopMsg
 
     def pytest_terminal_summary(self, terminalreporter, exitstatus: int) -> None:
         if not self._crashed:
@@ -235,7 +312,7 @@ class CrashRecoveryPlugin:
             file=sys.stderr,
             flush=True,
         )
-        self._reap_worker()
+        self._kill_worker()
         if self._crashes < self._max_crashes:
             self._spawn_worker()
         self._emit_reports(item, _crash_reports(item, "test runner crashed"))
@@ -245,10 +322,20 @@ class CrashRecoveryPlugin:
         ctrl_r, worker_w = os.pipe()
         self._rf = open(ctrl_r, "rb")
         self._wf = open(ctrl_w, "wb")
-        self._worker = subprocess.Popen(
-            [sys.executable, __file__, str(worker_r), str(worker_w)],
-            pass_fds=(worker_r, worker_w),
-        )
+        cmd = (
+            # unshare --user --pid --fork --mount-proc: worker becomes PID 1 in
+            # a fresh PID namespace with its own /proc.  When the worker exits,
+            # the kernel sends SIGKILL to every other process in the namespace,
+            # so leaked test-spawned processes are cleaned up automatically on
+            # restart.  --user allows this without root.
+            # Falls back to running without a PID namespace when user namespaces
+            # are unavailable (e.g. when already inside one); crash and timeout
+            # recovery still work, but proc-leak tracking is host-wide.
+            ["unshare", "--user", "--pid", "--fork", "--mount-proc"]
+            if _unshare_user_available
+            else []
+        ) + [sys.executable, __file__, str(worker_r), str(worker_w)]
+        self._worker = subprocess.Popen(cmd, pass_fds=(worker_r, worker_w))
         os.close(worker_r)
         os.close(worker_w)
         _send(self._wf, list(self._config.invocation_params.args))
@@ -262,7 +349,33 @@ class CrashRecoveryPlugin:
                     f"worker sent unexpected message during startup: {other!r}"
                 )
 
+    def _kill_worker(self) -> None:
+        """SIGKILL unshare; prctl chain delivers SIGKILL to the Python worker.
+
+        self._worker is the unshare wrapper process.  Killing it triggers
+        PR_SET_PDEATHSIG in the Python worker (_worker_main set it), so the
+        Python worker is killed too without needing process-group tricks.
+        With both dead before we close pipes, the write buffer is guaranteed
+        empty (flushed after the last _send) so wf.close() never raises.
+        """
+        try:
+            self._worker.kill()
+        except ProcessLookupError:
+            pass  # already dead
+        self._worker.wait()
+        self._worker = None
+        self._rf.close()
+        self._rf = None
+        self._wf.close()
+        self._wf = None
+
     def _reap_worker(self) -> None:
+        """Gracefully stop the worker (send StopMsg, close pipes, wait).
+
+        Only call this when the worker is known to be alive; the StopMsg
+        flush must succeed so the write buffer is empty before close().
+        """
+        _send(self._wf, StopMsg())
         self._rf.close()
         self._rf = None
         self._wf.close()
@@ -320,6 +433,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         metavar="N",
         help="Abort after N worker crashes (default: 10).",
     )
+    g.addoption(
+        "--max-leaked-procs",
+        type=int,
+        default=100,
+        metavar="N",
+        help="Restart worker when its PID namespace contains more than N processes (default: 100).",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -327,8 +447,9 @@ def pytest_configure(config: pytest.Config) -> None:
         return  # running as worker; _WorkerPlugin is registered by _worker_main
     if config.getoption("--crash-recovery", default=False):
         max_c = config.getoption("--max-crashes", default=10)
+        max_p = config.getoption("--max-leaked-procs", default=100)
         config.pluginmanager.register(
-            CrashRecoveryPlugin(max_c, config), "crash-recovery"
+            CrashRecoveryPlugin(max_c, max_p, config), "crash-recovery"
         )
 
 

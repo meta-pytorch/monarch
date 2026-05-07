@@ -295,6 +295,7 @@ run_test_groups() {
       --ignore-glob="**/meta/**" \
       --crash-recovery \
       --max-crashes=10 \
+      --max-leaked-procs=1024 \
       --junit-xml="$test_results_dir/test-results.xml"
   local rc=$?
   set -e
