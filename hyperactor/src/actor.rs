@@ -207,7 +207,7 @@ pub fn handle_undeliverable_message<A: Actor>(
     cx: &Instance<A>,
     Undeliverable(envelope): Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
-    assert_eq!(envelope.sender(), cx.self_id());
+    assert_eq!(envelope.sender(), cx.self_addr());
 
     anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
 }
@@ -247,7 +247,7 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
         match self.handle_undeliverable_message(cx, message).await {
             Ok(_) => {
                 tracing::debug!(
-                    actor_id = %cx.self_id(),
+                    actor_id = %cx.self_addr(),
                     name = "undeliverable_message_handled",
                     %sender,
                     %dest,
@@ -257,7 +257,7 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
             }
             Err(e) => {
                 tracing::error!(
-                    actor_id = %cx.self_id(),
+                    actor_id = %cx.self_addr(),
                     name = "undeliverable_message",
                     %sender,
                     %dest,
@@ -341,7 +341,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
             //
             // This will be replaced by a proper export/registry
             // mechanism.
-            Ok(handle.bind::<Self>().into_actor_id())
+            Ok(handle.bind::<Self>().into_actor_addr())
         })
     }
 
@@ -461,7 +461,7 @@ impl std::error::Error for ActorError {
 impl From<MailboxError> for ActorError {
     fn from(inner: MailboxError) -> Self {
         Self {
-            actor_id: Box::new(inner.actor_id().clone()),
+            actor_id: Box::new(inner.actor_addr().clone()),
             kind: Box::new(ActorErrorKind::mailbox(inner)),
         }
     }
@@ -470,7 +470,7 @@ impl From<MailboxError> for ActorError {
 impl From<MailboxSenderError> for ActorError {
     fn from(inner: MailboxSenderError) -> Self {
         Self {
-            actor_id: Box::new(inner.location().actor_id()),
+            actor_id: Box::new(inner.location().actor_addr()),
             kind: Box::new(ActorErrorKind::mailbox_sender(inner)),
         }
     }
@@ -667,26 +667,26 @@ impl<A: Actor> ActorHandle<A> {
     }
 
     /// The [`ActorAddr`] of the actor represented by this handle.
-    pub fn actor_id(&self) -> &ActorAddr {
-        self.cell.actor_id()
+    pub fn actor_addr(&self) -> &ActorAddr {
+        self.cell.actor_addr()
     }
 
     /// Signal the actor to drain its current messages and then stop.
     pub fn drain_and_stop(&self, reason: &str) -> Result<(), ActorError> {
-        tracing::info!("ActorHandle::drain_and_stop called: {}", self.actor_id());
+        tracing::info!("ActorHandle::drain_and_stop called: {}", self.actor_addr());
         self.cell.signal(Signal::DrainAndStop(reason.to_string()))
     }
 
     /// Signal the actor to stop without draining ordinary queued
     /// work first.
     pub fn stop(&self, reason: &str) -> Result<(), ActorError> {
-        tracing::info!("actor handle stop called: {}", self.actor_id());
+        tracing::info!("actor handle stop called: {}", self.actor_addr());
         self.cell.signal(Signal::Stop(reason.to_string()))
     }
 
     /// Signal the actor to terminate immediately.
     pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
-        tracing::info!("actor handle kill called: {}", self.actor_id());
+        tracing::info!("actor handle kill called: {}", self.actor_addr());
         self.cell.signal(Signal::Kill(reason.to_string()))
     }
 
@@ -1629,7 +1629,7 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_introspect", actor).unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_id().clone())
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1642,7 +1642,7 @@ mod tests {
 
         assert_eq!(
             payload.identity,
-            crate::introspect::IntrospectRef::Actor(handle.actor_id().clone())
+            crate::introspect::IntrospectRef::Actor(handle.actor_addr().clone())
         );
         assert_valid_attrs(&payload);
         assert_has_attr(&payload, "status");
@@ -1802,9 +1802,9 @@ mod tests {
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
 
-        let child_ref = crate::Addr::Actor(test_proc_id("nonexistent").actor_ref("child"));
+        let child_ref = crate::Addr::Actor(test_proc_id("nonexistent").actor_addr("child"));
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(handle.actor_id())
+        PortRef::<IntrospectMessage>::attest_handler_port(handle.actor_addr())
             .send(
                 &client,
                 IntrospectMessage::QueryChild {
@@ -1817,7 +1817,9 @@ mod tests {
 
         assert_eq!(
             payload.identity,
-            crate::introspect::IntrospectRef::Actor(test_proc_id("nonexistent").actor_id("child"))
+            crate::introspect::IntrospectRef::Actor(
+                test_proc_id("nonexistent").actor_addr("child")
+            )
         );
         assert_error_code(&payload, "not_found");
 
@@ -1852,7 +1854,7 @@ mod tests {
             .unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_id().clone())
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1893,7 +1895,7 @@ mod tests {
 
         // Query the child — supervisor should be the parent.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&child_handle.actor_id().clone())
+        PortRef::<IntrospectMessage>::attest_handler_port(&child_handle.actor_addr().clone())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1906,7 +1908,7 @@ mod tests {
 
         assert_eq!(
             child_payload.identity,
-            crate::introspect::IntrospectRef::Actor(child_handle.actor_id().clone()),
+            crate::introspect::IntrospectRef::Actor(child_handle.actor_addr().clone()),
         );
         // Verify it has actor attrs (status present).
         assert!(
@@ -1916,13 +1918,13 @@ mod tests {
         assert_eq!(
             child_payload.parent,
             Some(crate::introspect::IntrospectRef::Actor(
-                parent_handle.actor_id().clone()
+                parent_handle.actor_addr().clone()
             )),
         );
 
         // Query the parent — children should include the child.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&parent_handle.actor_id().clone())
+        PortRef::<IntrospectMessage>::attest_handler_port(&parent_handle.actor_addr().clone())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1938,7 +1940,7 @@ mod tests {
             parent_payload
                 .children
                 .contains(&crate::introspect::IntrospectRef::Actor(
-                    child_handle.actor_id().clone()
+                    child_handle.actor_addr().clone()
                 )),
         );
 
@@ -1968,7 +1970,7 @@ mod tests {
             .unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_id().clone())
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2003,7 +2005,7 @@ mod tests {
         let _ = rx.recv().await.unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_id().clone())
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2042,7 +2044,7 @@ mod tests {
 
         // First introspect query.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_id().clone())
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2055,7 +2057,7 @@ mod tests {
 
         // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_id().clone())
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2135,7 +2137,7 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
 
         // Before registering, query_child returns None.
-        let test_ref = Addr::Actor(test_proc_id("test").actor_ref("child"));
+        let test_ref = Addr::Actor(test_proc_id("test").actor_addr("child"));
         assert!(handle.cell().query_child(&test_ref).is_none());
 
         // Register a callback.
@@ -2144,7 +2146,7 @@ mod tests {
             let identity = match child_ref {
                 Addr::Proc(p) => IntrospectRef::Proc(p.clone()),
                 Addr::Actor(a) => IntrospectRef::Actor(a.clone()),
-                Addr::Port(p) => IntrospectRef::Actor(p.actor_ref()),
+                Addr::Port(p) => IntrospectRef::Actor(p.actor_addr()),
             };
             IntrospectResult {
                 identity,
@@ -2166,7 +2168,7 @@ mod tests {
             .expect("callback should produce a payload");
         assert_eq!(
             payload.identity,
-            crate::introspect::IntrospectRef::Actor(test_proc_id("test").actor_ref("child"))
+            crate::introspect::IntrospectRef::Actor(test_proc_id("test").actor_addr("child"))
         );
         let attrs: serde_json::Value =
             serde_json::from_str(&payload.attrs).expect("attrs must be valid JSON");
@@ -2226,7 +2228,7 @@ mod tests {
 
         // Send introspect query via the dedicated introspect port.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_id().clone())
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2271,7 +2273,7 @@ mod tests {
 
         // First introspect query.
         let (reply_port1, reply_rx1) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_id().clone())
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2284,7 +2286,7 @@ mod tests {
 
         // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<IntrospectResult>();
-        crate::PortRef::<IntrospectMessage>::attest_handler_port(handle.actor_id())
+        crate::PortRef::<IntrospectMessage>::attest_handler_port(handle.actor_addr())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2318,7 +2320,7 @@ mod tests {
     async fn test_introspectable_instance_responds_to_query() {
         let proc = Proc::local();
         let (bridge, handle) = proc.introspectable_instance("bridge").unwrap();
-        let actor_id: crate::ActorAddr = handle.actor_id().clone();
+        let actor_id: crate::ActorAddr = handle.actor_addr().clone();
 
         let (reply_port, reply_rx) = bridge.open_once_port::<IntrospectResult>();
         PortRef::<IntrospectMessage>::attest_handler_port(&actor_id)
@@ -2357,7 +2359,7 @@ mod tests {
         let proc = Proc::local();
         let (client, _client_handle) = proc.instance("client").unwrap();
         let (_mailbox, mailbox_handle) = proc.instance("mailbox").unwrap();
-        let mailbox_id: crate::ActorAddr = mailbox_handle.actor_id().clone();
+        let mailbox_id: crate::ActorAddr = mailbox_handle.actor_addr().clone();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
         PortRef::<IntrospectMessage>::attest_handler_port(&mailbox_id)
@@ -2387,7 +2389,7 @@ mod tests {
     async fn test_introspectable_instance_snapshot_on_drop() {
         let proc = Proc::local();
         let (instance, handle) = proc.introspectable_instance("bridge").unwrap();
-        let actor_id = handle.actor_id().clone();
+        let actor_id = handle.actor_addr().clone();
 
         assert!(
             proc.all_actor_ids().contains(&actor_id),

@@ -213,7 +213,7 @@ impl TestRootClient {
                             }
                             let kind = ActorErrorKind::processing(err);
                             break ActorError {
-                                actor_id: Box::new(instance.self_id().clone()),
+                                actor_id: Box::new(instance.self_addr().clone()),
                                 kind: Box::new(kind),
                             };
                         }
@@ -233,7 +233,7 @@ impl TestRootClient {
                 _ => {
                     let status = ActorStatus::generic_failure(err.kind.to_string());
                     ActorSupervisionEvent::new(
-                        instance.self_id().clone(),
+                        instance.self_addr().clone(),
                         Some("testclient".into()),
                         status,
                         None,

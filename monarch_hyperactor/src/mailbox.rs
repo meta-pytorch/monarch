@@ -115,7 +115,7 @@ impl PyMailbox {
     }
 
     pub(super) fn post(&self, dest: &PyActorAddr, message: &PythonMessage) -> PyResult<()> {
-        let port_id = dest.inner.port_ref(PythonMessage::port().into());
+        let port_id = dest.inner.port_addr(PythonMessage::port().into());
         let message = wirevalue::Any::serialize(message).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "failed to serialize message ({:?}) to Any: {}",
@@ -123,7 +123,7 @@ impl PyMailbox {
             ))
         })?;
         let envelope = MessageEnvelope::new(
-            self.inner.actor_id().clone(),
+            self.inner.actor_addr().clone(),
             port_id,
             message,
             Flattrs::new(),
@@ -139,7 +139,7 @@ impl PyMailbox {
     #[getter]
     pub(super) fn actor_id(&self) -> PyActorAddr {
         PyActorAddr {
-            inner: self.inner.actor_id().clone(),
+            inner: self.inner.actor_addr().clone(),
         }
     }
 
@@ -182,7 +182,7 @@ impl PyPortId {
     #[pyo3(signature = (*, actor_id, port))]
     fn new(actor_id: &PyActorAddr, port: u64) -> Self {
         Self {
-            inner: actor_id.inner.port_ref(port.into()),
+            inner: actor_id.inner.port_addr(port.into()),
         }
     }
 
@@ -198,7 +198,7 @@ impl PyPortId {
     #[getter]
     fn actor_id(&self) -> PyActorAddr {
         PyActorAddr {
-            inner: self.inner.actor_ref(),
+            inner: self.inner.actor_addr(),
         }
     }
 
@@ -287,7 +287,7 @@ impl PythonPortRef {
     fn __reduce__<'py>(
         slf: Bound<'py, PythonPortRef>,
     ) -> PyResult<(Bound<'py, PyType>, (PyPortId,))> {
-        let id: PyPortId = (*slf.borrow()).inner.port_id().clone().into();
+        let id: PyPortId = (*slf.borrow()).inner.port_addr().clone().into();
         Ok((slf.get_type(), (id,)))
     }
 
@@ -304,7 +304,7 @@ impl PythonPortRef {
 
     #[getter]
     fn port_id(&self) -> PyResult<PyPortId> {
-        Ok(self.inner.port_id().clone().into())
+        Ok(self.inner.port_addr().clone().into())
     }
 
     #[getter]
@@ -470,7 +470,7 @@ impl PythonOncePortRef {
         let id: Option<PyPortId> = (*slf.borrow())
             .inner
             .as_ref()
-            .map(|x: &hyperactor::OncePortRef<PythonMessage>| x.port_id().clone().into());
+            .map(|x: &hyperactor::OncePortRef<PythonMessage>| x.port_addr().clone().into());
         Ok((slf.get_type(), (id,)))
     }
 
@@ -494,7 +494,7 @@ impl PythonOncePortRef {
 
     #[getter]
     fn port_id(&self) -> PyResult<PyPortId> {
-        Ok(self.inner.as_ref().unwrap().port_id().clone().into())
+        Ok(self.inner.as_ref().unwrap().port_addr().clone().into())
     }
 
     #[getter]
