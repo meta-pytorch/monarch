@@ -17,6 +17,7 @@ pub mod proto;
 pub use keepalive::Keepalive;
 pub use keepalive::KeepaliveAck;
 pub use keepalive::KeepaliveLink;
+pub use keepalive::KeepaliveParams;
 pub use keepalive::KeepaliveSupervisor;
 pub use keepalive::KeepaliveSupervisorParams;
 pub use keepalive::KeepaliveWorker;

@@ -410,11 +410,11 @@ def _init_client_context() -> Context:
     import atexit
 
     from monarch._rust_bindings.monarch_hyperactor.host_mesh import bootstrap_host
-    from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
+    from monarch._src.actor.host_mesh import default_bootstrap_cmd, HostMesh
     from monarch._src.actor.proc_mesh import ProcMesh
 
     hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
-        _bootstrap_cmd()
+        default_bootstrap_cmd()
     ).block_on()
 
     ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
