@@ -333,6 +333,22 @@ run_test_groups() {
   set -e
 }
 
+# Copy cargo-nextest's JUnit XML to <dest>. Honors CARGO_TARGET_DIR
+# when set, falling back to `target`.
+# Logs and returns 0 when the file is missing (e.g. compile error before
+# tests started); rely on upload-artifact's `if-no-files-found` to
+# surface that case.
+stage_nextest_junit() {
+  local dest="${1:?usage: stage_nextest_junit <dest_dir>}"
+  local src="${CARGO_TARGET_DIR:-target}/nextest/ci/junit.xml"
+  mkdir -p "$dest"
+  if [[ -f "$src" ]]; then
+    cp -v "$src" "$dest/nextest-junit.xml"
+  else
+    echo "stage_nextest_junit: $src not found; nothing to stage" >&2
+  fi
+}
+
 # Stage JUnit XML test results into RUNNER_ARTIFACT_DIR so linux_job_v2.yml
 # uploads them as a workflow artifact (when the caller sets upload-artifact).
 # Picks up pytest XMLs from RUNNER_TEST_RESULTS_DIR and the cargo-nextest
@@ -348,7 +364,5 @@ stage_test_artifacts() {
   if [[ -d "${RUNNER_TEST_RESULTS_DIR:-test-results}" ]]; then
     cp -v "${RUNNER_TEST_RESULTS_DIR:-test-results}"/*.xml "${RUNNER_ARTIFACT_DIR}/" 2>/dev/null || true
   fi
-  if [[ -f target/nextest/ci/junit.xml ]]; then
-    cp -v target/nextest/ci/junit.xml "${RUNNER_ARTIFACT_DIR}/nextest-junit.xml"
-  fi
+  stage_nextest_junit "${RUNNER_ARTIFACT_DIR}"
 }

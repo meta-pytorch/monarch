@@ -59,12 +59,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use clap::Arg;
 use clap::Command as ClapCommand;
-use hyperactor as reference;
 use hyperactor::Actor;
+use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::OncePortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelAddr;
@@ -265,7 +266,7 @@ pub struct CudaRdmaActor {
     // RDMA buffer handle for the CUDA memory
     rdma_buffer_handle: Option<RdmaRemoteBuffer>,
     // Reference to the RDMA manager actor
-    rdma_manager: reference::ActorRef<RdmaManagerActor>,
+    rdma_manager: ActorRef<RdmaManagerActor>,
 }
 
 #[async_trait]
@@ -286,7 +287,7 @@ impl Actor for CudaRdmaActor {
 
 #[async_trait]
 impl RemoteSpawn for CudaRdmaActor {
-    type Params = (reference::ActorRef<RdmaManagerActor>, usize, usize);
+    type Params = (ActorRef<RdmaManagerActor>, usize, usize);
 
     async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         let (rdma_manager, device_id, buffer_size) = params;
@@ -386,21 +387,21 @@ impl RemoteSpawn for CudaRdmaActor {
 
 // Message to initialize the buffer with data
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-struct InitializeBuffer(pub u8, pub reference::OncePortRef<bool>);
+struct InitializeBuffer(pub u8, pub OncePortRef<bool>);
 
 // Message to perform an RDMA ping-pong operation with another actor
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct PerformPingPong(
-    pub reference::ActorRef<CudaRdmaActor>,
+    pub ActorRef<CudaRdmaActor>,
     pub RdmaRemoteBuffer,
     pub i32,
     pub i32,
-    pub reference::OncePortRef<bool>,
+    pub OncePortRef<bool>,
 );
 
 // Message to verify the buffer contents
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-struct VerifyBuffer(pub Box<[u8]>, pub reference::OncePortRef<bool>);
+struct VerifyBuffer(pub Box<[u8]>, pub OncePortRef<bool>);
 
 #[async_trait]
 impl Handler<InitializeBuffer> for CudaRdmaActor {
@@ -503,15 +504,13 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
         }
 
-        // Resolve IbvManagerActor refs and IbvBuffers from backends
+        // Extract IbvManagerActor refs and IbvBuffers from backends
         let (local_ibv_manager, local_ibv) = local_buffer
-            .resolve_ibv(cx)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for local buffer"))??;
+            .resolve_ibv()
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for local buffer"))?;
         let (remote_ibv_manager, remote_ibv) = remote_buffer
-            .resolve_ibv(cx)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for remote buffer"))??;
+            .resolve_ibv()
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for remote buffer"))?;
 
         let qp = local_ibv_manager
             .request_queue_pair(
@@ -659,7 +658,7 @@ impl Handler<VerifyBuffer> for CudaRdmaActor {
 
 // Message to get the buffer handle from an actor
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-struct GetBufferHandle(#[binding(include)] pub reference::OncePortRef<RdmaRemoteBuffer>);
+struct GetBufferHandle(#[binding(include)] pub OncePortRef<RdmaRemoteBuffer>);
 
 #[async_trait]
 impl Handler<GetBufferHandle> for CudaRdmaActor {
@@ -762,10 +761,10 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     // Create proc meshes (one proc per host mesh)
     let device_1_proc_mesh: ProcMesh = host_mesh_1
-        .spawn(&instance, "procs", Extent::unity(), None)
+        .spawn(&instance, "procs", Extent::unity(), None, None)
         .await?;
     let device_2_proc_mesh: ProcMesh = host_mesh_2
-        .spawn(&instance, "procs", Extent::unity(), None)
+        .spawn(&instance, "procs", Extent::unity(), None, None)
         .await?;
 
     // Create RDMA manager for the first device
