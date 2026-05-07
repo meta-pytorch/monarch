@@ -252,17 +252,17 @@ mod tests {
     use super::*;
 
     fn mock_actor_ref(name: &str) -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
             "world",
         );
-        NodeRef::Actor(proc_id.actor_id(name))
+        NodeRef::Actor(proc_id.actor_addr(name))
     }
 
     fn mock_proc_ref(name: &str) -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
@@ -272,13 +272,13 @@ mod tests {
     }
 
     fn mock_host_ref(name: &str) -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
             "world",
         );
-        NodeRef::Host(proc_id.actor_id(name))
+        NodeRef::Host(proc_id.actor_addr(name))
     }
 
     fn proc_payload(proc_name: &str, props: NodeProperties) -> NodePayload {
@@ -568,13 +568,13 @@ mod tests {
 
     #[test]
     fn derive_label_actor_standard_actor_id() {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
             "myworld",
         );
-        let actor_id = proc_id.actor_id("worker");
+        let actor_id = proc_id.actor_addr("worker");
         let payload = NodePayload {
             identity: NodeRef::Actor(actor_id),
             properties: NodeProperties::Actor {

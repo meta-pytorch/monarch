@@ -6,12 +6,12 @@
 
 # pyre-strict
 
-from typing import Any, final
+from typing import Any, Callable, final
 
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Point, Region
 
 @final
 class HostMesh:
@@ -21,6 +21,7 @@ class HostMesh:
         name: str,
         per_host: Extent,
         proc_bind: list[dict[str, str]] | None = None,
+        per_rank_bootstrap: Callable[[Point], BootstrapCommand] | None = None,
     ) -> PythonTask[ProcMesh]:
         """
         Spawn a new actor on this mesh.
@@ -29,6 +30,11 @@ class HostMesh:
         - `instance`: The instance to use to spawn the mesh.
         - `name`: Name of the proc mesh
         - `per_host`: Extent describing the shape of the proc mesh on each host.
+        - `proc_bind`: Optional per-process CPU/NUMA binding config.
+        - `per_rank_bootstrap`: Optional callable invoked once per proc with
+          that proc's ``Point`` over the combined ``host ⊕ per_host``
+          extent; its returned ``BootstrapCommand`` is used for that proc.
+          Scoped to this spawn; the mesh itself is not mutated.
         """
         ...
 
@@ -102,6 +108,16 @@ class BootstrapCommand:
         ...
 
     def __repr__(self) -> str: ...
+    def with_env(self, env: dict[str, str]) -> "BootstrapCommand":
+        """
+        Return a copy of this command with `env` merged on top of its
+        environment. Keys in `env` override any conflicting keys in the
+        existing environment.
+
+        Arguments:
+        - `env`: Additional environment variables to merge.
+        """
+        ...
 
 def bootstrap_host(
     bootstrap_cmd: BootstrapCommand | None,
