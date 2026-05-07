@@ -285,7 +285,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
             let mesh_controller = py.import("monarch.mesh_controller").unwrap();
             let p: PyPoint = point.into();
             mesh_controller
-                .call_method1("_initialize_env", (p, cx.proc().proc_id().to_string()))
+                .call_method1("_initialize_env", (p, cx.proc().proc_addr().to_string()))
                 .unwrap();
         });
         Ok(())
@@ -598,7 +598,7 @@ impl WorkerMessageHandler for WorkerActor {
             &self.controller_actor,
             cx,
             seq.next(),
-            cx.self_id().clone(),
+            cx.self_addr().clone(),
             controller,
         )
         .await?;
@@ -740,7 +740,7 @@ impl WorkerMessageHandler for WorkerActor {
                     actor_id,
                     reason
                 );
-                if cx.self_id() == &actor_id {
+                if cx.self_addr() == &actor_id {
                     self_error_exit_code
                 } else {
                     peer_error_exit_code
@@ -792,7 +792,7 @@ impl WorkerMessageHandler for WorkerActor {
             .send_value(
                 cx,
                 seq,
-                cx.self_id().clone(),
+                cx.self_addr().clone(),
                 mutates,
                 function,
                 args_kwargs,
