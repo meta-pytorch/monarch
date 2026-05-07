@@ -179,7 +179,9 @@ class CrashRecoveryPlugin:
         self, item: pytest.Item, nextitem: pytest.Item | None
     ) -> bool:
         if self._crashes >= self._max_crashes:
-            self._emit_reports(item, _crash_reports(item, "crash limit reached, test not run"))
+            self._emit_reports(
+                item, _crash_reports(item, "crash limit reached, test not run")
+            )
             return True
 
         _send(self._wf, RunMsg(nodeid=item.nodeid))
@@ -190,7 +192,9 @@ class CrashRecoveryPlugin:
             case NotFoundMsg(nodeid=nodeid):
                 self._emit_reports(
                     item,
-                    _crash_reports(item, f"worker could not find {nodeid!r} in its collection"),
+                    _crash_reports(
+                        item, f"worker could not find {nodeid!r} in its collection"
+                    ),
                 )
             case PickleReportsMsg(reports=reports):
                 self._emit_reports(item, reports)
@@ -254,7 +258,9 @@ class CrashRecoveryPlugin:
             case WorkerCrashedMsg():
                 raise RuntimeError("worker crashed before sending ready")
             case other:
-                raise RuntimeError(f"worker sent unexpected message during startup: {other!r}")
+                raise RuntimeError(
+                    f"worker sent unexpected message during startup: {other!r}"
+                )
 
     def _reap_worker(self) -> None:
         self._rf.close()
@@ -331,8 +337,13 @@ if __name__ == "__main__":
     # its importable name so that pickle uses "crash_recovery_plugin.Foo"
     # consistently on both sides rather than "__main__.Foo".
     sys.modules["crash_recovery_plugin"] = sys.modules["__main__"]
-    for _cls in (RunMsg, StopMsg, ReadyMsg, NotFoundMsg, PickleReportsMsg, WorkerCrashedMsg):
+    for _cls in (
+        RunMsg,
+        StopMsg,
+        ReadyMsg,
+        NotFoundMsg,
+        PickleReportsMsg,
+        WorkerCrashedMsg,
+    ):
         _cls.__module__ = "crash_recovery_plugin"
     _worker_main()
-
-
