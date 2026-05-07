@@ -14,6 +14,7 @@ use hyperactor::Context;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
+use hyperactor::id::Uid;
 use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
@@ -123,13 +124,13 @@ impl CastMessageEnvelope {
         A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
-        let actor_name = actor_mesh_id.actor_name();
+        let actor_uid = actor_mesh_id.uid().clone();
         let data = ErasedUnbound::try_from_message(message)?;
         Ok(Self {
             actor_mesh_id,
             headers,
             sender,
-            dest_port: DestinationPort::new::<A, M>(actor_name),
+            dest_port: DestinationPort::new::<A, M>(actor_uid),
             data,
             shape,
         })
@@ -208,8 +209,8 @@ impl CastMessageEnvelope {
 /// `PortId` of the message.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
 pub struct DestinationPort {
-    /// The actor name to which the message should be delivered.
-    actor_name: String,
+    /// The actor uid to which the message should be delivered.
+    actor_uid: Uid,
     /// The port index of the destination actors, it is derived from the
     /// message type and cached here.
     port: u64,
@@ -217,14 +218,14 @@ pub struct DestinationPort {
 wirevalue::register_type!(DestinationPort);
 
 impl DestinationPort {
-    /// Create a new DestinationPort for a global actor name and message type.
-    pub fn new<A, M>(actor_name: String) -> Self
+    /// Create a new DestinationPort for an actor uid and message type.
+    pub fn new<A, M>(actor_uid: Uid) -> Self
     where
         A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
     {
         Self {
-            actor_name,
+            actor_uid,
             port: IndexedErasedUnbound::<M>::port(),
         }
     }
@@ -234,9 +235,14 @@ impl DestinationPort {
         self.port
     }
 
-    /// Get the actor name of the destination.
-    pub fn actor_name(&self) -> &str {
-        &self.actor_name
+    /// Get the actor uid of the destination.
+    pub fn actor_uid(&self) -> &Uid {
+        &self.actor_uid
+    }
+
+    /// Get the display name of the destination actor uid.
+    pub fn actor_name(&self) -> String {
+        self.actor_uid.to_string()
     }
 }
 
@@ -338,7 +344,7 @@ impl CastMessageV1 {
             session_id,
             seqs,
             dest_region,
-            dest_port: DestinationPort::new::<A, M>(dest_mesh.actor_name()),
+            dest_port: DestinationPort::new::<A, M>(dest_mesh.uid().clone()),
             data,
         })
     }

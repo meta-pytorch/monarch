@@ -517,7 +517,7 @@ impl Proc {
     /// Create a new direct-addressed proc.
     pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
-        let proc_id = ProcAddr::from_resource_name(addr, name);
+        let proc_id = ProcAddr::named(addr, name);
         let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
         let handle = proc.clone().serve(rx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
@@ -546,13 +546,10 @@ impl Proc {
         // envelope ever escapes into the forwarder: it should be
         // dropped, not bounced to the fake sender.
         let signal_actor_id = ActorAddr::root(
-            ProcAddr::from_resource_name(
-                ChannelAddr::any(channel::ChannelTransport::Local),
-                "attach",
-            ),
+            ProcAddr::named(ChannelAddr::any(channel::ChannelTransport::Local), "attach"),
             crate::id::Label::strip("attach"),
         );
-        let signal_port = signal_actor_id.port_ref(crate::port::Port::from(0u64));
+        let signal_port = signal_actor_id.port_addr(crate::port::Port::from(0u64));
         let mut envelope = MessageEnvelope::serialize(
             signal_actor_id,
             signal_port,
@@ -595,7 +592,7 @@ impl Proc {
         &self,
         port: PortHandle<ActorSupervisionEvent>,
     ) -> Result<(), anyhow::Error> {
-        let actor_ref: ActorAddr = port.location().actor_id();
+        let actor_ref: ActorAddr = port.location().actor_addr();
         self.state()
             .supervision_coordinator_port
             .set(port)
@@ -604,9 +601,9 @@ impl Proc {
         Ok(())
     }
 
-    /// The actor ID of the supervision coordinator, if one is set and
+    /// The actor address of the supervision coordinator, if one is set and
     /// lives on this proc.
-    pub fn supervision_coordinator_actor_id(&self) -> Option<&ActorAddr> {
+    pub fn supervision_coordinator_actor_addr(&self) -> Option<&ActorAddr> {
         self.state().supervision_coordinator_actor_id.get()
     }
 
@@ -627,7 +624,7 @@ impl Proc {
                 }
                 Err(anyhow::anyhow!(
                     "coordinator port is not set for proc {}",
-                    self.proc_id(),
+                    self.proc_addr(),
                 ))
             }
         };
@@ -636,7 +633,7 @@ impl Proc {
                 // Normal lifecycle events that fail to send (e.g. coordinator
                 // mailbox already closed during shutdown) are silently dropped.
                 tracing::debug!(
-                    subject = %self.proc_id().subject(),
+                    subject = %self.proc_addr().subject(),
                     "dropping non-error supervision event {}: {:?}",
                     event,
                     err
@@ -644,7 +641,7 @@ impl Proc {
                 return;
             }
             tracing::error!(
-                subject = %self.proc_id().subject(),
+                subject = %self.proc_addr().subject(),
                 "could not propagate supervision event {} due to error: {:?}: crashing",
                 event,
                 err
@@ -663,8 +660,8 @@ impl Proc {
         Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     }
 
-    /// The proc's ID.
-    pub fn proc_id(&self) -> &ProcAddr {
+    /// The proc's address.
+    pub fn proc_addr(&self) -> &ProcAddr {
         &self.state().proc_id
     }
 
@@ -729,7 +726,7 @@ impl Proc {
     {
         let (instance, _handle) = self.instance(name)?;
         let (_handle, rx) = instance.bind_actor_port::<M>();
-        let actor_ref = ActorRef::attest(instance.self_id().clone());
+        let actor_ref = ActorRef::attest(instance.self_addr().clone());
         Ok((instance, actor_ref, rx))
     }
 
@@ -964,7 +961,7 @@ impl Proc {
         &self,
         parent: InstanceCell,
     ) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
-        let actor_id = self.allocate_child_id(parent.actor_id())?;
+        let actor_id = self.allocate_child_id(parent.actor_addr())?;
         let _ = tracing::debug_span!(
             "child_actor_instance",
             subject = %actor_id.subject(),
@@ -988,7 +985,7 @@ impl Proc {
         parent: InstanceCell,
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let actor_id = self.allocate_child_id(parent.actor_id())?;
+        let actor_id = self.allocate_child_id(parent.actor_addr())?;
         self.spawn_inner(actor_id, actor, Some(parent))
     }
 
@@ -1001,7 +998,7 @@ impl Proc {
         name: &str,
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let actor_id = self.allocate_named_child_id(parent.actor_id(), name)?;
+        let actor_id = self.allocate_named_child_id(parent.actor_addr(), name)?;
         self.spawn_inner(actor_id, actor, Some(parent))
     }
 
@@ -1060,7 +1057,7 @@ impl Proc {
         // Holding the read guard while cell drops would self-deadlock.
         let cell = match self.state().instances.get(actor_id) {
             None => {
-                tracing::error!(subject = %self.proc_id().subject(), "no actor {} found", actor_id);
+                tracing::error!(subject = %self.proc_addr().subject(), "no actor {} found", actor_id);
                 return None;
             }
             Some(entry) => entry.value().upgrade(),
@@ -1068,7 +1065,7 @@ impl Proc {
         match cell {
             None => None, // the actor's cell has been dropped
             Some(cell) => {
-                tracing::info!("sending stop signal to {}", cell.actor_id());
+                tracing::info!("sending stop signal to {}", cell.actor_addr());
                 if let Err(err) = cell.signal(Signal::DrainAndStop(reason)) {
                     tracing::error!(
                         "failed to send stop signal to uid {}: {:?}",
@@ -1109,7 +1106,7 @@ impl Proc {
     /// its task.
     /// If except_current is true, don't stop the actor represented by "cx" at
     /// all.
-    #[hyperactor::instrument(fields(subject = self.proc_id().subject().to_string()))]
+    #[hyperactor::instrument(fields(subject = self.proc_addr().subject().to_string()))]
     pub async fn destroy_and_wait_except_current<A: Actor>(
         &mut self,
         timeout: Duration,
@@ -1122,11 +1119,11 @@ impl Proc {
         let (this_handle, this_actor_id) = cx.map_or((None, None), |cx| {
             (
                 Some(cx.actor_task_handle().expect("cannot call destroy_and_wait from inside an actor unless actor has finished starting")),
-                Some(cx.self_id())
+                Some(cx.self_addr())
             )
         });
 
-        let coordinator_id = self.supervision_coordinator_actor_id().cloned();
+        let coordinator_id = self.supervision_coordinator_actor_addr().cloned();
 
         // Phase 1: stop all root actors except the supervision coordinator
         // (which must stay alive to receive stop events from the others).
@@ -1290,7 +1287,7 @@ impl Proc {
     ///
     /// Uses `reserved_roots` to prevent races between concurrent callers.
     fn allocate_root_id(&self, name: &str) -> Result<ActorAddr, anyhow::Error> {
-        let actor_ref = self.state().proc_id.actor_ref(name);
+        let actor_ref = self.state().proc_id.actor_addr(name);
         self.reserve_root(actor_ref, name)
     }
 
@@ -1315,7 +1312,7 @@ impl Proc {
         &self,
         parent_id: &ActorAddr,
     ) -> Result<ActorAddr, anyhow::Error> {
-        assert_eq!(parent_id.proc_ref(), self.state().proc_id);
+        assert_eq!(parent_id.proc_addr(), self.state().proc_id);
         Ok(parent_id.unique_child())
     }
 
@@ -1325,13 +1322,9 @@ impl Proc {
         parent_id: &ActorAddr,
         name: &str,
     ) -> Result<ActorAddr, anyhow::Error> {
-        assert_eq!(parent_id.proc_ref(), self.state().proc_id);
+        assert_eq!(parent_id.proc_addr(), self.state().proc_id);
         let proc_id = self.state().proc_id.id().clone();
-        let (_uid, label) = crate::addr::parse_resource_name(name);
-        let actor_id = match label {
-            Some(label) => crate::id::ActorId::instance_labeled(label, proc_id),
-            None => crate::id::ActorId::instance(proc_id),
-        };
+        let actor_id = crate::id::ActorId::instance_labeled(crate::id::Label::strip(name), proc_id);
         Ok(ActorAddr::new(
             actor_id,
             self.state().proc_id.location().clone(),
@@ -1381,7 +1374,7 @@ impl MailboxSender for Proc {
         // with the hardcoded names "local" and "service", violating this
         // invariant. Until that is fixed, we need to include the addr in this
         // routing decision.
-        if envelope.dest().actor_ref().proc_ref() == self.state().proc_id {
+        if envelope.dest().actor_addr().proc_addr() == self.state().proc_id {
             self.state().proc_muxer.post(envelope, return_handle)
         } else {
             self.state().forwarder.post(envelope, return_handle)
@@ -1543,8 +1536,8 @@ struct InstanceState<A: Actor> {
 }
 
 impl<A: Actor> InstanceState<A> {
-    fn self_id(&self) -> &ActorAddr {
-        self.mailbox.actor_id()
+    fn self_addr(&self) -> &ActorAddr {
+        self.mailbox.actor_addr()
     }
 }
 
@@ -1556,8 +1549,8 @@ impl<A: Actor> Drop for InstanceState<A> {
             } else {
                 tracing::info!(
                     name = "ActorStatus",
-                    actor_id = %self.self_id(),
-                    actor_name = self.self_id().log_name(),
+                    actor_id = %self.self_addr(),
+                    actor_name = self.self_addr().log_name(),
                     status = "Stopped",
                     prev_status = status.arm().unwrap_or("unknown"),
                     "instance is dropped",
@@ -1685,7 +1678,7 @@ impl<A: Actor> Instance<A> {
                 || old == new,
             "actor changing status illegally, only allow non-terminal -> non-terminal \
             and non-terminal -> terminal statuses. actor_id={}, prev_status={}, status={}",
-            self.self_id(),
+            self.self_addr(),
             old,
             new
         );
@@ -1705,14 +1698,14 @@ impl<A: Actor> Instance<A> {
             };
             tracing::info!(
                 name = "ActorStatus",
-                actor_id = %self.self_id(),
-                actor_name = self.self_id().log_name(),
+                actor_id = %self.self_addr(),
+                actor_name = self.self_addr().log_name(),
                 status = new_status,
                 prev_status = old.arm().unwrap_or("unknown"),
                 caller = %Location::caller(),
                 change_reason,
             );
-            let actor_id = hash_to_u64(self.self_id());
+            let actor_id = hash_to_u64(self.self_addr());
             notify_actor_status_changed(ActorStatusEvent {
                 id: generate_actor_status_event_id(actor_id),
                 timestamp: std::time::SystemTime::now(),
@@ -1735,9 +1728,9 @@ impl<A: Actor> Instance<A> {
         self.inner.status_tx.borrow().is_stopping()
     }
 
-    /// This instance's actor ID.
-    pub fn self_id(&self) -> &ActorAddr {
-        self.inner.self_id()
+    /// This instance's actor address.
+    pub fn self_addr(&self) -> &ActorAddr {
+        self.inner.self_addr()
     }
 
     /// Snapshot of this actor's introspection payload.
@@ -1767,7 +1760,7 @@ impl<A: Actor> Instance<A> {
         self.inner
             .cell
             .recording()
-            .span(&self.self_id().subject().to_string())
+            .span(&self.self_addr().subject().to_string())
     }
 
     /// Publish domain-specific properties for introspection.
@@ -1849,7 +1842,7 @@ impl<A: Actor> Instance<A> {
     /// Signal the actor to stop.
     pub fn stop(&self, reason: &str) -> Result<(), ActorError> {
         tracing::info!(
-            actor_id = %self.inner.cell.actor_id(),
+            actor_id = %self.inner.cell.actor_addr(),
             reason,
             "Instance::stop called",
         );
@@ -1861,7 +1854,7 @@ impl<A: Actor> Instance<A> {
     /// Signal the actor to abort with a provided reason.
     pub fn abort(&self, reason: &str) -> Result<(), ActorError> {
         tracing::info!(
-            actor_id = %self.inner.cell.actor_id(),
+            actor_id = %self.inner.cell.actor_addr(),
             reason,
             "Instance::abort called",
         );
@@ -1943,7 +1936,7 @@ impl<A: Actor> Instance<A> {
     {
         let client = Self::self_client();
         let port = self.port();
-        let self_id = self.self_id().clone();
+        let self_id = self.self_addr().clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
             if let Err(e) = port.send(&client, message) {
@@ -1959,7 +1952,7 @@ impl<A: Actor> Instance<A> {
     /// the actor has been linked with its parent, if it has one.
     fn start(self, actor: A, receivers: InstanceReceivers<A>) -> ActorHandle<A> {
         let instance_cell = self.inner.cell.clone();
-        let actor_id = self.inner.cell.actor_id().clone();
+        let actor_id = self.inner.cell.actor_addr().clone();
         let actor_handle = ActorHandle::new(self.inner.cell.clone(), self.inner.ports.clone());
 
         // Spawn the introspect task — a separate tokio task that
@@ -2012,7 +2005,7 @@ impl<A: Actor> Instance<A> {
             Ok(stop_reason) => {
                 let status = ActorStatus::Stopped(stop_reason);
                 let event = ActorSupervisionEvent::new(
-                    self.inner.cell.actor_id().clone(),
+                    self.inner.cell.actor_addr().clone(),
                     actor.display_name(),
                     status.clone(),
                     None,
@@ -2030,7 +2023,7 @@ impl<A: Actor> Instance<A> {
                     let error_kind = ActorErrorKind::Generic(err.kind.to_string());
                     let status = ActorStatus::Failed(error_kind);
                     let event = ActorSupervisionEvent::new(
-                        self.inner.cell.actor_id().clone(),
+                        self.inner.cell.actor_addr().clone(),
                         actor.display_name(),
                         status.clone(),
                         None,
@@ -2060,7 +2053,7 @@ impl<A: Actor> Instance<A> {
             if let Err(err) = parent.signal(Signal::ChildStopped(self.inner.cell.uid().clone())) {
                 tracing::error!(
                     "{}: failed to send stop message to parent uid {}: {:?}",
-                    self.self_id(),
+                    self.self_addr(),
                     parent.uid(),
                     err
                 );
@@ -2107,7 +2100,7 @@ impl<A: Actor> Instance<A> {
                     .map(|info| info.to_string())
                     .unwrap_or_else(|e| format!("Cannot take backtrace due to: {:?}", e));
                 Err(ActorError::new(
-                    self.self_id(),
+                    self.self_addr(),
                     ActorErrorKind::panic(anyhow::anyhow!(panic_info)),
                 ))
             }
@@ -2116,7 +2109,7 @@ impl<A: Actor> Instance<A> {
         assert!(!self.is_terminal());
         self.change_status(ActorStatus::Stopping);
         if let Err(err) = &result {
-            tracing::error!("{}: actor failure: {}", self.self_id(), err);
+            tracing::error!("{}: actor failure: {}", self.self_addr(), err);
         }
 
         // After this point, we know we won't spawn any more children,
@@ -2129,7 +2122,7 @@ impl<A: Actor> Instance<A> {
             {
                 tracing::error!(
                     "{}: failed to send stop signal to child pid {}: {:?}",
-                    self.self_id(),
+                    self.self_addr(),
                     child.key(),
                     err
                 );
@@ -2152,7 +2145,7 @@ impl<A: Actor> Instance<A> {
                 Err(_) => {
                     tracing::warn!(
                         "timeout waiting for ChildStopped signal from child on actor: {}, ignoring",
-                        self.self_id()
+                        self.self_addr()
                     );
                     // No more waiting to receive messages. Unlink all remaining
                     // children.
@@ -2172,9 +2165,12 @@ impl<A: Actor> Instance<A> {
                 .await
             {
                 Ok(Ok(x)) => Ok(x),
-                Ok(Err(e)) => Err(ActorError::new(self.self_id(), ActorErrorKind::cleanup(e))),
+                Ok(Err(e)) => Err(ActorError::new(
+                    self.self_addr(),
+                    ActorErrorKind::cleanup(e),
+                )),
                 Err(e) => Err(ActorError::new(
-                    self.self_id(),
+                    self.self_addr(),
                     ActorErrorKind::cleanup(e.into()),
                 )),
             }
@@ -2212,10 +2208,10 @@ impl<A: Actor> Instance<A> {
         actor
             .init(self)
             .await
-            .map_err(|err| ActorError::new(self.self_id(), ActorErrorKind::init(err)))?;
+            .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::init(err)))?;
         let need_drain;
         let stop_reason;
-        let actor_id_str = self.self_id().to_string();
+        let actor_id_str = self.self_addr().to_string();
         'messages: loop {
             self.change_status(ActorStatus::Idle);
             let metric_pairs = hyperactor_telemetry::kv_pairs!("actor_id" => actor_id_str.clone());
@@ -2231,7 +2227,7 @@ impl<A: Actor> Instance<A> {
                         }
                         let kind = ActorErrorKind::processing(err);
                         return Err(ActorError {
-                            actor_id: Box::new(self.self_id().clone()),
+                            actor_id: Box::new(self.self_addr().clone()),
                             kind: Box::new(kind),
                         });
                     }
@@ -2254,7 +2250,7 @@ impl<A: Actor> Instance<A> {
                             assert!(self.inner.cell.get_child(&uid).is_none());
                         },
                         Signal::Abort(reason) => {
-                            return Err(ActorError { actor_id: Box::new(self.self_id().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) });
+                            return Err(ActorError { actor_id: Box::new(self.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) });
                         }
                     }
                 }
@@ -2287,7 +2283,7 @@ impl<A: Actor> Instance<A> {
                 );
                 if let Err(err) = work.handle(actor, self).await {
                     return Err(ActorError::new(
-                        self.self_id(),
+                        self.self_addr(),
                         ActorErrorKind::processing(err),
                     ));
                 }
@@ -2310,7 +2306,7 @@ impl<A: Actor> Instance<A> {
             );
         }
         tracing::debug!(
-            actor_id = %self.self_id(),
+            actor_id = %self.self_addr(),
             reason = stop_reason,
             "exited actor loop",
         );
@@ -2334,7 +2330,7 @@ impl<A: Actor> Instance<A> {
             }
             Ok(false) => {
                 let kind = ActorErrorKind::UnhandledSupervisionEvent(Box::new(supervision_event));
-                Err(ActorError::new(self.self_id(), kind))
+                Err(ActorError::new(self.self_addr(), kind))
             }
             Err(err) => {
                 // The actor failed to handle the supervision event, it should die.
@@ -2343,7 +2339,7 @@ impl<A: Actor> Instance<A> {
                     err.to_string(),
                     Box::new(supervision_event),
                 );
-                Err(ActorError::new(self.self_id(), kind))
+                Err(ActorError::new(self.self_addr(), kind))
             }
         }
     }
@@ -2398,7 +2394,7 @@ impl<A: Actor> Instance<A> {
         self.change_status(ActorStatus::Processing(now, handler_info.clone()));
         crate::mailbox::headers::log_message_latency_if_sampling(
             &headers,
-            self.self_id().to_string(),
+            self.self_addr().to_string(),
         );
 
         let message_id = headers.get(crate::mailbox::headers::TELEMETRY_MESSAGE_ID);
@@ -2407,7 +2403,7 @@ impl<A: Actor> Instance<A> {
             let from_actor_id = headers
                 .get(crate::mailbox::headers::SENDER_ACTOR_ID_HASH)
                 .unwrap_or(0);
-            let to_actor_id = hash_to_u64(self.self_id());
+            let to_actor_id = hash_to_u64(self.self_addr());
             let port_id = headers.get(crate::mailbox::headers::TELEMETRY_PORT_ID);
 
             notify_message(hyperactor_telemetry::MessageEvent {
@@ -2435,7 +2431,7 @@ impl<A: Actor> Instance<A> {
         // coercion allows the `this` argument to be treated exactly like
         // &Instance<A>.
         let start = Instant::now();
-        let subject_str = self.self_id().subject().to_string();
+        let subject_str = self.self_addr().subject().to_string();
         let result = actor
             .handle(&context, message)
             .instrument(self.inner.cell.inner.recording.span(&subject_str))
@@ -2746,7 +2742,7 @@ impl InstanceCellState {
 
     /// Unlink this instance from a child.
     fn unlink(&self, child: &InstanceCellState) -> bool {
-        assert_eq!(self.actor_id.proc_ref(), child.actor_id.proc_ref());
+        assert_eq!(self.actor_id.proc_addr(), child.actor_id.proc_addr());
         self.children.remove(child.actor_id.uid()).is_some()
     }
 }
@@ -2848,8 +2844,8 @@ impl InstanceCell {
         Self { inner }
     }
 
-    /// The actor's ID.
-    pub fn actor_id(&self) -> &ActorAddr {
+    /// The actor's address.
+    pub fn actor_addr(&self) -> &ActorAddr {
         &self.inner.actor_id
     }
 
@@ -2918,7 +2914,7 @@ impl InstanceCell {
                         // instances created via Proc::instance()).
                         tracing::debug!(
                             "{}: dropping non-error supervision event {}: {:?}",
-                            self.actor_id(),
+                            self.actor_addr(),
                             event,
                             err
                         );
@@ -2926,7 +2922,7 @@ impl InstanceCell {
                     }
                     tracing::error!(
                         "{}: failed to send supervision event to actor: {:?}. Crash the process.",
-                        self.actor_id(),
+                        self.actor_addr(),
                         err
                     );
                     std::process::exit(1);
@@ -2936,14 +2932,14 @@ impl InstanceCell {
                 if !event.is_error() {
                     tracing::debug!(
                         "{}: dropping non-error supervision event {} to detached actor",
-                        self.actor_id(),
+                        self.actor_addr(),
                         event,
                     );
                     return;
                 }
                 tracing::error!(
                     "{}: failed: {}: cannot send supervision event to detached actor: crashing",
-                    self.actor_id(),
+                    self.actor_addr(),
                     event,
                 );
                 std::process::exit(1);
@@ -2960,13 +2956,19 @@ impl InstanceCell {
 
     /// Link this instance to a new child.
     fn link(&self, child: InstanceCell) {
-        assert_eq!(self.actor_id().proc_ref(), child.actor_id().proc_ref());
+        assert_eq!(
+            self.actor_addr().proc_addr(),
+            child.actor_addr().proc_addr()
+        );
         self.inner.children.insert(child.uid().clone(), child);
     }
 
     /// Unlink this instance from a child.
     fn unlink(&self, child: &InstanceCell) {
-        assert_eq!(self.actor_id().proc_ref(), child.actor_id().proc_ref());
+        assert_eq!(
+            self.actor_addr().proc_addr(),
+            child.actor_addr().proc_addr()
+        );
         self.inner.children.remove(child.uid());
     }
 
@@ -3004,7 +3006,7 @@ impl InstanceCell {
         self.inner
             .children
             .iter()
-            .map(|entry| entry.value().actor_id().clone())
+            .map(|entry| entry.value().actor_addr().clone())
             .collect()
     }
 
@@ -3114,7 +3116,7 @@ impl InstanceCell {
     ///    which are closest to the root cause.
     pub fn store_terminated_snapshot(&self, payload: crate::introspect::IntrospectResult) {
         let snapshots = &self.inner.proc.inner.terminated_snapshots;
-        snapshots.insert(self.actor_id().clone(), payload);
+        snapshots.insert(self.actor_addr().clone(), payload);
         let max = hyperactor_config::global::get(crate::config::TERMINATED_SNAPSHOT_RETENTION);
         let excess = snapshots.len().saturating_sub(max);
         if excess > 0 {
@@ -3168,7 +3170,7 @@ impl InstanceCell {
                 .exported_named_ports
                 .insert(*entry.key(), entry.value());
         }
-        ActorRef::attest(self.actor_id().clone())
+        ActorRef::attest(self.actor_addr().clone())
     }
 
     /// Attempt to downcast this cell to a concrete actor handle.
@@ -3207,7 +3209,7 @@ impl Drop for InstanceCellState {
             tracing::debug!(
                 "instance {} was dropped with parent {} still linked",
                 self.actor_id,
-                parent.actor_id()
+                parent.actor_addr()
             );
         }
         if self.proc.inner.instances.remove(&self.actor_id).is_none() {
@@ -3295,7 +3297,7 @@ impl<A: Actor> Ports<A> {
 
                 let type_info = TypeInfo::get_by_typeid(key);
                 let workq = self.workq.clone();
-                let actor_id = self.mailbox.actor_id().to_string();
+                let actor_id = self.mailbox.actor_addr().to_string();
                 let enqueue_depth = Arc::clone(&self.queue_depth);
                 let enqueue_proc_stats = Arc::clone(&self.proc_stats);
                 let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
@@ -3536,7 +3538,7 @@ mod tests {
         assert!(logs_contain(
             format!(
                 "{}: spawned with {:?}",
-                handle.actor_id(),
+                handle.actor_addr(),
                 handle.cell().actor_task_handle().unwrap(),
             )
             .as_str()
@@ -3638,7 +3640,7 @@ mod tests {
         let sender = test_actor_id("sender", "client");
 
         // Same ProcId, same addr: route locally; the forwarder must not see it.
-        let local_dest = proc_local.actor_id("worker").port_ref(Port::from(1234));
+        let local_dest = proc_local.actor_addr("worker").port_addr(Port::from(1234));
         proc.post(
             MessageEnvelope::new(
                 sender.clone(),
@@ -3651,7 +3653,7 @@ mod tests {
         assert_eq!(forwarded.load(Ordering::SeqCst), 0);
 
         // Same ProcId, different addr: must forward to reach the remote proc.
-        let remote_dest = proc_remote.actor_id("worker").port_ref(Port::from(1234));
+        let remote_dest = proc_remote.actor_addr("worker").port_addr(Port::from(1234));
         proc.post(
             MessageEnvelope::new(
                 sender,
@@ -3710,7 +3712,7 @@ mod tests {
             !lookup_actor
                 .actor_exists(
                     &client,
-                    ActorRef::attest(target_actor.actor_id().unique_child())
+                    ActorRef::attest(target_actor.actor_addr().unique_child())
                 )
                 .await
                 .unwrap()
@@ -3718,7 +3720,7 @@ mod tests {
         // A wrongly-typed actor ref should also not obtain.
         assert!(
             !lookup_actor
-                .actor_exists(&client, ActorRef::attest(lookup_actor.actor_id().clone()))
+                .actor_exists(&client, ActorRef::attest(lookup_actor.actor_addr().clone()))
                 .await
                 .unwrap()
         );
@@ -3738,14 +3740,17 @@ mod tests {
     }
 
     fn validate_link(child: &InstanceCell, parent: &InstanceCell) {
-        assert_eq!(child.actor_id().proc_ref(), parent.actor_id().proc_ref());
         assert_eq!(
-            child.inner.parent.upgrade().unwrap().actor_id(),
-            parent.actor_id()
+            child.actor_addr().proc_addr(),
+            parent.actor_addr().proc_addr()
+        );
+        assert_eq!(
+            child.inner.parent.upgrade().unwrap().actor_addr(),
+            parent.actor_addr()
         );
         assert_matches!(
             parent.inner.children.get(child.uid()),
-            Some(node) if node.actor_id() == child.actor_id()
+            Some(node) if node.actor_addr() == child.actor_addr()
         );
     }
 
@@ -3765,7 +3770,7 @@ mod tests {
             "hyperactor::proc",
             format!(
                 "{}: spawned with {:?}",
-                first.actor_id(),
+                first.actor_addr(),
                 first.cell().actor_task_handle().unwrap()
             )
             .as_str()
@@ -3774,7 +3779,7 @@ mod tests {
             "hyperactor::proc",
             format!(
                 "{}: spawned with {:?}",
-                second.actor_id(),
+                second.actor_addr(),
                 second.cell().actor_task_handle().unwrap()
             )
             .as_str()
@@ -3783,16 +3788,16 @@ mod tests {
             "hyperactor::proc",
             format!(
                 "{}: spawned with {:?}",
-                third.actor_id(),
+                third.actor_addr(),
                 third.cell().actor_task_handle().unwrap()
             )
             .as_str()
         ));
 
         // All actors are in the same proc:
-        assert_eq!(first.actor_id().proc_ref(), *proc.proc_id());
-        assert_eq!(second.actor_id().proc_ref(), *proc.proc_id());
-        assert_eq!(third.actor_id().proc_ref(), *proc.proc_id());
+        assert_eq!(first.actor_addr().proc_addr(), *proc.proc_addr());
+        assert_eq!(second.actor_addr().proc_addr(), *proc.proc_addr());
+        assert_eq!(third.actor_addr().proc_addr(), *proc.proc_addr());
 
         // Supervision tree is constructed correctly.
         validate_link(third.cell(), second.cell());
@@ -3858,7 +3863,7 @@ mod tests {
                 TestActorMessage::Fail(anyhow::anyhow!("some random failure")),
             )
             .unwrap();
-        let _root_2_actor_id = root_2.actor_id().clone();
+        let _root_2_actor_id = root_2.actor_addr().clone();
         assert_matches!(
             root_2.await,
             ActorStatus::Failed(err) if err.to_string() == "some random failure"
@@ -3984,7 +3989,7 @@ mod tests {
 
                 tracing::error!(
                     "{}: supervision event received: {:?}",
-                    _this.self_id(),
+                    _this.self_addr(),
                     _event
                 );
                 self.handled.store(true, Ordering::SeqCst);
@@ -4000,7 +4005,7 @@ mod tests {
                 cx: &crate::Context<Self>,
                 message: String,
             ) -> anyhow::Result<()> {
-                tracing::info!("{} received message: {}", cx.self_id(), message);
+                tracing::info!("{} received message: {}", cx.self_addr(), message);
                 Err(anyhow::anyhow!(message))
             }
         }
@@ -4061,7 +4066,7 @@ mod tests {
 
         // fail `root_2_1`, the supervision msg should be propagated to
         // ProcSupervisionCoordinator.
-        let root_2_1_id = root_2_1.actor_id().clone();
+        let root_2_1_id = root_2_1.actor_addr().clone();
         root_2_1
             .send::<String>(&client, "some random failure".into())
             .unwrap();
@@ -4383,7 +4388,7 @@ mod tests {
         let (_client, _client_handle) = proc.instance("client").unwrap();
 
         let handle = proc.spawn::<TestActor>("actor", TestActor).unwrap();
-        let actor_id = handle.actor_id().clone();
+        let actor_id = handle.actor_addr().clone();
 
         // Actor is live — no terminated snapshot yet.
         assert!(proc.terminated_snapshot(&actor_id).is_none());
@@ -4429,7 +4434,7 @@ mod tests {
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
-        let actor_id = handle.actor_id().clone();
+        let actor_id = handle.actor_addr().clone();
 
         // Trigger a failure.
         handle
@@ -4458,7 +4463,7 @@ mod tests {
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
-        let actor_id = handle.actor_id().clone();
+        let actor_id = handle.actor_addr().clone();
         let cell = handle.cell().clone();
 
         handle
@@ -4506,7 +4511,7 @@ mod tests {
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
-        let actor_id = handle.actor_id().clone();
+        let actor_id = handle.actor_addr().clone();
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
@@ -4534,7 +4539,7 @@ mod tests {
             let handle = proc
                 .spawn::<TestActor>(&format!("actor_{i}"), TestActor)
                 .unwrap();
-            actor_ids.push(handle.actor_id().clone());
+            actor_ids.push(handle.actor_addr().clone());
         }
 
         // destroy_and_wait stops all actors. If the coordinator were stopped
@@ -4574,7 +4579,7 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         parent.send(&client, TestActorMessage::Spawn(tx)).unwrap();
         let child = rx.await.unwrap();
-        let child_id = child.actor_id().clone();
+        let child_id = child.actor_addr().clone();
 
         // Fail the child — parent doesn't handle supervision, so it
         // propagates and terminates too.
@@ -4637,7 +4642,7 @@ mod tests {
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
-        let actor_id = handle.actor_id().clone();
+        let actor_id = handle.actor_addr().clone();
 
         handle
             .send(&client, TestActorMessage::Fail(anyhow::anyhow!("kaboom")))
@@ -4681,12 +4686,12 @@ mod tests {
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
-        let parent_id = parent.actor_id().clone();
+        let parent_id = parent.actor_addr().clone();
 
         let (tx, rx) = oneshot::channel();
         parent.send(&client, TestActorMessage::Spawn(tx)).unwrap();
         let child = rx.await.unwrap();
-        let child_id = child.actor_id().clone();
+        let child_id = child.actor_addr().clone();
 
         child
             .send(
@@ -4717,8 +4722,11 @@ mod tests {
         let handle = proc
             .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
             .unwrap();
-        assert_eq!(handle.actor_id().label().unwrap().as_str(), "my_controller");
-        assert!(!handle.actor_id().is_root());
+        assert_eq!(
+            handle.actor_addr().label().unwrap().as_str(),
+            "my_controller"
+        );
+        assert!(!handle.actor_addr().is_root());
     }
 
     /// Exercises AI-1 (see module doc).
@@ -4732,7 +4740,7 @@ mod tests {
         let second = proc
             .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
             .unwrap();
-        assert_ne!(first.actor_id().uid(), second.actor_id().uid());
+        assert_ne!(first.actor_addr().uid(), second.actor_addr().uid());
     }
 
     /// Exercises AI-1 (see module doc).
@@ -4746,7 +4754,7 @@ mod tests {
             .unwrap();
         let child_cell = child.cell();
         let parent = child_cell.parent().expect("named child must have a parent");
-        assert_eq!(parent.actor_id(), root.actor_id());
+        assert_eq!(parent.actor_addr(), root.actor_addr());
     }
 
     /// Exercises AI-1 (see module doc).
@@ -4755,7 +4763,7 @@ mod tests {
         let proc = Proc::local();
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let child = proc.spawn_child(root.cell().clone(), TestActor).unwrap();
-        assert!(!child.actor_id().is_root());
+        assert!(!child.actor_addr().is_root());
     }
 
     /// Exercises AI-1 (see module doc).
@@ -4769,9 +4777,9 @@ mod tests {
         let b = proc
             .spawn_named_child(root.cell().clone(), "controller_b", TestActor)
             .unwrap();
-        assert_ne!(a.actor_id().uid(), b.actor_id().uid());
-        assert_eq!(a.actor_id().label().unwrap().as_str(), "controller_a");
-        assert_eq!(b.actor_id().label().unwrap().as_str(), "controller_b");
+        assert_ne!(a.actor_addr().uid(), b.actor_addr().uid());
+        assert_eq!(a.actor_addr().label().unwrap().as_str(), "controller_a");
+        assert_eq!(b.actor_addr().label().unwrap().as_str(), "controller_b");
     }
 
     /// Exercises AI-1 (see module doc).
@@ -4819,8 +4827,8 @@ mod tests {
             .unwrap();
 
         assert_ne!(
-            ctrl_a.actor_id(),
-            ctrl_b.actor_id(),
+            ctrl_a.actor_addr(),
+            ctrl_b.actor_addr(),
             "controller ActorAddrs must be unique across parents"
         );
     }
@@ -4841,11 +4849,11 @@ mod tests {
 
         // Both must be independently resolvable via the proc's instances.
         assert!(
-            proc.get_instance(ctrl_a.actor_id()).is_some(),
+            proc.get_instance(ctrl_a.actor_addr()).is_some(),
             "ctrl_a must be resolvable"
         );
         assert!(
-            proc.get_instance(ctrl_b.actor_id()).is_some(),
+            proc.get_instance(ctrl_b.actor_addr()).is_some(),
             "ctrl_b must be resolvable"
         );
         // Parents each see exactly one child.
@@ -4860,7 +4868,7 @@ mod tests {
         let (_client, _client_handle) = proc.instance("client").unwrap();
 
         let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
-        let actor_id = handle.actor_id().clone();
+        let actor_id = handle.actor_addr().clone();
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
@@ -4896,7 +4904,7 @@ mod tests {
         let (client, _) = proc.instance("client").unwrap();
         let handle = proc.spawn("qd_test", TestActor).unwrap();
         let actor_ref: crate::ActorRef<TestActor> = handle.bind();
-        let actor_id = actor_ref.actor_id().clone();
+        let actor_id = actor_ref.actor_addr().clone();
 
         // Before any message: queue depth should be 0.
         let cell = proc.get_instance(&actor_id).expect("actor exists");

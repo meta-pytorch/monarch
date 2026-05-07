@@ -87,7 +87,7 @@ impl BrokerId {
         use std::time::Duration;
 
         let broker_name = format!("{:?}", self);
-        let actor_id = cx.proc().proc_id().actor_id(&self.0);
+        let actor_id = cx.proc().proc_addr().actor_addr(&self.0);
         let actor_ref: hyperactor::ActorRef<LocalStateBrokerActor> =
             hyperactor::ActorRef::attest(actor_id);
 
