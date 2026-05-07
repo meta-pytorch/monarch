@@ -190,15 +190,15 @@ mod tests {
     // Test fixtures
 
     fn test_proc_id() -> ProcAddr {
-        ProcAddr::from_resource_name(ChannelAddr::Local(0), "worker")
+        hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "worker")
     }
 
     fn test_actor_id(name: &str) -> hyperactor::ActorAddr {
-        test_proc_id().actor_id(name)
+        test_proc_id().actor_addr(name)
     }
 
     fn test_host_actor_id() -> hyperactor::ActorAddr {
-        test_proc_id().actor_id("host_agent")
+        test_proc_id().actor_addr("host_agent")
     }
 
     fn test_time() -> SystemTime {

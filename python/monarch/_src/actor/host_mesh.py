@@ -20,7 +20,7 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Point, Region
 from monarch._src.actor.actor_mesh import _Lazy, context
 from monarch._src.actor.future import Future
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh
@@ -28,7 +28,16 @@ from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
 from monarch.tools.config.workspace import Workspace
 
 
-def _bootstrap_cmd() -> BootstrapCommand:
+def default_bootstrap_cmd() -> BootstrapCommand:
+    """Get the default bootstrap command for the current environment.
+
+    Returns a BootstrapCommand configured with the current Python executable
+    and environment. This can be used as a base for customization with
+    ``with_env()`` or by modifying its attributes directly.
+
+    Returns:
+        BootstrapCommand: The default bootstrap command.
+    """
     cmd, args, bootstrap_env = _get_bootstrap_args()
     return BootstrapCommand(
         cmd,
@@ -95,6 +104,9 @@ class HostMesh(MeshTrait):
         bootstrap: Callable[[], None] | Callable[[], Awaitable[None]] | None = None,
         name: str | None = None,
         proc_bind: list[dict[str, str]] | None = None,
+        bootstrap_command: (
+            BootstrapCommand | Callable[[Point], BootstrapCommand] | None
+        ) = None,
     ) -> "ProcMesh":
         """Spawn a ProcMesh onto this host mesh.
 
@@ -106,6 +118,11 @@ class HostMesh(MeshTrait):
                 Length must equal ``math.prod(per_host.values())``.
                 Each dict maps binding keys (``cpunodebind``,
                 ``membind``, ``physcpubind``, ``cpus``) to values.
+            bootstrap_command: optional BootstrapCommand or callable that
+                returns a BootstrapCommand for each coordinate. The callable
+                receives a ``Point`` (combined coordinate across host and
+                per_host dimensions). This allows full customization of the
+                bootstrap command per coordinate.
         """
         if not per_host:
             per_host = {}
@@ -128,6 +145,7 @@ class HostMesh(MeshTrait):
             bootstrap,
             True,
             proc_bind,
+            bootstrap_command,
         )
 
     def _spawn_nonblocking(
@@ -137,6 +155,9 @@ class HostMesh(MeshTrait):
         setup: Callable[[], None] | Callable[[], Awaitable[None]] | None,
         _attach_controller_controller: bool,
         proc_bind: list[dict[str, str]] | None = None,
+        bootstrap_command: (
+            BootstrapCommand | Callable[[Point], BootstrapCommand] | None
+        ) = None,
     ) -> "ProcMesh":
         if set(per_host.labels) & set(self._labels):
             # The rust side will catch this too, but this lets us fail fast
@@ -148,10 +169,32 @@ class HostMesh(MeshTrait):
         if self._inner_host_mesh is None:
             raise RuntimeError("HostMesh has already been shut down")
 
+        per_rank_bootstrap: Callable[[Point], BootstrapCommand] | None = None
+
+        if bootstrap_command is not None:
+            if isinstance(bootstrap_command, BootstrapCommand):
+                # Uniform BootstrapCommand - convert to callable
+                def make_uniform_bootstrap(
+                    cmd: BootstrapCommand,
+                ) -> Callable[[Point], BootstrapCommand]:
+                    def bootstrap_callable(point: Point) -> BootstrapCommand:
+                        return cmd
+
+                    return bootstrap_callable
+
+                per_rank_bootstrap = make_uniform_bootstrap(bootstrap_command)
+            else:
+                # Callable that returns BootstrapCommand
+                per_rank_bootstrap = bootstrap_command
+
         async def task() -> HyProcMesh:
             hy_host_mesh = await self._hy_host_mesh
             return await hy_host_mesh.spawn_nonblocking(
-                context().actor_instance._as_rust(), name, per_host, proc_bind
+                context().actor_instance._as_rust(),
+                name,
+                per_host,
+                proc_bind,
+                per_rank_bootstrap,
             )
 
         spawn_shared = PythonTask.from_coroutine(task()).spawn()
