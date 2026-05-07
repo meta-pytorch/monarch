@@ -668,7 +668,7 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::Call, instance.self_id());
+        let span_guard = self.enter_endpoint_span(EndpointAdverb::Call, instance.self_addr());
 
         let extent = self.get_extent(py)?;
         let method_name = self.get_method_name().to_string();
@@ -714,7 +714,7 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_id());
+        let span_guard = self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_addr());
         let (port_ref, receiver) = self.open_response_port(&instance);
 
         let caller_headers = self.build_operation_context_headers(EndpointAdverb::Choose);
@@ -758,7 +758,7 @@ pub(crate) trait Endpoint {
         }
 
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::CallOne, instance.self_id());
+        let span_guard = self.enter_endpoint_span(EndpointAdverb::CallOne, instance.self_addr());
         let (port_ref, receiver) = self.open_response_port(&instance);
 
         let caller_headers = self.build_operation_context_headers(EndpointAdverb::CallOne);
