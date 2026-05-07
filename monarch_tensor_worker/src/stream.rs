@@ -499,14 +499,14 @@ impl Actor for StreamActor {
         PROC.with(|proc| proc.set(cx.proc().clone()).ok());
         ROOT_ACTOR_ID.with(|root_actor_id: &OnceCell<reference::ActorId>| {
             let root_label = cx
-                .self_id()
+                .self_addr()
                 .label()
                 .cloned()
                 .unwrap_or_else(|| Label::new("stream").unwrap());
             root_actor_id
                 .set(reference::ActorId::singleton(
                     root_label,
-                    cx.self_id().proc_ref().id().clone(),
+                    cx.self_addr().proc_addr().id().clone(),
                 ))
                 .ok()
         });
@@ -647,7 +647,7 @@ impl StreamActor {
                 if self.active_recording.is_none() {
                     let worker_error = WorkerError {
                         backtrace: format!("{e}"),
-                        worker_actor_id: cx.self_id().clone(),
+                        worker_actor_id: cx.self_addr().clone(),
                     };
                     tracing::info!("Propagating remote function error to client: {worker_error}");
                     self.controller_actor
@@ -1797,7 +1797,7 @@ impl StreamMessageHandler for StreamActor {
                             seq,
                             WorkerError {
                                 backtrace: format!("recording failed: {}", &seq_err),
-                                worker_actor_id: cx.self_id().clone(),
+                                worker_actor_id: cx.self_addr().clone(),
                             },
                         )
                         .await?;
@@ -2101,7 +2101,7 @@ mod tests {
             .send_value(
                 cx,
                 seq,
-                stream_actor.actor_id().clone(),
+                stream_actor.actor_addr().clone(),
                 Vec::new(),
                 None,
                 ArgsKwargs::from_wire_values(

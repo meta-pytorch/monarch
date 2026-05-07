@@ -108,12 +108,12 @@ impl ProcRef {
         }
     }
 
-    pub fn proc_id(&self) -> &hyperactor_reference::ProcAddr {
+    pub fn proc_addr(&self) -> &hyperactor_reference::ProcAddr {
         &self.proc_id
     }
 
-    pub(crate) fn actor_id(&self, id: &ActorMeshId) -> hyperactor_reference::ActorAddr {
-        self.proc_id.actor_ref_uid(id.uid().clone())
+    pub(crate) fn actor_addr(&self, id: &ActorMeshId) -> hyperactor_reference::ActorAddr {
+        self.proc_id.actor_addr_uid(id.uid().clone())
     }
 
     /// Generic bound: `A: Referable` - required because we return
@@ -122,7 +122,7 @@ impl ProcRef {
         &self,
         id: &ActorMeshId,
     ) -> hyperactor_reference::ActorRef<A> {
-        hyperactor_reference::ActorRef::attest(self.actor_id(id))
+        hyperactor_reference::ActorRef::attest(self.actor_addr(id))
     }
 }
 
@@ -165,7 +165,7 @@ impl ProcMesh {
             ranks
                 .first()
                 .expect("root mesh cannot be empty")
-                .actor_id(&comm_actor_name),
+                .actor_addr(&comm_actor_name),
         );
         let current_ref = ProcMeshRef::new(
             id.clone(),
@@ -209,7 +209,7 @@ impl ProcMesh {
             // These are skipped in Proc::spawn_inner. mesh_id directly points to proc mesh.
             let now = std::time::SystemTime::now();
             for rank in current_ref.ranks.iter() {
-                let actor_id = rank.agent.actor_id();
+                let actor_id = rank.agent.actor_addr();
 
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
                     id: hyperactor_telemetry::hash_to_u64(&actor_id),
@@ -243,7 +243,7 @@ impl ProcMesh {
         for (rank, comm_actor) in &address_book {
             comm_actor
                 .send(cx, CommMeshConfig::new(*rank, address_book.clone()))
-                .map_err(|e| Error::SendingError(comm_actor.actor_id().clone(), Box::new(e)))?
+                .map_err(|e| Error::SendingError(comm_actor.actor_addr().clone(), Box::new(e)))?
         }
 
         // The comm actor is now set up and ready to go.
@@ -388,7 +388,7 @@ impl ProcMeshRef {
             .first()
             .unwrap()
             .agent
-            .actor_id()
+            .actor_addr()
             .label()
             .cloned()
             .unwrap_or_else(|| Label::new(proc_agent::PROC_AGENT_ACTOR_NAME).unwrap());
@@ -477,7 +477,7 @@ impl ProcMeshRef {
                         .pop()
                         .expect("leftover ranks should not be empty");
                     let agent = agent_mesh.get(rank).expect("agent should exist");
-                    let agent_id = agent.actor_id().clone();
+                    let agent_id = agent.actor_addr().clone();
                     states.push((
                         // We populate with any ranks leftover at the time of the timeout.
                         rank,
@@ -833,7 +833,7 @@ impl ProcMeshRef {
                     let point = self.region().extent().point_of_rank(rank).unwrap();
                     crate::actor_display_name(sdn, &point)
                 });
-                let actor_id = proc_ref.actor_id(&actor_mesh_id);
+                let actor_id = proc_ref.actor_addr(&actor_mesh_id);
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
                     id: hyperactor_telemetry::hash_to_u64(&actor_id),
                     timestamp: now,
@@ -1048,7 +1048,7 @@ mod tests {
 
         let mut hm = testing::host_mesh(4).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None)
+            .spawn(&instance, "test", extent!(gpus = 2), None, None)
             .await
             .unwrap();
         let actor_mesh = proc_mesh.spawn(instance, "test", &()).await.unwrap();
@@ -1067,7 +1067,7 @@ mod tests {
 
         let mut hm = testing::host_mesh(4).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None)
+            .spawn(&instance, "test", extent!(gpus = 2), None, None)
             .await
             .unwrap();
         let err = proc_mesh
