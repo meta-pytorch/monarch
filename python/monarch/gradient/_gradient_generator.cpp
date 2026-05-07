@@ -616,9 +616,16 @@ typedef struct {
 // shared_ptr<Node> in older PyTorch, intrusive_ptr<Node> in newer PyTorch
 using node_ptr_t = decltype(std::declval<THPCppFunction>().cdata);
 
+template <typename T = THPFunction>
 static int convertNode(PyObject* obj, node_ptr_t* node) {
   if (THPFunction_Check(obj)) {
-    *node = ((THPFunction*)obj)->cdata.lock();
+    if constexpr (std::is_same_v<
+                      decltype(std::declval<T>().cdata),
+                      node_ptr_t>) {
+      *node = ((T*)obj)->cdata;
+    } else {
+      *node = ((T*)obj)->cdata.lock();
+    }
     return 1;
   } else if (THPCppFunction_Check(obj)) {
     *node = ((THPCppFunction*)obj)->cdata;
@@ -634,7 +641,7 @@ std::optional<Edge> parseEdge(PyObject* obj) {
   if (THPVariable_Check(obj)) {
     auto tensor = THPVariable_Unpack(obj);
     return torch::autograd::impl::gradient_edge(tensor);
-  } else if (PyArg_ParseTuple(obj, "O&i", &convertNode, &node, &input_nr)) {
+  } else if (PyArg_ParseTuple(obj, "O&i", &convertNode<>, &node, &input_nr)) {
     return Edge(std::move(node), input_nr);
   }
   return std::nullopt;
