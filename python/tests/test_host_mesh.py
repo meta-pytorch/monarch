@@ -21,7 +21,7 @@ from unittest.mock import patch
 import cloudpickle
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
+from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
 from monarch._src.actor.actor_mesh import _client_context, Actor, context
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.host_mesh import HostMesh, this_host
@@ -470,6 +470,52 @@ def _make_python_wrapper() -> str:
         )
     os.chmod(wrapper_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
     return wrapper_path
+
+
+class CudaVisibleDevicesActor(Actor):
+    @endpoint
+    def get_cuda_visible_devices(self) -> str:
+        return os.environ.get("CUDA_VISIBLE_DEVICES", "")
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_spawn_procs_with_bootstrap_command() -> None:
+    from monarch._src.actor.host_mesh import default_bootstrap_cmd
+
+    hm = this_host()
+
+    # Use with_env to customize the bootstrap command
+    base = default_bootstrap_cmd()
+    cmd = base.with_env({"CUDA_VISIBLE_DEVICES": "3"})
+
+    pm = hm.spawn_procs(per_host={"gpus": 1}, bootstrap_command=cmd)
+    am = pm.spawn("cuda_marker", CudaVisibleDevicesActor)
+    assert am.get_cuda_visible_devices.call_one().get() == "3"
+
+    # A second spawn without bootstrap_command must not inherit the previous
+    # spawn's env, confirming that with_env is non-mutating on the HostMesh.
+    pm_no_env = hm.spawn_procs(per_host={"gpus": 1})
+    am_no_env = pm_no_env.spawn("cuda_marker_default", CudaVisibleDevicesActor)
+    assert am_no_env.get_cuda_visible_devices.call_one().get() != "3"
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_spawn_procs_with_bootstrap_command_callable() -> None:
+    from monarch._rust_bindings.monarch_hyperactor.host_mesh import BootstrapCommand
+    from monarch._src.actor.host_mesh import default_bootstrap_cmd
+
+    hm = this_host()
+
+    def per_rank_bootstrap(point: Point) -> BootstrapCommand:
+        base = default_bootstrap_cmd()
+        return base.with_env({"CUDA_VISIBLE_DEVICES": str(point["gpus"])})
+
+    pm = hm.spawn_procs(per_host={"gpus": 2}, bootstrap_command=per_rank_bootstrap)
+    am = pm.spawn("cuda_per_rank", CudaVisibleDevicesActor)
+    observed = sorted(am.get_cuda_visible_devices.call().get().values())
+    assert observed == ["0", "1"]
 
 
 @pytest.mark.timeout(60)
