@@ -1,3 +1,9 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 # %%
 # Imports
 # -------
@@ -19,7 +25,6 @@ from kubernetes.client import (
     V1Volume,
     V1VolumeMount,
 )
-
 from monarch.config import configure
 from monarch.job.kubernetes import KubernetesJob
 from monarch.spmd import SPMDActor
@@ -91,16 +96,18 @@ def build_gpu_pod_spec(
             # Monarch pod per node since each pod consumes the node's full VF pool.
             "nvidia.com/sriov-rdma-vf": "16",
         }
-        env.extend([
-            V1EnvVar(name="NCCL_IB_DISABLE", value="0"),
-            V1EnvVar(name="NCCL_IB_HCA", value="mlx5"),
-            V1EnvVar(name="NCCL_IB_GID_INDEX", value="3"),
-            V1EnvVar(name="NCCL_IB_TC", value="41"),
-            V1EnvVar(name="NCCL_IB_SL", value="0"),
-            V1EnvVar(name="NCCL_IB_QPS_PER_CONNECTION", value="4"),
-            V1EnvVar(name="NCCL_NET_GDR_LEVEL", value="PHB"),
-            V1EnvVar(name="NCCL_DEBUG", value="INFO"),
-        ])
+        env.extend(
+            [
+                V1EnvVar(name="NCCL_IB_DISABLE", value="0"),
+                V1EnvVar(name="NCCL_IB_HCA", value="mlx5"),
+                V1EnvVar(name="NCCL_IB_GID_INDEX", value="3"),
+                V1EnvVar(name="NCCL_IB_TC", value="41"),
+                V1EnvVar(name="NCCL_IB_SL", value="0"),
+                V1EnvVar(name="NCCL_IB_QPS_PER_CONNECTION", value="4"),
+                V1EnvVar(name="NCCL_NET_GDR_LEVEL", value="PHB"),
+                V1EnvVar(name="NCCL_DEBUG", value="INFO"),
+            ]
+        )
         security_context = V1SecurityContext(
             privileged=True,
             capabilities=V1Capabilities(add=["IPC_LOCK"]),

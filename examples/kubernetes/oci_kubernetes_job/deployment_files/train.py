@@ -1,25 +1,32 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
 import warnings
+
 warnings.filterwarnings("ignore", message="Using the native apex kernel for RoPE.")
 
 import argparse
-from glob import glob
-from sklearn.metrics import precision_score, recall_score, accuracy_score, f1_score
-import numpy as np
 import os
-import timm
-from PIL import Image
+from glob import glob
 
+import numpy as np
+import timm
 import torch
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
-from torchvision.datasets import ImageFolder
-import torch.multiprocessing as mp
-from torch.utils.data.distributed import DistributedSampler
+from PIL import Image
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
+from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
+from torchvision.datasets import ImageFolder
 
 
 IMAGE_SIZE_PX = 1024
@@ -36,12 +43,12 @@ class Trainer:
         train_data: DataLoader,
         optimizer: torch.optim.Optimizer,
         save_every: int,
-        snapshot_path: str
+        snapshot_path: str,
     ) -> None:
         self.local_rank = int(os.environ["LOCAL_RANK"])
         self.global_rank = int(os.environ["RANK"])
         self.model = model.to(self.local_rank)
-        self.criterion = nn.CrossEntropyLoss()         # Customizable: Loss Function
+        self.criterion = nn.CrossEntropyLoss()  # Customizable: Loss Function
         self.train_data = train_data
         self.optimizer = optimizer
         self.save_every = save_every
@@ -56,8 +63,8 @@ class Trainer:
     def _load_snapshot(self, snapshot_path):
         snapshot = torch.load(snapshot_path)
 
-        self.model.load_state_dict(snapshot['MODEL_STATE'])
-        self.epochs_run = snapshot['EPOCHS_RUN']
+        self.model.load_state_dict(snapshot["MODEL_STATE"])
+        self.epochs_run = snapshot["EPOCHS_RUN"]
 
         print(f"Snapshot loaded. Resuming from epoch {self.epochs_run}")
 
@@ -69,7 +76,9 @@ class Trainer:
         self.optimizer.step()
 
     def _run_epoch(self, epoch):
-        print(f"[GPU{self.global_rank}] Epoch {epoch} | Batchsize: {self.train_data.batch_size} | Steps: {len(self.train_data)}")
+        print(
+            f"[GPU{self.global_rank}] Epoch {epoch} | Batchsize: {self.train_data.batch_size} | Steps: {len(self.train_data)}"
+        )
         self.train_data.sampler.set_epoch(epoch)
         for source, targets in self.train_data:
             source = source.to(self.local_rank)
@@ -114,28 +123,36 @@ class SimpleCardClassifer(nn.Module):
         super(SimpleCardClassifer, self).__init__()
 
         # Use timm's built-in num_classes to replace the classifier head cleanly
-        self.base_model = timm.create_model('efficientnet_b0', pretrained=False, num_classes=num_classes)
+        self.base_model = timm.create_model(
+            "efficientnet_b0", pretrained=False, num_classes=num_classes
+        )
 
     def forward(self, x):
         return self.base_model(x)
 
 
 def load_train_objs():
-    train_folder = os.path.expanduser('~/.cache/kagglehub/datasets/gpiosenka/cards-image-datasetclassification/versions/2/train')
+    train_folder = os.path.expanduser(
+        "~/.cache/kagglehub/datasets/gpiosenka/cards-image-datasetclassification/versions/2/train"
+    )
 
-    transform = transforms.Compose([
-        transforms.Resize((IMAGE_SIZE_PX, IMAGE_SIZE_PX)),
-        transforms.ToTensor(),
-    ])
+    transform = transforms.Compose(
+        [
+            transforms.Resize((IMAGE_SIZE_PX, IMAGE_SIZE_PX)),
+            transforms.ToTensor(),
+        ]
+    )
 
-    train_set = PlayingCardDataset(train_folder, transform=transform)  # Customizable: Train Set
-    model = SimpleCardClassifer(num_classes=53)                        # Customizable: Model
-    optimizer = optim.Adam(model.parameters(), lr=0.001)               # Customizable: Optimizer
+    train_set = PlayingCardDataset(
+        train_folder, transform=transform
+    )  # Customizable: Train Set
+    model = SimpleCardClassifer(num_classes=53)  # Customizable: Model
+    optimizer = optim.Adam(model.parameters(), lr=0.001)  # Customizable: Optimizer
 
     return train_set, model, optimizer
 
 
-def prepare_dataloader(dataset: Dataset, batch_size: int): #, world_size: int):
+def prepare_dataloader(dataset: Dataset, batch_size: int):  # , world_size: int):
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -144,14 +161,22 @@ def prepare_dataloader(dataset: Dataset, batch_size: int): #, world_size: int):
         num_workers=2,
         # num_workers=torch.cuda.device_count(),
         sampler=DistributedSampler(dataset),
-        persistent_workers=True
+        persistent_workers=True,
     )
 
-def main(save_every: int, total_epochs: int, batch_size: int, snapshot_path: str = "snapshot.pt"):
+
+def main(
+    save_every: int,
+    total_epochs: int,
+    batch_size: int,
+    snapshot_path: str = "snapshot.pt",
+):
     ddp_setup()
     dataset, model, optimizer = load_train_objs()
-    train_data = prepare_dataloader(dataset, batch_size) #, world_size)
-    trainer = Trainer(model, train_data, optimizer, save_every, snapshot_path=snapshot_path)
+    train_data = prepare_dataloader(dataset, batch_size)  # , world_size)
+    trainer = Trainer(
+        model, train_data, optimizer, save_every, snapshot_path=snapshot_path
+    )
     trainer.train(total_epochs)
     destroy_process_group()
 
@@ -159,13 +184,14 @@ def main(save_every: int, total_epochs: int, batch_size: int, snapshot_path: str
     if int(os.environ["RANK"]) == 0:
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-        transform = transforms.Compose([
-            transforms.Resize((IMAGE_SIZE_PX, IMAGE_SIZE_PX)),
-            transforms.ToTensor()
-        ])
+        transform = transforms.Compose(
+            [transforms.Resize((IMAGE_SIZE_PX, IMAGE_SIZE_PX)), transforms.ToTensor()]
+        )
 
-        test_folder = os.path.expanduser('~/.cache/kagglehub/datasets/gpiosenka/cards-image-datasetclassification/versions/2/test')
-        test_images = glob(test_folder + '/*/*')
+        test_folder = os.path.expanduser(
+            "~/.cache/kagglehub/datasets/gpiosenka/cards-image-datasetclassification/versions/2/test"
+        )
+        test_images = glob(test_folder + "/*/*")
         test_examples = np.random.choice(test_images, 100)
 
         all_true_labels = []
@@ -190,9 +216,15 @@ def main(save_every: int, total_epochs: int, batch_size: int, snapshot_path: str
             all_pred_labels.append(pred_label)
 
         accuracy = accuracy_score(all_true_labels, all_pred_labels)
-        precision = precision_score(all_true_labels, all_pred_labels, average='weighted', zero_division=0)
-        recall = recall_score(all_true_labels, all_pred_labels, average='weighted', zero_division=0)
-        f1 = f1_score(all_true_labels, all_pred_labels, average='weighted', zero_division=0)
+        precision = precision_score(
+            all_true_labels, all_pred_labels, average="weighted", zero_division=0
+        )
+        recall = recall_score(
+            all_true_labels, all_pred_labels, average="weighted", zero_division=0
+        )
+        f1 = f1_score(
+            all_true_labels, all_pred_labels, average="weighted", zero_division=0
+        )
 
         print(f"Accuracy:  {accuracy:.4f}")
         print(f"Precision: {precision:.4f}")
