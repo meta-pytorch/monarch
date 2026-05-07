@@ -105,7 +105,7 @@ impl _Controller {
         // Build rank map from proc ids to ranks.
         let rank_map: HashMap<reference::ProcAddr, usize> = proc_mesh
             .iter()
-            .map(|(point, proc)| (proc.proc_id().clone(), point.rank()))
+            .map(|(point, proc)| (proc.proc_addr().clone(), point.rank()))
             .collect();
 
         let region = Ranked::region(&proc_mesh);
@@ -781,13 +781,13 @@ impl MeshControllerActor {
     ) -> anyhow::Result<()> {
         if matches!(action, DebuggerAction::Paused()) {
             self.debugger_paused
-                .push_back(reference::ActorRef::attest(debugger_actor_id.into()));
+                .push_back(reference::ActorRef::attest(debugger_actor_id));
         } else {
             let debugger_actor = self
                 .debugger_active
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("no active debugger"))?;
-            if debugger_actor_id != *debugger_actor.actor_id() {
+            if debugger_actor_id != *debugger_actor.actor_addr() {
                 anyhow::bail!("debugger action for wrong actor");
             }
             match action {
@@ -892,7 +892,7 @@ impl MeshControllerActor {
     fn rank_of_worker(&self, actor_id: &reference::ActorAddr) -> usize {
         *self
             .rank_map
-            .get(&actor_id.proc_id())
+            .get(&actor_id.proc_addr())
             .expect("rank map should contain worker")
     }
 }
@@ -1004,7 +1004,7 @@ impl Handler<MeshFailure> for MeshControllerActor {
         // If an actor spawned by this one fails, we can't handle it. We fail
         // ourselves with a chained error and bubble up to the next owner.
         let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
-            this.self_id().clone(),
+            this.self_addr().clone(),
             None,
             ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(
                 message.event.clone(),

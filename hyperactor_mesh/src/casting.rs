@@ -121,7 +121,7 @@ where
     headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
     let message = CastMessageEnvelope::new::<A, M>(
         actor_mesh_id.clone(),
-        cx.mailbox().actor_id().clone().into(),
+        cx.mailbox().actor_addr().clone(),
         cast_mesh_shape.clone(),
         headers,
         message,

@@ -347,7 +347,7 @@ impl ExecutionPlan for DistributedExec {
                     Box<dyn std::future::Future<Output = PyResult<Py<PyAny>>> + Send + 'static>,
                 >,
             > {
-                let dest_port_id: PyPortId = dest_port_ref.port_id().clone().into();
+                let dest_port_id: PyPortId = dest_port_ref.port_addr().clone().into();
 
                 // Call actor.scan.call(dest, table, proj, limit, filter) to get a Future
                 let scan = self.actor.getattr(py, "scan")?;

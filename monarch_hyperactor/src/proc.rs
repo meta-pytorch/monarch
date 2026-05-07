@@ -51,21 +51,21 @@ impl PyProc {
 
     #[getter]
     fn addr(&self) -> String {
-        self.inner.proc_id().addr().to_string()
+        self.inner.proc_addr().addr().to_string()
     }
 
     #[getter]
     fn name(&self) -> String {
         self.inner
-            .proc_id()
+            .proc_addr()
             .label()
             .map(|l: &hyperactor::id::Label| l.as_str().to_string())
-            .unwrap_or_else(|| self.inner.proc_id().id().to_string())
+            .unwrap_or_else(|| self.inner.proc_addr().id().to_string())
     }
 
     #[getter]
     fn id(&self) -> String {
-        self.inner.proc_id().to_string()
+        self.inner.proc_addr().to_string()
     }
 
     fn destroy<'py>(
@@ -166,7 +166,7 @@ impl PyActorAddr {
             PyValueError::new_err(format!("Failed to parse channel address '{}': {}", addr, e))
         })?;
         Ok(Self {
-            inner: hyperactor::ProcAddr::from_resource_name(addr, proc_name).actor_id(actor_name),
+            inner: hyperactor::ProcAddr::named(addr, proc_name).actor_addr(actor_name),
         })
     }
 
@@ -184,16 +184,16 @@ impl PyActorAddr {
 
     #[getter]
     fn addr(&self) -> String {
-        self.inner.proc_id().addr().to_string()
+        self.inner.proc_addr().addr().to_string()
     }
 
     #[getter]
     fn proc_name(&self) -> String {
         self.inner
-            .proc_id()
+            .proc_addr()
             .label()
             .map(|l: &hyperactor::id::Label| l.as_str().to_string())
-            .unwrap_or_else(|| self.inner.proc_id().id().to_string())
+            .unwrap_or_else(|| self.inner.proc_addr().id().to_string())
     }
 
     #[getter]
@@ -214,7 +214,7 @@ impl PyActorAddr {
     #[getter]
     fn proc_label(&self) -> Option<String> {
         self.inner
-            .proc_id()
+            .proc_addr()
             .label()
             .map(|l: &hyperactor::id::Label| l.as_str().to_string())
     }
@@ -231,7 +231,7 @@ impl PyActorAddr {
 
     #[getter]
     fn proc_id(&self) -> String {
-        self.inner.proc_id().to_string()
+        self.inner.proc_addr().to_string()
     }
 
     #[getter]
@@ -339,7 +339,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 
         let (_signal_port, signal_receiver) = instance.bind_actor_port::<Signal>();
 
-        let actor_id = instance.self_id().clone();
+        let actor_id = instance.self_addr().clone();
 
         Ok(Self {
             instance,
@@ -355,13 +355,14 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
     pub fn send(&self, actor_id: &PyActorAddr, message: &PySerialized) -> PyResult<()> {
         hyperactor::internal_macro_support::tracing::debug!(
             name = "py_send_message",
-            actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_id()),
+            actor_id =
+                hyperactor::internal_macro_support::tracing::field::display(self.actor_addr()),
             receiver_actor_id = tracing::field::display(&actor_id.inner),
             ?message,
         );
         actor_id
             .inner
-            .port_ref(message.port().into())
+            .port_addr(message.port().into())
             .send(&self.instance, message.inner.clone());
         Ok(())
     }
@@ -394,7 +395,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 
     /// Get the next message from the queue. It will wait until a message is received
     /// or the timeout is reached in which case it will return None.
-    #[hyperactor::instrument(level = "trace", fields(actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_id())))]
+    #[hyperactor::instrument(level = "trace", fields(actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_addr())))]
     pub async fn next_message(&mut self, timeout_msec: Option<u64>) -> Result<Option<M>> {
         hyperactor::declare_static_timer!(
             PY_NEXT_MESSAGE_TIMER,
@@ -402,7 +403,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             hyperactor_telemetry::TimeUnit::Nanos
         );
         let _ = PY_NEXT_MESSAGE_TIMER
-            .start(hyperactor::kv_pairs!("actor_id" => self.actor_id().to_string(), "mode" => match timeout_msec{
+            .start(hyperactor::kv_pairs!("actor_id" => self.actor_addr().to_string(), "mode" => match timeout_msec{
                 None => "blocking",
                 Some(0) => "polling",
                 Some(_) => "blocking_with_timeout",
@@ -432,16 +433,16 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         }
         .map_err(|err| err.into())
         .inspect_err(|err| {
-            hyperactor::metrics::ACTOR_MESSAGE_RECEIVE_ERRORS.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_id().to_string()));
-            tracing::error!(err=?err, actor_id=%self.actor_id(), "unable to receive next py message");
+            hyperactor::metrics::ACTOR_MESSAGE_RECEIVE_ERRORS.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_addr().to_string()));
+            tracing::error!(err=?err, actor_id=%self.actor_addr(), "unable to receive next py message");
         })
         .inspect(|_|{
-            hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_id().to_string()));
+            hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_addr().to_string()));
         })
     }
 
     /// Put the actor in stopped mode and return any messages that were received.
-    #[hyperactor::instrument(fields(actor_id=hyperactor::internal_macro_support::tracing::field::display(self.actor_id())))]
+    #[hyperactor::instrument(fields(actor_id=hyperactor::internal_macro_support::tracing::field::display(self.actor_addr())))]
     pub fn drain_and_stop(&mut self) -> Result<Vec<M>> {
         self.ensure_detached_and_alive()?;
         let messages: Vec<M> = self.message_receiver.drain().into_iter().collect();
@@ -454,7 +455,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         &self.instance
     }
 
-    pub fn actor_id(&self) -> &hyperactor::ActorAddr {
+    pub fn actor_addr(&self) -> &hyperactor::ActorAddr {
         &self.actor_id
     }
 }
