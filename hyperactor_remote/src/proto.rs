@@ -41,11 +41,13 @@ use crate::link::LinkSpec;
     Serialize,
     Deserialize,
     Named,
+    PartialEq,
+    Eq,
+    Bind,
+    Unbind,
     Handler,
     HandleClient,
-    RefClient,
-    Bind,
-    Unbind
+    RefClient
 )]
 pub struct Link {
     /// Unique identifier for this supervision session.
@@ -105,7 +107,7 @@ pub enum OrphanPolicy {
     /// Stop the supervised child if the supervisor unlinks or expires.
     Stop,
     /// Leave the supervised child running after supervisor unlink.
-    LeaveRunning,
+    Detach,
 }
 wirevalue::register_type!(OrphanPolicy);
 

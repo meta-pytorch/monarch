@@ -33,12 +33,36 @@ use crate::local_memory::KeepaliveLocalMemory;
 use crate::local_memory::RdmaLocalMemory;
 use crate::register_segment_scanner;
 
+/// One physical chunk mapped into an expandable segment's VA
+/// reservation. Owns a single `cuMemCreate` handle.
+#[derive(Debug)]
+struct MappedChunk {
+    offset: usize,
+    size: usize,
+    handle: u64,
+}
+
 #[derive(Debug)]
 struct CudaAllocationInner {
+    /// Start of the VA reservation; stable for the allocation's life.
     ptr: usize,
-    size: usize,
+    /// Total VA extent reserved; `mapped_size` grows up to this.
+    reserved_size: usize,
     device: i32,
-    handle: u64,
+    /// Driver-reported granularity; commit/expand sizes round up to
+    /// the next multiple.
+    granularity: usize,
+    state: Mutex<MappedState>,
+}
+
+#[derive(Debug)]
+struct MappedState {
+    /// Ordered chunks; each must be unmapped before the VA reservation
+    /// is freed.
+    chunks: Vec<MappedChunk>,
+    /// Sum of chunk sizes — what the scanner reports and what
+    /// `CudaAllocation::size` returns.
+    mapped_size: usize,
 }
 
 impl Drop for CudaAllocationInner {
@@ -47,9 +71,10 @@ impl Drop for CudaAllocationInner {
     }
 }
 
-/// A CUDA device allocation that keeps its backing memory alive via
-/// reference counting. When the last clone is dropped, the backing
-/// CUDA resources are released through [`CudaAllocator`].
+/// CUDA VMM allocation modelled on PyTorch's expandable segments:
+/// a large VA range reserved up front, with physical memory mapped
+/// in on demand via [`Self::expand`]. `ptr` is stable; `size()`
+/// grows. Refcounted; dropped on last clone.
 #[derive(Clone, Debug)]
 pub struct CudaAllocation {
     inner: Arc<CudaAllocationInner>,
@@ -60,12 +85,112 @@ impl CudaAllocation {
         self.inner.ptr
     }
 
+    /// Currently mapped extent. Use this — not [`Self::reserved_size`]
+    /// — to bounds-check buffer offsets; addresses past `ptr + size()`
+    /// are reserved but unmapped.
     pub fn size(&self) -> usize {
-        self.inner.size
+        self.inner.state.lock().unwrap().mapped_size
     }
-}
 
-impl CudaAllocation {
+    /// Total reserved VA extent. Always >= [`Self::size`].
+    pub fn reserved_size(&self) -> usize {
+        self.inner.reserved_size
+    }
+
+    /// Driver-reported allocation granularity. [`Self::expand`]
+    /// rounds `additional_size` up to a multiple of this.
+    pub fn granularity(&self) -> usize {
+        self.inner.granularity
+    }
+
+    /// Map another `additional_size` bytes (rounded up to a granularity
+    /// multiple) into the trailing reserved VA region and return the
+    /// new total mapped size. Errors if `additional_size` is zero or
+    /// the rounded total would exceed `reserved_size`.
+    ///
+    /// Scanner sees the same `ptr`, just a larger `size`.
+    pub fn expand(&self, additional_size: usize) -> Result<usize, anyhow::Error> {
+        anyhow::ensure!(
+            additional_size > 0,
+            "expand: additional_size must be positive (got 0)",
+        );
+        let granularity = self.inner.granularity;
+        let padded = additional_size.div_ceil(granularity) * granularity;
+
+        let mut state = self.inner.state.lock().unwrap();
+        let new_total = state
+            .mapped_size
+            .checked_add(padded)
+            .ok_or_else(|| anyhow::anyhow!("expand: mapped_size overflow"))?;
+        anyhow::ensure!(
+            new_total <= self.inner.reserved_size,
+            "expand: would map {} bytes past reservation ({} reserved, {} already mapped)",
+            padded,
+            self.inner.reserved_size,
+            state.mapped_size,
+        );
+
+        let offset = state.mapped_size;
+        let chunk_addr = self.inner.ptr + offset;
+
+        // SAFETY: [offset, offset + padded) is within the live VA
+        // reservation and currently unmapped (the inner `Arc` keeps
+        // the reservation alive past every chunk).
+        unsafe {
+            let _ctx_guard = crate::local_memory::set_ctx_for_ptr(self.inner.ptr)
+                .map_err(|e| anyhow::anyhow!("set CUDA context for expand: {e}"))?;
+
+            let mut prop: rdmaxcel_sys::CUmemAllocationProp = std::mem::zeroed();
+            prop.type_ = rdmaxcel_sys::CU_MEM_ALLOCATION_TYPE_PINNED;
+            prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
+            prop.location.id = self.inner.device;
+            prop.allocFlags.gpuDirectRDMACapable = 1;
+            prop.requestedHandleTypes = rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+            let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
+            let r = rdmaxcel_sys::rdmaxcel_cuMemCreate(&mut handle, padded, &prop, 0);
+            if r != rdmaxcel_sys::CUDA_SUCCESS {
+                anyhow::bail!("cuMemCreate (expand): {}", cuda_err(r));
+            }
+
+            let r = rdmaxcel_sys::rdmaxcel_cuMemMap(
+                chunk_addr as rdmaxcel_sys::CUdeviceptr,
+                padded,
+                0,
+                handle,
+                0,
+            );
+            if r != rdmaxcel_sys::CUDA_SUCCESS {
+                rdmaxcel_sys::rdmaxcel_cuMemRelease(handle);
+                anyhow::bail!("cuMemMap (expand): {}", cuda_err(r));
+            }
+
+            let mut access: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
+            access.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
+            access.location.id = self.inner.device;
+            access.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+            let r = rdmaxcel_sys::rdmaxcel_cuMemSetAccess(
+                chunk_addr as rdmaxcel_sys::CUdeviceptr,
+                padded,
+                &access,
+                1,
+            );
+            if r != rdmaxcel_sys::CUDA_SUCCESS {
+                rdmaxcel_sys::rdmaxcel_cuMemUnmap(chunk_addr as rdmaxcel_sys::CUdeviceptr, padded);
+                rdmaxcel_sys::rdmaxcel_cuMemRelease(handle);
+                anyhow::bail!("cuMemSetAccess (expand): {}", cuda_err(r));
+            }
+
+            state.chunks.push(MappedChunk {
+                offset,
+                size: padded,
+                handle,
+            });
+            state.mapped_size = new_total;
+        }
+        Ok(new_total)
+    }
+
     /// Try to free the backing CUDA memory. Returns `true` if the
     /// resources were released, or `false` if other clones still exist.
     pub fn try_free(self) -> bool {
@@ -113,10 +238,19 @@ impl CudaAllocator {
         })
     }
 
-    /// Allocate GPU memory on `device` of at least `size` bytes via the CUDA
-    /// VMM API. Returns the device pointer. Panics on failure, cleaning up
-    /// any partially-allocated resources.
-    pub fn allocate(&self, device: i32, size: usize) -> CudaAllocation {
+    /// Allocate an expandable CUDA segment on `device`: reserve
+    /// `reserved_size` bytes of VA and commit `initial_committed_size`
+    /// at offset 0. [`CudaAllocation::expand`] commits more later.
+    ///
+    /// Both sizes must be positive and round up to the device
+    /// granularity, with `initial_committed_size <= reserved_size`
+    /// after rounding. Panics on FFI failure.
+    pub fn allocate(
+        &self,
+        device: i32,
+        reserved_size: usize,
+        initial_committed_size: usize,
+    ) -> CudaAllocation {
         unsafe {
             // Context setup — shared primary context, nothing to roll back.
             let mut dev: rdmaxcel_sys::CUdevice = std::mem::zeroed();
@@ -142,29 +276,39 @@ impl CudaAllocator {
                 rdmaxcel_sys::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
             ));
 
-            let padded = size.div_ceil(granularity) * granularity;
+            assert!(reserved_size > 0, "reserved_size must be positive");
+            assert!(
+                initial_committed_size > 0,
+                "initial_committed_size must be positive",
+            );
+            let padded_reserved = reserved_size.div_ceil(granularity) * granularity;
+            let padded_initial = initial_committed_size.div_ceil(granularity) * granularity;
+            assert!(
+                padded_initial <= padded_reserved,
+                "initial_committed_size {initial_committed_size} (padded {padded_initial}) > \
+                 reserved_size {reserved_size} (padded {padded_reserved})",
+            );
 
-            // From here each step acquires a resource; clean up predecessors
-            // before panicking if a later step fails.
-            let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemCreate(
-                &mut handle,
-                padded,
-                &prop,
-                0
-            ));
-
+            // Reserve the full VA range up front so `expand` can
+            // contiguously fill in.
             let mut dptr: rdmaxcel_sys::CUdeviceptr = std::mem::zeroed();
-            let r = rdmaxcel_sys::rdmaxcel_cuMemAddressReserve(&mut dptr, padded, 0, 0, 0);
+            let r = rdmaxcel_sys::rdmaxcel_cuMemAddressReserve(&mut dptr, padded_reserved, 0, 0, 0);
             if r != rdmaxcel_sys::CUDA_SUCCESS {
-                rdmaxcel_sys::rdmaxcel_cuMemRelease(handle);
                 panic!("cuMemAddressReserve: {}", cuda_err(r));
             }
 
-            let r = rdmaxcel_sys::rdmaxcel_cuMemMap(dptr, padded, 0, handle, 0);
+            // Commit the initial chunk at offset 0.
+            let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
+            let r = rdmaxcel_sys::rdmaxcel_cuMemCreate(&mut handle, padded_initial, &prop, 0);
+            if r != rdmaxcel_sys::CUDA_SUCCESS {
+                rdmaxcel_sys::rdmaxcel_cuMemAddressFree(dptr, padded_reserved);
+                panic!("cuMemCreate: {}", cuda_err(r));
+            }
+
+            let r = rdmaxcel_sys::rdmaxcel_cuMemMap(dptr, padded_initial, 0, handle, 0);
             if r != rdmaxcel_sys::CUDA_SUCCESS {
                 rdmaxcel_sys::rdmaxcel_cuMemRelease(handle);
-                rdmaxcel_sys::rdmaxcel_cuMemAddressFree(dptr, padded);
+                rdmaxcel_sys::rdmaxcel_cuMemAddressFree(dptr, padded_reserved);
                 panic!("cuMemMap: {}", cuda_err(r));
             }
 
@@ -172,20 +316,28 @@ impl CudaAllocator {
             access.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
             access.location.id = device;
             access.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-            let r = rdmaxcel_sys::rdmaxcel_cuMemSetAccess(dptr, padded, &access, 1);
+            let r = rdmaxcel_sys::rdmaxcel_cuMemSetAccess(dptr, padded_initial, &access, 1);
             if r != rdmaxcel_sys::CUDA_SUCCESS {
-                rdmaxcel_sys::rdmaxcel_cuMemUnmap(dptr, padded);
+                rdmaxcel_sys::rdmaxcel_cuMemUnmap(dptr, padded_initial);
                 rdmaxcel_sys::rdmaxcel_cuMemRelease(handle);
-                rdmaxcel_sys::rdmaxcel_cuMemAddressFree(dptr, padded);
+                rdmaxcel_sys::rdmaxcel_cuMemAddressFree(dptr, padded_reserved);
                 panic!("cuMemSetAccess: {}", cuda_err(r));
             }
 
             let ptr = dptr as usize;
             let inner = Arc::new(CudaAllocationInner {
                 ptr,
-                size: padded,
+                reserved_size: padded_reserved,
                 device,
-                handle,
+                granularity,
+                state: Mutex::new(MappedState {
+                    chunks: vec![MappedChunk {
+                        offset: 0,
+                        size: padded_initial,
+                        handle,
+                    }],
+                    mapped_size: padded_initial,
+                }),
             });
             self.allocations
                 .lock()
@@ -213,15 +365,21 @@ impl CudaAllocator {
         // SAFETY: inner.ptr is a valid CUDA device pointer from allocate.
         let _ctx_guard = unsafe { crate::local_memory::set_ctx_for_ptr(inner.ptr) }
             .expect("failed to set CUDA context for deallocation");
+
+        // Unmap each chunk individually (the unmapped portion of the
+        // reservation isn't safe to touch), then free the VA range.
+        let chunks = std::mem::take(&mut inner.state.lock().unwrap().chunks);
         unsafe {
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemUnmap(
-                inner.ptr as rdmaxcel_sys::CUdeviceptr,
-                inner.size
-            ));
-            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemRelease(inner.handle));
+            for chunk in chunks {
+                cu_check!(rdmaxcel_sys::rdmaxcel_cuMemUnmap(
+                    (inner.ptr + chunk.offset) as rdmaxcel_sys::CUdeviceptr,
+                    chunk.size,
+                ));
+                cu_check!(rdmaxcel_sys::rdmaxcel_cuMemRelease(chunk.handle));
+            }
             cu_check!(rdmaxcel_sys::rdmaxcel_cuMemAddressFree(
                 inner.ptr as rdmaxcel_sys::CUdeviceptr,
-                inner.size
+                inner.reserved_size,
             ));
         }
     }
@@ -257,12 +415,15 @@ pub unsafe extern "C" fn cuda_allocator_scanner(
         let Some(inner) = weak.upgrade() else {
             continue;
         };
+        // Report the *currently mapped* extent, not the reserved
+        // VA. Expandable segments grow this on each `expand` call.
+        let mapped_size = inner.state.lock().unwrap().mapped_size;
         if !out.is_null() && written < max {
             // SAFETY: caller guarantees `out` points to a buffer of at least `max` entries.
             unsafe {
                 *out.add(written) = rdmaxcel_sys::rdmaxcel_scanned_segment_t {
                     address: inner.ptr,
-                    size: inner.size,
+                    size: mapped_size,
                     device: inner.device,
                     is_expandable: 1,
                 };
@@ -283,7 +444,7 @@ pub unsafe extern "C" fn cuda_allocator_scanner(
 #[derive(Debug)]
 pub struct SenderActor {
     device: i32,
-    allocation: Option<CudaAllocation>,
+    allocations: Vec<CudaAllocation>,
 }
 
 impl Actor for SenderActor {}
@@ -296,7 +457,7 @@ impl RemoteSpawn for SenderActor {
         register_segment_scanner(Some(cuda_allocator_scanner));
         Ok(Self {
             device: device_id,
-            allocation: None,
+            allocations: Vec::new(),
         })
     }
 }
@@ -310,20 +471,34 @@ impl RemoteSpawn for SenderActor {
     Debug
 )]
 pub enum SenderMessage {
-    /// Allocate GPU memory for later registration.
+    /// Allocate an expandable segment and return its index for use
+    /// with `Register` and `Expand`.
     Allocate {
-        total_size: usize,
+        reserved_size: usize,
+        initial_committed_size: usize,
         #[reply]
-        reply: OncePortRef<()>,
+        reply: OncePortRef<usize>,
     },
-    /// Register sub-buffers from the previous allocation with the RDMA manager.
+    /// Commit another `additional_size` bytes into the segment at
+    /// `allocation_idx`; returns the new mapped extent.
+    Expand {
+        allocation_idx: usize,
+        additional_size: usize,
+        #[reply]
+        reply: OncePortRef<usize>,
+    },
+    /// Register sub-buffers carved out of allocation `allocation_idx`
+    /// with the RDMA manager. Each buffer's backing bytes are pre-
+    /// filled with `pattern` so reads return a known sequence.
     Register {
+        allocation_idx: usize,
         buffers: Vec<(usize, usize)>,
+        pattern: u8,
         rdma_manager: ActorRef<RdmaManagerActor>,
         #[reply]
         reply: OncePortRef<Vec<RdmaRemoteBuffer>>,
     },
-    FreeAllocation {
+    FreeAllocations {
         #[reply]
         reply: OncePortRef<()>,
     },
@@ -335,22 +510,53 @@ impl SenderMessageHandler for SenderActor {
     async fn allocate(
         &mut self,
         _cx: &Context<Self>,
-        total_size: usize,
-    ) -> Result<(), anyhow::Error> {
-        self.allocation = Some(CudaAllocator::get().allocate(self.device, total_size));
-        Ok(())
+        reserved_size: usize,
+        initial_committed_size: usize,
+    ) -> Result<usize, anyhow::Error> {
+        let idx = self.allocations.len();
+        self.allocations.push(CudaAllocator::get().allocate(
+            self.device,
+            reserved_size,
+            initial_committed_size,
+        ));
+        Ok(idx)
+    }
+
+    async fn expand(
+        &mut self,
+        _cx: &Context<Self>,
+        allocation_idx: usize,
+        additional_size: usize,
+    ) -> Result<usize, anyhow::Error> {
+        let alloc = self.allocations.get(allocation_idx).ok_or_else(|| {
+            anyhow::anyhow!(
+                "expand called with allocation_idx={allocation_idx} but only \
+                 {} allocations exist",
+                self.allocations.len()
+            )
+        })?;
+        alloc.expand(additional_size)
     }
 
     async fn register(
         &mut self,
         cx: &Context<Self>,
+        allocation_idx: usize,
         buffers: Vec<(usize, usize)>,
+        pattern: u8,
         rdma_manager: ActorRef<RdmaManagerActor>,
     ) -> Result<Vec<RdmaRemoteBuffer>, anyhow::Error> {
         let alloc = self
-            .allocation
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("register called before allocate"))?;
+            .allocations
+            .get(allocation_idx)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "register called with allocation_idx={allocation_idx} but only \
+                     {} allocations exist",
+                    self.allocations.len()
+                )
+            })?
+            .clone();
 
         for (i, &(offset, size)) in buffers.iter().enumerate() {
             anyhow::ensure!(
@@ -371,14 +577,18 @@ impl SenderMessageHandler for SenderActor {
                 size,
                 Arc::new(alloc.clone()),
             ));
+            // Pre-fill so reads return a known sequence; write_at
+            // routes to the GPU path for CUDA-backed memory.
+            let fill = vec![pattern; size];
+            local.write_at(0, &fill)?;
             remotes.push(handle.request_buffer(cx, local).await?);
         }
 
         Ok(remotes)
     }
 
-    async fn free_allocation(&mut self, _cx: &Context<Self>) -> Result<(), anyhow::Error> {
-        if let Some(alloc) = self.allocation.take() {
+    async fn free_allocations(&mut self, _cx: &Context<Self>) -> Result<(), anyhow::Error> {
+        for alloc in self.allocations.drain(..) {
             alloc.try_free();
         }
         Ok(())
@@ -412,9 +622,22 @@ impl RemoteSpawn for ReceiverActor {
     Debug
 )]
 pub enum ReceiverMessage {
+    /// RDMA-read `size` bytes from `remote` and verify every byte of
+    /// the local destination equals `expected_pattern`. Catches both
+    /// WR-level failures and silent data corruption.
     ReadRemote {
         remote: RdmaRemoteBuffer,
         size: usize,
+        expected_pattern: u8,
+        timeout_secs: u64,
+        #[reply]
+        reply: OncePortRef<Result<(), String>>,
+    },
+    /// RDMA-write `size` bytes of `pattern` into `remote`.
+    WriteRemote {
+        remote: RdmaRemoteBuffer,
+        size: usize,
+        pattern: u8,
         timeout_secs: u64,
         #[reply]
         reply: OncePortRef<Result<(), String>>,
@@ -429,15 +652,55 @@ impl ReceiverMessageHandler for ReceiverActor {
         cx: &Context<Self>,
         remote: RdmaRemoteBuffer,
         size: usize,
+        expected_pattern: u8,
         timeout_secs: u64,
     ) -> Result<Result<(), String>, anyhow::Error> {
-        let buf: Box<[u8]> = vec![0u8; size].into_boxed_slice();
+        // Pre-fill with the bitwise-NOT of `expected_pattern` so an
+        // unwritten destination is distinguishable from a successful
+        // read.
+        let buf: Box<[u8]> = vec![!expected_pattern; size].into_boxed_slice();
+        let addr = buf.as_ptr() as usize;
+        let local: Arc<dyn RdmaLocalMemory> =
+            Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(buf)));
+
+        let read_result = remote
+            .read_into_local(cx, Arc::clone(&local), timeout_secs)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        if let Err(e) = read_result {
+            return Ok(Err(e));
+        }
+
+        let mut got = vec![0u8; size];
+        if let Err(e) = local.read_at(0, &mut got) {
+            return Ok(Err(format!("post-read inspect failed: {e}")));
+        }
+        if let Some(idx) = got.iter().position(|&b| b != expected_pattern) {
+            return Ok(Err(format!(
+                "pattern mismatch at byte {idx}: expected 0x{expected_pattern:02x}, \
+                 got 0x{:02x}",
+                got[idx]
+            )));
+        }
+        Ok(Ok(()))
+    }
+
+    async fn write_remote(
+        &mut self,
+        cx: &Context<Self>,
+        remote: RdmaRemoteBuffer,
+        size: usize,
+        pattern: u8,
+        timeout_secs: u64,
+    ) -> Result<Result<(), String>, anyhow::Error> {
+        let buf: Box<[u8]> = vec![pattern; size].into_boxed_slice();
         let addr = buf.as_ptr() as usize;
         let local: Arc<dyn RdmaLocalMemory> =
             Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(buf)));
 
         let result = remote
-            .read_into_local(cx, local, timeout_secs)
+            .write_from_local(cx, local, timeout_secs)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string());

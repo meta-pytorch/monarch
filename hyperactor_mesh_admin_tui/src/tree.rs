@@ -295,17 +295,17 @@ mod tests {
     }
 
     fn host(name: &str) -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
             "world",
         );
-        NodeRef::Host(proc_id.actor_id(name))
+        NodeRef::Host(proc_id.actor_addr(name))
     }
 
     fn proc_ref(name: &str) -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
@@ -315,13 +315,13 @@ mod tests {
     }
 
     fn actor(name: &str) -> NodeRef {
-        let proc_id = hyperactor::ProcAddr::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
             "world",
         );
-        NodeRef::Actor(proc_id.actor_id(name))
+        NodeRef::Actor(proc_id.actor_addr(name))
     }
 
     // Helper to find a node by reference using algebraic fold.
