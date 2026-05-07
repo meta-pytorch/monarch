@@ -25,11 +25,15 @@ use hyperactor::ActorRef;
 use hyperactor::PortRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::UnboundPort;
+use hyperactor::UnboundPortKind;
+use hyperactor::accum::ReducerMode;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
+use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
 use hyperactor::port::Port;
@@ -58,6 +62,7 @@ use crate::ValueMesh;
 use crate::casting;
 use crate::comm::multicast;
 use crate::comm::multicast::CastMessageV1;
+use crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshController;
@@ -633,11 +638,100 @@ impl<A: Referable> ActorMeshRef<A> {
         ));
 
         let actor_ids: ValueMesh<_> = self.proc_mesh.map_into(|proc| proc.actor_addr(&self.id));
-        // This block is infallible so is okay to assign the sequence numbers
-        // without worrying about rollback.
-        {
+
+        let mut headers = caller_headers.clone();
+        headers.set(
+            multicast::CAST_ORIGINATING_SENDER,
+            cx.instance().self_addr().clone().into(),
+        );
+        // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
+        // v0 transition. Should be removed once supervision is migrated
+        // and ActorMeshId is deleted.
+        headers.set(casting::CAST_ACTOR_MESH_ID, self.id.clone());
+
+        let region = view::Ranked::region(self).clone();
+        let num_ranks = region.num_ranks();
+        let threshold = hyperactor_config::global::get(V1_CAST_POINT_TO_POINT_THRESHOLD);
+
+        if threshold > 0 && num_ranks < threshold {
+            // Point-to-point: send directly to each destination actor,
+            // bypassing the comm actor tree for lower latency when fanout
+            // is small.
+            let sender = cx.instance().self_addr().clone();
+            let dest_port = <IndexedErasedUnbound<M> as typeuri::Named>::port();
+
+            let mut data = ErasedUnbound::try_from_message(message)
+                .expect("cast message serialization should not fail");
+
+            // Split ports for N destinations, matching the comm tree's
+            // split_ports behavior.
+            data.visit_mut::<UnboundPort>(
+                |UnboundPort(port_id, reducer_spec, return_undeliverable, kind, unsplit)| {
+                    if *unsplit {
+                        return Ok(());
+                    }
+                    let reducer_mode = match kind {
+                        UnboundPortKind::Streaming(opts) => {
+                            ReducerMode::Streaming(opts.clone().unwrap_or_default())
+                        }
+                        UnboundPortKind::Once if reducer_spec.is_none() => {
+                            // Once ports without reducers pass through — same as
+                            // the comm tree's split_ports.
+                            return Ok(());
+                        }
+                        UnboundPortKind::Once => ReducerMode::Once(num_ranks),
+                    };
+                    let split = port_id.split(
+                        cx,
+                        reducer_spec.clone(),
+                        reducer_mode,
+                        *return_undeliverable,
+                    )?;
+                    *port_id = split;
+                    Ok(())
+                },
+            )
+            .expect("port splitting should not fail");
+
+            for rank in 0..num_ranks {
+                let mut rank_data = data.clone();
+
+                let cast_point = region
+                    .point_of_base_rank(rank)
+                    .expect("rank should be valid in region");
+
+                rank_data
+                    .visit_mut::<resource::Rank>(|resource::Rank(r)| {
+                        *r = Some(cast_point.rank());
+                        Ok(())
+                    })
+                    .expect("rank replacement should not fail");
+
+                let mut rank_headers = headers.clone();
+                multicast::set_cast_info_on_headers(
+                    &mut rank_headers,
+                    cast_point,
+                    sender.clone().into(),
+                );
+
+                let port_id = actor_ids
+                    .get(rank)
+                    .expect("mismatched actor_ids and dest_region")
+                    .port_addr(Port::from(dest_port));
+
+                cx.instance().post(
+                    port_id,
+                    rank_headers,
+                    wirevalue::Any::serialize(&rank_data)
+                        .expect("cast message serialization should not fail"),
+                );
+            }
+        } else {
+            // Tree path: route through the comm actor tree.
+            // Pre-compute sequence numbers — this block is infallible so
+            // rollback is not a concern.
             let sequencer = cx.instance().sequencer();
-            let seqs = actor_ids.map_into(|actor_id| {
+            let seqs: ValueMesh<u64> = actor_ids.map_into(|actor_id| {
                 let hyperactor::ordering::SeqInfo::Session { seq, .. } = sequencer
                     .assign_seq(&actor_id.port_addr(Port::from(<M as typeuri::Named>::port())))
                 else {
@@ -658,7 +752,7 @@ impl<A: Referable> ActorMeshRef<A> {
             let cast_message = CastMessageV1::new::<A, M>(
                 cx.instance().self_addr().clone().into(),
                 &self.id,
-                view::Ranked::region(self).clone(),
+                region,
                 headers.clone(),
                 message,
                 sequencer.session_id(),
@@ -672,7 +766,6 @@ impl<A: Referable> ActorMeshRef<A> {
                 .expect("infallible because CastMessage should not fail for serialization");
         }
     }
-
     /// Query the state of all actors in this mesh.
     /// If keepalive is Some, use a message that indicates to the recipient
     /// that the owner of the mesh is still alive, along with the expiry time
@@ -1457,10 +1550,8 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
     #[cfg(fbcode_build)]
-    async fn test_cast() {
-        let config = hyperactor_config::global::lock();
+    async fn execute_cast(config: &hyperactor_config::global::ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance();
@@ -1558,6 +1649,25 @@ mod tests {
         let _ = host_mesh.shutdown(instance).await;
     }
 
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_cast() {
+        let config = hyperactor_config::global::lock();
+        execute_cast(&config).await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_cast_p2p() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        execute_cast(&config).await;
+    }
     /// Test that undeliverable messages are properly returned to the
     /// sender when communication to a proc is broken.
     ///

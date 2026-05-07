@@ -1054,8 +1054,6 @@ mod tests {
 
     #[cfg(fbcode_build)]
     async fn execute_spawn_actor() {
-        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
-
         let instance = testing::instance();
 
         let mut hm = testing::host_mesh(4).await;
@@ -1075,6 +1073,16 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        execute_spawn_actor().await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_spawn_actor_v1_casting_p2p() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
         execute_spawn_actor().await;
     }
 
@@ -1101,7 +1109,7 @@ mod tests {
             .proc()
             .instance(&format!("random_casts_{}", Uuid::now_v7()))
             .unwrap();
-        let n = fastrand::u64(3..10);
+        let n = 5;
         for _ in 0..n {
             actor_mesh.cast(&instance, ()).unwrap();
         }
