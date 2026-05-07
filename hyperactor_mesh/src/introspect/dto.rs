@@ -459,22 +459,20 @@ impl TryFrom<FailureInfoDto> for FailureInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh_id::ResourceId;
 
     // Test fixtures
 
     fn test_proc_id() -> hyperactor::ProcAddr {
-        hyperactor::ProcAddr::from_resource_name(
-            hyperactor::channel::ChannelAddr::Local(0),
-            "worker",
-        )
+        ResourceId::proc_addr_from_name(hyperactor::channel::ChannelAddr::Local(0), "worker")
     }
 
     fn test_actor_id() -> hyperactor::ActorAddr {
-        test_proc_id().actor_id("actor")
+        test_proc_id().actor_addr("actor")
     }
 
     fn test_host_actor_id() -> hyperactor::ActorAddr {
-        test_proc_id().actor_id("host_agent")
+        test_proc_id().actor_addr("host_agent")
     }
 
     fn test_time() -> SystemTime {

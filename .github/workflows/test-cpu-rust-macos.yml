@@ -52,7 +52,6 @@ jobs:
       - name: Run macOS CPU Rust tests
         shell: bash
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
           RUSTFLAGS: --cfg tracing_unstable
         run: |
           set -eux
@@ -70,19 +69,9 @@ jobs:
             --exclude monarch_bench \
             --exclude monarch_conda
 
-      - name: Stage nextest results
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p test-results
-          if [[ -f "${{ runner.temp }}/cargo-target/nextest/ci/junit.xml" ]]; then
-            cp -v "${{ runner.temp }}/cargo-target/nextest/ci/junit.xml" test-results/nextest-junit.xml
-          fi
-
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results-cpu-rust-macos-${{ github.sha }}
-          path: test-results/nextest-junit.xml
-          if-no-files-found: ignore
+          path: target/nextest/ci/junit.xml

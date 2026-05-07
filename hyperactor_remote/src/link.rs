@@ -24,7 +24,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-/// Specification for a link implementation actor.
+/// Serializable worker-side link actor spawn specification.
+///
+/// A supervisor-side link factory returns this after it starts the local
+/// supervisor link actor. The worker sends this spec to the remote worker,
+/// which calls [`LinkSpec::spawn_worker`] to instantiate its side of the link.
 #[derive(
     Clone,
     Debug,
@@ -44,22 +48,22 @@ pub struct LinkSpec {
 wirevalue::register_type!(LinkSpec);
 
 impl LinkSpec {
-    /// Create a link spec for the registered actor type with a fresh uid.
+    /// Create a worker-side link spec for the registered actor type with a fresh uid.
     pub fn for_actor<A: Actor + Named>(params: Data) -> Self {
         Self::new(A::typename(), params)
     }
 
-    /// Create a link spec for the registered actor type with an explicit uid.
+    /// Create a worker-side link spec for the registered actor type with an explicit uid.
     pub fn for_actor_uid<A: Actor + Named>(uid: Uid, params: Data) -> Self {
         Self::with_uid(A::typename(), uid, params)
     }
 
-    /// Create a link spec with a fresh uid.
+    /// Create a worker-side link spec with a fresh uid.
     pub fn new(actor_type: impl Into<String>, params: Data) -> Self {
         Self::with_uid(actor_type, Uid::instance(), params)
     }
 
-    /// Create a link spec with an explicit uid.
+    /// Create a worker-side link spec with an explicit uid.
     pub fn with_uid(actor_type: impl Into<String>, uid: Uid, params: Data) -> Self {
         Self {
             actor_type: actor_type.into(),
@@ -68,7 +72,7 @@ impl LinkSpec {
         }
     }
 
-    /// The registered actor type used to spawn this link.
+    /// Registered name of the worker-side link implementation actor.
     pub fn actor_type(&self) -> &str {
         &self.actor_type
     }
@@ -83,8 +87,11 @@ impl LinkSpec {
         &self.params
     }
 
-    /// Spawn the link actor as a supervised child of `parent`.
-    pub async fn spawn<A: Actor>(self, parent: &Instance<A>) -> anyhow::Result<AnyActorHandle> {
+    /// Spawn the worker-side link actor as a supervised child of `parent`.
+    pub async fn spawn_worker<A: Actor>(
+        self,
+        parent: &Instance<A>,
+    ) -> anyhow::Result<AnyActorHandle> {
         parent
             .gspawn_uid(&self.actor_type, self.uid, self.params)
             .await
@@ -144,7 +151,7 @@ mod tests {
     impl Actor for TestParentActor {
         async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
             let link = self.link.take().unwrap();
-            let handle = link.spawn(this).await?;
+            let handle = link.spawn_worker(this).await?;
             handle.kill("link failed")?;
             Ok(())
         }
@@ -170,7 +177,7 @@ mod tests {
             bincode::serde::encode_to_vec((), bincode::config::legacy()).unwrap(),
         );
 
-        let handle = link.spawn(&parent).await.unwrap();
+        let handle = link.spawn_worker(&parent).await.unwrap();
 
         assert_eq!(handle.actor_id().uid(), &uid);
         assert!(handle.downcast::<TestLinkActor>().is_some());
