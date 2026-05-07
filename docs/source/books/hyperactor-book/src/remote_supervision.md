@@ -7,6 +7,14 @@ The `hyperactor_remote` crate provides two related mechanisms:
 
 Use remote supervision when a parent actor must own the lifecycle of a child that runs behind another actor. Use rendezvous tokens when the actors do not yet have direct references to each other, or when a token must cross a boundary outside normal actor messaging.
 
+## Intended usage
+
+Remote supervision is for ownership. The parent should treat the `Supervisor` as the owned child and let failures propagate through normal supervision. The worker should wrap exactly one local child in `Worker<C>` and allow only the active session to control that child.
+
+Rendezvous tokens are for discovery. They exchange typed references, not ownership. The rendezvous actor is a child of the token creator, so the token remains useful only while the creator and its rendezvous child remain alive.
+
+Use `OrphanPolicy::Stop` when the remote child must not outlive its supervisor. Use `OrphanPolicy::LeaveRunning` only when the child has an independent lifecycle and losing the supervision channel should not stop useful work.
+
 ## Remote supervision
 
 Remote supervision connects one parent-side `Supervisor` actor to one worker-side `Worker<C>` actor. The worker owns and supervises the real child `C`. The supervisor is a proxy child of the parent that re-raises worker-reported lifecycle events through the ordinary `ActorSupervisionEvent` path.
@@ -165,14 +173,6 @@ Rendezvous<C, J>
 The token is typed by the creator peer type `C` and joiner peer type `J`. Its serialized payload includes the type URIs for `C`, `J`, and the rendezvous behavior. Deserialization rejects tokens used with incompatible peer types.
 
 `TokenPolicy::Multi` accepts every join while the rendezvous actor is alive. `TokenPolicy::Once` accepts the first join and rejects later joins with `JoinResult::Rejected`.
-
-## Intended usage
-
-Remote supervision is for ownership. The parent should treat the `Supervisor` as the owned child and let failures propagate through normal supervision. The worker should wrap exactly one local child in `Worker<C>` and allow only the active session to control that child.
-
-Rendezvous tokens are for discovery. They exchange typed references, not ownership. The rendezvous actor is a child of the token creator, so the token remains useful only while the creator and its rendezvous child remain alive.
-
-Use `OrphanPolicy::Stop` when the remote child must not outlive its supervisor. Use `OrphanPolicy::LeaveRunning` only when the child has an independent lifecycle and losing the supervision channel should not stop useful work.
 
 ## Public surface
 
