@@ -1440,6 +1440,37 @@ def test_simple_bootstrap():
             proc.wait()
 
 
+@isolate_in_subprocess
+def test_attach_fails_closed_on_unreachable_host():
+    """`attach_to_workers(...)` against an unreachable host raises a
+    Python exception whose message names the failing host. See HM-* in
+    `host_mesh.rs` for the underlying contract."""
+    # Tighten the per-host config-push timeout so the test doesn't
+    # wait the 10 s default.
+    with configured(mesh_attach_config_timeout="500ms"):
+        with TemporaryDirectory() as d:
+            unreachable = f"ipc://{d}/never_bound"
+
+            hosts = attach_to_workers(ca="trust_all_connections", workers=[unreachable])
+
+            with pytest.raises(Exception) as excinfo:
+                hosts.initialized.get()
+
+            msg = str(excinfo.value)
+
+            assert "attach failed: config push failed during attach" in msg, (
+                f"expected attach-time config-push failure shape, got: {msg}"
+            )
+
+            # `ipc://...` normalizes to `unix:...` in
+            # `ChannelAddr::Display`; match on the stable path
+            # component so the assertion isn't tied to scheme spelling.
+            expected_path = f"{d}/never_bound"
+            assert expected_path in msg, (
+                f"unreachable host path must appear in error, got: {msg}"
+            )
+
+
 @parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 def test_config_propagates_to_host_agent():

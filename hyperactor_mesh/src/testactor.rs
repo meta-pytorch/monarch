@@ -127,7 +127,7 @@ impl Handler<GetActorId> for TestActor {
         GetActorId(reply): GetActorId,
     ) -> Result<(), anyhow::Error> {
         let seq_info = cx.headers().get(SEQ_INFO);
-        reply.send(cx, (cx.self_id().clone(), seq_info))?;
+        reply.send(cx, (cx.self_addr().clone(), seq_info))?;
         Ok(())
     }
 }
@@ -463,7 +463,7 @@ pub async fn assert_casting_correctness(
     actor_mesh.cast(instance, GetActorId(port.bind())).unwrap();
     let expected_actor_ids = actor_mesh
         .values()
-        .map(|actor_ref| actor_ref.actor_id().clone())
+        .map(|actor_ref| actor_ref.actor_addr().clone())
         .collect::<Vec<_>>();
     let mut expected: HashMap<&hyperactor::ActorAddr, Option<SeqInfo>> = match expected_seqs {
         None => expected_actor_ids
