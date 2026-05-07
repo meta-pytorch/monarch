@@ -57,6 +57,15 @@ struct SupervisorSession {
     display_name: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SessionId(hyperactor::Uid);
+
+impl SessionId {
+    fn into_uid(self) -> hyperactor::Uid {
+        self.0
+    }
+}
+
 /// Parent-side proxy for one remote supervision relationship.
 #[derive(Debug)]
 pub struct Supervisor {
@@ -238,7 +247,7 @@ impl Supervisor {
 
 #[derive(Debug)]
 struct WorkerSession {
-    session_id: hyperactor::Uid,
+    session_id: SessionId,
     supervisor: PortRef<WorkerSupervisor>,
     options: LinkOptions,
     link_handle: AnyActorHandle,
@@ -298,7 +307,7 @@ where
                     .send(
                         this,
                         WorkerSupervisor::SupervisionEvent {
-                            session_id,
+                            session_id: session_id.into_uid(),
                             event: event.clone(),
                             disposition: RemoteActorDisposition::Terminal,
                         },
@@ -312,7 +321,17 @@ where
             this.exit("supervised child stopped")?;
             return Ok(true);
         }
-        Ok(!event.is_error())
+
+        debug_assert!(
+            self.session.is_none(),
+            "worker with active session received supervision event for non-link non-child actor: {:?}",
+            event.actor_id
+        );
+        if self.session.is_none() {
+            Ok(true)
+        } else {
+            Ok(!event.is_error())
+        }
     }
 
     async fn handle_undeliverable_message(
@@ -349,8 +368,9 @@ where
             .actor_addr()
             .clone();
         let supervisor = message.supervisor.clone();
+        let session_id = SessionId(message.session_id.clone());
         self.session = Some(WorkerSession {
-            session_id: message.session_id.clone(),
+            session_id,
             supervisor: message.supervisor,
             options: message.options,
             link_handle,
@@ -388,19 +408,25 @@ where
                 mode,
                 reason,
             } => {
-                self.ensure_session(&session_id)?;
+                self.accept_session_id(session_id)?;
                 self.stop_child(mode, &reason)?;
             }
             SupervisedWorker::Unlink { session_id, reason } => {
-                self.ensure_session(&session_id)?;
+                let session_id = self.accept_session_id(session_id)?;
                 if let Some(session) = self.session.take() {
                     let _ = session.link_handle.stop(&reason);
-                    if session.options.orphan_policy == OrphanPolicy::Stop {
-                        self.stop_child(StopMode::Stop, &reason)?;
+                    match session.options.orphan_policy {
+                        OrphanPolicy::Stop => self.stop_child(StopMode::Stop, &reason)?,
+                        OrphanPolicy::Detach => (),
                     }
-                    let _ = session
-                        .supervisor
-                        .send(cx, WorkerSupervisor::Unlinked { session_id, reason });
+
+                    let _ = session.supervisor.send(
+                        cx,
+                        WorkerSupervisor::Unlinked {
+                            session_id: session_id.into_uid(),
+                            reason,
+                        },
+                    );
                 }
             }
         }
@@ -409,14 +435,15 @@ where
 }
 
 impl<C: Actor> Worker<C> {
-    fn ensure_session(&self, session_id: &hyperactor::Uid) -> anyhow::Result<()> {
+    fn accept_session_id(&self, raw: hyperactor::Uid) -> anyhow::Result<SessionId> {
         let Some(session) = &self.session else {
             anyhow::bail!("worker is not linked");
         };
-        if &session.session_id != session_id {
+        let session_id = SessionId(raw);
+        if session_id != session.session_id {
             anyhow::bail!("remote supervision session id mismatch");
         }
-        Ok(())
+        Ok(session_id)
     }
 
     fn stop_child(&self, mode: StopMode, reason: &str) -> anyhow::Result<()> {
@@ -443,10 +470,10 @@ impl<C: Actor> Worker<C> {
     }
 
     fn handle_orphaned_supervisor(&mut self, reason: &str) -> anyhow::Result<()> {
-        if self.unlink_orphaned_supervisor(reason) == Some(OrphanPolicy::Stop) {
-            self.stop_child(StopMode::Stop, reason)?;
+        match self.unlink_orphaned_supervisor(reason) {
+            Some(OrphanPolicy::Stop) => self.stop_child(StopMode::Stop, reason),
+            Some(OrphanPolicy::Detach) | None => Ok(()),
         }
-        Ok(())
     }
 
     fn unlink_orphaned_supervisor(&mut self, reason: &str) -> Option<OrphanPolicy> {
@@ -471,7 +498,7 @@ impl<C: Actor> Worker<C> {
                 .send(
                     cx,
                     WorkerSupervisor::SupervisionEvent {
-                        session_id,
+                        session_id: session_id.into_uid(),
                         event: ActorSupervisionEvent::new(
                             child.actor_addr().clone(),
                             self.child_display_name.clone(),
