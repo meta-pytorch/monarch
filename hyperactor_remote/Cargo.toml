@@ -20,8 +20,6 @@ wirevalue = { version = "0.0.0", path = "../wirevalue" }
 async-trait = "0.1.86"
 bincode = { version = "2", features = ["serde"] }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
-
-[dev-dependencies]
 tokio = { version = "1.52.1", features = ["full", "test-util", "tracing"] }
 
 [lints]
