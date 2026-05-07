@@ -311,6 +311,7 @@ async fn main() -> Result<ExitCode> {
             "philosophers",
             extent!(replica = group_size),
             None,
+            None,
         )
         .await?;
 

@@ -1,0 +1,161 @@
+name: Close Stale PRs
+
+on:
+  schedule:
+    # Run daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      stale_days:
+        description: >
+          Threshold in days, applied to both the PR staleness window and the
+          minimum age of a closed-PR branch's tip commit before deletion.
+          Default: 180 (6 months).
+        required: false
+        default: '180'
+        type: string
+
+permissions:
+  pull-requests: write
+  contents: write
+
+env:
+  # Single source of truth shared by both jobs. Falls back to 180 on schedule.
+  STALE_DAYS: ${{ inputs.stale_days || '180' }}
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          # Disable processing of issues; this workflow only targets PRs.
+          days-before-issue-stale: -1
+          days-before-issue-close: -1
+
+          # PR staleness threshold (default 6 months), then a 7-day grace
+          # period before the PR is closed.
+          days-before-pr-stale: ${{ env.STALE_DAYS }}
+          days-before-pr-close: 7
+
+          stale-pr-label: 'stale'
+          stale-pr-message: >
+            This PR has had no activity for ${{ env.STALE_DAYS }} days and is
+            being marked as stale. It will be closed in 7 days if no further
+            activity occurs. Comment or push to keep it open.
+          close-pr-message: >
+            Closing this PR after ${{ env.STALE_DAYS }} days of inactivity
+            plus a 7-day grace period. Feel free to reopen if you'd like to
+            continue the work.
+
+          # Delete the PR's head branch once the action closes it.
+          delete-branch: true
+
+          # Process a generous batch per run so backlog is cleared promptly.
+          operations-per-run: 100
+
+  cleanup-closed-pr-branches:
+    # actions/stale's delete-branch only deletes branches it closes itself.
+    # This job sweeps already-closed PRs and removes their lingering head branches.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+
+            const staleDays = parseInt(process.env.STALE_DAYS, 10);
+            if (!Number.isFinite(staleDays) || staleDays < 0) {
+              throw new Error(`Invalid STALE_DAYS: ${process.env.STALE_DAYS}`);
+            }
+            console.log(`Deleting closed-PR branches with tip commits older than ${staleDays} days.`);
+
+            const repoInfo = await github.rest.repos.get({ owner, repo });
+            const defaultBranch = repoInfo.data.default_branch;
+
+            // Branches that must never be deleted by this job.
+            const protectedBranches = new Set([defaultBranch, 'gh-pages']);
+
+            const staleCutoff = Date.now() - staleDays * 24 * 60 * 60 * 1000;
+
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'closed',
+              per_page: 100,
+              sort: 'updated',
+              direction: 'desc',
+            });
+
+            let deleted = 0;
+            let skipped = 0;
+            for (const pr of prs) {
+              // Only act on PRs that were closed without merging.
+              if (pr.merged_at) {
+                skipped++;
+                continue;
+              }
+
+              // Skip PRs from forks — we can't delete branches in another repo.
+              if (!pr.head.repo || pr.head.repo.full_name !== `${owner}/${repo}`) {
+                skipped++;
+                continue;
+              }
+
+              const branch = pr.head.ref;
+
+              // Never touch the default branch or gh-pages.
+              if (protectedBranches.has(branch)) {
+                skipped++;
+                continue;
+              }
+
+              // Skip docs branches.
+              if (branch.startsWith('docs/')) {
+                skipped++;
+                continue;
+              }
+
+              // Skip if the branch is referenced by any other open PR.
+              const openPrsForBranch = await github.rest.pulls.list({
+                owner,
+                repo,
+                state: 'open',
+                head: `${owner}:${branch}`,
+                per_page: 1,
+              });
+              if (openPrsForBranch.data.length > 0) {
+                skipped++;
+                continue;
+              }
+
+              // Confirm the ref still exists before attempting deletion.
+              let refSha;
+              try {
+                const ref = await github.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
+                refSha = ref.data.object.sha;
+              } catch (e) {
+                if (e.status === 404) { skipped++; continue; }
+                throw e;
+              }
+
+              // Only delete if the branch's tip commit is older than the threshold.
+              const commit = await github.rest.git.getCommit({ owner, repo, commit_sha: refSha });
+              const committedAt = new Date(commit.data.committer.date).getTime();
+              if (committedAt > staleCutoff) {
+                skipped++;
+                continue;
+              }
+
+              try {
+                await github.rest.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
+                console.log(`Deleted branch '${branch}' (PR #${pr.number})`);
+                deleted++;
+              } catch (e) {
+                // 422 typically means the branch is protected; just log and continue.
+                console.log(`Could not delete '${branch}' (PR #${pr.number}): ${e.status} ${e.message}`);
+                skipped++;
+              }
+            }
+
+            console.log(`Done. Deleted ${deleted} branch(es), skipped ${skipped}.`);

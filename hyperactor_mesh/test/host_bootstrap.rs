@@ -22,7 +22,7 @@ async fn main() {
     .await
     .unwrap();
 
-    tracing::info!("booted proc {}", proc.proc_id());
+    tracing::info!("booted proc {}", proc.proc_addr());
 
     future::pending::<()>().await;
     unreachable!();
