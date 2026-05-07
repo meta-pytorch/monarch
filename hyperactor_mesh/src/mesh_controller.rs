@@ -253,11 +253,11 @@ fn send_subscriber_message(
         tracing::warn!(
             event = %message,
             "failed to send supervision event to subscriber {}: {}",
-            subscriber.port_id(),
+            subscriber.port_addr(),
             error
         );
     } else {
-        tracing::info!(event = %message, "sent supervision failure message to subscriber {}", subscriber.port_id());
+        tracing::info!(event = %message, "sent supervision failure message to subscriber {}", subscriber.port_addr());
     }
 }
 
@@ -309,7 +309,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
                 // bind path should be idempotent and eliminate the
                 // need for attestation here.
                 subscriber: PortRef::<resource::State<ActorState>>::attest_message_port(
-                    &this.self_id().clone(),
+                    &this.self_addr().clone(),
                 )
                 .unsplit(),
             },
@@ -320,7 +320,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         } else {
             String::from("None")
         };
-        tracing::info!(actor_id = %this.self_id(), %owner, "started mesh controller for {}", self.mesh.id());
+        tracing::info!(actor_id = %this.self_addr(), %owner, "started mesh controller for {}", self.mesh.id());
         Ok(())
     }
 
@@ -332,7 +332,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         // If the monitor hasn't been dropped yet, send a stop message to the
         // proc mesh.
         if self.monitor.take().is_some() {
-            tracing::info!(actor_id = %this.self_id(), actor_mesh = %self.mesh.id(), "starting cleanup for ActorMeshController, stopping actor mesh");
+            tracing::info!(actor_id = %this.self_addr(), actor_mesh = %self.mesh.id(), "starting cleanup for ActorMeshController, stopping actor mesh");
             self.stop(this, "actor mesh controller cleanup".to_string())
                 .await?;
         }
@@ -356,10 +356,10 @@ impl<A: Referable> Actor for ActorMeshController<A> {
             let did_exist = self.health_state.subscribers.remove(&port);
             if did_exist {
                 tracing::debug!(
-                    actor_id = %cx.self_id(),
+                    actor_id = %cx.self_addr(),
                     num_subscribers = self.health_state.subscribers.len(),
                     "ActorMeshController: handle_undeliverable_message: removed subscriber {} from mesh controller",
-                    port.port_id()
+                    port.port_addr()
                 );
             }
             Ok(())
@@ -369,7 +369,7 @@ impl<A: Referable> Actor for ActorMeshController<A> {
             // This is expected when the network session is broken. Log and
             // continue — the supervision polling loop will detect the failure.
             tracing::warn!(
-                actor_id = %cx.self_id(),
+                actor_id = %cx.self_addr(),
                 dest = %envelope.0.dest(),
                 "ActorMeshController: ignoring undeliverable cast message",
             );
@@ -400,9 +400,9 @@ impl<A: Referable> Handler<Subscribe> for ActorMeshController<A> {
             replay_msg.crashed_ranks = self.health_state.crashed_ranks.keys().copied().collect();
             send_subscriber_message(cx, &message.0, replay_msg);
         }
-        let port_id = message.0.port_id().clone();
+        let port_id = message.0.port_addr().clone();
         if self.health_state.subscribers.insert(message.0) {
-            tracing::debug!(actor_id = %cx.self_id(), num_subscribers = self.health_state.subscribers.len(), "added subscriber {} to mesh controller", port_id);
+            tracing::debug!(actor_id = %cx.self_addr(), num_subscribers = self.health_state.subscribers.len(), "added subscriber {} to mesh controller", port_id);
         }
         Ok(())
     }
@@ -412,7 +412,7 @@ impl<A: Referable> Handler<Subscribe> for ActorMeshController<A> {
 impl<A: Referable> Handler<Unsubscribe> for ActorMeshController<A> {
     async fn handle(&mut self, cx: &Context<Self>, message: Unsubscribe) -> anyhow::Result<()> {
         if self.health_state.subscribers.remove(&message.0) {
-            tracing::debug!(actor_id = %cx.self_id(), num_subscribers = self.health_state.subscribers.len(), "removed subscriber {} from mesh controller", message.0.port_id());
+            tracing::debug!(actor_id = %cx.self_addr(), num_subscribers = self.health_state.subscribers.len(), "removed subscriber {} from mesh controller", message.0.port_addr());
         }
         Ok(())
     }
@@ -507,10 +507,10 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
         // This message is idempotent because multiple stops only send out one
         // set of messages to subscribers.
         if self.monitor.take().is_none() {
-            tracing::debug!(actor_id = %cx.self_id(), actor_mesh = %mesh_name, "duplicate stop request, actor mesh is already stopped");
+            tracing::debug!(actor_id = %cx.self_addr(), actor_mesh = %mesh_name, "duplicate stop request, actor mesh is already stopped");
             return Ok(());
         }
-        tracing::info!(actor_id = %cx.self_id(), actor_mesh = %mesh_name, "forwarding stop request from ActorMeshController to proc mesh");
+        tracing::info!(actor_id = %cx.self_addr(), actor_mesh = %mesh_name, "forwarding stop request from ActorMeshController to proc mesh");
 
         // Let the client know that the controller has stopped. Since the monitor
         // is cancelled, it will not alert the owner or the subscribers.
@@ -521,7 +521,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
         let rank = 0usize;
         let event = ActorSupervisionEvent::new(
             // Use an actor id from the mesh.
-            mesh.get(rank).unwrap().actor_id().clone(),
+            mesh.get(rank).unwrap().actor_addr().clone(),
             None,
             ActorStatus::Stopped("ActorMeshController received explicit stop request".to_string()),
             None,
@@ -579,7 +579,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
             }
         }
 
-        tracing::info!(actor_id = %cx.self_id(), actor_mesh = %mesh_name, "stopped mesh");
+        tracing::info!(actor_id = %cx.self_addr(), actor_mesh = %mesh_name, "stopped mesh");
         Ok(())
     }
 }
@@ -600,7 +600,7 @@ fn send_heartbeat(cx: &impl context::Actor, health_state: &HealthState) {
         let mut headers = Flattrs::new();
         headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
         if let Err(e) = subscriber.send_with_headers(cx, headers, None) {
-            tracing::warn!(subscriber = %subscriber.port_id(), "error sending heartbeat message: {:?}", e);
+            tracing::warn!(subscriber = %subscriber.port_addr(), "error sending heartbeat message: {:?}", e);
         }
     }
 }
@@ -660,11 +660,11 @@ fn send_state_change(
                     %event,
                     %error,
                     "failed to send supervision event to owner {}: {}. dropping event",
-                    owner.port_id(),
+                    owner.port_addr(),
                     error
                 );
             } else {
-                tracing::info!(actor_mesh = %mesh_name, %event, "sent supervision failure message to owner {}", owner.port_id());
+                tracing::info!(actor_mesh = %mesh_name, %event, "sent supervision failure message to owner {}", owner.port_addr());
             }
         }
     }
@@ -833,9 +833,9 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
             // Current time is included by default in the log message.
             let expected_time = format_system_time(expected_time);
             // Track in both metrics and tracing.
-            ACTOR_MESH_CONTROLLER_SUPERVISION_STALLS.add(1, kv_pairs!("actor_id" => cx.self_id().to_string(), "expected_time" => expected_time.clone()));
+            ACTOR_MESH_CONTROLLER_SUPERVISION_STALLS.add(1, kv_pairs!("actor_id" => cx.self_addr().to_string(), "expected_time" => expected_time.clone()));
             tracing::warn!(
-                actor_id = %cx.self_id(),
+                actor_id = %cx.self_addr(),
                 "Handler<CheckState> is being stalled, expected at {}",
                 expected_time,
             );
@@ -849,7 +849,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 cx,
                 0,
                 ActorSupervisionEvent::new(
-                    cx.self_id().clone(),
+                    cx.self_addr().clone(),
                     None,
                     ActorStatus::generic_failure(format!(
                         "unable to query for proc states: {:?}",
@@ -882,7 +882,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                     ActorSupervisionEvent::new(
                         // Attribute this to the monitored actor, even if the underlying
                         // cause is a proc_failure. We propagate the cause explicitly.
-                        mesh.get(point.rank()).unwrap().actor_id().clone(),
+                        mesh.get(point.rank()).unwrap().actor_addr().clone(),
                         Some(display_name),
                         actor_status,
                         None,
@@ -909,7 +909,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 cx,
                 0,
                 ActorSupervisionEvent::new(
-                    cx.self_id().clone(),
+                    cx.self_addr().clone(),
                     Some(supervision_display_name.clone()),
                     ActorStatus::generic_failure(format!(
                         "unable to query for actor states: {:?}",
@@ -1105,7 +1105,7 @@ mod tests {
         let instance = testing::instance();
         let host_mesh = local_host_mesh(2).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
 
@@ -1230,14 +1230,14 @@ mod tests {
         // MESH_ORPHAN_TIMEOUT=2s and start the SelfCheck loop.
         let mut actor_hm = host_mesh_with_config(num_replicas).await;
         let actor_proc_mesh = actor_hm
-            .spawn(instance, "actors", Extent::unity(), None)
+            .spawn(instance, "actors", Extent::unity(), None, None)
             .await
             .unwrap();
 
         // Host mesh for the wrapper + controller (will be killed).
         let mut controller_hm = host_mesh_with_config(1).await;
         let controller_proc_mesh = controller_hm
-            .spawn(instance, "controller", Extent::unity(), None)
+            .spawn(instance, "controller", Extent::unity(), None, None)
             .await
             .unwrap();
 
