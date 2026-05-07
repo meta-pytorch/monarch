@@ -28,6 +28,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::dto::NodePayloadDto;
+use hyperactor_mesh::mesh_id::ResourceId;
 use reqwest::Client;
 use reqwest::Response;
 use serde::Serialize;
@@ -306,7 +307,7 @@ pub(crate) fn pyspy_workload_binary() -> PathBuf {
 /// Build a canonical proc reference that is syntactically valid but
 /// points at an unreachable abstract unix socket.
 pub(crate) fn unreachable_proc_ref() -> String {
-    hyperactor::ProcAddr::from_resource_name(
+    ResourceId::proc_addr_from_name(
         "unix:@nonexistent_bogus_socket_xyz"
             .parse::<hyperactor::channel::ChannelAddr>()
             .unwrap(),
