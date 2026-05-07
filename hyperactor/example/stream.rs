@@ -74,7 +74,7 @@ impl Actor for CountClient {
 #[async_trait]
 impl Handler<u64> for CountClient {
     async fn handle(&mut self, cx: &Context<Self>, count: u64) -> Result<(), anyhow::Error> {
-        eprintln!("{}: count: {}", cx.self_id(), count);
+        eprintln!("{}: count: {}", cx.self_addr(), count);
         Ok(())
     }
 }

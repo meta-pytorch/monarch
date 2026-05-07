@@ -1403,7 +1403,7 @@ mod tests {
             let (tcp_ref, id) = env.rdma_remote_buf.resolve_tcp()?;
             assert_eq!(id, env.rdma_remote_buf.id, "buf id mismatch for env {i}");
             let expected: hyperactor::ActorRef<TcpManagerActor> = env.tcp_backend.bind();
-            assert_eq!(tcp_ref.actor_id(), expected.actor_id());
+            assert_eq!(tcp_ref.actor_addr(), expected.actor_addr());
         }
 
         Ok(())
@@ -1578,7 +1578,7 @@ mod tests {
                     .ok_or_else(|| anyhow::anyhow!("tcp actor not local"))?,
             );
 
-            let alloc = CudaAllocator::get().allocate(device, buffer_size);
+            let alloc = CudaAllocator::get().allocate(device, buffer_size, buffer_size);
             let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
                 alloc.ptr(),
                 buffer_size,
