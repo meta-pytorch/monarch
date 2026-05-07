@@ -8,6 +8,7 @@
 
 import logging
 import threading
+import warnings
 from typing import Optional, TextIO, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.logging import LoggingMeshClient
@@ -127,6 +128,21 @@ class LoggingManager:
     ) -> None:
         if level < 0 or level > 255:
             raise ValueError("Invalid logging level: {}".format(level))
+
+        if stream_to_client:
+            from monarch._rust_bindings.monarch_hyperactor.config import (
+                get_global_config,
+            )
+
+            if not get_global_config().get("enable_log_forwarding", False):
+                warnings.warn(
+                    "logging_option(stream_to_client=True) has no effect: "
+                    "log forwarding was disabled when this ProcMesh was "
+                    "spawned, so no LogForwardActor mesh exists to stream "
+                    "from. Call configure(enable_log_forwarding=True) before "
+                    "creating the ProcMesh, or set "
+                    "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING=true.",
+                )
 
         assert self._logging_mesh_client is not None
         self._logging_mesh_client.set_mode(
