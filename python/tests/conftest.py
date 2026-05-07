@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import platform
+
+pytest_plugins = ["crash_recovery_plugin"]
 import sys
 from pathlib import Path
 

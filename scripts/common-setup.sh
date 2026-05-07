@@ -278,59 +278,27 @@ setup_test_environment() {
     install_python_test_dependencies
 }
 
-# Run Python test groups for Monarch.
+# Run Monarch Python tests with crash recovery.
 # Usage: run_test_groups
 #
-# Tests are executed in 10 sequential groups with process cleanup
-# between runs.
+# Tests run sequentially in a persistent worker subprocess. If the worker
+# crashes mid-test, that test is recorded as failed and the worker restarts
+# for the next test. All failures (including crashes) are reported at the end.
 run_test_groups() {
   set +e
   local test_results_dir="${RUNNER_TEST_RESULTS_DIR:-test-results}"
-  # Make sure the runtime linker uses the conda env's libstdc++
-  # (which was used to compile monarch) instead of the system's.
-  # TODO: Revisit this to determine if this is the proper/most
-  # sustainable/most robust solution.
   export CONDA_LIBSTDCPP="${CONDA_PREFIX}/lib/libstdc++.so.6"
   export LD_PRELOAD="${CONDA_LIBSTDCPP}${LD_PRELOAD:+:$LD_PRELOAD}"
-  # Backtraces help with debugging remotely.
   export RUST_BACKTRACE=1
-  local FAILED_GROUPS=()
-  local TEST_EXIT_CODE=0
-  for GROUP in $(seq 1 10); do
-    echo "Running test group $GROUP of 10..."
-    # Kill any existing Python processes to ensure clean state
-    echo "Cleaning up Python processes before group $GROUP..."
-    pkill -9 python || true
-    pkill -9 pytest || true
-    sleep 2
-    LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
-        --ignore-glob="**/meta/**" \
-        --dist=no \
-        --group="$GROUP" \
-        --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
-        --splits=10
-    TEST_EXIT_CODE=$?
-    # Check result and record failures
-    if [[ $TEST_EXIT_CODE -eq 0 ]]; then
-        echo "✓ Test group $GROUP completed successfully"
-    else
-        FAILED_GROUPS+=("$GROUP")
-        echo "✗ Test group $GROUP failed with exit code $TEST_EXIT_CODE"
-    fi
-  done
-  # Final cleanup after all groups
-  echo "Final cleanup of Python processes..."
-  pkill -9 python || true
-  pkill -9 pytest || true
-  # Check if any groups failed and exit with appropriate code
-  if [ ${#FAILED_GROUPS[@]} -eq 0 ]; then
-    echo "✓ All test groups completed successfully!"
-  else
-    echo "✗ The following test groups failed: ${FAILED_GROUPS[*]}"
-    echo "Failed groups count: ${#FAILED_GROUPS[@]}/10"
-    return 1
-  fi
+  mkdir -p "$test_results_dir"
+  LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+      --ignore-glob="**/meta/**" \
+      --crash-recovery \
+      --max-crashes=10 \
+      --junit-xml="$test_results_dir/test-results.xml"
+  local rc=$?
   set -e
+  return $rc
 }
 
 # Copy cargo-nextest's JUnit XML to <dest>. Honors CARGO_TARGET_DIR
