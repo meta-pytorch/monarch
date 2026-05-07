@@ -40,12 +40,13 @@ from _pytest.reports import TestReport
 
 _in_worker = False
 
-# Whether unshare --user is available (i.e. user namespaces can be created).
-# Checked once at import time so _spawn_worker can fall back gracefully when
-# running inside an existing user namespace (where nesting is not permitted).
+# Whether the full unshare --user --pid --fork --mount-proc command works.
+# Some environments allow user namespaces but not --mount-proc (e.g. Docker
+# containers with restricted capabilities).  Checked once at import time so
+# _spawn_worker can fall back gracefully.
 _unshare_user_available: bool = (
     subprocess.run(
-        ["unshare", "--user", "true"],
+        ["unshare", "--user", "--pid", "--fork", "--mount-proc", "true"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     ).returncode
