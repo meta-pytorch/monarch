@@ -1465,14 +1465,13 @@ impl Mailbox {
             Ok(())
         };
         (
-            PortHandle {
-                mailbox: self.clone(),
+            PortHandle::new_full(
+                self.clone(),
                 port_index,
-                sender: UnboundedPortSender::Func(Arc::new(enqueue)),
-                bound: Arc::new(RwLock::new(None)),
+                UnboundedPortSender::Func(Arc::new(enqueue)),
                 reducer_spec,
                 streaming_opts,
-            },
+            ),
             PortReceiver::new(receiver, port_id, /*coalesce=*/ true, self.clone()),
         )
     }
@@ -1484,14 +1483,13 @@ impl Mailbox {
         &self,
         enqueue: impl Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
     ) -> PortHandle<M> {
-        PortHandle {
-            mailbox: self.clone(),
-            port_index: self.inner.allocate_port(),
-            sender: UnboundedPortSender::Func(Arc::new(enqueue)),
-            bound: Arc::new(RwLock::new(None)),
-            reducer_spec: None,
-            streaming_opts: StreamingReducerOpts::default(),
-        }
+        PortHandle::new_full(
+            self.clone(),
+            self.inner.allocate_port(),
+            UnboundedPortSender::Func(Arc::new(enqueue)),
+            None,
+            StreamingReducerOpts::default(),
+        )
     }
 
     /// Open a new one-shot port that accepts M-typed messages. The
@@ -1597,18 +1595,20 @@ impl Mailbox {
 
     fn bind<M: RemoteMessage>(&self, handle: &PortHandle<M>) -> PortRef<M> {
         assert_eq!(
-            handle.mailbox.actor_addr(),
+            handle.inner.mailbox.actor_addr(),
             self.actor_addr(),
             "port does not belong to mailbox"
         );
 
         // TODO: don't even allocate a port until the port is bound. Possibly
         // have handles explicitly staged (unbound, bound).
-        let port_ref = self.actor_addr().port_addr(Port::from(handle.port_index));
-        match self.inner.ports.entry(handle.port_index) {
+        let port_ref = self
+            .actor_addr()
+            .port_addr(Port::from(handle.inner.port_index));
+        match self.inner.ports.entry(handle.inner.port_index) {
             Entry::Vacant(entry) => {
                 entry.insert(Arc::new(UnboundedSender::new(
-                    handle.sender.clone(),
+                    handle.inner.sender.clone(),
                     port_ref.clone(),
                 )));
             }
@@ -1620,7 +1620,7 @@ impl Mailbox {
 
     fn bind_to_actor_port<M: RemoteMessage>(&self, handle: &PortHandle<M>) {
         assert_eq!(
-            handle.mailbox.actor_addr(),
+            handle.inner.mailbox.actor_addr(),
             self.actor_addr(),
             "port does not belong to mailbox"
         );
@@ -1630,7 +1630,7 @@ impl Mailbox {
         match self.inner.ports.entry(port_index) {
             Entry::Vacant(entry) => {
                 entry.insert(Arc::new(UnboundedSender::new(
-                    handle.sender.clone(),
+                    handle.inner.sender.clone(),
                     port_ref,
                 )));
             }
@@ -1865,15 +1865,9 @@ fn unbound_port_delivery_error(port_index: u64, data: &wirevalue::Any) -> Delive
     ))
 }
 
-/// A port to which M-typed messages can be delivered. Ports may be
-/// serialized to be sent to other actors. However, when a port is
-/// deserialized, it may no longer be used to send messages directly
-/// to a mailbox since it is no longer associated with a local mailbox
-/// ([`Mailbox::send`] will fail). However, the runtime may accept
-/// remote Ports, and arrange for these messages to be delivered
-/// indirectly through inter-node message passing.
-#[derive(Debug)]
-pub struct PortHandle<M: Message> {
+/// Inner state of a [`PortHandle`], shared via `Arc` to make cloning cheap
+/// (single atomic refcount bump instead of cloning each field).
+struct PortHandleInner<M: Message> {
     mailbox: Mailbox,
     port_index: u64,
     sender: UnboundedPortSender<M>,
@@ -1891,36 +1885,79 @@ pub struct PortHandle<M: Message> {
     streaming_opts: StreamingReducerOpts,
 }
 
+impl<M: Message> fmt::Debug for PortHandleInner<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PortHandleInner")
+            .field("mailbox", &self.mailbox)
+            .field("port_index", &self.port_index)
+            .field("sender", &self.sender)
+            .field("bound", &self.bound)
+            .field("reducer_spec", &self.reducer_spec)
+            .field("streaming_opts", &self.streaming_opts)
+            .finish()
+    }
+}
+
+/// A port to which M-typed messages can be delivered. Ports may be
+/// serialized to be sent to other actors. However, when a port is
+/// deserialized, it may no longer be used to send messages directly
+/// to a mailbox since it is no longer associated with a local mailbox
+/// ([`Mailbox::send`] will fail). However, the runtime may accept
+/// remote Ports, and arrange for these messages to be delivered
+/// indirectly through inter-node message passing.
+#[derive(Debug)]
+pub struct PortHandle<M: Message> {
+    inner: Arc<PortHandleInner<M>>,
+}
+
 impl<M: Message> PortHandle<M> {
-    fn new(mailbox: Mailbox, port_index: u64, sender: UnboundedPortSender<M>) -> Self {
+    fn new_full(
+        mailbox: Mailbox,
+        port_index: u64,
+        sender: UnboundedPortSender<M>,
+        reducer_spec: Option<ReducerSpec>,
+        streaming_opts: StreamingReducerOpts,
+    ) -> Self {
         Self {
-            mailbox,
-            port_index,
-            sender,
-            bound: Arc::new(RwLock::new(None)),
-            reducer_spec: None,
-            streaming_opts: StreamingReducerOpts::default(),
+            inner: Arc::new(PortHandleInner {
+                mailbox,
+                port_index,
+                sender,
+                bound: Arc::new(RwLock::new(None)),
+                reducer_spec,
+                streaming_opts,
+            }),
         }
     }
 
+    fn new(mailbox: Mailbox, port_index: u64, sender: UnboundedPortSender<M>) -> Self {
+        Self::new_full(
+            mailbox,
+            port_index,
+            sender,
+            None,
+            StreamingReducerOpts::default(),
+        )
+    }
+
     pub(crate) fn location(&self) -> PortLocation {
-        match self.bound.read().unwrap().as_ref() {
+        match self.inner.bound.read().unwrap().as_ref() {
             Some(port_id) => PortLocation::Bound(port_id.clone()),
-            None => PortLocation::new_unbound::<M>(self.mailbox.actor_addr().clone()),
+            None => PortLocation::new_unbound::<M>(self.inner.mailbox.actor_addr().clone()),
         }
     }
 
     /// Send a message to this port.
     pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        let closed = self.mailbox.inner.closed.read().unwrap();
+        let closed = self.inner.mailbox.inner.closed.read().unwrap();
 
         if let Some(status) = &*closed {
             let err = MailboxError {
-                actor_id: self.mailbox.actor_addr().clone(),
+                actor_id: self.inner.mailbox.actor_addr().clone(),
                 kind: MailboxErrorKind::OwnerTerminated(status.clone()),
             };
             return Err(MailboxSenderError::new_unbound::<M>(
-                self.mailbox.actor_addr().clone(),
+                self.inner.mailbox.actor_addr().clone(),
                 MailboxSenderErrorKind::Mailbox(err),
             ));
         }
@@ -1932,7 +1969,7 @@ impl<M: Message> PortHandle<M> {
         // Hold read lock while checking and sending to prevent race with bind().
         // Message sent from handle is delivered immediately. It could race with
         // messages from refs. So we need to assign seq if the handle is bound.
-        let bound_guard = self.bound.read().unwrap();
+        let bound_guard = self.inner.bound.read().unwrap();
         if let Some(bound_port) = bound_guard.as_ref() {
             let sequencer = cx.instance().sequencer();
             let bound_ref: PortAddr = bound_port.clone();
@@ -1956,9 +1993,9 @@ impl<M: Message> PortHandle<M> {
         //   2.  another thread is trying to bind and thus waiting for write lock.
         // But we do not expect `sender.send` to use the same PortHandle, so this
         // deadlock scenario should not happen.
-        self.sender.send(headers, message).map_err(|err| {
+        self.inner.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
-                self.mailbox.actor_addr().clone(),
+                self.inner.mailbox.actor_addr().clone(),
                 MailboxSenderErrorKind::Other(err),
             )
         })
@@ -1971,10 +2008,10 @@ impl<M: Message> PortHandle<M> {
         R: Message,
         F: Fn(R) -> M + Send + Sync + 'static,
     {
-        let port_index = self.mailbox.inner.allocate_port();
-        let sender = self.sender.clone();
+        let port_index = self.inner.mailbox.inner.allocate_port();
+        let sender = self.inner.sender.clone();
         PortHandle::new(
-            self.mailbox.clone(),
+            self.inner.mailbox.clone(),
             port_index,
             UnboundedPortSender::Func(Arc::new(move |headers, value: R| {
                 sender.send(headers, unmap(value))
@@ -1987,15 +2024,15 @@ impl<M: RemoteMessage> PortHandle<M> {
     /// Bind this port, making it accessible to remote actors.
     pub fn bind(&self) -> PortRef<M> {
         let port_ref = {
-            let mut guard = self.bound.write().unwrap();
+            let mut guard = self.inner.bound.write().unwrap();
             guard
-                .get_or_insert_with(|| self.mailbox.bind(self).into_port_addr())
+                .get_or_insert_with(|| self.inner.mailbox.bind(self).into_port_addr())
                 .clone()
         };
         PortRef::attest_reducible(
             port_ref,
-            self.reducer_spec.clone(),
-            self.streaming_opts.clone(),
+            self.inner.reducer_spec.clone(),
+            self.inner.streaming_opts.clone(),
         )
     }
 
@@ -2005,30 +2042,29 @@ impl<M: RemoteMessage> PortHandle<M> {
     /// This is used by [`actor::Binder`] implementations to bind actor refs.
     /// This is not intended for general use.
     pub(crate) fn bind_actor_port(&self) {
-        let port_id = self.mailbox.actor_addr().port_addr(Port::from(M::port()));
+        let port_id = self
+            .inner
+            .mailbox
+            .actor_addr()
+            .port_addr(Port::from(M::port()));
         {
-            let mut guard = self.bound.write().unwrap();
+            let mut guard = self.inner.bound.write().unwrap();
             if guard.is_some() {
                 panic!(
                     "could not bind port handle {} as {port_id}: already bound",
-                    self.port_index
+                    self.inner.port_index
                 );
             }
             *guard = Some(port_id);
         }
-        self.mailbox.bind_to_actor_port(self);
+        self.inner.mailbox.bind_to_actor_port(self);
     }
 }
 
 impl<M: Message> Clone for PortHandle<M> {
     fn clone(&self) -> Self {
         Self {
-            mailbox: self.mailbox.clone(),
-            port_index: self.port_index,
-            sender: self.sender.clone(),
-            bound: self.bound.clone(),
-            reducer_spec: self.reducer_spec.clone(),
-            streaming_opts: self.streaming_opts.clone(),
+            inner: Arc::clone(&self.inner),
         }
     }
 }
@@ -3196,14 +3232,14 @@ mod tests {
             let accumulator = accum::join_semilattice::<accum::Max<u64>>();
             let reducer_spec = accumulator.reducer_spec().unwrap();
             let (port, _) = mbox.open_accum_port(accum::join_semilattice::<accum::Max<u64>>());
-            assert_eq!(port.reducer_spec, Some(reducer_spec.clone()));
+            assert_eq!(port.inner.reducer_spec, Some(reducer_spec.clone()));
             let port_ref = port.bind();
             assert_eq!(port_ref.reducer_spec(), &Some(reducer_spec));
         }
         // normal port should not have reducer typehash
         {
             let (port, _) = mbox.open_port::<u64>();
-            assert_eq!(port.reducer_spec, None);
+            assert_eq!(port.inner.reducer_spec, None);
             let port_ref = port.bind();
             assert_eq!(port_ref.reducer_spec(), &None);
         }
@@ -4542,7 +4578,7 @@ mod tests {
         let default_port = mbox.actor_addr().port_addr(Port::from(String::port()));
         let (handle, _rx) = mbox.open_port::<String>();
         // Handle's port index is allocated by mailbox, not the actor port.
-        assert_ne!(default_port.index(), handle.port_index);
+        assert_ne!(default_port.index(), handle.inner.port_index);
         // Bind the handle to the actor port.
         handle.bind_actor_port();
         assert_matches!(handle.location(), PortLocation::Bound(port) if port == default_port);
@@ -4559,7 +4595,7 @@ mod tests {
         let (handle, _rx) = mbox.open_port::<String>();
         // Bound handle to the port allocated by mailbox.
         handle.bind();
-        assert_matches!(handle.location(), PortLocation::Bound(port) if port.index() == handle.port_index);
+        assert_matches!(handle.location(), PortLocation::Bound(port) if port.index() == handle.inner.port_index);
         // Since handle is already bound, call bind_to() on it will cause panic.
         handle.bind_actor_port();
     }
