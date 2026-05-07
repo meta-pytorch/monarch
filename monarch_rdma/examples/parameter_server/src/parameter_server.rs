@@ -489,7 +489,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         vec![host_addr],
     );
     let ps_proc_mesh = host_mesh
-        .spawn(instance, "ps", extent!(gpu = 1), None)
+        .spawn(instance, "ps", extent!(gpu = 1), None, None)
         .await?;
 
     tracing::info!(
@@ -509,7 +509,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // Create a proc mesh for workers, where each worker is assigned to its own GPU.
     tracing::info!("creating worker proc mesh ({} workers)...", num_workers);
     let worker_proc_mesh = host_mesh
-        .spawn(instance, "workers", extent!(gpu = num_workers), None)
+        .spawn(instance, "workers", extent!(gpu = num_workers), None, None)
         .await?;
 
     tracing::info!(

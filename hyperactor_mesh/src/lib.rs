@@ -164,6 +164,12 @@ pub enum Error {
     #[error("error configuring host mesh agent {0}: {1}")]
     HostMeshAgentConfigurationError(ActorAddr, String),
 
+    /// HM-2 / HM-3 / HM-4: structured per-host failure from
+    /// `HostMeshRef::push_config()`. See the HM-* invariant block in
+    /// `host_mesh.rs` for the contract this surfaces.
+    #[error(transparent)]
+    ConfigPushFailed(#[from] crate::host_mesh::ConfigPushError),
+
     #[error(
         "error creating proc (host rank {host_rank}) on host mesh agent {mesh_agent}, state: {state}"
     )]
