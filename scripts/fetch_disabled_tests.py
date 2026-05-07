@@ -36,19 +36,36 @@ _NEXTEST_FILTER_FILE = Path(".config/nextest-filter.txt")
 
 
 def fetch_disabled_test_names_with_status() -> tuple[list[str], bool]:
-    url = f"https://api.github.com/repos/{_REPO}/issues?state=open&per_page=100"
-    headers = {"Accept": "application/vnd.github+json"}
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            issues: list[dict[str, object]] = json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
-        print(f"Warning: could not fetch GitHub issues: {e}", file=sys.stderr)
-        return [], False
+    issues: list[dict[str, object]] = []
+    page = 1
+    while True:
+        url = (
+            f"https://api.github.com/search/issues"
+            f"?q=repo:{_REPO}+is:open+is:issue+DISABLED+in:title"
+            f"&per_page=100&page={page}"
+        )
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data: dict[str, object] = json.loads(resp.read().decode())
+        except urllib.error.URLError as e:
+            print(f"Warning: could not fetch GitHub issues: {e}", file=sys.stderr)
+            return [], False
+
+        batch = data.get("items", [])
+        assert isinstance(batch, list)
+        issues.extend(batch)
+        if len(issues) >= int(data.get("total_count", 0)) or len(batch) < 100:
+            break
+        page += 1
 
     return (
         [
@@ -56,7 +73,6 @@ def fetch_disabled_test_names_with_status() -> tuple[list[str], bool]:
             for issue in issues
             if isinstance(issue.get("title"), str)
             and str(issue["title"]).startswith("DISABLED ")
-            and "pull_request" not in issue
         ],
         True,
     )

@@ -819,9 +819,9 @@ impl BootstrapProcHandle {
         }
     }
 
-    /// Return the logical proc identity in the mesh.
+    /// Return the logical proc address in the mesh.
     #[inline]
-    pub fn proc_id(&self) -> &ProcAddr {
+    pub fn proc_addr(&self) -> &ProcAddr {
         &self.proc_id
     }
 
@@ -1226,7 +1226,7 @@ impl ProcHandle for BootstrapProcHandle {
     type TerminalStatus = ProcStatus;
 
     #[inline]
-    fn proc_id(&self) -> &ProcAddr {
+    fn proc_addr(&self) -> &ProcAddr {
         &self.proc_id
     }
 
@@ -1323,7 +1323,7 @@ impl ProcHandle for BootstrapProcHandle {
                     // Variety of possible errors, proceed with launcher termination.
                     tracing::warn!(
                         "ProcAgent {} could not successfully stop all actors: {}",
-                        agent.actor_id(),
+                        agent.actor_addr(),
                         e,
                     );
                 }
@@ -2664,8 +2664,8 @@ mod tests {
             assert!(h.mark_running(t0));
             // Build a consistent AgentRef for Ready using the
             // handle's ProcAddr.
-            let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = proc_id.actor_ref(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
+            let proc_id = <BootstrapProcHandle as ProcHandle>::proc_addr(&h);
+            let actor_id = proc_id.actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
             let agent_ref: ActorRef<ProcAgent> = ActorRef::attest(actor_id);
             // Ready -> Stopping -> Stopped should be legal.
             assert!(h.mark_ready(addr, agent_ref));
@@ -2682,8 +2682,8 @@ mod tests {
             assert!(h.mark_running(t0));
             // Build a consistent AgentRef for Ready using the
             // handle's ProcAddr.
-            let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = proc_id.actor_ref(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
+            let proc_id = <BootstrapProcHandle as ProcHandle>::proc_addr(&h);
+            let actor_id = proc_id.actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
             let agent: ActorRef<ProcAgent> = ActorRef::attest(actor_id);
             // Running -> Ready
             assert!(h.mark_ready(addr, agent));
@@ -2815,7 +2815,7 @@ mod tests {
         let started_at = std::time::SystemTime::now();
         assert!(handle.mark_running(started_at));
 
-        let actor_id = proc_id.actor_ref(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
+        let actor_id = proc_id.actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME);
         let agent_ref: ActorRef<ProcAgent> = ActorRef::attest(actor_id);
 
         // Pick any addr to carry in Ready (what the child would have
@@ -2860,7 +2860,7 @@ mod tests {
         let addr = ChannelAddr::any(ChannelTransport::Unix);
         let agent = ActorRef::attest(
             test_proc_id_with_addr(addr.clone(), "proc")
-                .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
+                .actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
         );
 
         let st = ProcStatus::Ready {
@@ -2897,7 +2897,7 @@ mod tests {
                 addr: ChannelAddr::any(ChannelTransport::Unix),
                 agent: ActorRef::attest(
                     test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "x")
-                        .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
+                        .actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME),
                 ),
             },
             ProcStatus::Killed {
@@ -2927,7 +2927,7 @@ mod tests {
         // Synthesize Ready data
         let addr = ChannelAddr::any(ChannelTransport::Unix);
         let agent: ActorRef<ProcAgent> =
-            ActorRef::attest(proc_id.actor_ref(crate::proc_agent::PROC_AGENT_ACTOR_NAME));
+            ActorRef::attest(proc_id.actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME));
         assert!(handle.mark_ready(addr, agent));
 
         // Call the trait method (not ready_inner).
