@@ -30,6 +30,8 @@ use hyperactor::PortRef;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
+use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::Undeliverable;
 use hyperactor::supervision::ActorSupervisionEvent;
 
 use crate::KeepaliveLink;
@@ -99,14 +101,14 @@ impl Actor for Supervisor {
             .link
             .take()
             .expect("supervisor initialized more than once")
-            .spawn(this)?;
+            .spawn_supervisor(this)?;
         self.link_handle = Some(link_handle);
         self.worker.send(
             this,
             Link {
                 session_id: self.session_id.clone(),
                 supervisor: this.port::<WorkerSupervisor>().bind(),
-                parent: this.self_id().clone(),
+                parent: this.self_addr().clone(),
                 link,
                 options: self.options.clone(),
             },
@@ -124,7 +126,7 @@ impl Actor for Supervisor {
             mode,
             reason: reason.to_string(),
         });
-        self.send_worker_stop(this)
+        self.send_pending_worker_stop(this)
     }
 
     async fn handle_supervision_event(
@@ -135,7 +137,7 @@ impl Actor for Supervisor {
         if self
             .link_handle
             .as_ref()
-            .is_some_and(|handle| handle.actor_id() == &event.actor_id)
+            .is_some_and(|handle| handle.actor_addr() == &event.actor_id)
         {
             let event = self.synthesize_unreachable_event("supervision link failed");
             return self.propagate_event(event);
@@ -162,9 +164,7 @@ impl Handler<WorkerSupervisor> for Supervisor {
                     child,
                     display_name,
                 });
-                if self.pending_stop.is_some() {
-                    self.send_worker_stop(cx)?;
-                }
+                self.send_pending_worker_stop(cx)?;
                 Ok(())
             }
             WorkerSupervisor::LinkRejected { session_id, reason } => {
@@ -196,8 +196,8 @@ impl Supervisor {
         Ok(())
     }
 
-    fn send_worker_stop(&self, cx: &Instance<Self>) -> anyhow::Result<()> {
-        let Some(stop) = &self.pending_stop else {
+    fn send_pending_worker_stop(&mut self, cx: &Instance<Self>) -> anyhow::Result<()> {
+        let Some(stop) = self.pending_stop.take() else {
             return Ok(());
         };
         self.worker.send(
@@ -205,7 +205,7 @@ impl Supervisor {
             SupervisedWorker::Stop {
                 session_id: self.session_id.clone(),
                 mode: stop.mode,
-                reason: stop.reason.clone(),
+                reason: stop.reason,
             },
         )?;
         Ok(())
@@ -221,7 +221,7 @@ impl Supervisor {
             )
         } else {
             ActorSupervisionEvent::new(
-                self.worker.actor_id().clone(),
+                self.worker.actor_addr().clone(),
                 None,
                 ActorStatus::generic_failure(reason),
                 None,
@@ -292,20 +292,35 @@ where
         }
         if self.is_child_event(event) {
             if let Some(session) = &self.session {
-                session.supervisor.send(
-                    this,
-                    WorkerSupervisor::SupervisionEvent {
-                        session_id: session.session_id.clone(),
-                        event: event.clone(),
-                        disposition: RemoteActorDisposition::Terminal,
-                    },
-                )?;
+                let supervisor = session.supervisor.clone();
+                let session_id = session.session_id.clone();
+                if supervisor
+                    .send(
+                        this,
+                        WorkerSupervisor::SupervisionEvent {
+                            session_id,
+                            event: event.clone(),
+                            disposition: RemoteActorDisposition::Terminal,
+                        },
+                    )
+                    .is_err()
+                {
+                    let _ = self.unlink_orphaned_supervisor("supervisor session undeliverable");
+                }
             }
             self.child_handle = None;
             this.exit("supervised child stopped")?;
             return Ok(true);
         }
         Ok(!event.is_error())
+    }
+
+    async fn handle_undeliverable_message(
+        &mut self,
+        _this: &Instance<Self>,
+        _envelope: Undeliverable<MessageEnvelope>,
+    ) -> anyhow::Result<()> {
+        self.handle_orphaned_supervisor("supervisor session undeliverable")
     }
 }
 
@@ -316,35 +331,43 @@ where
 {
     async fn handle(&mut self, cx: &Context<Self>, message: Link) -> anyhow::Result<()> {
         if self.session.is_some() {
-            message.supervisor.send(
+            let _ = message.supervisor.send(
                 cx,
                 WorkerSupervisor::LinkRejected {
                     session_id: message.session_id,
                     reason: "worker already linked".to_string(),
                 },
-            )?;
+            );
             return Ok(());
         }
 
-        let link_handle = message.link.spawn(cx).await?;
-        let child = self
+        let link_handle = message.link.spawn_worker(cx).await?;
+        let child_addr = self
             .child_handle
             .as_ref()
-            .expect("worker child must be spawned before linking");
-        message.supervisor.send(
-            cx,
-            WorkerSupervisor::Linked {
-                session_id: message.session_id.clone(),
-                child: child.actor_id().clone(),
-                display_name: self.child_display_name.clone(),
-            },
-        )?;
+            .expect("worker child must be spawned before linking")
+            .actor_addr()
+            .clone();
+        let supervisor = message.supervisor.clone();
         self.session = Some(WorkerSession {
-            session_id: message.session_id,
+            session_id: message.session_id.clone(),
             supervisor: message.supervisor,
             options: message.options,
             link_handle,
         });
+        if supervisor
+            .send(
+                cx,
+                WorkerSupervisor::Linked {
+                    session_id: message.session_id.clone(),
+                    child: child_addr,
+                    display_name: self.child_display_name.clone(),
+                },
+            )
+            .is_err()
+        {
+            self.handle_orphaned_supervisor("supervisor session undeliverable")?;
+        }
         Ok(())
     }
 }
@@ -371,13 +394,13 @@ where
             SupervisedWorker::Unlink { session_id, reason } => {
                 self.ensure_session(&session_id)?;
                 if let Some(session) = self.session.take() {
-                    session.link_handle.stop(&reason)?;
+                    let _ = session.link_handle.stop(&reason);
                     if session.options.orphan_policy == OrphanPolicy::Stop {
                         self.stop_child(StopMode::Stop, &reason)?;
                     }
-                    session
+                    let _ = session
                         .supervisor
-                        .send(cx, WorkerSupervisor::Unlinked { session_id, reason })?;
+                        .send(cx, WorkerSupervisor::Unlinked { session_id, reason });
                 }
             }
         }
@@ -410,13 +433,26 @@ impl<C: Actor> Worker<C> {
     fn is_child_event(&self, event: &ActorSupervisionEvent) -> bool {
         self.child_handle
             .as_ref()
-            .is_some_and(|child| child.actor_id() == &event.actor_id)
+            .is_some_and(|child| child.actor_addr() == &event.actor_id)
     }
 
     fn is_link_event(&self, event: &ActorSupervisionEvent) -> bool {
         self.session
             .as_ref()
             .is_some_and(|session| session.link_handle.actor_id() == &event.actor_id)
+    }
+
+    fn handle_orphaned_supervisor(&mut self, reason: &str) -> anyhow::Result<()> {
+        if self.unlink_orphaned_supervisor(reason) == Some(OrphanPolicy::Stop) {
+            self.stop_child(StopMode::Stop, reason)?;
+        }
+        Ok(())
+    }
+
+    fn unlink_orphaned_supervisor(&mut self, reason: &str) -> Option<OrphanPolicy> {
+        let session = self.session.take()?;
+        let _ = session.link_handle.stop(reason);
+        Some(session.options.orphan_policy)
     }
 
     fn handle_link_event(
@@ -427,22 +463,34 @@ impl<C: Actor> Worker<C> {
         let Some(session) = &self.session else {
             return Ok(());
         };
+        let supervisor = session.supervisor.clone();
+        let session_id = session.session_id.clone();
+        let orphan_policy = session.options.orphan_policy;
         if let Some(child) = &self.child_handle {
-            session.supervisor.send(
-                cx,
-                WorkerSupervisor::SupervisionEvent {
-                    session_id: session.session_id.clone(),
-                    event: ActorSupervisionEvent::new(
-                        child.actor_id().clone(),
-                        self.child_display_name.clone(),
-                        ActorStatus::generic_failure(format!("supervision link failed: {}", event)),
-                        None,
-                    ),
-                    disposition: RemoteActorDisposition::Unreachable,
-                },
-            )?;
+            if supervisor
+                .send(
+                    cx,
+                    WorkerSupervisor::SupervisionEvent {
+                        session_id,
+                        event: ActorSupervisionEvent::new(
+                            child.actor_addr().clone(),
+                            self.child_display_name.clone(),
+                            ActorStatus::generic_failure(format!(
+                                "supervision link failed: {}",
+                                event
+                            )),
+                            None,
+                        ),
+                        disposition: RemoteActorDisposition::Unreachable,
+                    },
+                )
+                .is_err()
+            {
+                self.handle_orphaned_supervisor("supervisor session undeliverable")?;
+                return Ok(());
+            }
         }
-        if session.options.orphan_policy == OrphanPolicy::Stop {
+        if orphan_policy == OrphanPolicy::Stop {
             self.stop_child(StopMode::Stop, "supervision link failed")?;
         }
         Ok(())
@@ -489,7 +537,7 @@ mod tests {
     #[async_trait]
     impl Actor for TestChild {
         async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-            self.ready.send(this, this.self_id().clone())?;
+            self.ready.send(this, this.self_addr().clone())?;
             if let Some(TestChildAction::FailAfter(delay)) = self.action.take() {
                 this.self_message_with_delay(TestChildCommand::Fail, delay)?;
             }
@@ -570,7 +618,7 @@ mod tests {
                     .take()
                     .expect("grandparent initialized more than once"),
             )?;
-            self.parent_addr.send(this, parent.actor_id().clone())?;
+            self.parent_addr.send(this, parent.actor_addr().clone())?;
             self.parent_handle = Some(parent);
             Ok(())
         }
@@ -731,6 +779,88 @@ mod tests {
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+    }
+
+    // proc
+    // ├── client instance
+    // │   ├── ready port: receives the child address
+    // │   ├── stopped port: receives the child stop reason
+    // │   ├── supervisor port: receives the initial Linked message
+    // │   └── supervisor-side link actor: KeepaliveSupervisor
+    // └── worker: Worker<TestChild>
+    //     ├── child: TestChild
+    //     └── worker-side link actor: KeepaliveWorker
+    //
+    // Worker accepts Link and records an active supervisor session. The test
+    // then injects an Undeliverable for a worker-sent message. Worker treats
+    // the supervisor session as orphaned, applies OrphanPolicy::Stop, and
+    // exits after the child stops.
+    #[tokio::test]
+    async fn test_worker_undeliverable_supervisor_session_stops_child() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
+        let (stopped, mut stopped_rx) = client.open_port::<String>();
+        let (supervisor, mut supervisor_rx) = client.open_port::<WorkerSupervisor>();
+        let supervisor_ref = supervisor.bind();
+        let worker = proc
+            .spawn("worker", Worker::new(test_child(ready, stopped, None)))
+            .unwrap();
+        let (link_handle, link) =
+            KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
+                .spawn_supervisor(&client)
+                .unwrap();
+        let _child_addr = ready_rx.recv().await.unwrap();
+        let session_id = hyperactor::Uid::instance();
+
+        worker
+            .send(
+                &client,
+                Link {
+                    session_id: session_id.clone(),
+                    supervisor: supervisor_ref.clone(),
+                    parent: client.self_addr().clone(),
+                    link,
+                    options: LinkOptions::default(),
+                },
+            )
+            .unwrap();
+        let linked = tokio::time::timeout(Duration::from_secs(5), supervisor_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(linked, WorkerSupervisor::Linked { .. }));
+
+        let envelope = MessageEnvelope::serialize(
+            worker.actor_addr().clone(),
+            supervisor_ref.port_addr().clone(),
+            &WorkerSupervisor::Unlinked {
+                session_id,
+                reason: "test".to_string(),
+            },
+            hyperactor_config::Flattrs::new(),
+        )
+        .unwrap();
+        worker
+            .port::<Undeliverable<MessageEnvelope>>()
+            .send(&client, Undeliverable(envelope))
+            .unwrap();
+
+        let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reason, "supervisor session undeliverable");
+
+        let status = tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+        assert!(matches!(status, ActorStatus::Stopped(_)));
+
+        link_handle.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), link_handle)
             .await
             .unwrap();
     }

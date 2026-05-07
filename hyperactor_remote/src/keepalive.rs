@@ -8,9 +8,31 @@
 
 //! Message-based link implementation.
 //!
-//! `KeepaliveWorker` initiates a stream of [`Keepalive`] messages and fails if
-//! the supervisor does not acknowledge them. `KeepaliveSupervisor` responds to
-//! keepalives and fails if the next expected keepalive is not delivered.
+//! The link has two actors. `KeepaliveWorker` runs on the worker side and owns
+//! the outbound keepalive stream. `KeepaliveSupervisor` runs on the supervisor
+//! side and acknowledges each keepalive. The worker sends [`Keepalive`] with a
+//! reply port for the worker's [`KeepaliveAck`] handler. The supervisor answers
+//! with [`KeepaliveAck`] on that reply port. Either side may fail the link: the
+//! worker fails if a keepalive is not acknowledged within `timeout`, and the
+//! supervisor fails if no newer keepalive is delivered within `timeout`.
+//!
+//! Keepalives carry monotonically increasing generation numbers. A generation
+//! identifies one worker-issued keepalive and the local timers derived from it.
+//! We use generations instead of canceling timers: if a later generation has
+//! already been observed, a delayed timer for an older generation is stale and
+//! is ignored. This relies on Hyperactor's in-order delivery guarantee for
+//! messages sent along a single actor-to-actor path. In particular, the
+//! supervisor observes keepalives from one worker in generation order, and each
+//! actor observes its own scheduled control messages in the order in which they
+//! become deliverable. The generation checks make late timers harmless, while
+//! ordered delivery preserves the meaning of "no newer generation arrived before
+//! this deadline."
+//!
+//! The worker uses two internal self messages. [`SendKeepalive`] advances the
+//! stream after `interval` if its generation is still current. [`AckDeadline`]
+//! checks after `timeout` whether the corresponding generation was acknowledged.
+//! The supervisor uses [`Deadline`] to check whether a newer generation arrived
+//! before its `timeout`.
 
 use std::time::Duration;
 
@@ -35,42 +57,85 @@ use typeuri::Named;
 
 use crate::LinkSpec;
 
-/// Keepalive link configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeepaliveLink {
-    interval: Duration,
-    timeout: Duration,
+/// Keepalive timing parameters.
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Named,
+    PartialEq,
+    Eq,
+    Bind,
+    Unbind
+)]
+pub struct KeepaliveParams {
+    /// Duration between keepalive messages sent by the worker side.
+    pub interval: Duration,
+    /// Maximum duration to wait for keepalive delivery and acknowledgment.
+    ///
+    /// The worker side waits this long for each acknowledgment, and the
+    /// supervisor side uses this as the maximum accepted gap between
+    /// keepalives.
+    pub timeout: Duration,
 }
+wirevalue::register_type!(KeepaliveParams);
 
-impl KeepaliveLink {
-    /// Create a keepalive link configuration.
+impl KeepaliveParams {
+    /// Create keepalive timing parameters.
+    ///
+    /// The worker sends keepalives every `interval`. Each keepalive must be
+    /// acknowledged within `timeout`, and the supervisor side also uses
+    /// `timeout` as the maximum accepted gap between keepalives.
     pub fn new(interval: Duration, timeout: Duration) -> Self {
         Self { interval, timeout }
     }
+}
+
+/// Keepalive link configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeepaliveLink(KeepaliveParams);
+
+impl KeepaliveLink {
+    /// Create a keepalive link configuration.
+    ///
+    /// The worker sends keepalives every `interval`. Each keepalive must be
+    /// acknowledged within `timeout`, and the supervisor side also uses
+    /// `timeout` as the maximum accepted gap between keepalives.
+    pub fn new(interval: Duration, timeout: Duration) -> Self {
+        Self(KeepaliveParams::new(interval, timeout))
+    }
+
+    /// Create a keepalive link configuration from timing parameters.
+    pub fn from_params(params: KeepaliveParams) -> Self {
+        Self(params)
+    }
 
     /// Spawn the supervisor side and return the worker-side link spec.
-    pub fn spawn<A: Actor>(
+    pub fn spawn_supervisor<A: Actor>(
         self,
         this: &Instance<A>,
     ) -> anyhow::Result<(ActorHandle<KeepaliveSupervisor>, LinkSpec)> {
-        self.spawn_uid(this, Uid::instance())
+        self.spawn_supervisor_uid(this, Uid::instance())
     }
 
-    /// Spawn the supervisor side and return the worker-side link spec with an explicit uid.
-    pub fn spawn_uid<A: Actor>(
+    /// Spawn the supervisor side and return the worker-side link spec,
+    /// used to instantiate the worker side of the link.
+    ///
+    /// The passed uid determines the uid of the worker side implementation
+    /// actor; it is specified by the supervisor to enable efficient group-style
+    /// supervision.
+    pub fn spawn_supervisor_uid<A: Actor>(
         self,
         this: &Instance<A>,
         uid: Uid,
     ) -> anyhow::Result<(ActorHandle<KeepaliveSupervisor>, LinkSpec)> {
+        let params = self.0;
         let supervisor = this.spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
-            self.timeout,
+            params.timeout,
         )))?;
-        let worker = KeepaliveWorkerParams::new(
-            supervisor.port::<Keepalive>().bind(),
-            self.interval,
-            self.timeout,
-        )
-        .link_spec_uid(uid)?;
+        let worker = KeepaliveWorkerParams::new(supervisor.port::<Keepalive>().bind(), params)
+            .link_spec_uid(uid)?;
         Ok((supervisor, worker))
     }
 }
@@ -91,29 +156,26 @@ pub struct KeepaliveWorkerParams {
     /// Supervisor-side keepalive handler port.
     #[binding(include)]
     pub supervisor: PortRef<Keepalive>,
-    /// Duration between keepalive sends.
-    pub interval: Duration,
-    /// Maximum duration to wait for each keepalive acknowledgment.
-    pub timeout: Duration,
+    /// Keepalive timing parameters.
+    pub keepalive: KeepaliveParams,
 }
 wirevalue::register_type!(KeepaliveWorkerParams);
 
 impl KeepaliveWorkerParams {
     /// Create keepalive worker parameters.
-    pub fn new(supervisor: PortRef<Keepalive>, interval: Duration, timeout: Duration) -> Self {
+    pub fn new(supervisor: PortRef<Keepalive>, keepalive: KeepaliveParams) -> Self {
         Self {
             supervisor,
-            interval,
-            timeout,
+            keepalive,
         }
     }
 
-    /// Create a link spec for a keepalive worker actor with a fresh uid.
+    /// Create a worker-side link spec for a keepalive worker actor with a fresh uid.
     pub fn link_spec(self) -> anyhow::Result<LinkSpec> {
         self.link_spec_uid(Uid::instance())
     }
 
-    /// Create a link spec for a keepalive worker actor with an explicit uid.
+    /// Create a worker-side link spec for a keepalive worker actor with an explicit uid.
     pub fn link_spec_uid(self, uid: Uid) -> anyhow::Result<LinkSpec> {
         let params = bincode::serde::encode_to_vec(self, bincode::config::legacy())?;
         Ok(LinkSpec::for_actor_uid::<KeepaliveWorker>(uid, params))
@@ -159,7 +221,7 @@ impl KeepaliveSupervisorParams {
     Unbind
 )]
 pub struct Keepalive {
-    /// Supervisor-owned keepalive generation.
+    /// Worker-issued keepalive generation.
     pub generation: u64,
     /// Reply port that receives the keepalive acknowledgment.
     #[binding(include)]
@@ -185,24 +247,36 @@ pub struct KeepaliveAck {
 }
 wirevalue::register_type!(KeepaliveAck);
 
+/// Supervisor-side deadline for receiving a newer keepalive.
+///
+/// `generation` is the supervisor's current generation when the deadline is
+/// scheduled. If the supervisor still has the same current generation when this
+/// message is handled, no newer keepalive arrived before the deadline, and the
+/// supervisor fails the link. If the current generation is larger, this message
+/// is stale.
 #[derive(Clone, Debug, Serialize, Deserialize, Named)]
 struct Deadline {
     generation: u64,
 }
 wirevalue::register_type!(Deadline);
 
+/// Worker-side timer for sending the next keepalive.
+///
+/// `generation` is the keepalive generation that scheduled this timer. The
+/// worker sends the next keepalive only if this generation is still current. If
+/// the worker has already advanced, this message is stale.
 #[derive(Clone, Debug, Serialize, Deserialize, Named)]
 struct SendKeepalive {
     generation: u64,
 }
 wirevalue::register_type!(SendKeepalive);
 
-#[derive(Clone, Debug, Serialize, Deserialize, Named)]
-struct AckReceived {
-    generation: u64,
-}
-wirevalue::register_type!(AckReceived);
-
+/// Worker-side deadline for receiving a keepalive acknowledgment.
+///
+/// `generation` is the keepalive generation that scheduled this deadline. If
+/// the worker has not recorded an acknowledgment for this generation, or any
+/// later generation, when the message is handled, the worker fails the link. If
+/// the acknowledged generation is equal or larger, this deadline is satisfied.
 #[derive(Clone, Debug, Serialize, Deserialize, Named)]
 struct AckDeadline {
     generation: u64,
@@ -210,6 +284,15 @@ struct AckDeadline {
 wirevalue::register_type!(AckDeadline);
 
 /// Worker-side keepalive link actor.
+///
+/// `KeepaliveWorker` owns the generation sequence and handles supervisor
+/// [`KeepaliveAck`] messages directly. On startup, the worker sends generation
+/// 1 and schedules [`SendKeepalive`] and [`AckDeadline`] for that generation.
+/// Each live [`SendKeepalive`] advances to the next generation, sends a new
+/// [`Keepalive`], and schedules the next pair of timers. Each [`KeepaliveAck`]
+/// records progress. Each [`AckDeadline`] proves that the matching generation
+/// failed to receive an acknowledgment before `timeout`, unless a same-or-newer
+/// acknowledgment has already been recorded.
 #[derive(Debug)]
 #[hyperactor::export]
 pub struct KeepaliveWorker {
@@ -234,8 +317,8 @@ impl RemoteSpawn for KeepaliveWorker {
     async fn new(params: KeepaliveWorkerParams, _environment: Flattrs) -> anyhow::Result<Self> {
         Ok(Self {
             supervisor: params.supervisor,
-            interval: params.interval,
-            timeout: params.timeout,
+            interval: params.keepalive.interval,
+            timeout: params.keepalive.timeout,
             generation: 0,
             acked_generation: 0,
         })
@@ -253,9 +336,9 @@ impl Handler<SendKeepalive> for KeepaliveWorker {
 }
 
 #[async_trait]
-impl Handler<AckReceived> for KeepaliveWorker {
-    async fn handle(&mut self, _cx: &Context<Self>, message: AckReceived) -> anyhow::Result<()> {
-        self.acked_generation = self.acked_generation.max(message.generation);
+impl Handler<KeepaliveAck> for KeepaliveWorker {
+    async fn handle(&mut self, _cx: &Context<Self>, ack: KeepaliveAck) -> anyhow::Result<()> {
+        self.acked_generation = self.acked_generation.max(ack.generation);
         Ok(())
     }
 }
@@ -274,26 +357,13 @@ impl KeepaliveWorker {
     fn send_keepalive(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         self.generation += 1;
         let generation = self.generation;
-        let (reply, ack_rx) = this.open_once_port::<KeepaliveAck>();
         self.supervisor.send(
             this,
             Keepalive {
                 generation,
-                reply: reply.bind(),
+                reply: this.port::<KeepaliveAck>().bind().into_once(),
             },
         )?;
-
-        let ack_port = this.port::<AckReceived>();
-        tokio::spawn(async move {
-            if let Ok(ack) = ack_rx.recv().await {
-                let _ = ack_port.send(
-                    Instance::<KeepaliveSupervisor>::self_client(),
-                    AckReceived {
-                        generation: ack.generation,
-                    },
-                );
-            }
-        });
 
         this.self_message_with_delay(SendKeepalive { generation }, self.interval)?;
         this.self_message_with_delay(AckDeadline { generation }, self.timeout)?;
@@ -302,6 +372,12 @@ impl KeepaliveWorker {
 }
 
 /// Supervisor-side keepalive link actor.
+///
+/// `KeepaliveSupervisor` records the maximum keepalive generation it has
+/// accepted and acknowledges every [`Keepalive`] with the same generation. Each
+/// accepted keepalive schedules a [`Deadline`] for the current generation. A
+/// deadline is active only while its generation remains current; if a newer
+/// keepalive has arrived, the deadline is stale.
 #[derive(Debug)]
 pub struct KeepaliveSupervisor {
     timeout: Duration,
@@ -332,8 +408,13 @@ impl Handler<Keepalive> for KeepaliveSupervisor {
 #[async_trait]
 impl Handler<Deadline> for KeepaliveSupervisor {
     async fn handle(&mut self, cx: &Context<Self>, message: Deadline) -> anyhow::Result<()> {
+        // A deadline is scheduled for the generation that was current at the
+        // time. Equality means no newer keepalive arrived before the deadline.
+        // A smaller deadline generation is stale. A larger deadline generation
+        // cannot be produced by this actor before it observes that generation.
         if message.generation == self.generation {
-            cx.kill("keepalive missed")?;
+            let reason = format!("keepalive missed for generation {}", message.generation);
+            cx.kill(&reason)?;
         }
         Ok(())
     }
@@ -389,7 +470,7 @@ mod tests {
         async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
             match self.spawn.take().unwrap() {
                 ParentSpawn::Link(link) => {
-                    link.spawn(this).await?;
+                    link.spawn_worker(this).await?;
                 }
                 ParentSpawn::Supervisor(supervisor) => {
                     this.spawn(supervisor)?;
@@ -472,7 +553,7 @@ mod tests {
         assert!(matches!(
             event.actor_status,
             ActorStatus::Failed(ActorErrorKind::Generic(ref reason))
-                if reason == "actor explicitly aborted due to: keepalive missed"
+                if reason == "actor explicitly aborted due to: keepalive missed for generation 0"
         ));
         assert!(!event.actor_id.is_root());
 
@@ -491,12 +572,11 @@ mod tests {
             .unwrap();
         let worker = KeepaliveWorkerParams::new(
             supervisor.port::<Keepalive>().bind(),
-            Duration::from_millis(5),
-            Duration::from_millis(50),
+            KeepaliveParams::new(Duration::from_millis(5), Duration::from_millis(50)),
         )
         .link_spec()
         .unwrap()
-        .spawn(&parent)
+        .spawn_worker(&parent)
         .await
         .unwrap()
         .downcast::<KeepaliveWorker>()
@@ -522,8 +602,7 @@ mod tests {
         let uid = Uid::instance();
         let link = KeepaliveWorkerParams::new(
             supervisor.port::<Keepalive>().bind(),
-            Duration::from_millis(100),
-            Duration::from_millis(10),
+            KeepaliveParams::new(Duration::from_millis(100), Duration::from_millis(10)),
         )
         .link_spec_uid(uid.clone())
         .unwrap();
@@ -559,10 +638,10 @@ mod tests {
 
         let (supervisor, worker_link) =
             KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
-                .spawn(&parent)
+                .spawn_supervisor(&parent)
                 .unwrap();
         let worker_uid = worker_link.uid().clone();
-        let remote_worker = worker_link.spawn(&parent).await.unwrap();
+        let remote_worker = worker_link.spawn_worker(&parent).await.unwrap();
 
         assert_eq!(remote_worker.actor_id().uid(), &worker_uid);
 
