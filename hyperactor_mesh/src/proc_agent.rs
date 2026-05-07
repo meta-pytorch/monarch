@@ -46,6 +46,7 @@ use typeuri::Named;
 
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
+use crate::introspect::ProcessMemoryStats;
 use crate::mesh_id::ResourceId;
 use crate::pyspy::PySpyDump;
 use crate::pyspy::PySpyProfile;
@@ -64,6 +65,20 @@ declare_attrs! {
     ))
     pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(60);
 
+    /// Interval at which each ProcAgent republishes introspection
+    /// on a periodic timer and emits the
+    /// `process.memory.rss_bytes` / `process.memory.vm_bytes`
+    /// Scuba/OTLP gauges. Linux only — has no effect on other
+    /// platforms. `Duration::ZERO` disables the periodic timer
+    /// (gauges then never fire); non-periodic republishes (boot,
+    /// post-spawn, supervision-event coalesce) still publish
+    /// introspect attrs but do not emit gauges.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_PROCESS_MEMORY_METRIC_INTERVAL".to_string()),
+        Some("process_memory_metric_interval".to_string()),
+    ))
+    pub attr PROCESS_MEMORY_METRIC_INTERVAL: Duration = Duration::from_secs(300);
+
     /// Header tag for StreamState subscriber messages. When present on an
     /// undeliverable envelope, ProcAgent removes the dead subscriber instead
     /// of treating it as an error.
@@ -72,19 +87,27 @@ declare_attrs! {
 
 /// Deferred republish of introspect properties.
 ///
-/// Sent as a zero-delay self-message from the supervision event
-/// handler so it returns immediately without blocking the ProcAgent
-/// message loop. Multiple rapid supervision events (e.g., 4 actors
-/// failing simultaneously via broadcast) coalesce into a single
-/// republish via the `introspect_dirty` flag.
+/// Carries an `emit_memory_metrics` flag distinguishing two senders:
 ///
-/// Without this, calling `publish_introspect_properties` inline in
-/// the supervision handler starves `GetRankStatus` polls from the
-/// `ActorMeshController`, preventing `__supervise__` from firing
-/// within the test timeout. See D94960791 for the root cause
-/// analysis.
+/// - `emit_memory_metrics: false` — sent from the supervision event
+///   handler with a delay so the supervision handler returns
+///   immediately without blocking the ProcAgent message loop.
+///   Multiple rapid supervision events (e.g., 4 actors failing
+///   simultaneously via broadcast) coalesce into a single republish
+///   via the `introspect_dirty` flag. Without this, calling
+///   `publish_introspect_properties` inline in the supervision
+///   handler starves `GetRankStatus` polls from the
+///   `ActorMeshController`, preventing `__supervise__` from firing
+///   within the test timeout. See D94960791 for the root cause
+///   analysis.
+///
+/// - `emit_memory_metrics: true` — sent from `Actor::init` and
+///   re-armed by the handler at the `PROCESS_MEMORY_METRIC_INTERVAL`
+///   cadence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-struct RepublishIntrospect;
+struct RepublishIntrospect {
+    emit_memory_metrics: bool,
+}
 wirevalue::register_type!(RepublishIntrospect);
 
 /// Collect live actor children and system actor children from the
@@ -382,7 +405,10 @@ impl ProcAgent {
 
     /// Publish the current proc properties and children list for
     /// introspection. See S12 in `introspect` module doc.
-    fn publish_introspect_properties(&self, cx: &impl hyperactor::context::Actor) {
+    fn publish_introspect_properties(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+    ) -> ProcessMemoryStats {
         let (mut children, mut system_children) = collect_live_children(&self.proc);
 
         // Terminated actors appear as children but don't inflate
@@ -473,6 +499,8 @@ impl ProcAgent {
         );
 
         cx.instance().publish_attrs(attrs);
+
+        memory
     }
 }
 
@@ -481,7 +509,7 @@ impl Actor for ProcAgent {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
         self.proc.set_supervision_coordinator(this.port())?;
-        self.publish_introspect_properties(this);
+        let _ = self.publish_introspect_properties(this);
 
         // Resolve terminated actor snapshots via QueryChild so that
         // dead actors remain directly queryable by reference.
@@ -631,6 +659,17 @@ impl Actor for ProcAgent {
         if let Some(delay) = &self.mesh_orphan_timeout {
             this.self_message_with_delay(SelfCheck::default(), *delay)?;
         }
+        if cfg!(target_os = "linux") {
+            let interval = hyperactor_config::global::get(PROCESS_MEMORY_METRIC_INTERVAL);
+            if !interval.is_zero() {
+                this.self_message_with_delay(
+                    RepublishIntrospect {
+                        emit_memory_metrics: true,
+                    },
+                    interval,
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -694,7 +733,9 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
             if !self.introspect_dirty {
                 self.introspect_dirty = true;
                 let _ = cx.self_message_with_delay(
-                    RepublishIntrospect,
+                    RepublishIntrospect {
+                        emit_memory_metrics: false,
+                    },
                     std::time::Duration::from_millis(100),
                 );
             }
@@ -725,10 +766,39 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
 
 #[async_trait]
 impl Handler<RepublishIntrospect> for ProcAgent {
-    async fn handle(&mut self, cx: &Context<Self>, _: RepublishIntrospect) -> anyhow::Result<()> {
-        if self.introspect_dirty {
-            self.introspect_dirty = false;
-            self.publish_introspect_properties(cx);
+    async fn handle(&mut self, cx: &Context<Self>, msg: RepublishIntrospect) -> anyhow::Result<()> {
+        self.introspect_dirty = false;
+        let memory = self.publish_introspect_properties(cx);
+        if msg.emit_memory_metrics {
+            let proc_id = self.proc.proc_addr().to_string();
+            let pid = std::process::id() as i64;
+            if let Some(rss) = memory.process_rss_bytes {
+                crate::metrics::PROCESS_RSS_BYTES.record(
+                    rss as f64,
+                    hyperactor_telemetry::kv_pairs!(
+                        "proc_id" => proc_id.clone(),
+                        "pid" => pid,
+                    ),
+                );
+            }
+            if let Some(vm) = memory.process_vm_size_bytes {
+                crate::metrics::PROCESS_VM_SIZE_BYTES.record(
+                    vm as f64,
+                    hyperactor_telemetry::kv_pairs!(
+                        "proc_id" => proc_id,
+                        "pid" => pid,
+                    ),
+                );
+            }
+            let interval = hyperactor_config::global::get(PROCESS_MEMORY_METRIC_INTERVAL);
+            if !interval.is_zero() {
+                cx.self_message_with_delay(
+                    RepublishIntrospect {
+                        emit_memory_metrics: true,
+                    },
+                    interval,
+                )?;
+            }
         }
         Ok(())
     }
@@ -856,7 +926,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
             },
         );
 
-        self.publish_introspect_properties(cx);
+        let _ = self.publish_introspect_properties(cx);
         Ok(())
     }
 }
