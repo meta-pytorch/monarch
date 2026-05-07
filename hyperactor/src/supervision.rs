@@ -88,7 +88,7 @@ impl ActorSupervisionEvent {
     fn actor_name(&self) -> String {
         self.display_name.clone().unwrap_or_else(|| {
             if self.actor_id.is_root() {
-                format!("{},{}", self.actor_id.proc_ref(), self.actor_id.log_name())
+                format!("{},{}", self.actor_id.proc_addr(), self.actor_id.log_name())
             } else {
                 self.actor_id.to_string()
             }
@@ -219,7 +219,7 @@ impl fmt::Display for ActorSupervisionEvent {
                     .label()
                     .is_some_and(|l| l.as_str() == "host_agent" || l.as_str() == "proc_agent") =>
             {
-                let addr = self.actor_id.proc_ref().addr().to_string();
+                let addr = self.actor_id.proc_addr().addr().to_string();
                 write!(
                     f,
                     "Supervision event: the process {} owned by actor {} became unresponsive \
@@ -245,9 +245,9 @@ mod tests {
     use crate::channel::ChannelAddr;
 
     fn test_event(name: &str, status: ActorStatus) -> ActorSupervisionEvent {
-        let proc_id = ProcAddr::from_resource_name(ChannelAddr::Local(0), "test_proc");
+        let proc_id = ProcAddr::named(ChannelAddr::Local(0), "test_proc");
         ActorSupervisionEvent::new(
-            proc_id.actor_ref(name),
+            proc_id.actor_addr(name),
             Some(name.to_string()),
             status,
             None,
@@ -259,8 +259,8 @@ mod tests {
         addr: ChannelAddr,
         status: ActorStatus,
     ) -> ActorSupervisionEvent {
-        let proc_id = ProcAddr::from_resource_name(addr, "test_proc");
-        ActorSupervisionEvent::new(proc_id.actor_ref(name), None, status, None)
+        let proc_id = ProcAddr::named(addr, "test_proc");
+        ActorSupervisionEvent::new(proc_id.actor_addr(name), None, status, None)
     }
 
     fn generic(name: &str, msg: &str) -> ActorSupervisionEvent {
@@ -573,9 +573,9 @@ mod tests {
     /// root cause for structured failure attribution.
     #[test]
     fn test_sv1_actually_failing_actor_returns_stopped_child() {
-        let proc_id = ProcAddr::from_resource_name(ChannelAddr::Local(0), "test_proc");
-        let child_id = proc_id.actor_id("proc_agent");
-        let parent_id = proc_id.actor_id("controller");
+        let proc_id = ProcAddr::named(ChannelAddr::Local(0), "test_proc");
+        let child_id = proc_id.actor_addr("proc_agent");
+        let parent_id = proc_id.actor_addr("controller");
 
         let child_event = ActorSupervisionEvent::new(
             child_id.clone(),
