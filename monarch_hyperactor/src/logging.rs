@@ -613,7 +613,7 @@ mod tests {
         .expect("failed to bootstrap HostMesh");
 
         let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity(), None)
+            .spawn(&instance, "p0", Extent::unity(), None, None)
             .await
             .expect("failed to spawn ProcMesh");
 
@@ -636,8 +636,8 @@ mod tests {
             "should spawn exactly one proc"
         );
         assert_eq!(
-            instance.self_id().proc_ref(),
-            proc.proc_id().clone(),
+            instance.self_addr().proc_addr(),
+            proc.proc_addr().clone(),
             "returned Instance<()> should be bound to the root Proc"
         );
 
