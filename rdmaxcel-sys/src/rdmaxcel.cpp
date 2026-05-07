@@ -336,7 +336,8 @@ int compact_mrs(struct ibv_pd* pd, SegmentInfo& seg, int access_flags) {
 int register_segments(
     struct ibv_pd** pds,
     rdmaxcel_qp_t** qps,
-    int num_devices) {
+    int num_devices,
+    int32_t max_sge_override) {
   if (!pds || !qps || num_devices <= 0) {
     return RDMAXCEL_INVALID_PARAMS;
   }
@@ -378,7 +379,13 @@ int register_segments(
       if (ibv_query_device(pd->context, &dev_attr)) {
         return RDMAXCEL_QUERY_DEVICE_FAILED;
       }
-      max_sge = dev_attr.max_sge;
+      // Test-only override (see header).
+      if (max_sge_override > 0 &&
+          static_cast<uint32_t>(max_sge_override) < dev_attr.max_sge) {
+        max_sge = static_cast<uint32_t>(max_sge_override);
+      } else {
+        max_sge = dev_attr.max_sge;
+      }
       max_sge_cache[static_cast<void*>(pd)] = max_sge;
     }
 

@@ -154,7 +154,7 @@ impl<A: Referable> ActorMesh<A> {
                     },
                 )
                 .map_err(|e| {
-                    crate::Error::SendingError(controller.actor_id().clone(), Box::new(e))
+                    crate::Error::SendingError(controller.actor_addr().clone(), Box::new(e))
                 })?;
             let region = ndslice::view::Ranked::region(&self.current_ref);
             let num_ranks = region.num_ranks();
@@ -170,7 +170,7 @@ impl<A: Referable> ActorMesh<A> {
                     },
                 )
                 .map_err(|e| {
-                    crate::Error::SendingError(controller.actor_id().clone(), Box::new(e))
+                    crate::Error::SendingError(controller.actor_addr().clone(), Box::new(e))
                 })?;
 
             let statuses = rx.recv().await?;
@@ -193,7 +193,7 @@ impl<A: Referable> ActorMesh<A> {
             } else {
                 Err(Error::Other(anyhow::anyhow!(
                     "non-existent state in GetState reply from controller: {}",
-                    controller.actor_id()
+                    controller.actor_addr()
                 )))
             }?;
             // Update health state with the new statuses.
@@ -205,7 +205,7 @@ impl<A: Referable> ActorMesh<A> {
                     // Use an actor id from the mesh.
                     ndslice::view::Ranked::get(&self.current_ref, 0)
                         .unwrap()
-                        .actor_id()
+                        .actor_addr()
                         .clone(),
                     None,
                     ActorStatus::Stopped("mesh stopped".to_string()),
@@ -510,7 +510,7 @@ impl<A: Referable> ActorMeshRef<A> {
 
         hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
             timestamp: std::time::SystemTime::now(),
-            sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_id()),
+            sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr()),
             actor_mesh_id: hyperactor_telemetry::hash_to_u64(&self.id.to_string()),
             view_json: serde_json::to_string(view::Ranked::region(self)).unwrap_or_default(),
             shape_json: {
@@ -550,7 +550,7 @@ impl<A: Referable> ActorMeshRef<A> {
             multicast::set_cast_info_on_headers(
                 &mut headers,
                 point,
-                cx.instance().self_id().clone().into(),
+                cx.instance().self_addr().clone().into(),
             );
 
             // Make sure that we re-bind ranks, as these may be used for
@@ -568,7 +568,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 .map_err(|e| Error::CastingError(self.id.clone(), e))?;
             actor
                 .send_with_headers(cx, headers, rebound_message)
-                .map_err(|e| Error::SendingError(actor.actor_id().clone(), Box::new(e)))?;
+                .map_err(|e| Error::SendingError(actor.actor_addr().clone(), Box::new(e)))?;
         }
         Ok(())
     }
@@ -632,14 +632,14 @@ impl<A: Referable> ActorMeshRef<A> {
             "message_variant" => message.arm().unwrap_or_default(),
         ));
 
-        let actor_ids: ValueMesh<_> = self.proc_mesh.map_into(|proc| proc.actor_id(&self.id));
+        let actor_ids: ValueMesh<_> = self.proc_mesh.map_into(|proc| proc.actor_addr(&self.id));
         // This block is infallible so is okay to assign the sequence numbers
         // without worrying about rollback.
         {
             let sequencer = cx.instance().sequencer();
             let seqs = actor_ids.map_into(|actor_id| {
                 let hyperactor::ordering::SeqInfo::Session { seq, .. } = sequencer
-                    .assign_seq(&actor_id.port_ref(Port::from(<M as typeuri::Named>::port())))
+                    .assign_seq(&actor_id.port_addr(Port::from(<M as typeuri::Named>::port())))
                 else {
                     unreachable!("assign_seq always returns SeqInfo::Session")
                 };
@@ -649,14 +649,14 @@ impl<A: Referable> ActorMeshRef<A> {
             let mut headers = caller_headers.clone();
             headers.set(
                 multicast::CAST_ORIGINATING_SENDER,
-                cx.instance().self_id().clone().into(),
+                cx.instance().self_addr().clone().into(),
             );
             // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
             // v0 transition. Should be removed once supervision is migrated
             // and ActorMeshId is deleted.
             headers.set(casting::CAST_ACTOR_MESH_ID, self.id.clone());
             let cast_message = CastMessageV1::new::<A, M>(
-                cx.instance().self_id().clone().into(),
+                cx.instance().self_addr().clone().into(),
                 &self.id,
                 view::Ranked::region(self).clone(),
                 headers.clone(),
@@ -896,11 +896,11 @@ impl<A: Referable> ActorMeshRef<A> {
                     Ok(MeshFailure {
                         actor_mesh_name: Some(self.id().to_string()),
                         event: ActorSupervisionEvent::new(
-                            controller.actor_id().clone(),
+                            controller.actor_addr().clone(),
                             None,
                             ActorStatus::generic_failure(format!(
                                 "timed out reaching controller {} for mesh {}. Assuming controller's proc is dead",
-                                controller.actor_id(),
+                                controller.actor_addr(),
                                 self.id()
                             )),
                             None,
@@ -1101,7 +1101,7 @@ mod tests {
         // cross a boundary
         let mut hm = testing::host_mesh(3).await;
         let pm: ProcMesh = hm
-            .spawn(instance, "test", extent!(gpus = 2), None)
+            .spawn(instance, "test", extent!(gpus = 2), None, None)
             .await
             .unwrap();
         let am: ActorMesh<testactor::TestActor> = pm.spawn(instance, "test", &()).await.unwrap();
@@ -1136,8 +1136,8 @@ mod tests {
 
         // 6) Clone should drop the cache but keep identity (actor_id)
         let amr_clone = amr.clone();
-        let orig_id_0 = amr.get(0).unwrap().actor_id().clone();
-        let clone_id_0 = amr_clone.get(0).unwrap().actor_id().clone();
+        let orig_id_0 = amr.get(0).unwrap().actor_addr().clone();
+        let clone_id_0 = amr_clone.get(0).unwrap().actor_addr().clone();
         assert_eq!(orig_id_0, clone_id_0, "clone preserves identity");
         let p0_clone = amr_clone.get(0).unwrap() as *const _;
         assert_ne!(
@@ -1203,7 +1203,7 @@ mod tests {
         let num_replicas = 4;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let child_name = ActorMeshId::unique(Label::new("child").unwrap());
@@ -1304,12 +1304,12 @@ mod tests {
         let num_replicas = 4;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let mut second_hm = testing::host_mesh(num_replicas).await;
         let second_proc_mesh = second_hm
-            .spawn(instance, "test2", Extent::unity(), None)
+            .spawn(instance, "test2", Extent::unity(), None, None)
             .await
             .unwrap();
         let child_name = ActorMeshId::unique(Label::new("child").unwrap());
@@ -1400,7 +1400,7 @@ mod tests {
         let num_replicas = 4;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let child_name = ActorMeshId::unique(Label::new("child").unwrap());
@@ -1466,7 +1466,7 @@ mod tests {
         let instance = testing::instance();
         let mut host_mesh = testing::host_mesh(4).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let actor_mesh: ActorMesh<testactor::TestActor> =
@@ -1491,7 +1491,7 @@ mod tests {
                 "key {:?} not present or removed twice",
                 key
             );
-            assert_eq!(&sender_actor_id, instance.self_id());
+            assert_eq!(&sender_actor_id, instance.self_addr());
         }
 
         let _ = host_mesh.shutdown(instance).await;
@@ -1512,7 +1512,7 @@ mod tests {
         let instance = testing::instance();
         let mut host_mesh = testing::host_mesh(4).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let actor_mesh: ActorMesh<testactor::TestActor> =
@@ -1579,7 +1579,7 @@ mod tests {
         // Create a proc mesh with 2 hosts.
         let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
 
@@ -1704,7 +1704,7 @@ mod tests {
         // Create proc mesh with 2 procs
         let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
 
@@ -1790,7 +1790,7 @@ mod tests {
         // Create proc mesh with 2 procs
         let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
 
