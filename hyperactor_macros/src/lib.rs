@@ -715,7 +715,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                 let log_message = quote! {
                         hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
-                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_id().to_string(),
+                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_addr().to_string(),
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
@@ -777,7 +777,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                 let log_message = quote! {
                         hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
-                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_id().to_string(),
+                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_addr().to_string(),
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
@@ -931,7 +931,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                 let log_message = quote! {
                         hyperactor::metrics::ACTOR_MESSAGES_SENT.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
-                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_id().to_string(),
+                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_addr().to_string(),
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
@@ -1027,7 +1027,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                 let log_message = quote! {
                     hyperactor::metrics::ACTOR_MESSAGES_SENT.add(1, hyperactor::kv_pairs!(
                         "rpc" => "oneway",
-                        "actor_id" => self.actor_id().to_string(),
+                        "actor_id" => self.actor_addr().to_string(),
                         "message_type" => stringify!(#enum_name),
                         "variant" => stringify!(#variant_name_snake),
                     ));
