@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hyperactor as reference;
+use hyperactor::ActorRef;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -32,10 +32,10 @@ use crate::RdmaTransportLevel;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RdmaRemoteBackendContext {
     Ibverbs(
-        reference::ActorRef<ibverbs::manager_actor::IbvManagerActor>,
+        ActorRef<ibverbs::manager_actor::IbvManagerActor>,
         ibverbs::IbvBuffer,
     ),
-    Tcp(reference::ActorRef<tcp::manager_actor::TcpManagerActor>),
+    Tcp(ActorRef<tcp::manager_actor::TcpManagerActor>),
 }
 
 /// Backend for executing RDMA operations over a specific transport.
