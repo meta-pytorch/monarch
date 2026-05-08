@@ -50,15 +50,23 @@ def _check(*cmd: str) -> bool:
     )
 
 
-# --mount-proc remaps /proc to only show processes inside the PID namespace.
-# Some container environments block the mount syscall even inside a user
-# namespace, so we also check --pid --fork alone as a fallback.
-_unshare_mount_proc_available: bool = _check(
-    "unshare", "--user", "--pid", "--fork", "--mount-proc", "true"
-)
-_unshare_pid_available: bool = _unshare_mount_proc_available or _check(
-    "unshare", "--user", "--pid", "--fork", "true"
-)
+# Prefer unshare without --user (works when running as root, avoids device
+# access restrictions that break torch.cuda.is_available() in the worker).
+# Fall back to --user variants for unprivileged environments.
+# _unshare_prefix is the command prefix to use, or [] if unavailable.
+if _check("unshare", "--pid", "--fork", "--mount-proc", "true"):
+    _unshare_prefix = ["unshare", "--pid", "--fork", "--mount-proc"]
+elif _check("unshare", "--user", "--pid", "--fork", "--mount-proc", "true"):
+    _unshare_prefix = ["unshare", "--user", "--pid", "--fork", "--mount-proc"]
+elif _check("unshare", "--pid", "--fork", "true"):
+    _unshare_prefix = ["unshare", "--pid", "--fork"]
+elif _check("unshare", "--user", "--pid", "--fork", "true"):
+    _unshare_prefix = ["unshare", "--user", "--pid", "--fork"]
+else:
+    _unshare_prefix: list[str] = []
+
+_unshare_mount_proc_available: bool = "--mount-proc" in _unshare_prefix
+_unshare_pid_available: bool = len(_unshare_prefix) > 0
 
 
 def _pids_in_my_namespace() -> set[int]:
@@ -384,16 +392,13 @@ class CrashRecoveryPlugin:
         self._rf = open(ctrl_r, "rb")
         self._wf = open(ctrl_w, "wb")
         if _unshare_mount_proc_available:
-            unshare_prefix = ["unshare", "--user", "--pid", "--fork", "--mount-proc"]
             mode = "pid-namespace+mount-proc (full isolation + proc counting)"
         elif _unshare_pid_available:
-            unshare_prefix = ["unshare", "--user", "--pid", "--fork"]
             mode = "pid-namespace (isolation + proc counting via ns/pid filter)"
         else:
-            unshare_prefix = []
             mode = "no namespace (crash/timeout recovery only)"
         print(f"[crash-recovery] worker mode: {mode}", file=sys.stderr, flush=True)
-        cmd = unshare_prefix + [sys.executable, __file__, str(worker_r), str(worker_w)]
+        cmd = _unshare_prefix + [sys.executable, __file__, str(worker_r), str(worker_w)]
         self._worker = subprocess.Popen(cmd, pass_fds=(worker_r, worker_w))
         os.close(worker_r)
         os.close(worker_w)
