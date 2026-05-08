@@ -239,11 +239,6 @@ impl DestinationPort {
     pub fn actor_uid(&self) -> &Uid {
         &self.actor_uid
     }
-
-    /// Get the display name of the destination actor uid.
-    pub fn actor_name(&self) -> String {
-        self.actor_uid.to_string()
-    }
 }
 
 /// The is used to start casting a message to a group of actors.
