@@ -779,7 +779,7 @@ impl PythonActor {
                                 need_drain = matches!(signal, Signal::DrainAndStop(_));
                                 break None;
                             },
-                            Ok(Signal::ExitRequested(_)) => {}
+                            Ok(Signal::ExitRequested(_)) => break None,
                             Ok(Signal::ChildStopped(_)) => {},
                             Ok(Signal::Kill(reason)) => {
                                 break Some(ActorError { actor_id: Box::new(instance.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
