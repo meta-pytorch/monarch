@@ -23,9 +23,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use bytes::BytesMut;
 use dashmap::DashMap;
-use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
@@ -364,8 +364,7 @@ impl TcpManagerActor {
         client: &(impl context::Actor + Send + Sync),
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let rdma_handle = RdmaManagerActor::local_handle(client);
-        let tcp_ref: reference::ActorRef<TcpManagerActor> =
-            rdma_handle.get_tcp_actor_ref(client).await?;
+        let tcp_ref: ActorRef<TcpManagerActor> = rdma_handle.get_tcp_actor_ref(client).await?;
         tcp_ref
             .downcast_handle(client)
             .ok_or_else(|| anyhow::anyhow!("TcpManagerActor is not in the local process"))
@@ -1578,7 +1577,7 @@ mod tests {
                     .ok_or_else(|| anyhow::anyhow!("tcp actor not local"))?,
             );
 
-            let alloc = CudaAllocator::get().allocate(device, buffer_size);
+            let alloc = CudaAllocator::get().allocate(device, buffer_size, buffer_size);
             let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
                 alloc.ptr(),
                 buffer_size,

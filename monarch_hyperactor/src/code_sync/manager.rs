@@ -615,7 +615,13 @@ mod tests {
         // Set up actor mesh with CodeSyncManager actors
         let mut host_mesh = test_utils::local_host_mesh(2).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "code_sync_test", ndslice::Extent::unity(), None)
+            .spawn(
+                instance,
+                "code_sync_test",
+                ndslice::Extent::unity(),
+                None,
+                None,
+            )
             .await
             .unwrap();
 

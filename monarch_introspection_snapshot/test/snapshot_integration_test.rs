@@ -137,7 +137,7 @@ async fn test_snapshot_sql_queries() -> Result<()> {
 
     // Step 2: Spawn two worker procs, each with one test actor.
     let proc_mesh = host_mesh
-        .spawn(&instance, "worker", extent!(replica = 2), None)
+        .spawn(&instance, "worker", extent!(replica = 2), None, None)
         .await?;
     let actor_mesh = proc_mesh
         .spawn::<SnapshotTestActor, _>(&instance, "test_actor", &())

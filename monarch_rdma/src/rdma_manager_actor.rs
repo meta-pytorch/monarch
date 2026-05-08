@@ -27,14 +27,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
+use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
@@ -42,11 +43,11 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::OnceCell;
 use typeuri::Named;
 
 use crate::backend::RdmaRemoteBackendContext;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
+use crate::backend::ibverbs::manager_actor::IbvManagerLocalMessageClient;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
@@ -100,7 +101,7 @@ wirevalue::register_type!(ReleaseBuffer);
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct GetIbvActorRef {
     #[reply]
-    pub reply: reference::OncePortRef<Option<reference::ActorRef<IbvManagerActor>>>,
+    pub reply: OncePortRef<Option<ActorRef<IbvManagerActor>>>,
 }
 wirevalue::register_type!(GetIbvActorRef);
 
@@ -109,7 +110,7 @@ wirevalue::register_type!(GetIbvActorRef);
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct GetTcpActorRef {
     #[reply]
-    pub reply: reference::OncePortRef<reference::ActorRef<TcpManagerActor>>,
+    pub reply: OncePortRef<ActorRef<TcpManagerActor>>,
 }
 wirevalue::register_type!(GetTcpActorRef);
 
@@ -162,7 +163,7 @@ impl RdmaManagerActor {
     /// Construct an [`ActorHandle`] for the [`RdmaManagerActor`] co-located
     /// with the caller.
     pub fn local_handle(client: &impl context::Actor) -> ActorHandle<Self> {
-        let actor_ref = reference::ActorRef::attest(
+        let actor_ref = ActorRef::attest(
             client
                 .mailbox()
                 .actor_addr()
@@ -249,7 +250,7 @@ impl GetIbvActorRefHandler for RdmaManagerActor {
     async fn get_ibv_actor_ref(
         &mut self,
         _cx: &Context<Self>,
-    ) -> Result<Option<reference::ActorRef<IbvManagerActor>>, anyhow::Error> {
+    ) -> Result<Option<ActorRef<IbvManagerActor>>, anyhow::Error> {
         Ok(self.ibverbs.as_ref().map(|ibv| ibv.handle().bind()))
     }
 }
@@ -260,7 +261,7 @@ impl GetTcpActorRefHandler for RdmaManagerActor {
     async fn get_tcp_actor_ref(
         &mut self,
         _cx: &Context<Self>,
-    ) -> Result<reference::ActorRef<TcpManagerActor>, anyhow::Error> {
+    ) -> Result<ActorRef<TcpManagerActor>, anyhow::Error> {
         Ok(self.tcp.handle().bind())
     }
 }
@@ -289,16 +290,21 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         self.next_remote_buf_id += 1;
         let size = local.size();
 
-        self.buffers.insert(remote_buf_id, local);
-
         let mut backends = Vec::new();
 
         if let Some(ibv) = &self.ibverbs {
+            let ibv_buffer = ibv
+                .handle()
+                .register_remote_buffer(cx, remote_buf_id, local.clone())
+                .await?
+                .map_err(|e| anyhow::anyhow!(e))?;
             backends.push(RdmaRemoteBackendContext::Ibverbs(
                 ibv.handle().bind(),
-                Arc::new(OnceCell::new()),
+                ibv_buffer,
             ));
         }
+
+        self.buffers.insert(remote_buf_id, local);
 
         backends.push(RdmaRemoteBackendContext::Tcp(self.tcp.handle().bind()));
 

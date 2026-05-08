@@ -1,0 +1,97 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+# Base manifests for Python-native MonarchMesh provisioning.
+#
+# The Python script creates MonarchMesh CRDs via the K8s API using --provision.
+# No worker pod YAML manifests are needed.
+#
+# This base is consumed by GPU-vendor-specific overlays (amd/, nvidia/),
+# which patch the controller Pod with the appropriate node affinity,
+# toleration, and container image.
+#
+# Prerequisites:
+# - Kubernetes cluster with Monarch operator installed
+# - GPU nodes with amd.com/gpu or nvidia.com/gpu resources available
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monarch-tests
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monarch-controller
+  namespace: monarch-tests
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: monarch-controller
+  namespace: monarch-tests
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["monarch.pytorch.org"]
+    resources: ["monarchmeshes"]
+    verbs: ["create", "get", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: monarch-controller
+  namespace: monarch-tests
+subjects:
+  - kind: ServiceAccount
+    name: monarch-controller
+    namespace: monarch-tests
+roleRef:
+  kind: Role
+  name: monarch-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: monarch-controller
+  namespace: monarch-tests
+spec:
+  # affinity, tolerations, and containers[0].image are supplied by overlays.
+  containers:
+    - name: controller
+      command: ["sleep"]
+      args: ["infinity"]
+      volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+  volumes:
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi
+  serviceAccountName: monarch-controller
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monarch-client
+  namespace: monarch-tests
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: monarch-client-binding
+  namespace: monarch-tests
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: monarch-client-role
+subjects:
+  - kind: ServiceAccount
+    name: monarch-client
+    namespace: monarch-tests

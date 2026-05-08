@@ -1795,7 +1795,7 @@ mod tests {
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
         };
         let port_ref = hyperactor::PortRef::<PythonMessage>::attest_reducible(
-            test_port_id("world_0", "client", 123).into(),
+            test_port_id("world_0", "client", 123),
             Some(reducer_spec),
             StreamingReducerOpts::default(),
         );
