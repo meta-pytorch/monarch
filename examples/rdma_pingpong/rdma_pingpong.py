@@ -102,6 +102,8 @@ def main(
     hpc_job_oncall: str = "monarch",
     hpc_cluster_uuid: str = "MastGenAICluster",
     rm_attribution: str = "msl_infra_pytorch_dev",
+    k8s_namespace: str = "monarch-tests",
+    k8s_image: str = "ghcr.io/meta-pytorch/monarch:latest",
     buffer_type: str = "tensor",
 ):
     """RDMA Pingpong: transfer data between two nodes via RDMABuffer."""
@@ -130,6 +132,65 @@ def main(
             default_transport=ChannelTransport.MetaTlsWithIpV6,
         )
         job.add_mesh("workers", 2)
+    elif backend == "k8s":
+        from kubernetes.client import (
+            V1Affinity,
+            V1Container,
+            V1EnvVar,
+            V1LabelSelector,
+            V1LabelSelectorRequirement,
+            V1PodAffinityTerm,
+            V1PodAntiAffinity,
+            V1PodSpec,
+            V1ResourceRequirements,
+        )
+        from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
+        from monarch.job.kubernetes import KubernetesJob
+
+        # Hard anti-affinity on the operator's per-mesh label forces the two
+        # replicas onto distinct nodes, so RDMA pingpong actually exercises
+        # the cross-host fabric instead of a same-HCA loopback path.
+        #
+        # NOTE: requesting "rdma/ib": 1 only guarantees each pod gets an IB
+        # device; it does NOT guarantee the two pods can reach each other
+        # over IB. On clusters with multiple isolated IB fabrics, add a
+        # required pod_affinity term keyed on your provider's fabric label
+        # so the two replicas land on the same fabric. Without it, the example will fail.
+        worker_resources = {"nvidia.com/gpu": "1", "rdma/ib": "1"}
+        pod_spec = V1PodSpec(
+            affinity=V1Affinity(
+                pod_anti_affinity=V1PodAntiAffinity(
+                    required_during_scheduling_ignored_during_execution=[
+                        V1PodAffinityTerm(
+                            topology_key="kubernetes.io/hostname",
+                            label_selector=V1LabelSelector(
+                                match_expressions=[
+                                    V1LabelSelectorRequirement(
+                                        key="monarch.pytorch.org/mesh-name",
+                                        operator="In",
+                                        values=["workers"],
+                                    ),
+                                ],
+                            ),
+                        ),
+                    ],
+                ),
+            ),
+            containers=[
+                V1Container(
+                    name="worker",
+                    image=k8s_image,
+                    command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
+                    env=[V1EnvVar(name="MONARCH_PORT", value="26600")],
+                    resources=V1ResourceRequirements(
+                        requests=worker_resources,
+                        limits=worker_resources,
+                    ),
+                ),
+            ],
+        )
+        job = KubernetesJob(namespace=k8s_namespace)
+        job.add_mesh("workers", num_replicas=2, pod_spec=pod_spec)
     else:
         from monarch.job import SlurmJob
 
