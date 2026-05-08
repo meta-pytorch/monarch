@@ -29,14 +29,16 @@ use backoff::ExponentialBackoff;
 use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
 use futures::lock::Mutex;
-use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorId;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
+use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use serde::Deserialize;
 use serde::Serialize;
@@ -73,44 +75,44 @@ pub enum IbvManagerMessage {
     /// (no reply port) to avoid blocking the caller during teardown.
     ReleaseBuffer { remote_buf_id: usize },
     RequestQueuePair {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: reference::OncePortRef<Result<IbvQueuePair, String>>,
+        reply: OncePortRef<Result<IbvQueuePair, String>>,
     },
     Connect {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         endpoint: IbvQpInfo,
     },
     InitializeQP {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: reference::OncePortRef<bool>,
+        reply: OncePortRef<bool>,
     },
     ConnectionInfo {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: reference::OncePortRef<IbvQpInfo>,
+        reply: OncePortRef<IbvQpInfo>,
     },
     ReleaseQueuePair {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         qp: IbvQueuePair,
     },
     GetQpState {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: reference::OncePortRef<u32>,
+        reply: OncePortRef<u32>,
     },
 }
 wirevalue::register_type!(IbvManagerMessage);
@@ -260,11 +262,11 @@ pub struct IbvManagerActor {
     owner: OnceLock<ActorHandle<RdmaManagerActor>>,
 
     // Nested map: local_device -> (ActorId, remote_device) -> IbvQueuePair
-    device_qps: HashMap<String, HashMap<(reference::ActorId, String), IbvQueuePair>>,
+    device_qps: HashMap<String, HashMap<(ActorId, String), IbvQueuePair>>,
 
     // Track QPs currently being created to prevent duplicate creation
     // Wrapped in Arc<Mutex> to allow safe concurrent access
-    pending_qp_creation: Arc<Mutex<HashSet<(String, reference::ActorId, String)>>>,
+    pending_qp_creation: Arc<Mutex<HashSet<(String, ActorId, String)>>>,
 
     // Map of RDMA device names to their domains and loopback QPs
     // Created lazily when memory is registered for a specific device
@@ -372,7 +374,7 @@ impl IbvManagerActor {
         client: &(impl hyperactor::context::Actor + Send + Sync),
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let rdma_handle = RdmaManagerActor::local_handle(client);
-        let ibv_ref: reference::ActorRef<IbvManagerActor> = rdma_handle
+        let ibv_ref: ActorRef<IbvManagerActor> = rdma_handle
             .get_ibv_actor_ref(client)
             .await?
             .ok_or_else(|| anyhow::anyhow!("local RdmaManagerActor has no ibverbs backend"))?;
@@ -689,18 +691,18 @@ impl IbvManagerActor {
     async fn request_queue_pair_impl(
         &mut self,
         cx: &Context<'_, Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<IbvQueuePair, anyhow::Error> {
-        let self_ref: reference::ActorRef<IbvManagerActor> = cx.bind();
+        let self_ref: ActorRef<IbvManagerActor> = cx.bind();
         let other_id = other.actor_addr().id().clone();
 
         // Use the nested map structure: local_device -> (actor_id, remote_device) -> IbvQueuePair
         let inner_key = (other_id.clone(), other_device.clone());
 
         // Check if queue pair exists in map
-        let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+        let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
             self.device_qps.get(&self_device);
         if let Some(device_map) = device_map {
             if let Some(qp) = device_map.get(&inner_key) {
@@ -710,10 +712,8 @@ impl IbvManagerActor {
 
         // Try to acquire lock and mark as pending (hold lock only once!)
         let pending_key = (self_device.clone(), other_id.clone(), other_device.clone());
-        let mut pending: futures::lock::MutexGuard<
-            '_,
-            HashSet<(String, reference::ActorId, String)>,
-        > = self.pending_qp_creation.lock().await;
+        let mut pending: futures::lock::MutexGuard<'_, HashSet<(String, ActorId, String)>> =
+            self.pending_qp_creation.lock().await;
 
         if pending.contains(&pending_key) {
             // Another task is creating this QP, release lock and wait
@@ -728,7 +728,7 @@ impl IbvManagerActor {
                 tokio::time::sleep(Duration::from_micros(200)).await;
 
                 // Check if QP was created while we waited
-                let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+                let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
                     self.device_qps.get(&self_device);
                 if let Some(device_map) = device_map {
                     if let Some(qp) = device_map.get(&inner_key) {
@@ -836,7 +836,7 @@ impl IbvManagerActor {
             }
 
             // Now that connection is established, get and clone the queue pair
-            let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+            let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
                 self.device_qps.get(&self_device);
             if let Some(device_map) = device_map {
                 if let Some(qp) = device_map.get(&inner_key) {
@@ -859,10 +859,8 @@ impl IbvManagerActor {
         .await;
 
         // Always remove from pending set when done (success or failure)
-        let mut pending: futures::lock::MutexGuard<
-            '_,
-            HashSet<(String, reference::ActorId, String)>,
-        > = self.pending_qp_creation.lock().await;
+        let mut pending: futures::lock::MutexGuard<'_, HashSet<(String, ActorId, String)>> =
+            self.pending_qp_creation.lock().await;
         pending.remove(&pending_key);
         drop(pending);
 
@@ -888,7 +886,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn request_queue_pair(
         &mut self,
         cx: &Context<Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<Result<IbvQueuePair, String>, anyhow::Error> {
@@ -901,7 +899,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn connect(
         &mut self,
         _cx: &Context<Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         endpoint: IbvQpInfo,
@@ -911,7 +909,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
 
         let inner_key = (other_id.clone(), other_device.clone());
 
-        let device_map: Option<&mut HashMap<(reference::ActorId, String), IbvQueuePair>> =
+        let device_map: Option<&mut HashMap<(ActorId, String), IbvQueuePair>> =
             self.device_qps.get_mut(&self_device);
         if let Some(device_map) = device_map {
             match device_map.get_mut(&inner_key) {
@@ -937,7 +935,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn initialize_qp(
         &mut self,
         _cx: &Context<Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<bool, anyhow::Error> {
@@ -945,7 +943,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         let inner_key = (other_id.clone(), other_device.clone());
 
         // Check if QP already exists in nested structure
-        let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+        let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
             self.device_qps.get(&self_device);
         if let Some(device_map) = device_map {
             if device_map.contains_key(&inner_key) {
@@ -986,7 +984,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn connection_info(
         &mut self,
         _cx: &Context<Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<IbvQpInfo, anyhow::Error> {
@@ -995,7 +993,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
 
         let inner_key = (other_id.clone(), other_device.clone());
 
-        let device_map: Option<&mut HashMap<(reference::ActorId, String), IbvQueuePair>> =
+        let device_map: Option<&mut HashMap<(ActorId, String), IbvQueuePair>> =
             self.device_qps.get_mut(&self_device);
         if let Some(device_map) = device_map {
             match device_map.get_mut(&inner_key) {
@@ -1019,7 +1017,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn release_queue_pair(
         &mut self,
         _cx: &Context<Self>,
-        _other: reference::ActorRef<IbvManagerActor>,
+        _other: ActorRef<IbvManagerActor>,
         _self_device: String,
         _other_device: String,
         _qp: IbvQueuePair,
@@ -1030,14 +1028,14 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn get_qp_state(
         &mut self,
         _cx: &Context<Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<u32, anyhow::Error> {
         let other_id = other.actor_addr().id().clone();
         let inner_key = (other_id.clone(), other_device.clone());
 
-        let device_map: Option<&mut HashMap<(reference::ActorId, String), IbvQueuePair>> =
+        let device_map: Option<&mut HashMap<(ActorId, String), IbvQueuePair>> =
             self.device_qps.get_mut(&self_device);
         if let Some(device_map) = device_map {
             match device_map.get_mut(&inner_key) {

@@ -46,7 +46,6 @@ use std::result::Result;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyperactor as reference;
 use hyperactor::ActorRef;
 use hyperactor::context;
 use serde::Deserialize;
@@ -75,7 +74,7 @@ use crate::local_memory::RdmaLocalMemory;
 pub struct RdmaRemoteBuffer {
     pub id: usize,
     pub size: usize,
-    pub owner: reference::ActorRef<RdmaManagerActor>,
+    pub owner: ActorRef<RdmaManagerActor>,
     pub backends: Vec<RdmaRemoteBackendContext>,
 }
 wirevalue::register_type!(RdmaRemoteBuffer);
@@ -216,7 +215,7 @@ impl RdmaRemoteBuffer {
     ///
     /// Returns `None` if the buffer has no ibverbs backend context
     /// (i.e., the remote side was created without ibverbs).
-    pub fn resolve_ibv(&self) -> Option<(reference::ActorRef<IbvManagerActor>, IbvBuffer)> {
+    pub fn resolve_ibv(&self) -> Option<(ActorRef<IbvManagerActor>, IbvBuffer)> {
         self.backends.iter().find_map(|b| match b {
             RdmaRemoteBackendContext::Ibverbs(mgr, buf) => Some((mgr.clone(), buf.clone())),
             _ => None,
