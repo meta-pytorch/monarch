@@ -50,18 +50,16 @@ def _check(*cmd: str) -> bool:
     )
 
 
-# Prefer unshare without --user (works when running as root, avoids device
-# access restrictions that break torch.cuda.is_available() in the worker).
-# Fall back to --user variants for unprivileged environments.
-# _unshare_prefix is the command prefix to use, or [] if unavailable.
+# Only use unshare without --user: --user creates a user namespace that
+# restricts GPU device access and breaks torch.cuda.is_available() in the
+# worker.  --pid without --user requires CAP_SYS_ADMIN (available on
+# privileged containers / bare metal) but not in typical CI Docker setups.
+# When unshare is unavailable the periodic --restart-every cleanup handles
+# leaked processes instead.
 if _check("unshare", "--pid", "--fork", "--mount-proc", "true"):
     _unshare_prefix = ["unshare", "--pid", "--fork", "--mount-proc"]
-elif _check("unshare", "--user", "--pid", "--fork", "--mount-proc", "true"):
-    _unshare_prefix = ["unshare", "--user", "--pid", "--fork", "--mount-proc"]
 elif _check("unshare", "--pid", "--fork", "true"):
     _unshare_prefix = ["unshare", "--pid", "--fork"]
-elif _check("unshare", "--user", "--pid", "--fork", "true"):
-    _unshare_prefix = ["unshare", "--user", "--pid", "--fork"]
 else:
     _unshare_prefix: list[str] = []
 
