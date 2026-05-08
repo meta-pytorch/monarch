@@ -36,12 +36,18 @@ if sys.platform != "linux":
 # Several test files import monarch.mesh_controller or monarch._testing which
 # transitively require the tensor_engine Rust extension.  When the extension is
 # not compiled in (USE_TENSOR_ENGINE=0), skip collection to avoid ImportError.
-try:
-    from monarch._rust_bindings import has_tensor_engine as _has_te_fn
+# When running as the crash-recovery worker, inherit the controller's detection
+# results via env vars so both processes make identical collect_ignore decisions.
+if "_CRASH_RECOVERY_HAS_TENSOR_ENGINE" in os.environ:
+    _HAS_TENSOR_ENGINE = os.environ["_CRASH_RECOVERY_HAS_TENSOR_ENGINE"] == "1"
+else:
+    try:
+        from monarch._rust_bindings import has_tensor_engine as _has_te_fn
 
-    _HAS_TENSOR_ENGINE = _has_te_fn()
-except Exception:
-    _HAS_TENSOR_ENGINE = False
+        _HAS_TENSOR_ENGINE = _has_te_fn()
+    except Exception:
+        _HAS_TENSOR_ENGINE = False
+    os.environ["_CRASH_RECOVERY_HAS_TENSOR_ENGINE"] = "1" if _HAS_TENSOR_ENGINE else "0"
 
 if not _HAS_TENSOR_ENGINE:
     collect_ignore.extend(
@@ -67,12 +73,16 @@ if not _HAS_TENSOR_ENGINE:
 # The simulator tests and a handful of others exercise paths that unconditionally
 # construct CUDA tensors. They are collectable with a CPU-only tensor_engine
 # build but cannot run without a CUDA device, so skip them when CUDA is absent.
-try:
-    import torch as _torch
+if "_CRASH_RECOVERY_HAS_CUDA" in os.environ:
+    _HAS_CUDA = os.environ["_CRASH_RECOVERY_HAS_CUDA"] == "1"
+else:
+    try:
+        import torch as _torch
 
-    _HAS_CUDA = _torch.cuda.is_available()
-except (ImportError, RuntimeError):
-    _HAS_CUDA = False
+        _HAS_CUDA = _torch.cuda.is_available()
+    except (ImportError, RuntimeError):
+        _HAS_CUDA = False
+    os.environ["_CRASH_RECOVERY_HAS_CUDA"] = "1" if _HAS_CUDA else "0"
 
 if _HAS_TENSOR_ENGINE and not _HAS_CUDA:
     collect_ignore.extend(
