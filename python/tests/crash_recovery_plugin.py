@@ -40,18 +40,51 @@ from _pytest.reports import TestReport
 
 _in_worker = False
 
-# Whether the full unshare --user --pid --fork --mount-proc command works.
-# Some environments allow user namespaces but not --mount-proc (e.g. Docker
-# containers with restricted capabilities).  Checked once at import time so
-# _spawn_worker can fall back gracefully.
-_unshare_user_available: bool = (
-    subprocess.run(
-        ["unshare", "--user", "--pid", "--fork", "--mount-proc", "true"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    ).returncode
-    == 0
+
+def _check(*cmd: str) -> bool:
+    return (
+        subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ).returncode
+        == 0
+    )
+
+
+# --mount-proc remaps /proc to only show processes inside the PID namespace.
+# Some container environments block the mount syscall even inside a user
+# namespace, so we also check --pid --fork alone as a fallback.
+_unshare_mount_proc_available: bool = _check(
+    "unshare", "--user", "--pid", "--fork", "--mount-proc", "true"
 )
+_unshare_pid_available: bool = _unshare_mount_proc_available or _check(
+    "unshare", "--user", "--pid", "--fork", "true"
+)
+
+
+def _pids_in_my_namespace() -> set[int]:
+    """Return PIDs of all processes sharing our PID namespace.
+
+    Works whether or not /proc was remounted with --mount-proc:
+    - With --mount-proc: /proc only has namespace-local entries, so a plain
+      scandir suffices; the ns/pid check is redundant but harmless.
+    - Without --mount-proc: /proc has all host processes; we filter by
+      comparing each process's /proc/<pid>/ns/pid symlink to our own.
+    """
+    try:
+        my_ns = os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return set()
+    result = set()
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        try:
+            if os.readlink(f"/proc/{entry.name}/ns/pid") == my_ns:
+                result.add(int(entry.name))
+        except OSError:
+            pass
+    return result
+
 
 # prctl(PR_SET_PDEATHSIG, SIGKILL): tell the kernel to deliver SIGKILL to this
 # process when its parent exits.  Used to chain kills through the unshare →
@@ -135,7 +168,11 @@ class _WorkerPlugin:
         and worker collections.
         """
         items: dict[str, pytest.Item] = {item.nodeid: item for item in session.items}
-        known_pids = {int(e.name) for e in os.scandir("/proc") if e.name.isdigit()}
+        # Track leaked processes whenever we have a PID namespace (with or
+        # without --mount-proc).  _pids_in_my_namespace() filters /proc by
+        # namespace symlink so it's accurate in both cases.
+        track_procs = _unshare_pid_available
+        known_pids: set[int] = _pids_in_my_namespace() if track_procs else set()
         _send(self._wf, ReadyMsg())
 
         while True:
@@ -151,16 +188,19 @@ class _WorkerPlugin:
                     # PASSED/FAILED markers don't appear from the worker;
                     # the controller fires them after receiving the reports.
                     reports = runner.runtestprotocol(item, log=False, nextitem=None)
-                    after = {
-                        int(e.name) for e in os.scandir("/proc") if e.name.isdigit()
-                    }
-                    newly_leaked = len(after - known_pids)
-                    known_pids = after
+                    if track_procs:
+                        after = _pids_in_my_namespace()
+                        newly_leaked = len(after - known_pids)
+                        known_pids = after
+                        proc_count = len(after)
+                    else:
+                        newly_leaked = 0
+                        proc_count = 0
                     _send(
                         self._wf,
                         PickleReportsMsg(
                             reports=reports,
-                            proc_count=len(after),
+                            proc_count=proc_count,
                             newly_leaked=newly_leaked,
                         ),
                     )
@@ -323,19 +363,17 @@ class CrashRecoveryPlugin:
         ctrl_r, worker_w = os.pipe()
         self._rf = open(ctrl_r, "rb")
         self._wf = open(ctrl_w, "wb")
-        cmd = (
-            # unshare --user --pid --fork --mount-proc: worker becomes PID 1 in
-            # a fresh PID namespace with its own /proc.  When the worker exits,
-            # the kernel sends SIGKILL to every other process in the namespace,
-            # so leaked test-spawned processes are cleaned up automatically on
-            # restart.  --user allows this without root.
-            # Falls back to running without a PID namespace when user namespaces
-            # are unavailable (e.g. when already inside one); crash and timeout
-            # recovery still work, but proc-leak tracking is host-wide.
-            ["unshare", "--user", "--pid", "--fork", "--mount-proc"]
-            if _unshare_user_available
-            else []
-        ) + [sys.executable, __file__, str(worker_r), str(worker_w)]
+        if _unshare_mount_proc_available:
+            unshare_prefix = ["unshare", "--user", "--pid", "--fork", "--mount-proc"]
+            mode = "pid-namespace+mount-proc (full isolation + proc counting)"
+        elif _unshare_pid_available:
+            unshare_prefix = ["unshare", "--user", "--pid", "--fork"]
+            mode = "pid-namespace (isolation + proc counting via ns/pid filter)"
+        else:
+            unshare_prefix = []
+            mode = "no namespace (crash/timeout recovery only)"
+        print(f"[crash-recovery] worker mode: {mode}", file=sys.stderr, flush=True)
+        cmd = unshare_prefix + [sys.executable, __file__, str(worker_r), str(worker_w)]
         self._worker = subprocess.Popen(cmd, pass_fds=(worker_r, worker_w))
         os.close(worker_r)
         os.close(worker_w)
