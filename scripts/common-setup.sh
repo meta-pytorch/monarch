@@ -296,6 +296,7 @@ run_test_groups() {
       --crash-recovery \
       --max-crashes=10 \
       --max-leaked-procs=16 \
+      --restart-every=100 \
       --junit-xml="$test_results_dir/test-results.xml"
   local rc=$?
   set -e

@@ -247,16 +247,22 @@ def _worker_main() -> None:
 
 class CrashRecoveryPlugin:
     def __init__(
-        self, max_crashes: int, max_leaked_procs: int, config: pytest.Config
+        self,
+        max_crashes: int,
+        max_leaked_procs: int,
+        restart_every: int,
+        config: pytest.Config,
     ) -> None:
         self._max_crashes = max_crashes
         self._max_leaked_procs = max_leaked_procs
+        self._restart_every = restart_every
         self._config = config
         self._crashes = 0
         self._crashed: list[str] = []
         self._worker: subprocess.Popen | None = None
         self._rf = None
         self._wf = None
+        self._tests_since_restart = 0
 
     def pytest_collection_finish(self, session: pytest.Session) -> None:
         self._spawn_worker()
@@ -304,6 +310,7 @@ class CrashRecoveryPlugin:
                 reports=reports, proc_count=proc_count, newly_leaked=newly_leaked
             ):
                 self._emit_reports(item, reports)
+                self._tests_since_restart += 1
                 if newly_leaked:
                     print(
                         f"[crash-recovery] {item.nodeid} leaked {newly_leaked} process(es)"
@@ -318,14 +325,26 @@ class CrashRecoveryPlugin:
                         file=sys.stderr,
                         flush=True,
                     )
-                    self._reap_worker()
+                    self._kill_worker()  # SIGKILL cleans up the entire PID namespace
+                    self._spawn_worker()
+                elif (
+                    self._restart_every > 0
+                    and self._tests_since_restart >= self._restart_every
+                ):
+                    print(
+                        f"[crash-recovery] restarting worker after"
+                        f" {self._tests_since_restart} tests (periodic cleanup)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    self._kill_worker()  # SIGKILL cleans up the entire PID namespace
                     self._spawn_worker()
 
         return True
 
     def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
         if self._worker is not None:
-            self._reap_worker()  # graceful: worker is alive, send StopMsg
+            self._kill_worker()  # SIGKILL cleans up the entire PID namespace
 
     def pytest_terminal_summary(self, terminalreporter, exitstatus: int) -> None:
         if not self._crashed:
@@ -359,6 +378,7 @@ class CrashRecoveryPlugin:
         self._emit_reports(item, _crash_reports(item, "test runner crashed"))
 
     def _spawn_worker(self) -> None:
+        self._tests_since_restart = 0
         worker_r, ctrl_w = os.pipe()
         ctrl_r, worker_w = os.pipe()
         self._rf = open(ctrl_r, "rb")
@@ -407,24 +427,6 @@ class CrashRecoveryPlugin:
         self._rf = None
         self._wf.close()
         self._wf = None
-
-    def _reap_worker(self) -> None:
-        """Gracefully stop the worker (send StopMsg, close pipes, wait).
-
-        Only call this when the worker is known to be alive; the StopMsg
-        flush must succeed so the write buffer is empty before close().
-        """
-        _send(self._wf, StopMsg())
-        self._rf.close()
-        self._rf = None
-        self._wf.close()
-        self._wf = None
-        try:
-            self._worker.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self._worker.kill()
-            self._worker.wait()
-        self._worker = None
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +481,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         metavar="N",
         help="Restart worker when its PID namespace contains more than N processes (default: 100).",
     )
+    g.addoption(
+        "--restart-every",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Restart worker every N tests regardless of crashes or leaks (0 = disabled).",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -487,8 +496,9 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.getoption("--crash-recovery", default=False):
         max_c = config.getoption("--max-crashes", default=10)
         max_p = config.getoption("--max-leaked-procs", default=100)
+        restart_every = config.getoption("--restart-every", default=0)
         config.pluginmanager.register(
-            CrashRecoveryPlugin(max_c, max_p, config), "crash-recovery"
+            CrashRecoveryPlugin(max_c, max_p, restart_every, config), "crash-recovery"
         )
 
 
