@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
+use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::Addr;
 use hyperactor::Bind;
@@ -27,6 +27,7 @@ use hyperactor::Context;
 use hyperactor::Data;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::PortAddr;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
@@ -139,7 +140,7 @@ fn collect_live_children(
 #[derive(Debug)]
 struct ActorInstanceState {
     create_rank: usize,
-    spawn: Result<hyperactor_reference::ActorAddr, anyhow::Error>,
+    spawn: Result<ActorAddr, anyhow::Error>,
     /// True once a stop signal has been sent. This does *not* mean the actor
     /// has reached a terminal state — that is determined by observing
     /// supervision events.
@@ -393,7 +394,7 @@ impl ProcAgent {
 
     /// Send a stop signal to an actor on this proc. This is fire-and-forget;
     /// it does not wait for the actor to reach terminal status.
-    fn stop_actor_by_id(&self, actor_id: &hyperactor_reference::ActorAddr, reason: &str) {
+    fn stop_actor_by_id(&self, actor_id: &ActorAddr, reason: &str) {
         tracing::info!(
             name = "StopActor",
             %actor_id,
@@ -679,7 +680,7 @@ impl Actor for ProcAgent {
         envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         if let Some(true) = envelope.0.headers().get(STREAM_STATE_SUBSCRIBER) {
-            let dest_port_id: hyperactor_reference::PortAddr = envelope.0.dest().clone();
+            let dest_port_id: PortAddr = envelope.0.dest().clone();
             let port = PortRef::<resource::State<ActorState>>::attest(dest_port_id);
             // Remove this subscriber from whichever actor instance holds it.
             for instance in self.actor_states.values_mut() {
@@ -857,7 +858,7 @@ wirevalue::register_type!(ActorSpec);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct ActorState {
     /// The actor's ID.
-    pub actor_id: hyperactor_reference::ActorAddr,
+    pub actor_id: ActorAddr,
     /// The rank of the proc that created the actor. This is before any slicing.
     pub create_rank: usize,
     // TODO status: ActorStatus,
@@ -969,7 +970,7 @@ impl Handler<resource::StopAll> for ProcAgent {
         self.stopping_all = true;
 
         // Send stop signals to all actors that haven't been stopped yet.
-        let to_stop: Vec<hyperactor_reference::ActorAddr> = self
+        let to_stop: Vec<ActorAddr> = self
             .actor_states
             .values_mut()
             .filter_map(|state| {
@@ -1222,7 +1223,7 @@ impl Handler<SelfCheck> for ProcAgent {
         let now = std::time::SystemTime::now();
 
         // Collect expired actors before mutating, since stop_actor borrows &mut self.
-        let expired: Vec<(ResourceId, hyperactor_reference::ActorAddr)> = self
+        let expired: Vec<(ResourceId, ActorAddr)> = self
             .actor_states
             .iter()
             .filter_map(|(id, state)| {
@@ -1286,7 +1287,6 @@ mod tests {
     // mesh_admin::tests::test_proc_children_reflect_directly_spawned_actors.
     #[tokio::test]
     async fn test_query_child_proc_returns_live_children() {
-        use hyperactor as hyperactor_reference;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
@@ -1307,8 +1307,7 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id: hyperactor_reference::ActorAddr =
-            proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
+        let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Helper: send QueryChild(Proc) and return the payload with a
@@ -1318,7 +1317,7 @@ mod tests {
             port.send(
                 client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Addr::Proc(proc.proc_addr().clone()),
+                    child_ref: Addr::Proc(proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
             )
@@ -1396,7 +1395,6 @@ mod tests {
         use std::sync::atomic::AtomicUsize;
         use std::sync::atomic::Ordering;
 
-        use hyperactor as hyperactor_reference;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
@@ -1415,8 +1413,7 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id: hyperactor_reference::ActorAddr =
-            proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
+        let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Concurrent query task: send QueryChild(Proc) every 10ms.
@@ -1434,7 +1431,7 @@ mod tests {
                     .send(
                         &query_client,
                         IntrospectMessage::QueryChild {
-                            child_ref: hyperactor_reference::Addr::Proc(query_proc_id.clone()),
+                            child_ref: Addr::Proc(query_proc_id.clone()),
                             reply: reply_port.bind(),
                         },
                     )
@@ -1495,7 +1492,7 @@ mod tests {
         port.send(
             &client,
             IntrospectMessage::QueryChild {
-                child_ref: hyperactor_reference::Addr::Proc(proc.proc_addr().clone()),
+                child_ref: Addr::Proc(proc.proc_addr().clone()),
                 reply: reply_port.bind(),
             },
         )
@@ -1700,7 +1697,6 @@ mod tests {
     // not backlog history.
     #[tokio::test]
     async fn test_query_child_proc_queue_depth_under_pressure() {
-        use hyperactor as hyperactor_reference;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
@@ -1740,8 +1736,7 @@ mod tests {
 
         // QueryChild(Proc) — same aggregation logic as mesh-admin
         // resolution.
-        let agent_id: hyperactor_reference::ActorAddr =
-            proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
+        let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Poll until queue stats are non-zero.
@@ -1751,7 +1746,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Addr::Proc(proc.proc_addr().clone()),
+                    child_ref: Addr::Proc(proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
             )
