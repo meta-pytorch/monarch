@@ -944,7 +944,7 @@ mod tests {
 
         let mut host_mesh = HostMesh::local_in_process().await.unwrap();
         let proc_mesh = host_mesh
-            .spawn(instance, "test", extent!(replicas = 2), None)
+            .spawn(instance, "test", extent!(replicas = 2), None, None)
             .await
             .unwrap();
 

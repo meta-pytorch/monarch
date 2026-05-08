@@ -14,15 +14,13 @@ pub mod ibverbs;
 pub mod tcp;
 
 use std::fmt::Debug;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hyperactor as reference;
+use hyperactor::ActorRef;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::OnceCell;
 
 use crate::RdmaOp;
 use crate::RdmaTransportLevel;
@@ -31,50 +29,13 @@ use crate::RdmaTransportLevel;
 ///
 /// Each variant holds the information needed to perform RDMA operations
 /// using that backend on a particular buffer.
-///
-/// The [`OnceCell`] is lazily populated at runtime and excluded from
-/// serialization; deserializing produces an empty cell.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RdmaRemoteBackendContext {
     Ibverbs(
-        reference::ActorRef<ibverbs::manager_actor::IbvManagerActor>,
-        Arc<OnceCell<ibverbs::IbvBuffer>>,
+        ActorRef<ibverbs::manager_actor::IbvManagerActor>,
+        ibverbs::IbvBuffer,
     ),
-    Tcp(reference::ActorRef<tcp::manager_actor::TcpManagerActor>),
-}
-
-impl Serialize for RdmaRemoteBackendContext {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            RdmaRemoteBackendContext::Ibverbs(actor_ref, _) => serializer
-                .serialize_newtype_variant("RdmaRemoteBackendContext", 0, "Ibverbs", actor_ref),
-            RdmaRemoteBackendContext::Tcp(actor_ref) => serializer.serialize_newtype_variant(
-                "RdmaRemoteBackendContext",
-                1,
-                "Tcp",
-                actor_ref,
-            ),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for RdmaRemoteBackendContext {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(rename = "RdmaRemoteBackendContext")]
-        enum Repr {
-            Ibverbs(reference::ActorRef<ibverbs::manager_actor::IbvManagerActor>),
-            Tcp(reference::ActorRef<tcp::manager_actor::TcpManagerActor>),
-        }
-
-        match Repr::deserialize(deserializer)? {
-            Repr::Ibverbs(actor_ref) => Ok(RdmaRemoteBackendContext::Ibverbs(
-                actor_ref,
-                Arc::new(OnceCell::new()),
-            )),
-            Repr::Tcp(actor_ref) => Ok(RdmaRemoteBackendContext::Tcp(actor_ref)),
-        }
-    }
+    Tcp(ActorRef<tcp::manager_actor::TcpManagerActor>),
 }
 
 /// Backend for executing RDMA operations over a specific transport.

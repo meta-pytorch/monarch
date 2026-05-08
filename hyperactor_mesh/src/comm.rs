@@ -1327,7 +1327,7 @@ mod tests {
         // can collect paths from the same process.
         let host_mesh = local_host_mesh(8).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", extent!(gpu = 8), None)
+            .spawn(instance, "test", extent!(gpu = 8), None, None)
             .await
             .unwrap();
 
@@ -1379,27 +1379,33 @@ mod tests {
                     // port 0 is still the same as the original one because it
                     // is not included in MutVisitor.
                     assert_eq!(reply_to0, reply_port_ref0);
-                    // ports have been replaced by comm actor's split ports.
+                    // ports have been replaced by split ports.
                     assert_ne!(reply_to1, reply_port_ref1);
-                    assert!(
-                        reply_to1
-                            .port_addr()
-                            .actor_addr()
-                            .label()
-                            .unwrap()
-                            .as_str()
-                            .contains("comm")
-                    );
                     assert_ne!(reply_to2, reply_port_ref2);
-                    assert!(
-                        reply_to2
-                            .port_addr()
-                            .actor_addr()
-                            .label()
-                            .unwrap()
-                            .as_str()
-                            .contains("comm")
+                    let p2p_threshold = hyperactor_config::global::get(
+                        crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD,
                     );
+                    if p2p_threshold == 0 {
+                        // Tree path: split ports belong to comm actors.
+                        assert!(
+                            reply_to1
+                                .port_addr()
+                                .actor_id()
+                                .label()
+                                .unwrap()
+                                .as_str()
+                                .contains("comm")
+                        );
+                        assert!(
+                            reply_to2
+                                .port_addr()
+                                .actor_id()
+                                .label()
+                                .unwrap()
+                                .as_str()
+                                .contains("comm")
+                        );
+                    }
                     reply_tos.push((reply_to1, reply_to2));
                 }
                 _ => {
@@ -1408,24 +1414,30 @@ mod tests {
             }
         }
 
-        // [collect_commactor_routing_tree] only returns ranks,So we need to
-        // map proc Ids collected in SPLIT_PORT_TREE to ranks.
-        let rank_lookup = proc_mesh
-            .ranks()
-            .iter()
-            .enumerate()
-            .map(|(i, r)| (r.proc_addr().clone(), i))
-            .collect::<HashMap<ProcAddr, usize>>();
+        // verify_split_port_paths only applies to the tree path;
+        // in point-to-point mode no comm actors are involved.
+        let p2p_threshold =
+            hyperactor_config::global::get(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD);
+        if p2p_threshold == 0 {
+            // [collect_commactor_routing_tree] only returns ranks, so we need
+            // to map proc IDs collected in SPLIT_PORT_TREE to ranks.
+            let rank_lookup = proc_mesh
+                .ranks()
+                .iter()
+                .enumerate()
+                .map(|(i, r)| (r.proc_addr().clone(), i))
+                .collect::<HashMap<ProcAddr, usize>>();
 
-        // v1 always uses sel!(*) when casting to a mesh.
-        let selection = sel!(*);
-        verify_split_port_paths(
-            &selection,
-            &proc_mesh.extent(),
-            &reply_port_ref1,
-            &reply_port_ref2,
-            &rank_lookup,
-        );
+            // v1 always uses sel!(*) when casting to a mesh.
+            let selection = sel!(*);
+            verify_split_port_paths(
+                &selection,
+                &proc_mesh.extent(),
+                &reply_port_ref1,
+                &reply_port_ref2,
+                &rank_lookup,
+            );
+        }
 
         MeshSetupV1 {
             instance,
@@ -1475,6 +1487,18 @@ mod tests {
         execute_cast_and_reply_v1().await
     }
 
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_reply_v1_native_p2p() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        execute_cast_and_reply_v1().await
+    }
+
     async fn execute_cast_and_accum_v1(config: &hyperactor_config::global::ConfigLock) {
         // Use temporary config for this test
         let _guard1 = config.override_key(hyperactor::config::SPLIT_MAX_BUFFER_SIZE, 1);
@@ -1509,6 +1533,18 @@ mod tests {
         execute_cast_and_accum_v1(&config).await
     }
 
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_accum_v1_native_p2p() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        execute_cast_and_accum_v1(&config).await
+    }
+
     struct OncePortMeshSetupV1 {
         instance: &'static Instance<testing::TestRootClient>,
         reply_rx: hyperactor::mailbox::OncePortReceiver<u64>,
@@ -1526,7 +1562,7 @@ mod tests {
         // can collect paths from the same process.
         let host_mesh = local_host_mesh(8).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", extent!(gpu = 8), None)
+            .spawn(instance, "test", extent!(gpu = 8), None, None)
             .await
             .unwrap();
 
@@ -1565,17 +1601,23 @@ mod tests {
                 TestMessage::CastAndReplyOnce { arg, reply_to } => {
                     assert_eq!(arg, "abc");
                     if has_reducer {
-                        // With reducer: port is split by comm actor.
+                        // With reducer: port is split.
                         assert_ne!(reply_to, reply_port_ref);
-                        assert!(
-                            reply_to
-                                .port_addr()
-                                .actor_addr()
-                                .label()
-                                .unwrap()
-                                .as_str()
-                                .contains("comm")
+                        let p2p_threshold = hyperactor_config::global::get(
+                            crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD,
                         );
+                        if p2p_threshold == 0 {
+                            // Tree path: split port belongs to a comm actor.
+                            assert!(
+                                reply_to
+                                    .port_addr()
+                                    .actor_id()
+                                    .label()
+                                    .unwrap()
+                                    .as_str()
+                                    .contains("comm")
+                            );
+                        }
                     } else {
                         // Without reducer: port is passed through unchanged.
                         assert_eq!(reply_to, reply_port_ref);
@@ -1597,8 +1639,7 @@ mod tests {
         }
     }
 
-    #[async_timed_test(timeout_secs = 60)]
-    async fn test_cast_and_reply_once_v1() {
+    async fn execute_cast_and_reply_once_v1() {
         // Test OncePort without accumulator - port is NOT split.
         // All destinations receive the same original port.
         // First reply is delivered, others fail at receiver (port closed).
@@ -1620,7 +1661,23 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 60)]
-    async fn test_cast_and_accum_once_v1() {
+    async fn test_cast_and_reply_once_v1() {
+        execute_cast_and_reply_once_v1().await
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_reply_once_v1_p2p() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        execute_cast_and_reply_once_v1().await
+    }
+
+    async fn execute_cast_and_accum_once_v1() {
         // Test OncePort splitting with sum accumulator.
         // Each destination actor replies with its rank.
         // The sum of all ranks should be received at the original port.
@@ -1641,11 +1698,28 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_accum_once_v1() {
+        execute_cast_and_accum_once_v1().await
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_accum_once_v1_p2p() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        execute_cast_and_accum_once_v1().await
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_unsplit_port_not_split() {
         let instance = crate::testing::instance();
         let mut host_mesh = local_host_mesh(8).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", extent!(gpu = 8), None)
+            .spawn(instance, "test", extent!(gpu = 8), None, None)
             .await
             .unwrap();
 

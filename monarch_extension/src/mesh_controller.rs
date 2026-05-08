@@ -781,7 +781,7 @@ impl MeshControllerActor {
     ) -> anyhow::Result<()> {
         if matches!(action, DebuggerAction::Paused()) {
             self.debugger_paused
-                .push_back(reference::ActorRef::attest(debugger_actor_id.into()));
+                .push_back(reference::ActorRef::attest(debugger_actor_id));
         } else {
             let debugger_actor = self
                 .debugger_active

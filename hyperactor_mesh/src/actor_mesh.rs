@@ -25,13 +25,18 @@ use hyperactor::ActorRef;
 use hyperactor::PortRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::UnboundPort;
+use hyperactor::UnboundPortKind;
+use hyperactor::accum::ReducerMode;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
+use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
+use hyperactor::port::Port;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -41,6 +46,7 @@ use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
 use ndslice::view;
+use ndslice::view::MapIntoExt;
 use ndslice::view::Region;
 use ndslice::view::View;
 use serde::Deserialize;
@@ -55,6 +61,8 @@ use crate::ProcMeshRef;
 use crate::ValueMesh;
 use crate::casting;
 use crate::comm::multicast;
+use crate::comm::multicast::CastMessageV1;
+use crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshController;
@@ -62,6 +70,7 @@ use crate::mesh_controller::SUPERVISION_POLL_FREQUENCY;
 use crate::mesh_controller::Subscribe;
 use crate::mesh_controller::Unsubscribe;
 use crate::mesh_id::ActorMeshId;
+use crate::metrics;
 use crate::proc_agent::ActorState;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::resource;
@@ -517,39 +526,56 @@ impl<A: Referable> ActorMeshRef<A> {
 
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            self.cast_v0(cx, message, sel, root_comm_actor, caller_headers)
-        } else {
-            for (point, actor) in self.iter() {
-                let create_rank = point.rank();
-                // Caller-known headers ride first; cast-info is
-                // stamped afterward and wins on collision because
-                // those keys are owned by this layer.
-                let mut headers = caller_headers.clone();
-                multicast::set_cast_info_on_headers(
-                    &mut headers,
-                    point,
-                    cx.instance().self_addr().clone(),
-                );
-
-                // Make sure that we re-bind ranks, as these may be used for
-                // bootstrapping comm actors.
-                let mut unbound = Unbound::try_from_message(message.clone())
-                    .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-                unbound
-                    .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                        *rank = Some(create_rank);
-                        Ok(())
-                    })
-                    .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-                let rebound_message = unbound
-                    .bind()
-                    .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-                actor
-                    .send_with_headers(cx, headers, rebound_message)
-                    .map_err(|e| Error::SendingError(actor.actor_addr().clone(), Box::new(e)))?;
+            if casting::v1_casting_enabled() {
+                if Selection::is_equivalent_to_true(&sel) {
+                    self.cast_v1(cx, message, root_comm_actor, caller_headers);
+                    return Ok(());
+                }
+                // V1 does not support non-* selections yet; fall back to
+                // the iteration path below.
+            } else {
+                return self.cast_v0(cx, message, sel, root_comm_actor, caller_headers);
             }
-            Ok(())
         }
+
+        let selected_ranks: std::collections::HashSet<usize> = sel
+            .eval(
+                &ndslice::selection::EvalOpts::lenient(),
+                view::Ranked::region(self).slice(),
+            )
+            .map_err(|e| Error::CastingError(self.id.clone(), e.into()))?
+            .collect();
+
+        for (point, actor) in self.iter() {
+            if !selected_ranks.contains(&point.rank()) {
+                continue;
+            }
+            let create_rank = point.rank();
+            let mut headers = caller_headers.clone();
+            multicast::set_cast_info_on_headers(
+                &mut headers,
+                point,
+                cx.instance().self_addr().clone().into(),
+            );
+
+            // Make sure that we re-bind ranks, as these may be used for
+            // bootstrapping comm actors.
+            let mut unbound = Unbound::try_from_message(message.clone())
+                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+            unbound
+                .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
+                    *rank = Some(create_rank);
+                    Ok(())
+                })
+                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+            let rebound_message = unbound
+                .bind()
+                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+            actor
+                .send_with_headers(cx, headers, rebound_message)
+                .map_err(|e| Error::SendingError(actor.actor_addr().clone(), Box::new(e)))?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::result_large_err)]
@@ -596,6 +622,150 @@ impl<A: Referable> ActorMeshRef<A> {
         }
     }
 
+    fn cast_v1<M>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+        root_comm_actor: &ActorRef<CommActor>,
+        caller_headers: &Flattrs,
+    ) where
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage,
+    {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => <M as typeuri::Named>::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
+
+        let actor_ids: ValueMesh<_> = self.proc_mesh.map_into(|proc| proc.actor_addr(&self.id));
+
+        let mut headers = caller_headers.clone();
+        headers.set(
+            multicast::CAST_ORIGINATING_SENDER,
+            cx.instance().self_addr().clone().into(),
+        );
+        // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
+        // v0 transition. Should be removed once supervision is migrated
+        // and ActorMeshId is deleted.
+        headers.set(casting::CAST_ACTOR_MESH_ID, self.id.clone());
+
+        let region = view::Ranked::region(self).clone();
+        let num_ranks = region.num_ranks();
+        let threshold = hyperactor_config::global::get(V1_CAST_POINT_TO_POINT_THRESHOLD);
+
+        if threshold > 0 && num_ranks < threshold {
+            // Point-to-point: send directly to each destination actor,
+            // bypassing the comm actor tree for lower latency when fanout
+            // is small.
+            let sender = cx.instance().self_addr().clone();
+            let dest_port = <IndexedErasedUnbound<M> as typeuri::Named>::port();
+
+            let mut data = ErasedUnbound::try_from_message(message)
+                .expect("cast message serialization should not fail");
+
+            // Split ports for N destinations, matching the comm tree's
+            // split_ports behavior.
+            data.visit_mut::<UnboundPort>(
+                |UnboundPort(port_id, reducer_spec, return_undeliverable, kind, unsplit)| {
+                    if *unsplit {
+                        return Ok(());
+                    }
+                    let reducer_mode = match kind {
+                        UnboundPortKind::Streaming(opts) => {
+                            ReducerMode::Streaming(opts.clone().unwrap_or_default())
+                        }
+                        UnboundPortKind::Once if reducer_spec.is_none() => {
+                            // Once ports without reducers pass through — same as
+                            // the comm tree's split_ports.
+                            return Ok(());
+                        }
+                        UnboundPortKind::Once => ReducerMode::Once(num_ranks),
+                    };
+                    let split = port_id.split(
+                        cx,
+                        reducer_spec.clone(),
+                        reducer_mode,
+                        *return_undeliverable,
+                    )?;
+                    *port_id = split;
+                    Ok(())
+                },
+            )
+            .expect("port splitting should not fail");
+
+            for rank in 0..num_ranks {
+                let mut rank_data = data.clone();
+
+                let cast_point = region
+                    .point_of_base_rank(rank)
+                    .expect("rank should be valid in region");
+
+                rank_data
+                    .visit_mut::<resource::Rank>(|resource::Rank(r)| {
+                        *r = Some(cast_point.rank());
+                        Ok(())
+                    })
+                    .expect("rank replacement should not fail");
+
+                let mut rank_headers = headers.clone();
+                multicast::set_cast_info_on_headers(
+                    &mut rank_headers,
+                    cast_point,
+                    sender.clone().into(),
+                );
+
+                let port_id = actor_ids
+                    .get(rank)
+                    .expect("mismatched actor_ids and dest_region")
+                    .port_addr(Port::from(dest_port));
+
+                cx.instance().post(
+                    port_id,
+                    rank_headers,
+                    wirevalue::Any::serialize(&rank_data)
+                        .expect("cast message serialization should not fail"),
+                );
+            }
+        } else {
+            // Tree path: route through the comm actor tree.
+            // Pre-compute sequence numbers — this block is infallible so
+            // rollback is not a concern.
+            let sequencer = cx.instance().sequencer();
+            let seqs: ValueMesh<u64> = actor_ids.map_into(|actor_id| {
+                let hyperactor::ordering::SeqInfo::Session { seq, .. } = sequencer
+                    .assign_seq(&actor_id.port_addr(Port::from(<M as typeuri::Named>::port())))
+                else {
+                    unreachable!("assign_seq always returns SeqInfo::Session")
+                };
+                seq
+            });
+
+            let mut headers = caller_headers.clone();
+            headers.set(
+                multicast::CAST_ORIGINATING_SENDER,
+                cx.instance().self_addr().clone().into(),
+            );
+            // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
+            // v0 transition. Should be removed once supervision is migrated
+            // and ActorMeshId is deleted.
+            headers.set(casting::CAST_ACTOR_MESH_ID, self.id.clone());
+            let cast_message = CastMessageV1::new::<A, M>(
+                cx.instance().self_addr().clone().into(),
+                &self.id,
+                region,
+                headers.clone(),
+                message,
+                sequencer.session_id(),
+                seqs,
+            )
+            .expect("infallible because CastMessage should not fail for serialization");
+
+            // TODO: load balancing instead of always using the first comm actor
+            root_comm_actor
+                .send_with_headers(cx, headers, cast_message)
+                .expect("infallible because CastMessage should not fail for serialization");
+        }
+    }
     /// Query the state of all actors in this mesh.
     /// If keepalive is Some, use a message that indicates to the recipient
     /// that the owner of the mesh is still alive, along with the expiry time
@@ -1024,7 +1194,7 @@ mod tests {
         // cross a boundary
         let mut hm = testing::host_mesh(3).await;
         let pm: ProcMesh = hm
-            .spawn(instance, "test", extent!(gpus = 2), None)
+            .spawn(instance, "test", extent!(gpus = 2), None, None)
             .await
             .unwrap();
         let am: ActorMesh<testactor::TestActor> = pm.spawn(instance, "test", &()).await.unwrap();
@@ -1126,7 +1296,7 @@ mod tests {
         let num_replicas = 4;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let child_name = ActorMeshId::unique(Label::new("child").unwrap());
@@ -1227,12 +1397,12 @@ mod tests {
         let num_replicas = 4;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let mut second_hm = testing::host_mesh(num_replicas).await;
         let second_proc_mesh = second_hm
-            .spawn(instance, "test2", Extent::unity(), None)
+            .spawn(instance, "test2", Extent::unity(), None, None)
             .await
             .unwrap();
         let child_name = ActorMeshId::unique(Label::new("child").unwrap());
@@ -1323,7 +1493,7 @@ mod tests {
         let num_replicas = 4;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let child_name = ActorMeshId::unique(Label::new("child").unwrap());
@@ -1380,16 +1550,14 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
     #[cfg(fbcode_build)]
-    async fn test_cast() {
-        let config = hyperactor_config::global::lock();
+    async fn execute_cast(config: &hyperactor_config::global::ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance();
         let mut host_mesh = testing::host_mesh(4).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let actor_mesh: ActorMesh<testactor::TestActor> =
@@ -1420,6 +1588,86 @@ mod tests {
         let _ = host_mesh.shutdown(instance).await;
     }
 
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_cast_with_selection_v1_fallback() {
+        use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
+        use hyperactor_mesh_macros::sel;
+        use ndslice::Selection;
+
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+        let _v1 = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
+        let _reorder = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        let instance = testing::instance();
+        let mut host_mesh = testing::host_mesh(4).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", Extent::unity(), None, None)
+            .await
+            .unwrap();
+        let actor_mesh: ActorMesh<testactor::TestActor> =
+            proc_mesh.spawn(instance, "test", &()).await.unwrap();
+
+        // Cast with sel!(0:2) — should only reach hosts 0 and 1.
+        let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
+        actor_mesh
+            .cast_for_tensor_engine_only_do_not_use(
+                instance,
+                sel!(0:2),
+                testactor::GetCastInfo {
+                    cast_info: cast_info.bind(),
+                },
+            )
+            .unwrap();
+
+        let mut received_ranks: HashSet<usize> = HashSet::new();
+        for _ in 0..2 {
+            let (point, _actor_ref, _sender) = cast_info_rx.recv().await.unwrap();
+            received_ranks.insert(point.rank());
+        }
+        assert_eq!(received_ranks, HashSet::from([0, 1]));
+
+        // Also cast with sel!(*) — all 4 should be reached via V1.
+        let (cast_info2, mut cast_info_rx2) = instance.mailbox().open_port();
+        actor_mesh
+            .cast(
+                instance,
+                testactor::GetCastInfo {
+                    cast_info: cast_info2.bind(),
+                },
+            )
+            .unwrap();
+
+        let mut all_ranks: HashSet<usize> = HashSet::new();
+        for _ in 0..4 {
+            let (point, _actor_ref, _sender) = cast_info_rx2.recv().await.unwrap();
+            all_ranks.insert(point.rank());
+        }
+        assert_eq!(all_ranks, HashSet::from([0, 1, 2, 3]));
+
+        let _ = host_mesh.shutdown(instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_cast() {
+        let config = hyperactor_config::global::lock();
+        execute_cast(&config).await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_cast_p2p() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        execute_cast(&config).await;
+    }
     /// Test that undeliverable messages are properly returned to the
     /// sender when communication to a proc is broken.
     ///
@@ -1441,7 +1689,7 @@ mod tests {
         // Create a proc mesh with 2 hosts.
         let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
 
@@ -1566,7 +1814,7 @@ mod tests {
         // Create proc mesh with 2 procs
         let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
 
@@ -1652,7 +1900,7 @@ mod tests {
         // Create proc mesh with 2 procs
         let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
 

@@ -25,15 +25,20 @@ use std::time::Instant;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use backoff::ExponentialBackoff;
+use backoff::ExponentialBackoffBuilder;
+use backoff::backoff::Backoff;
 use futures::lock::Mutex;
-use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorId;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
+use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use serde::Deserialize;
 use serde::Serialize;
@@ -56,73 +61,58 @@ use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
+use crate::local_memory::RdmaLocalMemory;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::GetIbvActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
-use crate::rdma_manager_actor::RdmaManagerMessageClient;
 use crate::rdma_manager_actor::get_rdmaxcel_error_message;
 use crate::validate_execution_context;
 
 /// Messages handled by [`IbvManagerActor`].
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub enum IbvManagerMessage {
-    /// Register the MR for a buffer identified by `remote_buf_id`. Resolves
-    /// the local memory via the parent [`RdmaManagerActor`]'s
-    /// `RequestLocalMemory`, registers it as an ibverbs MR, and returns
-    /// the resulting [`IbvBuffer`].
-    ///
-    /// Returns `None` if the buffer has already been released or does not
-    /// exist.
-    RequestBuffer {
-        remote_buf_id: usize,
-        #[reply]
-        reply: reference::OncePortRef<Option<IbvBuffer>>,
-    },
-    /// Release a buffer registration by `remote_buf_id`.
-    /// IMPORTANT: This needs to be fire-and-forget (no reply port)
-    /// to avoid a circular deadlock where RdmaManagerActor waits for
-    /// IbvManagerMessage::ReleaseBuffer while IbvManagerActor waits for
-    /// RdmaManagerMessage::RequestLocalMemory.
+    /// Release a buffer registration by `remote_buf_id`. Fire-and-forget
+    /// (no reply port) to avoid blocking the caller during teardown.
     ReleaseBuffer { remote_buf_id: usize },
     RequestQueuePair {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: reference::OncePortRef<Result<IbvQueuePair, String>>,
+        reply: OncePortRef<Result<IbvQueuePair, String>>,
     },
     Connect {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         endpoint: IbvQpInfo,
     },
     InitializeQP {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: reference::OncePortRef<bool>,
+        reply: OncePortRef<bool>,
     },
     ConnectionInfo {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: reference::OncePortRef<IbvQpInfo>,
+        reply: OncePortRef<IbvQpInfo>,
     },
     ReleaseQueuePair {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         qp: IbvQueuePair,
     },
     GetQpState {
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: reference::OncePortRef<u32>,
+        reply: OncePortRef<u32>,
     },
 }
 wirevalue::register_type!(IbvManagerMessage);
@@ -143,6 +133,119 @@ pub enum IbvManagerLocalMessage {
         #[reply]
         reply: OncePortHandle<Result<(), String>>,
     },
+    /// Register a remote-facing buffer's MR and return its
+    /// [`IbvBuffer`]. Called by
+    /// [`crate::rdma_manager_actor::RdmaManagerActor::request_buffer`]
+    /// at buffer-creation time.
+    ///
+    /// The MR lives in [`IbvManagerActor::buffer_registrations`] and
+    /// is deregistered on [`IbvManagerMessage::ReleaseBuffer`].
+    RegisterRemoteBuffer {
+        remote_buf_id: usize,
+        local: Arc<dyn RdmaLocalMemory>,
+        #[reply]
+        reply: OncePortHandle<Result<IbvBuffer, String>>,
+    },
+}
+
+/// Adaptive wait between completion polls.
+///
+/// While the elapsed time since [`Self::yield_now`] was first called
+/// is below `yield_window`, the policy yields cooperatively
+/// (`tokio::task::yield_now`) — keeping latency tight when the WR
+/// completes shortly after being posted. `tokio::time::sleep` has a
+/// minimum resolution of ~1ms (the timer wheel tick), so even a
+/// `sleep(Duration::from_micros(100))` would block that long; `yield_now` is
+/// sub-millisecond and lets the next poll fire as soon as the runtime
+/// schedules us. Past `yield_window` the policy switches to an
+/// exponential backoff (1ms initial, doubling, capped at 10ms) so
+/// long-running operations don't keep the runtime spinning.
+///
+/// `yield_window` is read from
+/// [`crate::config::RDMA_CQ_BUSY_POLL_WINDOW`]. When it's `None`
+/// (the default) the policy disables the cutoff and only ever
+/// yields, never sleeps.
+struct PollSleepPolicy {
+    yield_window: Option<Duration>,
+    started_at: Option<Instant>,
+    backoff: Option<ExponentialBackoff>,
+}
+
+impl PollSleepPolicy {
+    fn new() -> Self {
+        let yield_window = hyperactor_config::global::get(crate::config::RDMA_CQ_BUSY_POLL_WINDOW);
+        Self {
+            yield_window,
+            started_at: None,
+            backoff: None,
+        }
+    }
+
+    /// Suspend the current task before the next poll. If no yield
+    /// window is configured (the default), always yields. Otherwise,
+    /// yields while within the window and then walks an exponential
+    /// backoff up to 10ms past it.
+    async fn yield_now(&mut self) {
+        let Some(window) = self.yield_window else {
+            tokio::task::yield_now().await;
+            return;
+        };
+        let started = *self.started_at.get_or_insert_with(Instant::now);
+        if started.elapsed() < window {
+            tokio::task::yield_now().await;
+            return;
+        }
+        let backoff = self.backoff.get_or_insert_with(|| {
+            ExponentialBackoffBuilder::new()
+                .with_initial_interval(Duration::from_millis(1))
+                .with_max_interval(Duration::from_millis(10))
+                .with_multiplier(2.0)
+                .with_randomization_factor(0.0)
+                .with_max_elapsed_time(None)
+                .build()
+        });
+        match backoff.next_backoff() {
+            Some(delay) => tokio::time::sleep(delay).await,
+            None => tokio::task::yield_now().await,
+        }
+    }
+}
+
+/// Look up `(addr, size)` in a slice of registered CUDA segments
+/// and return a view into the matching mkey.
+///
+/// Bounded by `mr_size` (what the mkey actually covers), NOT by
+/// `phys_size` (the scanner-reported extent). They diverge when
+/// `register_segments` hits `max_sge` and stops growing the binding.
+/// Returning a view based on `phys_size` would hand out an
+/// `(lkey, offset)` past the bound and the WR would fail with
+/// `IBV_WC_LOC_PROT_ERR`; bounding by `mr_size` makes the gap a
+/// miss so the caller falls back to per-buffer dmabuf.
+///
+/// Free function so the boundary can be unit-tested without an actor.
+pub(super) fn lookup_segment_for_address(
+    segments: &[rdmaxcel_sys::rdma_segment_info_t],
+    addr: usize,
+    size: usize,
+    id: usize,
+) -> Option<IbvMemoryRegionView> {
+    for segment in segments {
+        let start_addr = segment.phys_address;
+        let end_addr = start_addr + segment.mr_size;
+        if start_addr <= addr && addr + size <= end_addr {
+            let offset = addr - start_addr;
+            let rdma_addr = segment.mr_addr + offset;
+            return Some(IbvMemoryRegionView {
+                id,
+                virtual_addr: addr,
+                rdma_addr,
+                size,
+                lkey: segment.lkey,
+                rkey: segment.rkey,
+            });
+        }
+    }
+    None
 }
 
 /// Manages all ibverbs-specific RDMA resources and operations.
@@ -159,11 +262,11 @@ pub struct IbvManagerActor {
     owner: OnceLock<ActorHandle<RdmaManagerActor>>,
 
     // Nested map: local_device -> (ActorId, remote_device) -> IbvQueuePair
-    device_qps: HashMap<String, HashMap<(reference::ActorId, String), IbvQueuePair>>,
+    device_qps: HashMap<String, HashMap<(ActorId, String), IbvQueuePair>>,
 
     // Track QPs currently being created to prevent duplicate creation
     // Wrapped in Arc<Mutex> to allow safe concurrent access
-    pending_qp_creation: Arc<Mutex<HashSet<(String, reference::ActorId, String)>>>,
+    pending_qp_creation: Arc<Mutex<HashSet<(String, ActorId, String)>>>,
 
     // Map of RDMA device names to their domains and loopback QPs
     // Created lazily when memory is registered for a specific device
@@ -271,7 +374,7 @@ impl IbvManagerActor {
         client: &(impl hyperactor::context::Actor + Send + Sync),
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let rdma_handle = RdmaManagerActor::local_handle(client);
-        let ibv_ref: reference::ActorRef<IbvManagerActor> = rdma_handle
+        let ibv_ref: ActorRef<IbvManagerActor> = rdma_handle
             .get_ibv_actor_ref(client)
             .await?
             .ok_or_else(|| anyhow::anyhow!("local RdmaManagerActor has no ibverbs backend"))?;
@@ -417,26 +520,10 @@ impl IbvManagerActor {
         pd: *mut rdmaxcel_sys::ibv_pd,
     ) -> Option<IbvMemoryRegionView> {
         let registered_segments = get_registered_cuda_segments(pd);
-        for segment in registered_segments {
-            let start_addr = segment.phys_address;
-            let end_addr = start_addr + segment.phys_size;
-            if start_addr <= addr && addr + size <= end_addr {
-                let offset = addr - start_addr;
-                let rdma_addr = segment.mr_addr + offset;
-
-                let mrv = IbvMemoryRegionView {
-                    id: self.mrv_id,
-                    virtual_addr: addr,
-                    rdma_addr,
-                    size,
-                    lkey: segment.lkey,
-                    rkey: segment.rkey,
-                };
-                self.mrv_id += 1;
-                return Some(mrv);
-            }
-        }
-        None
+        let id = self.mrv_id;
+        let mrv = lookup_segment_for_address(&registered_segments, addr, size, id)?;
+        self.mrv_id += 1;
+        Some(mrv)
     }
 
     fn register_mr_impl(
@@ -515,6 +602,7 @@ impl IbvManagerActor {
                             pds.as_mut_ptr(),
                             qps.as_mut_ptr(),
                             pds.len() as i32,
+                            self.config.max_sge_override,
                         );
                         // Only retry if register_segments succeeded
                         // If it fails (e.g., scanner returns 0 segments), we'll fall back to dmabuf
@@ -603,18 +691,18 @@ impl IbvManagerActor {
     async fn request_queue_pair_impl(
         &mut self,
         cx: &Context<'_, Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<IbvQueuePair, anyhow::Error> {
-        let self_ref: reference::ActorRef<IbvManagerActor> = cx.bind();
+        let self_ref: ActorRef<IbvManagerActor> = cx.bind();
         let other_id = other.actor_addr().id().clone();
 
         // Use the nested map structure: local_device -> (actor_id, remote_device) -> IbvQueuePair
         let inner_key = (other_id.clone(), other_device.clone());
 
         // Check if queue pair exists in map
-        let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+        let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
             self.device_qps.get(&self_device);
         if let Some(device_map) = device_map {
             if let Some(qp) = device_map.get(&inner_key) {
@@ -624,10 +712,8 @@ impl IbvManagerActor {
 
         // Try to acquire lock and mark as pending (hold lock only once!)
         let pending_key = (self_device.clone(), other_id.clone(), other_device.clone());
-        let mut pending: futures::lock::MutexGuard<
-            '_,
-            HashSet<(String, reference::ActorId, String)>,
-        > = self.pending_qp_creation.lock().await;
+        let mut pending: futures::lock::MutexGuard<'_, HashSet<(String, ActorId, String)>> =
+            self.pending_qp_creation.lock().await;
 
         if pending.contains(&pending_key) {
             // Another task is creating this QP, release lock and wait
@@ -642,7 +728,7 @@ impl IbvManagerActor {
                 tokio::time::sleep(Duration::from_micros(200)).await;
 
                 // Check if QP was created while we waited
-                let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+                let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
                     self.device_qps.get(&self_device);
                 if let Some(device_map) = device_map {
                     if let Some(qp) = device_map.get(&inner_key) {
@@ -750,7 +836,7 @@ impl IbvManagerActor {
             }
 
             // Now that connection is established, get and clone the queue pair
-            let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+            let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
                 self.device_qps.get(&self_device);
             if let Some(device_map) = device_map {
                 if let Some(qp) = device_map.get(&inner_key) {
@@ -773,10 +859,8 @@ impl IbvManagerActor {
         .await;
 
         // Always remove from pending set when done (success or failure)
-        let mut pending: futures::lock::MutexGuard<
-            '_,
-            HashSet<(String, reference::ActorId, String)>,
-        > = self.pending_qp_creation.lock().await;
+        let mut pending: futures::lock::MutexGuard<'_, HashSet<(String, ActorId, String)>> =
+            self.pending_qp_creation.lock().await;
         pending.remove(&pending_key);
         drop(pending);
 
@@ -787,41 +871,6 @@ impl IbvManagerActor {
 #[async_trait]
 #[hyperactor::handle(IbvManagerMessage)]
 impl IbvManagerMessageHandler for IbvManagerActor {
-    async fn request_buffer(
-        &mut self,
-        cx: &Context<Self>,
-        remote_buf_id: usize,
-    ) -> Result<Option<IbvBuffer>, anyhow::Error> {
-        // If already registered, return it
-        if let Some(buf) = self.buffer_registrations.get(&remote_buf_id) {
-            return Ok(Some(buf.clone()));
-        }
-
-        // Resolve local memory from the parent RdmaManagerActor.
-        // Returns None if the buffer has already been released or does
-        // not exist.
-        let owner = self.owner.get().unwrap();
-        let mem = match owner.request_local_memory(cx, remote_buf_id).await? {
-            Some(mem) => mem,
-            None => return Ok(None),
-        };
-
-        let (mrv, device_name) = self.register_mr_impl(mem.addr(), mem.size())?;
-
-        let buf = IbvBuffer {
-            mr_id: mrv.id,
-            lkey: mrv.lkey,
-            rkey: mrv.rkey,
-            addr: mrv.rdma_addr,
-            size: mrv.size,
-            device_name,
-        };
-
-        self.buffer_registrations.insert(remote_buf_id, buf.clone());
-
-        Ok(Some(buf))
-    }
-
     async fn release_buffer(
         &mut self,
         _cx: &Context<Self>,
@@ -837,7 +886,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn request_queue_pair(
         &mut self,
         cx: &Context<Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<Result<IbvQueuePair, String>, anyhow::Error> {
@@ -850,7 +899,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn connect(
         &mut self,
         _cx: &Context<Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         endpoint: IbvQpInfo,
@@ -860,7 +909,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
 
         let inner_key = (other_id.clone(), other_device.clone());
 
-        let device_map: Option<&mut HashMap<(reference::ActorId, String), IbvQueuePair>> =
+        let device_map: Option<&mut HashMap<(ActorId, String), IbvQueuePair>> =
             self.device_qps.get_mut(&self_device);
         if let Some(device_map) = device_map {
             match device_map.get_mut(&inner_key) {
@@ -886,7 +935,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn initialize_qp(
         &mut self,
         _cx: &Context<Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<bool, anyhow::Error> {
@@ -894,7 +943,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         let inner_key = (other_id.clone(), other_device.clone());
 
         // Check if QP already exists in nested structure
-        let device_map: Option<&HashMap<(reference::ActorId, String), IbvQueuePair>> =
+        let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
             self.device_qps.get(&self_device);
         if let Some(device_map) = device_map {
             if device_map.contains_key(&inner_key) {
@@ -903,8 +952,8 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         }
 
         // The domain is guaranteed to exist here: register_mr is always called before
-        // initialize_qp, either in execute_op (for the local actor) or via resolve_ibv
-        // (for the remote actor), and register_mr always calls get_or_create_device_domain.
+        // initialize_qp, either in execute_op or in register_remote_buffer at
+        // buffer-creation time, and register_mr always calls get_or_create_device_domain.
         let (domain, _) = self.device_domains.get(&self_device).ok_or_else(|| {
             anyhow::anyhow!(
                 "device domain for '{}' not found; register_mr must be called before initialize_qp",
@@ -935,7 +984,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn connection_info(
         &mut self,
         _cx: &Context<Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<IbvQpInfo, anyhow::Error> {
@@ -944,7 +993,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
 
         let inner_key = (other_id.clone(), other_device.clone());
 
-        let device_map: Option<&mut HashMap<(reference::ActorId, String), IbvQueuePair>> =
+        let device_map: Option<&mut HashMap<(ActorId, String), IbvQueuePair>> =
             self.device_qps.get_mut(&self_device);
         if let Some(device_map) = device_map {
             match device_map.get_mut(&inner_key) {
@@ -968,7 +1017,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn release_queue_pair(
         &mut self,
         _cx: &Context<Self>,
-        _other: reference::ActorRef<IbvManagerActor>,
+        _other: ActorRef<IbvManagerActor>,
         _self_device: String,
         _other_device: String,
         _qp: IbvQueuePair,
@@ -979,14 +1028,14 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn get_qp_state(
         &mut self,
         _cx: &Context<Self>,
-        other: reference::ActorRef<IbvManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<u32, anyhow::Error> {
         let other_id = other.actor_addr().id().clone();
         let inner_key = (other_id.clone(), other_device.clone());
 
-        let device_map: Option<&mut HashMap<(reference::ActorId, String), IbvQueuePair>> =
+        let device_map: Option<&mut HashMap<(ActorId, String), IbvQueuePair>> =
             self.device_qps.get_mut(&self_device);
         if let Some(device_map) = device_map {
             match device_map.get_mut(&inner_key) {
@@ -1025,6 +1074,31 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
     ) -> Result<Result<(), String>, anyhow::Error> {
         Ok(self.deregister_mr_impl(id).map_err(|e| e.to_string()))
     }
+
+    async fn register_remote_buffer(
+        &mut self,
+        _cx: &Context<Self>,
+        remote_buf_id: usize,
+        local: Arc<dyn RdmaLocalMemory>,
+    ) -> Result<Result<IbvBuffer, String>, anyhow::Error> {
+        if let Some(buf) = self.buffer_registrations.get(&remote_buf_id) {
+            return Ok(Ok(buf.clone()));
+        }
+        let (mrv, device_name) = match self.register_mr_impl(local.addr(), local.size()) {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(e.to_string())),
+        };
+        let buf = IbvBuffer {
+            mr_id: mrv.id,
+            lkey: mrv.lkey,
+            rkey: mrv.rkey,
+            addr: mrv.rdma_addr,
+            size: mrv.size,
+            device_name,
+        };
+        self.buffer_registrations.insert(remote_buf_id, buf.clone());
+        Ok(Ok(buf))
+    }
 }
 
 /// Wrapper around [`ActorHandle<IbvManagerActor>`] that moves the RDMA
@@ -1057,6 +1131,7 @@ impl IbvBackend {
 
         let mut remaining: std::collections::HashSet<u64> =
             expected_wr_ids.iter().copied().collect();
+        let mut poll_policy = PollSleepPolicy::new();
 
         while start_time.elapsed() < timeout {
             if remaining.is_empty() {
@@ -1072,7 +1147,7 @@ impl IbvBackend {
                     if remaining.is_empty() {
                         return Ok(());
                     }
-                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    poll_policy.yield_now().await;
                 }
                 Err(e) => {
                     // When the returned error is WR_FLUSH_ERR, which is generally a
@@ -1200,18 +1275,14 @@ impl RdmaBackend for IbvBackend {
     ) -> Result<(), anyhow::Error> {
         let mut ibv_ops = Vec::with_capacity(ops.len());
         for op in ops {
-            let (remote_ibv_mgr, remote_ibv_buffer): (
-                reference::ActorRef<IbvManagerActor>,
-                IbvBuffer,
-            ) = op.remote.resolve_ibv(cx).await.ok_or_else(|| {
+            let (remote_manager, remote_buffer) = op.remote.resolve_ibv().ok_or_else(|| {
                 anyhow::anyhow!("ibverbs backend not found for buffer: {:?}", op.remote)
-            })??;
-
+            })?;
             ibv_ops.push(IbvOp {
                 op_type: op.op_type,
                 local_memory: op.local.clone(),
-                remote_buffer: remote_ibv_buffer,
-                remote_manager: remote_ibv_mgr,
+                remote_buffer,
+                remote_manager,
             });
         }
 

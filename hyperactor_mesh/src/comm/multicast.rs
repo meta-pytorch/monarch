@@ -324,7 +324,6 @@ impl CastEnvelope for CastMessageV1 {
 
 impl CastMessageV1 {
     /// Create a new CastMessageEnvelope.
-    #[allow(unused)]
     pub(crate) fn new<A, M>(
         sender: ActorAddr,
         dest_mesh: &ActorMeshId,

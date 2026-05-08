@@ -413,7 +413,7 @@ impl ClientActor {
             reference::ActorRef::<ControllerActor>::attest(reference::ActorAddr::from(
                 &controller_id,
             ))
-            .attach(&instance, reference::ActorRef::attest(actor_id.into()))
+            .attach(&instance, reference::ActorRef::attest(actor_id))
             .await
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))
         })?

@@ -974,11 +974,20 @@ pub struct HostMeshRef {
     id: HostMeshId,
     region: Region,
     ranks: Arc<Vec<HostRef>>,
-    /// Bootstrap command to use when spawning procs on this mesh.
-    /// When `None`, each host agent uses its own default command.
+    /// Uniform bootstrap command to use when spawning procs on this
+    /// mesh. When `None`, each host agent uses its own default
+    /// command. Per-proc overrides are supplied at spawn time via the
+    /// `per_rank_bootstrap` parameter on [`HostMeshRef::spawn`].
     #[serde(default)]
     pub bootstrap_command: Option<BootstrapCommand>,
 }
+
+/// A function that produces a per-rank [`BootstrapCommand`], called
+/// once per proc during spawn with that proc's [`view::Point`] over
+/// the combined `host_extent ⊕ per_host` extent. Returning an error
+/// aborts the spawn with that error surfaced as a configuration
+/// failure.
+pub type PerRankBootstrapFn = dyn Fn(view::Point) -> anyhow::Result<BootstrapCommand> + Send + Sync;
 wirevalue::register_type!(HostMeshRef);
 
 impl HostMeshRef {
@@ -1126,6 +1135,12 @@ impl HostMeshRef {
     /// `membind`, `physcpubind`, `cpus`) to their values.
     /// Only takes effect when running on Linux.
     ///
+    /// `per_rank_bootstrap`, when provided, is a function called once
+    /// per proc to produce that proc's [`BootstrapCommand`]. The
+    /// function receives a [`view::Point`] over the combined
+    /// `host_extent ⊕ per_host` extent. Its return value takes
+    /// precedence over `self.bootstrap_command` for that proc only.
+    ///
     /// Currently, spawn issues direct calls to each host agent. This will be fixed by
     /// maintaining a comm actor on the host service procs themselves.
     #[allow(clippy::result_large_err)]
@@ -1135,6 +1150,7 @@ impl HostMeshRef {
         name: &str,
         per_host: Extent,
         proc_bind: Option<Vec<ProcBind>>,
+        per_rank_bootstrap: Option<Box<PerRankBootstrapFn>>,
     ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
@@ -1144,6 +1160,7 @@ impl HostMeshRef {
             ProcMeshId::unique(Label::strip(name)),
             per_host,
             proc_bind,
+            per_rank_bootstrap,
         )
         .await
     }
@@ -1155,6 +1172,7 @@ impl HostMeshRef {
         proc_mesh_id: ProcMeshId,
         per_host: Extent,
         proc_bind: Option<Vec<ProcBind>>,
+        per_rank_bootstrap: Option<Box<PerRankBootstrapFn>>,
     ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
@@ -1162,7 +1180,7 @@ impl HostMeshRef {
         tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Attempt");
         tracing::info!(name = "ProcMeshStatus", status = "Spawn::Attempt",);
         let result = self
-            .spawn_inner_inner(cx, proc_mesh_id, per_host, proc_bind)
+            .spawn_inner_inner(cx, proc_mesh_id, per_host, proc_bind, per_rank_bootstrap)
             .await;
         match &result {
             Ok(_) => {
@@ -1183,6 +1201,7 @@ impl HostMeshRef {
         proc_mesh_id: ProcMeshId,
         per_host: Extent,
         proc_bind: Option<Vec<ProcBind>>,
+        per_rank_bootstrap: Option<Box<PerRankBootstrapFn>>,
     ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
@@ -1254,9 +1273,18 @@ impl HostMeshRef {
                 )));
                 proc_names.push(proc_name.clone());
                 let bind = proc_bind.as_ref().map(|v| v[per_host_rank].clone());
+                let bootstrap_command = match per_rank_bootstrap.as_ref() {
+                    Some(f) => Some(
+                        f(extent
+                            .point_of_rank(create_rank)
+                            .expect("rank in combined extent"))
+                        .map_err(crate::Error::ConfigurationError)?,
+                    ),
+                    None => self.bootstrap_command.clone(),
+                };
                 let proc_spec = resource::ProcSpec {
                     client_config_override: client_config_override.clone(),
-                    bootstrap_command: self.bootstrap_command.clone(),
+                    bootstrap_command,
                     proc_bind: bind,
                     host_mesh_id: Some(self.id.clone()),
                 };
@@ -1948,7 +1976,7 @@ mod tests {
             HostMeshRef::from_hosts(HostMeshId::singleton(Label::new("test").unwrap()), hosts);
 
         let proc_mesh = host_mesh
-            .spawn(&testing::instance(), "test", Extent::unity(), None)
+            .spawn(&testing::instance(), "test", Extent::unity(), None, None)
             .await
             .unwrap();
 
@@ -2012,7 +2040,7 @@ mod tests {
         let instance = testing::instance();
 
         let err = host_mesh
-            .spawn(&instance, "test", Extent::unity(), None)
+            .spawn(&instance, "test", Extent::unity(), None, None)
             .await
             .unwrap_err();
         assert_matches!(
@@ -2060,7 +2088,7 @@ mod tests {
         let instance = testing::instance();
 
         let err = host_mesh
-            .spawn(&instance, "test", Extent::unity(), None)
+            .spawn(&instance, "test", Extent::unity(), None, None)
             .await
             .unwrap_err();
         let statuses = err.into_proc_spawn_error().unwrap();
@@ -2097,7 +2125,7 @@ mod tests {
 
         let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
 
