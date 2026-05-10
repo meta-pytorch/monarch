@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, patch
 import cloudpickle
 import monarch
 import pytest
-import torch
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor.actor_mesh import (
     Actor,
@@ -58,12 +57,6 @@ from scoped_state import scoped_state
 
 
 TActor = TypeVar("TActor", bound=Actor)
-
-
-needs_cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="CUDA not available",
-)
 
 
 debug_env = {
@@ -345,10 +338,6 @@ async def _test_debug(nested: bool) -> None:
 # debug controller per process, and we don't want this to interfere with
 # the other tests that access the debug controller.
 @isolate_in_subprocess(env=debug_env)
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
-)
 @pytest.mark.timeout(60)
 async def test_debug():
     await _test_debug(nested=False)
@@ -356,10 +345,6 @@ async def test_debug():
 
 # See earlier comment.
 @isolate_in_subprocess(env=debug_env)
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
-)
 @pytest.mark.timeout(60)
 async def test_debug_nested():
     await _test_debug(nested=True)
@@ -367,10 +352,6 @@ async def test_debug_nested():
 
 # See earlier comment
 @isolate_in_subprocess(env=debug_env)
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
-)
 @pytest.mark.timeout(60)
 async def test_debug_multi_actor() -> None:
     with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
@@ -800,10 +781,6 @@ async def test_debug_command_parser_invalid_inputs(invalid_input):
 
 # See earlier comment
 @isolate_in_subprocess(env={"MONARCH_CLI_BIN": cli_bin, **debug_env})
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
-)
 @pytest.mark.timeout(60)
 async def test_debug_cli():
     with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
