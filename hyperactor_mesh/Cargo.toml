@@ -37,7 +37,7 @@ hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
-libc = "0.2.183"
+libc = "0.2.186"
 ndslice = { version = "0.0.0", path = "../ndslice" }
 opentelemetry = "0.31"
 pin-project = "1.1.11"
