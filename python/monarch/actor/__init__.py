@@ -45,7 +45,7 @@ from monarch._src.actor.host_mesh import (
 )
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh
 from monarch._src.actor.supervision import unhandled_fault_hook
-from monarch._src.actor.telemetry import span
+from monarch._src.actor.telemetry import span, traced
 
 __all__ = [
     "Accumulator",
@@ -83,4 +83,5 @@ __all__ = [
     "MeshFailure",
     "config",
     "span",
+    "traced",
 ]
