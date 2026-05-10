@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: monarch-controller
+  namespace: monarch-tests
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                  - BM.GPU.MI300X.8
+  tolerations:
+    - key: "amd.com/gpu"
+      operator: "Equal"
+      value: "present"
+      effect: "NoSchedule"
+  containers:
+    - name: controller
+      image: ghcr.io/dochakov-oci/monarch-oci:monarch0.4.1-rocm7.2.1-02
