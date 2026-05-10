@@ -635,7 +635,11 @@ mod tests {
         Ok(())
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 30)]
+    // Wrapper is intentionally generous: under full-suite parallel
+    // load, `IbvTestEnv::setup` (proc spawn + CUDA ctx + buffer
+    // registration) alone takes >30s, while the actual concurrent
+    // reads are tens to hundreds of ms.
+    #[timed_test::async_timed_test(timeout_secs = 120)]
     async fn test_concurrent_send_to_same_target() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 2 * 1024 * 1024;
         let devices = get_all_devices();
