@@ -19,8 +19,8 @@ use std::ops::Deref;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
+use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
@@ -240,11 +240,7 @@ impl Handler<Forward> for TestActor {
 pub struct GetCastInfo {
     /// Originating actor, point, sender.
     #[reply]
-    pub cast_info: hyperactor::PortRef<(
-        Point,
-        hyperactor_reference::ActorRef<TestActor>,
-        hyperactor::ActorAddr,
-    )>,
+    pub cast_info: hyperactor::PortRef<(Point, ActorRef<TestActor>, hyperactor::ActorAddr)>,
 }
 
 #[async_trait]
