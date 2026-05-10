@@ -137,11 +137,6 @@ impl ResourceId {
         self.0.label()
     }
 
-    /// Returns the legacy actor-runtime name derived from this resource id.
-    pub fn actor_name(&self) -> String {
-        self.to_string()
-    }
-
     /// Converts this resource id into a hyperactor proc id.
     pub fn proc_id(&self) -> ProcId {
         ProcId::new(self.0.clone(), None)
@@ -348,11 +343,6 @@ macro_rules! define_mesh_id {
                 self.0.display_label()
             }
 
-            /// Returns the actor-runtime name derived from this mesh id.
-            pub fn actor_name(&self) -> String {
-                self.to_string()
-            }
-
             /// Returns the inner [`ResourceId`].
             pub fn resource_id(&self) -> &ResourceId {
                 &self.0
@@ -549,33 +539,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resource_id_actor_name_singleton() {
-        let id = ResourceId::singleton(Label::new("local").unwrap());
-        assert_eq!(id.actor_name(), "local");
-    }
-
-    #[test]
-    fn test_resource_id_actor_name_labeled_instance() {
-        let id = ResourceId::new(
-            Uid::Instance(0xd5d54d7201103869, None),
-            Some(Label::new("workers").unwrap()),
-        );
-        assert_eq!(
-            id.actor_name(),
-            format!("workers-{}", fmt_instance_uid(0xd5d54d7201103869))
-        );
-    }
-
-    #[test]
-    fn test_resource_id_actor_name_unlabeled_instance() {
-        let id = ResourceId::new(Uid::Instance(0xd5d54d7201103869, None), None);
-        assert_eq!(
-            id.actor_name(),
-            format!("resource-{}", fmt_instance_uid(0xd5d54d7201103869))
-        );
-    }
-
-    #[test]
     fn test_resource_id_debug() {
         let singleton = ResourceId::singleton(Label::new("local").unwrap());
         assert_eq!(format!("{:?}", singleton), "<local>");
@@ -763,15 +726,6 @@ mod tests {
         );
         assert_eq!(
             ActorMeshId::new(uid, None).to_string(),
-            format!("actor-{}", fmt_instance_uid(0xd5d54d7201103869))
-        );
-    }
-
-    #[test]
-    fn test_typed_mesh_id_actor_name_uses_type_default_label() {
-        let actor = ActorMeshId::new(Uid::Instance(0xd5d54d7201103869, None), None);
-        assert_eq!(
-            actor.actor_name(),
             format!("actor-{}", fmt_instance_uid(0xd5d54d7201103869))
         );
     }
