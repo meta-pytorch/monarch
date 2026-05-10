@@ -546,6 +546,13 @@ fn read_procfs_memory() -> (Option<u64>, Option<u64>) {
         return (None, None);
     }
     let page_size = page_size as u64;
+    // Sync I/O is intentional even though callers may invoke this from
+    // async contexts. `/proc/self/statm` is in the O(1) procfs tier —
+    // the kernel formats values from `mm_struct` atomic counters
+    // maintained on the page-fault and exit paths, with no page-table
+    // walk; typical wall time is a few microseconds. Dispatching via
+    // `tokio::fs::read_to_string` would cost more than the read
+    // itself, and this call cannot block on real disk I/O.
     match std::fs::read_to_string("/proc/self/statm") {
         Ok(contents) => {
             let mut fields = contents.split_whitespace();
