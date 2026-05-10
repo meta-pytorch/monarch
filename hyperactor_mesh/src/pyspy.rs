@@ -11,11 +11,11 @@
 //! See PS-* and PP-* invariants in `introspect` module doc.
 
 use async_trait::async_trait;
-use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use serde::Deserialize;
 use serde::Serialize;
@@ -439,7 +439,7 @@ pub struct PySpyDump {
     pub opts: PySpyOpts,
     /// Reply port for the result.
     #[reply]
-    pub result: hyperactor_reference::OncePortRef<PySpyResult>,
+    pub result: OncePortRef<PySpyResult>,
 }
 wirevalue::register_type!(PySpyDump);
 
@@ -456,7 +456,7 @@ pub struct PySpyProfile {
     pub request: ValidatedProfileRequest,
     /// Reply port for the result.
     #[reply]
-    pub result: hyperactor_reference::OncePortRef<PySpyProfileResult>,
+    pub result: OncePortRef<PySpyProfileResult>,
 }
 wirevalue::register_type!(PySpyProfile);
 
