@@ -170,6 +170,7 @@ async fn test_indirect_mkey_rebind_grows_existing_segment() -> Result<(), anyhow
             "rebind_grow_procs",
             hyperactor_mesh::extent!(procs = 2),
             None,
+            None,
         )
         .await?;
 
@@ -324,6 +325,7 @@ async fn test_indirect_mkey_rebind_falls_back_to_dmabuf_at_max_sge() -> Result<(
             instance,
             "rebind_failover_procs",
             hyperactor_mesh::extent!(procs = 2),
+            None,
             None,
         )
         .await?;
