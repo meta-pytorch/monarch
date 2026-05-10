@@ -22,15 +22,16 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
-use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
 use hyperactor::Addr;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
+use hyperactor::PortRef;
 use hyperactor::Proc;
 use hyperactor::ProcAddr;
 use hyperactor::RefClient;
@@ -172,7 +173,7 @@ impl HostAgentMode {
 pub(crate) struct ProcCreationState {
     pub(crate) rank: usize,
     pub(crate) host_mesh_id: Option<HostMeshId>,
-    pub(crate) created: Result<(ProcAddr, hyperactor_reference::ActorRef<ProcAgent>), HostError>,
+    pub(crate) created: Result<(ProcAddr, ActorRef<ProcAgent>), HostError>,
 }
 
 /// Actor name used when spawning the host mesh agent on the system proc.
@@ -206,7 +207,7 @@ struct ProcStatusChanged {
 /// Not exported — delivered locally via PortHandle (no serialization).
 struct DrainComplete {
     host: HostAgentMode,
-    ack: hyperactor_reference::PortRef<()>,
+    ack: PortRef<()>,
 }
 
 /// Child actor whose only job is to run `host.terminate_children()` in
@@ -218,7 +219,7 @@ struct DrainWorker {
     host: Option<HostAgentMode>,
     timeout: Duration,
     max_in_flight: usize,
-    ack: Option<hyperactor_reference::PortRef<()>>,
+    ack: Option<PortRef<()>>,
     done_notify: PortHandle<DrainComplete>,
 }
 
@@ -285,14 +286,8 @@ pub struct HostAgent {
     /// Pending `WaitRankStatus` waiters, keyed by resource name.
     /// Each entry is `(min_status, rank, reply_port)`. Only touched
     /// from `&mut self` handlers.
-    pending_proc_waiters: HashMap<
-        ResourceId,
-        Vec<(
-            resource::Status,
-            usize,
-            hyperactor_reference::PortRef<crate::StatusOverlay>,
-        )>,
-    >,
+    pending_proc_waiters:
+        HashMap<ResourceId, Vec<(resource::Status, usize, PortRef<crate::StatusOverlay>)>>,
     /// Procs that already have an active bridge task watching their status.
     watching: HashSet<ResourceId>,
     /// Port handle for sending `ProcStatusChanged` to self. Set in `init()`.
@@ -1157,9 +1152,9 @@ impl Handler<ShutdownHost> for HostAgent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Named, Serialize, Deserialize)]
 pub struct ProcState {
-    pub proc_id: hyperactor_reference::ProcAddr,
+    pub proc_id: ProcAddr,
     pub create_rank: usize,
-    pub mesh_agent: hyperactor_reference::ActorRef<ProcAgent>,
+    pub mesh_agent: ActorRef<ProcAgent>,
     pub bootstrap_command: Option<BootstrapCommand>,
     pub proc_status: Option<bootstrap::ProcStatus>,
 }
@@ -1258,7 +1253,7 @@ impl Handler<resource::List> for HostAgent {
 pub struct SetClientConfig {
     pub attrs: Attrs,
     #[reply]
-    pub done: hyperactor_reference::PortRef<()>,
+    pub done: PortRef<()>,
 }
 wirevalue::register_type!(SetClientConfig);
 
@@ -1358,6 +1353,7 @@ impl Handler<ConfigDump> for HostAgent {
 mod tests {
     use std::assert_matches;
 
+    use hyperactor::ActorAddr;
     use hyperactor::Proc;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::id::Label;
@@ -1425,7 +1421,7 @@ mod tests {
                 ..
             } if id == resource_id
               && proc_id == id.proc_addr(host_addr.clone())
-              && mesh_agent == hyperactor_reference::ActorRef::attest(id.proc_addr(host_addr.clone()).actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
+              && mesh_agent == ActorRef::attest(id.proc_addr(host_addr.clone()).actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }
@@ -1770,7 +1766,6 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_service_proc_query_child_has_queue_stats() {
-        use hyperactor as hyperactor_reference;
         use hyperactor::actor::ActorStatus;
         use hyperactor::introspect::IntrospectMessage;
         use hyperactor::introspect::IntrospectResult;
@@ -1822,9 +1817,8 @@ mod tests {
         let agent_ref = system_proc
             .proc_addr()
             .actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
-        let agent_id: hyperactor_reference::ActorAddr = agent_ref;
-        let port =
-            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let agent_id: ActorAddr = agent_ref;
+        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Poll until we see non-zero watermark (evidence of queue
         // traffic since startup).
@@ -1834,7 +1828,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Addr::Proc(system_proc.proc_addr().clone()),
+                    child_ref: Addr::Proc(system_proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
             )
