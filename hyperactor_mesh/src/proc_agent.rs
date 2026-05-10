@@ -58,12 +58,14 @@ use crate::resource;
 pub const PROC_AGENT_ACTOR_NAME: &str = "proc_agent";
 
 declare_attrs! {
-    /// Whether to self kill actors, procs, and hosts whose owner is not reachable.
+    /// Whether to self kill actors, procs, and hosts whose owner is not
+    /// reachable. `None` disables orphan cleanup entirely; `Some(d)` sets the
+    /// keepalive expiry to `d`.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_ORPHAN_TIMEOUT".to_string()),
         Some("mesh_orphan_timeout".to_string()),
     ))
-    pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(60);
+    pub attr MESH_ORPHAN_TIMEOUT: Option<Duration> = Some(Duration::from_secs(60));
 
     /// Interval at which each ProcAgent republishes introspection
     /// on a periodic timer and emits the
@@ -326,15 +328,7 @@ impl ProcAgent {
         proc: Proc,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
-        // We can't use Option<Duration> directly in config attrs because AttrValue
-        // is not implemented for Option<Duration>. So we use a zero timeout to
-        // indicate no timeout.
         let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
-        let orphan_timeout = if orphan_timeout.is_zero() {
-            None
-        } else {
-            Some(orphan_timeout)
-        };
         let agent = ProcAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
