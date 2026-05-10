@@ -1,0 +1,62 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rdma-pingpong-driver
+  namespace: monarch-tests
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rdma-pingpong-driver
+  namespace: monarch-tests
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["monarch.pytorch.org"]
+    resources: ["monarchmeshes"]
+    verbs: ["create", "get", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rdma-pingpong-driver
+  namespace: monarch-tests
+subjects:
+  - kind: ServiceAccount
+    name: rdma-pingpong-driver
+    namespace: monarch-tests
+roleRef:
+  kind: Role
+  name: rdma-pingpong-driver
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rdma-pingpong-driver
+  namespace: monarch-tests
+spec:
+  serviceAccountName: rdma-pingpong-driver
+  restartPolicy: Never
+  containers:
+    - name: driver
+      image: ghcr.io/meta-pytorch/monarch:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          pip install --quiet --break-system-packages fire xxhash && \
+          sleep infinity
+      readinessProbe:
+        exec:
+          command: ["python", "-c", "import fire, xxhash, monarch"]
+        initialDelaySeconds: 5
+        periodSeconds: 3
+        timeoutSeconds: 3
+        failureThreshold: 60
