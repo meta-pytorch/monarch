@@ -1,0 +1,7 @@
+FROM docker.io/rocm/pytorch:rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1
+
+COPY requirements-amd.txt /tmp/requirements.txt
+
+RUN pip install -r /tmp/requirements.txt --break-system-packages
+
+RUN python -c "import kagglehub; kagglehub.dataset_download('gpiosenka/cards-image-datasetclassification')"
