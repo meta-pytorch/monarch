@@ -507,7 +507,7 @@ fn test_lookup_segment_respects_mr_size_when_scanner_reports_larger_phys_size() 
     // Inside the bound region: hit; rdma_addr is offset from the
     // registered `mr_addr`, not the physical address.
     let in_bound_addr = PHYS_ADDR + 4 * 1024 * 1024;
-    let in_bound = lookup_segment_for_address(&segments, in_bound_addr, 1024, 0)
+    let in_bound = lookup_segment_for_address(&segments, in_bound_addr, 1024)
         .expect("in-bound address should hit the segment cache");
     assert_eq!(in_bound.virtual_addr, in_bound_addr);
     assert_eq!(in_bound.rdma_addr, MR_ADDR + 4 * 1024 * 1024);
@@ -518,7 +518,7 @@ fn test_lookup_segment_respects_mr_size_when_scanner_reports_larger_phys_size() 
     // caller falls through to dmabuf.
     let in_gap_addr = PHYS_ADDR + MR_SIZE + 1024;
     assert!(
-        lookup_segment_for_address(&segments, in_gap_addr, 1024, 0).is_none(),
+        lookup_segment_for_address(&segments, in_gap_addr, 1024).is_none(),
         "address in the [mr_size, phys_size) gap must not be reported \
          as covered by the indirect mkey",
     );
@@ -526,14 +526,14 @@ fn test_lookup_segment_respects_mr_size_when_scanner_reports_larger_phys_size() 
     // Request straddling the mr_size boundary must miss.
     let straddling_addr = PHYS_ADDR + MR_SIZE - 512;
     assert!(
-        lookup_segment_for_address(&segments, straddling_addr, 4096, 0).is_none(),
+        lookup_segment_for_address(&segments, straddling_addr, 4096).is_none(),
         "request straddling the mr_size boundary must miss",
     );
 
     // Past `phys_size`: out of range.
     let past_end_addr = PHYS_ADDR + PHYS_SIZE + 1;
     assert!(
-        lookup_segment_for_address(&segments, past_end_addr, 1, 0).is_none(),
+        lookup_segment_for_address(&segments, past_end_addr, 1).is_none(),
         "address past phys_size must miss",
     );
 }
