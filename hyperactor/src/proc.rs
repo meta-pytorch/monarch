@@ -160,6 +160,9 @@ use crate::channel::ChannelTransport;
 use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
+use crate::id::ActorId;
+use crate::id::ProcId;
+use crate::id::Uid;
 use crate::introspect::IntrospectMessage;
 use crate::introspect::IntrospectResult;
 use crate::mailbox::BoxedMailboxSender;
@@ -429,7 +432,7 @@ struct ProcState {
     reserved_roots: DashSet<crate::id::Uid>,
 
     /// All actor instances in this proc.
-    instances: DashMap<ActorAddr, WeakInstanceCell>,
+    instances: DashMap<ActorId, InstanceSlot>,
 
     /// Proc-level queue-pressure accounting (PD-6 through PD-9).
     /// Runtime-driven — updated from `account_enqueue` /
@@ -441,7 +444,7 @@ struct ProcState {
     /// Populated by the introspect task just before it exits on
     /// terminal status. Bounded by
     /// [`config::TERMINATED_SNAPSHOT_RETENTION`].
-    terminated_snapshots: DashMap<ActorAddr, crate::introspect::IntrospectResult>,
+    terminated_snapshots: DashMap<ActorId, TerminatedSnapshot>,
 
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
@@ -456,6 +459,18 @@ struct ProcState {
     /// gracefully stop the server and join it (flushing receive-side
     /// acks) during shutdown.
     mailbox_server_handle: std::sync::Mutex<Option<crate::mailbox::MailboxServerHandle>>,
+}
+
+// Stores the instance along with its addr.
+// This is temporary until we have gateways.
+struct InstanceSlot {
+    actor_addr: ActorAddr,
+    cell: WeakInstanceCell,
+}
+
+struct TerminatedSnapshot {
+    actor_addr: ActorAddr,
+    payload: crate::introspect::IntrospectResult,
 }
 
 impl Drop for ProcState {
@@ -515,9 +530,12 @@ impl Proc {
     }
 
     /// Create a new direct-addressed proc.
+    ///
+    /// The provided name is a display label. Direct procs are otherwise
+    /// independent instances, so each one receives a unique proc id.
     pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
-        let proc_id = ProcAddr::named(addr, name);
+        let proc_id = ProcAddr::unique(addr, name);
         let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
         let handle = proc.clone().serve(rx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
@@ -847,8 +865,8 @@ impl Proc {
         F: FnMut(&InstanceCell, usize),
     {
         for entry in self.state().instances.iter() {
-            if entry.key().is_root() {
-                if let Some(cell) = entry.value().upgrade() {
+            if entry.value().actor_addr.is_root() {
+                if let Some(cell) = entry.value().cell.upgrade() {
                     cell.traverse(f);
                 }
             }
@@ -874,8 +892,8 @@ impl Proc {
     pub fn get_instance(&self, actor_id: &ActorAddr) -> Option<InstanceCell> {
         self.state()
             .instances
-            .get(actor_id)
-            .and_then(|weak| weak.upgrade())
+            .get(actor_id.id())
+            .and_then(|slot| slot.cell.upgrade())
     }
 
     /// Returns the ActorAddrs of all root actors in this proc.
@@ -890,8 +908,8 @@ impl Proc {
         self.state()
             .instances
             .iter()
-            .filter(|entry| entry.key().is_root())
-            .map(|entry| entry.key().clone())
+            .filter(|entry| entry.value().actor_addr.is_root())
+            .map(|entry| entry.value().actor_addr.clone())
             .collect()
     }
 
@@ -910,10 +928,11 @@ impl Proc {
             .filter(|entry| {
                 entry
                     .value()
+                    .cell
                     .upgrade()
                     .is_some_and(|cell| !cell.status().borrow().is_terminal())
             })
-            .map(|entry| entry.key().clone())
+            .map(|entry| entry.value().actor_addr.clone())
             .collect()
     }
 
@@ -932,7 +951,7 @@ impl Proc {
         self.state()
             .instances
             .iter()
-            .map(|entry| entry.key().clone())
+            .map(|entry| entry.value().actor_addr.clone())
             .collect()
     }
 
@@ -943,8 +962,8 @@ impl Proc {
     ) -> Option<crate::introspect::IntrospectResult> {
         self.state()
             .terminated_snapshots
-            .get(actor_id)
-            .map(|e| e.value().clone())
+            .get(actor_id.id())
+            .map(|entry| entry.value().payload.clone())
     }
 
     /// Return all terminated actor IDs currently retained.
@@ -952,7 +971,7 @@ impl Proc {
         self.state()
             .terminated_snapshots
             .iter()
-            .map(|e| e.key().clone())
+            .map(|entry| entry.value().actor_addr.clone())
             .collect()
     }
 
@@ -1012,9 +1031,9 @@ impl Proc {
     ) -> Option<impl Future<Output = ActorAddr>> {
         self.state()
             .instances
-            .get(root)
+            .get(root.id())
             .into_iter()
-            .flat_map(|e| e.upgrade())
+            .flat_map(|entry| entry.cell.upgrade())
             .map(|cell| {
                 let r1 = root.clone();
                 let r2 = root.clone();
@@ -1055,12 +1074,12 @@ impl Proc {
         // guard) before doing anything with `cell`. InstanceCellState::drop
         // calls instances.remove(), which needs a write lock on the same shard.
         // Holding the read guard while cell drops would self-deadlock.
-        let cell = match self.state().instances.get(actor_id) {
+        let cell = match self.state().instances.get(actor_id.id()) {
             None => {
                 tracing::error!(subject = %self.proc_addr().subject(), "no actor {} found", actor_id);
                 return None;
             }
-            Some(entry) => entry.value().upgrade(),
+            Some(entry) => entry.value().cell.upgrade(),
         }; // entry (shard read lock) dropped here
         match cell {
             None => None, // the actor's cell has been dropped
@@ -1132,8 +1151,8 @@ impl Proc {
             .state()
             .instances
             .iter()
-            .filter(|entry| entry.key().is_root())
-            .map(|entry| entry.key().clone())
+            .filter(|entry| entry.value().actor_addr.is_root())
+            .map(|entry| entry.value().actor_addr.clone())
             .collect::<Vec<_>>()
         {
             if coordinator_id.as_ref() == Some(&actor_id) {
@@ -1272,7 +1291,8 @@ impl Proc {
         let cell = self
             .inner
             .instances
-            .get(actor_ref.actor_addr())?
+            .get(actor_ref.actor_addr().id())?
+            .cell
             .upgrade()?;
         // An actor whose status is terminal has stopped processing
         // messages even if its InstanceCell Arc is still alive (e.g.
@@ -1312,7 +1332,7 @@ impl Proc {
         &self,
         parent_id: &ActorAddr,
     ) -> Result<ActorAddr, anyhow::Error> {
-        assert_eq!(parent_id.proc_addr(), self.state().proc_id);
+        assert_eq!(parent_id.proc_id(), self.state().proc_id.id());
         Ok(parent_id.unique_child())
     }
 
@@ -1322,7 +1342,7 @@ impl Proc {
         parent_id: &ActorAddr,
         name: &str,
     ) -> Result<ActorAddr, anyhow::Error> {
-        assert_eq!(parent_id.proc_addr(), self.state().proc_id);
+        assert_eq!(parent_id.proc_id(), self.state().proc_id.id());
         let proc_id = self.state().proc_id.id().clone();
         let actor_id = crate::id::ActorId::instance_labeled(crate::id::Label::strip(name), proc_id);
         Ok(ActorAddr::new(
@@ -1360,6 +1380,26 @@ impl Proc {
     }
 }
 
+fn is_local_delivery_target(local_proc: &ProcAddr, dest_proc: &ProcAddr) -> bool {
+    if requires_location_for_local_delivery_identity(dest_proc.id()) {
+        return dest_proc == local_proc;
+    }
+
+    dest_proc.id() == local_proc.id()
+}
+
+fn requires_location_for_local_delivery_identity(proc_id: &ProcId) -> bool {
+    // Temporary hyperactor_mesh compatibility hack: host bootstrap
+    // still creates a `service` proc and a `local` proc in every host
+    // process, so those proc ids are not globally unique. Until those
+    // construction paths are assigned instance ids, local delivery for
+    // those two ids must keep the old full-address comparison.
+    matches!(
+        proc_id.uid(),
+        Uid::Singleton(label) if matches!(label.as_str(), "service" | "local")
+    )
+}
+
 #[async_trait]
 impl MailboxSender for Proc {
     fn post_unchecked(
@@ -1367,14 +1407,8 @@ impl MailboxSender for Proc {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        // TODO(https://github.com/meta-pytorch/monarch/issues/3673):
-        // Eventually we want this comparison to just be based on proc id
-        // rather than proc ref (proc id + addr), since proc id is supposed
-        // to be globally unique. However, every host today runs two processes
-        // with the hardcoded names "local" and "service", violating this
-        // invariant. Until that is fixed, we need to include the addr in this
-        // routing decision.
-        if envelope.dest().actor_addr().proc_addr() == self.state().proc_id {
+        let dest_proc = envelope.dest().actor_addr().proc_addr();
+        if is_local_delivery_target(&self.state().proc_id, &dest_proc) {
             self.state().proc_muxer.post(envelope, return_handle)
         } else {
             self.state().forwarder.post(envelope, return_handle)
@@ -2742,7 +2776,7 @@ impl InstanceCellState {
 
     /// Unlink this instance from a child.
     fn unlink(&self, child: &InstanceCellState) -> bool {
-        assert_eq!(self.actor_id.proc_addr(), child.actor_id.proc_addr());
+        assert_eq!(self.actor_id.proc_id(), child.actor_id.proc_id());
         self.children.remove(child.actor_id.uid()).is_some()
     }
 }
@@ -2834,9 +2868,13 @@ impl InstanceCell {
             }),
         };
         cell.maybe_link_parent();
-        proc.inner
-            .instances
-            .insert(actor_id.clone(), cell.downgrade());
+        proc.inner.instances.insert(
+            actor_id.id().clone(),
+            InstanceSlot {
+                actor_addr: actor_id,
+                cell: cell.downgrade(),
+            },
+        );
         cell
     }
 
@@ -2956,19 +2994,13 @@ impl InstanceCell {
 
     /// Link this instance to a new child.
     fn link(&self, child: InstanceCell) {
-        assert_eq!(
-            self.actor_addr().proc_addr(),
-            child.actor_addr().proc_addr()
-        );
+        assert_eq!(self.actor_addr().proc_id(), child.actor_addr().proc_id());
         self.inner.children.insert(child.uid().clone(), child);
     }
 
     /// Unlink this instance from a child.
     fn unlink(&self, child: &InstanceCell) {
-        assert_eq!(
-            self.actor_addr().proc_addr(),
-            child.actor_addr().proc_addr()
-        );
+        assert_eq!(self.actor_addr().proc_id(), child.actor_addr().proc_id());
         self.inner.children.remove(child.uid());
     }
 
@@ -3116,7 +3148,13 @@ impl InstanceCell {
     ///    which are closest to the root cause.
     pub fn store_terminated_snapshot(&self, payload: crate::introspect::IntrospectResult) {
         let snapshots = &self.inner.proc.inner.terminated_snapshots;
-        snapshots.insert(self.actor_addr().clone(), payload);
+        snapshots.insert(
+            self.actor_addr().id().clone(),
+            TerminatedSnapshot {
+                actor_addr: self.actor_addr().clone(),
+                payload,
+            },
+        );
         let max = hyperactor_config::global::get(crate::config::TERMINATED_SNAPSHOT_RETENTION);
         let excess = snapshots.len().saturating_sub(max);
         if excess > 0 {
@@ -3124,25 +3162,26 @@ impl InstanceCell {
             let entries: Vec<_> = snapshots
                 .iter()
                 .map(|entry| {
-                    let occurred_at =
-                        serde_json::from_str::<hyperactor_config::Attrs>(&entry.value().attrs)
-                            .ok()
-                            .and_then(|attrs| {
-                                // Presence of FAILURE_ERROR_MESSAGE means the actor failed.
-                                attrs
-                                    .get(crate::introspect::FAILURE_ERROR_MESSAGE)
-                                    .cloned()?;
-                                // Extract occurred_at timestamp for sorting.
-                                attrs
-                                    .get(crate::introspect::FAILURE_OCCURRED_AT)
-                                    .map(|t| humantime::format_rfc3339(*t).to_string())
-                            });
-                    (entry.key().clone(), occurred_at)
+                    let occurred_at = serde_json::from_str::<hyperactor_config::Attrs>(
+                        &entry.value().payload.attrs,
+                    )
+                    .ok()
+                    .and_then(|attrs| {
+                        // Presence of FAILURE_ERROR_MESSAGE means the actor failed.
+                        attrs
+                            .get(crate::introspect::FAILURE_ERROR_MESSAGE)
+                            .cloned()?;
+                        // Extract occurred_at timestamp for sorting.
+                        attrs
+                            .get(crate::introspect::FAILURE_OCCURRED_AT)
+                            .map(|t| humantime::format_rfc3339(*t).to_string())
+                    });
+                    (entry.value().actor_addr.clone(), occurred_at)
                 })
                 .collect();
 
             for key in select_eviction_candidates(&entries, excess) {
-                snapshots.remove(&key);
+                snapshots.remove(key.id());
             }
         }
     }
@@ -3212,7 +3251,13 @@ impl Drop for InstanceCellState {
                 parent.actor_addr()
             );
         }
-        if self.proc.inner.instances.remove(&self.actor_id).is_none() {
+        if self
+            .proc
+            .inner
+            .instances
+            .remove(self.actor_id.id())
+            .is_none()
+        {
             tracing::error!("instance {} was dropped but not in proc", self.actor_id);
         }
     }
@@ -3595,15 +3640,14 @@ mod tests {
         rx.await.unwrap();
     }
 
-    /// Two procs in different processes can share the same `ProcId`
-    /// (uid + label) but live at distinct channel addresses. The local
-    /// muxer must only handle envelopes for *this* address; everything
-    /// else has to fall through to the forwarder.
+    /// Proc ownership is based on `ProcId`, not the routeable
+    /// `ProcAddr`. A proc may be reached through multiple locations,
+    /// but a different proc id must still forward even when the
+    /// location matches.
     #[tokio::test]
-    async fn test_post_routes_by_addr() {
+    async fn test_post_routes_by_proc_id() {
         use crate::mailbox::monitored_return_handle;
         use crate::testing::ids::test_actor_id;
-        use crate::testing::ids::test_proc_id_with_addr;
 
         #[derive(Clone)]
         struct CountingSender(Arc<AtomicUsize>);
@@ -3624,12 +3668,19 @@ mod tests {
         let local_addr = ChannelAddr::Local(1);
         let remote_addr = ChannelAddr::Local(2);
 
-        let proc_local = test_proc_id_with_addr(local_addr, "shared");
-        let proc_remote = test_proc_id_with_addr(remote_addr, "shared");
+        let proc_local = ProcAddr::unique(local_addr.clone(), "shared");
+        let proc_same_id_other_location =
+            ProcAddr::new(proc_local.id().clone(), remote_addr.into());
+        let proc_other_id_same_location = ProcAddr::unique(local_addr, "other");
         assert_eq!(
             proc_local.id(),
-            proc_remote.id(),
-            "test setup: both procs must share a ProcId for the routing decision to be ambiguous"
+            proc_same_id_other_location.id(),
+            "test setup: both procs must share a ProcId"
+        );
+        assert_ne!(
+            proc_local.id(),
+            proc_other_id_same_location.id(),
+            "test setup: the remote proc must have a distinct ProcId"
         );
 
         let forwarded = Arc::new(AtomicUsize::new(0));
@@ -3639,7 +3690,7 @@ mod tests {
         );
         let sender = test_actor_id("sender", "client");
 
-        // Same ProcId, same addr: route locally; the forwarder must not see it.
+        // Same ProcId, same location: route locally; the forwarder must not see it.
         let local_dest = proc_local.actor_addr("worker").port_addr(Port::from(1234));
         proc.post(
             MessageEnvelope::new(
@@ -3652,18 +3703,89 @@ mod tests {
         );
         assert_eq!(forwarded.load(Ordering::SeqCst), 0);
 
-        // Same ProcId, different addr: must forward to reach the remote proc.
-        let remote_dest = proc_remote.actor_addr("worker").port_addr(Port::from(1234));
+        // Same instance ProcId, different location: still local ownership.
+        let same_id_other_location_dest = proc_same_id_other_location
+            .actor_addr("worker")
+            .port_addr(Port::from(1234));
+        proc.post(
+            MessageEnvelope::new(
+                sender.clone(),
+                same_id_other_location_dest,
+                wirevalue::Any::serialize(&1u64).unwrap(),
+                Flattrs::new(),
+            ),
+            monitored_return_handle(),
+        );
+        assert_eq!(forwarded.load(Ordering::SeqCst), 0);
+
+        // Different ProcId, same location: forward.
+        let other_id_same_location_dest = proc_other_id_same_location
+            .actor_addr("worker")
+            .port_addr(Port::from(1234));
         proc.post(
             MessageEnvelope::new(
                 sender,
-                remote_dest,
+                other_id_same_location_dest,
                 wirevalue::Any::serialize(&1u64).unwrap(),
                 Flattrs::new(),
             ),
             monitored_return_handle(),
         );
         assert_eq!(forwarded.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_local_delivery_service_and_local_compare_full_proc_addr() {
+        for name in ["service", "local"] {
+            let local = ProcAddr::named(ChannelAddr::Local(1), name);
+            let same_id_other_location = ProcAddr::named(ChannelAddr::Local(2), name);
+
+            assert_eq!(local.id(), same_id_other_location.id());
+            assert!(is_local_delivery_target(&local, &local));
+            assert!(!is_local_delivery_target(&local, &same_id_other_location));
+        }
+
+        let shared = ProcAddr::named(ChannelAddr::Local(1), "shared");
+        let shared_other_location = ProcAddr::named(ChannelAddr::Local(2), "shared");
+        assert!(is_local_delivery_target(&shared, &shared_other_location));
+
+        let service_instance = ProcAddr::unique(ChannelAddr::Local(1), "service");
+        let service_instance_other_location =
+            ProcAddr::new(service_instance.id().clone(), ChannelAddr::Local(2).into());
+        assert!(is_local_delivery_target(
+            &service_instance,
+            &service_instance_other_location
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_mailbox_muxer_delivers_by_actor_id() {
+        use crate::mailbox::PortLocation;
+        use crate::mailbox::monitored_return_handle;
+        use crate::testing::ids::test_actor_id;
+
+        let proc = Proc::local();
+        let (instance, _) = proc.instance("worker").unwrap();
+        let (port, mut receiver) = instance.bind_actor_port::<u64>();
+
+        let PortLocation::Bound(default_dest) = port.location() else {
+            panic!("actor port must be bound");
+        };
+        let alternate_dest =
+            PortAddr::new(default_dest.id().clone(), ChannelAddr::Local(9876).into());
+
+        proc.post(
+            MessageEnvelope::serialize(
+                test_actor_id("sender", "client"),
+                alternate_dest,
+                &123u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+
+        assert_eq!(receiver.recv().await.unwrap(), 123);
     }
 
     #[derive(Debug, Default)]

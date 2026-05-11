@@ -2128,6 +2128,14 @@ mod tests {
             .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
+        let proc_ids = proc_mesh
+            .proc_ids()
+            .map(|proc_addr| proc_addr.id().clone())
+            .collect::<Vec<_>>();
+        let unique_proc_ids = proc_ids.iter().collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(proc_ids.len(), 2);
+        assert_eq!(unique_proc_ids.len(), proc_ids.len());
 
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(instance, "test", &()).await.unwrap();
