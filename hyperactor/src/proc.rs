@@ -431,6 +431,10 @@ struct ProcState {
     /// was already reserved.
     reserved_roots: DashSet<crate::id::Uid>,
 
+    /// Reserved explicit child actor uids. Prevents races between concurrent
+    /// `gspawn_uid` callers with the same uid.
+    reserved_child_uids: DashSet<crate::id::Uid>,
+
     /// All actor instances in this proc.
     instances: DashMap<ActorAddr, WeakInstanceCell>,
 
@@ -507,6 +511,7 @@ impl Proc {
                 proc_muxer: MailboxMuxer::new(),
                 forwarder,
                 reserved_roots: DashSet::new(),
+                reserved_child_uids: DashSet::new(),
                 instances: DashMap::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
@@ -1337,9 +1342,10 @@ impl Proc {
         uid: crate::id::Uid,
     ) -> Result<ActorAddr, anyhow::Error> {
         assert_eq!(parent_id.proc_addr(), self.state().proc_id);
-        let actor_id = crate::id::ActorId::new(uid, self.state().proc_id.id().clone(), None);
+        let actor_id =
+            crate::id::ActorId::new(uid.clone(), self.state().proc_id.id().clone(), None);
         let actor_addr = ActorAddr::new(actor_id, self.state().proc_id.location().clone());
-        if self.state().instances.contains_key(&actor_addr) {
+        if !self.state().reserved_child_uids.insert(uid) {
             anyhow::bail!("an actor with id {} has already been spawned", actor_addr);
         }
         Ok(actor_addr)
