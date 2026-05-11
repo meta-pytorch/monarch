@@ -85,11 +85,11 @@ impl Actor for Parent {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         let token = token::create(
             this,
-            this.self_id().clone(),
+            this.self_addr().clone(),
             this.port::<token::Joined<ActorRef<WorkerLike>>>().bind(),
             TokenOptions::default(),
         )?;
-        write_text(&self.token_file, &token.to_string())?;
+        write_text(&self.token_file, &token.to_string()).await?;
         println!("parent token {}", token);
         Ok(())
     }
@@ -102,7 +102,7 @@ impl Actor for Parent {
         let text = format!("parent observed supervision event: {event}");
         println!("{text}");
         if let Some(path) = &self.event_file {
-            write_text(path, &text)?;
+            write_text(path, &text).await?;
         }
         this.exit("remote supervision event observed")?;
         Ok(true)
@@ -116,7 +116,7 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
         cx: &Context<Self>,
         message: token::Joined<ActorRef<WorkerLike>>,
     ) -> anyhow::Result<()> {
-        println!("parent joined by worker {}", message.peer.actor_id());
+        println!("parent joined by worker {}", message.peer.actor_addr());
         let supervisor = cx.spawn(Supervisor::new(
             message.peer,
             KeepaliveLink::new(self.keepalive_interval, self.keepalive_timeout),
@@ -124,7 +124,7 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
         ))?;
         self.supervisor = Some(supervisor);
         if let Some(path) = &self.ready_file {
-            write_text(path, "linked")?;
+            write_text(path, "linked").await?;
         }
         if let Some(delay) = self.exit_after_link {
             cx.self_message_with_delay(ParentCommand::Exit, delay)?;
@@ -154,7 +154,7 @@ struct DemoChild {
 #[async_trait]
 impl Actor for DemoChild {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-        println!("child running at {}", this.self_id());
+        println!("child running at {}", this.self_addr());
         Ok(())
     }
 
@@ -166,7 +166,7 @@ impl Actor for DemoChild {
     ) -> anyhow::Result<()> {
         println!("child stopping: {reason}");
         if let Some(path) = &self.stopped_file {
-            write_text(path, reason)?;
+            write_text(path, reason).await?;
         }
         this.close();
         match mode {
@@ -209,7 +209,7 @@ async fn run_parent(args: ParentArgs) -> anyhow::Result<()> {
 }
 
 async fn run_joiner(args: JoinerArgs) -> anyhow::Result<()> {
-    let token = read_token(&args.token_file)?;
+    let token = read_token(&args.token_file).await?;
     let proc = Proc::direct(
         ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Localhost)),
         "token_supervision_joiner".to_string(),
@@ -228,7 +228,7 @@ async fn run_joiner(args: JoinerArgs) -> anyhow::Result<()> {
         token::JoinResult::Joined { peer } => {
             println!("joiner linked to parent {peer}");
             if let Some(path) = &args.ready_file {
-                write_text(path, "joined")?;
+                write_text(path, "joined").await?;
             }
         }
         token::JoinResult::Rejected { reason } => {
@@ -238,19 +238,19 @@ async fn run_joiner(args: JoinerArgs) -> anyhow::Result<()> {
 
     worker.await;
     if let Some(path) = &args.exited_file {
-        write_text(path, "exited")?;
+        write_text(path, "exited").await?;
     }
     println!("joiner process exiting");
     Ok(())
 }
 
-fn read_token(path: &Path) -> anyhow::Result<DemoToken> {
-    let token = std::fs::read_to_string(path)?;
+async fn read_token(path: &Path) -> anyhow::Result<DemoToken> {
+    let token = tokio::fs::read_to_string(path).await?;
     token.trim().parse()
 }
 
-fn write_text(path: &Path, text: &str) -> anyhow::Result<()> {
-    std::fs::write(path, format!("{text}\n"))?;
+async fn write_text(path: &Path, text: &str) -> anyhow::Result<()> {
+    tokio::fs::write(path, format!("{text}\n")).await?;
     Ok(())
 }
 
