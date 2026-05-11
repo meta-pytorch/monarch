@@ -50,18 +50,28 @@ def _check(*cmd: str) -> bool:
     )
 
 
-# Only use unshare without --user: --user creates a user namespace that
-# restricts GPU device access and breaks torch.cuda.is_available() in the
-# worker.  --pid without --user requires CAP_SYS_ADMIN (available on
-# privileged containers / bare metal) but not in typical CI Docker setups.
-# When unshare is unavailable the periodic --restart-every cleanup handles
-# leaked processes instead.
-if _check("unshare", "--pid", "--fork", "--mount-proc", "true"):
-    _unshare_prefix = ["unshare", "--pid", "--fork", "--mount-proc"]
-elif _check("unshare", "--pid", "--fork", "true"):
-    _unshare_prefix = ["unshare", "--pid", "--fork"]
-else:
-    _unshare_prefix: list[str] = []
+# Build the best available unshare prefix.  Priority:
+# 1. --pid alone (needs CAP_SYS_ADMIN): no user-namespace overhead, full CUDA.
+# 2. --user --map-root-user --pid: user namespace but UID 0→0 mapping keeps
+#    GPU device access intact.  Plain --user (without --map-root-user) maps
+#    root to uid 65534 (nobody) which breaks /dev/nvidia* access.
+# 3. No unshare: periodic --restart-every handles cleanup instead.
+# --mount-proc is appended when available (gives accurate /proc counts);
+# if it's blocked by seccomp we fall back to the ns/pid filtering approach.
+def _unshare_prefix_for(base: list[str]) -> list[str]:
+    """Return base + ['--mount-proc'] if that works, else base, else []."""
+    if _check(*base, "--mount-proc", "true"):
+        return base + ["--mount-proc"]
+    if _check(*base, "true"):
+        return base
+    return []
+
+
+_unshare_prefix: list[str] = (
+    _unshare_prefix_for(["unshare", "--pid", "--fork"])
+    or _unshare_prefix_for(["unshare", "--user", "--map-root-user", "--pid", "--fork"])
+    or []
+)
 
 _unshare_mount_proc_available: bool = "--mount-proc" in _unshare_prefix
 _unshare_pid_available: bool = len(_unshare_prefix) > 0
