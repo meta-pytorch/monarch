@@ -364,7 +364,7 @@ impl WorkerMessageHandler for WorkerActor {
         let _: Vec<()> = try_join_all(
             sorted_streams
                 .into_iter()
-                .zip(splits.into_iter())
+                .zip(splits)
                 .map(|(stream, split)| stream.init_comm(cx, split)),
         )
         .await?;
