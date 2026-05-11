@@ -517,6 +517,11 @@ impl<C: Actor> Worker<C> {
                 return Ok(());
             }
         }
+        let session = self
+            .session
+            .take()
+            .expect("link event must have an active session");
+        let _ = session.link_handle.stop("supervision link failed");
         if orphan_policy == OrphanPolicy::Stop {
             self.stop_child(StopMode::Stop, "supervision link failed")?;
         }
