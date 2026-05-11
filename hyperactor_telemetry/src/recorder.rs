@@ -399,8 +399,8 @@ impl Recording {
             .collect();
 
         snapshot
-            .iter()
-            .filter_map(|(id, _)| {
+            .keys()
+            .filter_map(|id| {
                 if parents.contains(id) {
                     None
                 } else {
