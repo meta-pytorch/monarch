@@ -39,7 +39,13 @@ impl Ports {
         port
     }
 
-    fn alloc(&mut self) -> (u64, mpsc::UnboundedReceiver<Message>, watch::Sender<TxStatus>) {
+    fn alloc(
+        &mut self,
+    ) -> (
+        u64,
+        mpsc::UnboundedReceiver<Message>,
+        watch::Sender<TxStatus>,
+    ) {
         let port = self.reserve();
         let (rx, status_tx) = self.bind(port).expect("fresh local port must bind");
         (port, rx, status_tx)

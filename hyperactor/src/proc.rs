@@ -563,7 +563,7 @@ impl Builder {
             (None, Some(forwarder)) => {
                 Gateway::configured(channel::reserve_local_addr().into(), forwarder)
             }
-            (None, None) => Gateway::default().clone(),
+            (None, None) => Gateway::process_default().clone(),
             (Some(_), Some(_)) => anyhow::bail!("cannot set both gateway and forwarder"),
         };
         Ok(Proc::from_parts(proc_id, gateway))

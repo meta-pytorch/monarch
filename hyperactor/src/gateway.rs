@@ -87,7 +87,7 @@ impl Gateway {
     }
 
     /// Return the process-wide default gateway.
-    pub fn default() -> &'static Self {
+    pub fn process_default() -> &'static Self {
         static DEFAULT_GATEWAY: OnceLock<Gateway> = OnceLock::new();
         DEFAULT_GATEWAY.get_or_init(Self::new)
     }
@@ -177,12 +177,9 @@ impl Gateway {
     }
 
     fn add_server(&self, location: Location) {
-        self.inner
-            .active_servers
-            .write()
-            .unwrap()
-            .push(location.clone());
-        self.set_default_location(location);
+        let mut active_servers = self.inner.active_servers.write().unwrap();
+        active_servers.push(location.clone());
+        *self.inner.default_location.write().unwrap() = location;
     }
 
     fn remove_server(&self, location: &Location) {
@@ -194,8 +191,7 @@ impl Gateway {
             .last()
             .cloned()
             .unwrap_or_else(|| self.inner.fallback_location.clone());
-        drop(active_servers);
-        self.set_default_location(default_location);
+        *self.inner.default_location.write().unwrap() = default_location;
     }
 
     /// Flush pending gateway traffic.
@@ -256,13 +252,19 @@ impl Future for GatewayServeHandle {
     type Output = <MailboxServerHandle as Future>::Output;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: This is safe because `handle` is pinned through `self`.
+        // SAFETY: `handle` is structurally pinned with `GatewayServeHandle`:
+        // this type is `!Unpin` because `MailboxServerHandle` is `!Unpin`, it
+        // has no `Drop` impl that moves `handle`, and no method moves `handle`
+        // out of a pinned `GatewayServeHandle`.
         let handle = unsafe {
             self.as_mut()
                 .map_unchecked_mut(|container| &mut container.handle)
         };
         let result = handle.poll(cx);
         if result.is_ready() {
+            // SAFETY: We only mutate unpinned bookkeeping fields after polling
+            // the pinned `handle`; this does not move `handle` or any other
+            // pinned field out of `self`.
             let this = unsafe { self.get_unchecked_mut() };
             if !this.stopped.swap(true, Ordering::AcqRel) {
                 this.gateway.remove_server(&this.location);
