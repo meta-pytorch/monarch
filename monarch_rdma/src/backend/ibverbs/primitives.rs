@@ -28,6 +28,7 @@
 //! - `IbvWc`: Wrapper around ibverbs work completion structure, used to track the status of RDMA operations.
 use std::ffi::CStr;
 use std::fmt;
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -758,16 +759,57 @@ fn ibverbs_supported_impl() -> bool {
 /// The caller must ensure the memory remains valid and is not freed, moved, or
 /// overwritten while RDMA operations are in progress.
 
-#[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    std::hash::Hash,
-    Serialize,
-    Deserialize,
-    Clone,
-    Copy
-)]
+/// Owns the lifetime of a memory region. Stored as `Arc<IbvMemoryRegion>`
+/// inside [`IbvMemoryRegionView::mr`] so the FFI resources stay
+/// alive as long as any view referencing them does. [`Drop`] runs
+/// the appropriate deregister call.
+#[derive(Debug)]
+pub(super) enum IbvMemoryRegion {
+    /// Standalone `ibv_mr*` registered via `ibv_reg_mr` /
+    /// `ibv_reg_dmabuf_mr`. `Drop` calls `ibv_dereg_mr`.
+    Direct(*mut rdmaxcel_sys::ibv_mr),
+    /// Singleton owner shared by every segment-backed view from the
+    /// mlx5dv segment scanner. `Drop` calls
+    /// `rdmaxcel_sys::deregister_segments`, so the scanner-registered
+    /// segments are torn down once the last segment-backed view in
+    /// the process is gone.
+    Segments,
+}
+
+// SAFETY: `IbvMemoryRegion::Direct`'s `*mut ibv_mr` is treated as
+// thread-safe by libibverbs for deregistration; `IbvMemoryRegion::Segments`
+// holds no data. Wrapping in `Arc<IbvMemoryRegion>` is the intended sharing
+// pattern.
+unsafe impl Send for IbvMemoryRegion {}
+unsafe impl Sync for IbvMemoryRegion {}
+
+impl Drop for IbvMemoryRegion {
+    fn drop(&mut self) {
+        match self {
+            IbvMemoryRegion::Direct(mr) => {
+                if mr.is_null() {
+                    return;
+                }
+                let result = unsafe { rdmaxcel_sys::ibv_dereg_mr(*mr) };
+                if result != 0 {
+                    tracing::error!(
+                        "failed to deregister MR at {:p}: error code {}",
+                        *mr,
+                        result
+                    );
+                }
+            }
+            IbvMemoryRegion::Segments => {
+                let result = unsafe { rdmaxcel_sys::deregister_segments() };
+                if result != 0 {
+                    tracing::error!("failed to deregister CUDA segments: error code {}", result);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct IbvMemoryRegionView {
     // id should be unique with a given rdmam manager
     pub id: usize,
@@ -780,6 +822,12 @@ pub struct IbvMemoryRegionView {
     pub size: usize,
     pub lkey: u32,
     pub rkey: u32,
+    /// Name of the RDMA device the view's protection domain is on.
+    pub device_name: String,
+    /// Strong reference to the underlying [`IbvMemoryRegion`]; keeps the FFI
+    /// MR (or segment singleton) alive for as long as any clone of
+    /// this view is reachable.
+    pub(super) mr: Arc<IbvMemoryRegion>,
 }
 
 // SAFETY: IbvMemoryRegionView can be safely sent between threads because it only
@@ -801,13 +849,15 @@ unsafe impl Sync for IbvMemoryRegionView {}
 
 impl IbvMemoryRegionView {
     /// Creates a new `IbvMemoryRegionView` with the given address and size.
-    pub fn new(
+    pub(super) fn new(
         id: usize,
         virtual_addr: usize,
         rdma_addr: usize,
         size: usize,
         lkey: u32,
         rkey: u32,
+        device_name: String,
+        mr: Arc<IbvMemoryRegion>,
     ) -> Self {
         Self {
             id,
@@ -816,6 +866,8 @@ impl IbvMemoryRegionView {
             size,
             lkey,
             rkey,
+            device_name,
+            mr,
         }
     }
 }
