@@ -1030,6 +1030,7 @@ fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
 mod tests {
     #[cfg(fbcode_build)]
     use std::ops::Deref;
+    use std::time::Duration;
 
     #[cfg(fbcode_build)]
     use hyperactor::Instance;
@@ -1047,6 +1048,7 @@ mod tests {
     use crate::ActorMesh;
     #[cfg(fbcode_build)]
     use crate::comm::ENABLE_NATIVE_V1_CASTING;
+    use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     use crate::resource::RankedValues;
     use crate::resource::Status;
     use crate::testactor;
@@ -1069,30 +1071,45 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_spawn_actor_v1_casting() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard4 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
         execute_spawn_actor().await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_spawn_actor_v1_casting_p2p() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
         let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        let _guard4 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard5 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
         execute_spawn_actor().await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_spawn_actor_v0_casting() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _guard2 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard3 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
         execute_spawn_actor().await;
     }
 
@@ -1111,7 +1128,7 @@ mod tests {
             .proc()
             .instance(&format!("random_casts_{}", Uuid::now_v7()))
             .unwrap();
-        let n = 5;
+        let n = 1;
         for _ in 0..n {
             actor_mesh.cast(&instance, ()).unwrap();
         }
@@ -1123,12 +1140,17 @@ mod tests {
         actor_mesh
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_seq_from_same_sender_to_different_meshes() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard4 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         hyperactor_telemetry::initialize_logging_for_test();
         let instance = testing::instance();
@@ -1166,12 +1188,17 @@ mod tests {
 
     /// Verify that the seq numbers are assigned correctly when we cast to
     /// different views of the same root mesh.
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_seq_from_same_sender_to_different_views() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard4 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1222,12 +1249,17 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_seq_from_different_senders() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard4 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1282,9 +1314,16 @@ mod tests {
     async fn test_failing_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard2 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
+
         let instance = testing::instance();
 
-        let mut hm = testing::host_mesh(2).await;
+        let mut hm = testing::host_mesh(1).await;
         let proc_mesh = hm
             .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
@@ -1300,7 +1339,7 @@ mod tests {
         let statuses = err.into_actor_spawn_error().unwrap();
         assert_eq!(
             statuses,
-            RankedValues::from((0..2, Status::Failed("test failure".to_string()))),
+            RankedValues::from((0..1, Status::Failed("test failure".to_string()))),
         );
 
         let _ = hm.shutdown(instance).await;

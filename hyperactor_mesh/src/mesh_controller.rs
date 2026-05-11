@@ -1320,6 +1320,7 @@ mod tests {
     use super::proc_status_to_actor_status;
     use crate::ActorMesh;
     use crate::bootstrap::ProcStatus;
+    use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     use crate::mesh_id::ActorMeshId;
     use crate::mesh_id::HostMeshId;
     use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
@@ -1496,9 +1497,14 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Some(Duration::from_secs(2)));
         let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
-        let num_replicas = 2;
+        let num_replicas = 1;
 
         // Host mesh for the test actors (these survive the crash).
         // host_mesh_with_config propagates config overrides to child

@@ -2111,6 +2111,7 @@ mod tests {
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_mins(1),
         );
+        let _guard4 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_mins(2));
 
         // Unset env vars that were mirrored by TestOverride, so child
         // processes don't inherit them. This allows Runtime layer to

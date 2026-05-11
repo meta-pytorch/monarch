@@ -518,9 +518,9 @@ impl Actor for HostAgent {
 
             let proc = match child_ref {
                 Addr::Proc(proc_ref) => {
-                    if *proc_ref == *system_proc.proc_addr() {
+                    if *proc_ref == system_proc.proc_addr() {
                         Some((&system_proc, SERVICE_PROC_NAME))
-                    } else if *proc_ref == *local_proc.proc_addr() {
+                    } else if *proc_ref == local_proc.proc_addr() {
                         Some((&local_proc, LOCAL_PROC_NAME))
                     } else {
                         None
