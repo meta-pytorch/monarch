@@ -1115,7 +1115,6 @@ wirevalue::register_type!(NotifyRts);
 /// Local-only self-message fired by the timeout task. Triggers
 /// the initializer to abort the handshake.
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 struct InitializationFailed;
 
 /// RAII wrapper that destroys the wrapped queue pair on drop.
@@ -1127,9 +1126,8 @@ pub struct QpGuard {
     qp: Option<IbvQueuePair>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl QpGuard {
-    fn new(qp: IbvQueuePair) -> Self {
+    pub(super) fn new(qp: IbvQueuePair) -> Self {
         Self { qp: Some(qp) }
     }
 
@@ -1172,7 +1170,6 @@ impl Drop for QpGuard {
 
 /// Stages of the QP setup handshake. See module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 enum InitState {
     /// Initial state after `init`: waiting for both `PeerInfo` and
     /// the peer's `NotifyRts`.
@@ -1191,7 +1188,6 @@ enum InitState {
 
 /// Bundle of trait bounds for an actor type that can play the role
 /// of [`QueuePairInitializer`]'s owner/peer manager.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) trait QpOwner:
     Actor
     + Referable
@@ -1216,7 +1212,6 @@ impl<T> QpOwner for T where
 /// mock.
 #[derive(Debug)]
 #[hyperactor::export(handlers = [PeerInfo, NotifyRts])]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) struct QueuePairInitializer<A: QpOwner> {
     owner: ActorHandle<A>,
     other: ActorRef<A>,
@@ -1233,7 +1228,6 @@ pub(super) struct QueuePairInitializer<A: QpOwner> {
     timeout_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl<A> QueuePairInitializer<A>
 where
     A: QpOwner,
@@ -1242,14 +1236,14 @@ where
         owner: ActorHandle<A>,
         other: ActorRef<A>,
         qp_key: QpKey,
-        qp: IbvQueuePair,
+        qp: QpGuard,
     ) -> Self {
         let timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
         Self {
             owner,
             other,
             qp_key,
-            qp: Some(QpGuard::new(qp)),
+            qp: Some(qp),
             timeout,
             state: InitState::AwaitingPeerInfoAndPeerRts,
             timeout_handle: None,
@@ -1631,13 +1625,13 @@ mod tests {
 
     /// A real (loopback) `IbvQueuePair` and its `IbvQpInfo`. Returns
     /// `None` when no RDMA device is present.
-    fn loopback_qp() -> Option<(IbvQueuePair, IbvQpInfo)> {
+    fn loopback_qp() -> Option<(QpGuard, IbvQpInfo)> {
         if get_all_devices().is_empty() {
             return None;
         }
         let config = IbvConfig::default();
         let domain = IbvDomain::new(config.device.clone()).ok()?;
-        let mut qp = IbvQueuePair::new(domain.context, domain.pd, config).ok()?;
+        let mut qp = QpGuard::new(IbvQueuePair::new(domain.context, domain.pd, config).ok()?);
         let info = qp.get_qp_info().ok()?;
         Some((qp, info))
     }
@@ -1716,7 +1710,7 @@ mod tests {
     }
 
     impl Harness {
-        fn build(qp: IbvQueuePair, response: MockResponse) -> Result<Self> {
+        fn build(qp: QpGuard, response: MockResponse) -> Result<Self> {
             let proc = Proc::local();
             let state = Arc::new(Mutex::new(MockState::default()));
             let mock = MockManager {
@@ -1777,8 +1771,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_peer_info_error_transitions_to_failed() {
-        let harness =
-            Harness::build(fake_qp(), MockResponse::Error("peer rejected".into())).unwrap();
+        let harness = Harness::build(
+            QpGuard::new(fake_qp()),
+            MockResponse::Error("peer rejected".into()),
+        )
+        .unwrap();
         let (key, error) = harness.await_failed().await;
         assert_eq!(key, harness.qp_key);
         assert_eq!(error, "peer rejected");
@@ -1796,7 +1793,7 @@ mod tests {
             Duration::from_millis(200),
         );
 
-        let harness = Harness::build(fake_qp(), MockResponse::DropReply).unwrap();
+        let harness = Harness::build(QpGuard::new(fake_qp()), MockResponse::DropReply).unwrap();
         let (key, error) = harness.await_failed().await;
         assert_eq!(key, harness.qp_key);
         assert!(
@@ -1879,7 +1876,7 @@ mod tests {
     /// envelope's error message.
     #[tokio::test]
     async fn test_undeliverable_in_awaiting_transitions_to_failed() {
-        let harness = Harness::build(fake_qp(), MockResponse::DropReply).unwrap();
+        let harness = Harness::build(QpGuard::new(fake_qp()), MockResponse::DropReply).unwrap();
         let undeliverable = fake_undeliverable(&harness.proc, "simulated bounce");
         let (peer, _) = harness.proc.instance("peer").unwrap();
         harness.init_handle.send(&peer, undeliverable).unwrap();
@@ -1915,7 +1912,11 @@ mod tests {
     /// `QpInitializerFailed` callback.
     #[tokio::test]
     async fn test_undeliverable_after_terminated_does_not_re_fail() {
-        let harness = Harness::build(fake_qp(), MockResponse::Error("first fail".into())).unwrap();
+        let harness = Harness::build(
+            QpGuard::new(fake_qp()),
+            MockResponse::Error("first fail".into()),
+        )
+        .unwrap();
         let _ = harness.await_failed().await;
 
         let undeliverable = fake_undeliverable(&harness.proc, "late bounce");
