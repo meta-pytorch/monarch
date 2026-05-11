@@ -71,7 +71,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use hyperactor as hyperactor_reference;
 use hyperactor::channel::ChannelAddr;
 use tokio::sync::oneshot;
 use tracing::Instrument;

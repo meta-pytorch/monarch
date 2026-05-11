@@ -124,8 +124,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -321,7 +321,7 @@ pub struct SnapshotCaptureActor {
     service: SnapshotService,
     /// Typed admin actor reference used to resolve `NodeRef`s during
     /// capture.
-    admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent>,
+    admin_ref: ActorRef<MeshAdminAgent>,
     /// Delay between periodic capture ticks after the initial
     /// immediate fire.
     interval: Duration,
@@ -367,7 +367,7 @@ impl SnapshotCaptureActor {
     /// start it.
     pub fn new(
         table_store: TableStore,
-        admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent>,
+        admin_ref: ActorRef<MeshAdminAgent>,
         interval: Duration,
     ) -> Self {
         Self {
