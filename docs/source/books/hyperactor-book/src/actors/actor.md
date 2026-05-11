@@ -24,7 +24,7 @@ pub trait Actor: Sized + Send + 'static {
     }
 
     fn spawn_detached(self) -> Result<ActorHandle<Self>, anyhow::Error> {
-        Proc::local().spawn("anon", self)
+        Proc::isolated().spawn("anon", self)
     }
 
     fn spawn_server_task<F>(future: F) -> JoinHandle<F::Output>
@@ -108,7 +108,7 @@ This method takes ownership of `self` (the actor instance) and spawns it as a ch
 
 ```rust
 fn spawn_detached(self) -> Result<ActorHandle<Self>, anyhow::Error> {
-    Proc::local().spawn("anon", self)
+    Proc::isolated().spawn("anon", self)
 }
 ```
 This method takes ownership of `self` and creates a root actor on a fresh, isolated proc.

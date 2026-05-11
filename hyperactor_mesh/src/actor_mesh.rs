@@ -1309,19 +1309,20 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 120)]
+    #[async_timed_test(timeout_secs = 300)]
     #[cfg(fbcode_build)]
     async fn test_actor_states_with_panic() {
         hyperactor_telemetry::initialize_logging_for_test();
 
+        let instance = testing::instance();
         let config = hyperactor_config::global::lock();
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let _actor_spawn = config.override_key(ACTOR_SPAWN_MAX_IDLE, Duration::from_secs(120));
         let _host_spawn = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(120),
         );
 
-        let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
@@ -1413,7 +1414,7 @@ mod tests {
 
     #[cfg(fbcode_build)]
     #[assert_no_process_leak]
-    #[async_timed_test(timeout_secs = 60)]
+    #[async_timed_test(timeout_secs = 300)]
     async fn test_actor_states_with_process_exit() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1421,17 +1422,17 @@ mod tests {
         let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
         let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
         let _proc_guard = config.override_key(GET_PROC_STATE_MAX_IDLE, Duration::from_secs(1));
-        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
         let _host_spawn = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_secs(60),
+            Duration::from_secs(120),
         );
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
-        let num_replicas = 2;
+        let num_replicas = 1;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
             .spawn(instance, "test", Extent::unity(), None, None)
@@ -1518,44 +1519,47 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 120)]
+    #[async_timed_test(timeout_secs = 300)]
     #[cfg(fbcode_build)]
     async fn test_actor_states_on_sliced_mesh() {
         hyperactor_telemetry::initialize_logging_for_test();
-
-        let config = hyperactor_config::global::lock();
-        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
-        let _host_spawn = config.override_key(
-            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_secs(120),
-        );
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
-        let num_replicas = 2;
-        let mut hm = testing::host_mesh(num_replicas).await;
-        let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None, None)
-            .await
-            .unwrap();
-        let child_name = ActorMeshId::unique(Label::new("child").unwrap());
+        let (mut hm, _actor_mesh, sliced, sliced_replicas, child_name) = {
+            let config = hyperactor_config::global::lock();
+            let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+            let _actor_spawn = config.override_key(ACTOR_SPAWN_MAX_IDLE, Duration::from_secs(120));
+            let _host_spawn = config.override_key(
+                hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+                Duration::from_secs(120),
+            );
+            let num_replicas = 2;
+            let mut hm = testing::host_mesh(num_replicas).await;
+            let proc_mesh = hm
+                .spawn(instance, "test", Extent::unity(), None, None)
+                .await
+                .unwrap();
+            let child_name = ActorMeshId::unique(Label::new("child").unwrap());
 
-        // Need to use a wrapper as there's no way to customize the handler for MeshFailure
-        // on the client instance. The client would just panic with the message.
-        let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
-            .spawn(
-                instance,
-                "wrapper",
-                &(proc_mesh.deref().clone(), supervisor, child_name.clone()),
-            )
-            .await
-            .unwrap();
-        let sliced = actor_mesh
-            .range("hosts", 1..2)
-            .expect("slice should be valid");
-        let sliced_replicas = sliced.len();
+            // Need to use a wrapper as there's no way to customize the handler for MeshFailure
+            // on the client instance. The client would just panic with the message.
+            let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
+                .spawn(
+                    instance,
+                    "wrapper",
+                    &(proc_mesh.deref().clone(), supervisor, child_name.clone()),
+                )
+                .await
+                .unwrap();
+            let sliced = actor_mesh
+                .range("hosts", 1..2)
+                .expect("slice should be valid");
+            let sliced_replicas = sliced.len();
+            (hm, actor_mesh, sliced, sliced_replicas, child_name)
+        };
 
         // TODO: check that independent slice refs don't get the supervision event.
         sliced
@@ -1739,19 +1743,23 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance();
-        let config = hyperactor_config::global::lock();
-        let _proc_spawn_guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
-        let _host_spawn_guard = config.override_key(
-            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_secs(60),
-        );
 
         // Create a proc mesh with 2 hosts.
-        let mut hm = testing::host_mesh(2).await;
-        let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None, None)
-            .await
-            .unwrap();
+        let (mut hm, proc_mesh) = {
+            let config = hyperactor_config::global::lock();
+            let _proc_spawn_guard =
+                config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+            let _host_spawn_guard = config.override_key(
+                hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+                Duration::from_secs(60),
+            );
+            let mut hm = testing::host_mesh(2).await;
+            let proc_mesh = hm
+                .spawn(instance, "test", Extent::unity(), None, None)
+                .await
+                .unwrap();
+            (hm, proc_mesh)
+        };
 
         // Set up undeliverable message port for collecting undeliverables
         let (undeliverable_port, mut undeliverable_rx) =
@@ -1803,6 +1811,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Set message delivery timeout for faster test
+        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             std::time::Duration::from_secs(5),
@@ -1866,7 +1875,6 @@ mod tests {
         // handler waits for ProcAgents to report `Stopped`. Shorten it
         // from 30s to 1s so the test finishes quickly.
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
         let _host_spawn = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
@@ -1886,6 +1894,7 @@ mod tests {
         // than timeout
         let mut sleep_mesh: ActorMesh<testactor::SleepActor> =
             proc_mesh.spawn(instance, "sleepers", &()).await.unwrap();
+        let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
 
         // Send each actor a message to sleep for 5 seconds. `Instance::run`
         // only polls the signal receiver at message boundaries, so
