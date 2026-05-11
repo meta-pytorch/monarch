@@ -1503,14 +1503,13 @@ impl Mailbox {
         let enqueue = Arc::new(enqueue);
         let sender = Arc::new(HandlerPortSender::new(UnboundedPortSender::Func(enqueue)));
         (
-            PortHandle {
-                mailbox: self.clone(),
+            PortHandle::new_full(
+                self.clone(),
                 port_index,
-                sender: UnboundedPortSender::Handler(sender.clone()),
-                bound: Arc::new(RwLock::new(None)),
-                reducer_spec: None,
-                streaming_opts: StreamingReducerOpts::default(),
-            },
+                UnboundedPortSender::Handler(sender.clone()),
+                None,
+                StreamingReducerOpts::default(),
+            ),
             sender,
         )
     }
