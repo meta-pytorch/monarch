@@ -50,46 +50,23 @@ def _check(*cmd: str) -> bool:
     )
 
 
-# Only use unshare without --user: --user creates a user namespace that
-# blocks CUDA device access (cudaErrorOperatingSystem / Error 304) due to
-# seccomp restrictions on ioctl calls from within user namespaces.
-# --pid without --user requires CAP_SYS_ADMIN, which typical CI Docker
-# containers don't have.  When unshare is unavailable, the periodic
-# --restart-every cleanup handles leaked processes instead.
+# Only the full unshare mode is supported: --pid --fork --mount-proc gives an
+# isolated PID namespace with /proc remounted, enabling accurate leak detection
+# and automatic cleanup of all child processes when the worker (PID 1) exits.
+# Partial modes (--pid without --mount-proc, or --user variants) are not
+# supported: without --mount-proc the CUDA driver detects nested namespaces via
+# NSpid in /proc/self/status and refuses to initialise.
+# When unshare is unavailable (e.g. CI Docker without CAP_SYS_ADMIN and without
+# seccomp allowance for mount), periodic --restart-every handles cleanup.
 if _check("unshare", "--pid", "--fork", "--mount-proc", "true"):
-    _unshare_prefix = ["unshare", "--pid", "--fork", "--mount-proc"]
-elif _check("unshare", "--pid", "--fork", "true"):
-    _unshare_prefix = ["unshare", "--pid", "--fork"]
+    _unshare_available = True
+    _unshare_cmd = ["unshare", "--pid", "--fork", "--mount-proc"]
+elif _check("unshare", "--user", "--pid", "--fork", "--mount", "--mount-proc", "true"):
+    _unshare_available = True
+    _unshare_cmd = ["unshare", "--user", "--pid", "--fork", "--mount", "--mount-proc"]
 else:
-    _unshare_prefix: list[str] = []
-
-_unshare_mount_proc_available: bool = "--mount-proc" in _unshare_prefix
-_unshare_pid_available: bool = len(_unshare_prefix) > 0
-
-
-def _pids_in_my_namespace() -> set[int]:
-    """Return PIDs of all processes sharing our PID namespace.
-
-    Works whether or not /proc was remounted with --mount-proc:
-    - With --mount-proc: /proc only has namespace-local entries, so a plain
-      scandir suffices; the ns/pid check is redundant but harmless.
-    - Without --mount-proc: /proc has all host processes; we filter by
-      comparing each process's /proc/<pid>/ns/pid symlink to our own.
-    """
-    try:
-        my_ns = os.readlink("/proc/self/ns/pid")
-    except OSError:
-        return set()
-    result = set()
-    for entry in os.scandir("/proc"):
-        if not entry.name.isdigit():
-            continue
-        try:
-            if os.readlink(f"/proc/{entry.name}/ns/pid") == my_ns:
-                result.add(int(entry.name))
-        except OSError:
-            pass
-    return result
+    _unshare_available = False
+    _unshare_cmd: list[str] = []
 
 
 # prctl(PR_SET_PDEATHSIG, SIGKILL): tell the kernel to deliver SIGKILL to this
@@ -174,11 +151,13 @@ class _WorkerPlugin:
         and worker collections.
         """
         items: dict[str, pytest.Item] = {item.nodeid: item for item in session.items}
-        # Track leaked processes whenever we have a PID namespace (with or
-        # without --mount-proc).  _pids_in_my_namespace() filters /proc by
-        # namespace symlink so it's accurate in both cases.
-        track_procs = _unshare_pid_available
-        known_pids: set[int] = _pids_in_my_namespace() if track_procs else set()
+        # Leak detection only works in the full unshare mode where /proc is
+        # remounted inside the PID namespace (so scandir gives accurate counts).
+        known_pids: set[int] = (
+            {int(e.name) for e in os.scandir("/proc") if e.name.isdigit()}
+            if _unshare_available
+            else set()
+        )
         _send(self._wf, ReadyMsg())
 
         while True:
@@ -194,8 +173,10 @@ class _WorkerPlugin:
                     # PASSED/FAILED markers don't appear from the worker;
                     # the controller fires them after receiving the reports.
                     reports = runner.runtestprotocol(item, log=False, nextitem=None)
-                    if track_procs:
-                        after = _pids_in_my_namespace()
+                    if _unshare_available:
+                        after = {
+                            int(e.name) for e in os.scandir("/proc") if e.name.isdigit()
+                        }
                         newly_leaked = len(after - known_pids)
                         known_pids = after
                         proc_count = len(after)
@@ -389,14 +370,17 @@ class CrashRecoveryPlugin:
         ctrl_r, worker_w = os.pipe()
         self._rf = open(ctrl_r, "rb")
         self._wf = open(ctrl_w, "wb")
-        if _unshare_mount_proc_available:
-            mode = "pid-namespace+mount-proc (full isolation + proc counting)"
-        elif _unshare_pid_available:
-            mode = "pid-namespace (isolation + proc counting via ns/pid filter)"
-        else:
-            mode = "no namespace (crash/timeout recovery only)"
+        mode = (
+            "pid-namespace+mount-proc (full isolation + proc counting)"
+            if _unshare_available
+            else "no namespace (periodic restart + process tree kill)"
+        )
         print(f"[crash-recovery] worker mode: {mode}", file=sys.stderr, flush=True)
-        cmd = _unshare_prefix + [sys.executable, __file__, str(worker_r), str(worker_w)]
+        cmd = (
+            _unshare_cmd + [sys.executable, __file__, str(worker_r), str(worker_w)]
+            if _unshare_available
+            else [sys.executable, __file__, str(worker_r), str(worker_w)]
+        )
         self._worker = subprocess.Popen(cmd, pass_fds=(worker_r, worker_w))
         os.close(worker_r)
         os.close(worker_w)
@@ -412,18 +396,18 @@ class CrashRecoveryPlugin:
                 )
 
     def _kill_worker(self) -> None:
-        """SIGKILL unshare; prctl chain delivers SIGKILL to the Python worker.
-
-        self._worker is the unshare wrapper process.  Killing it triggers
-        PR_SET_PDEATHSIG in the Python worker (_worker_main set it), so the
-        Python worker is killed too without needing process-group tricks.
-        With both dead before we close pipes, the write buffer is guaranteed
-        empty (flushed after the last _send) so wf.close() never raises.
-        """
-        try:
-            self._worker.kill()
-        except ProcessLookupError:
-            pass  # already dead
+        if _unshare_available:
+            # Killing the unshare wrapper triggers PR_SET_PDEATHSIG in the
+            # Python worker, which then exits as PID 1 in the namespace —
+            # the kernel sends SIGKILL to every other process in the namespace.
+            try:
+                self._worker.kill()
+            except ProcessLookupError:
+                pass
+        else:
+            # No PID namespace: recursively kill the worker's entire process
+            # tree so leaked subprocesses don't outlive the restart.
+            _kill_process_tree(self._worker.pid)
         self._worker.wait()
         self._worker = None
         self._rf.close()
@@ -435,6 +419,31 @@ class CrashRecoveryPlugin:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _kill_process_tree(root: int) -> None:
+    """SIGKILL root and all its descendants by walking /proc."""
+    children: dict[int, list[int]] = {}
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry.name}/status") as f:
+                for line in f:
+                    if line.startswith("PPid:"):
+                        ppid = int(line.split()[1])
+                        children.setdefault(ppid, []).append(int(entry.name))
+                        break
+        except OSError:
+            pass
+    stack = [root]
+    while stack:
+        pid = stack.pop()
+        stack.extend(children.get(pid, []))
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
 
 
 def _crash_reports(item: pytest.Item, reason: str) -> list[TestReport]:
