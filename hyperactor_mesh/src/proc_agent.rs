@@ -18,8 +18,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
+use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::Addr;
 use hyperactor::Bind;
@@ -27,6 +27,7 @@ use hyperactor::Context;
 use hyperactor::Data;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::PortAddr;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
@@ -46,6 +47,7 @@ use typeuri::Named;
 
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
+use crate::introspect::ProcessMemoryStats;
 use crate::mesh_id::ResourceId;
 use crate::pyspy::PySpyDump;
 use crate::pyspy::PySpyProfile;
@@ -57,12 +59,28 @@ use crate::resource;
 pub const PROC_AGENT_ACTOR_NAME: &str = "proc_agent";
 
 declare_attrs! {
-    /// Whether to self kill actors, procs, and hosts whose owner is not reachable.
+    /// Whether to self kill actors, procs, and hosts whose owner is not
+    /// reachable. `None` disables orphan cleanup entirely; `Some(d)` sets the
+    /// keepalive expiry to `d`.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_ORPHAN_TIMEOUT".to_string()),
         Some("mesh_orphan_timeout".to_string()),
     ))
-    pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(60);
+    pub attr MESH_ORPHAN_TIMEOUT: Option<Duration> = Some(Duration::from_secs(60));
+
+    /// Interval at which each ProcAgent republishes introspection
+    /// on a periodic timer and emits the
+    /// `process.memory.rss_bytes` / `process.memory.vm_bytes`
+    /// Scuba/OTLP gauges. Linux only — has no effect on other
+    /// platforms. `Duration::ZERO` disables the periodic timer
+    /// (gauges then never fire); non-periodic republishes (boot,
+    /// post-spawn, supervision-event coalesce) still publish
+    /// introspect attrs but do not emit gauges.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_PROCESS_MEMORY_METRIC_INTERVAL".to_string()),
+        Some("process_memory_metric_interval".to_string()),
+    ))
+    pub attr PROCESS_MEMORY_METRIC_INTERVAL: Duration = Duration::from_secs(300);
 
     /// Header tag for StreamState subscriber messages. When present on an
     /// undeliverable envelope, ProcAgent removes the dead subscriber instead
@@ -72,19 +90,27 @@ declare_attrs! {
 
 /// Deferred republish of introspect properties.
 ///
-/// Sent as a zero-delay self-message from the supervision event
-/// handler so it returns immediately without blocking the ProcAgent
-/// message loop. Multiple rapid supervision events (e.g., 4 actors
-/// failing simultaneously via broadcast) coalesce into a single
-/// republish via the `introspect_dirty` flag.
+/// Carries an `emit_memory_metrics` flag distinguishing two senders:
 ///
-/// Without this, calling `publish_introspect_properties` inline in
-/// the supervision handler starves `GetRankStatus` polls from the
-/// `ActorMeshController`, preventing `__supervise__` from firing
-/// within the test timeout. See D94960791 for the root cause
-/// analysis.
+/// - `emit_memory_metrics: false` — sent from the supervision event
+///   handler with a delay so the supervision handler returns
+///   immediately without blocking the ProcAgent message loop.
+///   Multiple rapid supervision events (e.g., 4 actors failing
+///   simultaneously via broadcast) coalesce into a single republish
+///   via the `introspect_dirty` flag. Without this, calling
+///   `publish_introspect_properties` inline in the supervision
+///   handler starves `GetRankStatus` polls from the
+///   `ActorMeshController`, preventing `__supervise__` from firing
+///   within the test timeout. See D94960791 for the root cause
+///   analysis.
+///
+/// - `emit_memory_metrics: true` — sent from `Actor::init` and
+///   re-armed by the handler at the `PROCESS_MEMORY_METRIC_INTERVAL`
+///   cadence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-struct RepublishIntrospect;
+struct RepublishIntrospect {
+    emit_memory_metrics: bool,
+}
 wirevalue::register_type!(RepublishIntrospect);
 
 /// Collect live actor children and system actor children from the
@@ -116,7 +142,7 @@ fn collect_live_children(
 #[derive(Debug)]
 struct ActorInstanceState {
     create_rank: usize,
-    spawn: Result<hyperactor_reference::ActorAddr, anyhow::Error>,
+    spawn: Result<ActorAddr, anyhow::Error>,
     /// True once a stop signal has been sent. This does *not* mean the actor
     /// has reached a terminal state — that is determined by observing
     /// supervision events.
@@ -303,15 +329,7 @@ impl ProcAgent {
         proc: Proc,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
-        // We can't use Option<Duration> directly in config attrs because AttrValue
-        // is not implemented for Option<Duration>. So we use a zero timeout to
-        // indicate no timeout.
         let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
-        let orphan_timeout = if orphan_timeout.is_zero() {
-            None
-        } else {
-            Some(orphan_timeout)
-        };
         let agent = ProcAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
@@ -370,7 +388,7 @@ impl ProcAgent {
 
     /// Send a stop signal to an actor on this proc. This is fire-and-forget;
     /// it does not wait for the actor to reach terminal status.
-    fn stop_actor_by_id(&self, actor_id: &hyperactor_reference::ActorAddr, reason: &str) {
+    fn stop_actor_by_id(&self, actor_id: &ActorAddr, reason: &str) {
         tracing::info!(
             name = "StopActor",
             %actor_id,
@@ -382,7 +400,10 @@ impl ProcAgent {
 
     /// Publish the current proc properties and children list for
     /// introspection. See S12 in `introspect` module doc.
-    fn publish_introspect_properties(&self, cx: &impl hyperactor::context::Actor) {
+    fn publish_introspect_properties(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+    ) -> ProcessMemoryStats {
         let (mut children, mut system_children) = collect_live_children(&self.proc);
 
         // Terminated actors appear as children but don't inflate
@@ -473,6 +494,8 @@ impl ProcAgent {
         );
 
         cx.instance().publish_attrs(attrs);
+
+        memory
     }
 }
 
@@ -481,7 +504,7 @@ impl Actor for ProcAgent {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
         self.proc.set_supervision_coordinator(this.port())?;
-        self.publish_introspect_properties(this);
+        let _ = self.publish_introspect_properties(this);
 
         // Resolve terminated actor snapshots via QueryChild so that
         // dead actors remain directly queryable by reference.
@@ -631,6 +654,17 @@ impl Actor for ProcAgent {
         if let Some(delay) = &self.mesh_orphan_timeout {
             this.self_message_with_delay(SelfCheck::default(), *delay)?;
         }
+        if cfg!(target_os = "linux") {
+            let interval = hyperactor_config::global::get(PROCESS_MEMORY_METRIC_INTERVAL);
+            if !interval.is_zero() {
+                this.self_message_with_delay(
+                    RepublishIntrospect {
+                        emit_memory_metrics: true,
+                    },
+                    interval,
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -640,7 +674,7 @@ impl Actor for ProcAgent {
         envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         if let Some(true) = envelope.0.headers().get(STREAM_STATE_SUBSCRIBER) {
-            let dest_port_id: hyperactor_reference::PortAddr = envelope.0.dest().clone();
+            let dest_port_id: PortAddr = envelope.0.dest().clone();
             let port = PortRef::<resource::State<ActorState>>::attest(dest_port_id);
             // Remove this subscriber from whichever actor instance holds it.
             for instance in self.actor_states.values_mut() {
@@ -694,7 +728,9 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
             if !self.introspect_dirty {
                 self.introspect_dirty = true;
                 let _ = cx.self_message_with_delay(
-                    RepublishIntrospect,
+                    RepublishIntrospect {
+                        emit_memory_metrics: false,
+                    },
                     std::time::Duration::from_millis(100),
                 );
             }
@@ -725,10 +761,39 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
 
 #[async_trait]
 impl Handler<RepublishIntrospect> for ProcAgent {
-    async fn handle(&mut self, cx: &Context<Self>, _: RepublishIntrospect) -> anyhow::Result<()> {
-        if self.introspect_dirty {
-            self.introspect_dirty = false;
-            self.publish_introspect_properties(cx);
+    async fn handle(&mut self, cx: &Context<Self>, msg: RepublishIntrospect) -> anyhow::Result<()> {
+        self.introspect_dirty = false;
+        let memory = self.publish_introspect_properties(cx);
+        if msg.emit_memory_metrics {
+            let proc_id = self.proc.proc_addr().to_string();
+            let pid = std::process::id() as i64;
+            if let Some(rss) = memory.process_rss_bytes {
+                crate::metrics::PROCESS_RSS_BYTES.record(
+                    rss as f64,
+                    hyperactor_telemetry::kv_pairs!(
+                        "proc_id" => proc_id.clone(),
+                        "pid" => pid,
+                    ),
+                );
+            }
+            if let Some(vm) = memory.process_vm_size_bytes {
+                crate::metrics::PROCESS_VM_SIZE_BYTES.record(
+                    vm as f64,
+                    hyperactor_telemetry::kv_pairs!(
+                        "proc_id" => proc_id,
+                        "pid" => pid,
+                    ),
+                );
+            }
+            let interval = hyperactor_config::global::get(PROCESS_MEMORY_METRIC_INTERVAL);
+            if !interval.is_zero() {
+                cx.self_message_with_delay(
+                    RepublishIntrospect {
+                        emit_memory_metrics: true,
+                    },
+                    interval,
+                )?;
+            }
         }
         Ok(())
     }
@@ -787,7 +852,7 @@ wirevalue::register_type!(ActorSpec);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct ActorState {
     /// The actor's ID.
-    pub actor_id: hyperactor_reference::ActorAddr,
+    pub actor_id: ActorAddr,
     /// The rank of the proc that created the actor. This is before any slicing.
     pub create_rank: usize,
     // TODO status: ActorStatus,
@@ -856,7 +921,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
             },
         );
 
-        self.publish_introspect_properties(cx);
+        let _ = self.publish_introspect_properties(cx);
         Ok(())
     }
 }
@@ -899,7 +964,7 @@ impl Handler<resource::StopAll> for ProcAgent {
         self.stopping_all = true;
 
         // Send stop signals to all actors that haven't been stopped yet.
-        let to_stop: Vec<hyperactor_reference::ActorAddr> = self
+        let to_stop: Vec<ActorAddr> = self
             .actor_states
             .values_mut()
             .filter_map(|state| {
@@ -1152,7 +1217,7 @@ impl Handler<SelfCheck> for ProcAgent {
         let now = std::time::SystemTime::now();
 
         // Collect expired actors before mutating, since stop_actor borrows &mut self.
-        let expired: Vec<(ResourceId, hyperactor_reference::ActorAddr)> = self
+        let expired: Vec<(ResourceId, ActorAddr)> = self
             .actor_states
             .iter()
             .filter_map(|(id, state)| {
@@ -1216,7 +1281,6 @@ mod tests {
     // mesh_admin::tests::test_proc_children_reflect_directly_spawned_actors.
     #[tokio::test]
     async fn test_query_child_proc_returns_live_children() {
-        use hyperactor as hyperactor_reference;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
@@ -1237,8 +1301,7 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id: hyperactor_reference::ActorAddr =
-            proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
+        let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Helper: send QueryChild(Proc) and return the payload with a
@@ -1248,7 +1311,7 @@ mod tests {
             port.send(
                 client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Addr::Proc(proc.proc_addr().clone()),
+                    child_ref: Addr::Proc(proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
             )
@@ -1326,7 +1389,6 @@ mod tests {
         use std::sync::atomic::AtomicUsize;
         use std::sync::atomic::Ordering;
 
-        use hyperactor as hyperactor_reference;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
@@ -1345,8 +1407,7 @@ mod tests {
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
-        let agent_id: hyperactor_reference::ActorAddr =
-            proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
+        let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Concurrent query task: send QueryChild(Proc) every 10ms.
@@ -1364,7 +1425,7 @@ mod tests {
                     .send(
                         &query_client,
                         IntrospectMessage::QueryChild {
-                            child_ref: hyperactor_reference::Addr::Proc(query_proc_id.clone()),
+                            child_ref: Addr::Proc(query_proc_id.clone()),
                             reply: reply_port.bind(),
                         },
                     )
@@ -1425,7 +1486,7 @@ mod tests {
         port.send(
             &client,
             IntrospectMessage::QueryChild {
-                child_ref: hyperactor_reference::Addr::Proc(proc.proc_addr().clone()),
+                child_ref: Addr::Proc(proc.proc_addr().clone()),
                 reply: reply_port.bind(),
             },
         )
@@ -1630,7 +1691,6 @@ mod tests {
     // not backlog history.
     #[tokio::test]
     async fn test_query_child_proc_queue_depth_under_pressure() {
-        use hyperactor as hyperactor_reference;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
@@ -1670,8 +1730,7 @@ mod tests {
 
         // QueryChild(Proc) — same aggregation logic as mesh-admin
         // resolution.
-        let agent_id: hyperactor_reference::ActorAddr =
-            proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
+        let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Poll until queue stats are non-zero.
@@ -1681,7 +1740,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Addr::Proc(proc.proc_addr().clone()),
+                    child_ref: Addr::Proc(proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
             )
