@@ -113,8 +113,8 @@ mod tests {
     fn test_named_struct() {
         let port_id2 = test_port_id("world_0", "comm", 2);
         let port_id4 = test_port_id("world_1", "worker", 4);
-        let port2 = reference::PortRef::attest(port_id2.clone().into());
-        let port4 = reference::PortRef::attest(port_id4.clone().into());
+        let port2 = reference::PortRef::attest(port_id2.clone());
+        let port4 = reference::PortRef::attest(port_id4.clone());
         let my_struct = MyNamedStruct {
             field0: 11,
             field1: MyReply("hello".to_string()),
@@ -132,8 +132,8 @@ mod tests {
     fn test_unnamed_struct() {
         let port_id2 = test_port_id("world_0", "comm", 2);
         let port_id4 = test_port_id("world_1", "worker", 4);
-        let port2 = reference::PortRef::attest(port_id2.clone().into());
-        let port4 = reference::PortRef::attest(port_id4.clone().into());
+        let port2 = reference::PortRef::attest(port_id2.clone());
+        let port4 = reference::PortRef::attest(port_id4.clone());
         let my_struct = MyUnamedStruct(
             11,
             MyReply("hello".to_string()),
@@ -151,8 +151,8 @@ mod tests {
     fn test_named_enum() {
         let port_id2 = test_port_id("world_0", "comm", 2);
         let port_id4 = test_port_id("world_1", "worker", 4);
-        let port2 = reference::PortRef::attest(port_id2.clone().into());
-        let port4 = reference::PortRef::attest(port_id4.clone().into());
+        let port2 = reference::PortRef::attest(port_id2.clone());
+        let port4 = reference::PortRef::attest(port_id4.clone());
         let my_enum = MyEnum::Struct {
             field0: 11,
             field1: MyReply("hello".to_string()),
@@ -170,8 +170,8 @@ mod tests {
     fn test_unnamed_enum() {
         let port_id2 = test_port_id("world_0", "comm", 2);
         let port_id4 = test_port_id("world_1", "worker", 4);
-        let port2 = reference::PortRef::attest(port_id2.clone().into());
-        let port4 = reference::PortRef::attest(port_id4.clone().into());
+        let port2 = reference::PortRef::attest(port_id2.clone());
+        let port4 = reference::PortRef::attest(port_id4.clone());
         let my_enum = MyEnum::Tuple(
             11,
             MyReply("hello".to_string()),
@@ -196,8 +196,8 @@ mod tests {
     fn test_my_generic_struct() {
         let port_id2 = test_port_id("world_0", "comm", 2);
         let port_id4 = test_port_id("world_1", "worker", 4);
-        let port2: reference::PortRef<()> = reference::PortRef::attest(port_id2.clone().into());
-        let port4: reference::PortRef<()> = reference::PortRef::attest(port_id4.clone().into());
+        let port2: reference::PortRef<()> = reference::PortRef::attest(port_id2.clone());
+        let port4: reference::PortRef<()> = reference::PortRef::attest(port_id4.clone());
         let my_struct = MyGenericStruct(port2.clone(), &11, port4.clone());
         let mut bindings = Bindings::default();
         port2.unbind(&mut bindings).unwrap();
@@ -208,8 +208,8 @@ mod tests {
     fn test_my_generic_enum() {
         let port_id2 = test_port_id("world_0", "comm", 2);
         let port_id4 = test_port_id("world_1", "worker", 4);
-        let port2: reference::PortRef<()> = reference::PortRef::attest(port_id2.clone().into());
-        let port4: reference::PortRef<()> = reference::PortRef::attest(port_id4.clone().into());
+        let port2: reference::PortRef<()> = reference::PortRef::attest(port_id2.clone());
+        let port4: reference::PortRef<()> = reference::PortRef::attest(port_id4.clone());
         let my_enum = MyGenericEnum::Tuple(port2.clone(), &11, port4.clone());
         let mut bindings = Bindings::default();
         port2.unbind(&mut bindings).unwrap();

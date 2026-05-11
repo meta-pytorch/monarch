@@ -287,8 +287,7 @@ mod tests {
         let port_id = actor_handle
             .actor_addr()
             .port_addr(Port::from(GenericMessage::<u64>::port()));
-        let port_ref: reference::PortRef<GenericMessage<u64>> =
-            reference::PortRef::attest(port_id.into());
+        let port_ref: reference::PortRef<GenericMessage<u64>> = reference::PortRef::attest(port_id);
         port_ref.send(&client, GenericMessage(42)).unwrap();
         assert_eq!(rx.recv().await.unwrap(), "42");
 
