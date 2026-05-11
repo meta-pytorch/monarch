@@ -314,29 +314,13 @@ impl<C: TokenPeer, J: TokenPeer> TokenPayload<C, J> {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{kind} type uri mismatch: expected {expected}, got {actual}")]
 struct TokenTypeError {
     kind: &'static str,
     expected: &'static str,
     actual: String,
 }
-
-impl fmt::Display for TokenTypeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} type uri mismatch: expected {}, got {}",
-            self.kind, self.expected, self.actual
-        )
-    }
-}
-
-impl fmt::Debug for TokenTypeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl std::error::Error for TokenTypeError {}
 
 fn check_type_uri(
     kind: &'static str,
