@@ -1537,7 +1537,7 @@ mod tests {
                 Duration::from_secs(120),
             );
             let num_replicas = 2;
-            let mut hm = testing::host_mesh(num_replicas).await;
+            let hm = testing::host_mesh(num_replicas).await;
             let proc_mesh = hm
                 .spawn(instance, "test", Extent::unity(), None, None)
                 .await
@@ -1753,7 +1753,7 @@ mod tests {
                 hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
                 Duration::from_secs(60),
             );
-            let mut hm = testing::host_mesh(2).await;
+            let hm = testing::host_mesh(2).await;
             let proc_mesh = hm
                 .spawn(instance, "test", Extent::unity(), None, None)
                 .await

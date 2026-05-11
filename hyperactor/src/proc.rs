@@ -3879,7 +3879,11 @@ mod tests {
 
         let shared = ProcAddr::named(ChannelAddr::Local(1), "shared");
         let shared_other_location = ProcAddr::named(ChannelAddr::Local(2), "shared");
-        assert!(is_local_delivery_target(&shared, &shared_other_location));
+        let proc = Proc::configured(
+            shared.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
+        assert!(proc.is_local_delivery_target(&shared_other_location));
 
         let service_instance = ProcAddr::unique(ChannelAddr::Local(1), "service");
         let service_instance_other_location =
