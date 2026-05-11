@@ -15,9 +15,11 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
+use hyperactor::ActorAddr;
+use hyperactor::ActorRef;
 use hyperactor::Handler;
+use hyperactor::ProcAddr;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
 use hyperactor::accum::StreamingReducerOpts;
@@ -87,20 +89,16 @@ pub const COMM_ACTOR_NAME: &str = "comm";
 /// A reference to a single [`hyperactor::Proc`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProcRef {
-    proc_id: hyperactor_reference::ProcAddr,
+    proc_id: ProcAddr,
     /// The rank of this proc at creation.
     create_rank: usize,
     /// The agent managing this proc.
-    agent: hyperactor_reference::ActorRef<ProcAgent>,
+    agent: ActorRef<ProcAgent>,
 }
 
 impl ProcRef {
     /// Create a new proc ref from the provided id, create rank and agent.
-    pub fn new(
-        proc_id: hyperactor_reference::ProcAddr,
-        create_rank: usize,
-        agent: hyperactor_reference::ActorRef<ProcAgent>,
-    ) -> Self {
+    pub fn new(proc_id: ProcAddr, create_rank: usize, agent: ActorRef<ProcAgent>) -> Self {
         Self {
             proc_id,
             create_rank,
@@ -108,21 +106,18 @@ impl ProcRef {
         }
     }
 
-    pub fn proc_addr(&self) -> &hyperactor_reference::ProcAddr {
+    pub fn proc_addr(&self) -> &ProcAddr {
         &self.proc_id
     }
 
-    pub(crate) fn actor_addr(&self, id: &ActorMeshId) -> hyperactor_reference::ActorAddr {
+    pub(crate) fn actor_addr(&self, id: &ActorMeshId) -> ActorAddr {
         self.proc_id.actor_addr_uid(id.uid().clone())
     }
 
     /// Generic bound: `A: Referable` - required because we return
     /// an `ActorRef<A>`.
-    pub(crate) fn attest<A: Referable>(
-        &self,
-        id: &ActorMeshId,
-    ) -> hyperactor_reference::ActorRef<A> {
-        hyperactor_reference::ActorRef::attest(self.actor_addr(id))
+    pub(crate) fn attest<A: Referable>(&self, id: &ActorMeshId) -> ActorRef<A> {
+        ActorRef::attest(self.actor_addr(id))
     }
 }
 
@@ -161,7 +156,7 @@ impl ProcMesh {
             );
         }
 
-        let root_comm_actor = hyperactor_reference::ActorRef::attest(
+        let root_comm_actor = ActorRef::attest(
             ranks
                 .first()
                 .expect("root mesh cannot be empty")
@@ -255,10 +250,7 @@ impl ProcMesh {
     /// Stop this mesh gracefully.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         let region = self.region.clone();
-        let procs = self
-            .current_ref
-            .proc_ids()
-            .collect::<Vec<hyperactor_reference::ProcAddr>>();
+        let procs = self.current_ref.proc_ids().collect::<Vec<ProcAddr>>();
         // We use the proc mesh region rather than the host mesh region
         // because the host agent stores one entry per proc, not per host.
         self.current_ref
@@ -320,7 +312,7 @@ pub struct ProcMeshRef {
     // should be removed after we remove the v0 code.
     // v0 casting requires root mesh rank 0 as the 1st hop, so we need to provide
     // it here. For v1, this can be removed since v1 can use any rank.
-    pub(crate) root_comm_actor: Option<hyperactor_reference::ActorRef<CommActor>>,
+    pub(crate) root_comm_actor: Option<ActorRef<CommActor>>,
 }
 wirevalue::register_type!(ProcMeshRef);
 
@@ -333,7 +325,7 @@ impl ProcMeshRef {
         ranks: Arc<Vec<ProcRef>>,
         host_mesh: Option<HostMeshRef>,
         root_region: Option<Region>,
-        root_comm_actor: Option<hyperactor_reference::ActorRef<CommActor>>,
+        root_comm_actor: Option<ActorRef<CommActor>>,
     ) -> crate::Result<Self> {
         if region.num_ranks() != ranks.len() {
             return Err(crate::Error::InvalidRankCardinality {
@@ -365,7 +357,7 @@ impl ProcMeshRef {
         }
     }
 
-    pub(crate) fn root_comm_actor(&self) -> Option<&hyperactor_reference::ActorRef<CommActor>> {
+    pub(crate) fn root_comm_actor(&self) -> Option<&ActorRef<CommActor>> {
         self.root_comm_actor.as_ref()
     }
 
@@ -524,9 +516,7 @@ impl ProcMeshRef {
         &self,
         cx: &impl context::Actor,
     ) -> crate::Result<Option<ValueMesh<resource::State<ProcState>>>> {
-        let names = self
-            .proc_ids()
-            .collect::<Vec<hyperactor_reference::ProcAddr>>();
+        let names = self.proc_ids().collect::<Vec<ProcAddr>>();
         if let Some(host_mesh) = &self.host_mesh {
             Ok(Some(
                 host_mesh
@@ -539,7 +529,7 @@ impl ProcMeshRef {
     }
 
     /// Returns an iterator over the proc ids in this mesh.
-    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = hyperactor_reference::ProcAddr> {
+    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = ProcAddr> {
         self.ranks.iter().map(|proc_ref| proc_ref.proc_id.clone())
     }
 
