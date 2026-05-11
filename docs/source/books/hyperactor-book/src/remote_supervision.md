@@ -28,16 +28,14 @@ Parent actor
   v
 Supervisor  -- Link ------------------------->  Worker<C>
   |                                             |
-  | spawns                                      | spawns
-  v                                             v
-KeepaliveSupervisor <--- keepalive link --->   KeepaliveWorker
+  | spawns                                      | spawns children
+  v                                             |
+KeepaliveSupervisor <--- keepalive link --->   +-- KeepaliveWorker
                                                 |
-                                                | supervises
-                                                v
-                                                Child C
+                                                +-- Child C
 ```
 
-The parent sees a conventional local child: the `Supervisor`. The worker sees a conventional local child: `C`. `hyperactor_remote` translates between those local supervision trees with explicit protocol messages.
+The parent sees a conventional local child: the `Supervisor`. The worker sees conventional local children: the link actor and `C`, which are siblings under `Worker<C>`. `hyperactor_remote` translates between those local supervision trees with explicit protocol messages.
 
 ## Link protocol
 
