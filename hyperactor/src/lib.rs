@@ -66,7 +66,7 @@ pub mod addr;
 pub mod channel;
 pub mod config;
 pub mod context;
-/// Gateway management for proc reachability.
+/// Gateway management for proc connectivity.
 pub mod gateway;
 pub mod id;
 mod init;
