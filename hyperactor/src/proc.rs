@@ -1613,7 +1613,6 @@ impl<A: Actor> Instance<A> {
             None
         } else {
             let (signal_port, signal_receiver) = mailbox.open_port::<Signal>();
-            signal_port.bind_handler_port();
             let (supervision_port, supervision_receiver) =
                 mailbox.open_port::<ActorSupervisionEvent>();
             Some((
@@ -3208,7 +3207,10 @@ impl InstanceCell {
     pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &HandlerPorts<A>) -> ActorRef<R> {
         <R as Binds<A>>::bind(ports);
         // Signal: registered directly in Instance::new() and handled
-        // by the actor loop's select!.
+        // by the actor loop's select!. The port remains unbound
+        // because runtime signals are sent through InstanceCell's
+        // stored PortHandle, not as externally addressable actor
+        // messages.
         //
         // Undeliverable: dispatched through the work queue to the
         // actor's Handler<Undeliverable<MessageEnvelope>>.
@@ -3582,6 +3584,14 @@ mod tests {
             reply.send(handle).unwrap();
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn test_client_instance_can_bind_signal_port() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        let (_signal_port, _signal_rx) = client.bind_handler_port::<Signal>();
     }
 
     #[allow(clippy::await_holding_invalid_type)]
