@@ -13,6 +13,7 @@
 pub mod keepalive;
 pub mod link;
 pub mod proto;
+pub mod supervision;
 
 pub use keepalive::Keepalive;
 pub use keepalive::KeepaliveAck;
@@ -29,3 +30,6 @@ pub use proto::OrphanPolicy;
 pub use proto::RemoteActorDisposition;
 pub use proto::SupervisedWorker;
 pub use proto::WorkerSupervisor;
+pub use supervision::Supervisor;
+pub use supervision::Worker;
+pub use supervision::WorkerLike;
