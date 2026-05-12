@@ -38,12 +38,14 @@ pub(crate) mod net;
 // Public TLS API for HTTP services (mesh admin, TUI, etc.). The
 // implementation lives in `net` but we re-export here to keep `net`'s
 // internal types out of the public API surface.
+pub use net::ServerError;
 pub use net::try_tls_acceptor;
 pub use net::try_tls_connector;
 pub use net::try_tls_pem_bundle;
 
 /// Duplex channel API: a single connection carries messages in both directions.
 pub mod duplex {
+    pub use super::net::duplex::DuplexClient;
     pub use super::net::duplex::DuplexRx;
     pub use super::net::duplex::DuplexServer;
     pub use super::net::duplex::DuplexTx;
@@ -1240,7 +1242,7 @@ pub fn serve_local<M: RemoteMessage>() -> (ChannelAddr, ChannelRx<M>) {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
     use std::collections::HashSet;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;

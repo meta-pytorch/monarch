@@ -279,13 +279,16 @@ void rdmaxcel_qp_store_rts_timestamp(rdmaxcel_qp_t* qp, uint64_t value);
 completion_cache_t* rdmaxcel_qp_get_send_cache(rdmaxcel_qp_t* qp);
 completion_cache_t* rdmaxcel_qp_get_recv_cache(rdmaxcel_qp_t* qp);
 
-// Per-device segment registration.
-// pds and qps are parallel arrays indexed by CUDA device ordinal.
-// num_devices is the length of both arrays.
+// Per-device segment registration. pds and qps are parallel arrays
+// indexed by CUDA device ordinal; num_devices is their length.
+// max_sge_override > 0 replaces ibv_query_device(...).max_sge for
+// this call (test-only knob to force RDMAXCEL_MKEY_REG_LIMIT); pass
+// 0 in production.
 int register_segments(
     struct ibv_pd** pds,
     rdmaxcel_qp_t** qps,
-    int num_devices);
+    int num_devices,
+    int32_t max_sge_override);
 
 // Completion Cache Structures and Functions
 #define MAX_CACHED_COMPLETIONS 128

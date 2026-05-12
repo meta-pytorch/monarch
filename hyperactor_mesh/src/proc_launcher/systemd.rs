@@ -72,7 +72,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::reference as hyperactor_reference;
 use tokio::sync::oneshot;
 use tracing::Instrument;
 use zbus::Connection;
@@ -147,8 +146,8 @@ fn is_unit_gone(e: &zbus::Error) -> bool {
 /// it), we log a warning and recover the guard anyway. This ensures
 /// cleanup can proceed even after a panic.
 fn units_lock_recover(
-    units: &std::sync::Mutex<HashMap<hyperactor_reference::ProcId, String>>,
-) -> MutexGuard<'_, HashMap<hyperactor_reference::ProcId, String>> {
+    units: &std::sync::Mutex<HashMap<hyperactor::ProcAddr, String>>,
+) -> MutexGuard<'_, HashMap<hyperactor::ProcAddr, String>> {
     units.lock().unwrap_or_else(|p| {
         tracing::warn!("mutex was poisoned, recovering");
         p.into_inner()
@@ -262,8 +261,8 @@ fn is_terminal(active: &str, sub: &str) -> bool {
 /// Log exit, remove proc from units map, and send result on channel.
 fn send_and_cleanup(
     kind: ProcExitKind,
-    proc_id: &hyperactor_reference::ProcId,
-    units: &std::sync::Mutex<HashMap<hyperactor_reference::ProcId, String>>,
+    proc_id: &hyperactor::ProcAddr,
+    units: &std::sync::Mutex<HashMap<hyperactor::ProcAddr, String>>,
     exit_tx: oneshot::Sender<ProcExitResult>,
 ) {
     tracing::debug!(?kind, "exit_observed");
@@ -396,8 +395,8 @@ fn map_exit_from_result(result: &str, status: i32, active: &str, sub: &str) -> P
 /// 7. Sends the result on `exit_tx`
 async fn monitor_exit(
     conn: Connection,
-    units: Arc<std::sync::Mutex<HashMap<hyperactor_reference::ProcId, String>>>,
-    proc_id: hyperactor_reference::ProcId,
+    units: Arc<std::sync::Mutex<HashMap<hyperactor::ProcAddr, String>>>,
+    proc_id: hyperactor::ProcAddr,
     handle: SystemdUnitHandle,
     exit_tx: oneshot::Sender<ProcExitResult>,
 ) {
@@ -655,7 +654,7 @@ pub(crate) struct SystemdProcLauncher {
     /// handshake until the first launch/terminate/kill operation.
     conn: tokio::sync::OnceCell<Connection>,
 
-    /// ProcId → unit name mapping for management operations.
+    /// ProcAddr → unit name mapping for management operations.
     ///
     /// - `terminate`/`kill` use this to find the unit name.
     /// - The exit monitor removes the entry once it observes
@@ -664,7 +663,7 @@ pub(crate) struct SystemdProcLauncher {
     ///
     /// Uses `std::sync::Mutex` (not tokio) so Drop can synchronously
     /// acquire the lock.
-    units: Arc<std::sync::Mutex<HashMap<hyperactor_reference::ProcId, String>>>,
+    units: Arc<std::sync::Mutex<HashMap<hyperactor::ProcAddr, String>>>,
 }
 
 impl SystemdProcLauncher {
@@ -698,20 +697,20 @@ impl SystemdProcLauncher {
     /// `proc_id`.
     ///
     /// systemd unit names are picky about allowed characters.
-    /// `ProcId::to_string()` can contain characters that are
+    /// `ProcAddr::to_string()` can contain characters that are
     /// awkward/invalid in a unit name, so we **hex-encode** the UTF-8
     /// bytes of that string and embed it in a `monarch-<hex>.service`
     /// name.
     ///
     /// Properties:
-    /// - **Stable**: the same `ProcId` always yields the same unit
+    /// - **Stable**: the same `ProcAddr` always yields the same unit
     ///   name.
-    /// - **Bijective**: different `ProcId` strings yield different
+    /// - **Bijective**: different `ProcAddr` strings yield different
     ///   unit names (hex encoding is collision-free on bytes).
     /// - **Systemd-safe**: output contains only ASCII hex digits plus
     ///   `-` and `.service`.
-    pub(crate) fn unit_name(proc_id: &hyperactor_reference::ProcId) -> String {
-        // Hex-encode the ProcId string to ensure only valid systemd
+    pub(crate) fn unit_name(proc_id: &hyperactor::ProcAddr) -> String {
+        // Hex-encode the ProcAddr string to ensure only valid systemd
         // unit name characters. This is bijective (collision-free)
         // and stable.
         let s = proc_id.to_string();
@@ -780,7 +779,7 @@ impl SystemdProcLauncher {
 
     /// Build the properties for `StartTransientUnit`.
     fn build_unit_props<'a>(
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         exec_start: Vec<(String, Vec<String>, bool)>,
         env_kv: Vec<String>,
     ) -> Vec<(&'a str, Value<'a>)> {
@@ -807,7 +806,7 @@ impl SystemdProcLauncher {
     /// Shared implementation for terminate/kill via systemd StopUnit.
     async fn stop_unit_impl(
         &self,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         op: StopOp,
     ) -> Result<(), ProcLauncherError> {
         let unit = match self.units.lock().unwrap().get(proc_id).cloned() {
@@ -908,7 +907,7 @@ impl ProcLauncher for SystemdProcLauncher {
     )]
     async fn launch(
         &self,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         opts: LaunchOptions,
     ) -> Result<LaunchResult, ProcLauncherError> {
         let unit = Self::unit_name(proc_id);
@@ -989,7 +988,7 @@ impl ProcLauncher for SystemdProcLauncher {
     ///   from the `units` map when observed.
     async fn terminate(
         &self,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         timeout: Duration,
     ) -> Result<(), ProcLauncherError> {
         self.stop_unit_impl(proc_id, StopOp::Terminate { timeout })
@@ -1010,7 +1009,7 @@ impl ProcLauncher for SystemdProcLauncher {
     /// - The exit monitor is responsible for observing the final exit
     ///   status (Exited vs Signaled) and for removing the proc from
     ///   the `units` map.
-    async fn kill(&self, proc_id: &hyperactor_reference::ProcId) -> Result<(), ProcLauncherError> {
+    async fn kill(&self, proc_id: &hyperactor::ProcAddr) -> Result<(), ProcLauncherError> {
         self.stop_unit_impl(proc_id, StopOp::Kill).await
     }
 }
@@ -1024,7 +1023,7 @@ impl Drop for SystemdProcLauncher {
         // Note: This cleanup is best-effort. If the process is
         // terminating, the spawned cleanup thread may not complete
         // before the process exits.
-        let units: Vec<(hyperactor_reference::ProcId, String)> = {
+        let units: Vec<(hyperactor::ProcAddr, String)> = {
             let mut guard = units_lock_recover(&self.units);
             guard.drain().collect()
         };
@@ -1102,6 +1101,7 @@ mod tests {
     use hyperactor::testing::ids::test_proc_id;
 
     use super::*;
+    use crate::mesh_id::ResourceId;
 
     // Helpers
 
@@ -1190,7 +1190,7 @@ mod tests {
 
         let launcher = SystemdProcLauncher::new();
 
-        let proc_id = hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "env-vars");
+        let proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "env-vars");
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
             addr: any_unix_addr(),
@@ -1299,7 +1299,7 @@ mod tests {
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id = hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "exit-7");
+        let proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "exit-7");
         let opts = LaunchOptions {
             command: with_sh("exit 7"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1346,7 +1346,7 @@ mod tests {
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id = hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "killed");
+        let proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "killed");
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1413,8 +1413,7 @@ mod tests {
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id =
-            hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "terminated");
+        let proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "terminated");
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1458,8 +1457,7 @@ mod tests {
 
         let launcher = SystemdProcLauncher::new();
 
-        let unknown_proc_id =
-            hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "unknown");
+        let unknown_proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "unknown");
 
         let result = launcher
             .terminate(&unknown_proc_id, Duration::from_secs(1))
@@ -1481,8 +1479,7 @@ mod tests {
 
         let launcher = SystemdProcLauncher::new();
 
-        let unknown_proc_id =
-            hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "unknown");
+        let unknown_proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "unknown");
 
         let result = launcher.kill(&unknown_proc_id).await;
 
@@ -1591,8 +1588,7 @@ mod tests {
             config: None,
             exit_on_shutdown: false,
         };
-        let proc_id =
-            hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "drop-cleanup-test");
+        let proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "drop-cleanup-test");
 
         let exit_rx;
 
@@ -1691,8 +1687,7 @@ mod tests {
 
         let launcher = SystemdProcLauncher::new();
 
-        let proc_id =
-            hyperactor_reference::ProcId::from_resource_name(any_unix_addr(), "long-running");
+        let proc_id = ResourceId::proc_addr_from_name(any_unix_addr(), "long-running");
         // The bootstrap payload content doesn't matter for this test.
         let bootstrap = Bootstrap::Host {
             addr: any_unix_addr(),

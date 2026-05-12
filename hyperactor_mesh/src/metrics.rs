@@ -13,3 +13,11 @@ declare_static_timer!(
     "actor_mesh_cast_duration",
     TimeUnit::Micros
 );
+
+// Per-proc memory samples emitted on the periodic tick of
+// `Handler<RepublishIntrospect>` for `ProcAgent`, governed by
+// `PROCESS_MEMORY_METRIC_INTERVAL`. Values are bytes; the underlying
+// source is `/proc/self/statm`. Linux only — non-Linux procs skip
+// the emit (PD-2: never fabricated).
+declare_static_gauge!(PROCESS_RSS_BYTES, "process.memory.rss_bytes");
+declare_static_gauge!(PROCESS_VM_SIZE_BYTES, "process.memory.vm_bytes");

@@ -6,18 +6,25 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#[cfg(feature = "cuda")]
 use std::sync::Once;
+#[cfg(feature = "cuda")]
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "cuda")]
 use std::sync::atomic::Ordering;
 
 /// Cached result of CUDA availability check
+#[cfg(feature = "cuda")]
 static CUDA_AVAILABLE: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "cuda")]
 static INIT: Once = Once::new();
 
 /// Safely checks if CUDA is available on the system.
 ///
 /// This function attempts to initialize CUDA and determine if it's available.
 /// The result is cached after the first call, so subsequent calls are very fast.
+///
+/// In CPU-only builds (no `cuda` feature), this trivially returns `false`.
 ///
 /// # Returns
 ///
@@ -34,6 +41,7 @@ static INIT: Once = Once::new();
 ///     println!("CUDA is not available, falling back to CPU-only mode");
 /// }
 /// ```
+#[cfg(feature = "cuda")]
 pub fn is_cuda_available() -> bool {
     INIT.call_once(|| {
         let available = check_cuda_available();
@@ -42,7 +50,13 @@ pub fn is_cuda_available() -> bool {
     CUDA_AVAILABLE.load(Ordering::SeqCst)
 }
 
+#[cfg(not(feature = "cuda"))]
+pub fn is_cuda_available() -> bool {
+    false
+}
+
 /// Internal function that performs the actual CUDA availability check
+#[cfg(feature = "cuda")]
 fn check_cuda_available() -> bool {
     unsafe {
         // Try to initialize CUDA

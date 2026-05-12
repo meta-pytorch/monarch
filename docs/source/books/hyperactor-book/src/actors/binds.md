@@ -14,10 +14,8 @@ In most cases, you do not implement this trait manually. Instead, the `#[export]
 
 For example:
 ```rust
-#[hyperactor::export(
-    spawn = true,
-    handlers = [ShoppingList],
-)]
+#[hyperactor::spawnable]
+#[hyperactor::export(ShoppingList)]
 struct ShoppingListActor;
 ```
 Expands to:

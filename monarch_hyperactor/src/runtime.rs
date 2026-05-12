@@ -8,9 +8,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::RwLock;
-use std::sync::RwLockReadGuard;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -21,7 +20,6 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::PanickingMailboxSender;
-use hyperactor::reference;
 use once_cell::sync::Lazy;
 use once_cell::unsync::OnceCell as UnsyncOnceCell;
 use pyo3::PyResult;
@@ -30,57 +28,70 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyAnyMethods;
 use pyo3_async_runtimes::TaskLocals;
+use tokio::runtime::Handle;
 use tokio::task;
 
-// this must be a RwLock and only return a guard for reading the runtime.
-// Otherwise multiple threads can deadlock fighting for the Runtime object if they hold it
-// while blocking on something.
-static INSTANCE: std::sync::LazyLock<RwLock<Option<tokio::runtime::Runtime>>> =
-    std::sync::LazyLock::new(|| RwLock::new(None));
+/// Global tokio runtime container.
+///
+/// `handle` is cheap to clone and is what callers receive from
+/// `get_tokio_runtime()`. Holding a `Handle` does not lock anything, so
+/// concurrent block_on calls from different threads do not contend.
+///
+/// `runtime` exists only so the atexit handler can take ownership and
+/// call `shutdown_timeout`. Under normal operation nothing locks it; the
+/// mutex is uncontended at shutdown.
+struct GlobalRuntime {
+    handle: Handle,
+    runtime: Mutex<Option<tokio::runtime::Runtime>>,
+}
 
-pub fn get_tokio_runtime<'l>() -> std::sync::MappedRwLockReadGuard<'l, tokio::runtime::Runtime> {
-    // First try to get a read lock and check if runtime exists
-    {
-        let read_guard = INSTANCE.read().unwrap();
-        if read_guard.is_some() {
-            return RwLockReadGuard::map(read_guard, |lock: &Option<tokio::runtime::Runtime>| {
-                lock.as_ref().unwrap()
-            });
+static INSTANCE: OnceLock<GlobalRuntime> = OnceLock::new();
+
+fn global_runtime() -> &'static GlobalRuntime {
+    INSTANCE.get_or_init(|| {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .thread_name_fn(|| {
+                static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+                let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+                format!("monarch-pytokio-worker-{}", id)
+            })
+            .enable_all()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+        GlobalRuntime {
+            handle,
+            runtime: Mutex::new(Some(runtime)),
         }
-        // Drop the read lock by letting it go out of scope
-    }
-
-    // Runtime doesn't exist, upgrade to write lock to initialize
-    let mut write_guard = INSTANCE.write().unwrap();
-    if write_guard.is_none() {
-        *write_guard = Some(
-            tokio::runtime::Builder::new_multi_thread()
-                .thread_name_fn(|| {
-                    static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
-                    let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
-                    format!("monarch-pytokio-worker-{}", id)
-                })
-                .enable_all()
-                .build()
-                .unwrap(),
-        );
-    }
-
-    // Downgrade write lock to read lock and return the reference
-    let read_guard = std::sync::RwLockWriteGuard::downgrade(write_guard);
-    RwLockReadGuard::map(read_guard, |lock: &Option<tokio::runtime::Runtime>| {
-        lock.as_ref().unwrap()
     })
 }
 
+pub fn get_tokio_runtime() -> Handle {
+    global_runtime().handle.clone()
+}
+
+/// atexit handler that tears down the global Tokio runtime.
+///
+/// Callers obtain a cloned `Handle` from `get_tokio_runtime()` rather
+/// than a guard, so the `runtime` mutex is uncontended at shutdown. We
+/// can take ownership of the `Runtime` and call `shutdown_timeout`
+/// directly. If a worker thread is still inside `Handle::block_on` on a
+/// future that never resolves (e.g. a non-main thread that cannot
+/// observe SIGINT), `shutdown_timeout` aborts spawned tasks and returns
+/// after at most one second; the stuck worker is then a daemon thread
+/// that CPython kills on interpreter exit.
 #[pyfunction]
 pub fn shutdown_tokio_runtime(py: Python<'_>) {
     // Called from Python's atexit, which holds the GIL. Release it so tokio
     // worker threads can acquire it to complete their Python work.
     py.detach(|| {
-        if let Some(x) = INSTANCE.write().unwrap().take() {
-            x.shutdown_timeout(Duration::from_secs(1));
-        }
+        let Some(global) = INSTANCE.get() else {
+            return;
+        };
+        let Some(rt) = global.runtime.lock().unwrap().take() else {
+            return;
+        };
+        rt.shutdown_timeout(Duration::from_secs(1));
     });
 }
 
@@ -89,7 +100,7 @@ pub(crate) fn get_proc_runtime() -> &'static Proc {
     static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
     RUNTIME_PROC.get_or_init(|| {
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = reference::ProcId::unique(addr, "monarch_hyperactor_runtime");
+        let proc_id = hyperactor::ProcAddr::unique(addr, "monarch_hyperactor_runtime");
         Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     })
 }
