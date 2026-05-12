@@ -24,7 +24,9 @@ fn main() {
     let cpp_static_libs_config = build_utils::CppStaticLibsConfig::from_env();
     let rdma_include = &cpp_static_libs_config.rdma_include_dir;
 
-    // Detect platform: ROCm or CUDA
+    // This crate is gated behind the `cuda` feature in monarch_rdma; cargo
+    // only runs build.rs once a downstream consumer enables that feature, so
+    // a GPU toolchain must be available here.
     let (is_rocm, compute_home) = build_utils::detect_gpu_platform();
 
     // Get the directory of the current crate
