@@ -94,7 +94,7 @@ use std::future::Future;
 use std::ops::Deref;
 use std::panic;
 use std::panic::AssertUnwindSafe;
-use std::panic::Location;
+use std::panic::Location as PanicLocation;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -139,9 +139,11 @@ use crate::ActorAddr;
 use crate::ActorRef;
 use crate::Addr;
 use crate::Handler;
+use crate::Location;
 use crate::Message;
 use crate::PortAddr;
 use crate::ProcAddr;
+use crate::ProcId;
 use crate::RemoteMessage;
 use crate::actor::ActorError;
 use crate::actor::ActorErrorKind;
@@ -162,7 +164,7 @@ use crate::context;
 use crate::context::Mailbox as _;
 use crate::id::ActorId;
 use crate::id::Label;
-use crate::id::ProcId;
+use crate::id::Label;
 use crate::id::Uid;
 use crate::introspect::IntrospectMessage;
 use crate::introspect::IntrospectResult;
@@ -428,9 +430,13 @@ impl fmt::Debug for Proc {
 }
 
 struct ProcState {
-    /// The proc's id. This should be globally unique, but is not (yet)
-    /// for local-only procs.
-    proc_id: ProcAddr,
+    /// The proc's runtime identity. This should be globally unique,
+    /// but is not (yet) for local-only procs.
+    proc_id: ProcId,
+
+    /// The location used when constructing routeable addresses for
+    /// newly bound refs.
+    default_location: RwLock<Location>,
 
     /// A muxer instance that has entries for every actor managed by
     /// the proc.
@@ -491,11 +497,26 @@ impl Drop for ProcState {
         // We only want log ProcStatus::Dropped when ProcState is dropped,
         // rather than Proc is dropped. This is because we need to wait for
         // Proc::inner's ref count becomes 0.
+        let proc_addr = self.proc_addr();
         tracing::info!(
-            subject = %self.proc_id.subject(),
+            subject = %proc_addr.subject(),
             name = "ProcStatus",
             status = "Dropped"
         );
+    }
+}
+
+impl ProcState {
+    fn default_location(&self) -> Location {
+        self.default_location.read().unwrap().clone()
+    }
+
+    fn set_default_location(&self, location: Location) {
+        *self.default_location.write().unwrap() = location;
+    }
+
+    fn proc_addr(&self) -> ProcAddr {
+        ProcAddr::new(self.proc_id.clone(), self.default_location())
     }
 }
 
@@ -519,7 +540,7 @@ pub struct ActorInstance<A: Actor> {
 impl Proc {
     /// Create a pre-configured proc with the given proc id and forwarder.
     pub fn configured(proc_id: impl Into<ProcAddr>, forwarder: BoxedMailboxSender) -> Self {
-        let proc_id = proc_id.into();
+        let proc_addr = proc_id.into();
         assert_not_legacy_pseudo_singleton_proc_id(proc_id.id());
         Self::configured_unchecked(proc_id, forwarder)
     }
@@ -539,14 +560,15 @@ impl Proc {
 
     fn configured_unchecked(proc_id: ProcAddr, forwarder: BoxedMailboxSender) -> Self {
         tracing::info!(
-            subject = %proc_id.subject(),
+            subject = %proc_addr.subject(),
             name = "ProcStatus",
             status = "Created"
         );
 
         Self {
             inner: Arc::new(ProcState {
-                proc_id,
+                proc_id: proc_addr.id().clone(),
+                default_location: RwLock::new(proc_addr.location().clone()),
                 proc_muxer: MailboxMuxer::new(),
                 forwarder,
                 reserved_roots: DashSet::new(),
@@ -709,9 +731,24 @@ impl Proc {
         Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     }
 
-    /// The proc's address.
-    pub fn proc_addr(&self) -> &ProcAddr {
+    /// The proc's runtime identity.
+    pub fn proc_id(&self) -> &ProcId {
         &self.state().proc_id
+    }
+
+    /// The proc's default advertised location.
+    pub fn default_location(&self) -> Location {
+        self.state().default_location()
+    }
+
+    /// Set the proc's default advertised location.
+    pub fn set_default_location(&self, location: Location) {
+        self.state().set_default_location(location)
+    }
+
+    /// The proc's routeable address using its default advertised location.
+    pub fn proc_addr(&self) -> ProcAddr {
+        self.state().proc_addr()
     }
 
     /// Shared sender used by the proc to forward messages to remote
@@ -1341,23 +1378,20 @@ impl Proc {
     ///
     /// Uses `reserved_roots` to prevent races between concurrent callers.
     fn allocate_root_id(&self, name: &str) -> Result<ActorAddr, anyhow::Error> {
-        let actor_ref = self.state().proc_id.actor_addr(name);
-        self.reserve_root(actor_ref, name)
+        self.reserve_root(Uid::singleton(Label::strip(name)))
     }
 
     /// Create a root allocation in the proc from an explicit uid.
     fn allocate_root_uid(&self, uid: crate::id::Uid) -> Result<ActorAddr, anyhow::Error> {
-        let name = uid.to_string();
-        let actor_ref = ActorAddr::new_from_uid(self.state().proc_id.clone(), uid);
-        self.reserve_root(actor_ref, &name)
+        self.reserve_root(uid)
     }
 
-    fn reserve_root(&self, actor_ref: ActorAddr, name: &str) -> Result<ActorAddr, anyhow::Error> {
-        let uid = actor_ref.uid().clone();
+    fn reserve_root(&self, uid: Uid) -> Result<ActorAddr, anyhow::Error> {
+        let actor_id = ActorId::new(uid.clone(), self.proc_id().clone(), None);
         if !self.state().reserved_roots.insert(uid) {
-            anyhow::bail!("an actor with name '{}' has already been spawned", name)
+            anyhow::bail!("an actor with id '{}' has already been spawned", actor_id)
         }
-        Ok(actor_ref)
+        Ok(ActorAddr::new(actor_id, self.default_location()))
     }
 
     /// Create a child allocation in the proc.
@@ -1366,7 +1400,7 @@ impl Proc {
         &self,
         parent_id: &ActorAddr,
     ) -> Result<ActorAddr, anyhow::Error> {
-        assert_eq!(parent_id.proc_id(), self.state().proc_id.id());
+        assert_eq!(parent_id.proc_id(), self.proc_id());
         Ok(parent_id.unique_child())
     }
 
@@ -1376,13 +1410,10 @@ impl Proc {
         parent_id: &ActorAddr,
         name: &str,
     ) -> Result<ActorAddr, anyhow::Error> {
-        assert_eq!(parent_id.proc_id(), self.state().proc_id.id());
-        let proc_id = self.state().proc_id.id().clone();
+        assert_eq!(parent_id.proc_id(), self.proc_id());
+        let proc_id = self.proc_id().clone();
         let actor_id = crate::id::ActorId::instance_labeled(crate::id::Label::strip(name), proc_id);
-        Ok(ActorAddr::new(
-            actor_id,
-            self.state().proc_id.location().clone(),
-        ))
+        Ok(ActorAddr::new(actor_id, self.default_location()))
     }
 
     /// Downgrade to a weak reference that doesn't prevent the proc from being dropped.
@@ -1412,14 +1443,18 @@ impl Proc {
             let _ = handle.await;
         }
     }
-}
 
-fn is_local_delivery_target(local_proc: &ProcAddr, dest_proc: &ProcAddr) -> bool {
-    if requires_location_for_local_delivery_identity(dest_proc.id()) {
-        return dest_proc == local_proc;
+    fn is_local_delivery_target(&self, dest_proc: &ProcAddr) -> bool {
+        let local_proc_id = self.proc_id();
+        if requires_location_for_local_delivery_identity(dest_proc.id()) {
+            // TODO: check all bound addresses for this proc, not only
+            // the current default advertised location.
+            return dest_proc.id() == local_proc_id
+                && dest_proc.location() == &self.default_location();
+        }
+
+        dest_proc.id() == local_proc_id
     }
-
-    dest_proc.id() == local_proc.id()
 }
 
 fn requires_location_for_local_delivery_identity(proc_id: &ProcId) -> bool {
@@ -1462,7 +1497,7 @@ impl MailboxSender for Proc {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let dest_proc = envelope.dest().actor_addr().proc_addr();
-        if is_local_delivery_target(&self.state().proc_id, &dest_proc) {
+        if self.is_local_delivery_target(&dest_proc) {
             self.state().proc_muxer.post(envelope, return_handle)
         } else {
             self.state().forwarder.post(envelope, return_handle)
@@ -1790,7 +1825,7 @@ impl<A: Actor> Instance<A> {
                 actor_name = self.self_addr().log_name(),
                 status = new_status,
                 prev_status = old.arm().unwrap_or("unknown"),
-                caller = %Location::caller(),
+                caller = %PanicLocation::caller(),
                 change_reason,
             );
             let actor_id = hash_to_u64(self.self_addr());
@@ -3263,7 +3298,10 @@ impl InstanceCell {
                 .exported_named_ports
                 .insert(*entry.key(), entry.value());
         }
-        ActorRef::attest(self.actor_addr().clone())
+        ActorRef::attest(ActorAddr::new(
+            self.actor_addr().id().clone(),
+            self.inner.proc.default_location(),
+        ))
     }
 
     /// Attempt to downcast this cell to a concrete actor handle.
@@ -3793,23 +3831,39 @@ mod tests {
         for name in [LEGACY_SERVICE_PROC_NAME, LEGACY_LOCAL_PROC_NAME] {
             let local = ProcAddr::named(ChannelAddr::Local(1), name);
             let same_id_other_location = ProcAddr::named(ChannelAddr::Local(2), name);
+            let proc = match name {
+                LEGACY_SERVICE_PROC_NAME => Proc::legacy_service_pseudo_singleton(
+                    ChannelAddr::Local(1),
+                    BoxedMailboxSender::new(PanickingMailboxSender),
+                ),
+                LEGACY_LOCAL_PROC_NAME => Proc::legacy_local_pseudo_singleton(
+                    ChannelAddr::Local(1),
+                    BoxedMailboxSender::new(PanickingMailboxSender),
+                ),
+                _ => unreachable!("test only covers legacy pseudo-singletons"),
+            };
 
             assert_eq!(local.id(), same_id_other_location.id());
-            assert!(is_local_delivery_target(&local, &local));
-            assert!(!is_local_delivery_target(&local, &same_id_other_location));
+            assert!(proc.is_local_delivery_target(&local));
+            assert!(!proc.is_local_delivery_target(&same_id_other_location));
         }
 
         let shared = ProcAddr::named(ChannelAddr::Local(1), "shared");
         let shared_other_location = ProcAddr::named(ChannelAddr::Local(2), "shared");
-        assert!(is_local_delivery_target(&shared, &shared_other_location));
+        let proc = Proc::configured(
+            shared.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
+        assert!(proc.is_local_delivery_target(&shared_other_location));
 
         let service_instance = ProcAddr::unique(ChannelAddr::Local(1), "service");
         let service_instance_other_location =
             ProcAddr::new(service_instance.id().clone(), ChannelAddr::Local(2).into());
-        assert!(is_local_delivery_target(
-            &service_instance,
-            &service_instance_other_location
-        ));
+        let proc = Proc::configured(
+            service_instance,
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
+        assert!(proc.is_local_delivery_target(&service_instance_other_location));
     }
 
     #[test]
@@ -3871,6 +3925,25 @@ mod tests {
         );
 
         assert_eq!(receiver.recv().await.unwrap(), 123);
+    }
+
+    #[test]
+    fn test_default_location_changes_new_bindings_not_lookup() {
+        let proc = Proc::local();
+        let (_instance, handle) = proc.instance("worker").unwrap();
+
+        let first_ref: ActorRef<()> = handle.bind();
+        let new_location = ChannelAddr::Local(9876).into();
+        proc.set_default_location(new_location);
+        let second_ref: ActorRef<()> = handle.bind();
+
+        assert_eq!(first_ref.actor_addr().id(), second_ref.actor_addr().id());
+        assert_ne!(
+            first_ref.actor_addr().location(),
+            second_ref.actor_addr().location()
+        );
+        assert_eq!(second_ref.actor_addr().location(), &proc.default_location());
+        assert!(proc.get_instance(second_ref.actor_addr()).is_some());
     }
 
     #[derive(Debug, Default)]
@@ -4002,9 +4075,9 @@ mod tests {
         ));
 
         // All actors are in the same proc:
-        assert_eq!(first.actor_addr().proc_addr(), *proc.proc_addr());
-        assert_eq!(second.actor_addr().proc_addr(), *proc.proc_addr());
-        assert_eq!(third.actor_addr().proc_addr(), *proc.proc_addr());
+        assert_eq!(first.actor_addr().proc_addr(), proc.proc_addr());
+        assert_eq!(second.actor_addr().proc_addr(), proc.proc_addr());
+        assert_eq!(third.actor_addr().proc_addr(), proc.proc_addr());
 
         // Supervision tree is constructed correctly.
         validate_link(third.cell(), second.cell());
