@@ -1131,7 +1131,7 @@ mod tests {
     async fn basic_worker() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
@@ -1240,7 +1240,7 @@ mod tests {
     async fn error_sends_response() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
@@ -1303,7 +1303,7 @@ mod tests {
     async fn mutated_refs_are_updated_with_error() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
@@ -1377,7 +1377,7 @@ mod tests {
     async fn accessing_errored_dependency() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
@@ -1456,7 +1456,7 @@ mod tests {
     async fn py_remote_function_calls() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
@@ -1758,7 +1758,7 @@ mod tests {
     async fn delete_refs() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
@@ -1836,7 +1836,7 @@ mod tests {
     async fn request_status() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
@@ -1925,7 +1925,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn backend_network_init() {
         test_setup().unwrap();
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 
         let worker_handle1 = proc
