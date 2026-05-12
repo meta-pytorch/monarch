@@ -7,6 +7,8 @@
 # pyre-strict
 
 import asyncio
+import logging
+import warnings
 from typing import (
     Any,
     cast,
@@ -23,6 +25,7 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import (
     PythonTask,
     Shared,
 )
+from monarch._src.actor.telemetry import log_with_tracing
 
 R = TypeVar("R")
 
@@ -104,6 +107,24 @@ class Future(Generic[R]):
         )
 
     def get(self, timeout: Optional[float] = None) -> R:
+        in_asyncio = asyncio._get_running_loop() is not None
+        in_tokio = is_tokio_thread()
+        if in_asyncio or in_tokio:
+            warnings.warn(
+                "Future.get() called from within an active event loop blocks it; "
+                "use 'await' instead. This will become a RuntimeError in monarch v0.6.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            # Forward the event directly to Rust tracing so we capture it in
+            # non-actor driver processes too, where no `TracingForwarder`
+            # handler is attached to the Python logging chain.
+            log_with_tracing(
+                logging.WARNING,
+                "Future.get() called from within an active event loop",
+                extra={"context": "asyncio" if in_asyncio else "tokio"},
+                stacklevel=2,
+            )
         match self._status:
             case _Unawaited(coro=coro):
                 try:

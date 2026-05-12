@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from types import FrameType, TracebackType
 from typing import Any, Dict, Generator, Optional, TYPE_CHECKING
 
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._src.actor.sync_state import fake_sync_state
 
 if TYPE_CHECKING:
@@ -46,7 +46,7 @@ class PdbWrapper(pdb.Pdb):
         self,
         rank: int,
         coords: Dict[str, int],
-        actor_id: ActorId,
+        actor_id: ActorAddr,
         controller: "DebugController",
         header: str | None = None,
     ) -> None:

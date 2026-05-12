@@ -20,6 +20,7 @@ use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
 use futures::try_join;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Bind;
@@ -29,7 +30,6 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor::handle;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -176,12 +176,12 @@ wirevalue::register_type!(CodeSyncManagerParams);
 
 #[derive(Debug)]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         CodeSyncMessage { cast = true },
         SetActorMeshMessage { cast = true }
     ],
 )]
+#[hyperactor::spawnable]
 pub struct CodeSyncManager {
     rsync: OnceCell<ActorHandle<RsyncActor>>,
     auto_reload: OnceCell<ActorHandle<AutoReloadActor>>,
@@ -325,7 +325,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                 format!(
                     "{:#?}",
                     Err::<(), _>(e)
-                        .with_context(|| format!("code sync from {}", cx.self_id()))
+                        .with_context(|| format!("code sync from {}", cx.self_addr()))
                         .unwrap_err()
                 )
             }),
@@ -347,7 +347,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             return Ok(());
         }
         let res = async move {
-            let (tx, mut rx) = cx.open_port();
+            let (tx, mut rx) = cx.open_port::<Result<(), String>>();
             self.get_auto_reload_actor(cx)
                 .await?
                 .send(cx, AutoReloadMessage { result: tx.bind() })?;
@@ -361,7 +361,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                 format!(
                     "{:#?}",
                     Err::<(), _>(e)
-                        .with_context(|| format!("module reload from {}", cx.self_id()))
+                        .with_context(|| format!("module reload from {}", cx.self_addr()))
                         .unwrap_err()
                 )
             }),
@@ -376,7 +376,7 @@ impl Handler<SetActorMeshMessage> for CodeSyncManager {
         let mesh = self.self_mesh.get_or_init(|| msg.actor_mesh);
         self.rank.get_or_init(|| {
             mesh.iter()
-                .find(|(_, actor)| actor.actor_id() == cx.self_id())
+                .find(|(_, actor)| *actor.actor_addr() == *cx.self_addr())
                 .unwrap()
                 .0
                 .rank()
@@ -434,7 +434,7 @@ pub async fn code_sync_mesh(
                         .try_for_each_concurrent(None, |connect| async move {
                             let (mut local, mut stream) = try_join!(
                                 TcpStream::connect(daemon_addr.clone()).err_into(),
-                                accept(instance, instance.self_id().clone().into(), connect),
+                                accept(instance, instance.self_addr().clone(), connect),
                             )?;
                             tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
                             Ok(())
@@ -462,7 +462,7 @@ pub async fn code_sync_mesh(
                         .err_into::<anyhow::Error>()
                         .try_for_each_concurrent(None, |connect| async {
                             let (mut read, mut write) =
-                                accept(instance, instance.self_id().clone().into(), connect)
+                                accept(instance, instance.self_addr().clone(), connect)
                                     .await?
                                     .into_split();
                             let res = sender(&local_workspace, &mut read, &mut write).await;
@@ -615,7 +615,13 @@ mod tests {
         // Set up actor mesh with CodeSyncManager actors
         let mut host_mesh = test_utils::local_host_mesh(2).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "code_sync_test", ndslice::Extent::unity(), None)
+            .spawn(
+                instance,
+                "code_sync_test",
+                ndslice::Extent::unity(),
+                None,
+                None,
+            )
             .await
             .unwrap();
 

@@ -18,12 +18,12 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Parser;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::spawn_admin;
@@ -75,12 +75,8 @@ pub struct SieveParams {
 /// Filters candidates divisible by `prime`. Forwards survivors to
 /// `next`. Spawns a new child when a new prime is discovered.
 #[derive(Debug)]
-#[hyperactor::export(
-        spawn = true,
-        handlers = [
-          NextNumber,
-        ],
-    )]
+#[hyperactor::export(NextNumber)]
+#[hyperactor::spawnable]
 pub struct SieveActor {
     /// Prime used for filtering.
     prime: u64,

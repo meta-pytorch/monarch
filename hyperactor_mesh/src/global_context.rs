@@ -59,12 +59,11 @@ use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::PortRef;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
-use hyperactor::host::Host;
-use hyperactor::host::LocalProcManager;
 use hyperactor::id::Label;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MessageEnvelope;
@@ -72,12 +71,13 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::proc::Proc;
 use hyperactor::proc::WorkCell;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::HostMeshRef;
+use crate::host::Host;
+use crate::host::LocalProcManager;
 use crate::host_mesh::host_agent::GetLocalProcClient;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
@@ -100,13 +100,12 @@ use crate::transport::default_bind_spec;
 ///
 /// Uses `PortRef` (not `PortHandle`) because the sink target
 /// (`ProcAgent`) runs in a remote worker process.
-static GLOBAL_SUPERVISION_SINK: OnceLock<
-    RwLock<Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>>,
-> = OnceLock::new();
+static GLOBAL_SUPERVISION_SINK: OnceLock<RwLock<Option<PortRef<ActorSupervisionEvent>>>> =
+    OnceLock::new();
 
 /// Returns the lazily-initialized container that holds the current
 /// process-global supervision sink.
-fn sink_cell() -> &'static RwLock<Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>> {
+fn sink_cell() -> &'static RwLock<Option<PortRef<ActorSupervisionEvent>>> {
     GLOBAL_SUPERVISION_SINK.get_or_init(|| RwLock::new(None))
 }
 
@@ -126,8 +125,8 @@ fn sink_cell() -> &'static RwLock<Option<hyperactor_reference::PortRef<ActorSupe
 /// destination [`ProcAgent`] may live in a different
 /// process/rank.
 pub(crate) fn set_global_supervision_sink(
-    sink: hyperactor_reference::PortRef<ActorSupervisionEvent>,
-) -> Option<hyperactor_reference::PortRef<ActorSupervisionEvent>> {
+    sink: PortRef<ActorSupervisionEvent>,
+) -> Option<PortRef<ActorSupervisionEvent>> {
     let cell = sink_cell();
     let mut guard = cell.write().unwrap();
     let prev = guard.take();
@@ -146,7 +145,7 @@ pub(crate) fn set_global_supervision_sink(
 /// Cloning a [`PortRef`] is cheap.
 ///
 /// Used only by the process-global root client.
-fn get_global_supervision_sink() -> Option<hyperactor_reference::PortRef<ActorSupervisionEvent>> {
+fn get_global_supervision_sink() -> Option<PortRef<ActorSupervisionEvent>> {
     sink_cell().read().unwrap().clone()
 }
 
@@ -202,7 +201,7 @@ impl GlobalClientActor {
                             }
                             let kind = ActorErrorKind::processing(err);
                             break ActorError {
-                                actor_id: Box::new(instance.self_id().clone()),
+                                actor_id: Box::new(instance.self_addr().clone()),
                                 kind: Box::new(kind),
                             };
                         }
@@ -221,7 +220,7 @@ impl GlobalClientActor {
                 _ => {
                     let status = ActorStatus::generic_failure(err.kind.to_string());
                     ActorSupervisionEvent::new(
-                        instance.self_id().clone(),
+                        instance.self_addr().clone(),
                         Some("testclient".into()),
                         status,
                         None,
@@ -273,7 +272,7 @@ impl Actor for GlobalClientActor {
         env.set_error(DeliveryError::BrokenLink(
             "message returned to global root client".to_string(),
         ));
-        let actor_ref = env.dest().actor_ref();
+        let actor_ref = env.dest().actor_addr();
         let headers = env.headers().clone();
         let event = ActorSupervisionEvent::new(
             actor_ref.clone(),
@@ -397,7 +396,7 @@ async fn bootstrap_host() -> GlobalState {
     let proc_mesh = ProcMeshRef::new_singleton(
         ProcMeshId::singleton(Label::new("local").unwrap()),
         ProcRef::new(
-            local_proc_agent.actor_id().proc_ref().into(),
+            local_proc_agent.actor_addr().proc_addr(),
             0,
             local_proc_agent.bind(),
         ),
@@ -512,7 +511,6 @@ pub fn try_this_host() -> Option<&'static HostMeshRef> {
 mod tests {
     use std::time::Duration;
 
-    use hyperactor::reference as hyperactor_reference;
     use hyperactor::testing::ids::test_actor_id;
     use hyperactor_config::Flattrs;
     use ndslice::view::Extent;
@@ -533,20 +531,18 @@ mod tests {
     /// sink is shared across tests running in the same process).
     fn inject_undeliverable(
         client: &'static Instance<GlobalClientActor>,
-        dest_actor: hyperactor::reference::ActorId,
+        dest_actor: hyperactor::ActorAddr,
     ) {
         let env = MessageEnvelope::new(
-            client.self_id().clone(),
-            hyperactor_reference::PortId::new(dest_actor, 0),
+            client.self_addr().clone(),
+            dest_actor.port_addr(0.into()),
             wirevalue::Any::serialize(&0u64).unwrap(),
             Flattrs::new(),
         );
         // Target the global root client's well-known Undeliverable port.
-        let client_actor_id: hyperactor_reference::ActorId = client.self_id().clone().into();
+        let client_actor_id: hyperactor::ActorAddr = client.self_addr().clone();
         let undeliverable_port =
-            hyperactor_reference::PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(
-                &client_actor_id,
-            );
+            PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(&client_actor_id);
         undeliverable_port
             .send(client, Undeliverable(env))
             .expect("inject_undeliverable: send failed");
@@ -561,7 +557,7 @@ mod tests {
         let instance = testing::instance();
         let mut hm = testing::host_mesh(2).await;
         let _mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         assert!(

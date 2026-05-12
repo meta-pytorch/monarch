@@ -24,12 +24,12 @@ use derive_more::Display;
 use derive_more::From;
 use derive_more::TryInto;
 use enum_as_inner::EnumAsInner;
+use hyperactor as reference;
 use hyperactor::Bind;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
-use hyperactor::reference;
 use monarch_types::ReduceOp;
 use monarch_types::SerializablePyErr;
 use monarch_types::UniqueId;
@@ -858,7 +858,7 @@ pub enum WorkerMessage {
         /// - error message or stacktrace
         ///
         /// The worker process will be stopped if the error is provided.
-        error: Option<(Option<reference::ActorId>, String)>,
+        error: Option<(Option<reference::ActorAddr>, String)>,
     },
 
     /// Defines (part of) a new recording on the worker. This is a list of commands

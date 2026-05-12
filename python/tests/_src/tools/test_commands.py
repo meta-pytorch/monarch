@@ -15,7 +15,7 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 from monarch._src.tools import commands
-from monarch._src.tools.commands import component_args_from_cli, server_ready
+from monarch._src.tools.commands import server_ready
 from monarch.tools.config import Config
 from monarch.tools.config.workspace import Workspace
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
@@ -35,16 +35,6 @@ def _appdef() -> AppDef:
 
 
 class TestCommands(unittest.TestCase):
-    def test_component_args_from_cli(self) -> None:
-        def fn(h: str, num_hosts: int) -> AppDef:
-            return AppDef("_unused_", roles=[Role("_unused_", "_unused_")])
-
-        args = component_args_from_cli(fn, ["h=gpu.medium", "num_hosts=4"])
-
-        # should be able to call the component function with **args as kwargs
-        self.assertIsNotNone(fn(**args))
-        self.assertDictEqual({"h": "gpu.medium", "num_hosts": 4}, args)
-
     def test_create_dryrun(self) -> None:
         scheduler = "slurm"
         config = Config(
