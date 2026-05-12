@@ -372,12 +372,12 @@ async fn bootstrap_host() -> GlobalState {
 
     // 5. Get local_proc via HostAgent (lazily boots ProcAgent).
     //
-    // We use a throwaway Proc::local() for the bootstrap request-reply
+    // We use a throwaway Proc::isolated() for the bootstrap request-reply
     // calls, matching Python's bootstrap_host() (host_mesh.rs:330-333).
     // This creates a temporary in-process-only proc context during init
     // — intentionally acceptable for cross-language symmetry and easier
     // reasoning about the bootstrap sequence.
-    let temp_proc = Proc::local();
+    let temp_proc = Proc::isolated();
     let (bootstrap_cx, _guard) = temp_proc
         .instance("bootstrap")
         .expect("failed to create bootstrap instance");

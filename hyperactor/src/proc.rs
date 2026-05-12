@@ -102,6 +102,7 @@ use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
+#[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -176,7 +177,6 @@ use crate::mailbox::Mailbox;
 use crate::mailbox::MailboxClient;
 use crate::mailbox::MailboxMuxer;
 use crate::mailbox::MailboxSender;
-use crate::mailbox::MailboxServer as _;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::OncePortReceiver;
@@ -407,9 +407,6 @@ impl channel::Rx<MessageEnvelope> for AttachRx {
     }
 }
 
-/// This is used to mint new local ranks for [`Proc::local`].
-static NEXT_LOCAL_RANK: AtomicUsize = AtomicUsize::new(0);
-
 /// A proc instance is the runtime managing a single proc in Hyperactor.
 /// It is responsible for spawning actors in the proc, multiplexing messages
 /// to/within actors in the proc, and providing fallback routing to external
@@ -582,9 +579,9 @@ impl Builder {
         let gateway = match (self.gateway, self.forwarder) {
             (Some(gateway), None) => gateway,
             (None, Some(forwarder)) => {
-                Gateway::configured(ChannelAddr::any(ChannelTransport::Local).into(), forwarder)
+                Gateway::configured(channel::reserve_local_addr().into(), forwarder)
             }
-            (None, None) => Gateway::default().clone(),
+            (None, None) => Gateway::process_default().clone(),
             (Some(_), Some(_)) => anyhow::bail!("cannot set both gateway and forwarder"),
         };
         Ok(Proc::from_parts_unchecked(proc_id, gateway))
@@ -600,10 +597,10 @@ impl Proc {
             status = "Created"
         );
 
-        Self {
+        let proc = Self {
             inner: Arc::new(ProcState {
-                proc_id,
-                gateway,
+                proc_id: proc_id.clone(),
+                gateway: gateway.clone(),
                 proc_muxer: MailboxMuxer::new(),
                 reserved_roots: DashSet::new(),
                 instances: DashMap::new(),
@@ -613,7 +610,9 @@ impl Proc {
                 supervision_coordinator_actor_id: OnceLock::new(),
                 mailbox_server_handle: std::sync::Mutex::new(None),
             }),
-        }
+        };
+        gateway.attach(&proc);
+        proc
     }
 
     fn from_parts(proc_id: ProcId, gateway: Gateway) -> Self {
@@ -672,7 +671,7 @@ impl Proc {
     /// Create a proc with a random id on a fresh local-only gateway.
     pub fn isolated() -> Self {
         Self::builder()
-            .gateway(Gateway::new())
+            .gateway(Gateway::isolated())
             .build()
             .expect("isolated proc builder is valid")
     }
@@ -706,7 +705,7 @@ impl Proc {
             ))
             .build()
             .expect("direct proc builder is valid");
-        let handle = proc.clone().serve(rx);
+        let handle = proc.gateway().serve_rx(rx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
         Ok(proc)
     }
@@ -763,7 +762,7 @@ impl Proc {
         // Wrap the inner mailbox server handle so that stopping/
         // joining the outer handle also joins the dial-side
         // `DuplexClient`.
-        let inner_handle = proc.clone().serve(AttachRx(duplex_rx));
+        let inner_handle = proc.gateway().serve_rx(AttachRx(duplex_rx));
         let (stopped_tx, mut stopped_rx) = tokio::sync::watch::channel(false);
         let wrapped_join = tokio::spawn(async move {
             let _ = stopped_rx.wait_for(|stopped| *stopped).await;
@@ -842,17 +841,6 @@ impl Proc {
         }
     }
 
-    /// Create a new local-only proc. This proc is not allowed to forward messages
-    /// outside of the proc itself.
-    pub fn local() -> Self {
-        let rank = NEXT_LOCAL_RANK.fetch_add(1, Ordering::Relaxed);
-        Self::builder()
-            .proc_id(ProcId::instance(Label::strip(&format!("local_{}", rank))))
-            .gateway(Gateway::new())
-            .build()
-            .expect("local proc builder is valid")
-    }
-
     /// The proc's runtime identity.
     pub fn proc_id(&self) -> &ProcId {
         &self.state().proc_id
@@ -873,7 +861,7 @@ impl Proc {
         self.state().proc_addr()
     }
 
-    /// The proc's shared reachability boundary.
+    /// The proc's connectivity boundary.
     pub fn gateway(&self) -> Gateway {
         self.state().gateway.clone()
     }
@@ -1562,7 +1550,7 @@ impl Proc {
     /// transport-level acks before the channel is torn down.
     ///
     /// No-op if no mailbox server handle is stored (e.g. for
-    /// `Proc::configured` or `Proc::local` procs that don't serve).
+    /// `Proc::configured` or `Proc::isolated` procs that don't serve).
     pub async fn join_mailbox_server(&self) {
         let handle = self.inner.mailbox_server_handle.lock().unwrap().take();
         if let Some(handle) = handle {
@@ -1571,7 +1559,7 @@ impl Proc {
         }
     }
 
-    fn is_local_delivery_target(&self, dest_proc: &ProcAddr) -> bool {
+    pub(crate) fn is_local_delivery_target(&self, dest_proc: &ProcAddr) -> bool {
         let local_proc_id = self.proc_id();
         if requires_location_for_local_delivery_identity(dest_proc.id()) {
             // TODO: check all bound addresses for this proc, not only
@@ -1632,12 +1620,7 @@ impl MailboxSender for Proc {
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
-        let gateway = self.gateway();
-        let (r1, r2) =
-            futures::future::join(self.state().proc_muxer.flush(), gateway.flush()).await;
-        r1?;
-        r2?;
-        Ok(())
+        self.gateway().flush().await
     }
 }
 
@@ -3792,7 +3775,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let handle = proc.spawn("test", TestActor).unwrap();
 
@@ -3842,7 +3825,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_proc_actors_messaging() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let first = proc.spawn::<TestActor>("first", TestActor).unwrap();
         let second = proc.spawn::<TestActor>("second", TestActor).unwrap();
@@ -4028,7 +4011,7 @@ mod tests {
         use crate::mailbox::monitored_return_handle;
         use crate::testing::ids::test_actor_id;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (instance, _) = proc.instance("worker").unwrap();
         let (port, mut receiver) = instance.bind_actor_port::<u64>();
 
@@ -4054,7 +4037,7 @@ mod tests {
 
     #[test]
     fn test_default_location_changes_new_bindings_not_lookup() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let gateway = proc.gateway();
         let (_instance, handle) = proc.instance("worker").unwrap();
 
@@ -4115,6 +4098,77 @@ mod tests {
         assert_eq!(second.default_location(), second_location);
     }
 
+    #[tokio::test]
+    async fn test_gateway_serve_updates_location_and_stops() {
+        let proc = Proc::isolated();
+        let gateway = proc.gateway();
+        let initial_location = proc.default_location();
+
+        let server = Gateway::serve(&gateway, ChannelAddr::any(ChannelTransport::Local)).unwrap();
+
+        assert_eq!(proc.default_location(), initial_location);
+        assert_eq!(proc.default_location(), gateway.default_location());
+        assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
+
+        let next_server =
+            Gateway::serve(&gateway, ChannelAddr::any(ChannelTransport::Local)).unwrap();
+
+        assert_ne!(proc.default_location(), initial_location);
+        assert_eq!(proc.default_location(), gateway.default_location());
+        assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
+
+        next_server.stop("test complete");
+        next_server.await.unwrap().unwrap();
+
+        assert_eq!(proc.default_location(), initial_location);
+        assert_eq!(proc.default_location(), gateway.default_location());
+
+        server.stop("test complete");
+        server.await.unwrap().unwrap();
+
+        assert_eq!(proc.default_location(), initial_location);
+        assert_eq!(proc.default_location(), gateway.default_location());
+    }
+
+    #[tokio::test]
+    async fn test_direct_proc_server_stops_via_join_mailbox_server() {
+        let proc = Proc::direct(
+            ChannelAddr::any(ChannelTransport::Local),
+            "direct".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(proc.proc_addr(), proc.gateway().proc_addr(proc.proc_id()));
+
+        proc.join_mailbox_server().await;
+    }
+
+    #[tokio::test]
+    async fn test_local_only_gateway_returns_undeliverable_messages() {
+        use crate::testing::ids::test_actor_id;
+
+        let proc = Proc::isolated();
+        let (client, _) = proc.instance("client").unwrap();
+        let (return_handle, mut undeliverable_rx) =
+            client.open_port::<Undeliverable<MessageEnvelope>>();
+        let remote_proc = ProcAddr::unique(ChannelAddr::Local(1234), "remote");
+        let remote_dest = remote_proc.actor_addr("worker").port_addr(Port::from(0));
+
+        proc.post(
+            MessageEnvelope::serialize(
+                test_actor_id("sender", "client"),
+                remote_dest.clone(),
+                &123u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            return_handle,
+        );
+
+        let Undeliverable(envelope) = undeliverable_rx.recv().await.unwrap();
+        assert_eq!(envelope.dest(), &remote_dest);
+    }
+
     #[derive(Debug, Default)]
     #[export]
     struct LookupTestActor;
@@ -4140,7 +4194,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_actor_lookup() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _handle) = proc.instance("client").unwrap();
 
         let target_actor = proc.spawn::<TestActor>("target", TestActor).unwrap();
@@ -4207,7 +4261,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_child() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         let first = proc.spawn::<TestActor>("first", TestActor).unwrap();
@@ -4276,7 +4330,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_child_lifecycle() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
@@ -4295,7 +4349,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_parent_failure() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
@@ -4364,7 +4418,7 @@ mod tests {
             }
         }
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let state = Arc::new(AtomicUsize::new(0));
         let actor = TestActor(state.clone());
         let handle = proc.spawn::<TestActor>("test", actor).unwrap();
@@ -4385,7 +4439,7 @@ mod tests {
         // Need this custom hook to store panic backtrace in task_local.
         panic_handler::set_panic_hook();
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
@@ -4465,7 +4519,7 @@ mod tests {
             should_handle,
         };
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let (mut reported_event, _coordinator) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
@@ -4557,7 +4611,7 @@ mod tests {
             }
         }
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
 
         let (instance, handle) = proc.instance("my_test_actor").unwrap();
 
@@ -4591,7 +4645,7 @@ mod tests {
         }
 
         let process = async {
-            let proc = Proc::local();
+            let proc = Proc::isolated();
             // Intentionally not setting a proc supervison coordinator. This
             // should cause the process to terminate.
             // ProcSupervisionCoordinator::set(&proc).await.unwrap();
@@ -4691,7 +4745,7 @@ mod tests {
         }
 
         trace_and_block(async {
-            let proc = Proc::local();
+            let proc = Proc::isolated();
             let (client, _) = proc.instance("client").unwrap();
             let handle = LoggingActor.spawn_detached().unwrap();
             handle.send(&client, "hello world".to_string()).unwrap();
@@ -4731,7 +4785,7 @@ mod tests {
         use crate::mailbox::MailboxErrorKind;
         use crate::mailbox::MailboxSenderErrorKind;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let actor_handle = proc.spawn("test", TestActor).unwrap();
 
@@ -4764,7 +4818,7 @@ mod tests {
         use crate::mailbox::MailboxErrorKind;
         use crate::mailbox::MailboxSenderErrorKind;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
@@ -4833,7 +4887,7 @@ mod tests {
     //   - the actor id moves from the live set to the terminated set.
     #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_stored_on_stop() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (_client, _client_handle) = proc.instance("client").unwrap();
 
         let handle = proc.spawn::<TestActor>("actor", TestActor).unwrap();
@@ -4877,7 +4931,7 @@ mod tests {
     // and asserts the snapshot reports a `failed:*` actor_status.
     #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_stored_on_failure() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         // Supervision coordinator required for actor failure handling.
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
@@ -4907,7 +4961,7 @@ mod tests {
     // Exercises FI-1/FI-2 (see introspect.rs module-scope comment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_stored_on_failure() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
@@ -4932,7 +4986,7 @@ mod tests {
     // Exercises FI-2 (see introspect.rs module-scope comment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_on_clean_stop() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (_client, _client_handle) = proc.instance("client").unwrap();
 
         let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
@@ -4954,7 +5008,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_coordinator_receives_clean_stop() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (_client, _client_handle) = proc.instance("client").unwrap();
         let (mut reported_event, _coordinator_handle) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
@@ -4977,7 +5031,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_coordinator_shuts_down_last_during_destroy() {
-        let mut proc = Proc::local();
+        let mut proc = Proc::isolated();
         let (_client, _client_handle) = proc.instance("client").unwrap();
         let (mut reported_event, _coordinator_handle) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
@@ -5018,7 +5072,7 @@ mod tests {
     // Exercises FI-4 (see introspect.rs module-scope comment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_on_propagated_failure() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
@@ -5060,7 +5114,7 @@ mod tests {
     // resolve_actor_ref closes that race window.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_resolve_actor_ref_none_for_terminal_actor() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (_client, _client_handle) = proc.instance("client").unwrap();
 
         let handle = proc.spawn::<TestActor>("target", TestActor).unwrap();
@@ -5086,7 +5140,7 @@ mod tests {
     // Exercises FI-3 (see introspect module doc).
     #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_has_failure_info() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
@@ -5130,7 +5184,7 @@ mod tests {
     // Exercises FI-4 (see introspect module doc).
     #[async_timed_test(timeout_secs = 60)]
     async fn test_propagated_failure_info() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
@@ -5166,7 +5220,7 @@ mod tests {
     /// Exercises AI-1 (see module doc).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_creates_descriptive_name() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let handle = proc
             .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
@@ -5181,7 +5235,7 @@ mod tests {
     /// Exercises AI-1 (see module doc).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_increments_index() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let first = proc
             .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
@@ -5196,7 +5250,7 @@ mod tests {
     /// spawn_named_child passes Some(parent) to spawn_inner.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_preserves_supervision() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let child = proc
             .spawn_named_child(root.cell().clone(), "supervised_child", TestActor)
@@ -5209,7 +5263,7 @@ mod tests {
     /// Exercises AI-1 (see module doc).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_unchanged() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let child = proc.spawn_child(root.cell().clone(), TestActor).unwrap();
         assert!(!child.actor_addr().is_root());
@@ -5218,7 +5272,7 @@ mod tests {
     /// Exercises AI-1 (see module doc).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_different_names_different_pids() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let a = proc
             .spawn_named_child(root.cell().clone(), "controller_a", TestActor)
@@ -5234,7 +5288,7 @@ mod tests {
     /// Exercises AI-1 (see module doc).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_no_child_overwrite() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let _a = proc
             .spawn_named_child(root.cell().clone(), "ctrl", TestActor)
@@ -5249,7 +5303,7 @@ mod tests {
     /// Exercises AI-1 (see module doc).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_does_not_pollute_roots() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let _child = proc
             .spawn_named_child(root.cell().clone(), "foo", TestActor)
@@ -5263,7 +5317,7 @@ mod tests {
     /// Exercises AI-3 (see module doc).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ai3_controller_actor_ids_unique_across_parents_same_proc() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let parent_a = proc.spawn::<TestActor>("parent_a", TestActor).unwrap();
         let parent_b = proc.spawn::<TestActor>("parent_b", TestActor).unwrap();
 
@@ -5285,7 +5339,7 @@ mod tests {
     /// Exercises AI-3 (see module doc).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ai3_no_controller_overwrite_in_parent_or_proc_maps() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let parent_a = proc.spawn::<TestActor>("parent_a", TestActor).unwrap();
         let parent_b = proc.spawn::<TestActor>("parent_b", TestActor).unwrap();
 
@@ -5313,7 +5367,7 @@ mod tests {
     // Exercises FI-6 (see introspect module doc).
     #[async_timed_test(timeout_secs = 60)]
     async fn test_stopped_snapshot_has_no_failure_info() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (_client, _client_handle) = proc.instance("client").unwrap();
 
         let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
@@ -5349,7 +5403,7 @@ mod tests {
     // with the existing OTel ACTOR_MESSAGE_QUEUE_SIZE accounting.
     #[async_timed_test(timeout_secs = 10)]
     async fn test_queue_depth_increment_decrement() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let handle = proc.spawn("qd_test", TestActor).unwrap();
         let actor_ref: crate::ActorRef<TestActor> = handle.bind();
@@ -5404,7 +5458,7 @@ mod tests {
     // snapshot of currently queued work, not backlog history.
     #[async_timed_test(timeout_secs = 10)]
     async fn test_proc_queue_depth_aggregation_under_pressure() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         // Spawn two actors.
@@ -5484,7 +5538,7 @@ mod tests {
     // and watermark is 0.
     #[async_timed_test(timeout_secs = 5)]
     async fn test_retained_queue_stats_cold_start() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         assert_eq!(proc.queue_depth_total(), 0);
         assert_eq!(proc.queue_depth_high_water_mark(), 0);
         assert_eq!(proc.last_nonzero_queue_depth_age_ms(), None);
@@ -5494,7 +5548,7 @@ mod tests {
     // retains the peak and last-nonzero is Some.
     #[async_timed_test(timeout_secs = 10)]
     async fn test_retained_queue_stats_burst_then_drain() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let h = proc.spawn("ret_test", TestActor).unwrap();
 
