@@ -220,7 +220,7 @@ mod tests {
 
         let _ = remote
             .gspawn(
-                &Proc::local(),
+                &Proc::isolated(),
                 "hyperactor::actor::remote::tests::MyActor",
                 Uid::instance_labeled(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
@@ -231,7 +231,7 @@ mod tests {
 
         let err = remote
             .gspawn(
-                &Proc::local(),
+                &Proc::isolated(),
                 "hyperactor::actor::remote::tests::MyActor",
                 Uid::instance_labeled(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(false, bincode::config::legacy()).unwrap(),
