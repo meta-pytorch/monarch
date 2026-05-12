@@ -10,7 +10,6 @@
 #include <cuda_runtime.h>
 #include <dlfcn.h>
 #include <iostream>
-#include <stdexcept>
 
 // Two-level stringify macro to ensure macro arguments are expanded before
 // stringification
@@ -118,6 +117,15 @@ struct DriverAPI {
 
 namespace {
 
+// Fallback entry used when the driver library or a symbol cannot be loaded.
+// Returns CUDA_ERROR_NOT_INITIALIZED to the Rust caller. The variadic
+// template lets one definition match the heterogeneous driver signatures
+// in RDMAXCEL_CUDA_DRIVER_API.
+template <typename... Args>
+CUresult stub_entry(Args... /*unused*/) {
+  return CUDA_ERROR_NOT_INITIALIZED;
+}
+
 DriverAPI create_driver_api() {
 #ifdef USE_ROCM
   // Try to open libamdhip64.so - RTLD_NOLOAD means only succeed if already
@@ -131,8 +139,8 @@ DriverAPI create_driver_api() {
   }
 
   if (!handle) {
-    throw std::runtime_error(
-        std::string("[RdmaXcel] Can't open libamdhip64.so: ") + dlerror());
+    std::cerr << "[RdmaXcel] Can't open libamdhip64.so: " << dlerror()
+              << std::endl;
   }
 #else
   // Try to open libcuda.so.1 - RTLD_NOLOAD means only succeed if already loaded
@@ -145,19 +153,24 @@ DriverAPI create_driver_api() {
   }
 
   if (!handle) {
-    throw std::runtime_error(
-        std::string("[RdmaXcel] Can't open libcuda.so.1: ") + dlerror());
+    std::cerr << "[RdmaXcel] Can't open libcuda.so.1: " << dlerror()
+              << std::endl;
   }
 #endif
 
   DriverAPI r{};
 
-#define LOOKUP_CUDA_ENTRY(name, sym)                                           \
-  r.name##_ = reinterpret_cast<decltype(&sym)>(dlsym(handle, STRINGIFY(sym))); \
-  if (!r.name##_) {                                                            \
-    throw std::runtime_error(                                                  \
-        std::string("[RdmaXcel] Can't find ") + STRINGIFY(sym) + ": " +        \
-        dlerror());                                                            \
+#define LOOKUP_CUDA_ENTRY(name, sym)                                     \
+  if (!handle) {                                                         \
+    r.name##_ = &stub_entry;                                             \
+  } else {                                                               \
+    r.name##_ =                                                          \
+        reinterpret_cast<decltype(&sym)>(dlsym(handle, STRINGIFY(sym))); \
+    if (!r.name##_) {                                                    \
+      std::cerr << "[RdmaXcel] Can't find " << STRINGIFY(sym) << ": "    \
+                << dlerror() << std::endl;                               \
+      r.name##_ = &stub_entry;                                           \
+    }                                                                    \
   }
 
   RDMAXCEL_CUDA_DRIVER_API(LOOKUP_CUDA_ENTRY)
@@ -169,7 +182,7 @@ DriverAPI create_driver_api() {
 } // namespace
 
 DriverAPI* DriverAPI::get() {
-  // Ensure we have a valid CUDA context for this thread
+  // Ensure we have a valid CUDA context for this thread.
   cudaFree(0);
   static DriverAPI singleton = create_driver_api();
   return &singleton;
