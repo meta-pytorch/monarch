@@ -196,7 +196,7 @@ mod tests {
     async fn basic_borrow_test_impl(device: Device) -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
@@ -351,7 +351,7 @@ mod tests {
     async fn borrow_errored_value() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let worker_handle = proc
