@@ -1219,10 +1219,33 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
             .next()
             .map(|p| p.extent().clone());
 
+        // Observation snapshot of ranks already observed in a
+        // terminal status. Monotonicity makes those values stable;
+        // `stop_actor_by_id` uses this to pre-seed its wait
+        // accumulator and to skip `WaitRankStatus` for the
+        // corresponding agents. `Stop` is still cast to every rank.
+        let known_terminal: HashMap<usize, resource::Status> = health_state
+            .statuses
+            .iter()
+            .filter(|(_, (status, _))| status.is_terminated())
+            .map(|(point, (status, _))| (point.rank(), status.clone()))
+            .collect();
+
+        if known_terminal.len() == health_state.statuses.len() && !health_state.statuses.is_empty()
+        {
+            // Every rank already observed terminal; nothing to signal
+            // and the observation would be trivially complete.
+            tracing::info!(
+                actor_mesh = %mesh_name,
+                "all ranks already terminated: skipping stop broadcast"
+            );
+            return Ok(());
+        }
+
         // Cannot use "ActorMesh::stop" as it tries to message the controller.
         let result = self
             .proc_mesh()
-            .stop_actor_by_id(cx, ActorMeshRef::id(self).clone(), reason)
+            .stop_actor_by_id(cx, ActorMeshRef::id(self).clone(), reason, known_terminal)
             .await;
 
         match result {
@@ -1261,7 +1284,7 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
 
     async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         self.proc_mesh()
-            .stop_actor_by_id(cx, ActorMeshRef::id(self).clone(), reason)
+            .stop_actor_by_id(cx, ActorMeshRef::id(self).clone(), reason, HashMap::new())
             .await?;
         Ok(())
     }
@@ -1417,8 +1440,48 @@ impl Controlled for ProcMeshRef {
             send_subscriber_message(cx, subscriber, failure_message.clone());
         }
 
-        let names = self.proc_ids().collect::<Vec<hyperactor::ProcAddr>>();
+        // Build an observation snapshot of ranks already known to be
+        // in a terminal state (`Stopped`, `Failed`, or `Timeout`). By
+        // the monotonicity invariant on rank status, those values are
+        // stable; `stop_proc_mesh` will pre-seed the wait accumulator
+        // and skip `wait_rank_status` for them. The `Stop` signal
+        // itself is still sent to every proc — the signal and
+        // observation paths are independent. `Stopping` ranks are not
+        // included: their host agents are still expected to be alive
+        // and we want a fresh observation through to `Stopped`.
         let region = Ranked::region(self).clone();
+        let extent = region.extent();
+        let known_terminal: HashMap<usize, resource::Status> = self
+            .proc_refs()
+            .iter()
+            .filter_map(|proc_ref| {
+                let create_rank = proc_ref.create_rank();
+                let point = extent.point_of_rank(create_rank).ok()?;
+                let (status, _) = health_state.statuses.get(&point)?;
+                if status.is_terminated() {
+                    Some((create_rank, status.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if known_terminal.len() == self.proc_refs().len() {
+            // Every rank already observed terminal; nothing to signal
+            // and the observation would be trivially complete.
+            tracing::info!(
+                proc_mesh = %mesh_name,
+                "all ranks already terminated: skipping stop broadcast"
+            );
+            return Ok(());
+        }
+
+        let names: Vec<hyperactor::ProcAddr> = self
+            .proc_refs()
+            .iter()
+            .map(|p| p.proc_addr().clone())
+            .collect();
+
         let Some(hosts) = self.hosts() else {
             return Ok(());
         };
@@ -1428,13 +1491,13 @@ impl Controlled for ProcMeshRef {
         // ranks the host agents reported on; apply those too so health
         // state stays as accurate as we can make it.
         let max_rank = health_state.statuses.keys().map(|p| p.rank()).max();
-        let extent = health_state
+        let stored_extent = health_state
             .statuses
             .keys()
             .next()
             .map(|p| p.extent().clone());
         match hosts
-            .stop_proc_mesh(cx, self.id(), names, region, reason)
+            .stop_proc_mesh(cx, self.id(), names, region, reason, known_terminal)
             .await
         {
             Ok(statuses) => {
@@ -1447,7 +1510,7 @@ impl Controlled for ProcMeshRef {
                 Ok(())
             }
             Err(crate::Error::ProcMeshStopError { statuses }) => {
-                if let (Some(max_rank), Some(extent)) = (max_rank, extent) {
+                if let (Some(max_rank), Some(extent)) = (max_rank, stored_extent) {
                     for (rank, status) in statuses.materialized_iter(max_rank).enumerate() {
                         if let Ok(point) = extent.point_of_rank(rank) {
                             health_state
@@ -1468,7 +1531,7 @@ impl Controlled for ProcMeshRef {
         let region = Ranked::region(self).clone();
         if let Some(hosts) = self.hosts() {
             hosts
-                .stop_proc_mesh(cx, self.id(), names, region, reason)
+                .stop_proc_mesh(cx, self.id(), names, region, reason, HashMap::new())
                 .await?;
         }
         Ok(())
@@ -1793,6 +1856,90 @@ mod tests {
         }
 
         let _ = actor_hm.shutdown(instance).await;
+    }
+
+    /// Verify that `ProcMesh::stop()` returns promptly when one rank's host
+    /// process is already dead. Regression test for the case where the
+    /// controller's stop path coupled signal and observation: a dead host
+    /// caused `wait_rank_status` to bounce as undeliverable, which
+    /// short-circuited the per-host loop before the surviving rank ever
+    /// received `Stop`, leaving `stop()` hung.
+    ///
+    /// After the signal/observation split, `Stop` is signalled to every
+    /// host unconditionally with undeliverable bounces suppressed, and the
+    /// wait observation is pre-seeded with cached terminal statuses for
+    /// dead ranks. The call completes well under `PROC_STOP_MAX_IDLE`.
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_proc_mesh_stop_with_a_dead_host() {
+        let config = hyperactor_config::global::lock();
+        let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
+        let _stop_idle =
+            config.override_key(crate::host_mesh::PROC_STOP_MAX_IDLE, Duration::from_secs(5));
+
+        let instance = testing::instance();
+        let mut hm = host_mesh_with_config(2).await;
+
+        let mut proc_mesh = hm
+            .spawn(instance, "test_stop", Extent::unity(), None, None)
+            .await
+            .unwrap();
+
+        // Spawn a TestActor mesh so the controller has cached `Running`
+        // for every rank before we kill one.
+        let _actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn(instance, "stop_test_actor", &())
+            .await
+            .unwrap();
+
+        // Give the controller time to populate per-rank `Running` via
+        // its supervision stream.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Kill one host process. Its proc agent dies with it.
+        let _ = hm.children[0].start_kill();
+        let _ = hm.children[0].wait().await;
+
+        // Wait for the controller's supervision poll to observe the
+        // dead host's rank in a terminal status (Failed via
+        // supervision-stream disconnect, or Timeout via the next
+        // poll). This is what populates `known_terminal` on the stop
+        // path. The orphan/keepalive timeout in the agent is configured
+        // long; we poll the controller's actor_states view (also
+        // backed by health_state via GetState) until at least one rank
+        // appears terminal.
+        let observation_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(Some(states)) = proc_mesh.proc_states(instance, None).await
+                && states.values().any(|s| s.status.is_terminated())
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < observation_deadline,
+                "controller did not observe dead rank in terminal status within 30s"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        // Stop must complete in bounded time. The original bug was an
+        // unbounded hang.
+        let start = tokio::time::Instant::now();
+        let stop_result = tokio::time::timeout(
+            Duration::from_secs(30),
+            proc_mesh.stop(instance, "dead-host stop test".to_string()),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        tracing::info!(?elapsed, "proc_mesh.stop returned");
+        assert!(
+            stop_result.is_ok(),
+            "ProcMesh::stop hung when one rank's host was dead (elapsed {:?})",
+            elapsed,
+        );
+        stop_result
+            .unwrap()
+            .expect("ProcMesh::stop should succeed with cached-terminal partition");
     }
 
     #[test]

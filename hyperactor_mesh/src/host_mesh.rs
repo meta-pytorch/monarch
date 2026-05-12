@@ -112,7 +112,6 @@ use crate::resource::GetRankStatus;
 use crate::resource::GetRankStatusClient;
 use crate::resource::RankedValues;
 use crate::resource::Status;
-use crate::resource::WaitRankStatusClient;
 use crate::transport::DEFAULT_TRANSPORT;
 
 /// Actor name for `ProcMeshController` when spawned as a named child.
@@ -1483,32 +1482,55 @@ impl HostMeshRef {
         procs: impl IntoIterator<Item = ProcAddr>,
         region: Region,
         reason: String,
+        // Snapshot of ranks the caller has already observed in a
+        // terminal status. Observation-only: by the monotonicity
+        // invariant on rank status those values are stable, so we
+        // pre-seed the wait accumulator with them and skip
+        // `wait_rank_status` for the corresponding host agents. `Stop`
+        // is always signalled to every proc.
+        known_terminal: std::collections::HashMap<usize, Status>,
     ) -> crate::Result<crate::StatusMesh> {
-        // Accumulator outputs full StatusMesh snapshots; seed with
-        // NotExist.
-        let mut proc_names = Vec::new();
         let num_ranks = region.num_ranks();
-        // Accumulator outputs full StatusMesh snapshots; seed with
-        // NotExist.
+        // Accumulator outputs full StatusMesh snapshots; pre-fill
+        // ranks the caller already observed as terminal so the wait
+        // can complete without overlay updates for them.
+        let seed = if known_terminal.is_empty() {
+            crate::StatusMesh::from_single(region.clone(), Status::NotExist)
+        } else {
+            let ranges: Vec<(std::ops::Range<usize>, Status)> = known_terminal
+                .iter()
+                .map(|(rank, status)| (*rank..rank + 1, status.clone()))
+                .collect();
+            crate::StatusMesh::from_ranges_with_default(region.clone(), Status::NotExist, ranges)
+                .map_err(|e| anyhow::anyhow!("invalid known_terminal entries: {:?}", e))?
+        };
         let (port, rx) = cx.mailbox().open_accum_port_opts(
-            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
+            seed,
             StreamingReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: None,
             },
         );
-        for proc_id in procs.into_iter() {
-            let addr = proc_id.addr().clone();
-            // The name stored in HostAgent is not the same as the
-            // one stored in the ProcMesh. We instead take each proc id
-            // and map it to that particular agent.
-            let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
-            proc_names.push(proc_resource_id.clone());
 
-            // Note that we don't send 1 message per host agent, we send 1 message
-            // per proc.
-            let host = HostRef(addr);
-            host.mesh_agent()
+        // `procs` is in rank order, so the index in this vec is the
+        // create_rank — matching the keys in `known_terminal`.
+        let procs: Vec<ProcAddr> = procs.into_iter().collect();
+        let proc_names: Vec<ResourceId> = procs
+            .iter()
+            .map(|p| ResourceId::new(p.uid().clone(), p.label().cloned()))
+            .collect();
+
+        // Signal phase: send `Stop` to every host unconditionally.
+        // The signal sets the desired state; `return_undeliverable(false)`
+        // keeps a dead host agent's bounced envelope from being routed
+        // through the caller's supervisor. There is also no per-host
+        // short-circuit on `?`: every live host receives `Stop`
+        // regardless of sibling failures.
+        for (proc_id, proc_resource_id) in procs.iter().zip(proc_names.iter()) {
+            let host = HostRef(proc_id.addr().clone());
+            let mut stop_port = host.mesh_agent().port::<resource::Stop>();
+            stop_port.return_undeliverable(false);
+            stop_port
                 .send(
                     cx,
                     resource::Stop {
@@ -1519,16 +1541,38 @@ impl HostMeshRef {
                 .map_err(|e| {
                     crate::Error::SendingError(host.mesh_agent().actor_addr().clone(), Box::new(e))
                 })?;
-            host.mesh_agent()
-                .wait_rank_status(cx, proc_resource_id, Status::Stopped, port.bind())
-                .await
-                .map_err(|e| crate::Error::CallError(host.mesh_agent().actor_addr().clone(), e))?;
-
             tracing::info!(
                 name = "ProcMeshStatus",
                 %proc_id,
                 status = "Stop::Sent",
             );
+        }
+
+        // Observation phase: subscribe via `WaitRankStatus` only on
+        // hosts whose proc rank has not already been observed in a
+        // terminal state. A host can still die between building
+        // `known_terminal` and the send; `return_undeliverable(false)`
+        // suppresses the bounce so the wait's idle timeout is the
+        // only failure surface, matching the HM-3 in-band convention.
+        for (rank, (proc_id, proc_resource_id)) in procs.iter().zip(proc_names.iter()).enumerate() {
+            if known_terminal.contains_key(&rank) {
+                continue;
+            }
+            let host = HostRef(proc_id.addr().clone());
+            let mut wait_port = host.mesh_agent().port::<resource::WaitRankStatus>();
+            wait_port.return_undeliverable(false);
+            wait_port
+                .send(
+                    cx,
+                    resource::WaitRankStatus {
+                        id: proc_resource_id.clone(),
+                        min_status: Status::Stopped,
+                        reply: port.bind(),
+                    },
+                )
+                .map_err(|e| {
+                    crate::Error::SendingError(host.mesh_agent().actor_addr().clone(), Box::new(e))
+                })?;
         }
         tracing::info!(
             name = "HostMeshStatus",

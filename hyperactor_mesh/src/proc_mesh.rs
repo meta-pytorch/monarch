@@ -110,6 +110,11 @@ impl ProcRef {
         &self.proc_id
     }
 
+    /// The rank this proc was assigned when its mesh was created.
+    pub(crate) fn create_rank(&self) -> usize {
+        self.create_rank
+    }
+
     pub(crate) fn actor_addr(&self, id: &ActorMeshId) -> ActorAddr {
         self.proc_id.actor_addr_uid(id.uid().clone())
     }
@@ -330,7 +335,7 @@ impl ProcMesh {
             .host_mesh
             .as_ref()
             .expect("ProcMesh always has a host mesh")
-            .stop_proc_mesh(cx, &self.id, procs, region, reason)
+            .stop_proc_mesh(cx, &self.id, procs, region, reason, HashMap::new())
             .await
             .map(|_| ())
             .map_err(anyhow::Error::from)
@@ -607,6 +612,11 @@ impl ProcMeshRef {
     /// Returns an iterator over the proc ids in this mesh.
     pub(crate) fn proc_ids(&self) -> impl Iterator<Item = ProcAddr> {
         self.ranks.iter().map(|proc_ref| proc_ref.proc_id.clone())
+    }
+
+    /// Returns the proc refs in this mesh in rank order.
+    pub(crate) fn proc_refs(&self) -> &[ProcRef] {
+        &self.ranks
     }
 
     /// Spawn an actor on all of the procs in this mesh, returning a
@@ -915,6 +925,12 @@ impl ProcMeshRef {
     }
 
     /// Send stop actors message to all mesh agents for a specific actor mesh id.
+    ///
+    /// `known_terminal` is a snapshot of ranks the caller has already observed
+    /// in a terminal status. It is *observation-only*: by the monotonicity
+    /// invariant on rank status, those ranks cannot transition back, so we
+    /// reuse the cached value instead of asking their (possibly dead) agents.
+    /// `Stop` is always signalled to every rank.
     #[hyperactor::instrument(fields(
         host_mesh = self.host_mesh_id().map(|id| id.to_string()),
         proc_mesh = self.id.to_string(),
@@ -925,10 +941,13 @@ impl ProcMeshRef {
         cx: &impl context::Actor,
         actor_mesh_id: ActorMeshId,
         reason: String,
+        known_terminal: HashMap<usize, Status>,
     ) -> crate::Result<ValueMesh<Status>> {
         tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Attempt");
         tracing::info!(name = "ActorMeshStatus", status = "Stop::Attempt");
-        let result = self.stop_actor_by_id_inner(cx, actor_mesh_id, reason).await;
+        let result = self
+            .stop_actor_by_id_inner(cx, actor_mesh_id, reason, known_terminal)
+            .await;
         match &result {
             Ok(_) => {
                 tracing::info!(name = "ProcMeshStatus", status = "ActorMesh::Stop::Success");
@@ -947,46 +966,82 @@ impl ProcMeshRef {
         cx: &impl context::Actor,
         actor_mesh_id: ActorMeshId,
         reason: String,
+        known_terminal: HashMap<usize, Status>,
     ) -> crate::Result<ValueMesh<Status>> {
         let region = self.region().clone();
         let agent_mesh = self.agent_mesh();
-        agent_mesh.cast(
-            cx,
-            resource::Stop {
-                id: actor_mesh_id.resource_id().clone(),
-                reason,
-            },
-        )?;
 
-        // Open an accum port that *receives overlays* and *emits full
-        // meshes*.
+        // Signal phase: send `Stop` to every rank unconditionally.
+        // The signal sets the desired state and is independent of
+        // observed health; the mailbox enqueues every send, and
+        // `return_undeliverable(false)` keeps a dead proc agent's
+        // bounced envelope from being routed through the caller's
+        // supervisor.
+        let stop_msg = resource::Stop {
+            id: actor_mesh_id.resource_id().clone(),
+            reason,
+        };
+        for (_, agent) in agent_mesh.iter() {
+            let mut stop_port = agent.port::<resource::Stop>();
+            stop_port.return_undeliverable(false);
+            stop_port
+                .send(cx, stop_msg.clone())
+                .map_err(|e| Error::SendingError(agent.actor_addr().clone(), Box::new(e)))?;
+        }
+
+        // Observation phase. Open an accum port that *receives
+        // overlays* and *emits full meshes*. Pre-fill ranks the
+        // caller has already observed in a terminal state — the
+        // monotonicity invariant on rank status means those values
+        // are stable, so the wait completes without re-asking those
+        // (possibly dead) agents.
         //
         // NOTE: Mailbox initializes the accumulator state via
         // `Default`, which is an *empty* ValueMesh (0 ranks). Our
         // Accumulator<ValueMesh<T>> implementation detects this on
         // the first update and replaces it with the caller-supplied
-        // template (the `self` passed into open_accum_port), which we
-        // seed here as "full NotExist over the target region".
+        // template (the `self` passed into open_accum_port).
+        let seed = if known_terminal.is_empty() {
+            crate::StatusMesh::from_single(region.clone(), Status::NotExist)
+        } else {
+            let ranges: Vec<(std::ops::Range<usize>, Status)> = known_terminal
+                .iter()
+                .map(|(rank, status)| (*rank..rank + 1, status.clone()))
+                .collect();
+            crate::StatusMesh::from_ranges_with_default(region.clone(), Status::NotExist, ranges)
+                .map_err(|e| {
+                    Error::Other(anyhow::anyhow!("invalid known_terminal entries: {:?}", e))
+                })?
+        };
         let (port, rx) = cx.mailbox().open_accum_port_opts(
-            // Initial state for the accumulator: full mesh seeded to
-            // NotExist.
-            crate::StatusMesh::from_single(region.clone(), Status::NotExist),
+            seed,
             StreamingReducerOpts {
                 max_update_interval: Some(Duration::from_millis(50)),
                 initial_update_interval: None,
             },
         );
-        // Use WaitRankStatus instead of GetRankStatus so agents defer
-        // their reply until the actor reaches terminal state, rather
-        // than replying immediately with Stopping.
-        agent_mesh.cast(
-            cx,
-            resource::WaitRankStatus {
-                id: actor_mesh_id.resource_id().clone(),
-                min_status: Status::Stopped,
-                reply: port.bind(),
-            },
-        )?;
+        // Subscribe via `WaitRankStatus` only on ranks whose terminal
+        // status we have not already cached. Agents defer their reply
+        // until the actor reaches terminal state, rather than replying
+        // immediately with `Stopping`. A rank can still die between
+        // building `known_terminal` and the send; `return_undeliverable(false)`
+        // suppresses the bounce so the timeout — not the caller's
+        // supervisor — is the only failure surface.
+        let wait_msg = resource::WaitRankStatus {
+            id: actor_mesh_id.resource_id().clone(),
+            min_status: Status::Stopped,
+            reply: port.bind(),
+        };
+        for (point, agent) in agent_mesh.iter() {
+            if known_terminal.contains_key(&point.rank()) {
+                continue;
+            }
+            let mut wait_port = agent.port::<resource::WaitRankStatus>();
+            wait_port.return_undeliverable(false);
+            wait_port
+                .send(cx, wait_msg.clone())
+                .map_err(|e| Error::SendingError(agent.actor_addr().clone(), Box::new(e)))?;
+        }
         let start_time = tokio::time::Instant::now();
 
         // Reuse actor spawn idle time.
