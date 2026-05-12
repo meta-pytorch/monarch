@@ -80,6 +80,11 @@ declare_static_counter!(
     "actor.actor_mesh_controller.num_stalls"
 );
 
+declare_static_counter!(
+    PROC_MESH_CONTROLLER_SUPERVISION_STALLS,
+    "actor.proc_mesh_controller.num_stalls"
+);
+
 /// Aggregated health and subscriber bookkeeping for a single
 /// `ResourceController`. Tracks the most recently observed status of every
 /// rank in the controlled mesh, the latched unhealthy event (if any), the
@@ -1037,7 +1042,7 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
 
         // Actor-specific: first check if the proc mesh is dead before
         // trying to query their agents.
-        let proc_states = self.proc_mesh().proc_states(cx).await;
+        let proc_states = self.proc_mesh().proc_states(cx, None).await;
         if let Err(e) = proc_states {
             send_state_change(
                 cx,
@@ -1262,47 +1267,244 @@ impl<A: Referable> Controlled for ActorMeshRef<A> {
     }
 }
 
-#[derive(Debug)]
-#[hyperactor::export]
-pub(crate) struct ProcMeshController {
-    mesh: ProcMeshRef,
-}
+/// Controller for a proc mesh.
+pub(crate) type ProcMeshController = ResourceController<ProcMeshRef>;
 
-impl ProcMeshController {
-    /// Create a new proc controller based on the provided reference.
-    pub(crate) fn new(mesh: ProcMeshRef) -> Self {
-        Self { mesh }
-    }
-}
-
+/// `Controlled` implementation for a proc mesh.
 #[async_trait]
-impl Actor for ProcMeshController {
-    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        this.set_system();
+impl Controlled for ProcMeshRef {
+    type StateInner = crate::host_mesh::host_agent::ProcState;
+
+    fn stall_counter() -> &'static Counter<u64> {
+        &PROC_MESH_CONTROLLER_SUPERVISION_STALLS
+    }
+
+    fn id(&self) -> &ResourceId {
+        ProcMeshRef::id(self).resource_id()
+    }
+
+    fn region(&self) -> &ndslice::Region {
+        ndslice::view::Ranked::region(self)
+    }
+
+    fn subscribe_to_stream(
+        &self,
+        cx: &impl context::Actor,
+        subscriber: hyperactor::PortRef<resource::State<Self::StateInner>>,
+    ) -> anyhow::Result<()> {
+        // Send one StreamState per proc to its host agent.
+        for proc_id in self.proc_ids() {
+            let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
+            let host = crate::host_mesh::HostRef(proc_id.addr().clone());
+            host.mesh_agent().send(
+                cx,
+                resource::StreamState::<Self::StateInner> {
+                    id: proc_resource_id,
+                    subscriber: subscriber.clone(),
+                },
+            )?;
+        }
         Ok(())
     }
 
-    async fn cleanup(
-        &mut self,
-        this: &Instance<Self>,
-        _err: Option<&ActorError>,
-    ) -> Result<(), anyhow::Error> {
-        // Cannot use "ProcMesh::stop" as it's only defined on ProcMesh, not ProcMeshRef.
-        let names = self.mesh.proc_ids().collect::<Vec<hyperactor::ProcAddr>>();
-        let region = self.mesh.region().clone();
-        if let Some(hosts) = self.mesh.hosts() {
-            hosts
-                .stop_proc_mesh(
-                    this,
-                    self.mesh.id(),
-                    names,
-                    region,
-                    "proc mesh controller cleanup".to_string(),
-                )
-                .await
-        } else {
-            Ok(())
+    fn forward_wait_rank_status(
+        &self,
+        cx: &impl context::Actor,
+        msg: resource::WaitRankStatus,
+    ) -> anyhow::Result<()> {
+        for proc_id in self.proc_ids() {
+            let host = crate::host_mesh::HostRef(proc_id.addr().clone());
+            host.mesh_agent().send(cx, msg.clone())?;
         }
+        Ok(())
+    }
+
+    async fn poll_states(
+        &self,
+        cx: &impl context::Actor,
+        supervision_display_name: &str,
+        health_state: &mut HealthState,
+    ) -> PollResult {
+        let mesh_name = Controlled::id(self);
+
+        let proc_states = self.proc_states(cx, compute_keepalive()).await;
+        match proc_states {
+            Err(e) => {
+                send_state_change(
+                    cx,
+                    0,
+                    ActorSupervisionEvent::new(
+                        cx.instance().self_addr().clone(),
+                        Some(supervision_display_name.to_string()),
+                        ActorStatus::generic_failure(format!(
+                            "unable to query for proc states: {:?}",
+                            e
+                        )),
+                        None,
+                    ),
+                    mesh_name,
+                    false,
+                    health_state,
+                );
+                PollResult::Reschedule
+            }
+            Ok(None) => PollResult::Processed { did_notify: false },
+            Ok(Some(states)) => {
+                let did_notify =
+                    health_state.apply_updates_and_notify(&states, |state, health_state| {
+                        self.notify_proc_state_change(
+                            cx,
+                            supervision_display_name,
+                            state,
+                            health_state,
+                        )
+                    });
+                PollResult::Processed { did_notify }
+            }
+        }
+    }
+
+    fn process_state(
+        &self,
+        cx: &impl context::Actor,
+        state: resource::State<Self::StateInner>,
+        health_state: &mut HealthState,
+    ) -> bool {
+        let Ok(point) = Controlled::region(self).extent().point_of_rank(
+            state
+                .state
+                .as_ref()
+                .map(|s| s.create_rank)
+                .unwrap_or(usize::MAX),
+        ) else {
+            return false;
+        };
+        let changed = health_state.maybe_update(point, state.status.clone(), state.generation);
+        if !changed {
+            return false;
+        }
+        let display = Controlled::id(self).to_string();
+        self.notify_proc_state_change(cx, &display, state, health_state)
+    }
+
+    async fn handle_stop_request(
+        &self,
+        cx: &impl context::Actor,
+        _supervision_display_name: &str,
+        reason: String,
+        health_state: &mut HealthState,
+    ) -> anyhow::Result<()> {
+        let mesh_name = Controlled::id(self);
+        tracing::info!(
+            actor_id = %cx.instance().self_addr(),
+            proc_mesh = %mesh_name,
+            "ProcMeshController stopping proc mesh"
+        );
+        // Marker so subscribers know the mesh is being torn down on request.
+        let event = ActorSupervisionEvent::new(
+            cx.instance().self_addr().clone(),
+            None,
+            ActorStatus::Stopped("ProcMeshController received explicit stop request".to_string()),
+            None,
+        );
+        let failure_message = MeshFailure {
+            actor_mesh_name: Some(mesh_name.to_string()),
+            event,
+            crashed_ranks: vec![],
+        };
+        health_state.unhealthy_event = Some(Unhealthy::StreamClosed(failure_message.clone()));
+        for subscriber in health_state.subscribers.iter() {
+            send_subscriber_message(cx, subscriber, failure_message.clone());
+        }
+
+        let names = self.proc_ids().collect::<Vec<hyperactor::ProcAddr>>();
+        let region = Ranked::region(self).clone();
+        let Some(hosts) = self.hosts() else {
+            return Ok(());
+        };
+        // stop_proc_mesh waits for every rank to reach a terminating state
+        // before returning Ok, so we can apply its returned StatusMesh
+        // verbatim. On error we still got per-rank statuses for whatever
+        // ranks the host agents reported on; apply those too so health
+        // state stays as accurate as we can make it.
+        let max_rank = health_state.statuses.keys().map(|p| p.rank()).max();
+        let extent = health_state
+            .statuses
+            .keys()
+            .next()
+            .map(|p| p.extent().clone());
+        match hosts
+            .stop_proc_mesh(cx, self.id(), names, region, reason)
+            .await
+        {
+            Ok(statuses) => {
+                for (rank, status) in statuses.iter() {
+                    health_state
+                        .statuses
+                        .entry(rank)
+                        .and_modify(move |s| *s = (status, u64::MAX));
+                }
+                Ok(())
+            }
+            Err(crate::Error::ProcMeshStopError { statuses }) => {
+                if let (Some(max_rank), Some(extent)) = (max_rank, extent) {
+                    for (rank, status) in statuses.materialized_iter(max_rank).enumerate() {
+                        if let Ok(point) = extent.point_of_rank(rank) {
+                            health_state
+                                .statuses
+                                .entry(point)
+                                .and_modify(|s| *s = (status.clone(), u64::MAX));
+                        }
+                    }
+                }
+                Err(crate::Error::ProcMeshStopError { statuses }.into())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn cleanup_stop(&self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
+        let names = self.proc_ids().collect::<Vec<hyperactor::ProcAddr>>();
+        let region = Ranked::region(self).clone();
+        if let Some(hosts) = self.hosts() {
+            hosts
+                .stop_proc_mesh(cx, self.id(), names, region, reason)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+impl ProcMeshRef {
+    /// Translate a polled or streamed `State<ProcState>` into a supervision
+    /// event on this proc-mesh controller. Returns `true` if a notification
+    /// was sent (which suppresses the heartbeat path).
+    fn notify_proc_state_change(
+        &self,
+        cx: &impl context::Actor,
+        supervision_display_name: &str,
+        state: resource::State<crate::host_mesh::host_agent::ProcState>,
+        health_state: &mut HealthState,
+    ) -> bool {
+        let create_rank = state.state.as_ref().map(|s| s.create_rank);
+        let actor_status = proc_status_to_actor_status(state.state.and_then(|s| s.proc_status));
+        let event = ActorSupervisionEvent::new(
+            cx.instance().self_addr().clone(),
+            Some(supervision_display_name.to_string()),
+            actor_status,
+            None,
+        );
+        let rank = create_rank
+            .and_then(|r| {
+                ndslice::view::Ranked::region(self)
+                    .extent()
+                    .point_of_rank(r)
+                    .ok()
+            })
+            .map(|p| p.rank())
+            .unwrap_or(0);
+        send_state_change(cx, rank, event, Controlled::id(self), true, health_state);
+        true
     }
 }
 
