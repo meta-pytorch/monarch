@@ -299,7 +299,7 @@ where
 /// - `Binds<Self>`: lets the runtime wire this actor's handler ports
 ///   when it is spawned (the blanket impl calls `handle.bind::<Self>()`).
 ///
-/// `gspawn` is a type-erased entry point used by the remote
+/// `gspawn_root_bind` is a type-erased entry point used by the remote
 /// spawn/registry machinery. It takes serialized params and returns
 /// the new actor's `ActorAddr`; application code shouldn't call it
 /// directly.
@@ -313,11 +313,11 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     /// to pass in additional context that may be useful.
     async fn new(params: Self::Params, environment: Flattrs) -> anyhow::Result<Self>;
 
-    /// A type-erased entry point to spawn this actor. This is
+    /// A type-erased entry point to spawn this actor as a root. This is
     /// primarily used by hyperactor's remote actor registration
     /// mechanism.
     // TODO: consider making this 'private' -- by moving it into a non-public trait as in [`cap`].
-    fn gspawn(
+    fn gspawn_root_bind(
         proc: &Proc,
         uid: crate::id::Uid,
         serialized_params: Data,
@@ -342,6 +342,29 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
             // This will be replaced by a proper export/registry
             // mechanism.
             Ok(handle.bind::<Self>().into_actor_addr())
+        })
+    }
+
+    /// A type-erased entry point to spawn this actor as a child.
+    ///
+    /// The returned handle is lifecycle-only; callers that know the concrete
+    /// actor type can recover a typed handle with [`AnyActorHandle::downcast`].
+    fn gspawn_child(
+        proc: &Proc,
+        parent: InstanceCell,
+        uid: crate::id::Uid,
+        serialized_params: Data,
+        environment: Flattrs,
+    ) -> Pin<Box<dyn Future<Output = Result<AnyActorHandle, anyhow::Error>> + Send>> {
+        let proc = proc.clone();
+        Box::pin(async move {
+            let params =
+                bincode::serde::decode_from_slice(&serialized_params, bincode::config::legacy())
+                    .map(|(v, _)| v)?;
+            let actor = Self::new(params, environment).await?;
+            let handle = proc.spawn_child_with_uid(parent, uid, actor)?;
+            handle.bind::<Self>();
+            Ok(handle.into_any())
         })
     }
 
@@ -720,6 +743,89 @@ impl<A: Actor> ActorHandle<A> {
     /// TODO: we shoudl also have a default binding(?)
     pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
         self.cell.bind(self.ports.as_ref())
+    }
+
+    /// Erase this handle's actor type, preserving only lifecycle access.
+    pub fn into_any(self) -> AnyActorHandle {
+        AnyActorHandle { cell: self.cell }
+    }
+}
+
+/// A type-erased handle to a running actor whose concrete type is erased.
+///
+/// This handle intentionally does not expose typed messaging or binding APIs.
+/// Use [`AnyActorHandle::downcast`] to recover a typed [`ActorHandle`] when the
+/// concrete actor type is known.
+pub struct AnyActorHandle {
+    cell: InstanceCell,
+}
+
+impl AnyActorHandle {
+    /// The [`ActorAddr`] of the actor represented by this handle.
+    pub fn actor_id(&self) -> &ActorAddr {
+        self.cell.actor_addr()
+    }
+
+    /// Signal the actor to drain its current messages and then stop.
+    pub fn drain_and_stop(&self, reason: &str) -> Result<(), ActorError> {
+        self.cell.signal(Signal::DrainAndStop(reason.to_string()))
+    }
+
+    /// Signal the actor to stop without draining ordinary queued work first.
+    pub fn stop(&self, reason: &str) -> Result<(), ActorError> {
+        self.cell.signal(Signal::Stop(reason.to_string()))
+    }
+
+    /// Signal the actor to terminate immediately.
+    pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
+        self.cell.signal(Signal::Kill(reason.to_string()))
+    }
+
+    /// A watch that observes the lifecycle state of the actor.
+    pub fn status(&self) -> watch::Receiver<ActorStatus> {
+        self.cell.status().clone()
+    }
+
+    /// Attempt to recover a typed actor handle.
+    pub fn downcast<A: Actor>(&self) -> Option<ActorHandle<A>> {
+        self.cell.downcast_handle()
+    }
+}
+
+/// IntoFuture allows users to await the handle to join it. The future
+/// resolves when the actor itself has stopped processing messages.
+/// The future resolves to the actor's final status.
+impl IntoFuture for AnyActorHandle {
+    type Output = ActorStatus;
+    type IntoFuture = BoxFuture<'static, Self::Output>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        let future = async move {
+            let mut status_receiver = self.cell.status().clone();
+            let result = status_receiver.wait_for(ActorStatus::is_terminal).await;
+            match result {
+                Err(_) => ActorStatus::Unknown,
+                Ok(status) => status.clone(),
+            }
+        };
+
+        future.boxed()
+    }
+}
+
+impl Debug for AnyActorHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        f.debug_struct("AnyActorHandle")
+            .field("cell", &"..")
+            .finish()
+    }
+}
+
+impl Clone for AnyActorHandle {
+    fn clone(&self) -> Self {
+        Self {
+            cell: self.cell.clone(),
+        }
     }
 }
 
