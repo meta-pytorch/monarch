@@ -165,7 +165,6 @@ use crate::context::Mailbox as _;
 use crate::gateway::Gateway;
 use crate::id::ActorId;
 use crate::id::Label;
-use crate::id::Label;
 use crate::id::Uid;
 use crate::introspect::IntrospectMessage;
 use crate::introspect::IntrospectResult;
