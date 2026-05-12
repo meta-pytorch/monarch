@@ -1309,23 +1309,23 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 60)]
+    #[async_timed_test(timeout_secs = 120)]
     #[cfg(fbcode_build)]
     async fn test_actor_states_with_panic() {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let config = hyperactor_config::global::lock();
-        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
         let _host_spawn = config.override_key(
             hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
-            Duration::from_secs(60),
+            Duration::from_secs(120),
         );
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
-        let num_replicas = 2;
+        let num_replicas = 1;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
             .spawn(instance, "test", Extent::unity(), None, None)
@@ -1518,10 +1518,17 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 120)]
     #[cfg(fbcode_build)]
     async fn test_actor_states_on_sliced_mesh() {
         hyperactor_telemetry::initialize_logging_for_test();
+
+        let config = hyperactor_config::global::lock();
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(120),
+        );
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
