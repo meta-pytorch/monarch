@@ -58,8 +58,11 @@ use crate::RdmaOpType;
 use crate::ReleaseBufferClient;
 use crate::backend::RdmaBackend;
 use crate::backend::RdmaRemoteBackendContext;
+#[cfg(feature = "cuda")]
 use crate::backend::ibverbs::IbvBuffer;
+#[cfg(feature = "cuda")]
 use crate::backend::ibverbs::manager_actor::IbvBackend;
+#[cfg(feature = "cuda")]
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::tcp::manager_actor::TcpBackend;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
@@ -85,6 +88,7 @@ wirevalue::register_type!(RdmaRemoteBuffer);
 /// on `submit`), so we use an enum that delegates to the concrete handle.
 #[derive(Debug)]
 pub enum RdmaLocalBackend {
+    #[cfg(feature = "cuda")]
     Ibv(IbvBackend),
     Tcp(TcpBackend),
 }
@@ -97,6 +101,7 @@ impl RdmaLocalBackend {
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
         match self {
+            #[cfg(feature = "cuda")]
             RdmaLocalBackend::Ibv(h) => h.submit(cx, ops, timeout).await,
             RdmaLocalBackend::Tcp(h) => h.submit(cx, ops, timeout).await,
         }
@@ -114,6 +119,7 @@ impl RdmaRemoteBuffer {
         &self,
         client: &(impl context::Actor + Send + Sync),
     ) -> Result<RdmaLocalBackend, anyhow::Error> {
+        #[cfg(feature = "cuda")]
         if self.has_ibverbs_backend() {
             if let Ok(ibv_handle) = IbvManagerActor::local_handle(client).await {
                 return Ok(RdmaLocalBackend::Ibv(IbvBackend(ibv_handle)));
@@ -205,16 +211,23 @@ impl RdmaRemoteBuffer {
     }
 
     /// Whether this buffer has an ibverbs backend context.
+    #[cfg(feature = "cuda")]
     fn has_ibverbs_backend(&self) -> bool {
         self.backends
             .iter()
             .any(|b| matches!(b, RdmaRemoteBackendContext::Ibverbs(..)))
     }
 
+    #[cfg(not(feature = "cuda"))]
+    fn has_ibverbs_backend(&self) -> bool {
+        false
+    }
+
     /// Extract the ibverbs backend context for this buffer.
     ///
     /// Returns `None` if the buffer has no ibverbs backend context
     /// (i.e., the remote side was created without ibverbs).
+    #[cfg(feature = "cuda")]
     pub fn resolve_ibv(&self) -> Option<(ActorRef<IbvManagerActor>, IbvBuffer)> {
         self.backends.iter().find_map(|b| match b {
             RdmaRemoteBackendContext::Ibverbs(mgr, buf) => Some((mgr.clone(), buf.clone())),
@@ -228,6 +241,7 @@ impl RdmaRemoteBuffer {
             .iter()
             .find_map(|b| match b {
                 RdmaRemoteBackendContext::Tcp(tcp_ref) => Some((tcp_ref.clone(), self.id)),
+                #[cfg(feature = "cuda")]
                 _ => None,
             })
             .ok_or_else(|| anyhow::anyhow!("tcp backend not found for buffer: {:?}", self))
@@ -280,6 +294,7 @@ pub async fn validate_execution_context() -> Result<(), anyhow::Error> {
 ///
 /// Each protection domain maintains independent segment registrations, so
 /// callers must pass the PD whose lkeys they intend to use.
+#[cfg(feature = "cuda")]
 pub fn get_registered_cuda_segments(
     pd: *mut rdmaxcel_sys::ibv_pd,
 ) -> Vec<rdmaxcel_sys::rdma_segment_info_t> {
@@ -310,6 +325,7 @@ pub fn get_registered_cuda_segments(
 }
 
 /// Segment scanner callback type alias for convenience.
+#[cfg(feature = "cuda")]
 pub type SegmentScannerFn = rdmaxcel_sys::RdmaxcelSegmentScannerFn;
 
 /// Register a segment scanner callback.
@@ -327,6 +343,7 @@ pub type SegmentScannerFn = rdmaxcel_sys::RdmaxcelSegmentScannerFn;
 ///
 /// The provided callback function must be safe to call from C code and must
 /// properly handle the segment buffer.
+#[cfg(feature = "cuda")]
 pub fn register_segment_scanner(scanner: SegmentScannerFn) {
     // SAFETY: We are registering a callback function pointer with rdmaxcel.
     unsafe { rdmaxcel_sys::rdmaxcel_register_segment_scanner(scanner) }

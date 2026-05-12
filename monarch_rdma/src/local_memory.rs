@@ -26,6 +26,7 @@ use serde::Serialize;
 ///
 /// Probes the CUDA driver via `cuPointerGetAttribute`; returns `false`
 /// when CUDA is unavailable or the pointer is not device memory.
+#[cfg(feature = "cuda")]
 pub fn is_device_ptr(addr: usize) -> bool {
     // SAFETY: FFI call that queries pointer metadata without accessing
     // the pointed-to memory.
@@ -42,12 +43,14 @@ pub fn is_device_ptr(addr: usize) -> bool {
 
 /// RAII guard that restores the previous CUDA context on drop and, if a
 /// primary context was retained, releases it.
+#[cfg(feature = "cuda")]
 pub(crate) struct CudaCtxGuard {
     prev: rdmaxcel_sys::CUcontext,
     /// Set when the fallback path called `cuDevicePrimaryCtxRetain`.
     retained_device: Option<rdmaxcel_sys::CUdevice>,
 }
 
+#[cfg(feature = "cuda")]
 impl Drop for CudaCtxGuard {
     fn drop(&mut self) {
         unsafe {
@@ -72,6 +75,7 @@ impl Drop for CudaCtxGuard {
 /// # Safety
 ///
 /// `addr` must be a valid CUDA device pointer.
+#[cfg(feature = "cuda")]
 pub(crate) unsafe fn set_ctx_for_ptr(addr: usize) -> Result<CudaCtxGuard, anyhow::Error> {
     let mut prev: rdmaxcel_sys::CUcontext = std::ptr::null_mut();
     unsafe {
@@ -188,6 +192,7 @@ unsafe fn write_cpu(addr: usize, offset: usize, src: &[u8]) {
 ///
 /// The caller must ensure that `addr` is a valid CUDA device pointer to an
 /// allocation of at least `offset + dst.len()` bytes.
+#[cfg(feature = "cuda")]
 unsafe fn read_gpu(addr: usize, offset: usize, dst: &mut [u8]) -> Result<(), anyhow::Error> {
     let _guard = unsafe { set_ctx_for_ptr(addr)? };
     let rc = unsafe {
@@ -210,6 +215,7 @@ unsafe fn read_gpu(addr: usize, offset: usize, dst: &mut [u8]) -> Result<(), any
 ///
 /// The caller must ensure that `addr` is a valid CUDA device pointer to an
 /// allocation of at least `offset + src.len()` bytes.
+#[cfg(feature = "cuda")]
 unsafe fn write_gpu(addr: usize, offset: usize, src: &[u8]) -> Result<(), anyhow::Error> {
     let _guard = unsafe { set_ctx_for_ptr(addr)? };
     let rc = unsafe {
@@ -277,16 +283,20 @@ impl Debug for KeepaliveLocalMemory {
 }
 
 impl KeepaliveLocalMemory {
-    /// Create a new handle. Probes the CUDA driver to determine whether
-    /// `addr` is a device pointer and sets the bandwidth fields
-    /// accordingly.
+    /// Create a new handle. On CUDA builds, probes the CUDA driver to
+    /// determine whether `addr` is a device pointer and sets the bandwidth
+    /// fields accordingly. On CPU-only builds, always treats `addr` as
+    /// host memory.
     pub fn new(addr: usize, size: usize, keepalive: Arc<dyn Keepalive>) -> Self {
         // TODO(slurye): Using placeholder values for now. Fill in with real values.
+        #[cfg(feature = "cuda")]
         let (host_bw, device_bw) = if is_device_ptr(addr) {
             (None, Some(1))
         } else {
             (Some(1), None)
         };
+        #[cfg(not(feature = "cuda"))]
+        let (host_bw, device_bw): (Option<u64>, Option<u64>) = (Some(1), None);
         Self {
             addr,
             size,
@@ -317,7 +327,12 @@ impl RdmaLocalMemory for KeepaliveLocalMemory {
                 read_cpu(self.addr, offset, dst);
                 Ok(())
             } else {
-                read_gpu(self.addr, offset, dst)
+                #[cfg(feature = "cuda")]
+                {
+                    read_gpu(self.addr, offset, dst)
+                }
+                #[cfg(not(feature = "cuda"))]
+                unreachable!("device memory dispatch requires the cuda feature")
             }
         }
     }
@@ -332,7 +347,12 @@ impl RdmaLocalMemory for KeepaliveLocalMemory {
                 write_cpu(self.addr, offset, src);
                 Ok(())
             } else {
-                write_gpu(self.addr, offset, src)
+                #[cfg(feature = "cuda")]
+                {
+                    write_gpu(self.addr, offset, src)
+                }
+                #[cfg(not(feature = "cuda"))]
+                unreachable!("device memory dispatch requires the cuda feature")
             }
         }
     }
@@ -370,12 +390,12 @@ impl RdmaLocalMemory for UnsafeLocalMemory {
         // SAFETY: The caller is responsible for ensuring the allocation is
         // live; check_bounds verified the access is in range.
         unsafe {
+            #[cfg(feature = "cuda")]
             if is_device_ptr(self.addr) {
-                read_gpu(self.addr, offset, dst)
-            } else {
-                read_cpu(self.addr, offset, dst);
-                Ok(())
+                return read_gpu(self.addr, offset, dst);
             }
+            read_cpu(self.addr, offset, dst);
+            Ok(())
         }
     }
 
@@ -384,12 +404,12 @@ impl RdmaLocalMemory for UnsafeLocalMemory {
         // SAFETY: The caller is responsible for ensuring the allocation is
         // live; check_bounds verified the access is in range.
         unsafe {
+            #[cfg(feature = "cuda")]
             if is_device_ptr(self.addr) {
-                write_gpu(self.addr, offset, src)
-            } else {
-                write_cpu(self.addr, offset, src);
-                Ok(())
+                return write_gpu(self.addr, offset, src);
             }
+            write_cpu(self.addr, offset, src);
+            Ok(())
         }
     }
 }

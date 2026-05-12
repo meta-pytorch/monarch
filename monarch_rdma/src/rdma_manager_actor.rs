@@ -46,15 +46,20 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::backend::RdmaRemoteBackendContext;
+#[cfg(feature = "cuda")]
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
+#[cfg(feature = "cuda")]
 use crate::backend::ibverbs::manager_actor::IbvManagerLocalMessageClient;
+#[cfg(feature = "cuda")]
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
+#[cfg(feature = "cuda")]
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::RdmaLocalMemory;
 use crate::rdma_components::RdmaRemoteBuffer;
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes
+#[cfg(feature = "cuda")]
 pub fn get_rdmaxcel_error_message(error_code: i32) -> String {
     unsafe {
         let c_str = rdmaxcel_sys::rdmaxcel_error_string(error_code);
@@ -98,11 +103,13 @@ wirevalue::register_type!(ReleaseBuffer);
 
 /// Serializable query for resolving the [`IbvManagerActor`] ref
 /// from a remote [`RdmaManagerActor`]. Only used in testing.
+#[cfg(feature = "cuda")]
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct GetIbvActorRef {
     #[reply]
     pub reply: OncePortRef<Option<ActorRef<IbvManagerActor>>>,
 }
+#[cfg(feature = "cuda")]
 wirevalue::register_type!(GetIbvActorRef);
 
 /// Serializable query for resolving the [`TcpManagerActor`] ref
@@ -144,17 +151,30 @@ impl<A: Actor> RdmaBackendActor<A> {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(
-    handlers = [
-        GetIbvActorRef,
-        GetTcpActorRef,
-        ReleaseBuffer,
-    ],
+#[cfg_attr(
+    feature = "cuda",
+    hyperactor::export(
+        handlers = [
+            GetIbvActorRef,
+            GetTcpActorRef,
+            ReleaseBuffer,
+        ],
+    )
+)]
+#[cfg_attr(
+    not(feature = "cuda"),
+    hyperactor::export(
+        handlers = [
+            GetTcpActorRef,
+            ReleaseBuffer,
+        ],
+    )
 )]
 #[hyperactor::spawnable]
 pub struct RdmaManagerActor {
     next_remote_buf_id: usize,
     buffers: HashMap<usize, Arc<dyn RdmaLocalMemory>>,
+    #[cfg(feature = "cuda")]
     ibverbs: Option<RdmaBackendActor<IbvManagerActor>>,
     tcp: RdmaBackendActor<TcpManagerActor>,
 }
@@ -176,6 +196,7 @@ impl RdmaManagerActor {
     }
 }
 
+#[cfg(feature = "cuda")]
 #[async_trait]
 impl RemoteSpawn for RdmaManagerActor {
     type Params = Option<IbvConfig>;
@@ -219,9 +240,33 @@ impl RemoteSpawn for RdmaManagerActor {
     }
 }
 
+/// CPU-only build: ibverbs is never compiled in, so the manager always
+/// falls through to TCP. Returns an error only when TCP fallback is also
+/// disabled — matching the runtime behavior of the `cuda` build when no
+/// hardware is found.
+#[cfg(not(feature = "cuda"))]
+#[async_trait]
+impl RemoteSpawn for RdmaManagerActor {
+    type Params = ();
+
+    async fn new(_params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+        anyhow::ensure!(
+            hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK),
+            "ibverbs is not compiled into this build and TCP fallback is disabled"
+        );
+        let tcp = RdmaBackendActor::Created(TcpManagerActor::new());
+        Ok(Self {
+            next_remote_buf_id: 0,
+            buffers: HashMap::new(),
+            tcp,
+        })
+    }
+}
+
 #[async_trait]
 impl Actor for RdmaManagerActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        #[cfg(feature = "cuda")]
         if let Some(ibv) = &mut self.ibverbs {
             ibv.spawn(this)?;
         }
@@ -244,6 +289,7 @@ impl Actor for RdmaManagerActor {
     }
 }
 
+#[cfg(feature = "cuda")]
 #[async_trait]
 #[hyperactor::handle(GetIbvActorRef)]
 impl GetIbvActorRefHandler for RdmaManagerActor {
@@ -271,9 +317,12 @@ impl GetTcpActorRefHandler for RdmaManagerActor {
 impl ReleaseBufferHandler for RdmaManagerActor {
     async fn release_buffer(&mut self, cx: &Context<Self>, id: usize) -> Result<(), anyhow::Error> {
         self.buffers.remove(&id);
+        #[cfg(feature = "cuda")]
         if let Some(ibv) = &self.ibverbs {
             ibv.handle().release_buffer(cx, id).await?;
         }
+        #[cfg(not(feature = "cuda"))]
+        let _ = cx;
         Ok(())
     }
 }
@@ -292,6 +341,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
 
         let mut backends = Vec::new();
 
+        #[cfg(feature = "cuda")]
         if let Some(ibv) = &self.ibverbs {
             let ibv_buffer = ibv
                 .handle()

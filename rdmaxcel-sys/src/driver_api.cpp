@@ -126,6 +126,27 @@ CUresult stub_entry(Args... /*unused*/) {
   return CUDA_ERROR_NOT_INITIALIZED;
 }
 
+} // namespace
+
+DriverAPI* DriverAPI::stub() {
+  static DriverAPI s = []() {
+    DriverAPI api{};
+#define ASSIGN_STUB(name, sym) api.name##_ = &stub_entry;
+    RDMAXCEL_CUDA_DRIVER_API(ASSIGN_STUB)
+#undef ASSIGN_STUB
+    return api;
+  }();
+  return &s;
+}
+
+} // namespace rdmaxcel
+
+// GPU-backed `DriverAPI::get()` and its `create_driver_api` helper.
+// Relies on the `RDMAXCEL_CUDA_DRIVER_API` X-macro and `STRINGIFY` defined
+// above.
+namespace rdmaxcel {
+namespace {
+
 DriverAPI create_driver_api() {
 #ifdef USE_ROCM
   // Try to open libamdhip64.so - RTLD_NOLOAD means only succeed if already
