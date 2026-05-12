@@ -3124,7 +3124,7 @@ mod tests {
 
         // Create a local instance just to call the local bootstrap actor.
         // We should find a way to avoid this for local handles.
-        let temp_proc = Proc::local();
+        let temp_proc = Proc::isolated();
         let (temp_instance, _) = temp_proc.instance("temp").unwrap();
 
         let handle = host(
