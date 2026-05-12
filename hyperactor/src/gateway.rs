@@ -8,6 +8,7 @@
 
 //! Connectivity layer for Hyperactor procs.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -21,7 +22,6 @@ use std::task::Context;
 use std::task::Poll;
 
 use async_trait::async_trait;
-use dashmap::DashMap;
 
 use crate::Location;
 use crate::ProcAddr;
@@ -62,7 +62,7 @@ struct GatewayState {
     forwarder: BoxedMailboxSender,
 
     /// Procs attached to this gateway, keyed by runtime identity.
-    procs: DashMap<ProcId, WeakProc>,
+    procs: RwLock<HashMap<ProcId, WeakProc>>,
 
     /// Locations currently served by this gateway. The last location
     /// is the default advertised location.
@@ -98,7 +98,7 @@ impl Gateway {
                 fallback_location: default_location.clone(),
                 default_location: RwLock::new(default_location),
                 forwarder,
-                procs: DashMap::new(),
+                procs: RwLock::new(HashMap::new()),
                 active_servers: RwLock::new(Vec::new()),
             }),
         }
@@ -125,7 +125,12 @@ impl Gateway {
 
     pub(crate) fn attach(&self, proc: &Proc) {
         let proc_id = proc.proc_id().clone();
-        if let Some(existing) = self.inner.procs.insert(proc_id.clone(), proc.downgrade())
+        if let Some(existing) = self
+            .inner
+            .procs
+            .write()
+            .unwrap()
+            .insert(proc_id.clone(), proc.downgrade())
             && existing.upgrade().is_some()
         {
             panic!("gateway already has a live proc with id {}", proc_id)
@@ -211,8 +216,10 @@ impl Gateway {
         let procs = self
             .inner
             .procs
-            .iter()
-            .filter_map(|entry| entry.value().upgrade())
+            .read()
+            .unwrap()
+            .values()
+            .filter_map(WeakProc::upgrade)
             .collect::<Vec<_>>();
         for proc in procs {
             proc.muxer().flush().await?;
@@ -319,17 +326,25 @@ impl crate::mailbox::MailboxSender for Gateway {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let dest_proc = envelope.dest().actor_addr().proc_addr();
-        let proc = match self.inner.procs.get(dest_proc.id()) {
-            Some(entry) => match entry.value().upgrade() {
-                Some(proc) => Some(proc),
-                None => {
-                    drop(entry);
-                    self.inner.procs.remove(dest_proc.id());
-                    None
-                }
-            },
-            None => None,
-        };
+        let weak_proc = self
+            .inner
+            .procs
+            .read()
+            .unwrap()
+            .get(dest_proc.id())
+            .cloned();
+        let proc = weak_proc.as_ref().and_then(WeakProc::upgrade);
+
+        if weak_proc.is_some() && proc.is_none() {
+            let mut procs = self.inner.procs.write().unwrap();
+            if procs
+                .get(dest_proc.id())
+                .and_then(WeakProc::upgrade)
+                .is_none()
+            {
+                procs.remove(dest_proc.id());
+            }
+        }
 
         if let Some(proc) = proc {
             if proc.is_local_delivery_target(&dest_proc) {
