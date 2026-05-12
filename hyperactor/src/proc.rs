@@ -162,6 +162,7 @@ use crate::channel::ChannelTransport;
 use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
+use crate::gateway::Gateway;
 use crate::id::ActorId;
 use crate::id::Label;
 use crate::id::Label;
@@ -434,16 +435,12 @@ struct ProcState {
     /// but is not (yet) for local-only procs.
     proc_id: ProcId,
 
-    /// The location used when constructing routeable addresses for
-    /// newly bound refs.
-    default_location: RwLock<Location>,
+    /// Shared ingress, egress, and advertised reachability state.
+    gateway: Gateway,
 
     /// A muxer instance that has entries for every actor managed by
     /// the proc.
     proc_muxer: MailboxMuxer,
-
-    /// Sender used to forward messages outside of the proc.
-    forwarder: BoxedMailboxSender,
 
     /// Reserved root actor uids. Prevents races between concurrent
     /// `allocate_root_id` callers — insert returns false if the uid
@@ -508,15 +505,15 @@ impl Drop for ProcState {
 
 impl ProcState {
     fn default_location(&self) -> Location {
-        self.default_location.read().unwrap().clone()
+        self.gateway.default_location()
     }
 
     fn set_default_location(&self, location: Location) {
-        *self.default_location.write().unwrap() = location;
+        self.gateway.set_default_location(location)
     }
 
     fn proc_addr(&self) -> ProcAddr {
-        ProcAddr::new(self.proc_id.clone(), self.default_location())
+        self.gateway.proc_addr(&self.proc_id)
     }
 }
 
@@ -568,9 +565,8 @@ impl Proc {
         Self {
             inner: Arc::new(ProcState {
                 proc_id: proc_addr.id().clone(),
-                default_location: RwLock::new(proc_addr.location().clone()),
+                gateway: Gateway::configured(proc_addr.location().clone(), forwarder),
                 proc_muxer: MailboxMuxer::new(),
-                forwarder,
                 reserved_roots: DashSet::new(),
                 instances: DashMap::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
@@ -751,10 +747,15 @@ impl Proc {
         self.state().proc_addr()
     }
 
+    /// The proc's shared reachability boundary.
+    pub fn gateway(&self) -> Gateway {
+        self.state().gateway.clone()
+    }
+
     /// Shared sender used by the proc to forward messages to remote
     /// destinations.
     pub fn forwarder(&self) -> &BoxedMailboxSender {
-        &self.inner.forwarder
+        self.state().gateway.forwarder()
     }
 
     /// The proc's mailbox muxer, which routes messages to actors
@@ -1301,19 +1302,20 @@ impl Proc {
             }
         }
 
-        // Flush the forwarder so that any messages posted during
+        // Flush the gateway so that any messages posted during
         // teardown (e.g. supervision events) are wire-delivered
         // before we tear down the proc's networking. The flush is
         // best-effort: if the remote side has already torn down its
         // networking, acks may never arrive and flush would hang
         // indefinitely, so we bound it with a configurable timeout.
         let flush_timeout = hyperactor_config::global::get(crate::config::FORWARDER_FLUSH_TIMEOUT);
-        match tokio::time::timeout(flush_timeout, self.state().forwarder.flush()).await {
+        let gateway = self.gateway();
+        match tokio::time::timeout(flush_timeout, gateway.flush()).await {
             Ok(Err(err)) => {
-                tracing::warn!("forwarder flush failed during proc exit: {:?}", err);
+                tracing::warn!("gateway flush failed during proc exit: {:?}", err);
             }
             Err(_elapsed) => {
-                tracing::warn!("forwarder flush timed out during proc exit");
+                tracing::warn!("gateway flush timed out during proc exit");
             }
             Ok(Ok(())) => {}
         }
@@ -1382,7 +1384,7 @@ impl Proc {
     }
 
     /// Create a root allocation in the proc from an explicit uid.
-    fn allocate_root_uid(&self, uid: crate::id::Uid) -> Result<ActorAddr, anyhow::Error> {
+    fn allocate_root_uid(&self, uid: Uid) -> Result<ActorAddr, anyhow::Error> {
         self.reserve_root(uid)
     }
 
@@ -1421,11 +1423,10 @@ impl Proc {
         WeakProc::new(self)
     }
 
-    /// Flush the forwarder so that any buffered outbound messages
-    /// (e.g. supervision events posted during teardown) are
+    /// Flush the gateway so that any buffered messages are
     /// wire-delivered before the proc's networking is torn down.
     pub async fn flush(&self) -> Result<(), anyhow::Error> {
-        self.state().forwarder.flush().await
+        self.gateway().flush().await
     }
 
     /// Stop and join the mailbox server, flushing receive-side acks.
@@ -1500,16 +1501,14 @@ impl MailboxSender for Proc {
         if self.is_local_delivery_target(&dest_proc) {
             self.state().proc_muxer.post(envelope, return_handle)
         } else {
-            self.state().forwarder.post(envelope, return_handle)
+            self.forwarder().post(envelope, return_handle)
         }
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
-        let (r1, r2) = futures::future::join(
-            self.state().proc_muxer.flush(),
-            self.state().forwarder.flush(),
-        )
-        .await;
+        let gateway = self.gateway();
+        let (r1, r2) =
+            futures::future::join(self.state().proc_muxer.flush(), gateway.flush()).await;
         r1?;
         r2?;
         Ok(())
@@ -3930,11 +3929,12 @@ mod tests {
     #[test]
     fn test_default_location_changes_new_bindings_not_lookup() {
         let proc = Proc::local();
+        let gateway = proc.gateway();
         let (_instance, handle) = proc.instance("worker").unwrap();
 
         let first_ref: ActorRef<()> = handle.bind();
         let new_location = ChannelAddr::Local(9876).into();
-        proc.set_default_location(new_location);
+        gateway.set_default_location(new_location);
         let second_ref: ActorRef<()> = handle.bind();
 
         assert_eq!(first_ref.actor_addr().id(), second_ref.actor_addr().id());
@@ -3943,6 +3943,8 @@ mod tests {
             second_ref.actor_addr().location()
         );
         assert_eq!(second_ref.actor_addr().location(), &proc.default_location());
+        assert_eq!(proc.default_location(), gateway.default_location());
+        assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
         assert!(proc.get_instance(second_ref.actor_addr()).is_some());
     }
 
