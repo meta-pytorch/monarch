@@ -10,6 +10,7 @@
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod cuda_test_utils;
+#[cfg(feature = "cuda")]
 pub mod ibverbs;
 pub mod tcp;
 
@@ -31,6 +32,7 @@ use crate::RdmaTransportLevel;
 /// using that backend on a particular buffer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RdmaRemoteBackendContext {
+    #[cfg(feature = "cuda")]
     Ibverbs(
         ActorRef<ibverbs::manager_actor::IbvManagerActor>,
         ibverbs::IbvBuffer,

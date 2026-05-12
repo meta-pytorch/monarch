@@ -24,6 +24,7 @@ use monarch_rdma::local_memory::Keepalive;
 use monarch_rdma::local_memory::KeepaliveLocalMemory;
 use monarch_rdma::local_memory::RdmaLocalMemory;
 use monarch_rdma::rdma_supported;
+#[cfg(feature = "cuda")]
 use monarch_rdma::register_segment_scanner;
 use monarch_types::py_module_add_function;
 use pyo3::IntoPyObjectExt;
@@ -43,6 +44,7 @@ use typeuri::Named;
 ///
 /// # Safety
 /// This function is called from C code as a callback.
+#[cfg(feature = "cuda")]
 unsafe extern "C" fn pytorch_segment_scanner(
     segments_out: *mut monarch_rdma::rdmaxcel_sys::rdmaxcel_scanned_segment_t,
     max_segments: usize,
@@ -358,10 +360,18 @@ impl PyRdmaManager {
 
         let proc_mesh = proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
         PyPythonTask::new(async move {
+            // CPU-only builds collapse RdmaManagerActor's Params to `()`
+            // because IbvConfig isn't compiled in.
+            #[cfg(feature = "cuda")]
             let actor_mesh: ActorMesh<RdmaManagerActor> = proc_mesh
                 // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
                 // TODO - make IbverbsConfig configurable
                 .spawn_service(client.deref(), "rdma_manager", &None)
+                .await
+                .map_err(|err| PyException::new_err(err.to_string()))?;
+            #[cfg(not(feature = "cuda"))]
+            let actor_mesh: ActorMesh<RdmaManagerActor> = proc_mesh
+                .spawn_service(client.deref(), "rdma_manager", &())
                 .await
                 .map_err(|err| PyException::new_err(err.to_string()))?;
 
@@ -390,6 +400,9 @@ fn rdma_supported_py() -> bool {
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the PyTorch segment scanner callback.
     // This calls torch.cuda.memory._snapshot() to get CUDA memory segments.
+    // CPU-only builds have no CUDA segments to scan, so the registration is
+    // skipped along with the scanner.
+    #[cfg(feature = "cuda")]
     register_segment_scanner(Some(pytorch_segment_scanner));
 
     module.add_class::<PyLocalMemoryHandle>()?;
