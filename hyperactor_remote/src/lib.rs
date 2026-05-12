@@ -42,3 +42,4 @@ pub use token::Policy as TokenPolicy;
 pub use token::RendezvousLike;
 pub use token::Token;
 pub use token::TokenPeer;
+pub use token::create;
