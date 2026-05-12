@@ -94,17 +94,6 @@ use hyperactor::mailbox::MailboxServerError;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
-use tokio::process::Child;
-use tokio::process::Command;
-use tokio::sync::Mutex;
-use tokio::sync::watch;
-use tokio::task::JoinSet;
-
-use crate::mesh_id::ResourceId;
-/// Name of the system service proc on a host — hosts the admin actor
-/// layer (HostMeshAgent, MeshAdminAgent, bridge).
-pub const SERVICE_PROC_NAME: &str = "service";
-
 /// Name of the local client proc on a host.
 ///
 /// See LP-1 (lazy activation) in module doc.
@@ -113,7 +102,18 @@ pub const SERVICE_PROC_NAME: &str = "service";
 /// `GetLocalProc` is never sent, so the local proc remains empty
 /// throughout the program's lifetime. Code that inspects the local
 /// proc's actors must not assume they exist.
-pub const LOCAL_PROC_NAME: &str = "local";
+pub use hyperactor::proc::LEGACY_LOCAL_PROC_NAME as LOCAL_PROC_NAME;
+/// Name of the system service proc on a host.
+///
+/// Hosts the admin actor layer: HostMeshAgent, MeshAdminAgent, and bridge.
+pub use hyperactor::proc::LEGACY_SERVICE_PROC_NAME as SERVICE_PROC_NAME;
+use tokio::process::Child;
+use tokio::process::Command;
+use tokio::sync::Mutex;
+use tokio::sync::watch;
+use tokio::task::JoinSet;
+
+use crate::mesh_id::ResourceId;
 
 /// [`MailboxSender`] adapter that wraps outbound [`MessageEnvelope`]s
 /// in [`Host2Client::Envelope`] before posting to a
@@ -253,12 +253,12 @@ impl<M: ProcManager> Host<M> {
         // These use with_name (not unique) because their uniqueness is
         // guaranteed by the ChannelAddr component, and the Name type's
         // '-' delimiter must not collide with a hash suffix.
-        let service_proc_id =
-            ResourceId::proc_addr_from_name(frontend_addr.clone(), SERVICE_PROC_NAME);
-        let local_proc_id = ResourceId::proc_addr_from_name(frontend_addr.clone(), LOCAL_PROC_NAME);
         let combined = router.fallback(dial_router.boxed());
-        let service_proc = Proc::configured(service_proc_id.clone(), combined.clone());
-        let local_proc = Proc::configured(local_proc_id.clone(), combined);
+        let service_proc =
+            Proc::legacy_service_pseudo_singleton(frontend_addr.clone(), combined.clone());
+        let local_proc = Proc::legacy_local_pseudo_singleton(frontend_addr.clone(), combined);
+        let service_proc_id = service_proc.proc_addr().clone();
+        let local_proc_id = local_proc.proc_addr().clone();
 
         // Register the local procs' muxers so the router delivers to
         // them without dialing. We bind the muxer (not the Proc) to
