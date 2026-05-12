@@ -85,7 +85,7 @@ declare_attrs! {
     /// Header tag for StreamState subscriber messages. When present on an
     /// undeliverable envelope, ProcAgent removes the dead subscriber instead
     /// of treating it as an error.
-    attr STREAM_STATE_SUBSCRIBER: bool;
+    pub(crate) attr STREAM_STATE_SUBSCRIBER: bool;
 }
 
 /// Deferred republish of introspect properties.
@@ -262,7 +262,7 @@ impl ActorInstanceState {
     Bind,
     Unbind
 )]
-struct SelfCheck {}
+pub(crate) struct SelfCheck {}
 
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
 ///
@@ -395,7 +395,7 @@ impl ProcAgent {
             actor_name = actor_id.log_name(),
             %reason,
         );
-        self.proc.stop_actor(actor_id, reason.to_string());
+        self.proc.stop_actor(actor_id.id(), reason.to_string());
     }
 
     /// Publish the current proc properties and children list for
@@ -1452,7 +1452,7 @@ mod tests {
                 let name = format!("churn_{}", i);
                 let handle = proc.spawn(&name, ExtraActor).unwrap();
                 let actor_id = handle.actor_addr().clone();
-                if let Some(mut status) = proc.stop_actor(&actor_id, "churn".to_string()) {
+                if let Some(mut status) = proc.stop_actor(actor_id.id(), "churn".to_string()) {
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(5),
                         status.wait_for(ActorStatus::is_terminal),

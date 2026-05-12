@@ -1679,11 +1679,8 @@ mod tests {
             )
             .unwrap();
 
-        let mut received_ranks: HashSet<usize> = HashSet::new();
-        for _ in 0..1 {
-            let (point, _actor_ref, _sender) = cast_info_rx.recv().await.unwrap();
-            received_ranks.insert(point.rank());
-        }
+        let (point, _actor_ref, _sender) = cast_info_rx.recv().await.unwrap();
+        let received_ranks = HashSet::from([point.rank()]);
         assert_eq!(received_ranks, HashSet::from([0]));
 
         // Also cast with sel!(*) — all ranks should be reached via V1.
