@@ -1034,7 +1034,7 @@ impl Actor for PythonActor {
             envelope.0.sender(),
             ins.self_addr(),
             "undeliverable message was returned to the wrong actor. \
-            Return address = {}, src actor = {}, dest actor port = {}, message type = {}, envelope headers = {}",
+            Return address = {}, src actor = {}, dest handler port = {}, message type = {}, envelope headers = {}",
             envelope.0.sender(),
             ins.self_addr(),
             envelope.0.dest(),
@@ -1585,7 +1585,7 @@ async fn handle_async_endpoint_panic(
             .0;
         panic_sender
             .send(&client, Signal::Kill(panic.to_string()))
-            .expect("Unable to send panic message");
+            .expect("unable to send panic message");
     }
 
     // Record latency in microseconds

@@ -290,7 +290,7 @@ enum InstanceStatus {
 #[derive(Debug)]
 pub struct PySerialized {
     inner: wirevalue::Any,
-    /// The message port (type) of the message.
+    /// The handler port for this message type.
     port: u64,
 }
 
@@ -314,7 +314,7 @@ impl PySerialized {
         })
     }
 
-    /// The message port (type) of the message.
+    /// The handler port for this message type.
     pub fn port(&self) -> u64 {
         self.port
     }
@@ -334,10 +334,10 @@ pub struct InstanceWrapper<M: RemoteMessage> {
 impl<M: RemoteMessage> InstanceWrapper<M> {
     pub fn new(proc: &PyProc, actor_name: &str) -> Result<Self> {
         let instance = proc.inner.instance(actor_name)?.0;
-        // TEMPORARY: remove after using fixed message ports.
-        let (_message_port, message_receiver) = instance.bind_actor_port::<M>();
+        // TEMPORARY: remove after using fixed handler ports.
+        let (_handler_port, message_receiver) = instance.bind_handler_port::<M>();
 
-        let (_signal_port, signal_receiver) = instance.bind_actor_port::<Signal>();
+        let (_signal_port, signal_receiver) = instance.bind_handler_port::<Signal>();
 
         let actor_id = instance.self_addr().clone();
 
