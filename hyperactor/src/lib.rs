@@ -205,7 +205,7 @@ mod private {
     /// [Sealed trait pattern](https://rust-lang.github.io/api-guidelines/future-proofing.html#sealed-traits-protect-against-downstream-implementations-c-sealed).
     pub trait Sealed {}
 
-    // These two implement context capabilities:
+    // These two implement context capabilities (ci: verify extended label exclusions):
     impl<A: crate::Actor> Sealed for crate::proc::Instance<A> {}
     impl<A: crate::Actor> Sealed for &crate::proc::Instance<A> {}
     impl<A: crate::Actor> Sealed for crate::proc::Context<'_, A> {}
