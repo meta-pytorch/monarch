@@ -51,7 +51,7 @@
 //! - **PD-5a:** Per-actor queue depth counts work items enqueued for
 //!   handler execution but not yet received from `work_rx`.
 //! - **PD-5b:** Queue depth is incremented exactly once on every
-//!   enqueue into the actor work queue (in `Ports::get`).
+//!   enqueue into the actor work queue (in `HandlerPorts::get`).
 //! - **PD-5c:** Queue depth is decremented exactly once on every
 //!   dequeue from `work_rx` (in the actor `run` loop).
 //! - **PD-5d:** Queue depth is intended to be non-negative; tests
@@ -152,6 +152,7 @@ use crate::actor::HandlerInfo;
 use crate::actor::Referable;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
+use crate::actor::StopMode;
 use crate::actor_local::ActorLocalStorage;
 use crate::channel;
 use crate::channel::ChannelAddr;
@@ -165,6 +166,7 @@ use crate::introspect::IntrospectResult;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
+use crate::mailbox::HandlerPortControl;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::Mailbox;
 use crate::mailbox::MailboxClient;
@@ -434,7 +436,7 @@ struct ProcState {
     /// Proc-level queue-pressure accounting (PD-6 through PD-9).
     /// Runtime-driven — updated from `account_enqueue` /
     /// `account_dequeue`, not from publish-time sampling.
-    /// `Arc`-wrapped so `Ports<A>` enqueue closures can share it.
+    /// `Arc`-wrapped so `HandlerPorts<A>` enqueue closures can share it.
     queue_stats: Arc<ProcQueueStats>,
 
     /// Snapshots of terminated actors for post-mortem introspection.
@@ -1520,7 +1522,7 @@ struct InstanceState<A: Actor> {
     /// The mailbox associated with the actor.
     mailbox: Mailbox,
 
-    ports: Arc<Ports<A>>,
+    ports: Arc<HandlerPorts<A>>,
 
     /// A watch for communicating the actor's state.
     status_tx: watch::Sender<ActorStatus>,
@@ -1594,7 +1596,7 @@ impl<A: Actor> Instance<A> {
         );
         let queue_depth = Arc::new(AtomicU64::new(0));
         let proc_stats = Arc::clone(&proc.state().queue_stats);
-        let ports: Arc<Ports<A>> = Arc::new(Ports::new(
+        let ports: Arc<HandlerPorts<A>> = Arc::new(HandlerPorts::new(
             mailbox.clone(),
             work_tx,
             Arc::clone(&queue_depth),
@@ -1610,8 +1612,9 @@ impl<A: Actor> Instance<A> {
         let actor_loop_ports = if detached {
             None
         } else {
-            let (signal_port, signal_receiver) = ports.open_message_port().unwrap();
-            let (supervision_port, supervision_receiver) = mailbox.open_port();
+            let (signal_port, signal_receiver) = mailbox.open_port::<Signal>();
+            let (supervision_port, supervision_receiver) =
+                mailbox.open_port::<ActorSupervisionEvent>();
             Some((
                 (signal_port, supervision_port),
                 (signal_receiver, supervision_receiver),
@@ -1621,14 +1624,12 @@ impl<A: Actor> Instance<A> {
         let (actor_loop, actor_loop_receivers) = actor_loop_ports.unzip();
 
         // Introspect port: a separate channel handled by a dedicated
-        // tokio task (not the actor's message loop). Pre-registered
-        // so Ports::get finds the Occupied entry and skips WorkCell
-        // creation. bind_actor_port() registers in the mailbox
+        // tokio task (not the actor's message loop). bind_actor_port()
+        // registers in the mailbox
         // dispatch table at IntrospectMessage::port().
         //
         // Exercises S3, S4, S9 (see introspect module doc).
-        let (introspect_port, introspect_receiver) =
-            ports.open_message_port::<IntrospectMessage>().unwrap();
+        let (introspect_port, introspect_receiver) = mailbox.open_port::<IntrospectMessage>();
         introspect_port.bind_actor_port();
 
         let cell = InstanceCell::new(
@@ -1844,21 +1845,71 @@ impl<A: Actor> Instance<A> {
         tracing::info!(
             actor_id = %self.inner.cell.actor_addr(),
             reason,
-            "Instance::stop called",
+            "instance stop called",
+        );
+        self.inner.cell.signal(Signal::Stop(reason.to_string()))
+    }
+
+    /// Signal the actor to drain current ordinary work and then stop.
+    pub fn drain_and_stop(&self, reason: &str) -> Result<(), ActorError> {
+        tracing::info!(
+            actor_id = %self.inner.cell.actor_addr(),
+            reason,
+            "instance drain_and_stop called",
         );
         self.inner
             .cell
             .signal(Signal::DrainAndStop(reason.to_string()))
     }
 
-    /// Signal the actor to abort with a provided reason.
+    /// Signal the actor to terminate immediately with a provided reason.
+    pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
+        tracing::info!(
+            actor_id = %self.inner.cell.actor_addr(),
+            reason,
+            "instance kill called",
+        );
+        self.inner.cell.signal(Signal::Kill(reason.to_string()))
+    }
+
+    /// Backward-compatible alias for `kill()`.
     pub fn abort(&self, reason: &str) -> Result<(), ActorError> {
         tracing::info!(
             actor_id = %self.inner.cell.actor_addr(),
             reason,
-            "Instance::abort called",
+            "instance abort called",
         );
-        self.inner.cell.signal(Signal::Abort(reason.to_string()))
+        self.kill(reason)
+    }
+
+    /// Close handler ingress for this actor.
+    pub fn close(&self) {
+        self.inner.ports.close_handler_ports_for_drain();
+    }
+
+    /// Request immediate actor exit with the provided stop reason.
+    pub fn exit(&self, reason: &str) -> Result<(), ActorError> {
+        self.inner
+            .cell
+            .signal(Signal::ExitRequested(reason.to_string()))
+    }
+
+    /// Queue an internal exit request after already accepted handler work.
+    ///
+    /// This is intentionally a small runtime special case for now.
+    /// The long-term goal is to make "exit after drain" fall out of
+    /// ordinary self-messaging semantics rather than requiring a
+    /// dedicated internal path here.
+    pub fn exit_after_drain(&self, reason: &str) -> Result<(), ActorError> {
+        let this = self.clone_for_py();
+        let reason = reason.to_string();
+        let work = WorkCell::new(move |_actor: &mut A, _instance: &Instance<A>| {
+            Box::pin(async move {
+                this.exit(&reason).map_err(anyhow::Error::from)?;
+                Ok(())
+            })
+        });
+        self.enqueue_runtime_work(work)
     }
 
     /// Open a new port that accepts M-typed messages. The returned
@@ -1874,6 +1925,12 @@ impl<A: Actor> Instance<A> {
     /// receiver may receive a single message.
     pub fn open_once_port<M: Message>(&self) -> (OncePortHandle<M>, OncePortReceiver<M>) {
         self.inner.mailbox.open_once_port()
+    }
+
+    /// Return this actor's runtime signal port.
+    #[doc(hidden)]
+    pub fn signal_port(&self) -> PortHandle<Signal> {
+        self.inner.cell.signal_port()
     }
 
     /// Get the per-instance local storage.
@@ -1914,6 +1971,29 @@ impl<A: Actor> Instance<A> {
             true,
             context::SeqInfoPolicy::AllowExternal,
         )
+    }
+
+    fn enqueue_runtime_work(&self, work: WorkCell<A>) -> Result<(), ActorError> {
+        let actor_id_str = self.self_addr().to_string();
+        account_enqueue(
+            &self.inner.cell.inner.queue_depth,
+            &self.inner.proc.state().queue_stats,
+            &actor_id_str,
+        );
+        let result = self
+            .inner
+            .ports
+            .workq
+            .direct_send(work)
+            .map_err(anyhow::Error::from);
+        if result.is_err() {
+            account_cancel_enqueue(
+                &self.inner.cell.inner.queue_depth,
+                &self.inner.proc.state().queue_stats,
+                &actor_id_str,
+            );
+        }
+        result.map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))
     }
 
     /// Return a static client instance that can be used to send
@@ -2209,13 +2289,43 @@ impl<A: Actor> Instance<A> {
             .init(self)
             .await
             .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::init(err)))?;
-        let need_drain;
-        let stop_reason;
         let actor_id_str = self.self_addr().to_string();
-        'messages: loop {
-            self.change_status(ActorStatus::Idle);
+        let stop_reason = 'messages: loop {
+            if !self.is_stopping() {
+                self.change_status(ActorStatus::Idle);
+            }
             let metric_pairs = hyperactor_telemetry::kv_pairs!("actor_id" => actor_id_str.clone());
             tokio::select! {
+                biased;
+                signal = signal_receiver.recv() => {
+                    let signal = signal.map_err(ActorError::from);
+                    tracing::debug!("received signal {signal:?}");
+                    match signal? {
+                        Signal::Stop(reason) => {
+                            self.change_status(ActorStatus::Stopping);
+                            actor
+                                .handle_stop(self, StopMode::Stop, &reason)
+                                .await
+                                .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
+                        },
+                        Signal::DrainAndStop(reason) => {
+                            self.change_status(ActorStatus::Stopping);
+                            actor
+                                .handle_stop(self, StopMode::DrainAndStop, &reason)
+                                .await
+                                .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
+                        },
+                        Signal::ChildStopped(uid) => {
+                            assert!(self.inner.cell.get_child(&uid).is_none());
+                        },
+                        Signal::ExitRequested(reason) => {
+                            break 'messages reason;
+                        }
+                        Signal::Kill(reason) => {
+                            return Err(ActorError { actor_id: Box::new(self.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) });
+                        }
+                    }
+                }
                 work = work_rx.recv() => {
                     ACTOR_MESSAGES_RECEIVED.add(1, metric_pairs);
                     account_dequeue(&self.inner.cell.inner.queue_depth, &self.inner.proc.state().queue_stats, &actor_id_str);
@@ -2232,28 +2342,6 @@ impl<A: Actor> Instance<A> {
                         });
                     }
                 }
-                signal = signal_receiver.recv() => {
-                    let signal = signal.map_err(ActorError::from);
-                    tracing::debug!("Received signal {signal:?}");
-                    match signal? {
-                        Signal::Stop(reason) => {
-                            need_drain = false;
-                            stop_reason = reason;
-                            break 'messages;
-                        },
-                        Signal::DrainAndStop(reason) => {
-                            need_drain = true;
-                            stop_reason = reason;
-                            break 'messages;
-                        },
-                        Signal::ChildStopped(uid) => {
-                            assert!(self.inner.cell.get_child(&uid).is_none());
-                        },
-                        Signal::Abort(reason) => {
-                            return Err(ActorError { actor_id: Box::new(self.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) });
-                        }
-                    }
-                }
                 Ok(supervision_event) = supervision_event_receiver.recv() => {
                     self.handle_supervision_event(actor, supervision_event).await?;
                 }
@@ -2263,48 +2351,7 @@ impl<A: Actor> Instance<A> {
                 .inner
                 .num_processed_messages
                 .fetch_add(1, Ordering::SeqCst);
-        }
-
-        if need_drain {
-            let mut supervision_events_drained = 0;
-            for supervision_event in supervision_event_receiver.drain() {
-                self.handle_supervision_event(actor, supervision_event)
-                    .await?;
-                supervision_events_drained += 1;
-            }
-
-            let mut n = 0;
-            while let Ok(work) = work_rx.try_recv() {
-                // PD-5c: drained work items must also be accounted.
-                account_dequeue(
-                    &self.inner.cell.inner.queue_depth,
-                    &self.inner.proc.state().queue_stats,
-                    &actor_id_str,
-                );
-                if let Err(err) = work.handle(actor, self).await {
-                    return Err(ActorError::new(
-                        self.self_addr(),
-                        ActorErrorKind::processing(err),
-                    ));
-                }
-                for supervision_event in supervision_event_receiver.drain() {
-                    self.handle_supervision_event(actor, supervision_event)
-                        .await?;
-                    supervision_events_drained += 1;
-                }
-                n += 1;
-            }
-            for supervision_event in supervision_event_receiver.drain() {
-                self.handle_supervision_event(actor, supervision_event)
-                    .await?;
-                supervision_events_drained += 1;
-            }
-            tracing::debug!(
-                "drained {} messages and {} supervision events",
-                n,
-                supervision_events_drained
-            );
-        }
+        };
         tracing::debug!(
             actor_id = %self.self_addr(),
             reason = stop_reason,
@@ -2690,7 +2737,7 @@ struct InstanceCellState {
     /// Both are updated together by `account_enqueue` /
     /// `account_dequeue`.
     ///
-    /// Shared with `Ports<A>`: incremented at enqueue in the send
+    /// Shared with `HandlerPorts<A>`: incremented at enqueue in the send
     /// path, decremented when the actor loop receives from `work_rx`.
     queue_depth: Arc<AtomicU64>,
 
@@ -2726,8 +2773,8 @@ struct InstanceCellState {
     /// `Instance::set_system()`.
     is_system: AtomicBool,
 
-    /// A type-erased reference to Ports<A>, which allows us to recover
-    /// an ActorHandle<A> by downcasting.
+    /// A type-erased reference to HandlerPorts<A>, which allows us to
+    /// recover an ActorHandle<A> by downcasting.
     ports: Arc<dyn Any + Send + Sync>,
 }
 
@@ -2869,6 +2916,14 @@ impl InstanceCell {
     /// `None` for actors that stopped cleanly or are still running.
     pub fn supervision_event(&self) -> Option<crate::supervision::ActorSupervisionEvent> {
         self.inner.supervision_event.lock().unwrap().clone()
+    }
+
+    fn signal_port(&self) -> PortHandle<Signal> {
+        self.inner
+            .actor_loop
+            .as_ref()
+            .map(|(signal_port, _)| signal_port.clone())
+            .unwrap_or_else(|| panic!("{} has no runtime signal port", self.actor_addr()))
     }
 
     /// Send a signal to the actor.
@@ -3149,20 +3204,19 @@ impl InstanceCell {
 
     /// This is temporary so that we can share binding code between handle and instance.
     /// We should find some (better) way to consolidate the two.
-    pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &Ports<A>) -> ActorRef<R> {
+    pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &HandlerPorts<A>) -> ActorRef<R> {
         <R as Binds<A>>::bind(ports);
-        // Signal: pre-registered via open_message_port() in
-        // Instance::new(), handled by the actor loop's select!.
-        // Ports::bind() here reuses the existing handle.
+        // Signal: registered directly in Instance::new() and handled
+        // by the actor loop's select!. The port remains unbound
+        // because runtime signals are sent through InstanceCell's
+        // stored PortHandle, not as externally addressable actor
+        // messages.
         //
         // Undeliverable: dispatched through the work queue to the
         // actor's Handler<Undeliverable<MessageEnvelope>>.
         //
-        // IntrospectMessage: pre-registered via open_message_port()
-        // in Instance::new(), handled by a dedicated introspect task.
-        // NOT bound here — its port is registered via
-        // bind_actor_port() directly.
-        ports.bind::<Signal>();
+        // IntrospectMessage: registered directly in Instance::new()
+        // and handled by a dedicated introspect task.
         ports.bind::<Undeliverable<MessageEnvelope>>();
         // TODO: consider sharing `ports.bound` directly.
         for entry in ports.bound.iter() {
@@ -3175,7 +3229,9 @@ impl InstanceCell {
 
     /// Attempt to downcast this cell to a concrete actor handle.
     pub(crate) fn downcast_handle<A: Actor>(&self) -> Option<ActorHandle<A>> {
-        let ports = Arc::clone(&self.inner.ports).downcast::<Ports<A>>().ok()?;
+        let ports = Arc::clone(&self.inner.ports)
+            .downcast::<HandlerPorts<A>>()
+            .ok()?;
         Some(ActorHandle::new(self.clone(), ports))
     }
 
@@ -3243,12 +3299,14 @@ impl WeakInstanceCell {
     }
 }
 
-/// A polymorphic dictionary that stores ports for an actor's handlers.
+/// A polymorphic dictionary that stores runtime-dispatched handler ports.
 /// The interface memoizes the ports so that they are reused. We do not
 /// (yet) support stable identifiers across multiple instances of the same
 /// actor.
-pub struct Ports<A: Actor> {
+pub struct HandlerPorts<A: Actor> {
     ports: DashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
+    controls: DashMap<TypeId, Arc<dyn HandlerPortControl>>,
+    closed_for_drain: AtomicBool,
     bound: DashMap<u64, &'static str>,
     mailbox: Mailbox,
     workq: OrderedSender<WorkCell<A>>,
@@ -3258,7 +3316,7 @@ pub struct Ports<A: Actor> {
     proc_stats: Arc<ProcQueueStats>,
 }
 
-impl<A: Actor> Ports<A> {
+impl<A: Actor> HandlerPorts<A> {
     fn new(
         mailbox: Mailbox,
         workq: OrderedSender<WorkCell<A>>,
@@ -3267,6 +3325,8 @@ impl<A: Actor> Ports<A> {
     ) -> Self {
         Self {
             ports: DashMap::new(),
+            controls: DashMap::new(),
+            closed_for_drain: AtomicBool::new(false),
             bound: DashMap::new(),
             mailbox,
             workq,
@@ -3283,16 +3343,17 @@ impl<A: Actor> Ports<A> {
         let key = TypeId::of::<M>();
         match self.ports.entry(key) {
             Entry::Vacant(entry) => {
-                // Some special case hackery, but it keeps the rest of the code (relatively) simple.
+                // Runtime control-plane ports are provisioned directly,
+                // not through HandlerPorts.
                 assert_ne!(
                     key,
                     TypeId::of::<Signal>(),
-                    "cannot provision Signal port through `Ports::get`"
+                    "cannot provision Signal port through `HandlerPorts::get`"
                 );
                 assert_ne!(
                     key,
                     TypeId::of::<IntrospectMessage>(),
-                    "cannot provision IntrospectMessage port through `Ports::get`"
+                    "cannot provision IntrospectMessage port through `HandlerPorts::get`"
                 );
 
                 let type_info = TypeInfo::get_by_typeid(key);
@@ -3300,7 +3361,7 @@ impl<A: Actor> Ports<A> {
                 let actor_id = self.mailbox.actor_addr().to_string();
                 let enqueue_depth = Arc::clone(&self.queue_depth);
                 let enqueue_proc_stats = Arc::clone(&self.proc_stats);
-                let port = self.mailbox.open_enqueue_port(move |headers, msg: M| {
+                let enqueue = move |headers: Flattrs, msg: M| {
                     let seq_info = headers.get(SEQ_INFO);
 
                     let work = WorkCell::new(move |actor: &mut A, instance: &Instance<A>| {
@@ -3328,7 +3389,7 @@ impl<A: Actor> Ports<A> {
                                 workq.send(session_id, seq, work).map_err(|e| match e {
                                     OrderedSenderError::InvalidZeroSeq(_) => {
                                         let error_msg = format!(
-                                             "in enqueue func for {}, got seq 0 for message type {}",
+                                            "in enqueue func for {}, got seq 0 for message type {}",
                                             actor_id,
                                             std::any::type_name::<M>(),
                                         );
@@ -3347,7 +3408,7 @@ impl<A: Actor> Ports<A> {
                                     "in enqueue func for {}, buffering is enabled, but SEQ_INFO is not set for message type {}",
                                     actor_id,
                                     std::any::type_name::<M>(),
-                                    );
+                                );
                                 tracing::error!(error_msg);
                                 Err(anyhow::anyhow!(error_msg))
                             }
@@ -3359,8 +3420,13 @@ impl<A: Actor> Ports<A> {
                         account_cancel_enqueue(&enqueue_depth, &enqueue_proc_stats, &actor_id);
                     }
                     result
-                });
+                };
+                let (port, control) = self.mailbox.open_handler_enqueue_port(enqueue);
+                if self.closed_for_drain.load(Ordering::Relaxed) {
+                    control.close_for_drain();
+                }
                 entry.insert(Box::new(port.clone()));
+                self.controls.insert(key, control);
                 port
             }
             Entry::Occupied(entry) => {
@@ -3370,16 +3436,10 @@ impl<A: Actor> Ports<A> {
         }
     }
 
-    /// Open a (typed) message port as in [`get`], but return a port receiver instead of dispatching
-    /// the underlying handler.
-    pub(crate) fn open_message_port<M: Message>(&self) -> Option<(PortHandle<M>, PortReceiver<M>)> {
-        match self.ports.entry(TypeId::of::<M>()) {
-            Entry::Vacant(entry) => {
-                let (port, receiver) = self.mailbox.open_port();
-                entry.insert(Box::new(port.clone()));
-                Some((port, receiver))
-            }
-            Entry::Occupied(_) => None,
+    pub(crate) fn close_handler_ports_for_drain(&self) {
+        self.closed_for_drain.store(true, Ordering::Relaxed);
+        for entry in self.controls.iter() {
+            entry.value().close_for_drain();
         }
     }
 
@@ -3524,6 +3584,14 @@ mod tests {
             reply.send(handle).unwrap();
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn test_client_instance_can_bind_signal_port() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        let (_signal_port, _signal_rx) = client.bind_actor_port::<Signal>();
     }
 
     #[allow(clippy::await_holding_invalid_type)]
@@ -3842,6 +3910,98 @@ mod tests {
             assert!(actor.send(&client, TestActorMessage::Noop()).is_err());
             assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "parent stopping");
         }
+    }
+
+    #[derive(Debug)]
+    struct DeferredStopActor {
+        stop_started: Arc<tokio::sync::Notify>,
+        release_stop: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl Actor for DeferredStopActor {
+        async fn handle_stop(
+            &mut self,
+            this: &Instance<Self>,
+            mode: StopMode,
+            reason: &str,
+        ) -> Result<(), anyhow::Error> {
+            let this = this.clone_for_py();
+            let release_stop = Arc::clone(&self.release_stop);
+            let reason = reason.to_string();
+            this.close();
+            self.stop_started.notify_one();
+            tokio::spawn(async move {
+                release_stop.notified().await;
+                match mode {
+                    StopMode::Stop => this.exit(&reason).unwrap(),
+                    StopMode::DrainAndStop => this.exit_after_drain(&reason).unwrap(),
+                }
+            });
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<()> for DeferredStopActor {
+        async fn handle(&mut self, _cx: &crate::Context<Self>, _message: ()) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_handle_stop_can_defer_exit() {
+        let proc = Proc::local();
+        let stop_started = Arc::new(tokio::sync::Notify::new());
+        let release_stop = Arc::new(tokio::sync::Notify::new());
+        let handle = proc
+            .spawn(
+                "deferred_stop",
+                DeferredStopActor {
+                    stop_started: Arc::clone(&stop_started),
+                    release_stop: Arc::clone(&release_stop),
+                },
+            )
+            .unwrap();
+
+        let mut status = handle.status();
+        handle.stop("test").unwrap();
+        stop_started.notified().await;
+        status
+            .wait_for(|state| matches!(state, ActorStatus::Stopping))
+            .await
+            .unwrap();
+
+        release_stop.notify_one();
+        assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_drain_and_stop_closes_handler_ingress() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let stop_started = Arc::new(tokio::sync::Notify::new());
+        let release_stop = Arc::new(tokio::sync::Notify::new());
+        let handle = proc
+            .spawn(
+                "deferred_drain_stop",
+                DeferredStopActor {
+                    stop_started: Arc::clone(&stop_started),
+                    release_stop: Arc::clone(&release_stop),
+                },
+            )
+            .unwrap();
+
+        handle.drain_and_stop("test").unwrap();
+        stop_started.notified().await;
+
+        // Drain closes runtime-dispatched handler ingress, so new
+        // sends to the actor's handler port are rejected.
+        let err = handle.send(&client, ()).unwrap_err();
+        assert_matches!(err.kind(), crate::mailbox::MailboxSenderErrorKind::Closed);
+
+        release_stop.notify_one();
+        assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
     }
 
     #[async_timed_test(timeout_secs = 30)]

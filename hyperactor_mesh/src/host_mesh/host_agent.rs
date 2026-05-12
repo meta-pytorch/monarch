@@ -1536,7 +1536,6 @@ mod tests {
     use crate::mesh_id::ResourceId;
     use crate::resource::CreateOrUpdateClient;
     use crate::resource::GetStateClient;
-    use crate::resource::StopClient;
     use crate::resource::WaitRankStatusClient;
 
     #[tokio::test]
@@ -1695,8 +1694,7 @@ mod tests {
             .unwrap();
 
         // Stop the proc.
-        host_agent
-            .stop(&client, id, "test".to_string())
+        crate::resource::StopClient::stop(&host_agent, &client, id, "test".to_string())
             .await
             .unwrap();
 

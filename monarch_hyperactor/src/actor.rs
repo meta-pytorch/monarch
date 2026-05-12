@@ -710,8 +710,7 @@ impl PythonActor {
         // (matching GlobalClientActor::fresh_instance).
         instance.set_system();
 
-        // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
-        // are bound.
+        // Bind to ensure the Undeliverable<MessageEnvelope> port is bound.
         let _client_ref = handle.bind::<PythonActor>();
 
         get_tokio_runtime().spawn(async move {
@@ -780,8 +779,9 @@ impl PythonActor {
                                 need_drain = matches!(signal, Signal::DrainAndStop(_));
                                 break None;
                             },
+                            Ok(Signal::ExitRequested(_)) => {}
                             Ok(Signal::ChildStopped(_)) => {},
-                            Ok(Signal::Abort(reason)) => {
+                            Ok(Signal::Kill(reason)) => {
                                 break Some(ActorError { actor_id: Box::new(instance.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
                             },
                             Err(err) => break Some(err),
@@ -897,7 +897,7 @@ impl Actor for PythonActor {
             // Create an error port that converts PythonMessage to an abort signal.
             // This allows Python to send errors that trigger actor supervision.
             let error_port: hyperactor::PortHandle<PythonMessage> =
-                this.port::<Signal>().contramap(|msg: PythonMessage| {
+                this.signal_port().contramap(|msg: PythonMessage| {
                     monarch_with_gil_blocking(|py| {
                         let err = match msg.kind {
                             PythonMessageKind::Exception { .. } => {
@@ -917,7 +917,7 @@ impl Actor for PythonActor {
                                 SerializablePyErr::from(py, &py_err)
                             }
                         };
-                        Signal::Abort(err.to_string())
+                        Signal::Kill(err.to_string())
                     })
                 });
 
@@ -1311,7 +1311,7 @@ impl PythonActor {
 
         // Spawn a child actor to await the Python handler method.
         tokio::spawn(handle_async_endpoint_panic(
-            cx.port(),
+            cx.signal_port(),
             PythonTask::new(future)?,
             receiver,
             cx.self_addr().to_string(),
@@ -1584,7 +1584,7 @@ async fn handle_async_endpoint_panic(
             })
             .0;
         panic_sender
-            .send(&client, Signal::Abort(panic.to_string()))
+            .send(&client, Signal::Kill(panic.to_string()))
             .expect("Unable to send panic message");
     }
 

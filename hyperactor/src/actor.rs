@@ -47,13 +47,32 @@ use crate::mailbox::UndeliverableMessageError;
 use crate::message::Castable;
 use crate::message::IndexedErasedUnbound;
 use crate::proc::Context;
+use crate::proc::HandlerPorts;
 use crate::proc::Instance;
 use crate::proc::InstanceCell;
-use crate::proc::Ports;
 use crate::proc::Proc;
 use crate::supervision::ActorSupervisionEvent;
 
 pub mod remote;
+
+/// The shutdown mode requested for an actor.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    typeuri::Named
+)]
+pub enum StopMode {
+    /// Stop without draining ordinary queued work first.
+    Stop,
+    /// Stop after draining already accepted ordinary queued work.
+    DrainAndStop,
+}
+wirevalue::register_type!(StopMode);
 
 /// An Actor is an independent, asynchronous thread of execution. Each
 /// actor instance has a mailbox, whose messages are delivered through
@@ -71,6 +90,27 @@ pub trait Actor: Sized + Send + 'static {
     async fn init(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error> {
         // Default implementation: no init.
         Ok(())
+    }
+
+    /// Handle a stop request from the runtime.
+    ///
+    /// The default implementation closes handler ingress and then
+    /// either exits immediately or queues an exit after already
+    /// accepted handler work drains. Actors that need to coordinate
+    /// asynchronous shutdown work can override this method and call
+    /// `Instance::exit()` / `Instance::exit_after_drain()` later,
+    /// once they are ready to terminate.
+    async fn handle_stop(
+        &mut self,
+        this: &Instance<Self>,
+        mode: StopMode,
+        reason: &str,
+    ) -> Result<(), anyhow::Error> {
+        this.close();
+        match mode {
+            StopMode::Stop => this.exit(reason).map_err(anyhow::Error::from),
+            StopMode::DrainAndStop => this.exit_after_drain(reason).map_err(anyhow::Error::from),
+        }
     }
 
     /// Cleanup things used by this actor before shutting down. Notably this function
@@ -178,7 +218,7 @@ impl Actor for () {}
 impl Referable for () {}
 
 impl Binds<()> for () {
-    fn bind(_ports: &Ports<Self>) {
+    fn bind(_ports: &HandlerPorts<Self>) {
         // Binds no ports.
     }
 }
@@ -188,15 +228,6 @@ impl Binds<()> for () {
 pub trait Handler<M>: Actor {
     /// Handle the next M-typed message.
     async fn handle(&mut self, cx: &Context<Self>, message: M) -> Result<(), anyhow::Error>;
-}
-
-/// We provide this handler to indicate that actors can handle the [`Signal`] message.
-/// Its actual handler is implemented by the runtime.
-#[async_trait]
-impl<A: Actor> Handler<Signal> for A {
-    async fn handle(&mut self, _cx: &Context<Self>, _message: Signal) -> Result<(), anyhow::Error> {
-        unimplemented!("signal handler should not be called directly")
-    }
 }
 
 /// This handler provides a default behavior when a message sent by
@@ -457,13 +488,16 @@ pub enum Signal {
     /// Stop the actor immediately.
     Stop(String),
 
+    /// Exit the actor loop with the provided stop reason.
+    ExitRequested(String),
+
     /// The direct child with the given uid was stopped.
     ChildStopped(crate::id::Uid),
 
-    /// Abort the actor. This will exit the actor loop with an error,
+    /// Kill the actor. This will exit the actor loop with an error,
     /// causing a supervision event to propagate up the supervision
     /// hierarchy.
-    Abort(String),
+    Kill(String),
 }
 wirevalue::register_type!(Signal);
 
@@ -472,8 +506,9 @@ impl fmt::Display for Signal {
         match self {
             Signal::DrainAndStop(reason) => write!(f, "DrainAndStop({})", reason),
             Signal::Stop(reason) => write!(f, "Stop({})", reason),
+            Signal::ExitRequested(reason) => write!(f, "ExitRequested({})", reason),
             Signal::ChildStopped(uid) => write!(f, "ChildStopped({})", uid),
-            Signal::Abort(reason) => write!(f, "Abort({})", reason),
+            Signal::Kill(reason) => write!(f, "Kill({})", reason),
         }
     }
 }
@@ -614,12 +649,12 @@ impl fmt::Display for ActorStatus {
 /// actors.
 pub struct ActorHandle<A: Actor> {
     cell: InstanceCell,
-    ports: Arc<Ports<A>>,
+    ports: Arc<HandlerPorts<A>>,
 }
 
 /// A handle to a running (local) actor.
 impl<A: Actor> ActorHandle<A> {
-    pub(crate) fn new(cell: InstanceCell, ports: Arc<Ports<A>>) -> Self {
+    pub(crate) fn new(cell: InstanceCell, ports: Arc<HandlerPorts<A>>) -> Self {
         Self { cell, ports }
     }
 
@@ -638,6 +673,19 @@ impl<A: Actor> ActorHandle<A> {
     pub fn drain_and_stop(&self, reason: &str) -> Result<(), ActorError> {
         tracing::info!("ActorHandle::drain_and_stop called: {}", self.actor_addr());
         self.cell.signal(Signal::DrainAndStop(reason.to_string()))
+    }
+
+    /// Signal the actor to stop without draining ordinary queued
+    /// work first.
+    pub fn stop(&self, reason: &str) -> Result<(), ActorError> {
+        tracing::info!("actor handle stop called: {}", self.actor_addr());
+        self.cell.signal(Signal::Stop(reason.to_string()))
+    }
+
+    /// Signal the actor to terminate immediately.
+    pub fn kill(&self, reason: &str) -> Result<(), ActorError> {
+        tracing::info!("actor handle kill called: {}", self.actor_addr());
+        self.cell.signal(Signal::Kill(reason.to_string()))
     }
 
     /// A watch that observes the lifecycle state of the actor.
@@ -729,7 +777,7 @@ pub trait Referable: Named {}
 /// reference type.
 pub trait Binds<A: Actor>: Referable {
     /// Bind ports in this actor.
-    fn bind(ports: &Ports<A>);
+    fn bind(ports: &HandlerPorts<A>);
 }
 
 /// Handles is a marker trait specifying that message type [`M`]
@@ -1193,11 +1241,14 @@ mod tests {
 
         // Create a non-actor port using open_enqueue_port
         let non_actor_tx_clone = non_actor_tx.clone();
-        let non_actor_port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
-            let seq_info = headers.get(SEQ_INFO);
-            non_actor_tx_clone.send(seq_info).unwrap();
-            Ok(())
-        });
+        let non_actor_port_handle =
+            client
+                .mailbox()
+                .open_enqueue_port(move |headers: Flattrs, _m: ()| {
+                    let seq_info = headers.get(SEQ_INFO);
+                    non_actor_tx_clone.send(seq_info).unwrap();
+                    Ok(())
+                });
 
         // Bind the port to get a port ID
         non_actor_port_handle.bind();
