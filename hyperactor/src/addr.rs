@@ -248,6 +248,11 @@ impl ActorAddr {
         &self.id
     }
 
+    /// Returns the proc id that owns this actor id.
+    pub fn proc_id(&self) -> &ProcId {
+        self.id.proc_id()
+    }
+
     /// Returns the location.
     pub fn location(&self) -> &Location {
         &self.location
@@ -398,6 +403,11 @@ impl PortAddr {
     /// Returns the actor id (delegates to port id).
     pub fn actor_id(&self) -> &ActorId {
         self.id.actor_id()
+    }
+
+    /// Returns the proc id that owns this port id.
+    pub fn proc_id(&self) -> &ProcId {
+        self.id.actor_id().proc_id()
     }
 
     /// Whether this is a handler (actor-level) port.
@@ -893,6 +903,25 @@ mod tests {
         let loc: Location = ChannelAddr::Local(42).into();
         let aref = ActorAddr::new(aid, loc);
         assert_eq!(aref.to_string(), format!("{}@inproc://42", aref.id()));
+    }
+
+    #[test]
+    fn test_actor_and_port_proc_id_accessors() {
+        let proc_id = ProcId::new(
+            Uid::Instance(0xdef456, None),
+            Some(Label::new("my-proc").unwrap()),
+        );
+        let actor_id = ActorId::new(
+            Uid::Instance(0xabc123, None),
+            proc_id.clone(),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        let actor_addr = ActorAddr::new(actor_id, ChannelAddr::Local(42).into());
+        let port_addr = actor_addr.port_addr(Port::from(7));
+
+        assert_eq!(actor_addr.proc_id(), &proc_id);
+        assert_eq!(port_addr.actor_id(), actor_addr.id());
+        assert_eq!(port_addr.proc_id(), &proc_id);
     }
 
     #[test]

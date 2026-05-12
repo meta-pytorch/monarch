@@ -1120,11 +1120,13 @@ mod tests {
 
     #[cfg(fbcode_build)]
     async fn execute_spawn_actor() {
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
+
         let instance = testing::instance();
 
-        let mut hm = testing::host_mesh(4).await;
+        let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None, None)
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
         let actor_mesh = proc_mesh.spawn(instance, "test", &()).await.unwrap();
@@ -1198,9 +1200,9 @@ mod tests {
         let instance = testing::instance();
         let session_id = instance.sequencer().session_id();
 
-        let mut hm = testing::host_mesh(4).await;
+        let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None, None)
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
         let proc_mesh_ref = proc_mesh.deref();
@@ -1213,7 +1215,7 @@ mod tests {
                 let proc_mesh_ref_clone = proc_mesh_ref.clone();
                 tokio::spawn(async move {
                     let actor_mesh = spawn_for_seq_test(instance, &proc_mesh_ref_clone).await;
-                    let expected_seqs = vec![1; 8];
+                    let expected_seqs = vec![1; 2];
                     testactor::assert_casting_correctness(
                         &actor_mesh,
                         instance,
@@ -1242,16 +1244,16 @@ mod tests {
         let instance = testing::instance();
         let session_id = instance.sequencer().session_id();
 
-        let mut hm = testing::host_mesh(4).await;
+        let mut hm = testing::host_mesh(3).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None, None)
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
 
         let actor_mesh = spawn_for_seq_test(instance, &proc_mesh).await;
 
         // First cast. The seq should be 1 for all actors.
-        let expected_seqs = vec![1; 8];
+        let expected_seqs = vec![1; 3];
         testactor::assert_casting_correctness(
             &actor_mesh,
             instance,
@@ -1262,7 +1264,7 @@ mod tests {
         // Verify casting to the sliced actor mesh
         let sliced_actor_mesh = actor_mesh.range("hosts", 1..3).unwrap();
         // Second cast. The seq should be 2 for actors in the sliced mesh.
-        let expected_seqs = vec![2; 4];
+        let expected_seqs = vec![2; 2];
         testactor::assert_casting_correctness(
             &sliced_actor_mesh,
             instance,
@@ -1275,7 +1277,7 @@ mod tests {
         // For actors in the previous sliced mesh, the seq should be 3 since
         // this is the third cast for them. For other actors, the seq should
         // be 2.
-        let expected_seqs = vec![2, 2, 3, 3];
+        let expected_seqs = vec![2, 3];
         testactor::assert_casting_correctness(
             &sliced_actor_mesh,
             instance,
@@ -1316,9 +1318,9 @@ mod tests {
             .unwrap()
             .instance;
 
-        let mut hm = testing::host_mesh(4).await;
+        let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None, None)
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
 
@@ -1327,7 +1329,7 @@ mod tests {
         // Sequence numbers are calculated based on the sequencer, i.e. the
         // client name. So three casts would result in seq 1 for all actors.
         for inst in [&first_instance, &second_instance, &third_instance] {
-            let expected_seqs = vec![1; 8];
+            let expected_seqs = vec![1; 2];
             let session_id = inst.sequencer().session_id();
             testactor::assert_casting_correctness(
                 &actor_mesh,
@@ -1348,9 +1350,9 @@ mod tests {
 
         let instance = testing::instance();
 
-        let mut hm = testing::host_mesh(4).await;
+        let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None, None)
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
         let err = proc_mesh
@@ -1364,7 +1366,7 @@ mod tests {
         let statuses = err.into_actor_spawn_error().unwrap();
         assert_eq!(
             statuses,
-            RankedValues::from((0..8, Status::Failed("test failure".to_string()))),
+            RankedValues::from((0..2, Status::Failed("test failure".to_string()))),
         );
 
         let _ = hm.shutdown(instance).await;

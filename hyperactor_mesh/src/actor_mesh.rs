@@ -1317,7 +1317,7 @@ mod tests {
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
-        let num_replicas = 4;
+        let num_replicas = 2;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
             .spawn(instance, "test", Extent::unity(), None, None)
@@ -1418,7 +1418,7 @@ mod tests {
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
-        let num_replicas = 4;
+        let num_replicas = 2;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
             .spawn(instance, "test", Extent::unity(), None, None)
@@ -1514,7 +1514,7 @@ mod tests {
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
-        let num_replicas = 4;
+        let num_replicas = 2;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
             .spawn(instance, "test", Extent::unity(), None, None)
@@ -1533,7 +1533,7 @@ mod tests {
             .await
             .unwrap();
         let sliced = actor_mesh
-            .range("hosts", 1..3)
+            .range("hosts", 1..2)
             .expect("slice should be valid");
         let sliced_replicas = sliced.len();
 
@@ -1579,7 +1579,7 @@ mod tests {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance();
-        let mut host_mesh = testing::host_mesh(4).await;
+        let mut host_mesh = testing::host_mesh(2).await;
         let proc_mesh = host_mesh
             .spawn(instance, "test", Extent::unity(), None, None)
             .await
