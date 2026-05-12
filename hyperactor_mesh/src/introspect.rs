@@ -67,13 +67,13 @@
 //!
 //! These govern the HTTP DTO layer in [`dto`].
 //!
-//! - **HB-1 (typed-internal, string-external):** `NodeRef`, `ActorId`,
-//!   `ProcId`, and `SystemTime` are typed Rust values internally. At the
+//! - **HB-1 (typed-internal, string-external):** `NodeRef`, `ActorAddr`,
+//!   `ProcAddr`, and `SystemTime` are typed Rust values internally. At the
 //!   HTTP JSON boundary, [`dto::NodePayloadDto`],
 //!   [`dto::NodePropertiesDto`], and [`dto::FailureInfoDto`] encode them
 //!   as canonical strings.
 //! - **HB-2 (round-trip):** The HTTP string forms round-trip through the
-//!   internal typed parsers (`NodeRef::from_str`, `ActorId::from_str`,
+//!   internal typed parsers (`NodeRef::from_str`, `ActorAddr::from_str`,
 //!   `humantime::parse_rfc3339`). Timestamps are formatted at
 //!   millisecond precision; sub-millisecond values are truncated at
 //!   the boundary.
@@ -220,7 +220,7 @@
 //!   contract.
 //!
 //! v1 contract notes:
-//! - The current py-spy bridge expects a ProcId-form reference and
+//! - The current py-spy bridge expects a ProcAddr-form reference and
 //!   rejects other forms as `bad_request`. This may be broadened in
 //!   future versions.
 //! - If `worker.send()` fails after the reply port has moved into
@@ -546,6 +546,13 @@ fn read_procfs_memory() -> (Option<u64>, Option<u64>) {
         return (None, None);
     }
     let page_size = page_size as u64;
+    // Sync I/O is intentional even though callers may invoke this from
+    // async contexts. `/proc/self/statm` is in the O(1) procfs tier —
+    // the kernel formats values from `mm_struct` atomic counters
+    // maintained on the page-fault and exit paths, with no page-table
+    // walk; typical wall time is a few microseconds. Dispatching via
+    // `tokio::fs::read_to_string` would cost more than the read
+    // itself, and this call cannot block on real disk I/O.
     match std::fs::read_to_string("/proc/self/statm") {
         Ok(contents) => {
             let mut fields = contents.split_whitespace();
@@ -827,11 +834,11 @@ pub enum NodeRef {
     #[serde(rename = "root")]
     Root,
     /// A host in the mesh, identified by its `HostAgent` actor ID.
-    Host(hyperactor::reference::ActorId),
+    Host(hyperactor::ActorAddr),
     /// A proc running on a host.
-    Proc(hyperactor::reference::ProcId),
+    Proc(hyperactor::ProcAddr),
     /// An actor instance within a proc.
-    Actor(hyperactor::reference::ActorId),
+    Actor(hyperactor::ActorAddr),
 }
 
 hyperactor_config::impl_attrvalue!(NodeRef);
@@ -853,11 +860,11 @@ pub enum NodeRefParseError {
     #[error("empty reference string")]
     Empty,
     #[error("invalid host reference: {0}")]
-    InvalidHost(hyperactor::reference::ReferenceParsingError),
+    InvalidHost(hyperactor::AddrParseError),
     #[error("port references are not valid node references")]
     PortNotAllowed,
     #[error(transparent)]
-    Reference(#[from] hyperactor::reference::ReferenceParsingError),
+    Reference(#[from] hyperactor::AddrParseError),
 }
 
 impl FromStr for NodeRef {
@@ -871,15 +878,15 @@ impl FromStr for NodeRef {
             return Ok(Self::Root);
         }
         if let Some(rest) = s.strip_prefix("host:") {
-            let actor_id: hyperactor::reference::ActorId =
+            let actor_id: hyperactor::ActorAddr =
                 rest.parse().map_err(NodeRefParseError::InvalidHost)?;
             return Ok(Self::Host(actor_id));
         }
-        let r: hyperactor::reference::Reference = s.parse()?;
+        let r: hyperactor::Addr = s.parse()?;
         match r {
-            hyperactor::reference::Reference::Proc(id) => Ok(Self::Proc(id)),
-            hyperactor::reference::Reference::Actor(id) => Ok(Self::Actor(id)),
-            hyperactor::reference::Reference::Port(_) => Err(NodeRefParseError::PortNotAllowed),
+            hyperactor::Addr::Proc(id) => Ok(Self::Proc(id)),
+            hyperactor::Addr::Actor(id) => Ok(Self::Actor(id)),
+            hyperactor::Addr::Port(_) => Err(NodeRefParseError::PortNotAllowed),
         }
     }
 }
@@ -976,7 +983,7 @@ pub struct FailureInfo {
     /// Error message describing the failure.
     pub error_message: String,
     /// Actor that caused the failure (root cause).
-    pub root_cause_actor: hyperactor::reference::ActorId,
+    pub root_cause_actor: hyperactor::ActorAddr,
     /// Display name of the root-cause actor, if available.
     pub root_cause_name: Option<String>,
     /// When the failure occurred.
@@ -1181,6 +1188,7 @@ pub fn to_node_payload_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh_id::ResourceId;
 
     /// Enforces MK-1 (metadata completeness) for all mesh-topology
     /// introspection keys.
@@ -1255,9 +1263,10 @@ mod tests {
 
     fn test_actor_ref(proc_name: &str, actor_name: &str) -> NodeRef {
         use hyperactor::channel::ChannelAddr;
-        use hyperactor::reference::ProcId;
+
         NodeRef::Actor(
-            ProcId::from_resource_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name),
+            ResourceId::proc_addr_from_name(ChannelAddr::Local(0), proc_name)
+                .actor_addr(actor_name),
         )
     }
 
@@ -1650,15 +1659,14 @@ mod tests {
     #[test]
     fn test_payloads_validate_against_schema() {
         use hyperactor::channel::ChannelAddr;
-        use hyperactor::reference::ProcId;
 
         let schema = schemars::schema_for!(dto::NodePayloadDto);
         let schema_value = serde_json::to_value(&schema).unwrap();
         let compiled = jsonschema::JSONSchema::compile(&schema_value).expect("schema must compile");
 
         let epoch = std::time::UNIX_EPOCH;
-        let proc_id = ProcId::from_resource_name(ChannelAddr::Local(0), "worker");
-        let actor_id = proc_id.actor_id("actor");
+        let proc_id = ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "worker");
+        let actor_id = proc_id.actor_addr("actor");
 
         let samples = [
             NodePayload {

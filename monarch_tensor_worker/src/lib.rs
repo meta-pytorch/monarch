@@ -51,6 +51,7 @@ use comm::NcclCommActor;
 use derive_more::TryInto;
 use device_mesh::DeviceMesh;
 use futures::future::try_join_all;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
@@ -58,7 +59,6 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use itertools::Itertools;
@@ -142,8 +142,8 @@ enum Recording {
 ///
 /// See [`WorkerMessage`] for what it can do!
 #[derive(Debug)]
+#[hyperactor::spawnable]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         WorkerMessage {cast = true},
         AssignRankMessage {cast = true},
@@ -285,7 +285,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
             let mesh_controller = py.import("monarch.mesh_controller").unwrap();
             let p: PyPoint = point.into();
             mesh_controller
-                .call_method1("_initialize_env", (p, cx.proc().proc_id().to_string()))
+                .call_method1("_initialize_env", (p, cx.proc().proc_addr().to_string()))
                 .unwrap();
         });
         Ok(())
@@ -598,7 +598,7 @@ impl WorkerMessageHandler for WorkerActor {
             &self.controller_actor,
             cx,
             seq.next(),
-            cx.self_id().clone().into(),
+            cx.self_addr().clone(),
             controller,
         )
         .await?;
@@ -714,7 +714,7 @@ impl WorkerMessageHandler for WorkerActor {
     async fn exit(
         &mut self,
         cx: &hyperactor::Context<Self>,
-        error: Option<(Option<reference::ActorId>, String)>,
+        error: Option<(Option<reference::ActorAddr>, String)>,
     ) -> Result<()> {
         for (_, stream) in self.streams.drain() {
             stream.drain_and_stop("tensor worker exit cleanup")?;
@@ -740,7 +740,7 @@ impl WorkerMessageHandler for WorkerActor {
                     actor_id,
                     reason
                 );
-                if *cx.self_id() == actor_id {
+                if cx.self_addr() == &actor_id {
                     self_error_exit_code
                 } else {
                     peer_error_exit_code
@@ -792,7 +792,7 @@ impl WorkerMessageHandler for WorkerActor {
             .send_value(
                 cx,
                 seq,
-                cx.self_id().clone().into(),
+                cx.self_addr().clone(),
                 mutates,
                 function,
                 args_kwargs,
@@ -1105,7 +1105,7 @@ impl WorkerMessageHandler for WorkerActor {
 
 #[cfg(all(test, fbcode_build))]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
 
     use anyhow::Result;
     use hyperactor::RemoteSpawn;

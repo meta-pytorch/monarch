@@ -29,6 +29,7 @@ jobs:
       runner: ${{ inputs.runner }}
       submodules: recursive
       download-artifact: ${{ inputs.artifact-name }}
+      upload-artifact: test-results-cpu-python-${{ github.sha }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -57,3 +58,5 @@ jobs:
         # Run CPU Python tests (excluding GPU/tensor engine tests)
         # TODO: Add appropriate test filters for CPU-only Python tests
         echo "CPU Python tests would run here - currently placeholder"
+
+        stage_test_artifacts

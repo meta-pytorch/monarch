@@ -11,7 +11,7 @@ from typing import final, Protocol
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.pickle import PendingMessage
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Region
 from typing_extensions import Self
@@ -53,9 +53,9 @@ class PythonActorMesh(ActorMeshProtocol):
 @final
 class ActorSupervisionEvent:
     @property
-    def actor_id(self) -> ActorId:
+    def actor_id(self) -> ActorAddr:
         """
-        The actor id of the actor.
+        The actor address of the actor.
         """
         ...
 

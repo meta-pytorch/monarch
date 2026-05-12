@@ -201,8 +201,10 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_write_separate_devices_db() -> Result<(), anyhow::Error> {
+        if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
+            return Ok(());
+        }
         const BSIZE: usize = 1024;
         let devices = get_all_devices();
         if devices.len() < 4 {
@@ -232,8 +234,10 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_read_separate_devices_db_check() -> Result<(), anyhow::Error> {
+        if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
+            return Ok(());
+        }
         const BSIZE: usize = 1024;
         let devices = get_all_devices();
         if devices.len() < 4 {
@@ -356,8 +360,10 @@ mod tests {
 
     // Test that RDMA read can be performed between two actors on separate devices with CUDA.
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_read_separate_devices_db_device_trigger() -> Result<(), anyhow::Error> {
+        if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
+            return Ok(());
+        }
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -395,8 +401,10 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_write_recv_separate_devices_db_trigger() -> Result<(), anyhow::Error> {
+        if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
+            return Ok(());
+        }
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -627,7 +635,11 @@ mod tests {
         Ok(())
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 30)]
+    // Wrapper is intentionally generous: under full-suite parallel
+    // load, `IbvTestEnv::setup` (proc spawn + CUDA ctx + buffer
+    // registration) alone takes >30s, while the actual concurrent
+    // reads are tens to hundreds of ms.
+    #[timed_test::async_timed_test(timeout_secs = 120)]
     async fn test_concurrent_send_to_same_target() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 2 * 1024 * 1024;
         let devices = get_all_devices();

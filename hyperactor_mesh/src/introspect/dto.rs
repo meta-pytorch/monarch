@@ -15,8 +15,8 @@
 //!
 //! ## Invariants
 //!
-//! - **HB-1 (typed-internal, string-external):** `NodeRef`, `ActorId`,
-//!   `ProcId`, and `SystemTime` are encoded as canonical strings in the
+//! - **HB-1 (typed-internal, string-external):** `NodeRef`, `ActorAddr`,
+//!   `ProcAddr`, and `SystemTime` are encoded as canonical strings in the
 //!   DTO types.
 //! - **HB-2 (round-trip):** `NodePayload → NodePayloadDto → NodePayload`
 //!   is lossless for values representable in the wire format.
@@ -459,22 +459,20 @@ impl TryFrom<FailureInfoDto> for FailureInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mesh_id::ResourceId;
 
     // Test fixtures
 
-    fn test_proc_id() -> hyperactor::reference::ProcId {
-        hyperactor::reference::ProcId::from_resource_name(
-            hyperactor::channel::ChannelAddr::Local(0),
-            "worker",
-        )
+    fn test_proc_id() -> hyperactor::ProcAddr {
+        ResourceId::proc_addr_from_name(hyperactor::channel::ChannelAddr::Local(0), "worker")
     }
 
-    fn test_actor_id() -> hyperactor::reference::ActorId {
-        test_proc_id().actor_id("actor")
+    fn test_actor_id() -> hyperactor::ActorAddr {
+        test_proc_id().actor_addr("actor")
     }
 
-    fn test_host_actor_id() -> hyperactor::reference::ActorId {
-        test_proc_id().actor_id("host_agent")
+    fn test_host_actor_id() -> hyperactor::ActorAddr {
+        test_proc_id().actor_addr("host_agent")
     }
 
     fn test_time() -> SystemTime {
@@ -689,7 +687,7 @@ mod tests {
         assert!(root["system_children"].as_array().unwrap().is_empty());
     }
 
-    /// HB-1: Actor variant with failure — ActorId, SystemTime, and
+    /// HB-1: Actor variant with failure — ActorAddr, SystemTime, and
     /// nested FailureInfo fields all serialize as strings.
     #[test]
     fn test_json_shape_actor_with_failure() {

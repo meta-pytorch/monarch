@@ -23,12 +23,12 @@ use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
 use futures::try_join;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Unbind;
 use hyperactor::context;
-use hyperactor::reference;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -336,7 +336,8 @@ pub struct RsyncMessage {
 wirevalue::register_type!(RsyncMessage);
 
 #[derive(Debug, Default)]
-#[hyperactor::export(spawn = true, handlers = [RsyncMessage { cast = true }])]
+#[hyperactor::export(handlers = [RsyncMessage { cast = true }])]
+#[hyperactor::spawnable]
 pub struct RsyncActor {
     //workspace: WorkspaceLocation,
 }
@@ -358,7 +359,7 @@ impl Handler<RsyncMessage> for RsyncActor {
             let workspace = workspace
                 .resolve()
                 .context("resolving workspace location")?;
-            let (connect_msg, completer) = Connect::allocate(cx.self_id().clone().into(), cx);
+            let (connect_msg, completer) = Connect::allocate(cx.self_addr().clone(), cx);
             connect.send(cx, connect_msg)?;
 
             // some machines (e.g. github CI) do not have ipv6, so try ipv6 then fallback to ipv4
@@ -406,7 +407,7 @@ pub async fn rsync_mesh<C: context::Actor + Copy + Unpin>(
             .try_for_each_concurrent(None, |connect| async move {
                 let (mut local, mut stream) = try_join!(
                     TcpStream::connect(daemon_addr.clone()).err_into(),
-                    accept(cx, cx.instance().self_id().clone().into(), connect),
+                    accept(cx, cx.instance().self_addr().clone(), connect),
                 )?;
                 tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
                 anyhow::Ok(())
@@ -503,7 +504,7 @@ mod tests {
         let instance = cx.actor_instance;
         let mut host_mesh = test_utils::local_host_mesh(1).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "rsync_test", ndslice::Extent::unity(), None)
+            .spawn(instance, "rsync_test", ndslice::Extent::unity(), None, None)
             .await
             .unwrap();
         // Spawn actor mesh with RsyncActors

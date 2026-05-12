@@ -77,8 +77,7 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
 
     monarch_hyperactor::runtime::initialize(module.py())?;
-    let runtime = monarch_hyperactor::runtime::get_tokio_runtime();
-    ::hyperactor::initialize(runtime.handle().clone());
+    ::hyperactor::initialize(monarch_hyperactor::runtime::get_tokio_runtime());
     monarch_hyperactor::buffers::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.buffers",

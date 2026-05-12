@@ -26,15 +26,16 @@ def _checksum(buf: bytes) -> str:
 class PingPongActor(Actor):
     """Actor that participates in RDMA pingpong."""
 
-    def __init__(self, size_bytes: int, buffer_type: str = "tensor"):
+    def __init__(self, size_bytes: int, buffer_type: str = "cpu_tensor"):
         self.hostname = socket.gethostname()
         self.size_bytes = size_bytes
         self.buffer_type = buffer_type
 
-        if buffer_type == "tensor":
+        if buffer_type in ("cpu_tensor", "cuda_tensor"):
             n = size_bytes // 4
-            self.data = torch.rand(n, dtype=torch.float32)
-            self.recv_buf = torch.zeros(n, dtype=torch.float32)
+            device = "cuda" if buffer_type == "cuda_tensor" else "cpu"
+            self.data = torch.rand(n, dtype=torch.float32, device=device)
+            self.recv_buf = torch.zeros(n, dtype=torch.float32, device=device)
         elif buffer_type == "bytearray":
             self.data = bytearray(os.urandom(size_bytes))
             self.recv_buf = bytearray(size_bytes)
@@ -58,7 +59,7 @@ class PingPongActor(Actor):
 
     @endpoint
     async def get_buffer(self) -> RDMABuffer:
-        if self.buffer_type == "tensor":
+        if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
             return RDMABuffer(self.data.view(torch.uint8).flatten())
         else:
             return RDMABuffer(memoryview(self.data))
@@ -66,7 +67,7 @@ class PingPongActor(Actor):
     @endpoint
     async def read_from(self, peer_buf: RDMABuffer) -> float:
         """Read peer's data into recv_buf, return elapsed seconds."""
-        if self.buffer_type == "tensor":
+        if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
             self.recv_buf.zero_()
             local = self.recv_buf.view(torch.uint8).flatten()
         elif self.buffer_type == "bytearray":
@@ -86,8 +87,10 @@ class PingPongActor(Actor):
     @endpoint
     async def checksum(self, which: str = "data") -> str:
         buf = self.data if which == "data" else self.recv_buf
-        if self.buffer_type == "tensor":
-            raw = buf.numpy().tobytes()
+        if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
+            # .cpu() is a no-op on CPU tensors, required for cuda_tensor
+            # since numpy doesn't accept CUDA storage.
+            raw = buf.cpu().numpy().tobytes()
         else:
             raw = bytes(buf)
         return _checksum(raw)
@@ -102,23 +105,26 @@ def main(
     hpc_job_oncall: str = "monarch",
     hpc_cluster_uuid: str = "MastGenAICluster",
     rm_attribution: str = "msl_infra_pytorch_dev",
-    buffer_type: str = "tensor",
+    k8s_namespace: str = "monarch-tests",
+    k8s_image: str = "ghcr.io/meta-pytorch/monarch:latest",
+    buffer_type: str = "cpu_tensor",
 ):
     """RDMA Pingpong: transfer data between two nodes via RDMABuffer."""
     sys.stdout.reconfigure(line_buffering=True)
     size = data_size_mb * 1024 * 1024
 
-    if buffer_type not in ("tensor", "bytearray", "memoryview"):
+    if buffer_type not in ("cpu_tensor", "cuda_tensor", "bytearray", "memoryview"):
         raise ValueError(
             f"Unknown buffer_type: {buffer_type!r}; "
-            "choose from 'tensor', 'bytearray', 'memoryview'"
+            "choose from 'cpu_tensor', 'cuda_tensor', 'bytearray', 'memoryview'"
         )
 
     if backend == "mast":
         from monarch.actor import enable_transport
+        from monarch.config import ChannelTransport
         from monarch.job.meta import MASTJob
 
-        enable_transport("metatls-hostname")
+        enable_transport("metatls")
         job = MASTJob(
             hpcIdentity=hpc_identity,
             hpcJobOncall=hpc_job_oncall,
@@ -126,8 +132,68 @@ def main(
             rmAttribution=rm_attribution,
             useStrictName=True,
             localityConstraints=["region", "gtn"],
+            default_transport=ChannelTransport.MetaTlsWithIpV6,
         )
         job.add_mesh("workers", 2)
+    elif backend == "k8s":
+        from kubernetes.client import (
+            V1Affinity,
+            V1Container,
+            V1EnvVar,
+            V1LabelSelector,
+            V1LabelSelectorRequirement,
+            V1PodAffinityTerm,
+            V1PodAntiAffinity,
+            V1PodSpec,
+            V1ResourceRequirements,
+        )
+        from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
+        from monarch.job.kubernetes import KubernetesJob
+
+        # Hard anti-affinity on the operator's per-mesh label forces the two
+        # replicas onto distinct nodes, so RDMA pingpong actually exercises
+        # the cross-host fabric instead of a same-HCA loopback path.
+        #
+        # NOTE: requesting "rdma/ib": 1 only guarantees each pod gets an IB
+        # device; it does NOT guarantee the two pods can reach each other
+        # over IB. On clusters with multiple isolated IB fabrics, add a
+        # required pod_affinity term keyed on your provider's fabric label
+        # so the two replicas land on the same fabric. Without it, the example will fail.
+        worker_resources = {"nvidia.com/gpu": "1", "rdma/ib": "1"}
+        pod_spec = V1PodSpec(
+            affinity=V1Affinity(
+                pod_anti_affinity=V1PodAntiAffinity(
+                    required_during_scheduling_ignored_during_execution=[
+                        V1PodAffinityTerm(
+                            topology_key="kubernetes.io/hostname",
+                            label_selector=V1LabelSelector(
+                                match_expressions=[
+                                    V1LabelSelectorRequirement(
+                                        key="monarch.pytorch.org/mesh-name",
+                                        operator="In",
+                                        values=["workers"],
+                                    ),
+                                ],
+                            ),
+                        ),
+                    ],
+                ),
+            ),
+            containers=[
+                V1Container(
+                    name="worker",
+                    image=k8s_image,
+                    command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
+                    env=[V1EnvVar(name="MONARCH_PORT", value="26600")],
+                    resources=V1ResourceRequirements(
+                        requests=worker_resources,
+                        limits=worker_resources,
+                    ),
+                ),
+            ],
+        )
+        job = KubernetesJob(namespace=k8s_namespace)
+        job.add_mesh("workers", num_replicas=2, pod_spec=pod_spec)
     else:
         from monarch.job import SlurmJob
 

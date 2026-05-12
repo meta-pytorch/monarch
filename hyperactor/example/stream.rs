@@ -11,13 +11,13 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::proc::Proc;
-use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -40,7 +40,8 @@ impl Handler<Subscribe> for CounterActor {
         cx: &Context<Self>,
         subscriber: Subscribe,
     ) -> Result<(), anyhow::Error> {
-        self.subscribers.push(subscriber.0);
+        let port: reference::PortRef<u64> = subscriber.0;
+        self.subscribers.push(port);
         for port in &self.subscribers {
             port.send(cx, self.n)?;
         }
@@ -73,7 +74,7 @@ impl Actor for CountClient {
 #[async_trait]
 impl Handler<u64> for CountClient {
     async fn handle(&mut self, cx: &Context<Self>, count: u64) -> Result<(), anyhow::Error> {
-        eprintln!("{}: count: {}", cx.self_id(), count);
+        eprintln!("{}: count: {}", cx.self_addr(), count);
         Ok(())
     }
 }

@@ -195,22 +195,11 @@ def _get_addr_and_size(buf: "torch.Tensor | memoryview") -> tuple[int, int]:
     )
 
 
-def _memory_kind(data: "torch.Tensor | memoryview") -> str:
-    """Return ``"cuda"`` for CUDA tensors and ``"cpu"`` otherwise.
-
-    The value is consumed by ``_LocalMemoryHandle`` to select between the
-    CPU and CUDA dispatch paths without probing the CUDA driver.
-    """
-    if _is_torch_tensor(data) and data.device.type == "cuda":  # type: ignore[union-attr]
-        return "cuda"
-    return "cpu"
-
-
 def _make_local_memory_handle(
     data: "torch.Tensor | memoryview",
 ) -> _LocalMemoryHandle:
     addr, size = _get_addr_and_size(data)
-    return _LocalMemoryHandle(obj=data, addr=addr, size=size, kind=_memory_kind(data))
+    return _LocalMemoryHandle(obj=data, addr=addr, size=size)
 
 
 class RdmaController(Actor):
