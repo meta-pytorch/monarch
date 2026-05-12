@@ -22,10 +22,10 @@ concurrency:
 
 jobs:
   test-cpu-python:
-    name: Test CPU Python - No Tensor Engine
+    name: Test CPU Python - Tensor Engine
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
-      timeout: 60
+      timeout: 120
       runner: ${{ inputs.runner }}
       submodules: recursive
       download-artifact: ${{ inputs.artifact-name }}
@@ -39,24 +39,35 @@ jobs:
         python3 scripts/fetch_disabled_tests.py
 
         # Setup test environment
-        setup_conda_environment
+        setup_test_environment
 
-        # Disable tensor engine
-        export USE_TENSOR_ENGINE=0
+        # Install tensor engine runtime deps (fmt + RDMA libs; latter
+        # unused when MONARCH_GPU_PLATFORM=none gated the build).
+        setup_tensor_engine
 
-        # Install PyTorch nightly
+        # Force CPU-only tensor engine at runtime. The wheel was built with
+        # MONARCH_GPU_PLATFORM=none and NCCL/RDMA code paths short-circuit
+        # when CUDA is unavailable; this makes the expectation explicit.
+        export MONARCH_GPU_PLATFORM=none
+
+        # Install PyTorch nightly (CPU)
         pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
 
         # Install the built wheel from artifact
         install_wheel_from_artifact
 
-        # Currently a no-op.
-        # Tests requiring tensor engine / GPU need to be identified and flagged to skip.
-        # We will just ensure monarch can be imported successfully.
-        python -c "import monarch; print('Monarch imported successfully')"
+        # Verify the CPU tensor engine is available in the wheel.
+        python -c "from monarch import _rust_bindings; assert _rust_bindings.has_tensor_engine(); print('Tensor engine available')"
 
-        # Run CPU Python tests (excluding GPU/tensor engine tests)
-        # TODO: Add appropriate test filters for CPU-only Python tests
-        echo "CPU Python tests would run here - currently placeholder"
-
+        # Run CPU Python tests split into 10 groups sequentially.
+        # GPU-gated cases skip via needs_cuda/needs_tensor_engine markers.
+        # run_test_groups leaks `set +e`, so capture the exit code before
+        # stage_test_artifacts and propagate it explicitly; otherwise a test
+        # failure would be silently masked by stage_test_artifacts succeeding.
+        pip install pytest-split
+        set +e
+        run_test_groups
+        rc=$?
+        set -e
         stage_test_artifacts
+        exit $rc

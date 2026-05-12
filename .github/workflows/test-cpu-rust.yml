@@ -44,10 +44,24 @@ jobs:
         # Install System dependencies
         install_system_dependencies
 
-        # Install PyTorch (needed for ABI compatibility, no GPU required)
-        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128
+        # Install tensor engine C++ header deps (fmt). RDMA libs pulled in
+        # by this helper are unused on CPU builds.
+        setup_tensor_engine
 
-        # Run CPU-safe Rust tests (no GPU hardware available)
+        # Force the CPU tensor engine on hosts that may have CUDA installed
+        # (e.g. the ARM64 docker image ships with CUDA 12.8).
+        export MONARCH_GPU_PLATFORM=none
+
+        # Install PyTorch CPU build (provides libtorch headers via the
+        # python package; no CUDA runtime pulled in).
+        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
+
+        # Run CPU-safe Rust tests. With the CPU tensor engine, monarch_messages
+        # can build without libtorch (it uses the nccl_types stubs in
+        # monarch_types). The remaining excludes still require the GPU layer:
+        # monarch_rdma, nccl-sys, rdmaxcel-sys, and monarch_cpp_static_libs are
+        # tensor_engine_gpu-only; torch-sys, torch-sys-cuda, monarch_tensor_worker,
+        # and monarch_extension still need a full libtorch setup to compile.
         echo "Running CPU Rust tests..."
         # Capture the test exit code so stage_test_artifacts still runs on
         # failure (otherwise set -e would exit before any artifacts are
@@ -56,7 +70,6 @@ jobs:
         rc=0
         timeout 12m cargo nextest run --workspace --profile ci \
           -E "$(cat .config/nextest-filter.txt)" \
-          --exclude monarch_messages \
           --exclude monarch_tensor_worker \
           --exclude torch-sys-cuda \
           --exclude monarch_rdma \
