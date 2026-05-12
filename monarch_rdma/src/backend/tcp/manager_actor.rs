@@ -25,11 +25,13 @@ use bytes::BytesMut;
 use dashmap::DashMap;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
+use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
 use hyperactor::RefClient;
 use hyperactor::actor::ActorError;
@@ -40,8 +42,6 @@ use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::context;
 use hyperactor::context::Actor as _;
-use hyperactor::reference;
-use hyperactor::reference::OncePortRef;
 use hyperactor_mesh::transport::default_bind_spec;
 use serde::Deserialize;
 use serde::Serialize;
@@ -299,12 +299,12 @@ impl TcpManagerActor {
             let cancel = cancel.clone();
 
             tokio::spawn(async move {
-                let sender_name = reference::name::Name::generate(
-                    reference::name::Ident::new("tcp_manager_actor".into()).unwrap(),
-                    reference::name::Ident::new("tcp_chunk_sender".into()).unwrap(),
+                let sender_name = format!(
+                    "tcp_chunk_sender_{}",
+                    hyperactor_mesh::shortuuid::ShortUuid::generate()
                 );
                 let (instance, _handle) = proc
-                    .instance(&sender_name.to_string())
+                    .instance(&sender_name)
                     .expect("failed to create sender instance");
 
                 loop {
@@ -364,7 +364,7 @@ impl TcpManagerActor {
         client: &(impl context::Actor + Send + Sync),
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let rdma_handle = RdmaManagerActor::local_handle(client);
-        let tcp_ref = rdma_handle.get_tcp_actor_ref(client).await?;
+        let tcp_ref: ActorRef<TcpManagerActor> = rdma_handle.get_tcp_actor_ref(client).await?;
         tcp_ref
             .downcast_handle(client)
             .ok_or_else(|| anyhow::anyhow!("TcpManagerActor is not in the local process"))
@@ -396,9 +396,9 @@ impl Actor for TcpManagerActor {
             let result_port: PortHandle<SendTransferResult> = this.port();
             let error_port: PortHandle<TransferError> = this.port();
             let cancel = self.cancel.clone();
-            let receiver_name = reference::name::Name::generate(
-                reference::name::Ident::new("tcp_manager_actor".into()).unwrap(),
-                reference::name::Ident::new("tcp_chunk_receiver".into()).unwrap(),
+            let receiver_name = format!(
+                "tcp_chunk_receiver_{}",
+                hyperactor_mesh::shortuuid::ShortUuid::generate()
             );
 
             let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
@@ -952,14 +952,10 @@ mod tests {
     use crate::RdmaOp;
     use crate::RdmaOpType;
     use crate::backend::RdmaBackend;
-    use crate::local_memory::Keepalive;
     use crate::local_memory::KeepaliveLocalMemory;
-    use crate::local_memory::MemoryKind;
     use crate::local_memory::RdmaLocalMemory;
     use crate::rdma_manager_actor::GetTcpActorRefClient;
     use crate::rdma_manager_actor::RdmaManagerActor;
-
-    impl Keepalive for Box<[u8]> {}
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -1055,7 +1051,6 @@ mod tests {
             let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
                 ptr,
                 buffer_size,
-                MemoryKind::Cpu,
                 Arc::new(cpu_buf),
             ));
             let rdma_remote_buf = rdma_handle
@@ -1407,7 +1402,7 @@ mod tests {
             let (tcp_ref, id) = env.rdma_remote_buf.resolve_tcp()?;
             assert_eq!(id, env.rdma_remote_buf.id, "buf id mismatch for env {i}");
             let expected: hyperactor::ActorRef<TcpManagerActor> = env.tcp_backend.bind();
-            assert_eq!(tcp_ref.actor_id(), expected.actor_id());
+            assert_eq!(tcp_ref.actor_addr(), expected.actor_addr());
         }
 
         Ok(())
@@ -1582,11 +1577,10 @@ mod tests {
                     .ok_or_else(|| anyhow::anyhow!("tcp actor not local"))?,
             );
 
-            let alloc = CudaAllocator::get().allocate(device, buffer_size);
+            let alloc = CudaAllocator::get().allocate(device, buffer_size, buffer_size);
             let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
                 alloc.ptr(),
                 buffer_size,
-                MemoryKind::Cuda,
                 Arc::new(alloc),
             ));
             let rdma_remote_buf = rdma_handle

@@ -2,33 +2,31 @@ name: Test CPU Rust
 
 on:
   workflow_call:
-    inputs:
-      python-version:
-        description: 'Python version to test with'
-        type: string
-        default: '3.10'
-      runner:
-        description: 'Linux runner to use for the test'
-        type: string
-        default: 'linux.4xlarge'
-      docker-image:
-        description: 'Docker image to use (default lets test-infra auto-select)'
-        type: string
-        default: 'pytorch/almalinux-builder'
 
 concurrency:
-  group: test-cpu-rust-${{ inputs.runner }}-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  group: test-cpu-rust-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   test-cpu-rust:
-    name: Test CPU Rust
+    name: Test CPU Rust (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64
+            runner: linux.4xlarge
+            docker-image: pytorch/almalinux-builder
+          - name: arm64
+            runner: linux.arm64.2xlarge
+            docker-image: pytorch/manylinuxaarch64-builder:cuda12.8
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 120
-      runner: ${{ inputs.runner }}
-      docker-image: ${{ inputs.docker-image }}
+      runner: ${{ matrix.runner }}
+      docker-image: ${{ matrix.docker-image }}
       submodules: recursive
+      upload-artifact: test-results-cpu-rust-${{ matrix.name }}-${{ github.sha }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -65,6 +63,11 @@ jobs:
         # tensor_engine_gpu-only; torch-sys, torch-sys-cuda, monarch_tensor_worker,
         # and monarch_extension still need a full libtorch setup to compile.
         echo "Running CPU Rust tests..."
+        # Capture the test exit code so stage_test_artifacts still runs on
+        # failure (otherwise set -e would exit before any artifacts are
+        # uploaded). Exclude crates that require GPU hardware, CUDA libraries,
+        # or torch C++ headers (libtorch) not available on CPU-only runners.
+        rc=0
         timeout 12m cargo nextest run --workspace --profile ci \
           -E "$(cat .config/nextest-filter.txt)" \
           --exclude monarch_tensor_worker \
@@ -76,8 +79,11 @@ jobs:
           --exclude monarch_cpp_static_libs \
           --exclude monarch_extension \
           --exclude monarch_bench \
-          --exclude monarch_conda
+          --exclude monarch_conda || rc=$?
 
         echo "=== sccache stats ==="
         sccache --show-stats || true
         echo "=== end sccache stats ==="
+
+        stage_test_artifacts
+        exit $rc

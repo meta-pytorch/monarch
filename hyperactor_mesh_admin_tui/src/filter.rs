@@ -53,14 +53,14 @@ mod tests {
 
     use super::*;
 
-    fn mock_actor_id() -> hyperactor::reference::ActorId {
-        hyperactor::reference::ProcId::from_resource_name(
+    fn mock_actor_id() -> hyperactor::ActorAddr {
+        hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
             "world",
         )
-        .actor_id("a")
+        .actor_addr("a")
     }
 
     fn actor_props(status: &str) -> NodeProperties {

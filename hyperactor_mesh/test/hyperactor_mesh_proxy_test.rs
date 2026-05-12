@@ -14,13 +14,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Parser;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
 use hyperactor::context::Mailbox;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMesh;
@@ -56,12 +56,8 @@ struct Args {
 // -- TestActor
 
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        Echo,
-    ],
-)]
+#[hyperactor::export(Echo)]
+#[hyperactor::spawnable]
 pub struct TestActor;
 
 impl Actor for TestActor {}
@@ -89,12 +85,8 @@ impl Handler<Echo> for TestActor {
 
 // -- ProxyActor
 
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        Echo,
-    ],
-)]
+#[hyperactor::export(Echo)]
+#[hyperactor::spawnable]
 pub struct ProxyActor {
     exe_path: String,
     host_mesh: Option<HostMesh>,
@@ -134,7 +126,7 @@ impl Actor for ProxyActor {
         let host_mesh = HostMesh::process(extent! { hosts = 1 }, command).await?;
         let proc_mesh = Arc::new(
             host_mesh
-                .spawn(this, "proxy", extent! { replica = 1 }, None)
+                .spawn(this, "proxy", extent! { replica = 1 }, None, None)
                 .await?,
         );
         self.actor_mesh = Some(proc_mesh.spawn(this, "echo", &()).await?);
@@ -198,7 +190,7 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
 
     let mut host_mesh = HostMesh::process(extent! { hosts = 1 }, command).await?;
     let proc_mesh = host_mesh
-        .spawn(instance, "client", extent! { replica = 1 }, None)
+        .spawn(instance, "client", extent! { replica = 1 }, None, None)
         .await?;
     let actor_mesh: ActorMesh<ProxyActor> = proc_mesh
         .spawn(instance, "proxy", &exe_path.to_str().unwrap().to_string())

@@ -22,23 +22,11 @@ use std::sync::RwLock;
 use serde::Deserialize;
 use serde::Serialize;
 
-/// The kind of memory that a [`RdmaLocalMemory`] handle wraps.
-///
-/// Callers know at construction time whether the backing allocation is
-/// host memory or a CUDA device pointer; passing the kind explicitly
-/// avoids probing the CUDA driver on hosts that have no CUDA installed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MemoryKind {
-    /// Host memory, directly accessible from CPU threads.
-    Cpu,
-    /// CUDA device memory, accessible via the CUDA driver API.
-    Cuda,
-}
-
 /// Returns `true` when `addr` is a CUDA device pointer.
 ///
 /// Probes the CUDA driver via `cuPointerGetAttribute`; returns `false`
 /// when CUDA is unavailable or the pointer is not device memory.
+#[cfg(feature = "cuda")]
 pub fn is_device_ptr(addr: usize) -> bool {
     // SAFETY: FFI call that queries pointer metadata without accessing
     // the pointed-to memory.
@@ -55,12 +43,14 @@ pub fn is_device_ptr(addr: usize) -> bool {
 
 /// RAII guard that restores the previous CUDA context on drop and, if a
 /// primary context was retained, releases it.
+#[cfg(feature = "cuda")]
 pub(crate) struct CudaCtxGuard {
     prev: rdmaxcel_sys::CUcontext,
     /// Set when the fallback path called `cuDevicePrimaryCtxRetain`.
     retained_device: Option<rdmaxcel_sys::CUdevice>,
 }
 
+#[cfg(feature = "cuda")]
 impl Drop for CudaCtxGuard {
     fn drop(&mut self) {
         unsafe {
@@ -85,6 +75,7 @@ impl Drop for CudaCtxGuard {
 /// # Safety
 ///
 /// `addr` must be a valid CUDA device pointer.
+#[cfg(feature = "cuda")]
 pub(crate) unsafe fn set_ctx_for_ptr(addr: usize) -> Result<CudaCtxGuard, anyhow::Error> {
     let mut prev: rdmaxcel_sys::CUcontext = std::ptr::null_mut();
     unsafe {
@@ -201,6 +192,7 @@ unsafe fn write_cpu(addr: usize, offset: usize, src: &[u8]) {
 ///
 /// The caller must ensure that `addr` is a valid CUDA device pointer to an
 /// allocation of at least `offset + dst.len()` bytes.
+#[cfg(feature = "cuda")]
 unsafe fn read_gpu(addr: usize, offset: usize, dst: &mut [u8]) -> Result<(), anyhow::Error> {
     let _guard = unsafe { set_ctx_for_ptr(addr)? };
     let rc = unsafe {
@@ -223,6 +215,7 @@ unsafe fn read_gpu(addr: usize, offset: usize, dst: &mut [u8]) -> Result<(), any
 ///
 /// The caller must ensure that `addr` is a valid CUDA device pointer to an
 /// allocation of at least `offset + src.len()` bytes.
+#[cfg(feature = "cuda")]
 unsafe fn write_gpu(addr: usize, offset: usize, src: &[u8]) -> Result<(), anyhow::Error> {
     let _guard = unsafe { set_ctx_for_ptr(addr)? };
     let rc = unsafe {
@@ -246,19 +239,28 @@ unsafe fn write_gpu(addr: usize, offset: usize, src: &[u8]) -> Result<(), anyhow
 /// remain valid.
 pub trait Keepalive: Send + Sync {}
 
+impl Keepalive for Box<[u8]> {}
+
 /// Local memory handle that keeps its backing allocation alive via an
 /// [`Arc<dyn Keepalive>`].
 ///
-/// The caller specifies the [`MemoryKind`] at construction time, which
-/// selects the CPU or CUDA code path for `read_at`/`write_at`. Passing
-/// the kind explicitly (rather than probing the CUDA driver) means
-/// constructing a CPU handle does not touch CUDA and therefore works on
-/// hosts where `libcuda.so.1` is not installed.
+/// Detects at construction time whether the address is a CUDA device
+/// pointer and dispatches `read_at`/`write_at` accordingly.
+///
+/// The `direct_access_host_bandwidth` and `direct_access_device_bandwidth`
+/// fields indicate the speed of reading the memory via pointer dereference
+/// on a host or device thread, respectively. A value of `None` means the
+/// memory is not directly accessible from that context.
 #[derive(Clone)]
 pub struct KeepaliveLocalMemory {
     addr: usize,
     size: usize,
-    kind: MemoryKind,
+    /// Bandwidth (bytes/s) for direct host-thread pointer access, or `None`
+    /// if the memory is not host-accessible.
+    direct_access_host_bandwidth: Option<u64>,
+    /// Bandwidth (bytes/s) for direct device-thread pointer access, or
+    /// `None` if the memory is not device-accessible.
+    direct_access_device_bandwidth: Option<u64>,
     _keepalive: Arc<dyn Keepalive>,
     guard: Arc<RwLock<()>>,
 }
@@ -268,32 +270,41 @@ impl Debug for KeepaliveLocalMemory {
         f.debug_struct("KeepaliveLocalMemory")
             .field("addr", &self.addr)
             .field("size", &self.size)
-            .field("kind", &self.kind)
+            .field(
+                "direct_access_host_bandwidth",
+                &self.direct_access_host_bandwidth,
+            )
+            .field(
+                "direct_access_device_bandwidth",
+                &self.direct_access_device_bandwidth,
+            )
             .finish_non_exhaustive()
     }
 }
 
 impl KeepaliveLocalMemory {
-    /// Create a new handle for an allocation whose kind is known to the
-    /// caller.
-    pub fn new(
-        addr: usize,
-        size: usize,
-        kind: MemoryKind,
-        keepalive: Arc<dyn Keepalive>,
-    ) -> Self {
+    /// Create a new handle. On CUDA builds, probes the CUDA driver to
+    /// determine whether `addr` is a device pointer and sets the bandwidth
+    /// fields accordingly. On CPU-only builds, always treats `addr` as
+    /// host memory.
+    pub fn new(addr: usize, size: usize, keepalive: Arc<dyn Keepalive>) -> Self {
+        // TODO(slurye): Using placeholder values for now. Fill in with real values.
+        #[cfg(feature = "cuda")]
+        let (host_bw, device_bw) = if is_device_ptr(addr) {
+            (None, Some(1))
+        } else {
+            (Some(1), None)
+        };
+        #[cfg(not(feature = "cuda"))]
+        let (host_bw, device_bw): (Option<u64>, Option<u64>) = (Some(1), None);
         Self {
             addr,
             size,
-            kind,
+            direct_access_host_bandwidth: host_bw,
+            direct_access_device_bandwidth: device_bw,
             _keepalive: keepalive,
             guard: Arc::new(RwLock::new(())),
         }
-    }
-
-    /// The kind of memory this handle refers to.
-    pub fn kind(&self) -> MemoryKind {
-        self.kind
     }
 }
 
@@ -312,12 +323,16 @@ impl RdmaLocalMemory for KeepaliveLocalMemory {
         // SAFETY: The keepalive guard guarantees the allocation is live, and
         // check_bounds verified the access is in range.
         unsafe {
-            match self.kind {
-                MemoryKind::Cpu => {
-                    read_cpu(self.addr, offset, dst);
-                    Ok(())
+            if self.direct_access_host_bandwidth.is_some() {
+                read_cpu(self.addr, offset, dst);
+                Ok(())
+            } else {
+                #[cfg(feature = "cuda")]
+                {
+                    read_gpu(self.addr, offset, dst)
                 }
-                MemoryKind::Cuda => read_gpu(self.addr, offset, dst),
+                #[cfg(not(feature = "cuda"))]
+                unreachable!("device memory dispatch requires the cuda feature")
             }
         }
     }
@@ -328,12 +343,16 @@ impl RdmaLocalMemory for KeepaliveLocalMemory {
         // SAFETY: The keepalive guard guarantees the allocation is live, and
         // check_bounds verified the access is in range.
         unsafe {
-            match self.kind {
-                MemoryKind::Cpu => {
-                    write_cpu(self.addr, offset, src);
-                    Ok(())
+            if self.direct_access_host_bandwidth.is_some() {
+                write_cpu(self.addr, offset, src);
+                Ok(())
+            } else {
+                #[cfg(feature = "cuda")]
+                {
+                    write_gpu(self.addr, offset, src)
                 }
-                MemoryKind::Cuda => write_gpu(self.addr, offset, src),
+                #[cfg(not(feature = "cuda"))]
+                unreachable!("device memory dispatch requires the cuda feature")
             }
         }
     }
@@ -371,12 +390,12 @@ impl RdmaLocalMemory for UnsafeLocalMemory {
         // SAFETY: The caller is responsible for ensuring the allocation is
         // live; check_bounds verified the access is in range.
         unsafe {
+            #[cfg(feature = "cuda")]
             if is_device_ptr(self.addr) {
-                read_gpu(self.addr, offset, dst)
-            } else {
-                read_cpu(self.addr, offset, dst);
-                Ok(())
+                return read_gpu(self.addr, offset, dst);
             }
+            read_cpu(self.addr, offset, dst);
+            Ok(())
         }
     }
 
@@ -385,12 +404,12 @@ impl RdmaLocalMemory for UnsafeLocalMemory {
         // SAFETY: The caller is responsible for ensuring the allocation is
         // live; check_bounds verified the access is in range.
         unsafe {
+            #[cfg(feature = "cuda")]
             if is_device_ptr(self.addr) {
-                write_gpu(self.addr, offset, src)
-            } else {
-                write_cpu(self.addr, offset, src);
-                Ok(())
+                return write_gpu(self.addr, offset, src);
             }
+            write_cpu(self.addr, offset, src);
+            Ok(())
         }
     }
 }
@@ -401,17 +420,15 @@ mod tests {
 
     // -- KeepaliveLocalMemory (host) --
 
-    impl Keepalive for Vec<u8> {}
-
-    fn host_keepalive_mem(data: Vec<u8>) -> KeepaliveLocalMemory {
+    fn host_keepalive_mem(data: Box<[u8]>) -> KeepaliveLocalMemory {
         let addr = data.as_ptr() as usize;
         let size = data.len();
-        KeepaliveLocalMemory::new(addr, size, MemoryKind::Cpu, Arc::new(data))
+        KeepaliveLocalMemory::new(addr, size, Arc::new(data))
     }
 
     #[test]
     fn keepalive_host_read_at() {
-        let mem = host_keepalive_mem(vec![1, 2, 3, 4, 5]);
+        let mem = host_keepalive_mem(Box::from([1, 2, 3, 4, 5]));
         let mut buf = [0u8; 3];
         mem.read_at(1, &mut buf).unwrap();
         assert_eq!(buf, [2, 3, 4]);
@@ -419,7 +436,7 @@ mod tests {
 
     #[test]
     fn keepalive_host_write_then_read() {
-        let mem = host_keepalive_mem(vec![0; 5]);
+        let mem = host_keepalive_mem(vec![0; 5].into_boxed_slice());
         mem.write_at(1, &[7, 8, 9]).unwrap();
         let mut buf = [0u8; 5];
         mem.read_at(0, &mut buf).unwrap();
@@ -428,7 +445,7 @@ mod tests {
 
     #[test]
     fn keepalive_host_out_of_bounds() {
-        let mem = host_keepalive_mem(vec![0; 3]);
+        let mem = host_keepalive_mem(vec![0; 3].into_boxed_slice());
         let mut buf = [0u8; 3];
         assert!(mem.read_at(1, &mut buf).is_err());
         assert!(mem.write_at(1, &[7, 8, 9]).is_err());

@@ -15,18 +15,32 @@ use local_memory::RdmaLocalMemory;
 use serde::Deserialize;
 use serde::Serialize;
 
+#[cfg(feature = "cuda")]
 #[macro_use]
 mod macros;
 
 pub mod backend;
 pub mod config;
 pub mod device_selection;
+#[cfg(feature = "cuda")]
 pub mod efa;
 pub mod local_memory;
 mod rdma_components;
 mod rdma_manager_actor;
 
+#[cfg(feature = "cuda")]
 pub use backend::ibverbs::primitives::*;
+
+/// Whether ibverbs is available.
+///
+/// In CPU-only builds (no `cuda` feature) the ibverbs backend is not
+/// compiled in, so this is trivially `false`. In `cuda` builds, the
+/// `pub use backend::ibverbs::primitives::*` re-export above shadows
+/// this stub with the real runtime probe.
+#[cfg(not(feature = "cuda"))]
+pub fn ibverbs_supported() -> bool {
+    false
+}
 
 /// Whether any RDMA backend is available on this system.
 ///
@@ -36,12 +50,15 @@ pub fn rdma_supported() -> bool {
     ibverbs_supported() || hyperactor_config::global::get(config::RDMA_ALLOW_TCP_FALLBACK)
 }
 pub use rdma_components::RdmaRemoteBuffer;
+#[cfg(feature = "cuda")]
 pub use rdma_components::SegmentScannerFn;
 // Re-export segment scanner types for extension crate
+#[cfg(feature = "cuda")]
 pub use rdma_components::register_segment_scanner;
 pub use rdma_components::*;
 pub use rdma_manager_actor::*;
 // Re-export rdmaxcel_sys for extension crate to access types
+#[cfg(feature = "cuda")]
 pub use rdmaxcel_sys;
 pub use test_utils::is_cuda_available;
 
@@ -76,6 +93,7 @@ pub enum RdmaTransportLevel {
 
 /// Print comprehensive RDMA device information for debugging.
 /// Controlled by MONARCH_DEBUG_RDMA environment variable.
+#[cfg(feature = "cuda")]
 pub fn print_device_info_if_debug_enabled(context: *mut rdmaxcel_sys::ibv_context) {
     if std::env::var("MONARCH_DEBUG_RDMA").is_ok() {
         unsafe {
@@ -85,6 +103,7 @@ pub fn print_device_info_if_debug_enabled(context: *mut rdmaxcel_sys::ibv_contex
 }
 
 /// Print comprehensive RDMA device information for debugging (always prints).
+#[cfg(feature = "cuda")]
 pub fn print_device_info(context: *mut rdmaxcel_sys::ibv_context) {
     unsafe {
         rdmaxcel_sys::rdmaxcel_print_device_info(context);

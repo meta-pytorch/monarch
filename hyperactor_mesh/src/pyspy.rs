@@ -15,8 +15,8 @@ use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::OncePortRef;
 use hyperactor::RefClient;
-use hyperactor::reference as hyperactor_reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -439,7 +439,7 @@ pub struct PySpyDump {
     pub opts: PySpyOpts,
     /// Reply port for the result.
     #[reply]
-    pub result: hyperactor_reference::OncePortRef<PySpyResult>,
+    pub result: OncePortRef<PySpyResult>,
 }
 wirevalue::register_type!(PySpyDump);
 
@@ -456,7 +456,7 @@ pub struct PySpyProfile {
     pub request: ValidatedProfileRequest,
     /// Reply port for the result.
     #[reply]
-    pub result: hyperactor_reference::OncePortRef<PySpyProfileResult>,
+    pub result: OncePortRef<PySpyProfileResult>,
 }
 wirevalue::register_type!(PySpyProfile);
 
@@ -535,7 +535,7 @@ impl PySpyRunner {
 pub struct RunPySpyDump {
     pub opts: PySpyOpts,
     /// The original caller's reply port, forwarded from PySpyDump.
-    pub reply_port: hyperactor::reference::OncePortRef<PySpyResult>,
+    pub reply_port: hyperactor::OncePortRef<PySpyResult>,
 }
 wirevalue::register_type!(RunPySpyDump);
 
@@ -555,7 +555,7 @@ impl PySpyWorker {
     pub(crate) fn spawn_and_forward(
         cx: &impl hyperactor::context::Actor,
         opts: PySpyOpts,
-        reply_port: hyperactor::reference::OncePortRef<PySpyResult>,
+        reply_port: hyperactor::OncePortRef<PySpyResult>,
     ) -> Result<(), anyhow::Error> {
         let worker = match Self.spawn(cx) {
             Ok(handle) => handle,
@@ -600,7 +600,7 @@ impl Handler<RunPySpyDump> for PySpyWorker {
 #[derive(Debug, Serialize, Deserialize, Named)]
 pub struct RunPySpyProfile {
     pub request: ValidatedProfileRequest,
-    pub reply_port: hyperactor::reference::OncePortRef<PySpyProfileResult>,
+    pub reply_port: hyperactor::OncePortRef<PySpyProfileResult>,
 }
 wirevalue::register_type!(RunPySpyProfile);
 
@@ -617,7 +617,7 @@ impl PySpyProfileWorker {
     pub(crate) fn spawn_and_forward(
         cx: &impl hyperactor::context::Actor,
         request: ValidatedProfileRequest,
-        reply_port: hyperactor::reference::OncePortRef<PySpyProfileResult>,
+        reply_port: hyperactor::OncePortRef<PySpyProfileResult>,
     ) -> Result<(), anyhow::Error> {
         let worker = match Self.spawn(cx) {
             Ok(handle) => handle,

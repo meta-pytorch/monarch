@@ -24,9 +24,10 @@ fn main() {
     let cpp_static_libs_config = build_utils::CppStaticLibsConfig::from_env();
     let rdma_include = &cpp_static_libs_config.rdma_include_dir;
 
-    // Detect platform: ROCm, CUDA, or stub (no GPU toolchain).
-    let platform = build_utils::detect_gpu_platform_allow_none();
-    let stub_mode = platform.is_none();
+    // This crate is gated behind the `cuda` feature in monarch_rdma; cargo
+    // only runs build.rs once a downstream consumer enables that feature, so
+    // a GPU toolchain must be available here.
+    let (is_rocm, compute_home) = build_utils::detect_gpu_platform();
 
     // Get the directory of the current crate
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| {
@@ -46,20 +47,6 @@ fn main() {
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
     let out_path = PathBuf::from(&out_dir);
     let src_dir = PathBuf::from(&manifest_dir).join("src");
-
-    println!("cargo:rustc-check-cfg=cfg(rdmaxcel_stub)");
-    if stub_mode {
-        // Static rdma-core archives still need to be linked in stub mode:
-        // monarch_rdma's ibverbs code calls `ibv_*`/`mlx5dv_*`/`efadv_*`
-        // even on CPU-only builds, and those symbols live in the static
-        // libraries that `monarch_cpp_static_libs` built.
-        cpp_static_libs_config.emit_link_directives();
-        build_stub(&src_dir, &out_path, rdma_include);
-        return;
-    }
-
-    // SAFETY: not stub_mode implies Some(...)
-    let (is_rocm, compute_home) = platform.unwrap();
 
     // Determine source directory based on platform
     let source_dir = if is_rocm {
@@ -306,130 +293,6 @@ fn main() {
         &out_dir,
         is_rocm,
     );
-}
-
-/// Build `rdmaxcel-sys` in stub mode for hosts without a CUDA or ROCm
-/// toolchain.
-///
-/// The stub build compiles a single C++ TU that provides every
-/// `rdmaxcel_*` extern "C" symbol as a failing no-op (CUDA wrappers
-/// return `CUDA_ERROR_NOT_INITIALIZED`; QP/segment helpers return
-/// `RDMAXCEL_INVALID_PARAMS`). This keeps `monarch_rdma` linkable; the
-/// TCP backend still works end-to-end because it does not call any of
-/// the stubbed functions. `ibverbs_supported()` returns false on hosts
-/// without RDMA hardware, which is the usual case in a CPU-only build.
-#[cfg(not(target_os = "macos"))]
-fn build_stub(src_dir: &Path, out_path: &Path, rdma_include: &str) {
-    println!("cargo:rustc-cfg=rdmaxcel_stub");
-    println!("cargo:rerun-if-changed=src/rdmaxcel.h");
-    println!("cargo:rerun-if-changed=src/driver_api.h");
-    println!("cargo:rerun-if-changed=src/stub.cpp");
-    println!("cargo:rerun-if-changed=src/stubs/cuda.h");
-    println!("cargo:rerun-if-changed=src/stubs/cuda_runtime.h");
-
-    println!("cargo:rustc-link-lib=dl");
-
-    let stubs_dir = src_dir.join("stubs");
-
-    // Bindgen against the real rdmaxcel.h, but with our stub cuda headers
-    // ahead of any system includes so `#include <cuda.h>` resolves to the
-    // stub.
-    let builder = bindgen::Builder::default()
-        .header(src_dir.join("rdmaxcel.h").to_string_lossy())
-        .clang_arg("-x")
-        .clang_arg("c++")
-        .clang_arg("-std=c++14")
-        .clang_arg(format!("-I{}", stubs_dir.display()))
-        .clang_arg(format!("-I{}", rdma_include))
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .allowlist_function("ibv_.*")
-        .allowlist_function("mlx5dv_.*")
-        .allowlist_function("mlx5_wqe_.*")
-        .allowlist_function("create_qp")
-        .allowlist_function("create_mlx5dv_.*")
-        .allowlist_function("register_cuda_memory")
-        .allowlist_function("db_ring")
-        .allowlist_function("cqe_poll")
-        .allowlist_function("send_wqe")
-        .allowlist_function("recv_wqe")
-        .allowlist_function("launch_db_ring")
-        .allowlist_function("launch_cqe_poll")
-        .allowlist_function("launch_send_wqe")
-        .allowlist_function("launch_recv_wqe")
-        .allowlist_function("rdma_get_active_segment_count")
-        .allowlist_function("rdma_get_all_registered_segment_info")
-        .allowlist_function("register_segments")
-        .allowlist_function("deregister_segments")
-        .allowlist_function("rdmaxcel_cu.*")
-        .allowlist_function("get_cuda_pci_address_from_ptr")
-        .allowlist_function("rdmaxcel_print_device_info")
-        .allowlist_function("rdmaxcel_error_string")
-        .allowlist_function("rdmaxcel_qp_.*")
-        .allowlist_function("rdmaxcel_register_segment_scanner")
-        .allowlist_function("poll_cq_with_cache")
-        .allowlist_function("completion_cache_.*")
-        .allowlist_function("rdmaxcel_efa_.*")
-        .allowlist_function("rdmaxcel_is_efa_dev")
-        .allowlist_function("efadv_.*")
-        .allowlist_type("ibv_.*")
-        .allowlist_type("mlx5dv_.*")
-        .allowlist_type("mlx5_wqe_.*")
-        .allowlist_type("cqe_poll_.*")
-        .allowlist_type("wqe_params_t")
-        .allowlist_type("rdma_segment_info_t")
-        .allowlist_type("rdmaxcel_scanned_segment_t")
-        .allowlist_type("rdmaxcel_qp_t")
-        .allowlist_type("rdmaxcel_qp")
-        .allowlist_type("completion_cache_t")
-        .allowlist_type("completion_cache")
-        .allowlist_type("poll_context_t")
-        .allowlist_type("poll_context")
-        .allowlist_type("rdmaxcel_segment_scanner_fn")
-        .allowlist_type("efadv_.*")
-        .allowlist_type("CUmemorytype.*")
-        .allowlist_var("MLX5_.*")
-        .allowlist_var("IBV_.*")
-        .allowlist_var("EFADV_.*")
-        .allowlist_var("CUDA_SUCCESS")
-        .allowlist_var("CU_.*")
-        .blocklist_type("ibv_wc")
-        .blocklist_type("mlx5_wqe_ctrl_seg")
-        .bitfield_enum("ibv_access_flags")
-        .bitfield_enum("ibv_qp_attr_mask")
-        .bitfield_enum("ibv_wc_flags")
-        .bitfield_enum("ibv_send_flags")
-        .bitfield_enum("ibv_port_cap_flags")
-        .constified_enum_module("ibv_qp_type")
-        .constified_enum_module("ibv_qp_state")
-        .constified_enum_module("ibv_port_state")
-        .constified_enum_module("ibv_wc_opcode")
-        .constified_enum_module("ibv_wr_opcode")
-        .constified_enum_module("ibv_wc_status")
-        .derive_default(true)
-        .prepend_enum_name(false);
-
-    builder
-        .generate()
-        .expect("Unable to generate bindings (stub mode)")
-        .write_to_file(out_path.join("bindings.rs"))
-        .expect("Couldn't write bindings (stub mode)");
-
-    println!("cargo:out_dir={}", out_path.display());
-    println!("cargo:rustc-cfg=cargo");
-    println!("cargo:rustc-check-cfg=cfg(cargo)");
-    println!("cargo:rustc-check-cfg=cfg(use_rocm)");
-
-    cc::Build::new()
-        .file(src_dir.join("stub.cpp"))
-        .include(src_dir)
-        .include(&stubs_dir)
-        .include(rdma_include)
-        .flag("-fPIC")
-        .cpp(true)
-        .flag("-std=c++14")
-        .compile("rdmaxcel_stub");
-
-    build_utils::link_libstdcpp_static();
 }
 
 /// Find the main header file (rdmaxcel.h or rdmaxcel_hip.h)

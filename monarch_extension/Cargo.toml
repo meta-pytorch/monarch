@@ -23,7 +23,7 @@ futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
-libc = "0.2.183"
+libc = "0.2.186"
 monarch_cpp_static_libs = { path = "../monarch_cpp_static_libs", optional = true }
 monarch_distributed_telemetry = { version = "0.0.0", path = "../monarch_distributed_telemetry", optional = true }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
@@ -51,5 +51,5 @@ monarch_cpp_static_libs = { path = "../monarch_cpp_static_libs", optional = true
 default = ["tensor_engine"]
 distributed_sql_telemetry = ["dep:monarch_distributed_telemetry", "dep:monarch_introspection_snapshot"]
 extension-module = ["pyo3/extension-module"]
-tensor_engine = ["dep:monarch_messages", "dep:monarch_tensor_worker", "dep:torch-sys-cuda"]
-tensor_engine_gpu = ["dep:monarch_cpp_static_libs", "dep:monarch_rdma_extension", "dep:nccl-sys", "dep:rdmaxcel-sys", "monarch_messages/cuda", "monarch_tensor_worker/cuda", "tensor_engine", "torch-sys-cuda/cuda"]
+tensor_engine = ["dep:monarch_cpp_static_libs", "dep:monarch_messages", "dep:monarch_rdma_extension", "dep:monarch_tensor_worker", "dep:torch-sys-cuda"]
+tensor_engine_gpu = ["dep:monarch_cpp_static_libs", "dep:nccl-sys", "dep:rdmaxcel-sys", "monarch_messages/cuda", "monarch_rdma_extension/cuda", "monarch_tensor_worker/cuda", "tensor_engine", "torch-sys-cuda/cuda"]

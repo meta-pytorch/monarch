@@ -45,7 +45,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::context::PyInstance;
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 use crate::proc_mesh::PyProcMesh;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::monarch_with_gil;
@@ -68,7 +68,8 @@ pub enum LoggerRuntimeMessage {
 
 /// Simple Rust actor that invokes python logger APIs. It needs a python runtime.
 #[derive(Debug)]
-#[hyperactor::export(spawn = true, handlers = [LoggerRuntimeMessage {cast = true}])]
+#[hyperactor::export(handlers = [LoggerRuntimeMessage {cast = true}])]
+#[hyperactor::spawnable]
 pub struct LoggerRuntimeActor {
     logger: Arc<Py<PyAny>>,
 }
@@ -547,7 +548,7 @@ fn log_endpoint_exception<'py>(
     py: Python<'py>,
     e: Py<PyAny>,
     endpoint: Py<PyAny>,
-    actor_id: PyActorId,
+    actor_id: PyActorAddr,
 ) {
     let pyerr = PyErr::from_value(e.into_bound(py));
     let exception_str = format_traceback(py, &pyerr);
@@ -612,7 +613,7 @@ mod tests {
         .expect("failed to bootstrap HostMesh");
 
         let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity(), None)
+            .spawn(&instance, "p0", Extent::unity(), None, None)
             .await
             .expect("failed to spawn ProcMesh");
 
@@ -635,8 +636,8 @@ mod tests {
             "should spawn exactly one proc"
         );
         assert_eq!(
-            instance.self_id().proc_ref(),
-            proc.proc_id().clone(),
+            instance.self_addr().proc_addr(),
+            proc.proc_addr().clone(),
             "returned Instance<()> should be bound to the root Proc"
         );
 

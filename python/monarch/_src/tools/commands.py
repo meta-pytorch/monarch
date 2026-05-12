@@ -6,10 +6,8 @@
 
 # pyre-strict
 
-import argparse
 import asyncio
 import getpass
-import inspect
 import logging
 import os
 import subprocess
@@ -18,7 +16,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Union
+from typing import Any, Mapping, Optional, Union
 
 from monarch.tools.colors import CYAN, ENDC
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
@@ -30,8 +28,6 @@ from monarch.tools.utils import MONARCH_HOME
 from torchx.runner import Runner  # @manual=//torchx/runner:lib_core
 from torchx.specs import AppDef, AppDryRunInfo, AppState, CfgVal, parse_app_handle
 from torchx.specs.api import is_terminal
-from torchx.specs.builders import parse_args
-from torchx.util.types import decode, decode_optional
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -48,52 +44,6 @@ def torchx_runner() -> Runner:
     # so that server handle is short (e.g. slurm:///job-id)
     _EMPTY_NS = ""
     return Runner(_EMPTY_NS, defaults.scheduler_factories())
-
-
-def component_args_from_cli(
-    component_fn: Callable[..., AppDef], component_args: list[str]
-) -> dict[str, Any]:
-    """Parses component function's arguments from 'argname=argvalue' strings.
-
-    Returns: component arguments kwarg-ified.
-    """
-
-    cli_fied_component_args = []
-    for arg in component_args:
-        argname = arg.split("=")[0]
-        # torchx auto-generates an argparse parser for component function based
-        # type-hints and docstring as if the component was a CLI itself so we have to
-        # CLI arg-ify the component arguments by adding a "-" for
-        # single-char argnames (short arg) and "--" for multi-char (long arg)
-        cli_fied_component_args.append(f"-{arg}" if len(argname) == 1 else f"--{arg}")
-
-    parsed_args: argparse.Namespace = parse_args(component_fn, cli_fied_component_args)
-
-    # TODO kiuk@ logic below needs to move into torchx.specs.builders.parse_args()
-    #  which is copied from torchx.specs.builders.materialize_appdef()
-    #  parse_args() returns all the component parameters parsed from cli inputs
-    #  as a string. Additional parameter type matching needs to be done (as below)
-    #  to turn the CLI inputs to component function arguments.
-    component_kwargs = {}
-
-    parameters = inspect.signature(component_fn).parameters
-    for param_name, parameter in parameters.items():
-        arg_value = getattr(parsed_args, param_name)
-        parameter_type = parameter.annotation
-        parameter_type = decode_optional(parameter_type)
-        arg_value = decode(arg_value, parameter_type)
-        if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
-            raise TypeError(
-                f"component fn param `{param_name}` is a '*arg' which is not supported; consider changing the type to a list"
-            )
-        elif parameter.kind == inspect.Parameter.VAR_KEYWORD:
-            raise TypeError(
-                f"component fn param `{param_name}` is a '**kwargs' which is not supported; consider changing the type to a dict or explicitly declare the params"
-            )
-        else:
-            component_kwargs[param_name] = arg_value
-
-    return component_kwargs
 
 
 def create(
@@ -418,16 +368,6 @@ def kill_and_confirm(
     raise Exception(
         f"Server {server_handle} did not reach a terminal state within {timeout_after_kill} seconds after kill",
     )
-
-
-def bounce(server_handle: str) -> None:
-    """(re)starts the server's processes without tearing down the server's job."""
-    raise NotImplementedError("`bounce` is not yet implemented")
-
-
-def stop(server_handle: str) -> None:
-    """Stops the server's unix processes without tearing down the server's job."""
-    raise NotImplementedError("`stop` is not yet implemented")
 
 
 def debug(host: str, port: int) -> None:

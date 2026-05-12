@@ -29,31 +29,37 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
+use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
-use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::OnceCell;
 use typeuri::Named;
 
 use crate::backend::RdmaRemoteBackendContext;
+#[cfg(feature = "cuda")]
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
+#[cfg(feature = "cuda")]
+use crate::backend::ibverbs::manager_actor::IbvManagerLocalMessageClient;
+#[cfg(feature = "cuda")]
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
+#[cfg(feature = "cuda")]
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::RdmaLocalMemory;
 use crate::rdma_components::RdmaRemoteBuffer;
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes
+#[cfg(feature = "cuda")]
 pub fn get_rdmaxcel_error_message(error_code: i32) -> String {
     unsafe {
         let c_str = rdmaxcel_sys::rdmaxcel_error_string(error_code);
@@ -97,11 +103,13 @@ wirevalue::register_type!(ReleaseBuffer);
 
 /// Serializable query for resolving the [`IbvManagerActor`] ref
 /// from a remote [`RdmaManagerActor`]. Only used in testing.
+#[cfg(feature = "cuda")]
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct GetIbvActorRef {
     #[reply]
-    pub reply: reference::OncePortRef<Option<reference::ActorRef<IbvManagerActor>>>,
+    pub reply: OncePortRef<Option<ActorRef<IbvManagerActor>>>,
 }
+#[cfg(feature = "cuda")]
 wirevalue::register_type!(GetIbvActorRef);
 
 /// Serializable query for resolving the [`TcpManagerActor`] ref
@@ -109,7 +117,7 @@ wirevalue::register_type!(GetIbvActorRef);
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct GetTcpActorRef {
     #[reply]
-    pub reply: reference::OncePortRef<reference::ActorRef<TcpManagerActor>>,
+    pub reply: OncePortRef<ActorRef<TcpManagerActor>>,
 }
 wirevalue::register_type!(GetTcpActorRef);
 
@@ -143,17 +151,30 @@ impl<A: Actor> RdmaBackendActor<A> {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        GetIbvActorRef,
-        GetTcpActorRef,
-        ReleaseBuffer,
-    ],
+#[cfg_attr(
+    feature = "cuda",
+    hyperactor::export(
+        handlers = [
+            GetIbvActorRef,
+            GetTcpActorRef,
+            ReleaseBuffer,
+        ],
+    )
 )]
+#[cfg_attr(
+    not(feature = "cuda"),
+    hyperactor::export(
+        handlers = [
+            GetTcpActorRef,
+            ReleaseBuffer,
+        ],
+    )
+)]
+#[hyperactor::spawnable]
 pub struct RdmaManagerActor {
     next_remote_buf_id: usize,
     buffers: HashMap<usize, Arc<dyn RdmaLocalMemory>>,
+    #[cfg(feature = "cuda")]
     ibverbs: Option<RdmaBackendActor<IbvManagerActor>>,
     tcp: RdmaBackendActor<TcpManagerActor>,
 }
@@ -162,15 +183,20 @@ impl RdmaManagerActor {
     /// Construct an [`ActorHandle`] for the [`RdmaManagerActor`] co-located
     /// with the caller.
     pub fn local_handle(client: &impl context::Actor) -> ActorHandle<Self> {
-        let proc_id = client.mailbox().actor_id().proc_ref().into();
-        let actor_ref =
-            reference::ActorRef::attest(reference::ActorId::new(proc_id, "rdma_manager"));
+        let actor_ref = ActorRef::attest(
+            client
+                .mailbox()
+                .actor_addr()
+                .proc_addr()
+                .actor_addr("rdma_manager"),
+        );
         actor_ref
             .downcast_handle(client)
             .expect("RdmaManagerActor is not in the local process")
     }
 }
 
+#[cfg(feature = "cuda")]
 #[async_trait]
 impl RemoteSpawn for RdmaManagerActor {
     type Params = Option<IbvConfig>;
@@ -214,9 +240,33 @@ impl RemoteSpawn for RdmaManagerActor {
     }
 }
 
+/// CPU-only build: ibverbs is never compiled in, so the manager always
+/// falls through to TCP. Returns an error only when TCP fallback is also
+/// disabled — matching the runtime behavior of the `cuda` build when no
+/// hardware is found.
+#[cfg(not(feature = "cuda"))]
+#[async_trait]
+impl RemoteSpawn for RdmaManagerActor {
+    type Params = ();
+
+    async fn new(_params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
+        anyhow::ensure!(
+            hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK),
+            "ibverbs is not compiled into this build and TCP fallback is disabled"
+        );
+        let tcp = RdmaBackendActor::Created(TcpManagerActor::new());
+        Ok(Self {
+            next_remote_buf_id: 0,
+            buffers: HashMap::new(),
+            tcp,
+        })
+    }
+}
+
 #[async_trait]
 impl Actor for RdmaManagerActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        #[cfg(feature = "cuda")]
         if let Some(ibv) = &mut self.ibverbs {
             ibv.spawn(this)?;
         }
@@ -239,13 +289,14 @@ impl Actor for RdmaManagerActor {
     }
 }
 
+#[cfg(feature = "cuda")]
 #[async_trait]
 #[hyperactor::handle(GetIbvActorRef)]
 impl GetIbvActorRefHandler for RdmaManagerActor {
     async fn get_ibv_actor_ref(
         &mut self,
         _cx: &Context<Self>,
-    ) -> Result<Option<reference::ActorRef<IbvManagerActor>>, anyhow::Error> {
+    ) -> Result<Option<ActorRef<IbvManagerActor>>, anyhow::Error> {
         Ok(self.ibverbs.as_ref().map(|ibv| ibv.handle().bind()))
     }
 }
@@ -256,7 +307,7 @@ impl GetTcpActorRefHandler for RdmaManagerActor {
     async fn get_tcp_actor_ref(
         &mut self,
         _cx: &Context<Self>,
-    ) -> Result<reference::ActorRef<TcpManagerActor>, anyhow::Error> {
+    ) -> Result<ActorRef<TcpManagerActor>, anyhow::Error> {
         Ok(self.tcp.handle().bind())
     }
 }
@@ -266,9 +317,12 @@ impl GetTcpActorRefHandler for RdmaManagerActor {
 impl ReleaseBufferHandler for RdmaManagerActor {
     async fn release_buffer(&mut self, cx: &Context<Self>, id: usize) -> Result<(), anyhow::Error> {
         self.buffers.remove(&id);
+        #[cfg(feature = "cuda")]
         if let Some(ibv) = &self.ibverbs {
             ibv.handle().release_buffer(cx, id).await?;
         }
+        #[cfg(not(feature = "cuda"))]
+        let _ = cx;
         Ok(())
     }
 }
@@ -285,16 +339,22 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         self.next_remote_buf_id += 1;
         let size = local.size();
 
-        self.buffers.insert(remote_buf_id, local);
-
         let mut backends = Vec::new();
 
+        #[cfg(feature = "cuda")]
         if let Some(ibv) = &self.ibverbs {
+            let ibv_buffer = ibv
+                .handle()
+                .register_remote_buffer(cx, remote_buf_id, local.clone())
+                .await?
+                .map_err(|e| anyhow::anyhow!(e))?;
             backends.push(RdmaRemoteBackendContext::Ibverbs(
                 ibv.handle().bind(),
-                Arc::new(OnceCell::new()),
+                ibv_buffer,
             ));
         }
+
+        self.buffers.insert(remote_buf_id, local);
 
         backends.push(RdmaRemoteBackendContext::Tcp(self.tcp.handle().bind()));
 

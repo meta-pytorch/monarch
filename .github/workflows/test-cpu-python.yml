@@ -29,6 +29,7 @@ jobs:
       runner: ${{ inputs.runner }}
       submodules: recursive
       download-artifact: ${{ inputs.artifact-name }}
+      upload-artifact: test-results-cpu-python-${{ github.sha }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -60,5 +61,13 @@ jobs:
 
         # Run CPU Python tests split into 10 groups sequentially.
         # GPU-gated cases skip via needs_cuda/needs_tensor_engine markers.
+        # run_test_groups leaks `set +e`, so capture the exit code before
+        # stage_test_artifacts and propagate it explicitly; otherwise a test
+        # failure would be silently masked by stage_test_artifacts succeeding.
         pip install pytest-split
+        set +e
         run_test_groups
+        rc=$?
+        set -e
+        stage_test_artifacts
+        exit $rc

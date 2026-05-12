@@ -21,6 +21,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
@@ -33,7 +34,6 @@ use hyperactor::id::Label;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
-use hyperactor::reference;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
 use monarch_hyperactor::local_state_broker::BrokerId;
@@ -205,7 +205,7 @@ pub enum StreamMessage {
 
     SendValue {
         seq: Seq,
-        worker_actor_id: reference::ActorId,
+        worker_actor_id: reference::ActorAddr,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
         args_kwargs: ArgsKwargs,
@@ -491,20 +491,22 @@ impl Actor for StreamActor {
         // These thread locals are exposed via python functions, so we need to set them in the
         // same thread that python will run in. That means we need to initialize them here in
         // StreamActor::init instead of in StreamActor::new.
-        CONTROLLER_ACTOR_REF.with(|controller_actor_ref| {
-            controller_actor_ref.set(self.controller_actor.clone()).ok()
-        });
+        CONTROLLER_ACTOR_REF.with(
+            |controller_actor_ref: &OnceCell<reference::ActorRef<ControllerActor>>| {
+                controller_actor_ref.set(self.controller_actor.clone()).ok()
+            },
+        );
         PROC.with(|proc| proc.set(cx.proc().clone()).ok());
-        ROOT_ACTOR_ID.with(|root_actor_id| {
+        ROOT_ACTOR_ID.with(|root_actor_id: &OnceCell<reference::ActorId>| {
             let root_label = cx
-                .self_id()
+                .self_addr()
                 .label()
                 .cloned()
                 .unwrap_or_else(|| Label::new("stream").unwrap());
             root_actor_id
-                .set(reference::ActorId::root(
-                    cx.self_id().proc_ref().clone().into(),
+                .set(reference::ActorId::singleton(
                     root_label,
+                    cx.self_addr().proc_addr().id().clone(),
                 ))
                 .ok()
         });
@@ -645,7 +647,7 @@ impl StreamActor {
                 if self.active_recording.is_none() {
                     let worker_error = WorkerError {
                         backtrace: format!("{e}"),
-                        worker_actor_id: cx.self_id().clone().into(),
+                        worker_actor_id: cx.self_addr().clone(),
                     };
                     tracing::info!("Propagating remote function error to client: {worker_error}");
                     self.controller_actor
@@ -1452,7 +1454,7 @@ impl StreamMessageHandler for StreamActor {
         &mut self,
         cx: &Context<Self>,
         seq: Seq,
-        worker_actor_id: reference::ActorId,
+        worker_actor_id: reference::ActorAddr,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
         args_kwargs: ArgsKwargs,
@@ -1795,7 +1797,7 @@ impl StreamMessageHandler for StreamActor {
                             seq,
                             WorkerError {
                                 backtrace: format!("recording failed: {}", &seq_err),
-                                worker_actor_id: cx.self_id().clone().into(),
+                                worker_actor_id: cx.self_addr().clone(),
                             },
                         )
                         .await?;
@@ -2099,7 +2101,7 @@ mod tests {
             .send_value(
                 cx,
                 seq,
-                stream_actor.actor_id().clone().into(),
+                stream_actor.actor_addr().clone(),
                 Vec::new(),
                 None,
                 ArgsKwargs::from_wire_values(

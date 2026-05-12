@@ -11,29 +11,31 @@
 //! All functions prefix the name component with `test_` so that
 //! test-originated IDs are distinguishable from production ones.
 
+use crate::ActorAddr;
+use crate::PortAddr;
+use crate::ProcAddr;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelTransport;
-use crate::reference;
 
-/// Create a test `ProcId` with a local channel address and name `"test_{name}"`.
-pub fn test_proc_id(name: &str) -> reference::ProcId {
-    reference::ProcId::from_resource_name(
+/// Create a test `ProcAddr` with a local channel address and name `"test_{name}"`.
+pub fn test_proc_id(name: &str) -> ProcAddr {
+    ProcAddr::named(
         ChannelAddr::any(ChannelTransport::Local),
         format!("test_{name}"),
     )
 }
 
-/// Create a test `ProcId` with a custom address and name `"test_{name}"`.
-pub fn test_proc_id_with_addr(addr: ChannelAddr, name: &str) -> reference::ProcId {
-    reference::ProcId::from_resource_name(addr, format!("test_{name}"))
+/// Create a test `ProcAddr` with a custom address and name `"test_{name}"`.
+pub fn test_proc_id_with_addr(addr: ChannelAddr, name: &str) -> ProcAddr {
+    ProcAddr::named(addr, format!("test_{name}"))
 }
 
-/// Create a test `ActorId`.
-pub fn test_actor_id(proc_name: &str, actor_name: &str) -> reference::ActorId {
-    test_proc_id(proc_name).actor_id(actor_name)
+/// Create a test `ActorAddr`.
+pub fn test_actor_id(proc_name: &str, actor_name: &str) -> ActorAddr {
+    test_proc_id(proc_name).actor_addr(actor_name)
 }
 
-/// Create a test `PortId`.
-pub fn test_port_id(proc_name: &str, actor_name: &str, port: u64) -> reference::PortId {
-    reference::PortId::new(test_actor_id(proc_name, actor_name), port)
+/// Create a test `PortAddr`.
+pub fn test_port_id(proc_name: &str, actor_name: &str, port: u64) -> PortAddr {
+    test_actor_id(proc_name, actor_name).port_addr(port.into())
 }
