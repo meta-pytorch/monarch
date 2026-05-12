@@ -197,6 +197,12 @@ pub enum Error {
     )]
     ActorStopError { statuses: RankedValues<Status> },
 
+    #[error(
+        "error stopping proc mesh: statuses: {}",
+        RankedValues::invert(statuses)
+    )]
+    ProcMeshStopError { statuses: RankedValues<Status> },
+
     #[error("error spawning actor: {0}")]
     SingletonActorSpawnError(anyhow::Error),
 
