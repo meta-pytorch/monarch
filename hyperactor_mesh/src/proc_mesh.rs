@@ -129,6 +129,7 @@ pub struct ProcMesh {
     #[allow(dead_code)]
     comm_actor_name: Option<ActorMeshId>,
     current_ref: ProcMeshRef,
+    controller: Option<ActorRef<crate::mesh_controller::ProcMeshController>>,
 }
 
 impl ProcMesh {
@@ -221,6 +222,7 @@ impl ProcMesh {
             id,
             comm_actor_name: Some(comm_actor_name.clone()),
             current_ref,
+            controller: None,
         };
 
         // CommActor satisfies `Actor + Referable`, so it can be
@@ -247,8 +249,79 @@ impl ProcMesh {
         Ok(proc_mesh)
     }
 
+    /// Set or clear the controller actor managing this mesh.
+    pub(crate) fn set_controller(
+        &mut self,
+        controller: Option<ActorRef<crate::mesh_controller::ProcMeshController>>,
+    ) {
+        self.controller = controller;
+    }
+
     /// Stop this mesh gracefully.
+    ///
+    /// If a `ProcMeshController` is present (owned meshes spawned from a host
+    /// mesh), the stop is delegated to the controller via `resource::Stop`;
+    /// the controller's handler awaits `HostMeshRef::stop_proc_mesh`, which
+    /// casts `Stop` + `WaitRankStatus{min_status: Stopped}` to the
+    /// HostAgents and waits up to `PROC_STOP_MAX_IDLE` for every proc to
+    /// reach `Stopped`. We then serialize behind that handler with a
+    /// `GetState` to read the final statuses out of the controller's
+    /// `health_state`.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
+        if let Some(controller) = self.controller.take() {
+            let id = self.id.resource_id().clone();
+            controller
+                .send(
+                    cx,
+                    resource::Stop {
+                        id: id.clone(),
+                        reason,
+                    },
+                )
+                .map_err(|e| {
+                    crate::Error::SendingError(controller.actor_addr().clone(), Box::new(e))
+                })?;
+
+            // The controller processes messages serially, so by the time it
+            // gets to this `GetState`, its `health_state.statuses` already
+            // reflects the outcome of `stop_proc_mesh` (Stopping, Stopped,
+            // Failed, or Timeout on `PROC_STOP_MAX_IDLE` exhaustion).
+            let (port, mut rx) = cx.mailbox().open_port();
+            controller
+                .send(
+                    cx,
+                    resource::GetState::<resource::mesh::State<()>> {
+                        id: id.clone(),
+                        reply: port.bind(),
+                    },
+                )
+                .map_err(|e| {
+                    crate::Error::SendingError(controller.actor_addr().clone(), Box::new(e))
+                })?;
+
+            let statuses = rx.recv().await?;
+            let Some(state) = &statuses.state else {
+                anyhow::bail!(
+                    "non-existent state in GetState reply from controller: {}",
+                    controller.actor_addr()
+                );
+            };
+            // `is_terminating` accepts Stopping, Stopped, Failed, and
+            // Timeout. The controller's Stop handler has already awaited
+            // (or timed out) the underlying HostAgent wait, so any rank
+            // still in Running here means the controller never processed
+            // the stop for that rank.
+            let all_stopped = state.statuses.values().all(|s| s.is_terminating());
+            if !all_stopped {
+                anyhow::bail!(
+                    "proc mesh {} not all procs reached terminating state after stop: {:?}",
+                    id,
+                    state.statuses,
+                );
+            }
+            return Ok(());
+        }
+
         let region = self.region.clone();
         let procs = self.current_ref.proc_ids().collect::<Vec<ProcAddr>>();
         // We use the proc mesh region rather than the host mesh region
@@ -259,6 +332,8 @@ impl ProcMesh {
             .expect("ProcMesh always has a host mesh")
             .stop_proc_mesh(cx, &self.id, procs, region, reason)
             .await
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
     }
 
     #[cfg(test)]
@@ -515,12 +590,13 @@ impl ProcMeshRef {
     pub async fn proc_states(
         &self,
         cx: &impl context::Actor,
+        keepalive: Option<std::time::SystemTime>,
     ) -> crate::Result<Option<ValueMesh<resource::State<ProcState>>>> {
         let names = self.proc_ids().collect::<Vec<ProcAddr>>();
         if let Some(host_mesh) = &self.host_mesh {
             Ok(Some(
                 host_mesh
-                    .proc_states(cx, names, self.region.clone())
+                    .proc_states(cx, names, self.region.clone(), keepalive)
                     .await?,
             ))
         } else {
