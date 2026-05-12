@@ -37,6 +37,7 @@ use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxServerHandle;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -174,6 +175,10 @@ pub(crate) struct ProcCreationState {
     pub(crate) rank: usize,
     pub(crate) host_mesh_id: Option<HostMeshId>,
     pub(crate) created: Result<(ProcAddr, ActorRef<ProcAgent>), HostError>,
+    /// "Owner is alive" deadline communicated by the controller via
+    /// `KeepaliveGetState`. The host's `SelfCheck` reaper compares against this
+    /// and tears down procs whose owner has stopped extending the keepalive.
+    pub(crate) expiry_time: Option<std::time::SystemTime>,
 }
 
 /// Actor name used when spawning the host mesh agent on the system proc.
@@ -268,6 +273,8 @@ impl fmt::Debug for DrainWorker {
         resource::CreateOrUpdate<ProcSpec>,
         resource::Stop,
         resource::GetState<ProcState>,
+        resource::KeepaliveGetState<ProcState>,
+        resource::StreamState<ProcState> { cast = true },
         resource::GetRankStatus { cast = true },
         resource::WaitRankStatus { cast = true },
         resource::List,
@@ -278,6 +285,7 @@ impl fmt::Debug for DrainWorker {
         PySpyDump,
         PySpyProfile,
         ConfigDump,
+        crate::proc_agent::SelfCheck,
     ]
 )]
 pub struct HostAgent {
@@ -622,6 +630,14 @@ impl Actor for HostAgent {
 
         self.proc_status_port = Some(this.port::<ProcStatusChanged>());
 
+        // Kick off the SelfCheck reaper if the orphan timeout is configured.
+        // The reaper walks `created` looking for procs whose owner stopped
+        // extending the keepalive and tears them down.
+        if let Some(delay) = hyperactor_config::global::get(crate::proc_agent::MESH_ORPHAN_TIMEOUT)
+        {
+            this.self_message_with_delay(crate::proc_agent::SelfCheck::default(), delay)?;
+        }
+
         Ok(())
     }
 }
@@ -689,6 +705,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                 rank,
                 host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
                 created,
+                expiry_time: None,
             },
         );
 
@@ -1150,7 +1167,17 @@ impl Handler<ShutdownHost> for HostAgent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Named, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Named,
+    Serialize,
+    Deserialize,
+    hyperactor::Bind,
+    hyperactor::Unbind
+)]
 pub struct ProcState {
     pub proc_id: ProcAddr,
     pub create_rank: usize,
@@ -1230,10 +1257,156 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
 }
 
 #[async_trait]
+impl Handler<crate::proc_agent::SelfCheck> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        _: crate::proc_agent::SelfCheck,
+    ) -> anyhow::Result<()> {
+        // Walk procs and tear down any whose owner-supplied keepalive has
+        // lapsed. Mirrors the proc-agent reaper but at host scope: we
+        // address the same problem (a controller/client died abruptly)
+        // for proc-level cleanup so the host doesn't leak children.
+        let Some(duration) = hyperactor_config::global::get(crate::proc_agent::MESH_ORPHAN_TIMEOUT)
+        else {
+            return Ok(());
+        };
+        let now = std::time::SystemTime::now();
+        let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
+
+        let expired: Vec<ResourceId> = self
+            .created
+            .iter()
+            .filter_map(|(id, state)| {
+                let expiry = state.expiry_time?;
+                if now > expiry { Some(id.clone()) } else { None }
+            })
+            .collect();
+
+        if !expired.is_empty() {
+            tracing::info!(
+                "stopping {} orphaned procs past their keepalive expiry",
+                expired.len(),
+            );
+        }
+
+        for id in expired {
+            if let Some(ProcCreationState {
+                created: Ok((proc_id, _)),
+                ..
+            }) = self.created.get(&id)
+            {
+                let proc_id = proc_id.clone();
+                if let Some(host) = self.host() {
+                    host.request_stop(cx, &proc_id, timeout, "orphaned").await;
+                }
+                // Don't reap repeatedly while teardown is in flight.
+                if let Some(state) = self.created.get_mut(&id) {
+                    state.expiry_time = None;
+                }
+            }
+        }
+
+        cx.self_message_with_delay(crate::proc_agent::SelfCheck::default(), duration)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl Handler<resource::List> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, list: resource::List) -> anyhow::Result<()> {
         list.reply
             .send(cx, self.created.keys().cloned().collect())?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::KeepaliveGetState<ProcState>> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: resource::KeepaliveGetState<ProcState>,
+    ) -> anyhow::Result<()> {
+        // Record the new expiry so the periodic SelfCheck reaper knows the
+        // owner is still alive. If the owner stops extending the keepalive
+        // (e.g. its process dies abruptly), the proc will be reaped past
+        // `expires_after`.
+        if let Some(state) = self.created.get_mut(&message.get_state.id) {
+            state.expiry_time = Some(message.expires_after);
+        }
+        <Self as Handler<resource::GetState<ProcState>>>::handle(self, cx, message.get_state).await
+    }
+}
+
+#[async_trait]
+impl Handler<resource::StreamState<ProcState>> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        stream_state: resource::StreamState<ProcState>,
+    ) -> anyhow::Result<()> {
+        // TODO: register `subscriber` for ongoing updates. For now send the
+        // current state once so the controller has an initial snapshot.
+        let state = match self.created.get(&stream_state.id) {
+            Some(ProcCreationState {
+                rank,
+                created: Ok((proc_id, mesh_agent)),
+                ..
+            }) => {
+                let (raw_status, proc_status, bootstrap_command) = match self.host() {
+                    Some(host) => {
+                        let (status, proc_status) = host.proc_status(proc_id).await;
+                        (status, proc_status, host.bootstrap_command())
+                    }
+                    None => (resource::Status::Unknown, None, None),
+                };
+                let status = raw_status.clamp_min(self.min_proc_status());
+                resource::State {
+                    id: stream_state.id.clone(),
+                    status,
+                    state: Some(ProcState {
+                        proc_id: proc_id.clone(),
+                        create_rank: *rank,
+                        mesh_agent: mesh_agent.clone(),
+                        bootstrap_command,
+                        proc_status,
+                    }),
+                    generation: 0,
+                    timestamp: std::time::SystemTime::now(),
+                }
+            }
+            Some(ProcCreationState {
+                created: Err(e), ..
+            }) => resource::State {
+                id: stream_state.id.clone(),
+                status: resource::Status::Failed(e.to_string()),
+                state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
+            },
+            None => resource::State {
+                id: stream_state.id.clone(),
+                status: resource::Status::NotExist,
+                state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
+            },
+        };
+
+        let mut headers = Flattrs::new();
+        headers.set(crate::proc_agent::STREAM_STATE_SUBSCRIBER, true);
+        if let Err(e) = stream_state
+            .subscriber
+            .send_with_headers(cx, headers, state)
+        {
+            tracing::warn!(
+                actor = %cx.self_addr(),
+                "failed to send initial StreamState to {}: {}",
+                stream_state.subscriber.port_addr().actor_id(),
+                e,
+            );
+        }
         Ok(())
     }
 }
