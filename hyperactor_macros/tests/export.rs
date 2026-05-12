@@ -144,7 +144,7 @@ mod tests {
     // will not be bound, and the send will fail.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_binds() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).unwrap();
@@ -233,7 +233,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ref_alias() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).unwrap();
@@ -275,7 +275,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_generic_export() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let actor_handle = proc
