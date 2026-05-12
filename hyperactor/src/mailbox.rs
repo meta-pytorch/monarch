@@ -1498,19 +1498,19 @@ impl Mailbox {
     pub(crate) fn open_handler_enqueue_port<M: Message>(
         &self,
         enqueue: impl Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
-    ) -> (PortHandle<M>, Arc<dyn HandlerPortControl>) {
+    ) -> PortHandle<M> {
         let port_index = self.inner.allocate_port();
         let enqueue = Arc::new(enqueue);
-        let sender = Arc::new(HandlerPortSender::new(UnboundedPortSender::Func(enqueue)));
-        (
-            PortHandle::new_full(
-                self.clone(),
-                port_index,
-                UnboundedPortSender::Handler(sender.clone()),
-                None,
-                StreamingReducerOpts::default(),
-            ),
-            sender,
+        let sender = Arc::new(HandlerPortSender::new(
+            UnboundedPortSender::Func(enqueue),
+            self.inner.draining.clone(),
+        ));
+        PortHandle::new_full(
+            self.clone(),
+            port_index,
+            UnboundedPortSender::Handler(sender),
+            None,
+            StreamingReducerOpts::default(),
         )
     }
 
@@ -1691,6 +1691,20 @@ impl Mailbox {
             panic!("mailbox with owner {} already closed", self.actor_addr());
         }
         let _ = closed.insert(status);
+    }
+
+    /// Start draining handler ingress for this mailbox.
+    ///
+    /// Draining is a mailbox lifecycle property, but it is enforced
+    /// only by runtime-dispatched handler ports. New handler work is
+    /// rejected at the handler-port sender, while runtime/control
+    /// ports and ordinary mailbox ports remain usable so shutdown can
+    /// continue and already accepted work can flush.
+    ///
+    /// This is distinct from [`Mailbox::close`], which marks the
+    /// mailbox terminal and rejects all subsequent local delivery.
+    pub(crate) fn drain(&self) {
+        self.inner.draining.store(true, Ordering::Release);
     }
 }
 
@@ -2356,10 +2370,6 @@ trait SerializedSender: Send + Sync {
     ) -> Result<SerializedSendDisposition, SerializedSendFailure>;
 }
 
-pub(crate) trait HandlerPortControl: Send + Sync {
-    fn close_for_drain(&self);
-}
-
 #[derive(Debug, thiserror::Error)]
 #[error("handler port closed")]
 struct HandlerPortClosedError;
@@ -2378,7 +2388,7 @@ enum UnboundedPortSender<M: Message> {
     Mpsc(mpsc::UnboundedSender<M>),
     /// Use the provided function to enqueue the item.
     Func(Arc<dyn Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync>),
-    /// A runtime-dispatched handler port that can be closed during drain.
+    /// A runtime-dispatched handler port that observes mailbox drain state.
     Handler(Arc<HandlerPortSender<M>>),
 }
 
@@ -2422,28 +2432,19 @@ impl<M: Message> Debug for UnboundedPortSender<M> {
 
 struct HandlerPortSender<M: Message> {
     sender: UnboundedPortSender<M>,
-    closed: AtomicBool,
+    draining: Arc<AtomicBool>,
 }
 
 impl<M: Message> HandlerPortSender<M> {
-    fn new(sender: UnboundedPortSender<M>) -> Self {
-        Self {
-            sender,
-            closed: AtomicBool::new(false),
-        }
+    fn new(sender: UnboundedPortSender<M>, draining: Arc<AtomicBool>) -> Self {
+        Self { sender, draining }
     }
 
     fn send(&self, headers: Flattrs, message: M) -> Result<(), anyhow::Error> {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.draining.load(Ordering::Acquire) {
             return Err(HandlerPortClosedError.into());
         }
         self.sender.send(headers, message)
-    }
-}
-
-impl<M: Message> HandlerPortControl for HandlerPortSender<M> {
-    fn close_for_drain(&self) {
-        self.closed.store(true, Ordering::SeqCst);
     }
 }
 
@@ -2649,6 +2650,9 @@ struct State {
     /// If a value is present, the mailbox has been closed with the provided
     /// status, and any subsequent `Mailbox::post_unchecked` calls will fail.
     closed: RwLock<Option<ActorStatus>>,
+
+    /// Whether the mailbox is draining handler ingress.
+    draining: Arc<AtomicBool>,
 }
 
 impl State {
@@ -2662,6 +2666,7 @@ impl State {
             next_port: AtomicU64::new(USER_PORT_OFFSET),
             forwarder,
             closed: RwLock::new(None),
+            draining: Arc::new(AtomicBool::new(false)),
         }
     }
 
