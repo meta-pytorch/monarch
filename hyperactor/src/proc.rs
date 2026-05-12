@@ -164,6 +164,7 @@ use crate::context;
 use crate::context::Mailbox as _;
 use crate::id::ActorId;
 use crate::id::Label;
+use crate::id::Label;
 use crate::id::Uid;
 use crate::introspect::IntrospectMessage;
 use crate::introspect::IntrospectResult;
@@ -187,6 +188,18 @@ use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
 use crate::subject::AsSubject as _;
+
+/// Legacy singleton proc name used for host-local client actors.
+///
+/// This is not a true singleton: every host may have a `local` proc, so local
+/// delivery must compare both proc id and location for this id.
+pub const LEGACY_LOCAL_PROC_NAME: &str = "local";
+
+/// Legacy singleton proc name used for host system actors.
+///
+/// This is not a true singleton: every host may have a `service` proc, so
+/// local delivery must compare both proc id and location for this id.
+pub const LEGACY_SERVICE_PROC_NAME: &str = "service";
 
 /// Returns current epoch-millis from wall clock. Used by
 /// `ProcQueueStats` for timestamp recording. In tests, override
@@ -528,6 +541,24 @@ impl Proc {
     /// Create a pre-configured proc with the given proc id and forwarder.
     pub fn configured(proc_id: impl Into<ProcAddr>, forwarder: BoxedMailboxSender) -> Self {
         let proc_addr = proc_id.into();
+        assert_not_legacy_pseudo_singleton_proc_id(proc_id.id());
+        Self::configured_unchecked(proc_id, forwarder)
+    }
+
+    /// Create the legacy host-local client proc pseudo-singleton.
+    pub fn legacy_local_pseudo_singleton(addr: ChannelAddr, forwarder: BoxedMailboxSender) -> Self {
+        Self::configured_unchecked(ProcAddr::named(addr, LEGACY_LOCAL_PROC_NAME), forwarder)
+    }
+
+    /// Create the legacy host system proc pseudo-singleton.
+    pub fn legacy_service_pseudo_singleton(
+        addr: ChannelAddr,
+        forwarder: BoxedMailboxSender,
+    ) -> Self {
+        Self::configured_unchecked(ProcAddr::named(addr, LEGACY_SERVICE_PROC_NAME), forwarder)
+    }
+
+    fn configured_unchecked(proc_id: ProcAddr, forwarder: BoxedMailboxSender) -> Self {
         tracing::info!(
             subject = %proc_addr.subject(),
             name = "ProcStatus",
@@ -945,8 +976,10 @@ impl Proc {
         self.state()
             .instances
             .iter()
-            .filter(|entry| entry.value().actor_addr.is_root())
-            .map(|entry| entry.value().actor_addr.clone())
+            .filter_map(|slot| {
+                let actor_addr = &slot.value().actor_addr;
+                actor_addr.is_root().then(|| actor_addr.clone())
+            })
             .collect()
     }
 
@@ -1063,17 +1096,18 @@ impl Proc {
     /// `None`.
     pub fn abort_root_actor(
         &self,
-        root: &ActorAddr,
+        root: &ActorId,
         this_handle: Option<&JoinHandle<()>>,
     ) -> Option<impl Future<Output = ActorAddr>> {
         self.state()
             .instances
-            .get(root.id())
+            .get(root)
             .into_iter()
             .flat_map(|entry| entry.cell.upgrade())
             .map(|cell| {
-                let r1 = root.clone();
-                let r2 = root.clone();
+                let actor_addr = cell.actor_addr().clone();
+                let r1 = actor_addr.clone();
+                let r2 = actor_addr;
                 // If abort_root_actor was called from inside an actor task, we don't want to abort that actor's task yet.
                 let skip_abort = this_handle.is_some_and(|this_h| {
                     cell.inner
@@ -1104,14 +1138,14 @@ impl Proc {
     /// returning a status observer if successful.
     pub fn stop_actor(
         &self,
-        actor_id: &ActorAddr,
+        actor_id: &ActorId,
         reason: String,
     ) -> Option<watch::Receiver<ActorStatus>> {
         // Upgrade the weak ref and immediately drop the DashMap entry (read
         // guard) before doing anything with `cell`. InstanceCellState::drop
         // calls instances.remove(), which needs a write lock on the same shard.
         // Holding the read guard while cell drops would self-deadlock.
-        let cell = match self.state().instances.get(actor_id.id()) {
+        let cell = match self.state().instances.get(actor_id) {
             None => {
                 tracing::error!(subject = %self.proc_addr().subject(), "no actor {} found", actor_id);
                 return None;
@@ -1195,7 +1229,7 @@ impl Proc {
             if coordinator_id.as_ref() == Some(&actor_id) {
                 continue;
             }
-            if let Some(status) = self.stop_actor(&actor_id, reason.to_string()) {
+            if let Some(status) = self.stop_actor(actor_id.id(), reason.to_string()) {
                 statuses.insert(actor_id, status);
             }
         }
@@ -1228,7 +1262,7 @@ impl Proc {
             .iter()
             .filter(|(actor_id, _)| !stopped_actors.contains(actor_id))
             .map(|(actor_id, _)| {
-                let f = self.abort_root_actor(actor_id, this_handle);
+                let f = self.abort_root_actor(actor_id.id(), this_handle);
                 async move {
                     let _ = if let Some(f) = f { Some(f.await) } else { None };
                     // If `is_none(&_)` then the associated actor's
@@ -1249,7 +1283,7 @@ impl Proc {
         if let Some(ref coord_id) = coordinator_id
             && this_actor_id != Some(coord_id)
         {
-            if let Some(mut status) = self.stop_actor(coord_id, reason.to_string()) {
+            if let Some(mut status) = self.stop_actor(coord_id.id(), reason.to_string()) {
                 let stopped = tokio::time::timeout(
                     timeout,
                     status.wait_for(|s: &ActorStatus| s.is_terminal()),
@@ -1259,7 +1293,7 @@ impl Proc {
                 if stopped {
                     stopped_actors.push(coord_id.clone());
                 } else {
-                    if let Some(f) = self.abort_root_actor(coord_id, this_handle) {
+                    if let Some(f) = self.abort_root_actor(coord_id.id(), this_handle) {
                         f.await;
                     }
                     aborted_actors.push(coord_id.clone());
@@ -1429,9 +1463,29 @@ fn requires_location_for_local_delivery_identity(proc_id: &ProcId) -> bool {
     // process, so those proc ids are not globally unique. Until those
     // construction paths are assigned instance ids, local delivery for
     // those two ids must keep the old full-address comparison.
+    is_legacy_pseudo_singleton_proc_id(proc_id)
+}
+
+fn assert_not_legacy_pseudo_singleton_proc_id(proc_id: &ProcId) {
+    if is_legacy_pseudo_singleton_proc_id(proc_id) {
+        panic!(
+            "legacy pseudo-singleton proc id '{}' must be constructed with a dedicated Proc constructor",
+            proc_id
+        );
+    }
+}
+
+fn is_legacy_pseudo_singleton_proc_id(proc_id: &ProcId) -> bool {
     matches!(
         proc_id.uid(),
-        Uid::Singleton(label) if matches!(label.as_str(), "service" | "local")
+        Uid::Singleton(label) if is_legacy_pseudo_singleton_label(label)
+    )
+}
+
+fn is_legacy_pseudo_singleton_label(label: &Label) -> bool {
+    matches!(
+        label.as_str(),
+        LEGACY_SERVICE_PROC_NAME | LEGACY_LOCAL_PROC_NAME
     )
 }
 
@@ -3774,13 +3828,20 @@ mod tests {
 
     #[test]
     fn test_local_delivery_service_and_local_compare_full_proc_addr() {
-        for name in ["service", "local"] {
+        for name in [LEGACY_SERVICE_PROC_NAME, LEGACY_LOCAL_PROC_NAME] {
             let local = ProcAddr::named(ChannelAddr::Local(1), name);
             let same_id_other_location = ProcAddr::named(ChannelAddr::Local(2), name);
-            let proc = Proc::configured(
-                local.clone(),
-                BoxedMailboxSender::new(PanickingMailboxSender),
-            );
+            let proc = match name {
+                LEGACY_SERVICE_PROC_NAME => Proc::legacy_service_pseudo_singleton(
+                    ChannelAddr::Local(1),
+                    BoxedMailboxSender::new(PanickingMailboxSender),
+                ),
+                LEGACY_LOCAL_PROC_NAME => Proc::legacy_local_pseudo_singleton(
+                    ChannelAddr::Local(1),
+                    BoxedMailboxSender::new(PanickingMailboxSender),
+                ),
+                _ => unreachable!("test only covers legacy pseudo-singletons"),
+            };
 
             assert_eq!(local.id(), same_id_other_location.id());
             assert!(proc.is_local_delivery_target(&local));
@@ -3803,6 +3864,37 @@ mod tests {
             BoxedMailboxSender::new(PanickingMailboxSender),
         );
         assert!(proc.is_local_delivery_target(&service_instance_other_location));
+    }
+
+    #[test]
+    fn test_legacy_pseudo_singletons_use_dedicated_constructors() {
+        for name in [LEGACY_SERVICE_PROC_NAME, LEGACY_LOCAL_PROC_NAME] {
+            let result = std::panic::catch_unwind(|| {
+                Proc::configured(
+                    ProcAddr::named(ChannelAddr::Local(1), name),
+                    BoxedMailboxSender::new(PanickingMailboxSender),
+                );
+            });
+            assert!(result.is_err());
+        }
+
+        let service = Proc::legacy_service_pseudo_singleton(
+            ChannelAddr::Local(1),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
+        assert_eq!(
+            service.proc_addr().id().uid().to_string(),
+            LEGACY_SERVICE_PROC_NAME
+        );
+
+        let local = Proc::legacy_local_pseudo_singleton(
+            ChannelAddr::Local(2),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        );
+        assert_eq!(
+            local.proc_addr().id().uid().to_string(),
+            LEGACY_LOCAL_PROC_NAME
+        );
     }
 
     #[tokio::test]
