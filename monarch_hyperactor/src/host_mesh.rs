@@ -370,7 +370,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         hyperactor_mesh::global_context::register_client_host(host_mesh.clone());
 
         // We require a temporary instance to make a call to the host/proc agent.
-        let temp_proc = Proc::local();
+        let temp_proc = Proc::isolated();
         let (temp_instance, _) = temp_proc
             .instance("temp")
             .map_err(|e| PyException::new_err(e.to_string()))?;
@@ -509,7 +509,7 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
 
     PyPythonTask::new(async move {
         // Create a temporary instance to send the shutdown message
-        let temp_proc = hyperactor::Proc::local();
+        let temp_proc = hyperactor::Proc::isolated();
         let (instance, _) = temp_proc
             .instance("shutdown_requester")
             .map_err(|e| PyException::new_err(e.to_string()))?;
