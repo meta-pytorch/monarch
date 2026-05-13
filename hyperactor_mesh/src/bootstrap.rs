@@ -275,7 +275,7 @@ pub async fn host(
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will call host.serve() inside
-    // HostAgent::init (after this.bind::<Self>(), so the actor port is bound
+    // HostAgent::init (after this.bind::<Self>(), so the handler port is bound
     // before the frontend starts routing messages), then send the resulting
     // MailboxServerHandle back here for draining.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<MailboxServerHandle>();
