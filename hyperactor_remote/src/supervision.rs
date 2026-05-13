@@ -531,14 +531,18 @@ impl<C: Actor> Worker<C> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use hyperactor::Bind;
     use hyperactor::PortHandle;
     use hyperactor::Proc;
+    use hyperactor::Uid;
     use hyperactor::Unbind;
+    use hyperactor::mailbox::PortReceiver;
     use serde::Deserialize;
     use serde::Serialize;
+    use tokio::sync::Notify;
     use typeuri::Named;
 
     use super::*;
@@ -546,6 +550,7 @@ mod tests {
     #[derive(Clone, Debug, Serialize, Deserialize, Named, Bind, Unbind)]
     enum TestChildCommand {
         Fail,
+        Drain(String),
     }
     wirevalue::register_type!(TestChildCommand);
 
@@ -556,6 +561,7 @@ mod tests {
     #[derive(Debug)]
     enum TestChildAction {
         FailAfter(Duration),
+        DrainAfter(Duration, String),
     }
 
     #[derive(Debug)]
@@ -564,14 +570,28 @@ mod tests {
         ready: PortHandle<ActorAddr>,
         stopped: PortHandle<String>,
         action: Option<TestChildAction>,
+        drain_observer: Option<PortHandle<String>>,
+    }
+
+    impl TestChild {
+        fn with_drain_observer(mut self, port: PortHandle<String>) -> Self {
+            self.drain_observer = Some(port);
+            self
+        }
     }
 
     #[async_trait]
     impl Actor for TestChild {
         async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
             self.ready.send(this, this.self_addr().clone())?;
-            if let Some(TestChildAction::FailAfter(delay)) = self.action.take() {
-                this.self_message_with_delay(TestChildCommand::Fail, delay)?;
+            match self.action.take() {
+                Some(TestChildAction::FailAfter(delay)) => {
+                    this.self_message_with_delay(TestChildCommand::Fail, delay)?;
+                }
+                Some(TestChildAction::DrainAfter(delay, tag)) => {
+                    this.self_message_with_delay(TestChildCommand::Drain(tag), delay)?;
+                }
+                None => {}
             }
             Ok(())
         }
@@ -601,6 +621,11 @@ mod tests {
         ) -> anyhow::Result<()> {
             match message {
                 TestChildCommand::Fail => cx.kill("test child failed")?,
+                TestChildCommand::Drain(tag) => {
+                    if let Some(ref port) = self.drain_observer {
+                        port.send(cx, tag)?;
+                    }
+                }
             }
             Ok(())
         }
@@ -689,6 +714,107 @@ mod tests {
             ready,
             stopped,
             action,
+            drain_observer: None,
+        }
+    }
+
+    // Sets up the `Parent → Supervisor → Worker<TestChild>` harness
+    // (not Grandparent or synthetic-link). Spawns the worker, awaits
+    // the child's ready signal, then spawns the parent with
+    // `Supervisor::new_uid` using the supplied session id and
+    // options. Any post-spawn `Link`/`Linked` sleep is intentionally
+    // omitted - tests add it themselves next to the message send that
+    // depends on it.
+    async fn spawn_supervised_pair(
+        proc: &Proc,
+        inst: &Instance<()>,
+        session_id: hyperactor::Uid,
+        options: LinkOptions,
+        child_action: Option<TestChildAction>,
+    ) -> (
+        ActorAddr,                           // child address
+        ActorHandle<Worker<TestChild>>,      // worker handle
+        ActorHandle<Parent>,                 // parent handle
+        PortReceiver<String>,                // child stop notification
+        PortReceiver<ActorSupervisionEvent>, // parent's supervision events
+    ) {
+        // The ready receiver is consumed since no test needs more
+        // than one child address.
+        let (ready, mut ready_rx) = inst.open_port::<ActorAddr>();
+        let (stopped, stopped_rx) = inst.open_port::<String>();
+        let (events, events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let worker = proc
+            .spawn(
+                "worker",
+                Worker::new(test_child(ready, stopped, child_action)),
+            )
+            .unwrap();
+        let child_addr = ready_rx.recv().await.unwrap();
+        // Spawning Parent starts the link handshake: Parent::init
+        // spawns the Supervisor whose own init sends `Link` to the
+        // worker.
+        let parent = proc
+            .spawn(
+                "parent",
+                Parent {
+                    supervisor: Some(Supervisor::new_uid(
+                        worker.bind::<WorkerLike>(),
+                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                        options,
+                        session_id,
+                    )),
+                    events,
+                },
+            )
+            .unwrap();
+        (child_addr, worker, parent, stopped_rx, events_rx)
+    }
+
+    #[derive(Debug)]
+    #[hyperactor::export(Link, SupervisedWorker)]
+    struct TestSlowWorker {
+        link_started: PortHandle<()>,
+        release_link: Arc<Notify>,
+        received_stop: PortHandle<String>,
+        session: Option<(hyperactor::Uid, PortRef<WorkerSupervisor>)>,
+    }
+
+    #[async_trait]
+    impl Actor for TestSlowWorker {
+        async fn init(&mut self, _this: &Instance<Self>) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<Link> for TestSlowWorker {
+        async fn handle(&mut self, cx: &Context<Self>, message: Link) -> anyhow::Result<()> {
+            self.session = Some((message.session_id, message.supervisor));
+            self.link_started.send(cx, ())?;
+            self.release_link.notified().await;
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<SupervisedWorker> for TestSlowWorker {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            message: SupervisedWorker,
+        ) -> anyhow::Result<()> {
+            if let SupervisedWorker::Stop {
+                session_id, reason, ..
+            } = message
+            {
+                let Some((expected_session_id, supervisor)) = self.session.take() else {
+                    anyhow::bail!("stop received before link");
+                };
+                anyhow::ensure!(session_id == expected_session_id, "unexpected session id");
+                self.received_stop.send(cx, reason.clone())?;
+                let _ = supervisor.send(cx, WorkerSupervisor::Unlinked { session_id, reason });
+            }
+            Ok(())
         }
     }
 
@@ -713,33 +839,16 @@ mod tests {
     async fn test_child_failure_propagates_to_parent() {
         let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
-        let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
-        let (stopped, _stopped_rx) = client.open_port::<String>();
-        let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
-        let worker = proc
-            .spawn(
-                "worker",
-                Worker::new(test_child(
-                    ready,
-                    stopped,
-                    Some(TestChildAction::FailAfter(Duration::from_millis(200))),
-                )),
-            )
-            .unwrap();
-        let parent = proc
-            .spawn(
-                "parent",
-                Parent {
-                    supervisor: Some(Supervisor::new(
-                        worker.bind::<WorkerLike>(),
-                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
-                        LinkOptions::default(),
-                    )),
-                    events,
-                },
-            )
-            .unwrap();
-        let child_addr = ready_rx.recv().await.unwrap();
+        let session_id = Uid::instance();
+
+        let (child_addr, worker, parent, _stopped_rx, mut event_rx) = spawn_supervised_pair(
+            &proc,
+            &client,
+            session_id.clone(),
+            LinkOptions::default(),
+            Some(TestChildAction::FailAfter(Duration::from_millis(200))),
+        )
+        .await;
 
         let event = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
             .await
@@ -777,26 +886,16 @@ mod tests {
     async fn test_parent_stop_stops_remote_child_before_parent_finishes() {
         let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
-        let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
-        let (stopped, mut stopped_rx) = client.open_port::<String>();
-        let (events, _event_rx) = client.open_port::<ActorSupervisionEvent>();
-        let worker = proc
-            .spawn("worker", Worker::new(test_child(ready, stopped, None)))
-            .unwrap();
-        let parent = proc
-            .spawn(
-                "parent",
-                Parent {
-                    supervisor: Some(Supervisor::new(
-                        worker.bind::<WorkerLike>(),
-                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
-                        LinkOptions::default(),
-                    )),
-                    events,
-                },
-            )
-            .unwrap();
-        let _child_addr = ready_rx.recv().await.unwrap();
+        let session_id = Uid::instance();
+
+        let (_child_addr, worker, parent, mut stopped_rx, _event_rx) = spawn_supervised_pair(
+            &proc,
+            &client,
+            session_id.clone(),
+            LinkOptions::default(),
+            None,
+        )
+        .await;
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         parent.stop("test parent stopping").unwrap();
@@ -969,6 +1068,699 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), grandparent)
             .await
             .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+    }
+
+    // proc
+    // ├── client instance
+    // │   ├── ready port: receives the child address
+    // │   ├── stopped port: not expected to fire (Detach leaves child running)
+    // │   ├── supervisor port: receives the initial Linked message
+    // │   └── supervisor-side link actor: KeepaliveSupervisor
+    // └── worker: Worker<TestChild>
+    //     ├── child: TestChild
+    //     └── worker-side link actor: KeepaliveWorker
+    //
+    // Worker accepts Link with OrphanPolicy::Detach and records an
+    // active supervisor session. The test then injects an
+    // Undeliverable for a worker-sent message. Worker treats the
+    // supervisor session as orphaned, stops the link actor and clears
+    // the session, but does NOT stop the child. Worker remains alive
+    // with no active session.
+    #[tokio::test]
+    async fn test_detach_orphan_policy_leaves_child_running_on_supervisor_loss() {
+        let proc = Proc::local();
+        let (inst, _client_handle) = proc.instance("inst").unwrap();
+        let (ready, mut ready_rx) = inst.open_port::<ActorAddr>();
+        let (stopped, mut stopped_rx) = inst.open_port::<String>();
+        let (supervisor, mut supervisor_rx) = inst.open_port::<WorkerSupervisor>();
+        let supervisor_ref = supervisor.bind();
+        let worker = proc
+            .spawn("worker", Worker::new(test_child(ready, stopped, None)))
+            .unwrap();
+        let (keep_alive, link_spec) =
+            KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
+                .spawn_supervisor(&inst)
+                .unwrap();
+        let _child_addr = ready_rx.recv().await.unwrap();
+        let session_id = hyperactor::Uid::instance();
+
+        worker
+            .send(
+                &inst,
+                Link {
+                    session_id: session_id.clone(),
+                    supervisor: supervisor_ref.clone(),
+                    parent: inst.self_addr().clone(),
+                    link: link_spec,
+                    options: LinkOptions {
+                        orphan_policy: OrphanPolicy::Detach,
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        let linked = tokio::time::timeout(Duration::from_secs(5), supervisor_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(linked, WorkerSupervisor::Linked { .. }));
+
+        // Forge an undeliverable bounce for a worker-to-supervisor
+        // message - a production trigger for
+        // `handle_orphaned_supervisor` where `OrphanPolicy` is
+        // applied.
+        let envelope = MessageEnvelope::serialize(
+            worker.actor_addr().clone(),
+            supervisor_ref.port_addr().clone(),
+            &WorkerSupervisor::Unlinked {
+                session_id,
+                reason: "test".to_string(),
+            },
+            hyperactor_config::Flattrs::new(),
+        )
+        .unwrap();
+        worker
+            .port::<Undeliverable<MessageEnvelope>>()
+            .send(&inst, Undeliverable(envelope))
+            .unwrap();
+
+        // Under `Detach`, the worker clears its session and stops the
+        // link, but does NOT stop the child. No message shhould arrive on
+        // the stopped port within a generous timeout.
+        let timed_out = tokio::time::timeout(Duration::from_millis(500), stopped_rx.recv()).await;
+        assert!(
+            timed_out.is_err(),
+            "child should not be stopped under OrphanPolicy::Detach"
+        );
+
+        // The worker itself is still alive. Cleanly stopping it should
+        // succeed and yield a Stopped status.
+        worker.stop("test").unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+        assert!(
+            matches!(status, ActorStatus::Stopped(_)),
+            "worker should accept clean stop after Detach orphan, got {:?}",
+            status
+        );
+
+        keep_alive.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), keep_alive)
+            .await
+            .unwrap();
+    }
+
+    // proc
+    // ├── client instance
+    // │   ├── ready port: receives the child address
+    // │   ├── stopped port: receives the child stop reason
+    // │   └── events port: receives parent-observed supervision events
+    // ├── worker: Worker<TestChild>
+    // │   ├── child: TestChild
+    // │   └── worker-side link actor: KeepaliveWorker
+    // └── parent: Parent
+    //     └── supervisor: Supervisor (constructed with a known session id)
+    //         └── supervisor-side link actor: KeepaliveSupervisor
+    //
+    // After the link is established the test sends
+    // `SupervisedWorker::Unlink` to the worker with the matching
+    // session id. Under `OrphanPolicy::Stop` the worker stops the link
+    // actor, stops the child with the unlink reason, and sends
+    // `Unlinked` back. The supervisor receives `Unlinked` and exits
+    // cleanly via `cx.exit(reason)`; the parent observes that exit as a
+    // `Stopped(reason)` supervision event. The worker then observes the
+    // child's terminal event and exits as well.
+    #[tokio::test]
+    async fn test_supervised_worker_unlink_stops_child_under_stop_policy() {
+        let proc = Proc::local();
+        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
+        let session_id = Uid::instance();
+
+        let (_child_addr, worker, parent, mut stopped_rx, mut events_rx) = spawn_supervised_pair(
+            &proc,
+            &inst,
+            session_id.clone(),
+            LinkOptions::default(),
+            None,
+        )
+        .await;
+
+        // Give the Link/Linked handshake time to complete before
+        // issuing Unlink.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        worker
+            .send(
+                &inst,
+                SupervisedWorker::Unlink {
+                    session_id: session_id.clone(),
+                    reason: "test unlink".to_string(),
+                },
+            )
+            .unwrap();
+
+        // Under OrphanPolicy::Stop the worker stops the child with
+        // the unlink reason.
+        let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reason, "test unlink");
+
+        // Supervisor receives `Unlinked` and exits cleanly via
+        // cx.exit; Parent observes that supervisor exit as a
+        // `Stopped(reason)` event.
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event.actor_status {
+            ActorStatus::Stopped(reason) => assert_eq!(reason, "test unlink"),
+            status => panic!("expected supervisor Stopped event, got {:?}", status),
+        }
+
+        // Worker observed the child's terminal event and exited as
+        // well. No `SupervisionEvent { Terminal }` is forwarded
+        // because the Unlink handler already cleared the session -
+        // `Unlinked` is the sole protocol message in this path.
+        let status = tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+        assert!(matches!(status, ActorStatus::Stopped(_)));
+
+        parent.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+    }
+
+    // proc
+    // ├── client instance
+    // │   ├── ready port: receives the child address
+    // │   ├── stopped port: not expected to fire (Detach leaves child running)
+    // │   └── events port: receives parent-observed supervision events
+    // ├── worker: Worker<TestChild>
+    // │   ├── child: TestChild
+    // │   └── worker-side link actor: KeepaliveWorker
+    // └── parent: Parent
+    //     └── supervisor: Supervisor (constructed with a known session id)
+    //         └── supervisor-side link actor: KeepaliveSupervisor
+    //
+    // After the link is established the test sends
+    // `SupervisedWorker::Unlink` to the worker with the matching
+    // session id. Under `OrphanPolicy::Detach` the worker stops the
+    // link actor and clears the session but does NOT stop the child; it
+    // then sends `Unlinked` back. The supervisor receives `Unlinked`
+    // and exits cleanly via `cx.exit(reason)`; the parent observes that
+    // exit as a `Stopped(reason)` supervision event. The child and the
+    // worker both remain alive; the test cleanly stops the worker for
+    // teardown.
+    #[tokio::test]
+    async fn test_supervised_worker_unlink_leaves_child_running_under_detach_policy() {
+        let proc = Proc::local();
+        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
+        let session_id = Uid::instance();
+
+        let (_child_addr, worker, parent, mut stopped_rx, mut events_rx) = spawn_supervised_pair(
+            &proc,
+            &inst,
+            session_id.clone(),
+            LinkOptions {
+                orphan_policy: OrphanPolicy::Detach,
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+        // Give the Link/Linked handshake time to complete before
+        // issuing Unlink.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        worker
+            .send(
+                &inst,
+                SupervisedWorker::Unlink {
+                    session_id: session_id.clone(),
+                    reason: "test unlink".to_string(),
+                },
+            )
+            .unwrap();
+
+        // Supervisor receives `Unlinked` and exits cleanly via cx.exit;
+        // Parent observes that supervisor exit as a `Stopped(reason)`
+        // event. This is the positive signal that the Unlink round-trip
+        // has completed; only after this can we meaningfully assert the
+        // negative (no child stop).
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event.actor_status {
+            ActorStatus::Stopped(reason) => assert_eq!(reason, "test unlink"),
+            status => panic!("expected supervisor Stopped event, got {:?}", status),
+        }
+
+        // Under OrphanPolicy::Detach the worker does NOT stop the
+        // child. The stopped port should receive no message within a
+        // generous timeout window.
+        let timed_out = tokio::time::timeout(Duration::from_millis(500), stopped_rx.recv()).await;
+        assert!(
+            timed_out.is_err(),
+            "child should not be stopped under OrphanPolicy::Detach"
+        );
+
+        // The worker is still alive: Unlink left the child running, so
+        // no child-terminal event cascaded the worker into
+        // `this.exit("supervised child stopped")`. A clean stop
+        // succeeds and yields Stopped(_).
+        worker.stop("test").unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+        assert!(
+            matches!(status, ActorStatus::Stopped(_)),
+            "worker should accept clean stop after Detach unlink, got {:?}",
+            status
+        );
+
+        parent.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+    }
+
+    // proc
+    // ├── client instance
+    // │   ├── ready port: receives the child address (consumed by helper)
+    // │   ├── stopped port: not expected to fire
+    // │   ├── events1 port: parent1's supervision events (silent — first link succeeds)
+    // │   └── events2 port: parent2's supervision events (Failed with bail reason)
+    // ├── worker: Worker<TestChild>
+    // │   ├── child: TestChild
+    // │   └── worker-side link actor: KeepaliveWorker (under session_id1)
+    // ├── parent1: Parent
+    // │   └── supervisor1: Supervisor (session_id1) — wins the race, receives Linked
+    // └── parent2: Parent
+    //     └── supervisor2: Supervisor (session_id2) — rejected, bails
+    //
+    // Spawn worker + parent1 via the helper, sleep 100ms so the
+    // worker has `self.session = Some(...)` before parent2's Link
+    // arrives, then spawn a second parent whose Supervisor targets
+    // the same worker with a different session id. supervisor2 sends
+    // `Link`, the worker sees `self.session.is_some()` and replies
+    // with `WorkerSupervisor::LinkRejected { reason: "worker already
+    // linked" }` (`supervision.rs:181`). supervisor2's
+    // `Handler<WorkerSupervisor>` arm bails with "remote supervision
+    // link rejected: worker already linked", supervisor2 fails,
+    // parent2 observes that failure on events_rx2.
+    #[tokio::test]
+    async fn test_concurrent_link_rejects_second_supervisor() {
+        let proc = Proc::local();
+        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
+        let session_id1 = Uid::instance();
+        let (_child_addr, worker, parent1, _stopped_rx, mut events_rx1) = spawn_supervised_pair(
+            &proc,
+            &inst,
+            session_id1.clone(),
+            LinkOptions::default(),
+            None,
+        )
+        .await;
+
+        // Let the first Link/Linked handshake complete so the worker
+        // has self.session.is_some() = true before parent2's Link
+        // arrives.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Spawn a second parent whose Supervisor targets the same
+        // worker with a different session id. Its Link will be
+        // rejected.
+        let session_id2 = Uid::instance();
+        let (events2, mut events_rx2) = inst.open_port::<ActorSupervisionEvent>();
+        let parent2 = proc
+            .spawn(
+                "parent2",
+                Parent {
+                    supervisor: Some(Supervisor::new_uid(
+                        worker.bind::<WorkerLike>(),
+                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                        LinkOptions::default(),
+                        session_id2.clone(),
+                    )),
+                    events: events2,
+                },
+            )
+            .unwrap();
+
+        // supervisor2 receives WorkerSupervisor::LinkRejected and
+        // bails with "remote supervision link rejected: worker
+        // already linked" (supervision.rs:181). parent2 observes that
+        // failure.
+        let event = tokio::time::timeout(Duration::from_secs(5), events_rx2.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(event.actor_status, ActorStatus::Failed(_)),
+            "expected supervisor2 Failed event, got {:?}",
+            event.actor_status
+        );
+        assert!(
+            event
+                .to_string()
+                .contains("remote supervision link rejected: worker already linked"),
+            "expected LinkRejected bail string in failure message, got: {}",
+            event
+        );
+
+        // parent1's supervisor stays linked and healthy: its events
+        // port should not receive any failure within a short window.
+        let timed_out = tokio::time::timeout(Duration::from_millis(200), events_rx1.recv()).await;
+        assert!(
+            timed_out.is_err(),
+            "first supervisor should remain linked, no failure expected"
+        );
+
+        parent1.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent1)
+            .await
+            .unwrap();
+        // Worker exits as a downstream effect of parent1's stop
+        // (cascading SupervisedWorker::Stop -> child stop -> Worker
+        // exit).
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+
+        parent2.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent2)
+            .await
+            .unwrap();
+    }
+
+    // proc
+    // ├── client instance
+    // │   ├── link_started port: signals when TestSlowWorker enters Handler<Link>
+    // │   ├── received_stop port: signals when Stop arrives at the worker side
+    // │   └── events port: parent's supervision events (Parent absorbs)
+    // ├── worker: TestSlowWorker (fake WorkerLike, never sends Linked)
+    // └── parent: Parent
+    //     └── supervisor: Supervisor (constructed with a known session id)
+    //         └── supervisor-side link actor: KeepaliveSupervisor
+    //
+    // Protocol-surface test for `Supervisor::pending_stop`. The
+    // fake worker records the session, signals link_started, and
+    // blocks on a Notify the test holds. The test calls
+    // `parent.stop` while the worker is still in Handler<Link>,
+    // then releases the worker. The pending_stop machinery must
+    // have already queued `SupervisedWorker::Stop` carrying the
+    // parent's reason and the matching session_id. The worker
+    // validates the session_id, sends the reason via
+    // `received_stop`, then emits a synthetic `Unlinked` so the
+    // supervisor exits cleanly via cx.exit (the Unlinked arm only
+    // checks session_id; it does not require a prior Linked).
+    #[tokio::test]
+    async fn test_stop_before_linked_propagates_via_pending_stop() {
+        let proc = Proc::local();
+        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
+        let (link_started, mut link_started_rx) = inst.open_port::<()>();
+        let (received_stop, mut received_stop_rx) = inst.open_port::<String>();
+        let (events, _events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let release_link = Arc::new(Notify::new());
+        let worker = proc
+            .spawn(
+                "worker",
+                TestSlowWorker {
+                    link_started,
+                    release_link: Arc::clone(&release_link),
+                    received_stop,
+                    session: None,
+                },
+            )
+            .unwrap();
+        let session_id = Uid::instance();
+        let parent = proc
+            .spawn(
+                "parent",
+                Parent {
+                    supervisor: Some(Supervisor::new_uid(
+                        worker.bind::<WorkerLike>(),
+                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                        LinkOptions::default(),
+                        session_id.clone(),
+                    )),
+                    events,
+                },
+            )
+            .unwrap();
+
+        // Observe Link receipt - worker is now blocked in Handler<Link>.
+        tokio::time::timeout(Duration::from_secs(5), link_started_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // `Supervisor::handle_stop` does not call `cx.exit` — the
+        // only path that exits the supervisor is
+        // `WorkerSupervisor::Unlinked`. That's why `TestSlowWorker`
+        // emits `Unlinked` in its `Stop` handler.
+        parent.stop("test stop").unwrap();
+        release_link.notify_one();
+
+        let stop_reason = tokio::time::timeout(Duration::from_secs(5), received_stop_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stop_reason, "parent stopping");
+
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+        worker.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+    }
+
+    // proc
+    // ├── client instance
+    // │   ├── ready port: receives the child address
+    // │   ├── stopped port: receives the child stop reason
+    // │   ├── drained port: receives the child's work tag
+    // │   └── events port: parent's supervision events (silent — Parent absorbs)
+    // ├── worker: Worker<TestChild> (with DrainAfter(10ms, "child work"))
+    // │   ├── child: TestChild
+    // │   └── worker-side link actor: KeepaliveWorker
+    // └── parent: Parent
+    //     └── supervisor: Supervisor (constructed with a known session id)
+    //         └── supervisor-side link actor: KeepaliveSupervisor
+    //
+    // End-to-end proxy for the worker->child DrainAndStop path:
+    // verifies that `Worker::stop_child` takes the `DrainAndStop`
+    // branch, `TestChild::handle_stop` takes `exit_after_drain`, and
+    // the child can process ordinary work before terminating. It does
+    // not force work to remain queued at the instant stop arrives;
+    // that stricter property would require a blocked-handler style
+    // test.
+    #[tokio::test]
+    async fn test_drain_and_stop_propagates_through_worker_after_child_work() {
+        let proc = Proc::local();
+        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
+        let (ready, mut ready_rx) = inst.open_port::<ActorAddr>();
+        let (stopped, mut stopped_rx) = inst.open_port::<String>();
+        let (drained, mut drained_rx) = inst.open_port::<String>();
+        let (events, _events_rx) = inst.open_port::<ActorSupervisionEvent>();
+        let worker = proc
+            .spawn(
+                "worker",
+                Worker::new(
+                    test_child(
+                        ready,
+                        stopped,
+                        Some(TestChildAction::DrainAfter(
+                            Duration::from_millis(10),
+                            "child work".to_string(),
+                        )),
+                    )
+                    .with_drain_observer(drained),
+                ),
+            )
+            .unwrap();
+        let _child_addr = ready_rx.recv().await.unwrap();
+        let session_id = Uid::instance();
+        let parent = proc
+            .spawn(
+                "parent",
+                Parent {
+                    supervisor: Some(Supervisor::new_uid(
+                        worker.bind::<WorkerLike>(),
+                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                        LinkOptions::default(),
+                        session_id.clone(),
+                    )),
+                    events,
+                },
+            )
+            .unwrap();
+
+        // Wait for the self-scheduled child work.
+        let drained_tag = tokio::time::timeout(Duration::from_secs(5), drained_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(drained_tag, "child work");
+
+        // Now send Stop with DrainAndStop.
+        worker
+            .send(
+                &inst,
+                SupervisedWorker::Stop {
+                    session_id: session_id.clone(),
+                    mode: StopMode::DrainAndStop,
+                    reason: "drain test".to_string(),
+                },
+            )
+            .unwrap();
+
+        // Child reports the drain-stop reason via handle_stop.
+        let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reason, "drain test");
+
+        // Worker exits as a downstream effect of the child stop.
+        let status = tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap();
+        assert!(matches!(status, ActorStatus::Stopped(_)));
+
+        parent.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent)
+            .await
+            .unwrap();
+    }
+
+    // proc
+    // ├── client instance
+    // │   ├── ready port: child address
+    // │   ├── stopped port: child stop reasons (silent across both unlinks under Detach)
+    // │   ├── events1 port: parent1's supervision events
+    // │   └── events2 port: parent2's supervision events
+    // ├── worker: Worker<TestChild>
+    // │   └── child: TestChild (survives both unlinks under Detach)
+    // ├── parent1: Parent
+    // │   └── supervisor1 (session_id1, OrphanPolicy::Detach)
+    // └── parent2: Parent
+    //     └── supervisor2 (session_id2, OrphanPolicy::Detach)
+    //
+    // Verifies the worker accepts a fresh Link after Unlink clears
+    // self.session. Under OrphanPolicy::Detach the child and worker
+    // survive the first unlink, allowing a second supervisor with
+    // session_id2 to link. A second Unlink with session_id2 confirms
+    // accept_session_id installed the new session.
+    #[tokio::test]
+    async fn test_worker_accepts_relink_after_unlink_under_detach_policy() {
+        let proc = Proc::local();
+        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
+        let session_id1 = Uid::instance();
+        let (_child_addr, worker, parent1, mut stopped_rx, mut events_rx1) = spawn_supervised_pair(
+            &proc,
+            &inst,
+            session_id1.clone(),
+            LinkOptions {
+                orphan_policy: OrphanPolicy::Detach,
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+        // Give the first Link/Linked handshake time to complete before
+        // issuing Unlink.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        worker
+            .send(
+                &inst,
+                SupervisedWorker::Unlink {
+                    session_id: session_id1.clone(),
+                    reason: "first unlink".to_string(),
+                },
+            )
+            .unwrap();
+
+        let event1 = tokio::time::timeout(Duration::from_secs(5), events_rx1.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event1.actor_status {
+            ActorStatus::Stopped(reason) => assert_eq!(reason, "first unlink"),
+            status => panic!("expected supervisor1 Stopped event, got {:?}", status),
+        }
+
+        let timed_out = tokio::time::timeout(Duration::from_millis(500), stopped_rx.recv()).await;
+        assert!(
+            timed_out.is_err(),
+            "child should survive unlink under OrphanPolicy::Detach"
+        );
+
+        let session_id2 = Uid::instance();
+        let (events2, mut events_rx2) = inst.open_port::<ActorSupervisionEvent>();
+        let parent2 = proc
+            .spawn(
+                "parent2",
+                Parent {
+                    supervisor: Some(Supervisor::new_uid(
+                        worker.bind::<WorkerLike>(),
+                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                        LinkOptions {
+                            orphan_policy: OrphanPolicy::Detach,
+                            ..Default::default()
+                        },
+                        session_id2.clone(),
+                    )),
+                    events: events2,
+                },
+            )
+            .unwrap();
+
+        // Give the second Link/Linked handshake time to complete.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        worker
+            .send(
+                &inst,
+                SupervisedWorker::Unlink {
+                    session_id: session_id2.clone(),
+                    reason: "second unlink".to_string(),
+                },
+            )
+            .unwrap();
+
+        let event2 = tokio::time::timeout(Duration::from_secs(5), events_rx2.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event2.actor_status {
+            ActorStatus::Stopped(reason) => assert_eq!(reason, "second unlink"),
+            status => panic!("expected supervisor2 Stopped event, got {:?}", status),
+        }
+
+        parent1.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent1)
+            .await
+            .unwrap();
+        parent2.stop("test").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), parent2)
+            .await
+            .unwrap();
+        worker.stop("test").unwrap();
         tokio::time::timeout(Duration::from_secs(5), worker)
             .await
             .unwrap();
