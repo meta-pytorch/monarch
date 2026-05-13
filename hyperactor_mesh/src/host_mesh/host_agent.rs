@@ -305,7 +305,7 @@ pub struct HostAgent {
     /// `crate::host::LOCAL_PROC_NAME`).
     local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
     /// Handle to the host's frontend mailbox server, set during `init` after
-    /// `this.bind::<Self>()` ensures the actor port is registered before the
+    /// `this.bind::<Self>()` ensures the handler port is registered before the
     /// mailbox starts routing messages. Sent back to the bootstrap loop via
     /// `shutdown_tx` when the host shuts down so the caller can
     /// drain it.
@@ -1536,7 +1536,6 @@ mod tests {
     use crate::mesh_id::ResourceId;
     use crate::resource::CreateOrUpdateClient;
     use crate::resource::GetStateClient;
-    use crate::resource::StopClient;
     use crate::resource::WaitRankStatusClient;
 
     #[tokio::test]
@@ -1695,8 +1694,7 @@ mod tests {
             .unwrap();
 
         // Stop the proc.
-        host_agent
-            .stop(&client, id, "test".to_string())
+        crate::resource::StopClient::stop(&host_agent, &client, id, "test".to_string())
             .await
             .unwrap();
 
@@ -1993,7 +1991,7 @@ mod tests {
             .proc_addr()
             .actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
         let agent_id: ActorAddr = agent_ref;
-        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
 
         // Poll until we see non-zero watermark (evidence of queue
         // traffic since startup).

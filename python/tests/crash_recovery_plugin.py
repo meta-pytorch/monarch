@@ -42,12 +42,15 @@ _in_worker = False
 
 
 def _check(*cmd: str) -> bool:
-    return (
-        subprocess.run(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        ).returncode
-        == 0
-    )
+    try:
+        return (
+            subprocess.run(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ).returncode
+            == 0
+        )
+    except FileNotFoundError:
+        return False
 
 
 # Only the full unshare mode is supported: --pid --fork --mount-proc gives an
@@ -56,12 +59,17 @@ def _check(*cmd: str) -> bool:
 # Partial modes (--pid without --mount-proc, or --user variants) are not
 # supported: without --mount-proc the CUDA driver detects nested namespaces via
 # NSpid in /proc/self/status and refuses to initialise.
-# When unshare is unavailable (e.g. CI Docker without CAP_SYS_ADMIN and without
-# seccomp allowance for mount), periodic --restart-every handles cleanup.
-if _check("unshare", "--pid", "--fork", "--mount-proc", "true"):
+# When unshare is unavailable (e.g. macOS, or CI Docker without CAP_SYS_ADMIN
+# and without seccomp allowance for mount), periodic --restart-every handles
+# cleanup. unshare and libc.so.6 are Linux-only, so skip detection elsewhere.
+if sys.platform == "linux" and _check(
+    "unshare", "--pid", "--fork", "--mount-proc", "true"
+):
     _unshare_available = True
     _unshare_cmd = ["unshare", "--pid", "--fork", "--mount-proc"]
-elif _check("unshare", "--user", "--pid", "--fork", "--mount", "--mount-proc", "true"):
+elif sys.platform == "linux" and _check(
+    "unshare", "--user", "--pid", "--fork", "--mount", "--mount-proc", "true"
+):
     _unshare_available = True
     _unshare_cmd = ["unshare", "--user", "--pid", "--fork", "--mount", "--mount-proc"]
 else:
@@ -71,13 +79,17 @@ else:
 
 # prctl(PR_SET_PDEATHSIG, SIGKILL): tell the kernel to deliver SIGKILL to this
 # process when its parent exits.  Used to chain kills through the unshare →
-# Python worker hierarchy without needing process groups.
-_libc = ctypes.CDLL("libc.so.6", use_errno=True)
+# Python worker hierarchy without needing process groups. Linux-only.
+if sys.platform == "linux":
+    _libc = ctypes.CDLL("libc.so.6", use_errno=True)
+else:
+    _libc = None
 _PR_SET_PDEATHSIG = 1
 
 
 def _set_pdeathsig() -> None:
-    _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+    if _libc is not None:
+        _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
 
 
 # ---------------------------------------------------------------------------

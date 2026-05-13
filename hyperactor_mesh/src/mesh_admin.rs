@@ -398,7 +398,7 @@ async fn query_introspect(
     timeout: Duration,
     err_ctx: &str,
 ) -> Result<IntrospectResult, anyhow::Error> {
-    let introspect_port = hyperactor::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+    let introspect_port = hyperactor::PortRef::<IntrospectMessage>::attest_handler_port(actor_id);
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
     let mut reply_ref = reply_handle.bind();
     reply_ref.return_undeliverable(false);
@@ -423,7 +423,7 @@ async fn query_child_introspect(
     timeout: Duration,
     err_ctx: &str,
 ) -> Result<IntrospectResult, anyhow::Error> {
-    let introspect_port = hyperactor::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+    let introspect_port = hyperactor::PortRef::<IntrospectMessage>::attest_handler_port(actor_id);
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
     let mut reply_ref = reply_handle.bind();
     reply_ref.return_undeliverable(false);
@@ -904,7 +904,7 @@ impl axum::serve::Listener for TlsListener {
 impl Actor for MeshAdminAgent {
     /// Initializes the mesh admin agent and its HTTP server.
     ///
-    /// 1. Binds well-known message ports (`proc.spawn()` does not
+    /// 1. Binds well-known handler ports (`proc.spawn()` does not
     ///    call `bind()` — unlike `gspawn` — so the actor must do it
     ///    itself before becoming reachable).
     /// 2. Binds a TCP listener (ephemeral or fixed port).
@@ -1437,7 +1437,7 @@ impl MeshAdminAgent {
     /// actor-level `NodePayload`.
     ///
     /// Sends `IntrospectMessage::Query` directly to the target actor
-    /// via `PortRef::attest_message_port`. The blanket handler
+    /// via `PortRef::attest_handler_port`. The blanket handler
     /// returns a `NodePayload` with `NodeProperties::Actor` (or a
     /// domain-specific override like `NodeProperties::Proc` for
     /// `ProcAgent`).
@@ -2085,7 +2085,7 @@ async fn probe_actor(
     cx: &Instance<()>,
     agent_id: &hyperactor::ActorAddr,
 ) -> Result<bool, ApiError> {
-    let port = hyperactor::PortRef::<IntrospectMessage>::attest_message_port(agent_id);
+    let port = hyperactor::PortRef::<IntrospectMessage>::attest_handler_port(agent_id);
     let (handle, rx) = open_once_port::<IntrospectResult>(cx);
     port.send(
         cx,

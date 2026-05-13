@@ -17,8 +17,10 @@ use std::sync::LazyLock;
 use hyperactor_config::Flattrs;
 
 use crate::Actor;
+use crate::AnyActorHandle;
 use crate::Data;
 use crate::id::Uid;
+use crate::proc::InstanceCell;
 use crate::proc::Proc;
 
 /// The offset of user-defined ports (i.e., arbitrarily bound).
@@ -46,7 +48,8 @@ macro_rules! register_spawnable {
             $crate::internal_macro_support::inventory::submit! {
                 $crate::actor::remote::SpawnableActor {
                     name: &NAME,
-                    gspawn: <$actor as $crate::actor::RemoteSpawn>::gspawn,
+                    gspawn_root_bind: <$actor as $crate::actor::RemoteSpawn>::gspawn_root_bind,
+                    gspawn_child: <$actor as $crate::actor::RemoteSpawn>::gspawn_child,
                     get_type_id: <$actor as $crate::actor::RemoteSpawn>::get_type_id,
                 }
             }
@@ -65,14 +68,27 @@ pub struct SpawnableActor {
     /// implementation, which can not yet be `const`.
     pub name: &'static LazyLock<&'static str>,
 
-    /// Type-erased spawn function. This is the type's [`RemoteSpawn::gspawn`].
-    pub gspawn: fn(
+    /// Type-erased root spawn function. This is the type's
+    /// [`RemoteSpawn::gspawn_root_bind`].
+    pub gspawn_root_bind: fn(
         &Proc,
         Uid,
         Data,
         Flattrs,
-    )
-        -> Pin<Box<dyn Future<Output = Result<crate::ActorAddr, anyhow::Error>> + Send>>,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<crate::ActorAddr, anyhow::Error>> + Send>,
+    >,
+
+    /// Type-erased child spawn function. This is the type's
+    /// [`RemoteSpawn::gspawn_child`].
+    pub gspawn_child:
+        fn(
+            &Proc,
+            InstanceCell,
+            Uid,
+            Data,
+            Flattrs,
+        ) -> Pin<Box<dyn Future<Output = Result<AnyActorHandle, anyhow::Error>> + Send>>,
 
     /// A function to retrieve the type id of the actor itself. This is
     /// used to translate a concrete type to a global name.
@@ -112,6 +128,12 @@ impl Remote {
         }
     }
 
+    /// Return the process-wide remote spawn registry.
+    pub fn global() -> &'static Self {
+        static REMOTE: LazyLock<Remote> = LazyLock::new(Remote::collect);
+        &REMOTE
+    }
+
     /// Returns the name of the provided actor, if registered.
     pub fn name_of<A: Actor>(&self) -> Option<&'static str> {
         self.by_type_id
@@ -134,7 +156,25 @@ impl Remote {
             .by_name
             .get(actor_type)
             .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
-        (entry.gspawn)(proc, actor_uid, params, environment).await
+        (entry.gspawn_root_bind)(proc, actor_uid, params, environment).await
+    }
+
+    /// Spawns the actor as a child of the provided parent. Returns an
+    /// erased lifecycle handle.
+    pub async fn gspawn_child(
+        &self,
+        proc: &Proc,
+        parent: InstanceCell,
+        actor_type: &str,
+        actor_uid: Uid,
+        params: Data,
+        environment: Flattrs,
+    ) -> Result<AnyActorHandle, anyhow::Error> {
+        let entry = self
+            .by_name
+            .get(actor_type)
+            .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
+        (entry.gspawn_child)(proc, parent, actor_uid, params, environment).await
     }
 }
 
@@ -241,5 +281,77 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.to_string().as_str(), "some failure");
+    }
+
+    #[tokio::test]
+    async fn test_instance_gspawn_child_returns_erased_handle() {
+        let proc = Proc::isolated();
+        let (parent, _parent_handle) = proc.instance("parent").unwrap();
+
+        let child = parent
+            .gspawn(
+                "hyperactor::actor::remote::tests::MyActor",
+                bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!child.actor_id().is_root());
+        assert!(child.downcast::<MyActor>().is_some());
+        assert!(child.downcast::<GenericActor<u64>>().is_none());
+
+        child.stop("test").unwrap();
+        child.await;
+    }
+
+    #[tokio::test]
+    async fn test_instance_gspawn_uid_uses_explicit_uid() {
+        let proc = Proc::isolated();
+        let (parent, _parent_handle) = proc.instance("parent").unwrap();
+        let uid = Uid::instance_labeled(Label::new("child").unwrap());
+
+        let child = parent
+            .gspawn_uid(
+                "hyperactor::actor::remote::tests::MyActor",
+                uid.clone(),
+                bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(child.actor_id().uid(), &uid);
+
+        child.stop("test").unwrap();
+        child.await;
+    }
+
+    #[tokio::test]
+    async fn test_instance_gspawn_uid_rejects_duplicate_uid() {
+        let proc = Proc::isolated();
+        let (parent, _parent_handle) = proc.instance("parent").unwrap();
+        let uid = Uid::instance_labeled(Label::new("child").unwrap());
+
+        let child = parent
+            .gspawn_uid(
+                "hyperactor::actor::remote::tests::MyActor",
+                uid.clone(),
+                bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let err = parent
+            .gspawn_uid(
+                "hyperactor::actor::remote::tests::MyActor",
+                uid,
+                bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("has already been spawned"));
+
+        child.stop("test").unwrap();
+        child.await;
     }
 }

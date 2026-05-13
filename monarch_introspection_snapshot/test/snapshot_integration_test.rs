@@ -420,7 +420,7 @@ async fn test_pt3_immediate_first_capture() -> Result<()> {
     let actor_id = instance.proc().proc_addr().actor_addr("snapshot_capture");
     instance
         .proc()
-        .stop_actor(&actor_id, "PT-3 test cleanup".to_string());
+        .stop_actor(actor_id.id(), "PT-3 test cleanup".to_string());
 
     let mut host_mesh = host_mesh;
     host_mesh.shutdown(&instance).await?;
@@ -469,7 +469,7 @@ async fn test_pt5_drain_halts_future_captures() -> Result<()> {
     let actor_id = instance.proc().proc_addr().actor_addr("snapshot_capture");
     let status_rx = instance
         .proc()
-        .stop_actor(&actor_id, "PT-5 test shutdown".to_string());
+        .stop_actor(actor_id.id(), "PT-5 test shutdown".to_string());
     if let Some(mut rx) = status_rx {
         // Wait for the actor to reach a terminal state.
         while !rx.borrow().is_terminal() {
