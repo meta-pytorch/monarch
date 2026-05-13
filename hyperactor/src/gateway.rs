@@ -165,10 +165,17 @@ impl Gateway {
 
     /// Serve this gateway on the provided channel address.
     ///
-    /// When serving [`ChannelAddr::any`] for the local transport, the gateway
-    /// uses the local address that was reserved when the gateway was created.
-    /// Serving also updates the gateway's default location to the served
-    /// address.
+    /// When serving the first local [`ChannelAddr::any`] address, the gateway
+    /// binds the local address that was reserved when the gateway was created.
+    /// Local reservation is separate from local binding so a gateway can have a
+    /// stable location before it has a runtime available to run a server.
+    /// Later local `any` serves allocate fresh local ports, so the gateway can
+    /// have multiple active local servers.
+    ///
+    /// Serving updates the gateway's default location to the newly served
+    /// address. When that server stops, the default location falls back to the
+    /// previous active server, or to the reserved fallback location when no
+    /// server remains.
     pub fn serve(&self, addr: ChannelAddr) -> Result<GatewayServeHandle, ChannelError> {
         let (location, handle) = self.serve_inner(addr)?;
         Ok(GatewayServeHandle {
@@ -191,6 +198,9 @@ impl Gateway {
     }
 
     fn resolve_serve_addr(&self, addr: ChannelAddr) -> ChannelAddr {
+        // The first local-any serve activates the address that was reserved at
+        // construction time. Subsequent local-any serves should allocate new
+        // ports, so multiple local servers can coexist for the same gateway.
         if addr == ChannelAddr::any(ChannelTransport::Local)
             && self.inner.active_servers.read().unwrap().is_empty()
             && matches!(self.inner.fallback_location.addr(), ChannelAddr::Local(_))

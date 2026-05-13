@@ -1241,6 +1241,17 @@ pub fn serve_local<M: RemoteMessage>() -> (ChannelAddr, ChannelRx<M>) {
 }
 
 /// Reserve a local channel address that can be served later.
+///
+/// Local channels are backed by an in-process port registry, so reserving a
+/// concrete address is a synchronous allocation that does not require a Tokio
+/// runtime or an OS listener. Gateways use this to have a stable advertised
+/// local location immediately, including when the process-wide gateway is
+/// initialized from a [`std::sync::OnceLock`]. Serving is a separate step that
+/// binds the reserved port to a receiver.
+///
+/// Network transports do not have an equivalent reservation API here: their
+/// concrete addresses come from binding sockets and starting the corresponding
+/// channel server.
 pub fn reserve_local_addr() -> ChannelAddr {
     ChannelAddr::Local(local::reserve())
 }

@@ -4264,34 +4264,76 @@ mod tests {
 
     #[tokio::test]
     async fn test_gateway_serve_updates_location_and_stops() {
+        use crate::mailbox::PortLocation;
+        use crate::mailbox::monitored_return_handle;
+        use crate::testing::ids::test_actor_id;
+
         let proc = Proc::isolated();
         let gateway = proc.gateway();
         let initial_location = proc.default_location();
+        let (client, _) = proc.instance("client").unwrap();
+        let (port, mut receiver) = client.bind_handler_port::<u64>();
+        let PortLocation::Bound(default_dest) = port.location() else {
+            panic!("handler port must be bound");
+        };
+
+        async fn send_to_location(
+            location: Location,
+            default_dest: &PortAddr,
+            value: u64,
+            receiver: &mut PortReceiver<u64>,
+        ) {
+            let dest = PortAddr::new(default_dest.id().clone(), location.clone());
+            let sender = MailboxClient::dial(location.addr().clone()).unwrap();
+            sender.post(
+                MessageEnvelope::serialize(
+                    test_actor_id("sender", "client"),
+                    dest,
+                    &value,
+                    Flattrs::new(),
+                )
+                .unwrap(),
+                monitored_return_handle(),
+            );
+            sender.flush().await.unwrap();
+            let received = tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(received, value);
+        }
 
         let server = Gateway::serve(&gateway, ChannelAddr::any(ChannelTransport::Local)).unwrap();
 
         assert_eq!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
         assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
+        send_to_location(initial_location.clone(), &default_dest, 1, &mut receiver).await;
 
         let next_server =
             Gateway::serve(&gateway, ChannelAddr::any(ChannelTransport::Local)).unwrap();
+        let next_location = proc.default_location();
 
         assert_ne!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
         assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
+        send_to_location(next_location.clone(), &default_dest, 2, &mut receiver).await;
+        send_to_location(initial_location.clone(), &default_dest, 3, &mut receiver).await;
 
         next_server.stop("test complete");
         next_server.await.unwrap().unwrap();
 
         assert_eq!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
+        assert!(MailboxClient::dial(next_location.addr().clone()).is_err());
+        send_to_location(initial_location.clone(), &default_dest, 4, &mut receiver).await;
 
         server.stop("test complete");
         server.await.unwrap().unwrap();
 
         assert_eq!(proc.default_location(), initial_location);
         assert_eq!(proc.default_location(), gateway.default_location());
+        assert!(MailboxClient::dial(initial_location.addr().clone()).is_err());
     }
 
     #[tokio::test]
