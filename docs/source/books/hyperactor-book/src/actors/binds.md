@@ -1,9 +1,9 @@
 # Binds
 
-The `Binds` trait defines how an actor's ports are associated with the message types it can receive remotely.
+The `Binds` trait defines how an actor's handler ports are associated with the message types it can receive remotely.
 ```rust
 pub trait Binds<A: Actor>: Referable {
-    fn bind(ports: &Ports<A>);
+    fn bind(ports: &HandlerPorts<A>);
 }
 ```
 Implementing `Binds<A>` allows the system to determine which messages can be routed to an actor instance of type `A`.
@@ -21,7 +21,7 @@ struct ShoppingListActor;
 Expands to:
 ```rust
 impl Binds<ShoppingListActor> for ShoppingListActor {
-    fn bind(ports: &Ports<Self>) {
+    fn bind(ports: &HandlerPorts<Self>) {
         ports.bind::<ShoppingList>();
     }
 }
