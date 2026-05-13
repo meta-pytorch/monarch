@@ -6,7 +6,26 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Shared reachability state for Hyperactor procs.
+//! Connectivity layer for Hyperactor procs.
+//!
+//! A proc by itself is an isolated actor runtime. It owns local actor
+//! lifecycle and mailboxes, but it communicates with other procs by
+//! attaching to a gateway. The gateway encapsulates the proc's connectivity
+//! layer: it gives attached procs an advertised location, accepts inbound
+//! traffic for that location, and forwards outbound traffic to destinations
+//! outside the proc.
+//!
+//! This separation lets us compose different topologies without changing
+//! proc identity. A host can attach all of its procs to one gateway, so the
+//! gateway multiplexes ingress to those procs and routes egress on their
+//! behalf. A proc from a foreign host can also attach through another host's
+//! gateway, inheriting that host's advertised location while still retaining
+//! its own proc id. Gateways can also act as pure proxies when they do not
+//! own any local procs.
+//!
+//! From the channel/connectivity perspective, each location has one gateway.
+//! Operationally, a gateway is both a proc multiplexer for ingress and a
+//! router for egress.
 
 use std::fmt;
 use std::sync::Arc;
@@ -46,10 +65,10 @@ impl Gateway {
         )
     }
 
-    /// Return the process-wide default gateway.
-    pub fn default() -> &'static Self {
-        static DEFAULT_GATEWAY: OnceLock<Gateway> = OnceLock::new();
-        DEFAULT_GATEWAY.get_or_init(Self::new)
+    /// Return the process-wide global gateway.
+    pub fn global() -> &'static Self {
+        static GLOBAL_GATEWAY: OnceLock<Gateway> = OnceLock::new();
+        GLOBAL_GATEWAY.get_or_init(Self::new)
     }
 
     pub(crate) fn configured(default_location: Location, forwarder: BoxedMailboxSender) -> Self {

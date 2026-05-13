@@ -107,7 +107,7 @@ impl PyInstance {
         let actor_id = self.inner.self_addr().clone();
         let proc = self.inner.proc().clone();
         crate::pytokio::PyPythonTask::new(async move {
-            let status_rx = proc.stop_actor(&actor_id, reason);
+            let status_rx = proc.stop_actor(actor_id.id(), reason);
             if let Some(mut rx) = status_rx {
                 let _ = rx.wait_for(|s| s.is_terminal()).await;
             }
