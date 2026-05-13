@@ -44,6 +44,11 @@ def testing_context():
         yield
 
 
+# Sandcastle's overall timeout is 600s per test; set a tighter bound so timeouts
+# are counted as failures rather than silently burning the 3h job timeout.
+pytestmark = pytest.mark.timeout(120)
+
+
 class BackendType(Enum):
     PY = "py"
     RS = "rs"
