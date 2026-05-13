@@ -1346,7 +1346,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
 ///   - `Actor`: the agent actually runs inside the proc.
 ///   - `Referable`: callers hold `ActorRef<A>` to the agent; this
 ///     bound is required for typed remote refs.
-///   - `Binds<A>`: lets the runtime wire the agent's message ports.
+///   - `Binds<A>`: lets the runtime wire the agent's handler ports.
 /// - `F: Future<Output = anyhow::Result<ActorHandle<A>>> + Send`:
 ///   the spawn closure returns a Send future (we `tokio::spawn` it).
 /// - `S: Fn(Proc) -> F + Sync`: the factory can be called from

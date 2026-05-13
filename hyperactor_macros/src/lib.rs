@@ -1502,16 +1502,12 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #(#handles)*
 
-        // Always export the `Signal` type.
-        impl #named_impl_generics hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name #named_ty_generics #named_where_clause {}
-        impl #named_impl_generics hyperactor::remote::Accepts<hyperactor::actor::Signal> for #data_type_name #named_ty_generics #named_where_clause {}
-
         // Always export the `IntrospectMessage` type.
         impl #named_impl_generics hyperactor::actor::RemoteHandles<hyperactor::introspect::IntrospectMessage> for #data_type_name #named_ty_generics #named_where_clause {}
         impl #named_impl_generics hyperactor::remote::Accepts<hyperactor::introspect::IntrospectMessage> for #data_type_name #named_ty_generics #named_where_clause {}
 
         impl #bind_impl_generics hyperactor::actor::Binds<#data_type_name #bind_ty_generics> for #data_type_name #bind_ty_generics #bind_where_clause {
-            fn bind(ports: &hyperactor::proc::Ports<Self>) {
+            fn bind(ports: &hyperactor::proc::HandlerPorts<Self>) {
                 #(#bindings)*
             }
         }
@@ -1709,7 +1705,7 @@ pub fn behavior(input: TokenStream) -> TokenStream {
             A: hyperactor::Actor #(+ hyperactor::Handler<#tys>)*,
             #where_clause
         {
-            fn bind(ports: &hyperactor::proc::Ports<A>) {
+            fn bind(ports: &hyperactor::proc::HandlerPorts<A>) {
                 #(
                     ports.bind::<#tys>();
                 )*

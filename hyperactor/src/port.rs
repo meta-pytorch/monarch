@@ -36,7 +36,7 @@ impl Port {
         Port(M::port())
     }
 
-    /// Whether this is a handler port (actor port bit set).
+    /// Whether this port uses the handler-port discriminator bit.
     pub fn is_handler(&self) -> bool {
         self.0 & ACTOR_PORT_BIT != 0
     }
