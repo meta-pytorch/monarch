@@ -410,8 +410,8 @@ impl PortAddr {
         self.id.actor_id().proc_id()
     }
 
-    /// Whether this is a handler (actor-level) port.
-    pub(crate) fn is_actor_port(&self) -> bool {
+    /// Whether this is a handler port.
+    pub(crate) fn is_handler_port(&self) -> bool {
         self.id.port().is_handler()
     }
 

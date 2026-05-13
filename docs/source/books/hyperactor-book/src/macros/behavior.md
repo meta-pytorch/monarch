@@ -97,7 +97,7 @@ where
       + Handler<ClearList>
       + Handler<GetItemCount<usize>>,
 {
-    fn bind(ports: &hyperactor::proc::Ports<A>) {
+    fn bind(ports: &hyperactor::proc::HandlerPorts<A>) {
         ports.bind::<ShoppingList>();
         ports.bind::<ClearList>();
         ports.bind::<GetItemCount<usize>>();
