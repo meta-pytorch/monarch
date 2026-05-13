@@ -40,9 +40,17 @@ jobs:
       version: ${{ github.event.inputs.version }}
       platform: aarch64
 
+  build-macos:
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      runner: macos-latest
+      torch-spec: 'torch==2.11.0 --extra-index-url https://download.pytorch.org/whl/cpu'
+      version: ${{ github.event.inputs.version }}
+
   publish:
     name: Publish to PyPI
-    needs: [build-x86_64, build-aarch64]
+    needs: [build-x86_64, build-aarch64, build-macos]
     runs-on: ubuntu-latest
     environment: stable
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
