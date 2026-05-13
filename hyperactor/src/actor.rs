@@ -232,6 +232,33 @@ pub trait Handler<M>: Actor {
     async fn handle(&mut self, cx: &Context<Self>, message: M) -> Result<(), anyhow::Error>;
 }
 
+/// Blanket Handler impls for bypass-workq message types. Since these messages
+/// bypass workq, they will never be sent to actor's handler.
+///
+/// These exist solely to lock the `Handler<M>` coherence slot for each bypass
+/// type, so no specific `impl Handler<BypassType> for SomeActor` can be written.
+/// The actual delivery for these types goes through dedicated channels set up
+/// in `Instance::new`, not through Handler. See the matching sender-side check
+/// in [crate::ordering::Sequencer::assign_seq] and the registry of bypass types
+/// in [crate::ordering::is_bypass_workq_type_id].
+#[async_trait]
+impl<A: Actor> Handler<Signal> for A {
+    async fn handle(&mut self, _cx: &Context<Self>, _message: Signal) -> Result<(), anyhow::Error> {
+        unimplemented!("signal handler should not be called directly")
+    }
+}
+
+#[async_trait]
+impl<A: Actor> Handler<crate::introspect::IntrospectMessage> for A {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        _message: crate::introspect::IntrospectMessage,
+    ) -> Result<(), anyhow::Error> {
+        unimplemented!("introspect message handler should not be called directly")
+    }
+}
+
 /// This handler provides a default behavior when a message sent by
 /// the actor to another is returned due to delivery failure.
 #[async_trait]
