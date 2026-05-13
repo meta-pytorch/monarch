@@ -3538,17 +3538,14 @@ impl<A: Actor> HandlerPorts<A> {
         let key = TypeId::of::<M>();
         match self.ports.entry(key) {
             Entry::Vacant(entry) => {
-                // Runtime control-plane ports are provisioned directly,
-                // not through HandlerPorts.
-                assert_ne!(
-                    key,
-                    TypeId::of::<Signal>(),
-                    "cannot provision Signal port through `HandlerPorts::get`"
-                );
-                assert_ne!(
-                    key,
-                    TypeId::of::<IntrospectMessage>(),
-                    "cannot provision IntrospectMessage port through `HandlerPorts::get`"
+                // Runtime control-plane ports are provisioned directly, not
+                // through HandlerPorts, nor wired to the work queue. So they
+                // should never hit this code path.
+                assert!(
+                    !crate::ordering::is_bypass_workq_type_id(key),
+                    "cannot provision bypass-workq port {} through `Ports::get`; \
+                     it must be pre-registered via `open_message_port` in `Instance::new`",
+                    std::any::type_name::<M>()
                 );
 
                 let type_info = TypeInfo::get_by_typeid(key);

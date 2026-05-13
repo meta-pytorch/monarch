@@ -900,7 +900,7 @@ mod tests {
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
                 uuid::Uuid::new_v4(),
-                crate::ValueMesh::from_single(region, 0u64),
+                crate::ValueMesh::from_single(region, 1u64),
             )
             .unwrap();
             let frame = RoutingFrame::root(sel!(*), slice);
