@@ -826,7 +826,7 @@ impl PyShared {
     /// Note: `await shared` is only supported inside the
     /// `PythonTask.from_coroutine(...)` world (because it ultimately
     /// awaits a `PythonTask`).
-    fn __await__(&mut self, py: Python<'_>) -> PyResult<PythonTaskAwaitIterator> {
+    fn __await__(&self, py: Python<'_>) -> PyResult<PythonTaskAwaitIterator> {
         let task = self.task()?;
         Ok(PythonTaskAwaitIterator::new(task.into_py_any(py)?))
     }
