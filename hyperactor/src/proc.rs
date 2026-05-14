@@ -1036,7 +1036,6 @@ impl Proc {
         instance.change_status(ActorStatus::Client);
         tokio::spawn(crate::introspect::serve_introspect(
             instance.inner.cell.clone(),
-            instance.inner.mailbox.clone(),
             receivers.introspect,
         ));
         Ok((instance, handle))
@@ -1060,7 +1059,6 @@ impl Proc {
 
         tokio::spawn(crate::introspect::serve_introspect(
             instance.inner.cell.clone(),
-            instance.inner.mailbox.clone(),
             receivers.introspect,
         ));
 
@@ -2335,11 +2333,10 @@ impl<A: Actor> Instance<A> {
         let actor_handle = ActorHandle::new(self.inner.cell.clone(), self.inner.ports.clone());
 
         // Spawn the introspect task — a separate tokio task that
-        // reads InstanceCell directly and replies via the actor's
-        // Mailbox. The actor loop never sees IntrospectMessage.
+        // reads InstanceCell directly and replies through the owning Proc. The
+        // actor loop never sees IntrospectMessage.
         tokio::spawn(crate::introspect::serve_introspect(
             self.inner.cell.clone(),
-            self.inner.mailbox.clone(),
             receivers.introspect,
         ));
 
@@ -3224,6 +3221,11 @@ impl InstanceCell {
     /// The actor's address.
     pub fn actor_addr(&self) -> &ActorAddr {
         &self.inner.actor_id
+    }
+
+    /// The proc in which this actor is running.
+    pub(crate) fn proc(&self) -> &Proc {
+        &self.inner.proc
     }
 
     /// The actor's uid.
