@@ -946,7 +946,7 @@ impl Proc {
 
     /// Bind a mailbox to the proc.
     fn bind_mailbox(&self, actor_id: ActorAddr) -> Mailbox {
-        let mbox = Mailbox::new(actor_id, BoxedMailboxSender::new(self.downgrade()));
+        let mbox = Mailbox::new(actor_id);
 
         // TODO: T210748165 tie the muxer entry to the lifecycle of the mailbox held
         // by the caller. This will likely require a weak reference.
@@ -1888,7 +1888,7 @@ impl<A: Actor> Instance<A> {
         parent: Option<InstanceCell>,
     ) -> (Self, InstanceReceivers<A>) {
         // Set up messaging
-        let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
+        let mailbox = Mailbox::new(actor_id.clone());
         let (work_tx, work_rx) = ordered_channel(
             actor_id.to_string(),
             hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
