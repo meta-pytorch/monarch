@@ -151,9 +151,8 @@ mod tests {
             MailboxClient::dial(backend_addr).unwrap(),
         );
 
-        let (return_handle, mut return_rx) =
-            Mailbox::new_detached(test_actor_id("world_0", "proc"))
-                .open_port::<Undeliverable<MessageEnvelope>>();
+        let (return_handle, mut return_rx) = Mailbox::new(test_actor_id("world_0", "proc"))
+            .open_port::<Undeliverable<MessageEnvelope>>();
 
         // Existing address on the host:
         let envelope = MessageEnvelope::new(
