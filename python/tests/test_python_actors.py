@@ -59,7 +59,8 @@ from monarch.actor import (
     ProcMesh,
 )
 from monarch.config import configure, configured, parametrize_config
-from monarch.tools.config import defaults
+from monarch.tools.config import Config
+from monarch.tools.config.workspace import Workspace
 from scoped_state import scoped_state
 from typing_extensions import assert_type
 
@@ -1125,7 +1126,10 @@ async def test_sync_workspace() -> None:
         pm = host.spawn_procs(per_host={"gpus": 1})
         code_sync_mesh = host
 
-        config = defaults.config("slurm", workspace_src)
+        config = Config(
+            scheduler="slurm",
+            workspace=Workspace(dirs={workspace_src: ""}),
+        )
         await code_sync_mesh.sync_workspace(
             workspace=config.workspace, auto_reload=True
         )
