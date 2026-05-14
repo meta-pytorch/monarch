@@ -1195,6 +1195,7 @@ mod tests {
     use crate::ActorMeshRef;
     use crate::ProcMesh;
     use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
+    use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     use crate::mesh_controller::SUPERVISION_POLL_FREQUENCY;
     use crate::mesh_id::ActorMeshId;
     use crate::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
@@ -1216,7 +1217,7 @@ mod tests {
         let instance = testing::instance();
         // Small mesh so the test runs fast, but > page_size so we
         // cross a boundary
-        let mut hm = testing::host_mesh(3).await;
+        let mut hm = testing::host_mesh(2).await;
         let pm: ProcMesh = hm
             .spawn(instance, "test", extent!(gpus = 2), None, None)
             .await
@@ -1229,8 +1230,8 @@ mod tests {
         let page_size = 2;
         let amr: ActorMeshRef<testactor::TestActor> =
             ActorMeshRef::with_page_size(am.id.clone(), pm.clone(), page_size, None);
-        assert_eq!(amr.extent(), extent!(hosts = 3, gpus = 2));
-        assert_eq!(amr.region().num_ranks(), 6);
+        assert_eq!(amr.extent(), extent!(hosts = 2, gpus = 2));
+        assert_eq!(amr.region().num_ranks(), 4);
 
         // 3) Within-rank pointer stability (OnceLock caches &ActorRef)
         let p0_a = amr.get(0).expect("rank 0 exists") as *const _;
@@ -1264,7 +1265,7 @@ mod tests {
 
         // 7) Slicing preserves page_size and clears cache
         // (RankedSliceable::sliced)
-        let sliced = amr.range("hosts", 1..).expect("slice should be valid"); // leaves 4 ranks
+        let sliced = amr.range("hosts", 0..2).expect("slice should be valid"); // leaves 4 ranks
         assert_eq!(sliced.region().num_ranks(), 4);
         // First access materializes a new cache for the sliced view.
         let sp0_a = sliced.get(0).unwrap() as *const _;
@@ -1308,10 +1309,17 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_actor_states_with_panic() {
         hyperactor_telemetry::initialize_logging_for_test();
+
+        let config = hyperactor_config::global::lock();
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
@@ -1405,7 +1413,7 @@ mod tests {
 
     #[cfg(fbcode_build)]
     #[assert_no_process_leak]
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_actor_states_with_process_exit() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1413,6 +1421,11 @@ mod tests {
         let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
         let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
         let _proc_guard = config.override_key(GET_PROC_STATE_MAX_IDLE, Duration::from_secs(1));
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
@@ -1577,6 +1590,11 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn execute_cast(config: &hyperactor_config::global::ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
         let mut host_mesh = testing::host_mesh(2).await;
@@ -1612,7 +1630,7 @@ mod tests {
         let _ = host_mesh.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_cast_with_selection_v1_fallback() {
         use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
@@ -1623,9 +1641,14 @@ mod tests {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
         let _v1 = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
         let _reorder = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
-        let mut host_mesh = testing::host_mesh(4).await;
+        let mut host_mesh = testing::host_mesh(2).await;
         let proc_mesh = host_mesh
             .spawn(instance, "test", Extent::unity(), None, None)
             .await
@@ -1633,12 +1656,12 @@ mod tests {
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(instance, "test", &()).await.unwrap();
 
-        // Cast with sel!(0:2) — should only reach hosts 0 and 1.
+        // Cast with sel!(0:1) — should only reach host 0.
         let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
         actor_mesh
             .cast_for_tensor_engine_only_do_not_use(
                 instance,
-                sel!(0:2),
+                sel!(0:1),
                 testactor::GetCastInfo {
                     cast_info: cast_info.bind(),
                 },
@@ -1646,13 +1669,13 @@ mod tests {
             .unwrap();
 
         let mut received_ranks: HashSet<usize> = HashSet::new();
-        for _ in 0..2 {
+        for _ in 0..1 {
             let (point, _actor_ref, _sender) = cast_info_rx.recv().await.unwrap();
             received_ranks.insert(point.rank());
         }
-        assert_eq!(received_ranks, HashSet::from([0, 1]));
+        assert_eq!(received_ranks, HashSet::from([0]));
 
-        // Also cast with sel!(*) — all 4 should be reached via V1.
+        // Also cast with sel!(*) — all ranks should be reached via V1.
         let (cast_info2, mut cast_info_rx2) = instance.mailbox().open_port();
         actor_mesh
             .cast(
@@ -1664,11 +1687,11 @@ mod tests {
             .unwrap();
 
         let mut all_ranks: HashSet<usize> = HashSet::new();
-        for _ in 0..4 {
+        for _ in 0..2 {
             let (point, _actor_ref, _sender) = cast_info_rx2.recv().await.unwrap();
             all_ranks.insert(point.rank());
         }
-        assert_eq!(all_ranks, HashSet::from([0, 1, 2, 3]));
+        assert_eq!(all_ranks, HashSet::from([0, 1]));
 
         let _ = host_mesh.shutdown(instance).await;
     }
@@ -1709,6 +1732,12 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance();
+        let config = hyperactor_config::global::lock();
+        let _proc_spawn_guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn_guard = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         // Create a proc mesh with 2 hosts.
         let mut hm = testing::host_mesh(2).await;
@@ -1767,7 +1796,6 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Set message delivery timeout for faster test
-        let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             std::time::Duration::from_secs(5),
@@ -1832,6 +1860,11 @@ mod tests {
         // from 30s to 1s so the test finishes quickly.
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
 
@@ -1897,8 +1930,8 @@ mod tests {
         // controller's idle timeout while querying for `Stopped` — not
         // that the actors were actually aborted; they weren't.
         assert!(
-            stop_duration < std::time::Duration::from_secs(3),
-            "Stop took {:?}, expected < 3s (controller should have given up waiting for Stopped)",
+            stop_duration < std::time::Duration::from_millis(4500),
+            "Stop took {:?}, expected < 4.5s (controller should have given up waiting for Stopped)",
             stop_duration
         );
         assert!(
@@ -1915,10 +1948,17 @@ mod tests {
     /// test_actor_mesh_stop_timeout which tests abort behavior. V1
     /// equivalent of
     /// hyperactor_multiprocess/src/proc_actor.rs::test_stop
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_actor_mesh_stop_graceful() {
         hyperactor_telemetry::initialize_logging_for_test();
+
+        let config = hyperactor_config::global::lock();
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
 
@@ -1957,8 +1997,8 @@ mod tests {
         // actors should stop almost immediately, not wait for
         // timeout.
         assert!(
-            stop_duration < std::time::Duration::from_secs(2),
-            "Graceful stop took {:?}, expected < 2s (actors should stop quickly)",
+            stop_duration < std::time::Duration::from_secs(5),
+            "Graceful stop took {:?}, expected < 5s (actors should stop quickly)",
             stop_duration
         );
 

@@ -527,7 +527,7 @@ impl Actor for ProcAgent {
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
             if let Addr::Proc(proc_ref) = child_ref {
-                if *proc_ref == *proc.proc_addr() {
+                if *proc_ref == proc.proc_addr() {
                     let (mut children, mut system_children) = collect_live_children(&proc);
 
                     let mut stopped_children: Vec<crate::introspect::NodeRef> = Vec::new();
