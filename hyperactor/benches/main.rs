@@ -249,7 +249,7 @@ fn bench_mailbox_message_sizes(c: &mut Criterion) {
             let mut b = b.to_async(Runtime::new().unwrap());
             b.iter_custom(|iters| async move {
                 let actor_id = test_actor_id("world_0", "actor");
-                let mbox = Mailbox::new_detached(actor_id);
+                let mbox = Mailbox::new(actor_id);
                 let (port, mut receiver) = mbox.open_port::<Message>();
                 let port = port.bind();
 
@@ -279,7 +279,7 @@ fn bench_mailbox_message_rates(c: &mut Criterion) {
             let mut b = b.to_async(Runtime::new().unwrap());
             b.iter_custom(|iters| async move {
                 let actor_id = test_actor_id("world_0", "actor");
-                let mbox = Mailbox::new_detached(actor_id);
+                let mbox = Mailbox::new(actor_id);
                 let (port, mut receiver) = mbox.open_port::<Message>();
                 let port = port.bind();
 
