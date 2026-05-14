@@ -39,7 +39,9 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::OncePortRef;
+use hyperactor::PortRef;
 use hyperactor::RefClient;
+use hyperactor::actor::Referable;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -55,8 +57,11 @@ use super::primitives::ibverbs_supported;
 use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
+use super::queue_pair::PeerInfo;
 use super::queue_pair::PollCompletionError;
 use super::queue_pair::PollTarget;
+use super::queue_pair::QpGuard;
+use super::queue_pair::QpKey;
 use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
@@ -117,6 +122,21 @@ pub enum IbvManagerMessage {
 }
 wirevalue::register_type!(IbvManagerMessage);
 
+/// Cross-proc message: peer asks for our endpoint, lazily creating
+/// the entry on our side if absent. Generic over the manager actor
+/// type so tests can swap in a mock. The handler impl on
+/// `IbvManagerActor` lands in a follow-up commit; this commit only
+/// defines the type so `QueuePairInitializer` can compile.
+#[derive(Debug, Serialize, Deserialize, Named)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub(super) struct EnsureQueuePair<A: Referable> {
+    pub(super) sender: ActorRef<A>,
+    pub(super) sender_device: String,
+    pub(super) receiver_device: String,
+    pub(super) reply: PortRef<PeerInfo>,
+}
+wirevalue::register_type!(EnsureQueuePair<IbvManagerActor>);
+
 /// Local-only messages for MR registration/deregistration.
 #[derive(Handler, HandleClient, Debug)]
 pub enum IbvManagerLocalMessage {
@@ -146,6 +166,27 @@ pub enum IbvManagerLocalMessage {
         #[reply]
         reply: OncePortHandle<Result<IbvBuffer, String>>,
     },
+}
+
+/// Local-only handshake-success report. The initializer sends this
+/// to its owning manager once both sides have reached RTS, handing
+/// over the freshly-connected [`QpGuard`]. Wired up in a follow-up
+/// commit; the [`Handler`] impl is `unreachable!` until then.
+#[derive(Debug)]
+pub(super) struct QpInitializerDone {
+    pub(super) qp_key: QpKey,
+    pub(super) qp: QpGuard,
+}
+
+/// Local-only handshake-failure report. The initializer sends this
+/// to its owning manager when the handshake aborted; the underlying
+/// QP has already been dropped on the initializer side. Wired up in
+/// a follow-up commit; the [`Handler`] impl is `unreachable!` until
+/// then.
+#[derive(Debug)]
+pub(super) struct QpInitializerFailed {
+    pub(super) qp_key: QpKey,
+    pub(super) error: String,
 }
 
 /// Adaptive wait between completion polls.
@@ -1098,6 +1139,32 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
         };
         self.buffer_registrations.insert(remote_buf_id, buf.clone());
         Ok(Ok(buf))
+    }
+}
+
+#[async_trait]
+impl Handler<QpInitializerDone> for IbvManagerActor {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        _msg: QpInitializerDone,
+    ) -> Result<(), anyhow::Error> {
+        unreachable!(
+            "IbvManagerActor does not yet spawn QueuePairInitializer; wired up in a follow-up commit"
+        )
+    }
+}
+
+#[async_trait]
+impl Handler<QpInitializerFailed> for IbvManagerActor {
+    async fn handle(
+        &mut self,
+        _cx: &Context<Self>,
+        _msg: QpInitializerFailed,
+    ) -> Result<(), anyhow::Error> {
+        unreachable!(
+            "IbvManagerActor does not yet spawn QueuePairInitializer; wired up in a follow-up commit"
+        )
     }
 }
 
