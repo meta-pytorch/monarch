@@ -1,3 +1,7 @@
+[profile.default]
+# All tests timeout after 5 minutes.
+slow-timeout = { period = "30s", terminate-after = 10 }
+
 [profile.ci]
 # Do not cancel the test run on the first failure.
 fail-fast = false
