@@ -23,7 +23,7 @@
 //! # let proc = Proc::isolated();
 //! # let (client, _) = proc.instance("client").unwrap();
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
-//! let mbox = Mailbox::new_detached(actor_id);
+//! let mbox = Mailbox::new(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
 //!
 //! port.send(&client, 123).unwrap();
@@ -42,7 +42,7 @@
 //! # let proc = Proc::isolated();
 //! # let (client, _) = proc.instance("client").unwrap();
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
-//! let mbox = Mailbox::new_detached(actor_id);
+//! let mbox = Mailbox::new(actor_id);
 //!
 //! let (port, receiver) = mbox.open_once_port::<u64>();
 //!
@@ -1378,15 +1378,8 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
-    /// Create a runtime-owned mailbox associated with the provided actor ID.
-    pub(crate) fn new(actor_id: impl Into<ActorAddr>) -> Self {
-        Self {
-            inner: Arc::new(State::new(actor_id.into())),
-        }
-    }
-
-    /// Create a new detached mailbox associated with the provided actor ID.
-    pub fn new_detached(actor_id: impl Into<ActorAddr>) -> Self {
+    /// Create a mailbox associated with the provided actor ID.
+    pub fn new(actor_id: impl Into<ActorAddr>) -> Self {
         Self {
             inner: Arc::new(State::new(actor_id.into())),
         }
@@ -3331,7 +3324,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_basic() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (port, mut receiver) = mbox.open_port::<u64>();
         let port = port.bind();
 
@@ -3352,7 +3345,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_rejects_messages_for_other_actors() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "owner"));
+        let mbox = Mailbox::new(test_actor_id("0", "owner"));
         let dest = test_actor_id("0", "other").port_addr(Port::from(1234));
         let envelope =
             MessageEnvelope::serialize(mbox.actor_addr().clone(), dest, &42u64, Flattrs::new())
@@ -3410,7 +3403,7 @@ mod tests {
 
     #[test]
     fn test_port_and_reducer() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         // accum port could have reducer typehash
         {
             let accumulator = accum::join_semilattice::<accum::Max<u64>>();
@@ -3457,7 +3450,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // changed error behavior
     async fn test_mailbox_receiver_drop() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (port, mut receiver) = mbox.open_port::<u64>();
         // Make sure we go through "remote" path.
         let port = port.bind();
@@ -3475,7 +3468,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_type_mismatch_does_not_evict_unbounded_port() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (port, mut receiver) = mbox.open_port::<u64>();
         let port = port.bind();
         let port_index = port.port_addr().index();
@@ -3517,7 +3510,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_closed_unbounded_port_is_removed_after_send_failure() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let port_index = mbox.allocate_port();
         let port_id = mbox.actor_addr().port_addr(Port::from(port_index));
         let port = crate::PortRef::attest(port_id.clone());
@@ -3569,7 +3562,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_once_type_mismatch_preserves_sender_until_delivery() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (port, receiver) = mbox.open_once_port::<u64>();
         let port = port.bind();
         let port_index = port.port_addr().index();
@@ -3615,7 +3608,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_drain() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
 
         let (port, mut receiver) = mbox.open_port();
         let port = port.bind();
@@ -3636,8 +3629,8 @@ mod tests {
     async fn test_mailbox_muxer() {
         let muxer = MailboxMuxer::new();
 
-        let mbox0 = Mailbox::new_detached(test_actor_id("0", "actor1"));
-        let mbox1 = Mailbox::new_detached(test_actor_id("0", "actor2"));
+        let mbox0 = Mailbox::new(test_actor_id("0", "actor1"));
+        let mbox1 = Mailbox::new(test_actor_id("0", "actor2"));
 
         muxer.bind(mbox0.actor_addr().id().clone(), mbox0.clone());
         muxer.bind(mbox1.actor_addr().id().clone(), mbox1.clone());
@@ -3663,7 +3656,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_client_server() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "actor0"));
+        let mbox = Mailbox::new(test_actor_id("0", "actor0"));
         let (tx, rx) = channel::local::new();
         let serve_handle = mbox.clone().serve(rx);
         let client = MailboxClient::new(tx);
@@ -3681,10 +3674,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_router() {
-        let mbox0 = Mailbox::new_detached(test_actor_id("world0_0", "actor0"));
-        let mbox1 = Mailbox::new_detached(test_actor_id("world1_0", "actor0"));
-        let mbox2 = Mailbox::new_detached(test_actor_id("world1_1", "actor0"));
-        let mbox3 = Mailbox::new_detached(test_actor_id("world1_1", "actor1"));
+        let mbox0 = Mailbox::new(test_actor_id("world0_0", "actor0"));
+        let mbox1 = Mailbox::new(test_actor_id("world1_0", "actor0"));
+        let mbox2 = Mailbox::new(test_actor_id("world1_1", "actor0"));
+        let mbox3 = Mailbox::new(test_actor_id("world1_1", "actor1"));
 
         let comms: Vec<(OncePortRef<u64>, OncePortReceiver<u64>)> =
             [&mbox0, &mbox1, &mbox2, &mbox3]
@@ -3711,7 +3704,7 @@ mod tests {
 
         // Test undeliverable messages, and that it is delivered with the appropriate fallback.
 
-        let mbox4 = Mailbox::new_detached(test_actor_id("fallback_0", "actor"));
+        let mbox4 = Mailbox::new(test_actor_id("fallback_0", "actor"));
 
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
@@ -3803,10 +3796,10 @@ mod tests {
     #[tokio::test]
     #[ignore] // TODO: there's a leak here, fix it
     async fn test_dial_mailbox_router_default() {
-        let mbox0 = Mailbox::new_detached(test_actor_id("world0_0", "actor0"));
-        let mbox1 = Mailbox::new_detached(test_actor_id("world1_0", "actor0"));
-        let mbox2 = Mailbox::new_detached(test_actor_id("world1_1", "actor0"));
-        let mbox3 = Mailbox::new_detached(test_actor_id("world1_1", "actor1"));
+        let mbox0 = Mailbox::new(test_actor_id("world0_0", "actor0"));
+        let mbox1 = Mailbox::new(test_actor_id("world1_0", "actor0"));
+        let mbox2 = Mailbox::new(test_actor_id("world1_1", "actor0"));
+        let mbox3 = Mailbox::new(test_actor_id("world1_1", "actor1"));
 
         // We don't need to dial here, since we gain direct access to the
         // underlying routers.
@@ -4679,7 +4672,7 @@ mod tests {
     #[tokio::test]
     async fn message_ttl_success_local_delivery() {
         let actor_id = test_actor_id("world_0", "ttl_actor");
-        let mailbox = Mailbox::new_detached(actor_id.clone());
+        let mailbox = Mailbox::new(actor_id.clone());
         let (_undeliverable_tx, mut undeliverable_rx) =
             mailbox.bind_handler_port::<Undeliverable<MessageEnvelope>>();
 
@@ -4735,7 +4728,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "already bound")]
     fn test_bind_port_handle_to_handler_port_twice() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (handle, _rx) = mbox.open_port::<String>();
         handle.bind_handler_port();
         handle.bind_handler_port();
@@ -4743,7 +4736,7 @@ mod tests {
 
     #[test]
     fn test_bind_port_handle_to_handler_port() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let default_port = mbox.actor_addr().port_addr(Port::from(String::port()));
         let (handle, _rx) = mbox.open_port::<String>();
         // Handle's port index is allocated by mailbox, not the handler port.
@@ -4760,7 +4753,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "already bound")]
     fn test_bind_port_handle_to_handler_port_when_already_bound() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (handle, _rx) = mbox.open_port::<String>();
         // Bound handle to the port allocated by mailbox.
         handle.bind();
@@ -4773,13 +4766,13 @@ mod tests {
     async fn test_mailbox_post_fails_when_actor_stopped() {
         let actor_id = test_actor_id("0", "stopped_actor");
 
-        let mailbox = Mailbox::new_detached(actor_id.clone());
+        let mailbox = Mailbox::new(actor_id.clone());
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
 
         let (user_port, _user_rx) = mailbox.open_port::<u64>();
 
-        // Use a separate detached mailbox for the return handle since
+        // Use a separate return mailbox since
         // the main mailbox is stopped and won't accept messages.
         let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
 
@@ -4812,7 +4805,7 @@ mod tests {
 
         let actor_id = test_actor_id("0", "failed_actor");
 
-        let mailbox = Mailbox::new_detached(actor_id.clone());
+        let mailbox = Mailbox::new(actor_id.clone());
 
         let (user_port, _user_rx) = mailbox.open_port::<u64>();
 
@@ -4820,7 +4813,7 @@ mod tests {
             "test failure".to_string(),
         )));
 
-        // Use a separate detached mailbox for the return handle since
+        // Use a separate return mailbox since
         // the main mailbox is failed and won't accept messages.
         let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
 
@@ -4851,7 +4844,7 @@ mod tests {
     async fn test_port_handle_send_fails_when_actor_stopped() {
         let actor_id = test_actor_id("0", "stopped_actor");
 
-        let mailbox = Mailbox::new_detached(actor_id.clone());
+        let mailbox = Mailbox::new(actor_id.clone());
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
         let proc = Proc::isolated();
@@ -4876,7 +4869,7 @@ mod tests {
 
         let actor_id = test_actor_id("0", "failed_actor");
 
-        let mailbox = Mailbox::new_detached(actor_id.clone());
+        let mailbox = Mailbox::new(actor_id.clone());
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
         let proc = Proc::isolated();
@@ -4943,7 +4936,7 @@ mod tests {
     /// mailbox.
     #[tokio::test]
     async fn test_flush_over_unix_channel() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "actor0"));
+        let mbox = Mailbox::new(test_actor_id("0", "actor0"));
 
         // Serve the mailbox on a unix domain socket channel.
         let (addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
@@ -4982,7 +4975,7 @@ mod tests {
 
     #[test]
     fn test_drain_waits_for_active_handler_enqueue() {
-        let mailbox = Mailbox::new_detached(test_actor_id("drain", "actor"));
+        let mailbox = Mailbox::new(test_actor_id("drain", "actor"));
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let delivered = Arc::new(AtomicUsize::new(0));
