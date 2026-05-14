@@ -161,6 +161,7 @@ use crate::channel::ChannelTransport;
 use crate::channel::SendError;
 use crate::channel::TxStatus;
 use crate::context;
+use crate::id::ActorId;
 use crate::metrics;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
@@ -1761,7 +1762,7 @@ impl MailboxSender for Mailbox {
             envelope.dest
         );
 
-        if envelope.dest().actor_addr() != self.inner.actor_id {
+        if envelope.dest().actor_id() != self.inner.actor_id.id() {
             return self.inner.forwarder.post(envelope, return_handle);
         }
 
@@ -2793,7 +2794,7 @@ impl fmt::Debug for State {
 /// different underlying senders.
 #[derive(Clone)]
 pub struct MailboxMuxer {
-    mailboxes: Arc<DashMap<ActorAddr, Box<dyn MailboxSender + Send + Sync>>>,
+    mailboxes: Arc<DashMap<ActorId, Box<dyn MailboxSender + Send + Sync>>>,
 }
 
 impl Default for MailboxMuxer {
@@ -2814,12 +2815,7 @@ impl MailboxMuxer {
     /// sender. Returns false if there is already a sender associated
     /// with the actor. In this case, the sender is not replaced, and
     /// the caller must [`MailboxMuxer::unbind`] it first.
-    pub fn bind(
-        &self,
-        actor_id: impl Into<ActorAddr>,
-        sender: impl MailboxSender + 'static,
-    ) -> bool {
-        let actor_id = actor_id.into();
+    pub fn bind(&self, actor_id: ActorId, sender: impl MailboxSender + 'static) -> bool {
         match self.mailboxes.entry(actor_id) {
             Entry::Occupied(_) => false,
             Entry::Vacant(entry) => {
@@ -2831,20 +2827,15 @@ impl MailboxMuxer {
 
     /// Convenience function to bind a mailbox.
     pub fn bind_mailbox(&self, mailbox: Mailbox) -> bool {
-        self.bind(mailbox.actor_addr().clone(), mailbox)
+        self.bind(mailbox.actor_addr().id().clone(), mailbox)
     }
 
     /// Unbind the sender associated with the provided actor ID. After
     /// unbinding, the muxer will no longer be able to send messages to
     /// that actor.
     #[allow(dead_code)]
-    pub(crate) fn unbind(&self, actor_id: &ActorAddr) {
+    pub(crate) fn unbind(&self, actor_id: &ActorId) {
         self.mailboxes.remove(actor_id);
-    }
-
-    /// Returns a list of all actors bound to this muxer. Useful in debugging.
-    pub fn bound_actors(&self) -> Vec<ActorAddr> {
-        self.mailboxes.iter().map(|e| e.key().clone()).collect()
     }
 }
 
@@ -2856,7 +2847,7 @@ impl MailboxSender for MailboxMuxer {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let dest_actor_ref = envelope.dest().actor_addr();
-        match self.mailboxes.get(&dest_actor_ref) {
+        match self.mailboxes.get(dest_actor_ref.id()) {
             None => {
                 let err = format!(
                     "no mailbox for actor {} registered in muxer",
@@ -3621,8 +3612,8 @@ mod tests {
         let mbox0 = Mailbox::new_detached(test_actor_id("0", "actor1"));
         let mbox1 = Mailbox::new_detached(test_actor_id("0", "actor2"));
 
-        muxer.bind(mbox0.actor_addr().clone(), mbox0.clone());
-        muxer.bind(mbox1.actor_addr().clone(), mbox1.clone());
+        muxer.bind(mbox0.actor_addr().id().clone(), mbox0.clone());
+        muxer.bind(mbox1.actor_addr().id().clone(), mbox1.clone());
 
         let (port, receiver) = mbox0.open_once_port::<u64>();
 
