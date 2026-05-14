@@ -65,7 +65,7 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_ENABLE_NATIVE_V1_CASTING".to_string()),
         Some("enable_native_v1_casting".to_string()),
     ))
-    pub attr ENABLE_NATIVE_V1_CASTING: bool = false;
+    pub attr ENABLE_NATIVE_V1_CASTING: bool = true;
 }
 
 /// Parameters to initialize the CommActor
