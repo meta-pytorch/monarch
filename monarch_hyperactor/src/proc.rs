@@ -45,7 +45,7 @@ impl PyProc {
     #[pyo3(signature = ())]
     fn new() -> PyResult<Self> {
         Ok(Self {
-            inner: Proc::local(),
+            inner: Proc::isolated(),
         })
     }
 

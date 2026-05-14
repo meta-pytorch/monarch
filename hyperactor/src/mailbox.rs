@@ -20,7 +20,7 @@
 //! # use hyperactor::Proc;
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
-//! # let proc = Proc::local();
+//! # let proc = Proc::isolated();
 //! # let (client, _) = proc.instance("client").unwrap();
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
 //! let mbox = Mailbox::new_detached(actor_id);
@@ -39,7 +39,7 @@
 //! # use hyperactor::Proc;
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
-//! # let proc = Proc::local();
+//! # let proc = Proc::isolated();
 //! # let (client, _) = proc.instance("client").unwrap();
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
 //! let mbox = Mailbox::new_detached(actor_id);
@@ -3359,7 +3359,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_accum() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let (port, mut receiver) = client
             .mailbox()
@@ -3415,7 +3415,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // error behavior changed, but we will bring it back
     async fn test_mailbox_once() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         let (port, receiver) = client.open_once_port::<u64>();
@@ -3836,7 +3836,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_enqueue_port() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         let count = Arc::new(AtomicUsize::new(0));
@@ -3965,7 +3965,7 @@ mod tests {
             wirevalue::Any::serialize(&1u64).unwrap(),
             Flattrs::new(),
         );
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         return_handle
             .send(&client, Undeliverable(envelope.clone()))
@@ -4161,7 +4161,7 @@ mod tests {
         reducer_spec: Option<ReducerSpec>,
         reducer_mode: ReducerMode,
     ) -> Setup {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (actor0, actor0_handle) = proc.instance("actor0").unwrap();
         let (actor1, actor1_handle) = proc.instance("actor1").unwrap();
 
@@ -4292,7 +4292,7 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _config_guard =
             config.override_key(crate::config::SPLIT_MAX_BUFFER_AGE, Duration::from_mins(10));
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
@@ -4415,7 +4415,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_once_mode_basic() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
@@ -4443,7 +4443,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_once_mode_teardown() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
@@ -4719,7 +4719,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_port_contramap() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let (handle, mut rx) = client.open_port();
 
@@ -4861,7 +4861,7 @@ mod tests {
         );
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
@@ -4889,7 +4889,7 @@ mod tests {
         );
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         mailbox.close(ActorStatus::Failed(ActorErrorKind::Generic(
@@ -4909,7 +4909,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_open_reduce_port() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         // Open an accumulator port with sum reducer
@@ -4929,7 +4929,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_open_reduce_port_reducer_spec_preserved() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         // Test that different accumulators produce different reducer_specs

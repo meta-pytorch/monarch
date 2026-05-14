@@ -837,7 +837,7 @@ mod tests {
     // client events port.
     #[tokio::test]
     async fn test_child_failure_propagates_to_parent() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         let session_id = Uid::instance();
 
@@ -884,7 +884,7 @@ mod tests {
     // reason through the client stopped port before the handles complete.
     #[tokio::test]
     async fn test_parent_stop_stops_remote_child_before_parent_finishes() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         let session_id = Uid::instance();
 
@@ -930,7 +930,7 @@ mod tests {
     // exits after the child stops.
     #[tokio::test]
     async fn test_worker_undeliverable_supervisor_session_stops_child() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
         let (stopped, mut stopped_rx) = client.open_port::<String>();
@@ -1015,7 +1015,7 @@ mod tests {
     // stop to Worker, and Worker stops TestChild.
     #[tokio::test]
     async fn test_parent_kill_stops_remote_child() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
         let (stopped, mut stopped_rx) = client.open_port::<String>();
@@ -1091,7 +1091,7 @@ mod tests {
     // with no active session.
     #[tokio::test]
     async fn test_detach_orphan_policy_leaves_child_running_on_supervisor_loss() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (inst, _client_handle) = proc.instance("inst").unwrap();
         let (ready, mut ready_rx) = inst.open_port::<ActorAddr>();
         let (stopped, mut stopped_rx) = inst.open_port::<String>();
@@ -1196,7 +1196,7 @@ mod tests {
     // child's terminal event and exits as well.
     #[tokio::test]
     async fn test_supervised_worker_unlink_stops_child_under_stop_policy() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (inst, _inst_hndl) = proc.instance("inst").unwrap();
         let session_id = Uid::instance();
 
@@ -1281,7 +1281,7 @@ mod tests {
     // teardown.
     #[tokio::test]
     async fn test_supervised_worker_unlink_leaves_child_running_under_detach_policy() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (inst, _inst_hndl) = proc.instance("inst").unwrap();
         let session_id = Uid::instance();
 
@@ -1380,7 +1380,7 @@ mod tests {
     // parent2 observes that failure on events_rx2.
     #[tokio::test]
     async fn test_concurrent_link_rejects_second_supervisor() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (inst, _inst_hndl) = proc.instance("inst").unwrap();
         let session_id1 = Uid::instance();
         let (_child_addr, worker, parent1, _stopped_rx, mut events_rx1) = spawn_supervised_pair(
@@ -1486,7 +1486,7 @@ mod tests {
     // checks session_id; it does not require a prior Linked).
     #[tokio::test]
     async fn test_stop_before_linked_propagates_via_pending_stop() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (inst, _inst_hndl) = proc.instance("inst").unwrap();
         let (link_started, mut link_started_rx) = inst.open_port::<()>();
         let (received_stop, mut received_stop_rx) = inst.open_port::<String>();
@@ -1569,7 +1569,7 @@ mod tests {
     // test.
     #[tokio::test]
     async fn test_drain_and_stop_propagates_through_worker_after_child_work() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (inst, _inst_hndl) = proc.instance("inst").unwrap();
         let (ready, mut ready_rx) = inst.open_port::<ActorAddr>();
         let (stopped, mut stopped_rx) = inst.open_port::<String>();
@@ -1666,7 +1666,7 @@ mod tests {
     // accept_session_id installed the new session.
     #[tokio::test]
     async fn test_worker_accepts_relink_after_unlink_under_detach_policy() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (inst, _inst_hndl) = proc.instance("inst").unwrap();
         let session_id1 = Uid::instance();
         let (_child_addr, worker, parent1, mut stopped_rx, mut events_rx1) = spawn_supervised_pair(

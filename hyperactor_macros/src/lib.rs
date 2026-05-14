@@ -616,7 +616,7 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), anyhow::Error> {
-///     let mut proc = Proc::local();
+///     let mut proc = Proc::isolated();
 ///
 ///     // Spawn our actor, and get a handle for rank 0.
 ///     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =

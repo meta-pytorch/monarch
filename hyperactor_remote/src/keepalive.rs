@@ -505,7 +505,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_keepalive_supervisor_replies_to_keepalive() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (parent, _parent_handle) = proc.instance("parent").unwrap();
         let supervisor = parent
             .spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
@@ -533,7 +533,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_keepalive_supervisor_failure_propagates_to_parent() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let supervisor =
@@ -563,7 +563,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_keepalive_worker_sends_keepalives() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (parent, _parent_handle) = proc.instance("parent").unwrap();
         let supervisor = parent
             .spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
@@ -595,7 +595,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_keepalive_worker_failure_propagates_to_parent() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let supervisor = proc.spawn("silent_supervisor", SilentSupervisor).unwrap();
@@ -633,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_keepalive_link_spawn_mints_shared_worker_spec() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (parent, _parent_handle) = proc.instance("parent").unwrap();
 
         let (supervisor, worker_link) =

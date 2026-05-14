@@ -260,7 +260,7 @@ mod tests {
 
         let _ = remote
             .gspawn(
-                &Proc::local(),
+                &Proc::isolated(),
                 "hyperactor::actor::remote::tests::MyActor",
                 Uid::instance_labeled(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
@@ -271,7 +271,7 @@ mod tests {
 
         let err = remote
             .gspawn(
-                &Proc::local(),
+                &Proc::isolated(),
                 "hyperactor::actor::remote::tests::MyActor",
                 Uid::instance_labeled(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(false, bincode::config::legacy()).unwrap(),
@@ -285,7 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_instance_gspawn_child_returns_erased_handle() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (parent, _parent_handle) = proc.instance("parent").unwrap();
 
         let child = parent
@@ -306,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_instance_gspawn_uid_uses_explicit_uid() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (parent, _parent_handle) = proc.instance("parent").unwrap();
         let uid = Uid::instance_labeled(Label::new("child").unwrap());
 
@@ -327,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_instance_gspawn_uid_rejects_duplicate_uid() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (parent, _parent_handle) = proc.instance("parent").unwrap();
         let uid = Uid::instance_labeled(Label::new("child").unwrap());
 

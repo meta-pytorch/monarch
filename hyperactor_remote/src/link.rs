@@ -168,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_link_spec_spawns_supervised_child() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (parent, _parent_handle) = proc.instance("parent").unwrap();
         let uid = Uid::instance_labeled(Label::new("link").unwrap());
 
@@ -188,7 +188,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_link_actor_failure_propagates_to_parent() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _client_handle) = proc.instance("client").unwrap();
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let uid = Uid::instance_labeled(Label::new("link").unwrap());

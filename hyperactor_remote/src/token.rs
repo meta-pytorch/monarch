@@ -492,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_delivers_join_to_both_sides() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (creator, _creator_handle) = proc.instance("creator").unwrap();
         let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<JoinerRef>>();
         let token = create(
@@ -516,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_once_token_rejects_later_joins() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (creator, _creator_handle) = proc.instance("creator").unwrap();
         let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<JoinerRef>>();
         let token = create(
@@ -552,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_serializes_as_single_base64_json_string() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let rendezvous = proc.spawn("rendezvous", RendezvousStub).unwrap();
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
@@ -580,7 +580,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_display_includes_compact_json_suffix() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let rendezvous = proc.spawn("rendezvous", RendezvousStub).unwrap();
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
@@ -597,7 +597,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_from_str_accepts_display_suffix() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let rendezvous = proc.spawn("rendezvous", RendezvousStub).unwrap();
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
@@ -619,7 +619,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_token_rejects_incompatible_type_parameters() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let rendezvous = proc.spawn("rendezvous", RendezvousStub).unwrap();
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),

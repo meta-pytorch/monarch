@@ -1213,10 +1213,10 @@ fn serve_inner<M: RemoteMessage>(
             let (port, rx) = local::serve::<M>();
             Ok((ChannelAddr::Local(port), ChannelRxKind::Local(rx)))
         }
-        ChannelAddr::Local(a) => Err(ChannelError::InvalidAddress(format!(
-            "invalid local addr: {}",
-            a
-        ))),
+        ChannelAddr::Local(a) => Ok((
+            ChannelAddr::Local(a),
+            ChannelRxKind::Local(local::bind::<M>(a)?),
+        )),
         ChannelAddr::Alias { dial_to, bind_to } => {
             let (bound_addr, rx) = serve_inner::<M>(*bind_to, listener)?;
             let alias_addr = ChannelAddr::Alias {
@@ -1238,6 +1238,22 @@ pub fn serve_local<M: RemoteMessage>() -> (ChannelAddr, ChannelRx<M>) {
             inner: ChannelRxKind::Local(rx),
         },
     )
+}
+
+/// Reserve a local channel address that can be served later.
+///
+/// Local channels are backed by an in-process port registry, so reserving a
+/// concrete address is a synchronous allocation that does not require a Tokio
+/// runtime or an OS listener. Gateways use this to have a stable advertised
+/// local location immediately, including when the process-wide gateway is
+/// initialized from a [`std::sync::OnceLock`]. Serving is a separate step that
+/// binds the reserved port to a receiver.
+///
+/// Network transports do not have an equivalent reservation API here: their
+/// concrete addresses come from binding sockets and starting the corresponding
+/// channel server.
+pub fn reserve_local_addr() -> ChannelAddr {
+    ChannelAddr::Local(local::reserve())
 }
 
 #[cfg(test)]
@@ -1408,6 +1424,23 @@ mod tests {
             ChannelAddr::from_zmq_url("tls://[::1]:443").unwrap(),
             ChannelAddr::Tls(TlsAddr::new("::1", 443))
         );
+    }
+
+    #[tokio::test]
+    async fn test_reserved_local_addr_can_be_served() {
+        let addr = reserve_local_addr();
+        assert!(dial::<u64>(addr.clone()).is_err());
+
+        let (bound_addr, mut rx) = serve::<u64>(addr.clone()).unwrap();
+        assert_eq!(bound_addr, addr);
+
+        let tx = dial::<u64>(addr.clone()).unwrap();
+        tx.post(123);
+        assert_eq!(rx.recv().await.unwrap(), 123);
+        drop(rx);
+
+        let (rebound_addr, _rx) = serve::<u64>(addr.clone()).unwrap();
+        assert_eq!(rebound_addr, addr);
     }
 
     #[test]
