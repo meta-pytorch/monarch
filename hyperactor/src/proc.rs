@@ -540,28 +540,106 @@ pub struct ActorInstance<A: Actor> {
     pub work: mpsc::UnboundedReceiver<WorkCell<A>>,
 }
 
+/// Builder for constructing a [`Proc`] with explicit identity and connectivity.
+pub struct Builder<State = GlobalGateway> {
+    proc_id: Option<ProcId>,
+    state: State,
+}
+
+/// Builder state that attaches the proc to the process-wide global gateway.
+pub struct GlobalGateway;
+
+/// Builder state that attaches the proc to a shared gateway.
+pub struct SharedGateway {
+    gateway: Gateway,
+}
+
+/// Builder state that creates a private gateway with a custom forwarder.
+pub struct PrivateGateway {
+    forwarder: BoxedMailboxSender,
+}
+
+impl Builder<GlobalGateway> {
+    /// Create a new proc builder.
+    pub fn new() -> Self {
+        Self {
+            proc_id: None,
+            state: GlobalGateway,
+        }
+    }
+
+    /// Attach the proc to a shared gateway.
+    pub fn shared_gateway(self, gateway: Gateway) -> Builder<SharedGateway> {
+        Builder {
+            proc_id: self.proc_id,
+            state: SharedGateway { gateway },
+        }
+    }
+
+    /// Use a private gateway with the provided forwarder.
+    pub fn private_gateway(self, forwarder: BoxedMailboxSender) -> Builder<PrivateGateway> {
+        Builder {
+            proc_id: self.proc_id,
+            state: PrivateGateway { forwarder },
+        }
+    }
+
+    /// Build the proc.
+    pub fn build(self) -> Result<Proc, anyhow::Error> {
+        self.build_with_gateway(Gateway::global().clone())
+    }
+}
+
+impl<State> Builder<State> {
+    /// Set the proc identity.
+    pub fn proc_id(mut self, proc_id: ProcId) -> Self {
+        self.proc_id = Some(proc_id);
+        self
+    }
+
+    fn build_with_gateway(self, gateway: Gateway) -> Result<Proc, anyhow::Error> {
+        Self::build_proc(self.proc_id, gateway)
+    }
+
+    fn build_proc(proc_id: Option<ProcId>, gateway: Gateway) -> Result<Proc, anyhow::Error> {
+        let proc_id = proc_id.unwrap_or_else(|| ProcId::new(Uid::instance(), None));
+        if is_legacy_pseudo_singleton_proc_id(&proc_id) {
+            anyhow::bail!(
+                "legacy pseudo-singleton proc id '{}' must be constructed with a dedicated Proc constructor",
+                proc_id
+            );
+        }
+        Ok(Proc::from_parts_unchecked(proc_id, gateway))
+    }
+}
+
+impl Builder<SharedGateway> {
+    /// Build the proc.
+    pub fn build(self) -> Result<Proc, anyhow::Error> {
+        let Builder {
+            proc_id,
+            state: SharedGateway { gateway },
+        } = self;
+        Self::build_proc(proc_id, gateway)
+    }
+}
+
+impl Builder<PrivateGateway> {
+    /// Build the proc.
+    pub fn build(self) -> Result<Proc, anyhow::Error> {
+        let Builder {
+            proc_id,
+            state: PrivateGateway { forwarder },
+        } = self;
+        let gateway =
+            Gateway::configured(ChannelAddr::any(ChannelTransport::Local).into(), forwarder);
+        Self::build_proc(proc_id, gateway)
+    }
+}
+
 impl Proc {
-    /// Create a pre-configured proc with the given proc id and forwarder.
-    pub fn configured(proc_id: impl Into<ProcAddr>, forwarder: BoxedMailboxSender) -> Self {
-        let proc_addr = proc_id.into();
-        assert_not_legacy_pseudo_singleton_proc_id(proc_addr.id());
-        Self::configured_unchecked(proc_addr, forwarder)
-    }
-
-    /// Create the legacy host-local client proc pseudo-singleton.
-    pub fn legacy_local_pseudo_singleton(addr: ChannelAddr, forwarder: BoxedMailboxSender) -> Self {
-        Self::configured_unchecked(ProcAddr::named(addr, LEGACY_LOCAL_PROC_NAME), forwarder)
-    }
-
-    /// Create the legacy host system proc pseudo-singleton.
-    pub fn legacy_service_pseudo_singleton(
-        addr: ChannelAddr,
-        forwarder: BoxedMailboxSender,
-    ) -> Self {
-        Self::configured_unchecked(ProcAddr::named(addr, LEGACY_SERVICE_PROC_NAME), forwarder)
-    }
-
-    fn configured_unchecked(proc_addr: ProcAddr, forwarder: BoxedMailboxSender) -> Self {
+    fn from_parts_unchecked(proc_id: ProcId, gateway: Gateway) -> Self {
+        let proc_addr = gateway.proc_addr(&proc_id);
         tracing::info!(
             subject = %proc_addr.subject(),
             name = "ProcStatus",
@@ -570,8 +648,8 @@ impl Proc {
 
         Self {
             inner: Arc::new(ProcState {
-                proc_id: proc_addr.id().clone(),
-                gateway: Gateway::configured(proc_addr.location().clone(), forwarder),
+                proc_id,
+                gateway,
                 proc_muxer: MailboxMuxer::new(),
                 reserved_roots: DashSet::new(),
                 reserved_child_uids: DashSet::new(),
@@ -583,6 +661,81 @@ impl Proc {
                 mailbox_server_handle: std::sync::Mutex::new(None),
             }),
         }
+    }
+
+    fn from_parts(proc_id: ProcId, gateway: Gateway) -> Self {
+        assert_not_legacy_pseudo_singleton_proc_id(&proc_id);
+        Self::from_parts_unchecked(proc_id, gateway)
+    }
+
+    /// Create the legacy host-local client proc pseudo-singleton.
+    pub fn legacy_local_pseudo_singleton(addr: ChannelAddr, forwarder: BoxedMailboxSender) -> Self {
+        Self::legacy_pseudo_singleton(addr, LEGACY_LOCAL_PROC_NAME, forwarder)
+    }
+
+    /// Create the legacy host system proc pseudo-singleton.
+    pub fn legacy_service_pseudo_singleton(
+        addr: ChannelAddr,
+        forwarder: BoxedMailboxSender,
+    ) -> Self {
+        Self::legacy_pseudo_singleton(addr, LEGACY_SERVICE_PROC_NAME, forwarder)
+    }
+
+    fn legacy_pseudo_singleton(
+        addr: ChannelAddr,
+        name: &'static str,
+        forwarder: BoxedMailboxSender,
+    ) -> Self {
+        let proc_addr = ProcAddr::named(addr, name);
+        Self::from_parts_unchecked(
+            proc_addr.id().clone(),
+            Gateway::configured(proc_addr.location().clone(), forwarder),
+        )
+    }
+
+    /// Create a proc with a random id on the default gateway.
+    pub fn new() -> Self {
+        Self::builder()
+            .build()
+            .expect("default proc builder is valid")
+    }
+
+    /// Create a proc with a random id and display label on the default gateway.
+    pub fn unique(label: impl AsRef<str>) -> Self {
+        Self::builder()
+            .proc_id(ProcId::instance(Label::strip(label.as_ref())))
+            .build()
+            .expect("unique proc builder is valid")
+    }
+
+    /// Create a proc with a singleton id on the default gateway.
+    pub fn named(name: impl AsRef<str>) -> Self {
+        Self::builder()
+            .proc_id(ProcId::singleton(Label::strip(name.as_ref())))
+            .build()
+            .expect("named proc builder is valid")
+    }
+
+    /// Create a proc with a random id on a fresh local-only gateway.
+    pub fn isolated() -> Self {
+        Self::builder()
+            .shared_gateway(Gateway::new())
+            .build()
+            .expect("isolated proc builder is valid")
+    }
+
+    /// Create a proc builder.
+    pub fn builder() -> Builder {
+        Builder::new()
+    }
+
+    /// Create a pre-configured proc with the given proc id and forwarder.
+    pub fn configured(proc_id: impl Into<ProcAddr>, forwarder: BoxedMailboxSender) -> Self {
+        let proc_addr = proc_id.into();
+        Self::from_parts(
+            proc_addr.id().clone(),
+            Gateway::configured(proc_addr.location().clone(), forwarder),
+        )
     }
 
     /// Create a new direct-addressed proc.
@@ -729,9 +882,11 @@ impl Proc {
     /// outside of the proc itself.
     pub fn local() -> Self {
         let rank = NEXT_LOCAL_RANK.fetch_add(1, Ordering::Relaxed);
-        let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = ProcAddr::unique(addr, format!("local_{}", rank));
-        Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
+        Self::builder()
+            .proc_id(ProcId::instance(Label::strip(&format!("local_{}", rank))))
+            .shared_gateway(Gateway::new())
+            .build()
+            .expect("local proc builder is valid")
     }
 
     /// The proc's runtime identity.
@@ -4068,6 +4223,47 @@ mod tests {
         assert_eq!(proc.default_location(), gateway.default_location());
         assert_eq!(proc.proc_addr(), gateway.proc_addr(proc.proc_id()));
         assert!(proc.get_instance(second_ref.actor_addr()).is_some());
+    }
+
+    #[test]
+    fn test_builder_procs_can_share_gateway_with_distinct_ids() {
+        let gateway = Gateway::new();
+        let first = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("first")))
+            .shared_gateway(gateway.clone())
+            .build()
+            .unwrap();
+        let second = Proc::builder()
+            .proc_id(ProcId::instance(Label::strip("second")))
+            .shared_gateway(gateway.clone())
+            .build()
+            .unwrap();
+
+        assert_ne!(first.proc_id(), second.proc_id());
+        assert_eq!(first.default_location(), second.default_location());
+
+        let new_location = ChannelAddr::Local(9876).into();
+        gateway.set_default_location(new_location);
+
+        assert_eq!(first.default_location(), gateway.default_location());
+        assert_eq!(second.default_location(), gateway.default_location());
+        assert_eq!(first.proc_addr(), gateway.proc_addr(first.proc_id()));
+        assert_eq!(second.proc_addr(), gateway.proc_addr(second.proc_id()));
+    }
+
+    #[test]
+    fn test_isolated_procs_use_distinct_gateways() {
+        let first = Proc::isolated();
+        let second = Proc::isolated();
+        let second_location = second.default_location();
+
+        first
+            .gateway()
+            .set_default_location(ChannelAddr::Local(9876).into());
+
+        assert_ne!(first.proc_id(), second.proc_id());
+        assert_ne!(first.default_location(), second_location);
+        assert_eq!(second.default_location(), second_location);
     }
 
     #[derive(Debug, Default)]

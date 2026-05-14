@@ -29,13 +29,17 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 
 use crate::Location;
 use crate::ProcAddr;
 use crate::ProcId;
+use crate::channel::ChannelAddr;
+use crate::channel::ChannelTransport;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::MailboxSender as _;
+use crate::mailbox::PanickingMailboxSender;
 
 /// Shared ingress, egress, and advertised reachability state for one or more procs.
 #[derive(Clone)]
@@ -53,6 +57,20 @@ struct GatewayState {
 }
 
 impl Gateway {
+    /// Create a fresh local-only gateway.
+    pub fn new() -> Self {
+        Self::configured(
+            ChannelAddr::any(ChannelTransport::Local).into(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
+        )
+    }
+
+    /// Return the process-wide global gateway.
+    pub fn global() -> &'static Self {
+        static GLOBAL_GATEWAY: OnceLock<Gateway> = OnceLock::new();
+        GLOBAL_GATEWAY.get_or_init(Self::new)
+    }
+
     pub(crate) fn configured(default_location: Location, forwarder: BoxedMailboxSender) -> Self {
         Self {
             inner: Arc::new(GatewayState {
