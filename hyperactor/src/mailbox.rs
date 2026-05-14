@@ -1382,9 +1382,8 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
-    /// Create a new mailbox associated with the provided actor ID, using the provided
-    /// forwarder for external destinations.
-    pub fn new(actor_id: impl Into<ActorAddr>, forwarder: BoxedMailboxSender) -> Self {
+    /// Create a runtime-owned mailbox associated with the provided actor ID.
+    pub(crate) fn new(actor_id: impl Into<ActorAddr>, forwarder: BoxedMailboxSender) -> Self {
         Self {
             inner: Arc::new(State::new(actor_id.into(), forwarder)),
         }
