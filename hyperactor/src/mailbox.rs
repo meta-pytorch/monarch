@@ -161,6 +161,7 @@ use crate::channel::ChannelTransport;
 use crate::channel::SendError;
 use crate::channel::TxStatus;
 use crate::context;
+use crate::gateway::Gateway;
 use crate::id::ActorId;
 use crate::metrics;
 use crate::ordering::SEQ_INFO;
@@ -1065,7 +1066,16 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
             let proc_id = ProcAddr::unique(addr, format!("mailbox_server_{}", rank));
             // Use this mailbox server as the forwarder, so we can use it to
             // return message back to the sender.
-            let proc = Proc::configured(proc_id, BoxedMailboxSender::new(server));
+            //
+            // TODO(meriksen): use a global proc here when it materializes
+            let proc = Proc::builder()
+                .proc_id(proc_id.id().clone())
+                .shared_gateway(Gateway::configured(
+                    proc_id.location().clone(),
+                    BoxedMailboxSender::new(server),
+                ))
+                .build()
+                .expect("mailbox server proc builder is valid");
             let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
             while let Ok(Undeliverable(mut envelope)) = undeliverable_rx.recv().await {
                 if let Ok(Undeliverable(e)) =

@@ -745,7 +745,14 @@ impl Proc {
     pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
         let proc_id = ProcAddr::unique(addr, name);
-        let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
+        let proc = Self::builder()
+            .proc_id(proc_id.id().clone())
+            .shared_gateway(Gateway::configured(
+                proc_id.location().clone(),
+                DialMailboxRouter::new().into_boxed(),
+            ))
+            .build()
+            .expect("direct proc builder is valid");
         let handle = proc.clone().serve(rx);
         *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
         Ok(proc)
@@ -792,10 +799,14 @@ impl Proc {
                 anyhow::bail!("expected bootstrap assignment as first message")
             }
         };
-        let proc = Self::configured(
-            assignment.proc_id,
-            MailboxClient::new(duplex_tx).into_boxed(),
-        );
+        let proc = Self::builder()
+            .proc_id(assignment.proc_id.id().clone())
+            .shared_gateway(Gateway::configured(
+                assignment.proc_id.location().clone(),
+                MailboxClient::new(duplex_tx).into_boxed(),
+            ))
+            .build()
+            .expect("attached proc builder is valid");
         // Wrap the inner mailbox server handle so that stopping/
         // joining the outer handle also joins the dial-side
         // `DuplexClient`.
