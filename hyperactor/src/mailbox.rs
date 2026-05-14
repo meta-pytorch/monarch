@@ -4635,14 +4635,8 @@ mod tests {
     #[tokio::test]
     async fn message_ttl_expires_in_routing_loop_returns_to_sender() {
         let actor_id = test_actor_id("world_0", "ttl_actor");
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(AsyncLoopForwarder),
-        );
-        let (ret_port, mut ret_rx) = mailbox.bind_handler_port::<Undeliverable<MessageEnvelope>>();
+        let (ret_port, mut ret_rx) = undeliverable::new_undeliverable_port();
 
-        // Create a destination not owned by this mailbox to force
-        // forwarding.
         let remote_actor = test_actor_id("remote_world_1", "remote");
         let dest = remote_actor.port_addr(4242.into());
 
@@ -4653,10 +4647,7 @@ mod tests {
             MessageEnvelope::serialize(actor_id.clone(), dest.clone(), &payload, Flattrs::new())
                 .expect("serialize");
 
-        // Post it. This will start bouncing between forwarder and
-        // mailbox until TTL hits 0.
-        let return_handle = ret_port.clone();
-        mailbox.post(envelope, return_handle);
+        AsyncLoopForwarder.post(envelope, ret_port.clone());
 
         // We expect the undeliverable to come back once TTL expires.
         let Undeliverable(undelivered) =
@@ -4673,10 +4664,7 @@ mod tests {
     #[tokio::test]
     async fn message_ttl_success_local_delivery() {
         let actor_id = test_actor_id("world_0", "ttl_actor");
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let mailbox = Mailbox::new_detached(actor_id.clone());
         let (_undeliverable_tx, mut undeliverable_rx) =
             mailbox.bind_handler_port::<Undeliverable<MessageEnvelope>>();
 
@@ -4770,10 +4758,7 @@ mod tests {
     async fn test_mailbox_post_fails_when_actor_stopped() {
         let actor_id = test_actor_id("0", "stopped_actor");
 
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let mailbox = Mailbox::new_detached(actor_id.clone());
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
 
@@ -4812,10 +4797,7 @@ mod tests {
 
         let actor_id = test_actor_id("0", "failed_actor");
 
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let mailbox = Mailbox::new_detached(actor_id.clone());
 
         let (user_port, _user_rx) = mailbox.open_port::<u64>();
 
@@ -4854,10 +4836,7 @@ mod tests {
     async fn test_port_handle_send_fails_when_actor_stopped() {
         let actor_id = test_actor_id("0", "stopped_actor");
 
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let mailbox = Mailbox::new_detached(actor_id.clone());
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
         let proc = Proc::isolated();
@@ -4882,10 +4861,7 @@ mod tests {
 
         let actor_id = test_actor_id("0", "failed_actor");
 
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let mailbox = Mailbox::new_detached(actor_id.clone());
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
         let proc = Proc::isolated();
