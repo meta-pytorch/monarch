@@ -64,6 +64,7 @@ use super::IbvOp;
 use super::domain::IbvDomain;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDevice;
+use super::primitives::IbvMemoryRegion;
 use super::primitives::IbvMemoryRegionView;
 use super::primitives::IbvQpInfo;
 use super::primitives::ibverbs_supported;
@@ -85,7 +86,6 @@ use crate::local_memory::RdmaLocalMemory;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::GetIbvActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
-use crate::rdma_manager_actor::get_rdmaxcel_error_message;
 use crate::validate_execution_context;
 
 /// Cross-proc message: peer asks for our endpoint, lazily creating
@@ -151,12 +151,6 @@ pub enum IbvManagerLocalMessage {
         size: usize,
         #[reply]
         reply: OncePortHandle<Result<(IbvMemoryRegionView, String), String>>,
-    },
-    /// Deregister a memory region by its MR view id.
-    DeregisterMr {
-        id: usize,
-        #[reply]
-        reply: OncePortHandle<Result<(), String>>,
     },
     /// Register a remote-facing buffer's MR and return its
     /// [`IbvBuffer`]. Called by
@@ -285,17 +279,14 @@ pub(super) fn lookup_segment_for_address(
     segments: &[rdmaxcel_sys::rdma_segment_info_t],
     addr: usize,
     size: usize,
-    id: usize,
-) -> Option<IbvMemoryRegionView> {
+) -> Option<SegmentInfo> {
     for segment in segments {
         let start_addr = segment.phys_address;
         let end_addr = start_addr + segment.mr_size;
         if start_addr <= addr && addr + size <= end_addr {
             let offset = addr - start_addr;
             let rdma_addr = segment.mr_addr + offset;
-            return Some(IbvMemoryRegionView {
-                id,
-                virtual_addr: addr,
+            return Some(SegmentInfo {
                 rdma_addr,
                 size,
                 lkey: segment.lkey,
@@ -304,6 +295,19 @@ pub(super) fn lookup_segment_for_address(
         }
     }
     None
+}
+
+/// Result of a successful [`lookup_segment_for_address`] hit. Just
+/// the device-derived facts about the matched mkey; the caller
+/// composes these with whatever provenance it needs (mrv id,
+/// device name, refcounted owners) when materializing an
+/// [`IbvMemoryRegionView`].
+#[derive(Debug)]
+pub(super) struct SegmentInfo {
+    pub(super) rdma_addr: usize,
+    pub(super) size: usize,
+    pub(super) lkey: u32,
+    pub(super) rkey: u32,
 }
 
 /// Manages all ibverbs-specific RDMA resources and operations.
@@ -324,23 +328,32 @@ pub struct IbvManagerActor {
     qps: HashMap<QpKey, QpState>,
 
     /// Map of RDMA device names to their domains and loopback QPs.
-    /// Created lazily when memory is registered for a specific device.
-    device_domains: HashMap<String, (IbvDomain, Option<IbvQueuePair>)>,
+    /// Created lazily when memory is registered for a specific
+    /// device. `Arc<IbvDomain>` so every `IbvMemoryRegionView`
+    /// registered against the domain can hold a clone and keep the
+    /// PD alive until the last MR is dereg'd.
+    device_domains: HashMap<String, (Arc<IbvDomain>, Option<IbvQueuePair>)>,
 
     config: IbvConfig,
 
     mlx5dv_enabled: bool,
 
-    /// Map of MR view id to ibv_mr*. CUDA segments register as `0`
-    /// since they're managed independently. Used only for
-    /// registration/deregistration bookkeeping.
-    mr_map: HashMap<usize, usize>,
+    /// Singleton Arc owning the CUDA segment scanner state. `Some`
+    /// once `register_segments` succeeds; cloned into every
+    /// segment-backed view. `deregister_segments` runs from the
+    /// `IbvMemoryRegion::Segments` Drop when the last reference goes
+    /// away.
+    segments_mr: Option<Arc<IbvMemoryRegion>>,
 
     /// Id for next mrv created.
     mrv_id: usize,
 
-    /// Map from buffer_id to registration details.
-    buffer_registrations: HashMap<usize, IbvBuffer>,
+    /// Map from buffer_id to the buffer's `(IbvBuffer, view)`. The
+    /// view keeps the MR (and its PD) alive for the lifetime of the
+    /// registration; `ReleaseBuffer` drops the entry, and the FFI
+    /// resources are released by the `Arc`s' `Drop`s once no other
+    /// holder of those views remains.
+    buffer_registrations: HashMap<usize, (IbvBuffer, IbvMemoryRegionView)>,
 }
 
 #[async_trait]
@@ -379,7 +392,22 @@ impl Drop for IbvManagerActor {
             }
         }
 
-        // 2. Clean up device domains (which contain PDs and loopback QPs)
+        // 2. Drop buffer registrations. Each entry's
+        // `IbvMemoryRegionView` carries the only manager-side
+        // reference to that MR's `Arc<IbvMemoryRegion>` and its
+        // `Arc<IbvDomain>`. They run their FFI cleanup from their
+        // `Drop`s once no surviving view holds a clone.
+        self.buffer_registrations.clear();
+
+        // 3. Drop the segments-owner Arc. `deregister_segments`
+        // runs from `IbvMemoryRegion::Segments::Drop` when the last
+        // segment-backed view also goes away.
+        self.segments_mr.take();
+
+        // 4. Drop device domains (PDs + loopback QPs). Loopback QPs
+        // are tied to this map only; destroy them explicitly. PD
+        // teardown waits on the last `Arc<IbvDomain>` clone (held
+        // by any outstanding view) to drop.
         for (_device_name, (domain, qp)) in self.device_domains.drain() {
             if let Some(qp) = qp {
                 // SAFETY: `device_domains` is the only holder of
@@ -388,39 +416,6 @@ impl Drop for IbvManagerActor {
                 unsafe { destroy_qp(&qp) };
             }
             drop(domain);
-        }
-
-        // 3. Clean up memory regions
-        let _mr_count = self.mr_map.len();
-        for (id, mr_ptr) in self.mr_map.drain() {
-            if mr_ptr != 0 {
-                unsafe {
-                    let result = rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr);
-                    if result != 0 {
-                        tracing::error!(
-                            "Failed to deregister MR with id {}: error code {}",
-                            id,
-                            result
-                        );
-                    }
-                }
-            }
-        }
-
-        // 4. Deregister all CUDA segments (if using mlx5dv)
-        // The segment scanner in Python handles compatibility checks
-        if self.mlx5dv_enabled {
-            unsafe {
-                let result = rdmaxcel_sys::deregister_segments();
-                if result != 0 {
-                    let error_msg = get_rdmaxcel_error_message(result);
-                    tracing::error!(
-                        "Failed to deregister CUDA segments: {} (error code: {})",
-                        error_msg,
-                        result
-                    );
-                }
-            }
         }
     }
 }
@@ -477,7 +472,7 @@ impl IbvManagerActor {
             device_domains: HashMap::new(),
             config,
             mlx5dv_enabled,
-            mr_map: HashMap::new(),
+            segments_mr: None,
             mrv_id: 0,
             buffer_registrations: HashMap::new(),
         };
@@ -490,15 +485,15 @@ impl IbvManagerActor {
         &mut self,
         device_name: &str,
         rdma_device: &IbvDevice,
-    ) -> Result<(IbvDomain, Option<IbvQueuePair>), anyhow::Error> {
+    ) -> Result<(Arc<IbvDomain>, Option<IbvQueuePair>), anyhow::Error> {
         if let Some((domain, qp)) = self.device_domains.get(device_name) {
-            return Ok((domain.clone(), qp.clone()));
+            return Ok((Arc::clone(domain), qp.clone()));
         }
 
         // Create new domain for this device
-        let domain = IbvDomain::new(rdma_device.clone()).map_err(|e| {
+        let domain = Arc::new(IbvDomain::new(rdma_device.clone()).map_err(|e| {
             anyhow::anyhow!("could not create domain for device {}: {}", device_name, e)
-        })?;
+        })?);
 
         // Print device info if MONARCH_DEBUG_RDMA=1 is set (before initial QP creation)
         crate::print_device_info_if_debug_enabled(domain.context);
@@ -536,7 +531,7 @@ impl IbvManagerActor {
 
         let qp = qp.map(|qp| qp.into_inner());
         self.device_domains
-            .insert(device_name.to_string(), (domain.clone(), qp.clone()));
+            .insert(device_name.to_string(), (Arc::clone(&domain), qp.clone()));
         Ok((domain, qp))
     }
 
@@ -573,16 +568,12 @@ impl IbvManagerActor {
     }
 
     fn find_cuda_segment_for_address(
-        &mut self,
+        &self,
         addr: usize,
         size: usize,
         pd: *mut rdmaxcel_sys::ibv_pd,
-    ) -> Option<IbvMemoryRegionView> {
-        let registered_segments = get_registered_cuda_segments(pd);
-        let id = self.mrv_id;
-        let mrv = lookup_segment_for_address(&registered_segments, addr, size, id)?;
-        self.mrv_id += 1;
-        Some(mrv)
+    ) -> Option<SegmentInfo> {
+        lookup_segment_for_address(&get_registered_cuda_segments(pd), addr, size)
     }
 
     fn register_mr_impl(
@@ -644,18 +635,17 @@ impl IbvManagerActor {
                     | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC
             };
 
-            let mut mr: *mut rdmaxcel_sys::ibv_mr = std::ptr::null_mut();
             let mrv;
 
             if is_cuda {
                 // First, try to use segment scanning if mlx5dv is enabled
-                let mut segment_mrv = None;
+                let mut segment_info = None;
                 if self.mlx5dv_enabled {
                     // Try to find in already registered segments
-                    segment_mrv = self.find_cuda_segment_for_address(addr, size, domain.pd);
+                    segment_info = self.find_cuda_segment_for_address(addr, size, domain.pd);
 
                     // If not found, trigger a re-sync with the allocator and retry
-                    if segment_mrv.is_none() {
+                    if segment_info.is_none() {
                         let (mut pds, mut qps) = self.build_per_device_pd_qp_arrays();
                         let err = rdmaxcel_sys::register_segments(
                             pds.as_mut_ptr(),
@@ -666,14 +656,40 @@ impl IbvManagerActor {
                         // Only retry if register_segments succeeded
                         // If it fails (e.g., scanner returns 0 segments), we'll fall back to dmabuf
                         if err == 0 {
-                            segment_mrv = self.find_cuda_segment_for_address(addr, size, domain.pd);
+                            // The scanner just registered (or
+                            // re-synced) global segment state. Lazily
+                            // install the singleton `segments_mr` now,
+                            // independent of whether *this* address
+                            // matches a segment. Without this, a
+                            // subsequent retry that doesn't find a
+                            // segment would leak the newly-registered
+                            // global state on manager teardown.
+                            self.segments_mr
+                                .get_or_insert_with(|| Arc::new(IbvMemoryRegion::Segments));
+                            segment_info =
+                                self.find_cuda_segment_for_address(addr, size, domain.pd);
                         }
                     }
                 }
 
                 // Use segment if found, otherwise fall back to direct dmabuf registration
-                if let Some(mrv_from_segment) = segment_mrv {
-                    mrv = mrv_from_segment;
+                if let Some(info) = segment_info {
+                    let segments_mr = Arc::clone(
+                        self.segments_mr
+                            .get_or_insert_with(|| Arc::new(IbvMemoryRegion::Segments)),
+                    );
+                    let id = self.mrv_id;
+                    self.mrv_id += 1;
+                    mrv = IbvMemoryRegionView::new(
+                        id,
+                        addr,
+                        info.rdma_addr,
+                        info.size,
+                        info.lkey,
+                        info.rkey,
+                        device_name.clone(),
+                        segments_mr,
+                    );
                 } else {
                     // Dmabuf path: used when mlx5dv is disabled OR scanner returns no segments
                     let mut fd: i32 = -1;
@@ -693,24 +709,30 @@ impl IbvManagerActor {
                             fd
                         ));
                     }
-                    mr =
+                    let mr =
                         rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
                     if mr.is_null() {
                         return Err(anyhow::anyhow!("Failed to register dmabuf MR"));
                     }
-                    mrv = IbvMemoryRegionView {
-                        id: self.mrv_id,
-                        virtual_addr: addr,
-                        rdma_addr: (*mr).addr as usize,
-                        size,
-                        lkey: (*mr).lkey,
-                        rkey: (*mr).rkey,
-                    };
+                    let id = self.mrv_id;
                     self.mrv_id += 1;
+                    mrv = IbvMemoryRegionView::new(
+                        id,
+                        addr,
+                        (*mr).addr as usize,
+                        size,
+                        (*mr).lkey,
+                        (*mr).rkey,
+                        device_name.clone(),
+                        Arc::new(IbvMemoryRegion::Direct {
+                            mr,
+                            _domain: Arc::clone(&domain),
+                        }),
+                    );
                 }
             } else {
                 // CPU memory path
-                mr = rdmaxcel_sys::ibv_reg_mr(
+                let mr = rdmaxcel_sys::ibv_reg_mr(
                     domain.pd,
                     addr as *mut std::ffi::c_void,
                     size,
@@ -721,30 +743,24 @@ impl IbvManagerActor {
                     return Err(anyhow::anyhow!("failed to register standard MR"));
                 }
 
-                mrv = IbvMemoryRegionView {
-                    id: self.mrv_id,
-                    virtual_addr: addr,
-                    rdma_addr: (*mr).addr as usize,
-                    size,
-                    lkey: (*mr).lkey,
-                    rkey: (*mr).rkey,
-                };
+                let id = self.mrv_id;
                 self.mrv_id += 1;
+                mrv = IbvMemoryRegionView::new(
+                    id,
+                    addr,
+                    (*mr).addr as usize,
+                    size,
+                    (*mr).lkey,
+                    (*mr).rkey,
+                    device_name.clone(),
+                    Arc::new(IbvMemoryRegion::Direct {
+                        mr,
+                        _domain: Arc::clone(&domain),
+                    }),
+                );
             }
-            self.mr_map.insert(mrv.id, mr as usize);
             Ok((mrv, device_name))
         }
-    }
-
-    fn deregister_mr_impl(&mut self, id: usize) -> Result<(), anyhow::Error> {
-        if let Some(mr_ptr) = self.mr_map.remove(&id) {
-            if mr_ptr != 0 {
-                unsafe {
-                    rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr);
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Lazy QP creation: if `qp_key` is absent, create the local
@@ -803,10 +819,10 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         _cx: &Context<Self>,
         remote_buf_id: usize,
     ) -> Result<(), anyhow::Error> {
-        if let Some(buf) = self.buffer_registrations.remove(&remote_buf_id) {
-            self.deregister_mr_impl(buf.mr_id)
-                .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
-        }
+        // Dropping the entry releases the manager's `Arc` clones on
+        // the view's MR and PD; FFI cleanup happens via their `Drop`s
+        // once the last referencing view is gone.
+        self.buffer_registrations.remove(&remote_buf_id);
         Ok(())
     }
 }
@@ -876,21 +892,13 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
         Ok(self.register_mr_impl(addr, size).map_err(|e| e.to_string()))
     }
 
-    async fn deregister_mr(
-        &mut self,
-        _cx: &Context<Self>,
-        id: usize,
-    ) -> Result<Result<(), String>, anyhow::Error> {
-        Ok(self.deregister_mr_impl(id).map_err(|e| e.to_string()))
-    }
-
     async fn register_remote_buffer(
         &mut self,
         _cx: &Context<Self>,
         remote_buf_id: usize,
         local: Arc<dyn RdmaLocalMemory>,
     ) -> Result<Result<IbvBuffer, String>, anyhow::Error> {
-        if let Some(buf) = self.buffer_registrations.get(&remote_buf_id) {
+        if let Some((buf, _)) = self.buffer_registrations.get(&remote_buf_id) {
             return Ok(Ok(buf.clone()));
         }
         let (mrv, device_name) = match self.register_mr_impl(local.addr(), local.size()) {
@@ -905,7 +913,8 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
             size: mrv.size,
             device_name,
         };
-        self.buffer_registrations.insert(remote_buf_id, buf.clone());
+        self.buffer_registrations
+            .insert(remote_buf_id, (buf.clone(), mrv));
         Ok(Ok(buf))
     }
 
@@ -1146,15 +1155,17 @@ impl IbvBackend {
         ))
     }
 
-    /// Core submit logic: registers local MR via actor message, resolves remote
-    /// IbvBuffer lazily, executes the op locally, and deregisters local MR.
+    /// Core submit logic: registers a local MR via actor message,
+    /// resolves the remote `IbvBuffer` lazily, and executes the op.
+    /// `local_mrv` is kept in scope for the duration of the op so
+    /// its `Arc<IbvMemoryRegion>` (and the PD it lives on) survive
+    /// until completion; on drop, the FFI MR is deregistered.
     async fn execute_op(
         &self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
         op: IbvOp,
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
-        // Register the local memory via actor message
         let (local_mrv, local_device_name) = self
             .register_mr(cx, op.local_memory.addr(), op.local_memory.size())
             .await?
@@ -1169,7 +1180,7 @@ impl IbvBackend {
             device_name: local_device_name,
         };
 
-        let op_result = async {
+        let result = async {
             let mut qp = request_queue_pair(
                 &self.0,
                 cx,
@@ -1190,22 +1201,8 @@ impl IbvBackend {
         }
         .await;
 
-        // Always deregister the locally registered MR via actor message
-        let dereg_result = self
-            .deregister_mr(cx, local_buffer.mr_id)
-            .await?
-            .map_err(|e| anyhow::anyhow!(e));
-
-        match (op_result, dereg_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(e), Ok(())) => Err(e),
-            (Ok(()), Err(e)) => Err(e),
-            (Err(op_err), Err(dereg_err)) => Err(anyhow::anyhow!(
-                "deregister MR error: {}; op error: {}",
-                dereg_err,
-                op_err
-            )),
-        }
+        drop(local_mrv);
+        result
     }
 }
 
