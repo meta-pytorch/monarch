@@ -174,7 +174,7 @@ impl _Controller {
             tracebacks,
             response_port,
         };
-        hyperactor::Endpoint::send(
+        hyperactor::Endpoint::post(
             &*self.controller_handle.blocking_lock(),
             instance.deref(),
             msg,
@@ -183,7 +183,7 @@ impl _Controller {
     }
 
     fn _drop_refs(&mut self, instance: &PyInstance, refs: Vec<Ref>) -> PyResult<()> {
-        hyperactor::Endpoint::send(
+        hyperactor::Endpoint::post(
             &*self.controller_handle.blocking_lock(),
             instance.deref(),
             ClientToControllerMessage::DropRefs { refs },
@@ -192,7 +192,7 @@ impl _Controller {
     }
 
     fn _sync_at_exit(&mut self, instance: &PyInstance, port: PyPortId) -> PyResult<()> {
-        hyperactor::Endpoint::send(
+        hyperactor::Endpoint::post(
             &*self.controller_handle.blocking_lock(),
             instance.deref(),
             ClientToControllerMessage::SyncAtExit {
@@ -215,7 +215,7 @@ impl _Controller {
             slices.iter().map(|x| x.into()).collect::<Vec<Slice>>()
         };
         let message: WorkerMessage = convert(message)?;
-        hyperactor::Endpoint::send(
+        hyperactor::Endpoint::post(
             &*self.controller_handle.blocking_lock(),
             instance.deref(),
             ClientToControllerMessage::Send { slices, message },
@@ -226,7 +226,7 @@ impl _Controller {
     fn _drain_and_stop(&mut self, py: Python<'_>, instance: &PyInstance) -> PyResult<()> {
         let (stop_worker_port, stop_worker_receiver) = instance.open_once_port();
 
-        hyperactor::Endpoint::send(
+        hyperactor::Endpoint::post(
             &*self.controller_handle.blocking_lock(),
             instance.deref(),
             ClientToControllerMessage::StopWorkers {
@@ -370,10 +370,10 @@ impl Invocation {
                                     .expect("complete runs should not overlap");
                             }
                         }
-                        port.send(sender, overlay.into());
+                        port.post(sender, overlay.into());
                     } else {
                         for result in results {
-                            port.send(sender, result);
+                            port.post(sender, result);
                         }
                     }
                 }
@@ -423,10 +423,10 @@ impl Invocation {
                                             )
                                             .expect("exception runs should not overlap");
                                     }
-                                    port.send(sender, overlay.into());
+                                    port.post(sender, overlay.into());
                                 } else {
                                     for rank in ranks.iter() {
-                                        port.send(
+                                        port.post(
                                             sender,
                                             exception.as_ref().clone().into_rank(rank),
                                         );
@@ -669,7 +669,7 @@ impl History {
                         )
                     }
                 };
-                port.send(sender, result);
+                port.post(sender, result);
                 self.exit_port = None;
             }
         }
@@ -802,7 +802,7 @@ impl MeshControllerActor {
                         let bytes: Vec<u8> =
                             read.call1((requested_size,)).unwrap().extract().unwrap();
 
-                        debugger_actor.send(
+                        debugger_actor.post(
                             this,
                             DebuggerMessage::Action {
                                 action: DebuggerAction::Write { bytes },
@@ -832,7 +832,7 @@ impl MeshControllerActor {
         }
         if self.debugger_active.is_none() {
             self.debugger_active = self.debugger_paused.pop_front().inspect(|pdb_actor| {
-                pdb_actor.send(
+                pdb_actor.post(
                     this,
                     DebuggerMessage::Action {
                         action: DebuggerAction::Attach(),
@@ -983,9 +983,9 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
                     .stop(this, "client requested stop".to_string())
                     .await;
                 if worker_stop_result.is_ok() && broker_stop_result.is_ok() {
-                    response_port.send(this, Ok(()));
+                    response_port.post(this, Ok(()));
                 } else {
-                    response_port.send(this, Err(format!("stopping mesh workers failed: tensor worker result: {:?}, broker result: {:?}", worker_stop_result, broker_stop_result)));
+                    response_port.post(this, Err(format!("stopping mesh workers failed: tensor worker result: {:?}, broker result: {:?}", worker_stop_result, broker_stop_result)));
                 }
             }
         }

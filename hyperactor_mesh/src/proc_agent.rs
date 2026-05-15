@@ -228,7 +228,7 @@ impl ActorInstanceState {
         for subscriber in &self.subscribers {
             let mut headers = Flattrs::new();
             headers.set(STREAM_STATE_SUBSCRIBER, true);
-            subscriber.send_with_headers(cx, headers, state.clone());
+            subscriber.post_with_headers(cx, headers, state.clone());
         }
 
         // One-shot waiters (predicated).
@@ -239,7 +239,7 @@ impl ActorInstanceState {
                 let overlay =
                     crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status.clone())])
                         .expect("valid single-run overlay");
-                let _ = reply.send(cx, overlay);
+                let _ = reply.post(cx, overlay);
                 false
             } else {
                 true
@@ -831,7 +831,7 @@ impl Handler<ConfigDump> for ProcAgent {
         let entries = hyperactor_config::global::config_entries();
         // Reply is best-effort: the caller may have timed out and dropped
         // the once-port.  That must not crash this actor.
-        let _ = message.result.send(cx, ConfigDumpResult { entries });
+        let _ = message.result.post(cx, ConfigDumpResult { entries });
         Ok(())
     }
 }
@@ -1012,7 +1012,7 @@ impl Handler<resource::GetRankStatus> for ProcAgent {
             StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                 .expect("valid single-run overlay")
         };
-        get_rank_status.reply.send(cx, overlay);
+        get_rank_status.reply.post(cx, overlay);
         Ok(())
     }
 }
@@ -1040,7 +1040,7 @@ impl Handler<resource::WaitRankStatus> for ProcAgent {
                 StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                     .expect("valid single-run overlay")
             };
-            let _ = msg.reply.send(cx, overlay);
+            let _ = msg.reply.post(cx, overlay);
             return Ok(());
         }
 
@@ -1071,7 +1071,7 @@ impl Handler<resource::GetState<ActorState>> for ProcAgent {
             },
         };
 
-        get_state.reply.send(cx, state);
+        get_state.reply.post(cx, state);
         Ok(())
     }
 }
@@ -1103,7 +1103,7 @@ impl Handler<resource::StreamState<ActorState>> for ProcAgent {
         headers.set(STREAM_STATE_SUBSCRIBER, true);
         stream_state
             .subscriber
-            .send_with_headers(cx, headers, state);
+            .post_with_headers(cx, headers, state);
         Ok(())
     }
 }
@@ -1150,7 +1150,7 @@ impl Handler<NewClientInstance> for ProcAgent {
         NewClientInstance { client_instance }: NewClientInstance,
     ) -> anyhow::Result<()> {
         let (instance, _handle) = self.proc.instance("client")?;
-        client_instance.send(cx, instance);
+        client_instance.post(cx, instance);
         Ok(())
     }
 }
@@ -1170,7 +1170,7 @@ impl Handler<GetProc> for ProcAgent {
         cx: &Context<Self>,
         GetProc { proc }: GetProc,
     ) -> anyhow::Result<()> {
-        proc.send(cx, self.proc.clone());
+        proc.post(cx, self.proc.clone());
         Ok(())
     }
 }
@@ -1281,7 +1281,7 @@ mod tests {
         // timeout so a misrouted reply fails fast rather than hanging.
         let query = |client: &hyperactor::Instance<()>| {
             let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-            port.send(
+            port.post(
                 client,
                 IntrospectMessage::QueryChild {
                     child_ref: Addr::Proc(proc.proc_addr().clone()),
@@ -1393,7 +1393,7 @@ mod tests {
         let query_task = tokio::spawn(async move {
             loop {
                 let (reply_port, reply_rx) = query_client.open_once_port::<IntrospectResult>();
-                query_port.send(
+                query_port.post(
                     &query_client,
                     IntrospectMessage::QueryChild {
                         child_ref: Addr::Proc(query_proc_id.clone()),
@@ -1450,7 +1450,7 @@ mod tests {
 
         // Final consistency check: QueryChild should still work.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        port.send(
+        port.post(
             &client,
             IntrospectMessage::QueryChild {
                 child_ref: Addr::Proc(proc.proc_addr().clone()),
@@ -1703,7 +1703,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-            port.send(
+            port.post(
                 &client,
                 IntrospectMessage::QueryChild {
                     child_ref: Addr::Proc(proc.proc_addr().clone()),

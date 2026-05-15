@@ -375,7 +375,7 @@ impl PythonMessage {
             } => {
                 let broker = BrokerId::new(local_state_broker).resolve(cx).await;
                 let (send, recv) = cx.open_once_port();
-                broker.send(cx, LocalStateBrokerMessage::Get(id, send));
+                broker.post(cx, LocalStateBrokerMessage::Get(id, send));
                 let state = recv.recv().await?;
                 let mut state_it = state.state.into_iter();
                 monarch_with_gil(|py| {
@@ -519,7 +519,7 @@ pub(super) struct PythonActorHandle {
 impl PythonActorHandle {
     // TODO: do the pickling in rust
     fn send(&self, instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
-        self.inner.send(instance.deref(), message.clone());
+        self.inner.post(instance.deref(), message.clone());
         Ok(())
     }
 
@@ -1592,7 +1592,7 @@ async fn handle_async_endpoint_panic(
                     .unwrap()
             })
             .0;
-        panic_sender.send(&client, Signal::Kill(panic.to_string()));
+        panic_sender.post(&client, Signal::Kill(panic.to_string()));
     }
 
     // Record latency in microseconds
@@ -1625,12 +1625,12 @@ where
 impl LocalPort {
     fn send(&mut self, obj: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
-        port.send(self.instance.deref(), Ok(obj));
+        port.post(self.instance.deref(), Ok(obj));
         Ok(())
     }
     fn exception(&mut self, e: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
-        port.send(self.instance.deref(), Err(e));
+        port.post(self.instance.deref(), Err(e));
         Ok(())
     }
 }
@@ -1728,7 +1728,7 @@ impl Port {
         );
 
         self.port_ref
-            .send_with_headers(&self.instance, self.reply_headers.clone(), message)
+            .post_with_headers(&self.instance, self.reply_headers.clone(), message)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
@@ -1739,7 +1739,7 @@ impl Port {
         );
 
         self.port_ref
-            .send_with_headers(&self.instance, self.reply_headers.clone(), message)
+            .post_with_headers(&self.instance, self.reply_headers.clone(), message)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 }
