@@ -17,6 +17,7 @@ use futures::TryStreamExt;
 use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::Unbind;

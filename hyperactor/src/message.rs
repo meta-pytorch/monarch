@@ -45,6 +45,7 @@ use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::actor::Referable;
 use crate::context;
+use crate::endpoint::Endpoint as _;
 
 /// An object `T` that is [`Unbind`] can extract a set of parameters from itself,
 /// and store in [`Bindings`]. The extracted parameters in [`Bindings`] can be
