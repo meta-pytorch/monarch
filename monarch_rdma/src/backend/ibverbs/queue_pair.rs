@@ -13,10 +13,12 @@
 //! methods for establishing connections and performing RDMA operations.
 
 /// Maximum size for a single RDMA operation in bytes (1 GiB).
-const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
+pub(super) const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
 
+use std::collections::HashSet;
 use std::io::Error;
 use std::result::Result;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -38,6 +40,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use super::IbvBuffer;
+use super::domain::IbvDomain;
 use super::manager_actor::EnsureQueuePair;
 use super::manager_actor::QpInitializerDone;
 use super::manager_actor::QpInitializerFailed;
@@ -74,6 +77,16 @@ impl PollCompletionError {
     pub fn is_wr_flush_err(&self) -> bool {
         self.status == Some(rdmaxcel_sys::ibv_wc_status::IBV_WC_WR_FLUSH_ERR)
     }
+
+    /// Test-only constructor
+    #[cfg(test)]
+    pub(super) fn for_test(message: &str) -> Self {
+        Self {
+            message: message.to_string(),
+            status: None,
+            vendor_err: None,
+        }
+    }
 }
 
 /// A doorbell trigger for batched RDMA operations.
@@ -108,12 +121,20 @@ pub enum PollTarget {
 /// 5. Perform RDMA operations with `put()` or `get()`
 /// 6. Poll for completions with `poll_completion()`
 ///
-/// # Notes
-/// - The `qp` field stores a pointer to `rdmaxcel_qp_t` (not `ibv_qp`)
-/// - `rdmaxcel_qp_t` contains atomic counters and completion caches internally
-/// - This makes IbvQueuePair trivially Clone and Serialize
-/// - Multiple clones share the same underlying rdmaxcel_qp_t via the pointer
-#[derive(Debug, Serialize, Deserialize, Named, Clone)]
+/// # Ownership
+///
+/// `IbvQueuePair` owns the underlying `rdmaxcel_qp_t` and is
+/// deliberately not `Clone`: each instance is the unique owner of
+/// its FFI resource and runs `rdmaxcel_qp_destroy` from its `Drop`
+/// impl. Moving the value (e.g. handing it across an actor reply
+/// port) transfers ownership; the originating side must not retain
+/// any reference to the freed pointer.
+///
+/// The QP holds an [`Arc<IbvDomain>`] so its context and protection
+/// domain are guaranteed to outlive the FFI resource, even after the
+/// owning [`super::manager_actor::IbvManagerActor`] has dropped its
+/// own clone of the domain.
+#[derive(Debug)]
 pub struct IbvQueuePair {
     pub send_cq: usize,    // *mut rdmaxcel_sys::ibv_cq,
     pub recv_cq: usize,    // *mut rdmaxcel_sys::ibv_cq,
@@ -121,11 +142,26 @@ pub struct IbvQueuePair {
     pub dv_qp: usize,      // *mut rdmaxcel_sys::mlx5dv_qp,
     pub dv_send_cq: usize, // *mut rdmaxcel_sys::mlx5dv_cq,
     pub dv_recv_cq: usize, // *mut rdmaxcel_sys::mlx5dv_cq,
-    context: usize,        // *mut rdmaxcel_sys::ibv_context,
+    domain: Arc<IbvDomain>,
     config: IbvConfig,
     is_efa: bool,
 }
-wirevalue::register_type!(IbvQueuePair);
+
+impl Drop for IbvQueuePair {
+    fn drop(&mut self) {
+        // SAFETY: `IbvQueuePair` is not `Clone`, so this is the
+        // unique owner of `self.qp`. `qp == 0` covers the
+        // zero-initialized test fixture from `fake_qp()`; the real
+        // constructor always produces a non-null pointer.
+        if self.qp == 0 {
+            return;
+        }
+        unsafe {
+            let rdmaxcel_qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+            rdmaxcel_sys::rdmaxcel_qp_destroy(rdmaxcel_qp);
+        }
+    }
+}
 
 impl IbvQueuePair {
     fn is_efa(&self) -> bool {
@@ -163,25 +199,25 @@ impl IbvQueuePair {
     /// Creates a new IbvQueuePair.
     ///
     /// Initializes a new Queue Pair (QP) and associated Completion Queues (CQ)
-    /// using the provided context and protection domain. The QP is created in
-    /// the RESET state and must be transitioned via `connect()` before use.
+    /// using the provided domain. The QP is created in the RESET state and
+    /// must be transitioned via `connect()` before use.
+    ///
+    /// The [`Arc<IbvDomain>`] is retained inside the QP so the device
+    /// context and protection domain are guaranteed to outlive the FFI
+    /// resource.
     ///
     /// # Errors
     ///
     /// Returns errors if CQ or QP creation fails.
-    pub fn new(
-        context: *mut rdmaxcel_sys::ibv_context,
-        pd: *mut rdmaxcel_sys::ibv_pd,
-        config: IbvConfig,
-    ) -> Result<Self, anyhow::Error> {
+    pub fn new(domain: Arc<IbvDomain>, config: IbvConfig) -> Result<Self, anyhow::Error> {
         tracing::debug!("creating an IbvQueuePair from config {}", config);
         unsafe {
             // Resolve Auto to a concrete QP type based on device capabilities
             let resolved_qp_type = resolve_qp_type(config.qp_type);
             let is_efa = resolved_qp_type == rdmaxcel_sys::RDMA_QP_TYPE_EFA;
             let qp = rdmaxcel_sys::rdmaxcel_qp_create(
-                context,
-                pd,
+                domain.context,
+                domain.pd,
                 config.cq_entries,
                 config.max_send_wr.try_into().unwrap(),
                 config.max_recv_wr.try_into().unwrap(),
@@ -210,7 +246,7 @@ impl IbvQueuePair {
                     dv_qp: 0,
                     dv_send_cq: 0,
                     dv_recv_cq: 0,
-                    context: context as usize,
+                    domain,
                     config,
                     is_efa: true,
                 });
@@ -248,7 +284,7 @@ impl IbvQueuePair {
                 dv_qp: dv_qp as usize,
                 dv_send_cq: dv_send_cq as usize,
                 dv_recv_cq: dv_recv_cq as usize,
-                context: context as usize,
+                domain,
                 config,
                 is_efa: false,
             })
@@ -258,7 +294,7 @@ impl IbvQueuePair {
     /// Returns the connection info needed by a remote peer to connect to this QP.
     pub fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
         unsafe {
-            let context = self.context as *mut rdmaxcel_sys::ibv_context;
+            let context = self.domain.context;
             let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
             let mut port_attr = rdmaxcel_sys::ibv_port_attr::default();
             let errno = rdmaxcel_sys::ibv_query_port(
@@ -753,7 +789,7 @@ impl IbvQueuePair {
 
         unsafe {
             let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
-            let context = self.context as *mut rdmaxcel_sys::ibv_context;
+            let context = self.domain.context;
             let ops = &mut (*context).ops;
             let errno;
             if op_type == IbvOperation::Recv {
@@ -947,7 +983,7 @@ impl IbvQueuePair {
     /// # Arguments
     ///
     /// * `target` - Which completion queue to poll (Send, Receive)
-    /// * `expected_wr_ids` - Slice of work request IDs to wait for
+    /// * `expected_wr_ids` - Set of work request IDs to wait for
     ///
     /// # Returns
     ///
@@ -956,7 +992,7 @@ impl IbvQueuePair {
     pub fn poll_completion(
         &mut self,
         target: PollTarget,
-        expected_wr_ids: &[u64],
+        expected_wr_ids: &HashSet<u64>,
     ) -> Result<Vec<(u64, IbvWc)>, PollCompletionError> {
         if expected_wr_ids.is_empty() {
             return Ok(Vec::new());
@@ -1084,10 +1120,11 @@ impl IbvQueuePair {
 // `PeerInfo`, connected, and sent our `NotifyRts`) and
 // `peer_rts_received` (we observed the peer's `NotifyRts`). When
 // both are true the handshake hands the qp to the manager via
-// [`QpInitializerDone`]. The `terminal` flag short-circuits any
-// further handler work after success or failure. The qp is held in
-// a `QpGuard` so any failure path (or aborted message delivery)
-// destroys it.
+// [`QpInitializerDone`], transferring ownership. The `terminal`
+// flag short-circuits any further handler work after success or
+// failure. The qp is held in an `Option<IbvQueuePair>`: any
+// failure path (or aborted message delivery) drops it, and
+// `IbvQueuePair::Drop` destroys the underlying FFI resource.
 
 /// Identifies a per-peer queue pair held by one
 /// [`super::manager_actor::IbvManagerActor`]. The same conceptual
@@ -1119,55 +1156,6 @@ wirevalue::register_type!(NotifyRts);
 /// the initializer to abort the handshake.
 #[derive(Debug)]
 struct InitializationFailed;
-
-/// RAII wrapper that destroys the wrapped queue pair on drop.
-/// Use `into_inner` to extract the qp without destroying.
-#[derive(Debug)]
-pub(super) struct QpGuard {
-    qp: Option<IbvQueuePair>,
-}
-
-impl QpGuard {
-    pub(super) fn new(qp: IbvQueuePair) -> Self {
-        Self { qp: Some(qp) }
-    }
-
-    /// Consume the guard and return the qp; suppresses Drop's destroy.
-    pub(super) fn into_inner(mut self) -> IbvQueuePair {
-        self.qp.take().expect("QpGuard already drained")
-    }
-
-    /// Delegates to [`IbvQueuePair::connect`].
-    pub(super) fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
-        self.qp
-            .as_mut()
-            .expect("QpGuard already drained")
-            .connect(info)
-    }
-
-    /// Delegates to [`IbvQueuePair::get_qp_info`].
-    pub(super) fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
-        self.qp
-            .as_mut()
-            .expect("QpGuard already drained")
-            .get_qp_info()
-    }
-}
-
-impl Drop for QpGuard {
-    fn drop(&mut self) {
-        if let Some(qp) = self.qp.take() {
-            // SAFETY: `QpGuard` owns the `IbvQueuePair` and exposes
-            // no API that hands out a reference to it, so safe code
-            // cannot have cloned the underlying `rdmaxcel_qp_t`
-            // pointer out from under us. The only way to extract a
-            // live clone is `into_inner`, which consumes `self` and
-            // skips this `Drop`; reaching here means `into_inner`
-            // was never called.
-            unsafe { destroy_qp(&qp) };
-        }
-    }
-}
 
 /// Bundle of trait bounds for an actor type that can play the role
 /// of [`QueuePairInitializer`]'s owner/peer manager.
@@ -1203,8 +1191,8 @@ pub(super) struct QueuePairInitializer<A: QpOwner> {
     qp_key: QpKey,
     /// Held until the handshake succeeds (handed to the manager
     /// via [`QpInitializerDone`]) or fails (dropped here, which
-    /// destroys the qp via `QpGuard::drop`).
-    qp: Option<QpGuard>,
+    /// destroys the qp via `IbvQueuePair::Drop`).
+    qp: Option<IbvQueuePair>,
     /// Per-side handshake budget pulled from
     /// `RDMA_QP_INIT_TIMEOUT` at construction.
     timeout: Duration,
@@ -1230,7 +1218,7 @@ where
         owner: ActorHandle<A>,
         other: ActorRef<A>,
         qp_key: QpKey,
-        qp: QpGuard,
+        qp: IbvQueuePair,
     ) -> Self {
         let timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
         Self {
@@ -1285,7 +1273,7 @@ where
     }
 
     /// Transition to the terminal success state and hand the qp
-    /// guard to the owning manager via [`QpInitializerDone`].
+    /// to the owning manager via [`QpInitializerDone`].
     fn done(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         if let Some(h) = self.timeout_handle.take() {
             h.abort();
@@ -1315,7 +1303,7 @@ where
             .as_mut()
             .expect("qp present pre-terminal")
             .connect(&peer_endpoint)
-            .map_err(|e| format!("QpGuard::connect failed: {e}"))?;
+            .map_err(|e| format!("IbvQueuePair::connect failed: {e}"))?;
         peer_notify_rts
             .send(cx, NotifyRts)
             .map_err(|e| format!("failed to send NotifyRts to peer: {e}"))?;
@@ -1383,30 +1371,6 @@ where
     fn drop(&mut self) {
         if let Some(h) = self.timeout_handle.take() {
             h.abort();
-        }
-    }
-}
-
-/// Destroy the underlying `rdmaxcel_qp_t`.
-///
-/// # Safety
-///
-/// `IbvQueuePair` derives [`Clone`] but the wrapped `rdmaxcel_qp_t`
-/// pointer is shared by all clones; this call frees that pointer. The
-/// caller must guarantee no remaining clones of `qp` are in use (no
-/// other code is reading from or posting to `qp.qp`, and no future
-/// code will), since accessing a freed `rdmaxcel_qp_t` is undefined
-/// behavior.
-pub(super) unsafe fn destroy_qp(qp: &IbvQueuePair) {
-    // SAFETY: The caller has guaranteed no other live clone of `qp`
-    // observes `qp.qp` (see this function's `# Safety` section). This
-    // is truly unsafe -- the current implementation does not properly
-    // track outstanding clones. An imminent change will fix this, but
-    // for now it isn't a regression.
-    unsafe {
-        if qp.qp != 0 {
-            let rdmaxcel_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
-            rdmaxcel_sys::rdmaxcel_qp_destroy(rdmaxcel_qp);
         }
     }
 }
@@ -1496,7 +1460,6 @@ mod tests {
     use hyperactor_config::Flattrs;
 
     use super::*;
-    use crate::backend::ibverbs::domain::IbvDomain;
     use crate::backend::ibverbs::manager_actor::EnsureQueuePair;
     use crate::backend::ibverbs::primitives::IbvConfig;
     use crate::backend::ibverbs::primitives::get_all_devices;
@@ -1515,8 +1478,8 @@ mod tests {
         let domain = IbvDomain::new(config.device.clone());
         assert!(domain.is_ok());
 
-        let domain = domain.unwrap();
-        let queue_pair = IbvQueuePair::new(domain.context, domain.pd, config.clone());
+        let domain = Arc::new(domain.unwrap());
+        let queue_pair = IbvQueuePair::new(domain, config.clone());
         assert!(queue_pair.is_ok());
     }
 
@@ -1536,21 +1499,11 @@ mod tests {
             ..Default::default()
         };
 
-        let server_domain = IbvDomain::new(server_config.device.clone()).unwrap();
-        let client_domain = IbvDomain::new(client_config.device.clone()).unwrap();
+        let server_domain = Arc::new(IbvDomain::new(server_config.device.clone()).unwrap());
+        let client_domain = Arc::new(IbvDomain::new(client_config.device.clone()).unwrap());
 
-        let mut server_qp = IbvQueuePair::new(
-            server_domain.context,
-            server_domain.pd,
-            server_config.clone(),
-        )
-        .unwrap();
-        let mut client_qp = IbvQueuePair::new(
-            client_domain.context,
-            client_domain.pd,
-            client_config.clone(),
-        )
-        .unwrap();
+        let mut server_qp = IbvQueuePair::new(server_domain, server_config.clone()).unwrap();
+        let mut client_qp = IbvQueuePair::new(client_domain, client_config.clone()).unwrap();
 
         let server_connection_info = server_qp.get_qp_info().unwrap();
         let client_connection_info = client_qp.get_qp_info().unwrap();
@@ -1587,9 +1540,11 @@ mod tests {
         DropReply,
     }
 
-    /// Zero-initialized [`IbvQueuePair`]. `qp == 0` so `QpGuard::Drop`
-    /// is a no-op; tests using this must not exercise [`IbvQueuePair::connect`]
-    /// (it would deref a null pointer).
+    /// Zero-initialized [`IbvQueuePair`]. `qp == 0` so
+    /// `IbvQueuePair::Drop` is a no-op; tests using this must not
+    /// exercise [`IbvQueuePair::connect`] (it would deref a null
+    /// pointer). The domain is null too; `IbvDomain::Drop` is a no-op
+    /// on a null `pd`.
     fn fake_qp() -> IbvQueuePair {
         IbvQueuePair {
             send_cq: 0,
@@ -1598,7 +1553,10 @@ mod tests {
             dv_qp: 0,
             dv_send_cq: 0,
             dv_recv_cq: 0,
-            context: 0,
+            domain: Arc::new(IbvDomain {
+                context: std::ptr::null_mut(),
+                pd: std::ptr::null_mut(),
+            }),
             config: IbvConfig::default(),
             is_efa: false,
         }
@@ -1606,13 +1564,13 @@ mod tests {
 
     /// A real (loopback) `IbvQueuePair` and its `IbvQpInfo`. Returns
     /// `None` when no RDMA device is present.
-    fn loopback_qp() -> Option<(QpGuard, IbvQpInfo)> {
+    fn loopback_qp() -> Option<(IbvQueuePair, IbvQpInfo)> {
         if get_all_devices().is_empty() {
             return None;
         }
         let config = IbvConfig::default();
-        let domain = IbvDomain::new(config.device.clone()).ok()?;
-        let mut qp = QpGuard::new(IbvQueuePair::new(domain.context, domain.pd, config).ok()?);
+        let domain = Arc::new(IbvDomain::new(config.device.clone()).ok()?);
+        let mut qp = IbvQueuePair::new(domain, config).ok()?;
         let info = qp.get_qp_info().ok()?;
         Some((qp, info))
     }
@@ -1669,7 +1627,9 @@ mod tests {
     #[async_trait]
     impl Handler<QpInitializerDone> for MockManager {
         async fn handle(&mut self, _cx: &Context<Self>, msg: QpInitializerDone) -> Result<()> {
-            let _ = msg.qp.into_inner();
+            // The mock takes ownership; dropping the `IbvQueuePair`
+            // here destroys it.
+            drop(msg.qp);
             self.state.lock().unwrap().done.push(msg.qp_key);
             Ok(())
         }
@@ -1695,7 +1655,7 @@ mod tests {
     }
 
     impl Harness {
-        fn build(qp: QpGuard, response: MockResponse) -> Result<Self> {
+        fn build(qp: IbvQueuePair, response: MockResponse) -> Result<Self> {
             let proc = Proc::new();
             let state = Arc::new(Mutex::new(MockState::default()));
             let mock = MockManager {
@@ -1756,11 +1716,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_peer_info_error_transitions_to_failed() {
-        let harness = Harness::build(
-            QpGuard::new(fake_qp()),
-            MockResponse::Error("peer rejected".into()),
-        )
-        .unwrap();
+        let harness =
+            Harness::build(fake_qp(), MockResponse::Error("peer rejected".into())).unwrap();
         let (key, error) = harness.await_failed().await;
         assert_eq!(key, harness.qp_key);
         assert_eq!(error, "peer rejected");
@@ -1778,7 +1735,7 @@ mod tests {
             Duration::from_millis(200),
         );
 
-        let harness = Harness::build(QpGuard::new(fake_qp()), MockResponse::DropReply).unwrap();
+        let harness = Harness::build(fake_qp(), MockResponse::DropReply).unwrap();
         let (key, error) = harness.await_failed().await;
         assert_eq!(key, harness.qp_key);
         assert!(
@@ -1862,7 +1819,7 @@ mod tests {
     /// envelope's error message.
     #[tokio::test]
     async fn test_undeliverable_in_awaiting_transitions_to_failed() {
-        let harness = Harness::build(QpGuard::new(fake_qp()), MockResponse::DropReply).unwrap();
+        let harness = Harness::build(fake_qp(), MockResponse::DropReply).unwrap();
         let undeliverable = fake_undeliverable(&harness.proc, "simulated bounce");
         let (peer, _) = harness.proc.instance("peer").unwrap();
         harness.init_handle.send(&peer, undeliverable).unwrap();
@@ -1898,11 +1855,7 @@ mod tests {
     /// `QpInitializerFailed` callback.
     #[tokio::test]
     async fn test_undeliverable_after_terminated_does_not_re_fail() {
-        let harness = Harness::build(
-            QpGuard::new(fake_qp()),
-            MockResponse::Error("first fail".into()),
-        )
-        .unwrap();
+        let harness = Harness::build(fake_qp(), MockResponse::Error("first fail".into())).unwrap();
         let _ = harness.await_failed().await;
 
         let undeliverable = fake_undeliverable(&harness.proc, "late bounce");
