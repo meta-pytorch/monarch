@@ -166,6 +166,7 @@ use crate::channel::ChannelTransport;
 use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
+use crate::endpoint::Endpoint as _;
 use crate::gateway::Gateway;
 use crate::id::ActorId;
 use crate::id::Label;
@@ -4859,14 +4860,14 @@ mod tests {
         // fail `root_1_1_1`, the supervision msg should be propagated to
         // `root_1` because `root_1` has set `true` to `handle_supervision_event`.
         root_1_1_1
-            .send::<String>(&client, "some random failure".into())
+            .send(&client, "some random failure".to_string())
             .unwrap();
 
         // fail `root_2_1`, the supervision msg should be propagated to
         // ProcSupervisionCoordinator.
         let root_2_1_id = root_2_1.actor_addr().clone();
         root_2_1
-            .send::<String>(&client, "some random failure".into())
+            .send(&client, "some random failure".to_string())
             .unwrap();
 
         // Wait for root_1 to handle the supervision event from the
