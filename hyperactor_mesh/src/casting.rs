@@ -173,7 +173,7 @@ where
 
     comm_actor_ref
         .port()
-        .send_with_headers(cx, headers, cast_message);
+        .post_with_headers(cx, headers, cast_message);
 
     Ok(())
 }

@@ -322,7 +322,7 @@ impl TcpManagerActor {
                     let len = std::cmp::min(chunk_size, size - offset);
                     let mut buf = BytesMut::zeroed(len);
                     if let Err(e) = mem.read_at(offset, &mut buf) {
-                        error_port.send(
+                        error_port.post(
                             &instance,
                             TransferError {
                                 message: format!("read_at failed at offset {offset}: {e}"),
@@ -338,7 +338,7 @@ impl TcpManagerActor {
                     };
 
                     if let Err(e) = conn.send(chunk).await {
-                        error_port.send(
+                        error_port.post(
                             &instance,
                             TransferError {
                                 message: format!("failed to send chunk at offset {offset}: {e}"),
@@ -411,7 +411,7 @@ impl Actor for TcpManagerActor {
                             Ok(chunk) => chunk,
                             Err(e) => {
                                 error_port
-                                    .send(
+                                    .post(
                                         &instance,
                                         TransferError {
                                             message: format!(
@@ -446,7 +446,7 @@ impl Actor for TcpManagerActor {
                         let transfer_id = chunk.transfer_id;
                         drop(entry);
                         let (_, state) = transfers.remove(&transfer_id).unwrap();
-                        result_port.send(
+                        result_port.post(
                             &instance,
                             SendTransferResult {
                                 done: state.done,
@@ -461,7 +461,7 @@ impl Actor for TcpManagerActor {
                         let transfer_id = chunk.transfer_id;
                         drop(entry);
                         let (_, state) = transfers.remove(&transfer_id).unwrap();
-                        result_port.send(
+                        result_port.post(
                             &instance,
                             SendTransferResult {
                                 done: state.done,
@@ -589,7 +589,7 @@ impl Handler<RegisterTransferLocal> for TcpManagerActor {
     ) -> Result<(), anyhow::Error> {
         let transfer_id =
             self.register_transfer(message.local_memory, message.total_chunks, message.done);
-        message.reply.send(cx, transfer_id);
+        message.reply.post(cx, transfer_id);
         Ok(())
     }
 }
@@ -618,7 +618,7 @@ impl Handler<SendTransferResult> for TcpManagerActor {
         cx: &Context<Self>,
         message: SendTransferResult,
     ) -> Result<(), anyhow::Error> {
-        message.done.send(cx, message.result);
+        message.done.post(cx, message.result);
         Ok(())
     }
 }
@@ -690,7 +690,7 @@ impl TcpBackend {
         .map_err(|_| anyhow::anyhow!("get_channel_address timed out"))??
         .ok_or_else(|| anyhow::anyhow!("remote does not have parallel channels enabled"))?;
 
-        self.0.send(
+        self.0.post(
             cx,
             ExecuteTransferLocal {
                 transfer_id,
@@ -725,7 +725,7 @@ impl TcpBackend {
 
         let (id_handle, id_rx) = hyperactor::mailbox::open_once_port::<usize>(cx);
 
-        self.0.send(
+        self.0.post(
             cx,
             RegisterTransferLocal {
                 local_memory: op.local_memory.clone(),
