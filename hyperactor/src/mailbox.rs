@@ -141,6 +141,7 @@ use typeuri::Named;
 
 use crate::ActorAddr;
 use crate::Addr;
+use crate::Endpoint;
 // for macros
 use crate::OncePortRef;
 use crate::PortAddr;
@@ -1087,7 +1088,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 let sender_id: ActorAddr = envelope.sender().clone();
                 let return_port =
                     PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&sender_id);
-                return_port.send_serialized(
+                return_port.post_serialized(
                     &client,
                     Flattrs::new(),
                     wirevalue::Any::serialize(&Undeliverable(envelope)).unwrap(),
@@ -1358,7 +1359,7 @@ impl<C: context::Actor, M: RemoteMessage> Sink<M> for PortSink<C, M> {
     }
 
     fn start_send(self: Pin<&mut Self>, item: M) -> Result<(), Self::Error> {
-        self.port.send(&self.cx, item)
+        crate::Endpoint::send(&self.port, &self.cx, item)
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -1990,9 +1991,16 @@ impl<M: Message> PortHandle<M> {
             None => PortLocation::new_unbound::<M>(self.inner.mailbox.actor_addr().clone()),
         }
     }
+}
 
-    /// Send a message to this port.
-    pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
+impl<M> Endpoint<M> for &PortHandle<M>
+where
+    M: Message,
+{
+    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    where
+        C: context::Actor,
+    {
         let closed = self.inner.mailbox.inner.closed.read().unwrap();
 
         if let Some(status) = &*closed {
@@ -2043,7 +2051,9 @@ impl<M: Message> PortHandle<M> {
             )
         })
     }
+}
 
+impl<M: Message> PortHandle<M> {
     /// A contravariant map: using the provided function to translate
     /// `R`-typed messages to `M`-typed ones, delivered on this port.
     pub fn contramap<R, F>(&self, unmap: F) -> PortHandle<R>
@@ -2134,10 +2144,16 @@ impl<M: Message> OncePortHandle<M> {
     pub fn port_addr(&self) -> &PortAddr {
         &self.port_id
     }
+}
 
-    /// Send a message to this port. The send operation will consume the
-    /// port handle, as the port accepts at most one message.
-    pub fn send(self, _cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
+impl<M> Endpoint<M> for OncePortHandle<M>
+where
+    M: Message,
+{
+    fn send<C>(self, _cx: &C, message: M) -> Result<(), MailboxSenderError>
+    where
+        C: context::Actor,
+    {
         // TODO: Assign seq to the message if the port is bound to a handler port
         // in the future.
         assert!(
@@ -3289,6 +3305,7 @@ mod tests {
     use crate::accum::ReducerMode;
     use crate::channel::ChannelTransport;
     use crate::context::Mailbox as MailboxContext;
+    use crate::endpoint::Endpoint as _;
     use crate::proc::Proc;
     use crate::testing::ids::test_actor_id;
     use crate::testing::ids::test_port_id;
