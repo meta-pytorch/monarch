@@ -409,7 +409,7 @@ async fn query_introspect(
             view,
             reply: reply_ref,
         },
-    )?;
+    );
     tokio::time::timeout(timeout, reply_rx.recv())
         .await
         .map_err(|_| anyhow::anyhow!("timed out {}", err_ctx))?
@@ -434,7 +434,7 @@ async fn query_child_introspect(
             child_ref,
             reply: reply_ref,
         },
-    )?;
+    );
     tokio::time::timeout(timeout, reply_rx.recv())
         .await
         .map_err(|_| anyhow::anyhow!("timed out {}", err_ctx))?
@@ -1095,9 +1095,7 @@ impl Handler<MeshAdminMessage> for MeshAdminAgent {
                 let resp = MeshAdminAddrResponse {
                     addr: self.admin_host.clone(),
                 };
-                if let Err(e) = reply.send(cx, resp) {
-                    tracing::debug!("GetAdminAddr reply failed (caller gone?): {e}");
-                }
+                reply.send(cx, resp);
             }
         }
         Ok(())
@@ -1130,9 +1128,7 @@ impl Handler<ResolveReferenceMessage> for MeshAdminAgent {
                         .await
                         .map_err(|e| format!("{:#}", e)),
                 );
-                if let Err(e) = reply.send(cx, response) {
-                    tracing::debug!("Resolve reply failed (caller gone?): {e}");
-                }
+                reply.send(cx, response);
             }
         }
         Ok(())
@@ -2089,8 +2085,6 @@ fn parse_proc_reference(raw: &str) -> Result<(String, ProcAddr), ApiError> {
 ///
 /// Returns `Ok(true)` if the actor responds, `Ok(false)` if the
 /// actor is absent or unresponsive (timeout / recv error).
-/// Returns `Err(ApiError)` on bridge-side send failure — a real
-/// infrastructure problem, not an absent actor.
 async fn probe_actor(
     cx: &Instance<()>,
     agent_id: &hyperactor::ActorAddr,
@@ -2103,19 +2097,7 @@ async fn probe_actor(
             view: IntrospectView::Entity,
             reply: handle.bind(),
         },
-    )
-    .map_err(|e| {
-        tracing::warn!(
-            name = "pyspy_probe_send_failed",
-            %agent_id,
-            error = %e,
-        );
-        ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to send probe to {}: {}", agent_id, e),
-            details: None,
-        }
-    })?;
+    );
 
     let timeout = hyperactor_config::global::get(crate::config::MESH_ADMIN_QUERY_CHILD_TIMEOUT);
     match tokio::time::timeout(timeout, rx.recv()).await {
@@ -2173,12 +2155,7 @@ impl ResolvedProcHandler {
         match self {
             Self::Host(r) => r.send(cx, msg),
             Self::Proc(r) => r.send(cx, msg),
-        }
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to send PySpyDump: {}", e),
-            details: None,
-        })?;
+        };
         tokio::time::timeout(timeout, reply_rx.recv())
             .await
             .map_err(|_| ApiError {
@@ -2209,12 +2186,7 @@ impl ResolvedProcHandler {
         match self {
             Self::Host(r) => r.send(cx, msg),
             Self::Proc(r) => r.send(cx, msg),
-        }
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to send PySpyProfile: {}", e),
-            details: None,
-        })?;
+        };
         tokio::time::timeout(timeout, reply_rx.recv())
             .await
             .map_err(|_| ApiError {
@@ -2241,12 +2213,7 @@ impl ResolvedProcHandler {
         match self {
             Self::Host(r) => r.send(cx, msg),
             Self::Proc(r) => r.send(cx, msg),
-        }
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to send ConfigDump: {}", e),
-            details: None,
-        })?;
+        };
         tokio::time::timeout(timeout, reply_rx.recv())
             .await
             .map_err(|_| ApiError {
@@ -3527,16 +3494,14 @@ mod tests {
 
         // Spawn a user proc via CreateOrUpdate<ProcSpec>.
         let user_proc_name = ResourceId::unique(Label::new("user-proc").unwrap());
-        host_agent_ref
-            .send(
-                &client,
-                resource::CreateOrUpdate {
-                    id: user_proc_name.clone(),
-                    rank: Rank::new(0),
-                    spec: ProcSpec::default(),
-                },
-            )
-            .unwrap();
+        host_agent_ref.send(
+            &client,
+            resource::CreateOrUpdate {
+                id: user_proc_name.clone(),
+                rank: Rank::new(0),
+                spec: ProcSpec::default(),
+            },
+        );
 
         // Wait for the user proc to boot.
         tokio::time::sleep(Duration::from_secs(2)).await;
