@@ -141,7 +141,7 @@ pub fn start_periodic_snapshots(
     let actor = SnapshotCaptureActor::new(table_store, admin_ref, interval);
     let handle = proc.spawn("snapshot_capture", actor)?;
     // PT-3: first capture fires at spawn time.
-    handle.send(cx, CaptureSnapshot);
+    handle.post(cx, CaptureSnapshot);
     Ok(())
 }
 
