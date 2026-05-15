@@ -69,7 +69,6 @@ use hyperactor::OncePortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::context::Mailbox;
 use hyperactor::id::Label;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
@@ -84,7 +83,7 @@ use monarch_rdma::IbvConfig;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
-use monarch_rdma::backend::ibverbs::manager_actor::IbvManagerLocalMessageClient;
+use monarch_rdma::backend::ibverbs::manager_actor::request_queue_pair;
 use monarch_rdma::cu_check;
 use monarch_rdma::local_memory::RdmaLocalMemory;
 use monarch_rdma::local_memory::UnsafeLocalMemory;
@@ -516,23 +515,15 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         let local_ibv_manager_handle = local_ibv_manager
             .downcast_handle(cx)
             .ok_or_else(|| anyhow::anyhow!("local IbvManagerActor is not in this process"))?;
-        let (reply_handle, reply_rx) = cx
-            .mailbox()
-            .open_once_port::<Result<monarch_rdma::backend::ibverbs::queue_pair::IbvQueuePair, String>>();
-        local_ibv_manager_handle
-            .request_queue_pair(
-                cx,
-                remote_ibv_manager.clone(),
-                local_ibv.device_name.clone(),
-                remote_ibv.device_name.clone(),
-                reply_handle,
-            )
-            .await?;
-        let qp = reply_rx
-            .recv()
-            .await
-            .map_err(|e| anyhow::anyhow!("request_queue_pair reply channel closed: {e}"))?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let qp = request_queue_pair(
+            &local_ibv_manager_handle,
+            cx,
+            remote_ibv_manager.clone(),
+            local_ibv.device_name.clone(),
+            remote_ibv.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
 
         unsafe {
             let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;

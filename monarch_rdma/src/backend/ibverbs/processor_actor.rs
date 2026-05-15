@@ -43,6 +43,7 @@ use super::IbvOp;
 use super::primitives::IbvConfig;
 use super::primitives::IbvMemoryRegionView;
 use super::primitives::IbvWc;
+use super::queue_pair::IbvQueuePair;
 use super::queue_pair::MAX_RDMA_MSG_SIZE;
 use super::queue_pair::PollCompletionError;
 use super::queue_pair::PollTarget;
@@ -60,6 +61,24 @@ pub(super) trait QueuePair: std::fmt::Debug + Send + Sync + 'static {
         target: PollTarget,
         expected_wr_ids: &HashSet<u64>,
     ) -> Result<Vec<(u64, IbvWc)>, PollCompletionError>;
+}
+
+impl QueuePair for IbvQueuePair {
+    fn put(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> anyhow::Result<Vec<u64>> {
+        IbvQueuePair::put(self, lhandle, rhandle)
+    }
+
+    fn get(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> anyhow::Result<Vec<u64>> {
+        IbvQueuePair::get(self, lhandle, rhandle)
+    }
+
+    fn poll_completion(
+        &mut self,
+        target: PollTarget,
+        expected_wr_ids: &HashSet<u64>,
+    ) -> Result<Vec<(u64, IbvWc)>, PollCompletionError> {
+        IbvQueuePair::poll_completion(self, target, expected_wr_ids)
+    }
 }
 
 /// Adaptive wait between completion polls.
@@ -360,7 +379,6 @@ impl<'a, Qp: QueuePair> PostedOps<'a, Qp> {
 
 /// Local-only message: ask the manager to register an MR for
 /// `[addr, addr + size)` and return the resulting view.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired up in D105213930"))]
 #[derive(Debug)]
 pub(super) struct RegisterMr {
     pub addr: usize,
@@ -372,11 +390,9 @@ pub(super) struct RegisterMr {
 /// ownership of) a peer queue pair. The manager hands the QP value
 /// across the reply port and forgets it on its own side — the
 /// processor becomes the sole owner.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired up in D105213930"))]
 #[derive(Debug)]
 pub(super) struct RequestQueuePair<M: Referable, Qp: QueuePair> {
     pub qp_key: QpKey,
-    #[expect(dead_code, reason = "read by IbvManagerActor handler in D105213930")]
     pub remote_manager: ActorRef<M>,
     pub reply: OncePortHandle<Result<Qp, String>>,
 }
@@ -420,7 +436,6 @@ pub(super) struct IbvProcessorActor<M: Actor, Qp> {
     peer_qps: HashMap<QpKey, Arc<Mutex<Qp>>>,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "wired up in D105213930"))]
 impl<M, Qp> IbvProcessorActor<M, Qp>
 where
     M: Manager<Qp>,

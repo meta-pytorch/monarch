@@ -286,8 +286,7 @@ pub async fn wait_for_completion(
             return Ok(true);
         }
 
-        let wr_ids_to_poll: Vec<u64> = remaining.iter().copied().collect();
-        match qp.poll_completion(poll_target, &wr_ids_to_poll) {
+        match qp.poll_completion(poll_target, &remaining) {
             Ok(completions) => {
                 for (wr_id, _wc) in completions {
                     remaining.remove(&wr_id);

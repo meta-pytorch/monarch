@@ -827,8 +827,10 @@ mod tests {
     // ============================================================
 
     /// Two concurrent local `request_queue_pair` calls for the same
-    /// `(self_device, peer, other_device)` key must both succeed and
-    /// return the same QP; that QP must be usable for data-plane ops.
+    /// `(self_device, peer, other_device)` key. Only one can claim
+    /// the (single-owner) `IbvQueuePair`; the other surfaces an
+    /// "already been claimed" error. The winning side's QP must be
+    /// usable for data-plane ops.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_concurrent_request_queue_pair_converges() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 32;
@@ -855,12 +857,27 @@ mod tests {
                 other_device.clone(),
             ),
         );
-        let qp1 = r1?.map_err(|e| anyhow::anyhow!(e))?;
-        let mut qp2 = r2?.map_err(|e| anyhow::anyhow!(e))?;
-        assert_eq!(qp1.qp, qp2.qp);
+        let r1 = r1?;
+        let r2 = r2?;
+        let (mut qp, loser) = match (r1, r2) {
+            (Ok(qp), Err(e)) => (qp, e),
+            (Err(e), Ok(qp)) => (qp, e),
+            (Ok(_), Ok(_)) => {
+                panic!("expected exactly one concurrent request to claim the QP; both succeeded")
+            }
+            (Err(a), Err(b)) => panic!(
+                "expected exactly one concurrent request to claim the QP; both failed: {a} / {b}"
+            ),
+        };
+        assert!(
+            loser.contains("already pending")
+                || loser.contains("already claimed")
+                || loser.contains("already been claimed"),
+            "loser should surface the 'already pending' / 'already claimed' tombstone, got: {loser}"
+        );
 
-        let wr_id = qp2.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
-        wait_for_completion(&mut qp2, PollTarget::Send, &wr_id, 2).await?;
+        let wr_id = qp.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        wait_for_completion(&mut qp, PollTarget::Send, &wr_id, 2).await?;
         env.verify_buffers(BSIZE, 0).await?;
         Ok(())
     }
@@ -897,7 +914,11 @@ mod tests {
             ),
         );
         let mut qp1 = r_local?.map_err(|e| anyhow::anyhow!(e))?;
-        let _ = r_remote?.map_err(|e| anyhow::anyhow!(e))?;
+        // Bind the remote QP so it stays alive for the duration of
+        // the put/completion below. `IbvQueuePair` is single-owner
+        // and `let _ = ...` would drop it immediately, destroying
+        // the peer side of the connection before qp1's WR completes.
+        let _qp2 = r_remote?.map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         wait_for_completion(&mut qp1, PollTarget::Send, &wr_id, 2).await?;
         env.verify_buffers(BSIZE, 0).await?;
