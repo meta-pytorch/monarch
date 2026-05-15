@@ -8,11 +8,8 @@
 
 """Defines defaults for ``monarch.tools``"""
 
-import warnings
 from typing import Callable
 
-from monarch.tools.config import Config
-from monarch.tools.config.workspace import Workspace
 from torchx import specs
 from torchx.schedulers import (
     docker_scheduler,
@@ -41,19 +38,6 @@ def scheduler_factories() -> dict[str, SchedulerFactory]:
         "slurm": slurm_scheduler.create_scheduler,
         "k8s": kubernetes_scheduler.create_scheduler,
     }
-
-
-def config(scheduler: str, workspace: str | None = None) -> Config:
-    """The default :py:class:`~monarch.tools.config.Config` to use when submitting to the provided ``scheduler``."""
-    warnings.warn(
-        "`defaults.config()` is deprecated, prefer instantiating `Config()` directly",
-        FutureWarning,
-        stacklevel=2,
-    )
-    return Config(
-        scheduler=scheduler,
-        workspace=Workspace(dirs={workspace: ""}) if workspace else Workspace.null(),
-    )
 
 
 def dryrun_info_formatter(dryrun_info: specs.AppDryRunInfo) -> Callable[..., str]:

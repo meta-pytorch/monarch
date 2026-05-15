@@ -25,7 +25,11 @@ use super::primitives::IbvDevice;
 /// * `context`: A pointer to the RDMA device context.
 /// * `pd`: A pointer to the protection domain, which provides isolation between
 ///   different connections.
-#[derive(Clone)]
+///
+/// `IbvDomain` is not `Clone`: the `Drop` impl runs
+/// `ibv_dealloc_pd` and copying the pointer would lead to a
+/// double-free. Share the domain across owners via
+/// `Arc<IbvDomain>` instead.
 pub struct IbvDomain {
     pub context: *mut rdmaxcel_sys::ibv_context,
     pub pd: *mut rdmaxcel_sys::ibv_pd,
@@ -52,6 +56,9 @@ unsafe impl Sync for IbvDomain {}
 
 impl Drop for IbvDomain {
     fn drop(&mut self) {
+        if self.pd.is_null() {
+            return;
+        }
         unsafe {
             rdmaxcel_sys::ibv_dealloc_pd(self.pd);
         }

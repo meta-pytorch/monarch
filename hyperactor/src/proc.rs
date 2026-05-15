@@ -452,7 +452,7 @@ struct ProcState {
     reserved_child_uids: DashSet<crate::id::Uid>,
 
     /// All actor instances in this proc.
-    instances: DashMap<ActorId, InstanceSlot>,
+    instances: DashMap<ActorId, WeakInstanceCell>,
 
     /// Proc-level queue-pressure accounting (PD-6 through PD-9).
     /// Runtime-driven — updated from `account_enqueue` /
@@ -479,13 +479,6 @@ struct ProcState {
     /// gracefully stop the server and join it (flushing receive-side
     /// acks) during shutdown.
     mailbox_server_handle: std::sync::Mutex<Option<crate::mailbox::MailboxServerHandle>>,
-}
-
-// Stores the instance along with its addr.
-// This is temporary until we have gateways.
-struct InstanceSlot {
-    actor_addr: ActorAddr,
-    cell: WeakInstanceCell,
 }
 
 struct TerminatedSnapshot {
@@ -957,7 +950,7 @@ impl Proc {
 
     /// Bind a mailbox to the proc.
     fn bind_mailbox(&self, actor_id: ActorAddr) -> Mailbox {
-        let mbox = Mailbox::new(actor_id, BoxedMailboxSender::new(self.downgrade()));
+        let mbox = Mailbox::new(actor_id);
 
         // TODO: T210748165 tie the muxer entry to the lifecycle of the mailbox held
         // by the caller. This will likely require a weak reference.
@@ -1047,7 +1040,6 @@ impl Proc {
         instance.change_status(ActorStatus::Client);
         tokio::spawn(crate::introspect::serve_introspect(
             instance.inner.cell.clone(),
-            instance.inner.mailbox.clone(),
             receivers.introspect,
         ));
         Ok((instance, handle))
@@ -1071,7 +1063,6 @@ impl Proc {
 
         tokio::spawn(crate::introspect::serve_introspect(
             instance.inner.cell.clone(),
-            instance.inner.mailbox.clone(),
             receivers.introspect,
         ));
 
@@ -1098,8 +1089,8 @@ impl Proc {
         F: FnMut(&InstanceCell, usize),
     {
         for entry in self.state().instances.iter() {
-            if entry.value().actor_addr.is_root() {
-                if let Some(cell) = entry.value().cell.upgrade() {
+            if entry.key().uid().is_singleton() {
+                if let Some(cell) = entry.value().upgrade() {
                     cell.traverse(f);
                 }
             }
@@ -1123,10 +1114,15 @@ impl Proc {
 
     /// Look up an instance by ActorAddr.
     pub fn get_instance(&self, actor_id: &ActorAddr) -> Option<InstanceCell> {
+        self.get_instance_by_id(actor_id.id())
+    }
+
+    /// Look up an instance by ActorId.
+    pub fn get_instance_by_id(&self, actor_id: &ActorId) -> Option<InstanceCell> {
         self.state()
             .instances
-            .get(actor_id.id())
-            .and_then(|slot| slot.cell.upgrade())
+            .get(actor_id)
+            .and_then(|cell| cell.upgrade())
     }
 
     /// Returns the ActorAddrs of all root actors in this proc.
@@ -1141,9 +1137,14 @@ impl Proc {
         self.state()
             .instances
             .iter()
-            .filter_map(|slot| {
-                let actor_addr = &slot.value().actor_addr;
-                actor_addr.is_root().then(|| actor_addr.clone())
+            .filter_map(|entry| {
+                entry
+                    .key()
+                    .uid()
+                    .is_singleton()
+                    .then(|| entry.value().upgrade())
+                    .flatten()
+                    .map(|cell| cell.actor_addr().clone())
             })
             .collect()
     }
@@ -1160,33 +1161,28 @@ impl Proc {
         self.state()
             .instances
             .iter()
-            .filter(|entry| {
-                entry
-                    .value()
-                    .cell
-                    .upgrade()
-                    .is_some_and(|cell| !cell.status().borrow().is_terminal())
+            .filter_map(|entry| {
+                let cell = entry.value().upgrade()?;
+                (!cell.status().borrow().is_terminal()).then(|| cell.actor_addr().clone())
             })
-            .map(|entry| entry.value().actor_addr.clone())
             .collect()
     }
 
-    /// Snapshot all instance keys from the DashMap without inspecting
+    /// Snapshot all instance ids from the DashMap without inspecting
     /// values. Each shard read lock is held only long enough to clone
-    /// the key — no `Weak::upgrade()`, no `watch::borrow()`, no
+    /// the id — no `Weak::upgrade()`, no `watch::borrow()`, no
     /// `is_terminal()` check. This minimises shard lock hold time to
     /// avoid convoy starvation with concurrent `insert`/`remove`
     /// operations during rapid actor churn.
     ///
-    /// The returned list may include actors that are terminal or
-    /// whose `WeakInstanceCell` no longer upgrades. Callers should
-    /// tolerate stale entries (e.g. by handling "not found" on
-    /// subsequent per-actor lookups).
-    pub fn all_instance_keys(&self) -> Vec<ActorAddr> {
+    /// The returned list may include actors that are terminal or whose
+    /// `WeakInstanceCell` no longer upgrades. Callers should tolerate stale
+    /// ids (e.g. by handling "not found" on subsequent per-actor lookups).
+    pub fn all_instance_keys(&self) -> Vec<ActorId> {
         self.state()
             .instances
             .iter()
-            .map(|entry| entry.value().actor_addr.clone())
+            .map(|entry| entry.key().clone())
             .collect()
     }
 
@@ -1279,7 +1275,7 @@ impl Proc {
             .instances
             .get(root)
             .into_iter()
-            .flat_map(|entry| entry.cell.upgrade())
+            .flat_map(|entry| entry.value().upgrade())
             .map(|cell| {
                 let actor_addr = cell.actor_addr().clone();
                 let r1 = actor_addr.clone();
@@ -1326,7 +1322,7 @@ impl Proc {
                 tracing::error!(subject = %self.proc_addr().subject(), "no actor {} found", actor_id);
                 return None;
             }
-            Some(entry) => entry.value().cell.upgrade(),
+            Some(entry) => entry.value().upgrade(),
         }; // entry (shard read lock) dropped here
         match cell {
             None => None, // the actor's cell has been dropped
@@ -1398,8 +1394,9 @@ impl Proc {
             .state()
             .instances
             .iter()
-            .filter(|entry| entry.value().actor_addr.is_root())
-            .map(|entry| entry.value().actor_addr.clone())
+            .filter(|entry| entry.key().uid().is_singleton())
+            .filter_map(|entry| entry.value().upgrade())
+            .map(|cell| cell.actor_addr().clone())
             .collect::<Vec<_>>()
         {
             if coordinator_id.as_ref() == Some(&actor_id) {
@@ -1540,7 +1537,6 @@ impl Proc {
             .inner
             .instances
             .get(actor_ref.actor_addr().id())?
-            .cell
             .upgrade()?;
         // An actor whose status is terminal has stopped processing
         // messages even if its InstanceCell Arc is still alive (e.g.
@@ -1894,7 +1890,7 @@ impl<A: Actor> Instance<A> {
         parent: Option<InstanceCell>,
     ) -> (Self, InstanceReceivers<A>) {
         // Set up messaging
-        let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
+        let mailbox = Mailbox::new(actor_id.clone());
         let (work_tx, work_rx) = ordered_channel(
             actor_id.to_string(),
             hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
@@ -2371,11 +2367,10 @@ impl<A: Actor> Instance<A> {
         let actor_handle = ActorHandle::new(self.inner.cell.clone(), self.inner.ports.clone());
 
         // Spawn the introspect task — a separate tokio task that
-        // reads InstanceCell directly and replies via the actor's
-        // Mailbox. The actor loop never sees IntrospectMessage.
+        // reads InstanceCell directly and replies through the owning Proc. The
+        // actor loop never sees IntrospectMessage.
         tokio::spawn(crate::introspect::serve_introspect(
             self.inner.cell.clone(),
-            self.inner.mailbox.clone(),
             receivers.introspect,
         ));
 
@@ -3247,13 +3242,9 @@ impl InstanceCell {
             }),
         };
         cell.maybe_link_parent();
-        proc.inner.instances.insert(
-            actor_id.id().clone(),
-            InstanceSlot {
-                actor_addr: actor_id,
-                cell: cell.downgrade(),
-            },
-        );
+        proc.inner
+            .instances
+            .insert(actor_id.id().clone(), cell.downgrade());
         cell
     }
 
@@ -3264,6 +3255,11 @@ impl InstanceCell {
     /// The actor's address.
     pub fn actor_addr(&self) -> &ActorAddr {
         &self.inner.actor_id
+    }
+
+    /// The proc in which this actor is running.
+    pub(crate) fn proc(&self) -> &Proc {
+        &self.inner.proc
     }
 
     /// The actor's uid.
@@ -5737,7 +5733,7 @@ mod tests {
             let mut total: u64 = 0;
             let mut max: u64 = 0;
             for actor_id in proc.all_instance_keys() {
-                if let Some(cell) = proc.get_instance(&actor_id) {
+                if let Some(cell) = proc.get_instance_by_id(&actor_id) {
                     let depth = cell.queue_depth();
                     total = total.saturating_add(depth);
                     max = max.max(depth);
