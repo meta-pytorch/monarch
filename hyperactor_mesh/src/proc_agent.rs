@@ -130,11 +130,12 @@ fn collect_live_children(
     let mut children = Vec::with_capacity(all_keys.len());
     let mut system_children = Vec::new();
     for id in all_keys {
-        if let Some(cell) = proc.get_instance(&id) {
+        if let Some(cell) = proc.get_instance_by_id(&id) {
+            let actor_addr = cell.actor_addr().clone();
             if cell.is_system() {
-                system_children.push(crate::introspect::NodeRef::Actor(id.clone()));
+                system_children.push(crate::introspect::NodeRef::Actor(actor_addr.clone()));
             }
-            children.push(hyperactor::introspect::IntrospectRef::Actor(id));
+            children.push(hyperactor::introspect::IntrospectRef::Actor(actor_addr));
         }
     }
     (children, system_children)
@@ -473,7 +474,7 @@ impl ProcAgent {
         // Per-actor max still needs the per-actor scan (PD-4: live actors only).
         let mut queue_max: u64 = 0;
         for actor_id in self.proc.all_instance_keys() {
-            if let Some(cell) = self.proc.get_instance(&actor_id) {
+            if let Some(cell) = self.proc.get_instance_by_id(&actor_id) {
                 queue_max = queue_max.max(cell.queue_depth());
             }
         }
@@ -598,7 +599,7 @@ impl Actor for ProcAgent {
                     );
                     let mut queue_max: u64 = 0;
                     for aid in proc.all_instance_keys() {
-                        if let Some(cell) = proc.get_instance(&aid) {
+                        if let Some(cell) = proc.get_instance_by_id(&aid) {
                             queue_max = queue_max.max(cell.queue_depth());
                         }
                     }

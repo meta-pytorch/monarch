@@ -56,9 +56,9 @@ def create(
 
     .. doc-test::
 
-        from monarch.tools.config import defaults
+        from monarch.tools.config import Config, defaults
 
-        config = defaults.config(scheduler="slurm")
+        config = Config(scheduler="slurm")
         config.appdef = defaults.component_fn(scheduler=config.scheduler)()
 
         config.scheduler_args.update(
@@ -269,9 +269,9 @@ async def get_or_create(
 
     .. code-block:: python
 
-        from monarch.tools.config import defaults
+        from monarch.tools.config import Config, defaults
 
-        config = defaults.config(scheduler)
+        config = Config(scheduler=scheduler)
         config.appdef = defaults.component_fn(config.scheduler)()
 
         server_handle = get_or_create(name="my_job_name", config)
