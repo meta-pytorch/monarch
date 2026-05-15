@@ -13,4 +13,5 @@
 //! created once and never modified -- to change membership, create a
 //! new domain.
 
+mod ordering;
 mod tile;
