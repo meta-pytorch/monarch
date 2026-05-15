@@ -445,7 +445,7 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
             self.rdma_buffer_handle = Some(buffer_handle);
         }
 
-        reply.send(cx, true)?;
+        reply.send(cx, true);
         Ok(())
     }
 }
@@ -576,7 +576,7 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
                 }
             }
         }
-        reply.send(cx, true)?;
+        reply.send(cx, true);
         Ok(())
     }
 }
@@ -664,7 +664,7 @@ impl Handler<VerifyBuffer> for CudaRdmaActor {
             }
         }
 
-        reply.send(cx, all_match)?;
+        reply.send(cx, all_match);
         Ok(())
     }
 }
@@ -686,7 +686,7 @@ impl Handler<GetBufferHandle> for CudaRdmaActor {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Buffer not initialized"))?;
 
-        reply.send(cx, buffer.clone())?;
+        reply.send(cx, buffer.clone());
         Ok(())
     }
 }
@@ -823,21 +823,21 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let device_1_actor = device_1_actor_mesh.values().next().unwrap();
     let device_2_actor = device_2_actor_mesh.values().next().unwrap();
     let (handle_1, receiver_1) = instance.open_once_port::<bool>();
-    device_1_actor.send(&instance, InitializeBuffer(DATA_VALUE, handle_1.bind()))?;
+    device_1_actor.send(&instance, InitializeBuffer(DATA_VALUE, handle_1.bind()));
     receiver_1.recv().await?;
 
     // Initialize device 2 buffer with 0
     let (handle_2, receiver_2) = instance.open_once_port::<bool>();
-    device_2_actor.send(&instance, InitializeBuffer(0, handle_2.bind()))?;
+    device_2_actor.send(&instance, InitializeBuffer(0, handle_2.bind()));
     receiver_2.recv().await?;
 
     // Get the remote buffer handle from device 1
     let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaRemoteBuffer>();
-    device_1_actor.send(&instance, GetBufferHandle(handle_remote.bind()))?;
+    device_1_actor.send(&instance, GetBufferHandle(handle_remote.bind()));
     let buffer_1 = receiver_remote.recv().await?;
 
     let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaRemoteBuffer>();
-    device_2_actor.send(&instance, GetBufferHandle(handle_remote.bind()))?;
+    device_2_actor.send(&instance, GetBufferHandle(handle_remote.bind()));
     let buffer_2 = receiver_remote.recv().await?;
     let (handle_1, receiver_1) = instance.open_once_port::<bool>();
 
@@ -851,7 +851,7 @@ pub async fn run() -> Result<(), anyhow::Error> {
             config.initial_length,
             handle_2.bind(),
         ),
-    )?;
+    );
     receiver_2.recv().await?;
     device_1_actor.send(
         &instance,
@@ -862,21 +862,21 @@ pub async fn run() -> Result<(), anyhow::Error> {
             config.initial_length,
             handle_1.bind(),
         ),
-    )?;
+    );
     receiver_1.recv().await?;
 
     let (handle, receiver) = instance.open_once_port::<bool>();
     device_2_actor.send(
         &instance,
         VerifyBuffer(expected_data_values.clone(), handle.bind()),
-    )?;
+    );
     let verification_result2 = receiver.recv().await?;
 
     let (handle, receiver) = instance.open_once_port::<bool>();
     device_1_actor.send(
         &instance,
         VerifyBuffer(expected_data_values.clone(), handle.bind()),
-    )?;
+    );
     let verification_result1 = receiver.recv().await?;
 
     if !verification_result1 {

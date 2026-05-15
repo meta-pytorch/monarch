@@ -229,7 +229,7 @@ impl<C: TokenPeer, J: TokenPeer> Token<C, J> {
         joiner: J,
         result: PortRef<JoinResult<C>>,
     ) -> anyhow::Result<()> {
-        self.rendezvous.send(cx, Join { joiner, result })?;
+        self.rendezvous.send(cx, Join { joiner, result });
         Ok(())
     }
 
@@ -347,35 +347,23 @@ impl<C: TokenPeer + Clone, J: TokenPeer> Handler<Join<C, J>> for Rendezvous<C, J
                 JoinResult::Rejected {
                     reason: "token already joined".to_string(),
                 },
-            )?;
+            );
             return Ok(());
         }
 
-        if self
-            .creator_joined
-            .send(
-                cx,
-                Joined {
-                    peer: message.joiner,
-                },
-            )
-            .is_err()
-        {
-            message.result.send(
-                cx,
-                JoinResult::Rejected {
-                    reason: "token creator unavailable".to_string(),
-                },
-            )?;
-            return Ok(());
-        }
+        self.creator_joined.send(
+            cx,
+            Joined {
+                peer: message.joiner,
+            },
+        );
 
         message.result.send(
             cx,
             JoinResult::Joined {
                 peer: self.creator.clone(),
             },
-        )?;
+        );
         self.joined = true;
         Ok(())
     }

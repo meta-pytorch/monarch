@@ -112,7 +112,7 @@ CONSTANT = "modified_constant"
         AutoReloadMessage {
             result: result_tx.bind(),
         },
-    )?;
+    );
 
     // Wait for reload to complete
     let reload_result = result_rx.recv().await?;

@@ -1256,12 +1256,7 @@ where
         let timeout = self.timeout;
         let task = tokio::spawn(async move {
             tokio::time::sleep(timeout).await;
-            if let Err(e) = self_handle.send(Instance::<Self>::self_client(), InitializationFailed)
-            {
-                tracing::error!(
-                    "QueuePairInitializer: failed to deliver timeout self-message: {e}"
-                );
-            }
+            self_handle.send(Instance::<Self>::self_client(), InitializationFailed);
         });
         self.timeout_handle = Some(task);
     }
@@ -1281,7 +1276,7 @@ where
                 qp_key: self.qp_key.clone(),
                 error,
             },
-        )?;
+        );
         Ok(())
     }
 
@@ -1299,7 +1294,7 @@ where
                 qp_key: self.qp_key.clone(),
                 qp,
             },
-        )?;
+        );
         Ok(())
     }
 
@@ -1317,9 +1312,7 @@ where
             .expect("qp present pre-terminal")
             .connect(&peer_endpoint)
             .map_err(|e| format!("QpGuard::connect failed: {e}"))?;
-        peer_notify_rts
-            .send(cx, NotifyRts)
-            .map_err(|e| format!("failed to send NotifyRts to peer: {e}"))?;
+        peer_notify_rts.send(cx, NotifyRts);
         Ok(())
     }
 }
@@ -1344,7 +1337,7 @@ where
                 receiver_device,
                 reply,
             },
-        )?;
+        );
 
         self.arm_timeout(this);
         Ok(())
@@ -1643,7 +1636,7 @@ mod tests {
             match response {
                 MockResponse::Success(info) => {
                     let notify_rts = cx.bind::<MockManager>().port::<NotifyRts>();
-                    msg.reply.send(cx, PeerInfo(Ok((info, notify_rts))))?;
+                    msg.reply.send(cx, PeerInfo(Ok((info, notify_rts))));
                 }
                 MockResponse::SuccessWithBogusNotifyRts(info) => {
                     let bogus = hyperactor::context::Mailbox::mailbox(cx)
@@ -1652,10 +1645,10 @@ mod tests {
                         .actor_addr("bogus")
                         .port_addr(Port::from(0u64));
                     let notify_rts = PortRef::<NotifyRts>::attest(bogus);
-                    msg.reply.send(cx, PeerInfo(Ok((info, notify_rts))))?;
+                    msg.reply.send(cx, PeerInfo(Ok((info, notify_rts))));
                 }
                 MockResponse::Error(e) => {
-                    msg.reply.send(cx, PeerInfo(Err(e)))?;
+                    msg.reply.send(cx, PeerInfo(Err(e)));
                 }
                 MockResponse::DropReply => {}
             }
@@ -1804,7 +1797,7 @@ mod tests {
         let harness = Harness::build(qp, MockResponse::Success(info))?;
 
         let (peer, _) = harness.proc.instance("peer")?;
-        harness.init_handle.send(&peer, NotifyRts)?;
+        harness.init_handle.send(&peer, NotifyRts);
 
         let key = harness.await_done().await;
         assert_eq!(key, harness.qp_key);
@@ -1870,7 +1863,7 @@ mod tests {
         let harness = Harness::build(QpGuard::new(fake_qp()), MockResponse::DropReply).unwrap();
         let undeliverable = fake_undeliverable(&harness.proc, "simulated bounce");
         let (peer, _) = harness.proc.instance("peer").unwrap();
-        harness.init_handle.send(&peer, undeliverable).unwrap();
+        harness.init_handle.send(&peer, undeliverable);
         let (key, error) = harness.await_failed().await;
         assert_eq!(key, harness.qp_key);
         assert!(
@@ -1912,7 +1905,7 @@ mod tests {
 
         let undeliverable = fake_undeliverable(&harness.proc, "late bounce");
         let (peer, _) = harness.proc.instance("peer").unwrap();
-        harness.init_handle.send(&peer, undeliverable).unwrap();
+        harness.init_handle.send(&peer, undeliverable);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(harness.state.lock().unwrap().failed.len(), 1);
     }
