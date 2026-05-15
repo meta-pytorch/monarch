@@ -358,7 +358,7 @@ impl KeepaliveWorker {
     fn send_keepalive(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         self.generation += 1;
         let generation = self.generation;
-        self.supervisor.send(
+        self.supervisor.post(
             this,
             Keepalive {
                 generation,
@@ -396,7 +396,7 @@ impl Actor for KeepaliveSupervisor {
 impl Handler<Keepalive> for KeepaliveSupervisor {
     async fn handle(&mut self, cx: &Context<Self>, message: Keepalive) -> anyhow::Result<()> {
         self.generation = self.generation.max(message.generation);
-        message.reply.send(
+        message.reply.post(
             cx,
             KeepaliveAck {
                 generation: message.generation,
@@ -485,7 +485,7 @@ mod tests {
             this: &Instance<Self>,
             event: &ActorSupervisionEvent,
         ) -> anyhow::Result<bool> {
-            self.events.send(this, event.clone());
+            self.events.post(this, event.clone());
             Ok(true)
         }
     }
@@ -515,7 +515,7 @@ mod tests {
             .unwrap();
         let (reply, ack_rx) = parent.open_once_port::<KeepaliveAck>();
 
-        supervisor.send(
+        supervisor.post(
             &parent,
             Keepalive {
                 generation: 41,

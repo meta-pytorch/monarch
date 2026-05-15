@@ -107,7 +107,7 @@ CONSTANT = "modified_constant"
 
     // Send AutoReloadMessage to trigger reload
     let (result_tx, mut result_rx) = instance.mailbox().open_port::<Result<(), String>>();
-    actor_ref.send(
+    actor_ref.post(
         instance,
         AutoReloadMessage {
             result: result_tx.bind(),

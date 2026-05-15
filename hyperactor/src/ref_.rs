@@ -103,11 +103,11 @@ where
         EndpointLocation::Actor(self.actor_addr.clone())
     }
 
-    fn send<C>(self, cx: &C, message: M)
+    fn post<C>(self, cx: &C, message: M)
     where
         C: context::Actor,
     {
-        RemoteEndpoint::send_with_headers(self, cx, Flattrs::new(), message)
+        RemoteEndpoint::post_with_headers(self, cx, Flattrs::new(), message)
     }
 }
 
@@ -116,11 +116,11 @@ where
     A: Referable + RemoteHandles<M>,
     M: RemoteMessage,
 {
-    fn send_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
+    fn post_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
     where
         C: context::Actor,
     {
-        RemoteEndpoint::send_with_headers(&self.port(), cx, headers, message)
+        RemoteEndpoint::post_with_headers(&self.port(), cx, headers, message)
     }
 }
 
@@ -348,11 +348,11 @@ where
         EndpointLocation::Port(self.port_addr.clone())
     }
 
-    fn send<C>(self, cx: &C, message: M)
+    fn post<C>(self, cx: &C, message: M)
     where
         C: context::Actor,
     {
-        RemoteEndpoint::send_with_headers(self, cx, Flattrs::new(), message)
+        RemoteEndpoint::post_with_headers(self, cx, Flattrs::new(), message)
     }
 }
 
@@ -360,7 +360,7 @@ impl<M> RemoteEndpoint<M> for &PortRef<M>
 where
     M: RemoteMessage,
 {
-    fn send_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
+    fn post_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
     where
         C: context::Actor,
     {
@@ -544,11 +544,11 @@ where
         EndpointLocation::Port(self.port_addr.clone())
     }
 
-    fn send<C>(self, cx: &C, message: M)
+    fn post<C>(self, cx: &C, message: M)
     where
         C: context::Actor,
     {
-        RemoteEndpoint::send_with_headers(self, cx, Flattrs::new(), message)
+        RemoteEndpoint::post_with_headers(self, cx, Flattrs::new(), message)
     }
 }
 
@@ -556,7 +556,7 @@ impl<M> RemoteEndpoint<M> for OncePortRef<M>
 where
     M: RemoteMessage,
 {
-    fn send_with_headers<C>(self, cx: &C, mut headers: Flattrs, message: M)
+    fn post_with_headers<C>(self, cx: &C, mut headers: Flattrs, message: M)
     where
         C: context::Actor,
     {

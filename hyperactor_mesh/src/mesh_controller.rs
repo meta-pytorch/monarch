@@ -243,7 +243,7 @@ fn send_subscriber_message(
 ) {
     let mut headers = Flattrs::new();
     headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
-    subscriber.send_with_headers(cx, headers, Some(message.clone()));
+    subscriber.post_with_headers(cx, headers, Some(message.clone()));
     tracing::info!(event = %message, "sent supervision failure message to subscriber {}", subscriber.port_addr());
 }
 
@@ -262,7 +262,7 @@ fn send_heartbeat(cx: &impl context::Actor, health_state: &HealthState) {
     for subscriber in health_state.subscribers.iter() {
         let mut headers = Flattrs::new();
         headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
-        subscriber.send_with_headers(cx, headers, None);
+        subscriber.post_with_headers(cx, headers, None);
     }
 }
 
@@ -314,7 +314,7 @@ fn send_state_change(
     // told that they were stopped.
     if is_failed {
         if let Some(owner) = &health_state.owner {
-            owner.send(cx, failure_message.clone());
+            owner.post(cx, failure_message.clone());
             tracing::info!(actor_mesh = %mesh_name, %event, "sent supervision failure message to owner {}", owner.port_addr());
         }
     }
@@ -616,7 +616,7 @@ impl<T: Controlled> ResourceController<T> {
             statuses,
             state: (),
         };
-        message.reply.send(
+        message.reply.post(
             cx,
             resource::State {
                 id: message.id,
@@ -864,7 +864,7 @@ where
         cx: &Context<Self>,
         message: GetSubscriberCount,
     ) -> anyhow::Result<()> {
-        message.0.send(cx, self.health_state.subscribers.len());
+        message.0.post(cx, self.health_state.subscribers.len());
         Ok(())
     }
 }
@@ -1280,7 +1280,7 @@ impl Controlled for ProcMeshRef {
         for proc_id in self.proc_ids() {
             let proc_resource_id = ResourceId::new(proc_id.uid().clone(), proc_id.label().cloned());
             let host = crate::host_mesh::HostRef(proc_id.addr().clone());
-            host.mesh_agent().send(
+            host.mesh_agent().post(
                 cx,
                 resource::StreamState::<Self::StateInner> {
                     id: proc_resource_id,
@@ -1298,7 +1298,7 @@ impl Controlled for ProcMeshRef {
     ) -> anyhow::Result<()> {
         for proc_id in self.proc_ids() {
             let host = crate::host_mesh::HostRef(proc_id.addr().clone());
-            host.mesh_agent().send(cx, msg.clone());
+            host.mesh_agent().post(cx, msg.clone());
         }
         Ok(())
     }

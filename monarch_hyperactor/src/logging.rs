@@ -238,7 +238,7 @@ impl LoggingMeshClient {
         let (version_tx, version_rx) = cx.instance().open_once_port::<u64>();
 
         // First initialize a sync flush.
-        client_actor.send(
+        client_actor.post(
             cx,
             LogClientMessage::StartSyncFlush {
                 expected_procs: forwarder_mesh.region().num_ranks(),
@@ -423,7 +423,7 @@ impl LoggingMeshClient {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         // Always update the client actor's aggregation window.
-        self.client_actor.send(
+        self.client_actor.post(
             instance.deref(),
             LogClientMessage::SetAggregate {
                 aggregate_window_sec,
