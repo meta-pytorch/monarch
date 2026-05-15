@@ -48,6 +48,7 @@
 
 use std::time::Duration;
 
+use hyperactor::Endpoint as _;
 use hyperactor_mesh::mesh_admin::MeshAdminAgent;
 use monarch_distributed_telemetry::database_scanner::TableStore;
 use monarch_record_batch::RecordBatchBuffer;

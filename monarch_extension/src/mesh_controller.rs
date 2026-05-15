@@ -25,6 +25,7 @@ use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -173,32 +174,32 @@ impl _Controller {
             tracebacks,
             response_port,
         };
-        self.controller_handle
-            .blocking_lock()
-            .send(instance.deref(), msg)
-            .map_err(to_py_error)
+        hyperactor::Endpoint::send(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            msg,
+        )
+        .map_err(to_py_error)
     }
 
     fn _drop_refs(&mut self, instance: &PyInstance, refs: Vec<Ref>) -> PyResult<()> {
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::DropRefs { refs },
-            )
-            .map_err(to_py_error)
+        hyperactor::Endpoint::send(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::DropRefs { refs },
+        )
+        .map_err(to_py_error)
     }
 
     fn _sync_at_exit(&mut self, instance: &PyInstance, port: PyPortId) -> PyResult<()> {
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::SyncAtExit {
-                    port: reference::PortRef::attest(reference::PortAddr::from(port)),
-                },
-            )
-            .map_err(to_py_error)
+        hyperactor::Endpoint::send(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::SyncAtExit {
+                port: reference::PortRef::attest(reference::PortAddr::from(port)),
+            },
+        )
+        .map_err(to_py_error)
     }
 
     fn _send<'py>(
@@ -214,27 +215,25 @@ impl _Controller {
             slices.iter().map(|x| x.into()).collect::<Vec<Slice>>()
         };
         let message: WorkerMessage = convert(message)?;
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::Send { slices, message },
-            )
-            .map_err(to_py_error)
+        hyperactor::Endpoint::send(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::Send { slices, message },
+        )
+        .map_err(to_py_error)
     }
 
     fn _drain_and_stop(&mut self, py: Python<'_>, instance: &PyInstance) -> PyResult<()> {
         let (stop_worker_port, stop_worker_receiver) = instance.open_once_port();
 
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::StopWorkers {
-                    response_port: stop_worker_port,
-                },
-            )
-            .map_err(to_py_error)?;
+        hyperactor::Endpoint::send(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::StopWorkers {
+                response_port: stop_worker_port,
+            },
+        )
+        .map_err(to_py_error)?;
         signal_safe_block_on(py, async move { stop_worker_receiver.recv().await })?
             .map_err(to_py_error)?
             .map_err(PyRuntimeError::new_err)?;
