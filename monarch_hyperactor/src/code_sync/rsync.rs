@@ -26,6 +26,7 @@ use futures::try_join;
 use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Unbind;
 use hyperactor::context;
