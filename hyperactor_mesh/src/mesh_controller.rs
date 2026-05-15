@@ -15,8 +15,10 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
@@ -241,16 +243,8 @@ fn send_subscriber_message(
 ) {
     let mut headers = Flattrs::new();
     headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
-    if let Err(error) = subscriber.send_with_headers(cx, headers, Some(message.clone())) {
-        tracing::warn!(
-            event = %message,
-            "failed to send supervision event to subscriber {}: {}",
-            subscriber.port_addr(),
-            error
-        );
-    } else {
-        tracing::info!(event = %message, "sent supervision failure message to subscriber {}", subscriber.port_addr());
-    }
+    subscriber.send_with_headers(cx, headers, Some(message.clone()));
+    tracing::info!(event = %message, "sent supervision failure message to subscriber {}", subscriber.port_addr());
 }
 
 /// Like send_state_change, but when there was no state change that occurred.
@@ -268,9 +262,7 @@ fn send_heartbeat(cx: &impl context::Actor, health_state: &HealthState) {
     for subscriber in health_state.subscribers.iter() {
         let mut headers = Flattrs::new();
         headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
-        if let Err(e) = subscriber.send_with_headers(cx, headers, None) {
-            tracing::warn!(subscriber = %subscriber.port_addr(), "error sending heartbeat message: {:?}", e);
-        }
+        subscriber.send_with_headers(cx, headers, None);
     }
 }
 
@@ -322,19 +314,8 @@ fn send_state_change(
     // told that they were stopped.
     if is_failed {
         if let Some(owner) = &health_state.owner {
-            if let Err(error) = owner.send(cx, failure_message.clone()) {
-                tracing::warn!(
-                    name = "SupervisionEvent",
-                    actor_mesh = %mesh_name,
-                    %event,
-                    %error,
-                    "failed to send supervision event to owner {}: {}. dropping event",
-                    owner.port_addr(),
-                    error
-                );
-            } else {
-                tracing::info!(actor_mesh = %mesh_name, %event, "sent supervision failure message to owner {}", owner.port_addr());
-            }
+            owner.send(cx, failure_message.clone());
+            tracing::info!(actor_mesh = %mesh_name, %event, "sent supervision failure message to owner {}", owner.port_addr());
         }
     }
     // Subscribers get all messages, even for non-failures like Stopped, because
@@ -644,7 +625,7 @@ impl<T: Controlled> ResourceController<T> {
                 generation: 0,
                 timestamp: SystemTime::now(),
             },
-        )?;
+        );
         Ok(())
     }
 
@@ -785,12 +766,15 @@ where
         mut envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         envelope = update_undeliverable_envelope_for_casting(envelope);
-        if let Some(true) = envelope.0.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
+        let Some(returned) = envelope.as_message() else {
+            return handle_undeliverable_message(cx, envelope);
+        };
+        if let Some(true) = returned.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
             // Remove from the subscriber list (if it existed) so we don't
             // send to this subscriber again.
             // NOTE: The only part of the port that is used for equality checks is
             // the port id, so create a new one just for the comparison.
-            let dest_port_id = envelope.0.dest().clone();
+            let dest_port_id = returned.dest().clone();
             let port = hyperactor::PortRef::<Option<MeshFailure>>::attest(dest_port_id);
             let did_exist = self.health_state.subscribers.remove(&port);
             if did_exist {
@@ -802,14 +786,14 @@ where
                 );
             }
             Ok(())
-        } else if envelope.0.headers().get(CAST_ACTOR_MESH_ID).is_some() {
+        } else if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
             // A cast message we sent (e.g. StreamState or KeepaliveGetState)
             // was returned by the CommActor because it could not be forwarded.
             // This is expected when the network session is broken. Log and
             // continue — the supervision polling loop will detect the failure.
             tracing::warn!(
                 actor_id = %cx.self_addr(),
-                dest = %envelope.0.dest(),
+                dest = %returned.dest(),
                 "ResourceController: ignoring undeliverable cast message",
             );
             Ok(())
@@ -880,7 +864,7 @@ where
         cx: &Context<Self>,
         message: GetSubscriberCount,
     ) -> anyhow::Result<()> {
-        message.0.send(cx, self.health_state.subscribers.len())?;
+        message.0.send(cx, self.health_state.subscribers.len());
         Ok(())
     }
 }
@@ -1302,7 +1286,7 @@ impl Controlled for ProcMeshRef {
                     id: proc_resource_id,
                     subscriber: subscriber.clone(),
                 },
-            )?;
+            );
         }
         Ok(())
     }
@@ -1314,7 +1298,7 @@ impl Controlled for ProcMeshRef {
     ) -> anyhow::Result<()> {
         for proc_id in self.proc_ids() {
             let host = crate::host_mesh::HostRef(proc_id.addr().clone());
-            host.mesh_agent().send(cx, msg.clone())?;
+            host.mesh_agent().send(cx, msg.clone());
         }
         Ok(())
     }

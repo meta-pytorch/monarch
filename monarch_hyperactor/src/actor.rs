@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
@@ -29,6 +30,7 @@ use hyperactor::actor::Signal;
 use hyperactor::context::Actor as ContextActor;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
@@ -373,7 +375,7 @@ impl PythonMessage {
             } => {
                 let broker = BrokerId::new(local_state_broker).resolve(cx).await;
                 let (send, recv) = cx.open_once_port();
-                broker.send(cx, LocalStateBrokerMessage::Get(id, send))?;
+                broker.send(cx, LocalStateBrokerMessage::Get(id, send));
                 let state = recv.recv().await?;
                 let mut state_it = state.state.into_iter();
                 monarch_with_gil(|py| {
@@ -517,9 +519,7 @@ pub(super) struct PythonActorHandle {
 impl PythonActorHandle {
     // TODO: do the pickling in rust
     fn send(&self, instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(instance.deref(), message.clone())
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        self.inner.send(instance.deref(), message.clone());
         Ok(())
     }
 
@@ -1026,23 +1026,32 @@ impl Actor for PythonActor {
         ins: &Instance<Self>,
         mut envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        if envelope.0.sender() != ins.self_addr() {
+        if envelope
+            .as_message()
+            .is_some_and(|envelope| envelope.sender() != ins.self_addr())
+        {
             // This can happen if the sender is comm. Update the envelope.
             envelope = update_undeliverable_envelope_for_casting(envelope);
         }
+        let envelope = match envelope {
+            Undeliverable::Message(envelope) => envelope,
+            Undeliverable::Lost(lost) => {
+                return Err(UndeliverableMessageError::Lost { lost }.into());
+            }
+        };
         assert_eq!(
-            envelope.0.sender(),
+            envelope.sender(),
             ins.self_addr(),
             "undeliverable message was returned to the wrong actor. \
             Return address = {}, src actor = {}, dest handler port = {}, message type = {}, envelope headers = {}",
-            envelope.0.sender(),
+            envelope.sender(),
             ins.self_addr(),
-            envelope.0.dest(),
-            envelope.0.data().typename().unwrap_or("unknown"),
-            envelope.0.headers()
+            envelope.dest(),
+            envelope.data().typename().unwrap_or("unknown"),
+            envelope.headers()
         );
 
-        let cx = Context::new(ins, envelope.0.headers().clone());
+        let cx = Context::new(ins, envelope.headers().clone());
 
         let (envelope, handled) = monarch_with_gil(|py| {
             let py_cx = match &self.instance {
@@ -1062,7 +1071,7 @@ impl Actor for PythonActor {
             }
             .into_bound_py_any(py)?;
             let py_envelope = PythonUndeliverableMessageEnvelope {
-                inner: Some(envelope),
+                inner: Some(Undeliverable::Message(envelope)),
             }
             .into_bound_py_any(py)?;
             let handled = self
@@ -1583,9 +1592,7 @@ async fn handle_async_endpoint_panic(
                     .unwrap()
             })
             .0;
-        panic_sender
-            .send(&client, Signal::Kill(panic.to_string()))
-            .expect("unable to send panic message");
+        panic_sender.send(&client, Signal::Kill(panic.to_string()));
     }
 
     // Record latency in microseconds
@@ -1618,13 +1625,13 @@ where
 impl LocalPort {
     fn send(&mut self, obj: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
-        port.send(self.instance.deref(), Ok(obj))
-            .map_err(to_py_error)
+        port.send(self.instance.deref(), Ok(obj));
+        Ok(())
     }
     fn exception(&mut self, e: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
-        port.send(self.instance.deref(), Err(e))
-            .map_err(to_py_error)
+        port.send(self.instance.deref(), Err(e));
+        Ok(())
     }
 }
 

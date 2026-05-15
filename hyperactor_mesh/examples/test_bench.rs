@@ -19,6 +19,7 @@ use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Unbind;
 use hyperactor_mesh::actor_mesh::ActorMesh;
@@ -53,7 +54,7 @@ impl Handler<TestMessage> for TestActor {
         message: TestMessage,
     ) -> Result<(), anyhow::Error> {
         match message {
-            TestMessage::Ping(reply) => reply.send(cx, cx.cast_point())?,
+            TestMessage::Ping(reply) => reply.send(cx, cx.cast_point()),
         }
         Ok(())
     }
