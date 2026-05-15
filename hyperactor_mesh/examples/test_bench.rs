@@ -54,7 +54,7 @@ impl Handler<TestMessage> for TestActor {
         message: TestMessage,
     ) -> Result<(), anyhow::Error> {
         match message {
-            TestMessage::Ping(reply) => reply.send(cx, cx.cast_point()),
+            TestMessage::Ping(reply) => reply.post(cx, cx.cast_point()),
         }
         Ok(())
     }

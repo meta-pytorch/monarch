@@ -112,7 +112,7 @@ impl Handler<AutoReloadMessage> for AutoReloadActor {
             anyhow::Ok(())
         }
         .await;
-        result.send(cx, res.map_err(|e| format!("{:#?}", e)));
+        result.post(cx, res.map_err(|e| format!("{:#?}", e)));
         Ok(())
     }
 }
