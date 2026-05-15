@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use hyperactor::ActorHandle;
+use hyperactor::Endpoint as _;
 use hyperactor::Instance;
 use hyperactor::Proc;
 use hyperactor::id::Label;
