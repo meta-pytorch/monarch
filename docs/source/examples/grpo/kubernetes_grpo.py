@@ -55,7 +55,7 @@ This example calls ``monarch.configure(rdma_allow_tcp_fallback=True)`` so
 cross-pod ``RDMABuffer`` reads fall back to TCP on clusters without an RDMA
 CNI / device plugin. This is demonstrative, not performance-tuned. On a
 cluster with ibverbs plumbing, drop the ``configure()`` call and add the
-appropriate device resource requests to ``build_pod_spec``.
+appropriate device resource requests to ``build_pod_template``.
 
 Pod startup time
 ----------------
@@ -146,6 +146,7 @@ from kubernetes.client import (
     V1EmptyDirVolumeSource,
     V1EnvVar,
     V1PodSpec,
+    V1PodTemplateSpec,
     V1Probe,
     V1ResourceRequirements,
     V1TCPSocketAction,
@@ -869,8 +870,8 @@ PIP_INSTALL = textwrap.dedent("""\
 """)
 
 
-def build_pod_spec(gpus: int) -> V1PodSpec:
-    """Shared pod spec for learner and generator meshes.
+def build_pod_template(gpus: int) -> V1PodTemplateSpec:
+    """Shared pod template for learner and generator meshes.
 
     Prepends a pip-install prefix to the Monarch worker bootstrap so that
     ``transformers``, ``tokenizers``, and ``accelerate`` are present before
@@ -913,38 +914,42 @@ def build_pod_spec(gpus: int) -> V1PodSpec:
                 value="expandable_segments:True",
             ),
         )
-    return V1PodSpec(
-        containers=[
-            V1Container(
-                name="worker",
-                image=MONARCH_IMAGE,
-                command=["python", "-u", "-c", bootstrap],
-                env=env,
-                resources=resources,
-                # Mark pod Ready only once the Monarch worker loop is actually
-                # listening on :26600. Without this, K8s reports Ready as soon
-                # as the container starts -- which is during pip install, long
-                # before run_worker_loop_forever binds the port. The controller
-                # then connects too early and the 30s message delivery timeout
-                # fires before the worker is reachable.
-                readiness_probe=V1Probe(
-                    tcp_socket=V1TCPSocketAction(port=26600),
-                    initial_delay_seconds=30,
-                    period_seconds=5,
-                    timeout_seconds=5,
-                    failure_threshold=60,
-                ),
-                volume_mounts=[
-                    V1VolumeMount(name="dshm", mount_path="/dev/shm"),
-                ],
-            )
-        ],
-        volumes=[
-            V1Volume(
-                name="dshm",
-                empty_dir=V1EmptyDirVolumeSource(medium="Memory", size_limit="16Gi"),
-            )
-        ],
+    return V1PodTemplateSpec(
+        spec=V1PodSpec(
+            containers=[
+                V1Container(
+                    name="worker",
+                    image=MONARCH_IMAGE,
+                    command=["python", "-u", "-c", bootstrap],
+                    env=env,
+                    resources=resources,
+                    # Mark pod Ready only once the Monarch worker loop is actually
+                    # listening on :26600. Without this, K8s reports Ready as soon
+                    # as the container starts -- which is during pip install, long
+                    # before run_worker_loop_forever binds the port. The controller
+                    # then connects too early and the 30s message delivery timeout
+                    # fires before the worker is reachable.
+                    readiness_probe=V1Probe(
+                        tcp_socket=V1TCPSocketAction(port=26600),
+                        initial_delay_seconds=30,
+                        period_seconds=5,
+                        timeout_seconds=5,
+                        failure_threshold=60,
+                    ),
+                    volume_mounts=[
+                        V1VolumeMount(name="dshm", mount_path="/dev/shm"),
+                    ],
+                )
+            ],
+            volumes=[
+                V1Volume(
+                    name="dshm",
+                    empty_dir=V1EmptyDirVolumeSource(
+                        medium="Memory", size_limit="16Gi"
+                    ),
+                )
+            ],
+        ),
     )
 
 
@@ -1014,12 +1019,12 @@ async def main(
     k8s_job.add_mesh(
         "learner",
         num_replicas=1,
-        pod_spec=build_pod_spec(gpus=2),
+        pod_template=build_pod_template(gpus=2),
     )
     k8s_job.add_mesh(
         "generator",
         num_replicas=num_generator_hosts,
-        pod_spec=build_pod_spec(gpus=gpus_per_generator),
+        pod_template=build_pod_template(gpus=gpus_per_generator),
     )
 
     learner_mesh = None
