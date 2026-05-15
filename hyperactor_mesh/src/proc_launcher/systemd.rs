@@ -1622,10 +1622,10 @@ mod tests {
             // was still alive.
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {
-                if let Ok(content) = std::fs::read_to_string(&marker) {
-                    if content.contains("running") {
-                        break;
-                    }
+                if let Ok(content) = std::fs::read_to_string(&marker)
+                    && content.contains("running")
+                {
+                    break;
                 }
                 assert!(
                     std::time::Instant::now() < deadline,

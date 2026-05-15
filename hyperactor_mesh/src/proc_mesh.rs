@@ -1096,7 +1096,6 @@ fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
 mod tests {
     #[cfg(fbcode_build)]
     use std::ops::Deref;
-    use std::time::Duration;
 
     #[cfg(fbcode_build)]
     use hyperactor::Instance;
@@ -1104,9 +1103,6 @@ mod tests {
     use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
     #[cfg(fbcode_build)]
     use ndslice::ViewExt as _;
-    use ndslice::extent;
-    use timed_test::assert_no_process_leak;
-    use timed_test::async_timed_test;
     #[cfg(fbcode_build)]
     use uuid::Uuid;
 
@@ -1114,11 +1110,6 @@ mod tests {
     use crate::ActorMesh;
     #[cfg(fbcode_build)]
     use crate::comm::ENABLE_NATIVE_V1_CASTING;
-    use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
-    use crate::resource::RankedValues;
-    use crate::resource::Status;
-    use crate::testactor;
-    use crate::testing;
 
     #[cfg(fbcode_build)]
     async fn execute_spawn_actor() {

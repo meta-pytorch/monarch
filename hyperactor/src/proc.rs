@@ -1085,10 +1085,10 @@ impl Proc {
         F: FnMut(&InstanceCell, usize),
     {
         for entry in self.state().instances.iter() {
-            if entry.key().uid().is_singleton() {
-                if let Some(cell) = entry.value().upgrade() {
-                    cell.traverse(f);
-                }
+            if entry.key().uid().is_singleton()
+                && let Some(cell) = entry.value().upgrade()
+            {
+                cell.traverse(f);
             }
         }
     }
@@ -1403,22 +1403,20 @@ impl Proc {
         // events have already been enqueued by this point, and the
         // coordinator's DrainAndStop path drains queued supervision
         // events before exiting.
-        if let Some(ref coord_id) = coordinator_id {
-            if let Some(mut status) = self.stop_actor(coord_id.id(), reason.to_string()) {
-                let stopped = tokio::time::timeout(
-                    timeout,
-                    status.wait_for(|s: &ActorStatus| s.is_terminal()),
-                )
-                .await
-                .is_ok();
-                if stopped {
-                    stopped_actors.push(coord_id.clone());
-                } else {
-                    if let Some(f) = self.abort_root_actor(coord_id.id()) {
-                        f.await;
-                    }
-                    aborted_actors.push(coord_id.clone());
+        if let Some(ref coord_id) = coordinator_id
+            && let Some(mut status) = self.stop_actor(coord_id.id(), reason.to_string())
+        {
+            let stopped =
+                tokio::time::timeout(timeout, status.wait_for(|s: &ActorStatus| s.is_terminal()))
+                    .await
+                    .is_ok();
+            if stopped {
+                stopped_actors.push(coord_id.clone());
+            } else {
+                if let Some(f) = self.abort_root_actor(coord_id.id()) {
+                    f.await;
                 }
+                aborted_actors.push(coord_id.clone());
             }
         }
 

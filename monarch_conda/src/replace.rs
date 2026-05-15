@@ -36,6 +36,12 @@ pub struct ReplacerBuilder<'a> {
     map: HashMap<&'a Path, &'a Path>,
 }
 
+impl<'a> Default for ReplacerBuilder<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> ReplacerBuilder<'a> {
     pub fn new() -> Self {
         Self {

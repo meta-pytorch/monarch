@@ -104,6 +104,12 @@ pub struct InMemoryMetrics {
     _provider: SdkMeterProvider,
 }
 
+impl Default for InMemoryMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryMetrics {
     // Create a new InMemoryMetrics
     //

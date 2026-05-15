@@ -231,7 +231,7 @@ async fn channel_ping_pong(
         });
 
     let start = Instant::now();
-    let _ = client_handle.await.unwrap().unwrap();
+    client_handle.await.unwrap().unwrap();
     start.elapsed()
 }
 

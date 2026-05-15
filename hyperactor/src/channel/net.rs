@@ -2756,7 +2756,7 @@ mod tests {
                 server_reader,
                 client_writer,
                 task_coordination_token.clone(),
-                self.debug_log_sampling_rate.clone(),
+                self.debug_log_sampling_rate,
                 /*is_from_client*/ false,
             ));
             let _client_relay_task_handle = tokio::spawn(relay_message::<M>(
@@ -2767,7 +2767,7 @@ mod tests {
                 client_reader,
                 server_writer,
                 task_coordination_token,
-                self.debug_log_sampling_rate.clone(),
+                self.debug_log_sampling_rate,
                 /*is_from_client*/ true,
             ));
 

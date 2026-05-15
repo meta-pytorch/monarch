@@ -1218,12 +1218,12 @@ impl HostMeshRef {
                 "per_host dims overlap with existing dims when spawning proc mesh"
             )));
         }
-        if let Some(proc_bind) = proc_bind.as_ref() {
-            if proc_bind.len() != per_host.num_ranks() {
-                return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
-                    "proc_bind length does not match per_host extent"
-                )));
-            }
+        if let Some(proc_bind) = proc_bind.as_ref()
+            && proc_bind.len() != per_host.num_ranks()
+        {
+            return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
+                "proc_bind length does not match per_host extent"
+            )));
         }
 
         let extent = self
@@ -1923,24 +1923,11 @@ impl FromStr for HostMeshRef {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
 
-    use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
-    use hyperactor_config::attrs::Attrs;
     use ndslice::ViewExt;
     use ndslice::extent;
-    use timed_test::assert_no_process_leak;
-    use tokio::process::Command;
 
     use super::*;
-    use crate::ActorMesh;
-    use crate::Bootstrap;
-    use crate::bootstrap::MESH_TAIL_LOG_LINES;
-    use crate::comm::ENABLE_NATIVE_V1_CASTING;
-    use crate::resource::Status;
-    use crate::testactor;
-    use crate::testactor::GetConfigAttrs;
-    use crate::testactor::SetConfigAttrs;
     use crate::testing;
 
     #[test]

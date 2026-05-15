@@ -147,12 +147,12 @@ fn copy_dir(src_dir: &Path, target_dir: &Path) {
 /// that delegates to make). cmake -GNinja requires a real ninja binary.
 fn detect_ninja() -> Option<&'static str> {
     for cmd in &["ninja-build", "ninja"] {
-        if let Ok(output) = Command::new(cmd).arg("--version").output() {
-            if output.status.success() {
-                let version = String::from_utf8_lossy(&output.stdout);
-                println!("cargo:warning=Found {} version: {}", cmd, version.trim());
-                return Some(cmd);
-            }
+        if let Ok(output) = Command::new(cmd).arg("--version").output()
+            && output.status.success()
+        {
+            let version = String::from_utf8_lossy(&output.stdout);
+            println!("cargo:warning=Found {} version: {}", cmd, version.trim());
+            return Some(cmd);
         }
     }
     println!("cargo:warning=ninja not found, will use make (cmake Makefile generator)");

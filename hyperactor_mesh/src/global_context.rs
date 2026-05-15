@@ -513,11 +513,8 @@ mod tests {
 
     use hyperactor::testing::ids::test_actor_id;
     use hyperactor_config::Flattrs;
-    use ndslice::view::Extent;
-    use timed_test::async_timed_test;
 
     use super::*;
-    use crate::testing;
 
     /// Helper: send an `Undeliverable<MessageEnvelope>` to the global
     /// root client's well-known undeliverable port via the runtime's

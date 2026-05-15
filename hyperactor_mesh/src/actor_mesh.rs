@@ -1175,34 +1175,7 @@ impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
 #[cfg(test)]
 mod tests {
 
-    use std::collections::HashSet;
-    use std::ops::Deref;
-
-    use hyperactor::actor::ActorErrorKind;
-    use hyperactor::actor::ActorStatus;
-    use hyperactor::context::Mailbox as _;
-    use hyperactor::id::Label;
-    use hyperactor::mailbox;
-    use ndslice::Extent;
-    use ndslice::ViewExt;
-    use ndslice::extent;
-    use ndslice::view::Ranked;
-    use timed_test::assert_no_process_leak;
-    use timed_test::async_timed_test;
-    use tokio::time::Duration;
-
-    use super::ActorMesh;
     use crate::ActorMeshRef;
-    use crate::ProcMesh;
-    use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
-    use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
-    use crate::mesh_controller::SUPERVISION_POLL_FREQUENCY;
-    use crate::mesh_id::ActorMeshId;
-    use crate::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
-    use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
-    use crate::supervision::MeshFailure;
-    use crate::testactor;
-    use crate::testing;
 
     #[test]
     fn test_actor_mesh_ref_is_send_and_sync() {

@@ -8,8 +8,6 @@
 
 #![cfg(test)]
 
-use std::path::PathBuf;
-
 /// Fetch the named (BUCK) named resource, heuristically falling back on
 /// the cargo-built path when possible. Beware! This is not actually a
 /// true cargo dependency, so the binaries have to be built independently.

@@ -607,10 +607,10 @@ impl<M: RemoteMessage> Unacked<M> {
             message.seq
         );
 
-        if let Some(AckedSeq(largest, _)) = self.largest_acked {
-            if message.seq <= largest {
-                return;
-            }
+        if let Some(AckedSeq(largest, _)) = self.largest_acked
+            && message.seq <= largest
+        {
+            return;
         }
 
         self.deque.push_back(message);

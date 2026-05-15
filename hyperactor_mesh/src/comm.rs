@@ -1008,7 +1008,7 @@ mod tests {
             }
 
             for (src, path) in &self.0 {
-                write!(f, "{} -> {}\n", src, vec_to_string(path))?;
+                writeln!(f, "{} -> {}", src, vec_to_string(path))?;
             }
             Ok(())
         }

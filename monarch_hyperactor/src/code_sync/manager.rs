@@ -419,7 +419,7 @@ pub async fn code_sync_mesh(
             let daemon =
                 RsyncDaemon::spawn(TcpListener::bind(&addrs[..]).await?, &local_workspace).await?;
 
-            let daemon_addr = daemon.addr().clone();
+            let daemon_addr = *daemon.addr();
             let (rsync_conns_tx, rsync_conns_rx) = instance.open_port::<Connect>();
             (
                 Method::Rsync {
@@ -433,7 +433,7 @@ pub async fn code_sync_mesh(
                         .err_into::<anyhow::Error>()
                         .try_for_each_concurrent(None, |connect| async move {
                             let (mut local, mut stream) = try_join!(
-                                TcpStream::connect(daemon_addr.clone()).err_into(),
+                                TcpStream::connect(daemon_addr).err_into(),
                                 accept(instance, instance.self_addr().clone(), connect),
                             )?;
                             tokio::io::copy_bidirectional(&mut local, &mut stream).await?;

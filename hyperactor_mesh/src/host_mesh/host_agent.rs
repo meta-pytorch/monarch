@@ -714,14 +714,12 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         );
 
         // Transition Detached → Attached on first proc creation.
-        if was_empty {
-            if let HostAgentState::Detached(_) = &self.state {
-                let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
-                    HostAgentState::Detached(h) => h,
-                    _ => unreachable!(),
-                };
-                self.state = HostAgentState::Attached(host);
-            }
+        if was_empty && let HostAgentState::Detached(_) = &self.state {
+            let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
+                HostAgentState::Detached(h) => h,
+                _ => unreachable!(),
+            };
+            self.state = HostAgentState::Attached(host);
         }
 
         // If any WaitRankStatus messages arrived before this proc
@@ -1528,19 +1526,6 @@ impl Handler<ConfigDump> for HostAgent {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
-
-    use hyperactor::ActorAddr;
-    use hyperactor::Proc;
-    use hyperactor::channel::ChannelTransport;
-    use hyperactor::id::Label;
-
-    use super::*;
-    use crate::bootstrap::ProcStatus;
-    use crate::mesh_id::ResourceId;
-    use crate::resource::CreateOrUpdateClient;
-    use crate::resource::GetStateClient;
-    use crate::resource::WaitRankStatusClient;
 
     #[tokio::test]
     #[cfg(fbcode_build)]

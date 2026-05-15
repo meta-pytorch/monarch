@@ -375,11 +375,11 @@ impl crate::mailbox::MailboxSender for Gateway {
             }
         }
 
-        if let Some(proc) = proc {
-            if proc.is_local_delivery_target(&dest_proc) {
-                proc.muxer().post(envelope, return_handle);
-                return;
-            }
+        if let Some(proc) = proc
+            && proc.is_local_delivery_target(&dest_proc)
+        {
+            proc.muxer().post(envelope, return_handle);
+            return;
         }
 
         self.inner.forwarder.post(envelope, return_handle)

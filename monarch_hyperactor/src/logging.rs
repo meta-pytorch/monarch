@@ -854,12 +854,12 @@ mod tests {
 
             // Await the returned PyPythonTask's future outside the
             // GIL.
-            let flush_result = flush_task
+            flush_task
                 .await_unit()
                 .await
                 .expect("flush failed (forwarding disabled)");
 
-            let _ = flush_result;
+            ();
             drop(client_py); // See "NOTE ON LIFECYCLE / CLEANUP"
         }
 
@@ -887,12 +887,12 @@ mod tests {
 
             // Await the returned PyPythonTask's future outside the
             // GIL.
-            let flush_result = flush_task
+            flush_task
                 .await_unit()
                 .await
                 .expect("flush failed (forwarding enabled)");
 
-            let _ = flush_result;
+            ();
             drop(client_py); // See note "NOTE ON LIFECYCLE / CLEANUP"
         }
 

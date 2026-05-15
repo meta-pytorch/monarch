@@ -540,10 +540,10 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
 
         // Join the host's mailbox server to flush receive-side acks
         // before the process exits.
-        if let Some(lock) = HOST_SHUTDOWN_HANDLE.get() {
-            if let Some(handle) = lock.lock().await.take() {
-                handle.join().await;
-            }
+        if let Some(lock) = HOST_SHUTDOWN_HANDLE.get()
+            && let Some(handle) = lock.lock().await.take()
+        {
+            handle.join().await;
         }
 
         Ok(())

@@ -34,14 +34,9 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
-use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::Bootstrap;
-use crate::HostMeshRef;
-use crate::host_mesh::HostMesh;
-use crate::host_mesh::HostMeshShutdownGuard;
 use crate::supervision::MeshFailure;
 
 /// Guard that fails the test if it leaves new child processes behind.
@@ -50,6 +45,12 @@ pub struct ChildProcessGuard {
     observed: Arc<Mutex<BTreeSet<u32>>>,
     stop_monitor: Arc<AtomicBool>,
     monitor: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Default for ChildProcessGuard {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ChildProcessGuard {

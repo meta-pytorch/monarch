@@ -1988,7 +1988,7 @@ mod tests {
 
         // Test that result is always between 0.0 and 1.0
         let distance = normalized_edit_distance("completely", "different");
-        assert!(distance >= 0.0 && distance <= 1.0);
+        assert!((0.0..=1.0).contains(&distance));
     }
 
     #[tokio::test]

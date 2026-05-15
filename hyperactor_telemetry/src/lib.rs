@@ -113,15 +113,12 @@ use tracing_subscriber::fmt::FormatFields;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::registry::LookupSpan;
 
-use crate::config::ENABLE_OTEL_METRICS;
-use crate::config::ENABLE_OTEL_TRACING;
 use crate::config::ENABLE_RECORDER_TRACING;
 use crate::config::ENABLE_SQLITE_TRACING;
 use crate::config::MONARCH_FILE_LOG_LEVEL;
 use crate::config::MONARCH_LOG_SUFFIX;
 use crate::config::USE_UNIFIED_LAYER;
 use crate::recorder::Recorder;
-use crate::sqlite::get_reloadable_sqlite_layer;
 
 /// Hash any hashable value to a u64 using DefaultHasher.
 pub fn hash_to_u64(value: &impl Hash) -> u64 {
@@ -160,6 +157,12 @@ impl From<crate::meta::sample_buffer::Sample> for TelemetrySample {
 }
 
 #[cfg(not(all(fbcode_build, target_os = "linux")))]
+impl Default for TelemetrySample {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TelemetrySample {
     pub fn new() -> Self {
         Self { fields: Vec::new() }
@@ -699,10 +702,10 @@ pub fn set_entity_dispatcher(dispatcher: Box<dyn EntityEventDispatcher>) {
                 EntityEventState::Dispatching(_) => Vec::new(),
             };
         for event in buffered {
-            if let EntityEventState::Dispatching(d) = &*state {
-                if let Err(e) = d.dispatch(event) {
-                    tracing::error!("failed to dispatch buffered entity event: {:?}", e);
-                }
+            if let EntityEventState::Dispatching(d) = &*state
+                && let Err(e) = d.dispatch(event)
+            {
+                tracing::error!("failed to dispatch buffered entity event: {:?}", e);
             }
         }
     }
@@ -1127,7 +1130,7 @@ pub fn initialize_logging_with_log_prefix_mock_scuba(
 fn initialize_logging_with_log_prefix_impl(
     clock: impl TelemetryClock + Send + 'static,
     prefix_env_var: Option<String>,
-    mock_scuba: bool,
+    _mock_scuba: bool,
 ) -> Box<dyn TelemetryTestHandle> {
     let use_unified = hyperactor_config::global::get(USE_UNIFIED_LAYER);
     let should_install_subscriber = !tracing::dispatcher::has_been_set();
