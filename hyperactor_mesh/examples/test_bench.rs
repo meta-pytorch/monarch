@@ -19,6 +19,7 @@ use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Unbind;
 use hyperactor_mesh::actor_mesh::ActorMesh;

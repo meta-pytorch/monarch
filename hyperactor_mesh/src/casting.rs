@@ -11,6 +11,7 @@
 use std::collections::BTreeSet;
 
 use hyperactor::ActorRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;

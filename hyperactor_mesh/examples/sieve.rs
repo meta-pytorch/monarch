@@ -22,6 +22,7 @@ use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
 use hyperactor_config::Flattrs;
