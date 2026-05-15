@@ -229,7 +229,7 @@ impl<C: TokenPeer, J: TokenPeer> Token<C, J> {
         joiner: J,
         result: PortRef<JoinResult<C>>,
     ) -> anyhow::Result<()> {
-        self.rendezvous.send(cx, Join { joiner, result });
+        self.rendezvous.post(cx, Join { joiner, result });
         Ok(())
     }
 
@@ -342,7 +342,7 @@ impl<C: TokenPeer, J: TokenPeer> Actor for Rendezvous<C, J> {}
 impl<C: TokenPeer + Clone, J: TokenPeer> Handler<Join<C, J>> for Rendezvous<C, J> {
     async fn handle(&mut self, cx: &Context<Self>, message: Join<C, J>) -> anyhow::Result<()> {
         if self.options.policy == Policy::Once && self.joined {
-            message.result.send(
+            message.result.post(
                 cx,
                 JoinResult::Rejected {
                     reason: "token already joined".to_string(),
@@ -351,14 +351,14 @@ impl<C: TokenPeer + Clone, J: TokenPeer> Handler<Join<C, J>> for Rendezvous<C, J
             return Ok(());
         }
 
-        self.creator_joined.send(
+        self.creator_joined.post(
             cx,
             Joined {
                 peer: message.joiner,
             },
         );
 
-        message.result.send(
+        message.result.post(
             cx,
             JoinResult::Joined {
                 peer: self.creator.clone(),
