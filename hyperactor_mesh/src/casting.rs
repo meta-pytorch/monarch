@@ -11,6 +11,7 @@
 use std::collections::BTreeSet;
 
 use hyperactor::ActorRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
@@ -73,13 +74,16 @@ declare_attrs! {
 pub fn update_undeliverable_envelope_for_casting(
     mut envelope: Undeliverable<MessageEnvelope>,
 ) -> Undeliverable<MessageEnvelope> {
-    let old_actor = envelope.0.sender().clone();
-    if let Some(actor_id) = envelope.0.headers().get(CAST_ORIGINATING_SENDER) {
+    let Some(message) = envelope.as_message_mut() else {
+        return envelope;
+    };
+    let old_actor = message.sender().clone();
+    if let Some(actor_id) = message.headers().get(CAST_ORIGINATING_SENDER) {
         tracing::debug!(
             actor_id = %old_actor,
             "remapped comm-actor id to id from CAST_ORIGINATING_SENDER {}", actor_id
         );
-        envelope.0.update_sender(actor_id);
+        message.update_sender(actor_id);
     }
     // Else do nothing, it wasn't from a comm actor.
     envelope

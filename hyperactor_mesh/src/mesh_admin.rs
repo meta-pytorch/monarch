@@ -352,6 +352,7 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -1053,14 +1054,23 @@ impl Actor for MeshAdminAgent {
     async fn handle_undeliverable_message(
         &mut self,
         _cx: &Instance<Self>,
-        hyperactor::mailbox::Undeliverable(envelope): hyperactor::mailbox::Undeliverable<
-            hyperactor::mailbox::MessageEnvelope,
-        >,
+        undeliverable: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        tracing::debug!(
-            "admin agent: undeliverable message to {} (port not bound?), ignoring",
-            envelope.dest(),
-        );
+        match undeliverable {
+            hyperactor::mailbox::Undeliverable::Message(envelope) => {
+                tracing::debug!(
+                    "admin agent: undeliverable message to {} (port not bound?), ignoring",
+                    envelope.dest(),
+                );
+            }
+            hyperactor::mailbox::Undeliverable::Lost(lost) => {
+                tracing::debug!(
+                    "admin agent: lost message to {} ({}), ignoring",
+                    lost.dest,
+                    lost.error,
+                );
+            }
+        }
         Ok(())
     }
 }
