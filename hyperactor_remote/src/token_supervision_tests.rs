@@ -175,7 +175,7 @@ impl Actor for SupervisedChild {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         self.ready.post(this, this.self_addr().clone());
         if let Some(ChildAction::StopAfter(delay)) = self.action.take() {
-            this.self_message_with_delay(ChildControl::Stop, delay)?;
+            this.post_after(this, ChildControl::Stop, delay);
         }
         Ok(())
     }
