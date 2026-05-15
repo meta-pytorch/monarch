@@ -637,7 +637,7 @@ impl Actor for HostAgent {
         // extending the keepalive and tears them down.
         if let Some(delay) = hyperactor_config::global::get(crate::proc_agent::MESH_ORPHAN_TIMEOUT)
         {
-            this.self_message_with_delay(crate::proc_agent::SelfCheck::default(), delay)?;
+            this.post_after(this, crate::proc_agent::SelfCheck::default(), delay);
         }
 
         Ok(())
@@ -1287,7 +1287,7 @@ impl Handler<crate::proc_agent::SelfCheck> for HostAgent {
             }
         }
 
-        cx.self_message_with_delay(crate::proc_agent::SelfCheck::default(), duration)?;
+        cx.post_after(cx, crate::proc_agent::SelfCheck::default(), duration);
         Ok(())
     }
 }

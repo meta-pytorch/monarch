@@ -358,7 +358,7 @@ impl KeepaliveWorker {
     fn send_keepalive(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         self.generation += 1;
         let generation = self.generation;
-        self.supervisor.post(
+        (&self.supervisor).post(
             this,
             Keepalive {
                 generation,
@@ -366,8 +366,8 @@ impl KeepaliveWorker {
             },
         );
 
-        this.self_message_with_delay(SendKeepalive { generation }, self.interval)?;
-        this.self_message_with_delay(AckDeadline { generation }, self.timeout)?;
+        this.post_after(this, SendKeepalive { generation }, self.interval);
+        this.post_after(this, AckDeadline { generation }, self.timeout);
         Ok(())
     }
 }
@@ -431,12 +431,13 @@ impl KeepaliveSupervisor {
     }
 
     fn schedule_deadline(&self, this: &Instance<Self>) -> anyhow::Result<()> {
-        this.self_message_with_delay(
+        this.post_after(
+            this,
             Deadline {
                 generation: self.generation,
             },
             self.timeout,
-        )?;
+        );
         Ok(())
     }
 }
