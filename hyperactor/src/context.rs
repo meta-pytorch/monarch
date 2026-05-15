@@ -28,6 +28,7 @@ use hyperactor_config::Flattrs;
 use crate::ActorAddr;
 use crate::Instance;
 use crate::PortAddr;
+use crate::Proc;
 use crate::accum;
 use crate::accum::ErasedCommReducer;
 use crate::accum::ReducerMode;
@@ -140,7 +141,7 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         let mut envelope =
             MessageEnvelope::new(self.mailbox().actor_addr().clone(), dest, data, headers);
         envelope.set_return_undeliverable(return_undeliverable);
-        MailboxSender::post(self.mailbox(), envelope, return_handle);
+        MailboxSender::post(self.instance().proc(), envelope, return_handle);
     }
 
     fn split(
@@ -151,16 +152,16 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
         return_undeliverable: bool,
     ) -> anyhow::Result<PortAddr> {
         fn post(
-            mailbox: &mailbox::Mailbox,
+            proc: &Proc,
+            sender: &ActorAddr,
             port_id: PortAddr,
             msg: wirevalue::Any,
             return_undeliverable: bool,
         ) {
-            let mut envelope =
-                MessageEnvelope::new(mailbox.actor_addr().clone(), port_id, msg, Flattrs::new());
+            let mut envelope = MessageEnvelope::new(sender.clone(), port_id, msg, Flattrs::new());
             envelope.set_return_undeliverable(return_undeliverable);
             mailbox::MailboxSender::post(
-                mailbox,
+                proc,
                 envelope,
                 // TODO(pzhang) figure out how to use upstream's return handle,
                 // instead of getting a new one like this.
@@ -175,7 +176,8 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             .mailbox()
             .actor_addr()
             .port_addr(Port::from(port_index));
-        let mailbox = self.mailbox().clone();
+        let proc = self.instance().proc().clone();
+        let sender = self.mailbox().actor_addr().clone();
         let reducer = reducer_spec
             .map(
                 |ReducerSpec {
@@ -194,10 +196,20 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                 + Send
                 + Sync,
         > = match reducer {
-            None => Box::new(move |_headers: Flattrs, serialized: wirevalue::Any| {
-                post(&mailbox, port_id.clone(), serialized, return_undeliverable);
-                Ok(mailbox::SerializedSendDisposition::Delivered)
-            }),
+            None => {
+                let proc = proc.clone();
+                let sender = sender.clone();
+                Box::new(move |_headers: Flattrs, serialized: wirevalue::Any| {
+                    post(
+                        &proc,
+                        &sender,
+                        port_id.clone(),
+                        serialized,
+                        return_undeliverable,
+                    );
+                    Ok(mailbox::SerializedSendDisposition::Delivered)
+                })
+            }
             Some(reducer) => match reducer_mode {
                 ReducerMode::Streaming(_) => {
                     let buffer: Arc<Mutex<UpdateBuffer>> =
@@ -209,14 +221,16 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                         let mut sleeper = alarm.sleeper();
                         let buffer = Arc::clone(&buffer);
                         let port_id = port_id.clone();
-                        let mailbox = mailbox.clone();
+                        let proc = proc.clone();
+                        let sender = sender.clone();
                         tokio::spawn(async move {
                             while sleeper.sleep().await {
                                 let mut buf = buffer.lock().unwrap();
                                 match buf.reduce() {
                                     None => (),
                                     Some(Ok(reduced)) => post(
-                                        &mailbox,
+                                        &proc,
+                                        &sender,
                                         port_id.clone(),
                                         reduced,
                                         return_undeliverable,
@@ -271,7 +285,13 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                             }
                             Some(Ok(reduced)) => {
                                 alarm.lock().unwrap().disarm();
-                                post(&mailbox, port_id.clone(), reduced, return_undeliverable);
+                                post(
+                                    &proc,
+                                    &sender,
+                                    port_id.clone(),
+                                    reduced,
+                                    return_undeliverable,
+                                );
                                 Ok(mailbox::SerializedSendDisposition::Delivered)
                             }
                             Some(Err(error)) => Err(mailbox::SerializedSendFailure::Error(
@@ -310,6 +330,8 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                     let buffer: Arc<Mutex<OnceBuffer>> =
                         Arc::new(Mutex::new(OnceBuffer::new(reducer, expected)));
                     let error_port_id = split_port.clone();
+                    let proc = proc.clone();
+                    let sender = sender.clone();
 
                     Box::new(move |headers: Flattrs, update: wirevalue::Any| {
                         let mut buf = buffer.lock().unwrap();
@@ -321,7 +343,13 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
                         }
                         match buf.push(update) {
                             Ok(Some(reduced)) => {
-                                post(&mailbox, port_id.clone(), reduced, return_undeliverable);
+                                post(
+                                    &proc,
+                                    &sender,
+                                    port_id.clone(),
+                                    reduced,
+                                    return_undeliverable,
+                                );
                                 Ok(mailbox::SerializedSendDisposition::DeliveredAndExhausted)
                             }
                             Ok(None) => Ok(mailbox::SerializedSendDisposition::Delivered),
