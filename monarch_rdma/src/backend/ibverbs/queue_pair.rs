@@ -19,11 +19,28 @@ use std::io::Error;
 use std::result::Result;
 use std::time::Duration;
 
+use async_trait::async_trait;
+use hyperactor::Actor;
+use hyperactor::ActorHandle;
+use hyperactor::ActorId;
+use hyperactor::ActorRef;
+use hyperactor::Context;
+use hyperactor::Handler;
+use hyperactor::Instance;
+use hyperactor::PortRef;
+use hyperactor::actor::Binds;
+use hyperactor::actor::Referable;
+use hyperactor::actor::RemoteHandles;
+use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::Undeliverable;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
 use super::IbvBuffer;
+use super::manager_actor::EnsureQueuePair;
+use super::manager_actor::QpInitializerDone;
+use super::manager_actor::QpInitializerFailed;
 use super::primitives::Gid;
 use super::primitives::IbvConfig;
 use super::primitives::IbvOperation;
@@ -1051,10 +1068,436 @@ impl IbvQueuePair {
     }
 }
 
+// =====================================================================
+// QueuePairInitializer
+// =====================================================================
+//
+// Drives one local `IbvQueuePair` through `INIT → RTR → RTS` off the
+// owning `IbvManagerActor`'s mailbox. Each peer spawns its own
+// initializer; the two converge by exchanging `NotifyRts` directly
+// after one round-trip through the peer's manager (`EnsureQueuePair`
+// → `PeerInfo`). A side declares itself "Ready" as soon as it
+// observes the peer's `NotifyRts`; it does not wait for the peer to
+// observe its own.
+//
+// Progress is tracked by two flags — `our_rts_sent` (we received
+// `PeerInfo`, connected, and sent our `NotifyRts`) and
+// `peer_rts_received` (we observed the peer's `NotifyRts`). When
+// both are true the handshake hands the qp to the manager via
+// [`QpInitializerDone`]. The `terminal` flag short-circuits any
+// further handler work after success or failure. The qp is held in
+// a `QpGuard` so any failure path (or aborted message delivery)
+// destroys it.
+
+/// Identifies a per-peer queue pair held by one
+/// [`super::manager_actor::IbvManagerActor`]. The same conceptual
+/// QP is referenced by two distinct keys, one from each side: each
+/// manager stores the local view (its own device, the peer's actor
+/// id, the peer's device).
+#[derive(Clone, Hash, Eq, PartialEq, Debug, Serialize, Deserialize, Named)]
+pub(super) struct QpKey {
+    pub(super) self_device: String,
+    pub(super) other_id: ActorId,
+    pub(super) other_device: String,
+}
+
+/// Cross-proc reply payload for [`EnsureQueuePair`]: peer's endpoint
+/// plus a `PortRef` to the peer initializer's `NotifyRts` port, or
+/// an error string from the peer side.
+#[derive(Debug, Serialize, Deserialize, Named)]
+pub(super) struct PeerInfo(pub(super) Result<(IbvQpInfo, PortRef<NotifyRts>), String>);
+wirevalue::register_type!(PeerInfo);
+
+/// Cross-proc fire-and-forget. Sent from one initializer to the peer
+/// initializer once we hit RTS. A queue pair can begin sending to
+/// its peer as soon as it receives this message.
+#[derive(Debug, Serialize, Deserialize, Named)]
+pub(super) struct NotifyRts;
+wirevalue::register_type!(NotifyRts);
+
+/// Local-only self-message fired by the timeout task. Triggers
+/// the initializer to abort the handshake.
+#[derive(Debug)]
+struct InitializationFailed;
+
+/// RAII wrapper that destroys the wrapped queue pair on drop.
+/// Use `into_inner` to extract the qp without destroying.
+#[derive(Debug)]
+pub(super) struct QpGuard {
+    qp: Option<IbvQueuePair>,
+}
+
+impl QpGuard {
+    pub(super) fn new(qp: IbvQueuePair) -> Self {
+        Self { qp: Some(qp) }
+    }
+
+    /// Consume the guard and return the qp; suppresses Drop's destroy.
+    pub(super) fn into_inner(mut self) -> IbvQueuePair {
+        self.qp.take().expect("QpGuard already drained")
+    }
+
+    /// Delegates to [`IbvQueuePair::connect`].
+    pub(super) fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
+        self.qp
+            .as_mut()
+            .expect("QpGuard already drained")
+            .connect(info)
+    }
+
+    /// Delegates to [`IbvQueuePair::get_qp_info`].
+    pub(super) fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
+        self.qp
+            .as_mut()
+            .expect("QpGuard already drained")
+            .get_qp_info()
+    }
+}
+
+impl Drop for QpGuard {
+    fn drop(&mut self) {
+        if let Some(qp) = self.qp.take() {
+            // SAFETY: `QpGuard` owns the `IbvQueuePair` and exposes
+            // no API that hands out a reference to it, so safe code
+            // cannot have cloned the underlying `rdmaxcel_qp_t`
+            // pointer out from under us. The only way to extract a
+            // live clone is `into_inner`, which consumes `self` and
+            // skips this `Drop`; reaching here means `into_inner`
+            // was never called.
+            unsafe { destroy_qp(&qp) };
+        }
+    }
+}
+
+/// Bundle of trait bounds for an actor type that can play the role
+/// of [`QueuePairInitializer`]'s owner/peer manager.
+pub(super) trait QpOwner:
+    Actor
+    + Referable
+    + Binds<Self>
+    + RemoteHandles<EnsureQueuePair<Self>>
+    + Handler<QpInitializerDone>
+    + Handler<QpInitializerFailed>
+{
+}
+
+impl<T> QpOwner for T where
+    T: Actor
+        + Referable
+        + Binds<T>
+        + RemoteHandles<EnsureQueuePair<T>>
+        + Handler<QpInitializerDone>
+        + Handler<QpInitializerFailed>
+{
+}
+
+/// Per-peer queue-pair handshake actor. See module docs.
+///
+/// Generic over the manager actor type `A` so tests can swap in a
+/// mock.
+#[derive(Debug)]
+#[hyperactor::export(handlers = [PeerInfo, NotifyRts])]
+pub(super) struct QueuePairInitializer<A: QpOwner> {
+    owner: ActorHandle<A>,
+    other: ActorRef<A>,
+    qp_key: QpKey,
+    /// Held until the handshake succeeds (handed to the manager
+    /// via [`QpInitializerDone`]) or fails (dropped here, which
+    /// destroys the qp via `QpGuard::drop`).
+    qp: Option<QpGuard>,
+    /// Per-side handshake budget pulled from
+    /// `RDMA_QP_INIT_TIMEOUT` at construction.
+    timeout: Duration,
+    /// Set in `Handler<PeerInfo>` after we connect the qp and send
+    /// our `NotifyRts` to the peer.
+    our_rts_sent: bool,
+    /// Set in `Handler<NotifyRts>` when the peer's `NotifyRts`
+    /// arrives.
+    peer_rts_received: bool,
+    /// Set by `done`/`fail` once a terminal report has been
+    /// dispatched to the owner. All further handler work
+    /// short-circuits.
+    terminal: bool,
+    /// Currently-armed timeout. `arm_timeout` aborts any prior one.
+    timeout_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl<A> QueuePairInitializer<A>
+where
+    A: QpOwner,
+{
+    pub(super) fn new(
+        owner: ActorHandle<A>,
+        other: ActorRef<A>,
+        qp_key: QpKey,
+        qp: QpGuard,
+    ) -> Self {
+        let timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
+        Self {
+            owner,
+            other,
+            qp_key,
+            qp: Some(qp),
+            timeout,
+            our_rts_sent: false,
+            peer_rts_received: false,
+            terminal: false,
+            timeout_handle: None,
+        }
+    }
+
+    /// Arm a fresh `InitializationFailed` timer, aborting any prior one.
+    fn arm_timeout(&mut self, this: &Instance<Self>) {
+        if let Some(h) = self.timeout_handle.take() {
+            h.abort();
+        }
+        let self_handle: ActorHandle<Self> = this.handle();
+        let timeout = self.timeout;
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(timeout).await;
+            if let Err(e) = self_handle.send(Instance::<Self>::self_client(), InitializationFailed)
+            {
+                tracing::error!(
+                    "QueuePairInitializer: failed to deliver timeout self-message: {e}"
+                );
+            }
+        });
+        self.timeout_handle = Some(task);
+    }
+
+    /// Transition to the terminal failed state, drop the qp guard
+    /// (destroying any qp held), and report failure to the owning
+    /// manager.
+    fn fail(&mut self, this: &Instance<Self>, error: String) -> Result<(), anyhow::Error> {
+        if let Some(h) = self.timeout_handle.take() {
+            h.abort();
+        }
+        self.qp = None;
+        self.terminal = true;
+        self.owner.send(
+            this,
+            QpInitializerFailed {
+                qp_key: self.qp_key.clone(),
+                error,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Transition to the terminal success state and hand the qp
+    /// guard to the owning manager via [`QpInitializerDone`].
+    fn done(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        if let Some(h) = self.timeout_handle.take() {
+            h.abort();
+        }
+        let qp = self.qp.take().expect("qp present in done()");
+        self.terminal = true;
+        self.owner.send(
+            this,
+            QpInitializerDone {
+                qp_key: self.qp_key.clone(),
+                qp,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Connect our qp to the peer endpoint, then notify the peer
+    /// that we've reached RTS. Returns the failure string for
+    /// [`Self::fail`] on error.
+    fn connect_and_notify(
+        &mut self,
+        cx: &Context<Self>,
+        info: Result<(IbvQpInfo, PortRef<NotifyRts>), String>,
+    ) -> Result<(), String> {
+        let (peer_endpoint, peer_notify_rts) = info?;
+        self.qp
+            .as_mut()
+            .expect("qp present pre-terminal")
+            .connect(&peer_endpoint)
+            .map_err(|e| format!("QpGuard::connect failed: {e}"))?;
+        peer_notify_rts
+            .send(cx, NotifyRts)
+            .map_err(|e| format!("failed to send NotifyRts to peer: {e}"))?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<A> Actor for QueuePairInitializer<A>
+where
+    A: QpOwner,
+{
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Send the QueuePairInitializer's PeerInfo actor port so that the reply
+        // is routed back to this actor's handler automatically.
+        let reply = this.bind::<Self>().port();
+        let sender = self.owner.bind();
+        let sender_device = self.qp_key.self_device.clone();
+        let receiver_device = self.qp_key.other_device.clone();
+        self.other.send(
+            this,
+            EnsureQueuePair {
+                sender,
+                sender_device,
+                receiver_device,
+                reply,
+            },
+        )?;
+
+        self.arm_timeout(this);
+        Ok(())
+    }
+
+    async fn cleanup(
+        &mut self,
+        _this: &Instance<Self>,
+        _err: Option<&hyperactor::actor::ActorError>,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(h) = self.timeout_handle.take() {
+            h.abort();
+        }
+        Ok(())
+    }
+
+    async fn handle_undeliverable_message(
+        &mut self,
+        this: &Instance<Self>,
+        Undeliverable(envelope): Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        if self.terminal {
+            tracing::warn!(
+                "undeliverable message after handshake terminated: {}",
+                envelope.error_msg().unwrap_or_default()
+            );
+            return Ok(());
+        }
+        self.fail(this, envelope.error_msg().unwrap_or_default())
+    }
+}
+
+impl<A> Drop for QueuePairInitializer<A>
+where
+    A: QpOwner,
+{
+    fn drop(&mut self) {
+        if let Some(h) = self.timeout_handle.take() {
+            h.abort();
+        }
+    }
+}
+
+/// Destroy the underlying `rdmaxcel_qp_t`.
+///
+/// # Safety
+///
+/// `IbvQueuePair` derives [`Clone`] but the wrapped `rdmaxcel_qp_t`
+/// pointer is shared by all clones; this call frees that pointer. The
+/// caller must guarantee no remaining clones of `qp` are in use (no
+/// other code is reading from or posting to `qp.qp`, and no future
+/// code will), since accessing a freed `rdmaxcel_qp_t` is undefined
+/// behavior.
+pub(super) unsafe fn destroy_qp(qp: &IbvQueuePair) {
+    // SAFETY: The caller has guaranteed no other live clone of `qp`
+    // observes `qp.qp` (see this function's `# Safety` section). This
+    // is truly unsafe -- the current implementation does not properly
+    // track outstanding clones. An imminent change will fix this, but
+    // for now it isn't a regression.
+    unsafe {
+        if qp.qp != 0 {
+            let rdmaxcel_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+            rdmaxcel_sys::rdmaxcel_qp_destroy(rdmaxcel_qp);
+        }
+    }
+}
+
+#[async_trait]
+impl<A> Handler<PeerInfo> for QueuePairInitializer<A>
+where
+    A: QpOwner,
+{
+    async fn handle(&mut self, cx: &Context<Self>, msg: PeerInfo) -> Result<(), anyhow::Error> {
+        if self.terminal {
+            tracing::warn!("PeerInfo received after queue pair already terminal");
+            return Ok(());
+        }
+        debug_assert!(!self.our_rts_sent, "duplicate PeerInfo");
+        if let Err(e) = self.connect_and_notify(cx, msg.0) {
+            return self.fail(cx, e);
+        }
+        self.our_rts_sent = true;
+        if self.peer_rts_received {
+            return self.done(cx);
+        }
+        // Rearm the timeout for the remaining wait on the peer's
+        // `NotifyRts` so a hang past this point still surfaces as a
+        // failure.
+        self.arm_timeout(cx);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<A> Handler<NotifyRts> for QueuePairInitializer<A>
+where
+    A: QpOwner,
+{
+    async fn handle(&mut self, cx: &Context<Self>, _msg: NotifyRts) -> Result<(), anyhow::Error> {
+        if self.terminal {
+            tracing::warn!("NotifyRts received after queue pair already terminal");
+            return Ok(());
+        }
+        debug_assert!(!self.peer_rts_received, "duplicate NotifyRts");
+        self.peer_rts_received = true;
+        if self.our_rts_sent {
+            return self.done(cx);
+        }
+        // Rearm the timeout for the remaining wait on our own
+        // `PeerInfo` reply.
+        self.arm_timeout(cx);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<A> Handler<InitializationFailed> for QueuePairInitializer<A>
+where
+    A: QpOwner,
+{
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        _msg: InitializationFailed,
+    ) -> Result<(), anyhow::Error> {
+        if self.terminal {
+            return Ok(());
+        }
+        self.fail(cx, "QP initialization timed out".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use hyperactor::Context;
+    use hyperactor::Handler;
+    use hyperactor::PortRef;
+    use hyperactor::mailbox::DeliveryError;
+    use hyperactor::mailbox::MessageEnvelope;
+    use hyperactor::mailbox::Undeliverable;
+    use hyperactor::port::Port;
+    use hyperactor::proc::Proc;
+    use hyperactor_config::Flattrs;
+
     use super::*;
     use crate::backend::ibverbs::domain::IbvDomain;
+    use crate::backend::ibverbs::manager_actor::EnsureQueuePair;
     use crate::backend::ibverbs::primitives::IbvConfig;
     use crate::backend::ibverbs::primitives::get_all_devices;
 
@@ -1114,5 +1557,358 @@ mod tests {
 
         assert!(server_qp.connect(&client_connection_info).is_ok());
         assert!(client_qp.connect(&server_connection_info).is_ok());
+    }
+
+    /// Outcomes recorded by [`MockManager`] for assertions.
+    #[derive(Default, Debug)]
+    struct MockState {
+        done: Vec<QpKey>,
+        failed: Vec<(QpKey, String)>,
+        /// Number of `NotifyRts` messages the mock received from the
+        /// initializer (i.e., how many times the initializer reached
+        /// the "we've hit RTS" point and sent us a notification).
+        notify_rts: usize,
+    }
+
+    /// Scripted reply for the next `EnsureQueuePair` the mock sees.
+    /// After a single reply the mock disarms back to `DropReply`.
+    #[derive(Debug)]
+    enum MockResponse {
+        /// Reply with `PeerInfo(Ok((info, mock_notify_rts_port)))`. The
+        /// caller must drive the initializer's `NotifyRts` port from
+        /// the test to reach `Succeeded`.
+        Success(IbvQpInfo),
+        /// Like `Success`, but the `PortRef<NotifyRts>` handed back is
+        /// attested to an unreachable address in the mock's own proc
+        /// so the initializer's `NotifyRts` send bounces back as
+        /// undeliverable.
+        SuccessWithBogusNotifyRts(IbvQpInfo),
+        Error(String),
+        DropReply,
+    }
+
+    /// Zero-initialized [`IbvQueuePair`]. `qp == 0` so `QpGuard::Drop`
+    /// is a no-op; tests using this must not exercise [`IbvQueuePair::connect`]
+    /// (it would deref a null pointer).
+    fn fake_qp() -> IbvQueuePair {
+        IbvQueuePair {
+            send_cq: 0,
+            recv_cq: 0,
+            qp: 0,
+            dv_qp: 0,
+            dv_send_cq: 0,
+            dv_recv_cq: 0,
+            context: 0,
+            config: IbvConfig::default(),
+            is_efa: false,
+        }
+    }
+
+    /// A real (loopback) `IbvQueuePair` and its `IbvQpInfo`. Returns
+    /// `None` when no RDMA device is present.
+    fn loopback_qp() -> Option<(QpGuard, IbvQpInfo)> {
+        if get_all_devices().is_empty() {
+            return None;
+        }
+        let config = IbvConfig::default();
+        let domain = IbvDomain::new(config.device.clone()).ok()?;
+        let mut qp = QpGuard::new(IbvQueuePair::new(domain.context, domain.pd, config).ok()?);
+        let info = qp.get_qp_info().ok()?;
+        Some((qp, info))
+    }
+
+    #[derive(Debug)]
+    #[hyperactor::export(handlers = [EnsureQueuePair<MockManager>, NotifyRts])]
+    struct MockManager {
+        state: Arc<Mutex<MockState>>,
+        response: MockResponse,
+    }
+
+    #[async_trait]
+    impl Actor for MockManager {}
+
+    #[async_trait]
+    impl Handler<EnsureQueuePair<MockManager>> for MockManager {
+        async fn handle(
+            &mut self,
+            cx: &Context<Self>,
+            msg: EnsureQueuePair<MockManager>,
+        ) -> Result<()> {
+            let response = std::mem::replace(&mut self.response, MockResponse::DropReply);
+            match response {
+                MockResponse::Success(info) => {
+                    let notify_rts = cx.bind::<MockManager>().port::<NotifyRts>();
+                    msg.reply.send(cx, PeerInfo(Ok((info, notify_rts))))?;
+                }
+                MockResponse::SuccessWithBogusNotifyRts(info) => {
+                    let bogus = hyperactor::context::Mailbox::mailbox(cx)
+                        .actor_addr()
+                        .proc_addr()
+                        .actor_addr("bogus")
+                        .port_addr(Port::from(0u64));
+                    let notify_rts = PortRef::<NotifyRts>::attest(bogus);
+                    msg.reply.send(cx, PeerInfo(Ok((info, notify_rts))))?;
+                }
+                MockResponse::Error(e) => {
+                    msg.reply.send(cx, PeerInfo(Err(e)))?;
+                }
+                MockResponse::DropReply => {}
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<NotifyRts> for MockManager {
+        async fn handle(&mut self, _cx: &Context<Self>, _msg: NotifyRts) -> Result<()> {
+            self.state.lock().unwrap().notify_rts += 1;
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<QpInitializerDone> for MockManager {
+        async fn handle(&mut self, _cx: &Context<Self>, msg: QpInitializerDone) -> Result<()> {
+            let _ = msg.qp.into_inner();
+            self.state.lock().unwrap().done.push(msg.qp_key);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<QpInitializerFailed> for MockManager {
+        async fn handle(&mut self, _cx: &Context<Self>, msg: QpInitializerFailed) -> Result<()> {
+            self.state
+                .lock()
+                .unwrap()
+                .failed
+                .push((msg.qp_key, msg.error));
+            Ok(())
+        }
+    }
+
+    struct Harness {
+        proc: Proc,
+        init_handle: ActorHandle<QueuePairInitializer<MockManager>>,
+        state: Arc<Mutex<MockState>>,
+        qp_key: QpKey,
+    }
+
+    impl Harness {
+        fn build(qp: QpGuard, response: MockResponse) -> Result<Self> {
+            let proc = Proc::new();
+            let state = Arc::new(Mutex::new(MockState::default()));
+            let mock = MockManager {
+                state: state.clone(),
+                response,
+            };
+            let mock_handle = proc.spawn("mock", mock)?;
+            let mock_ref = mock_handle.bind::<MockManager>();
+            let qp_key = QpKey {
+                self_device: "mock0".into(),
+                other_id: mock_ref.actor_addr().id().clone(),
+                other_device: "mock0".into(),
+            };
+            let initializer = QueuePairInitializer::new(mock_handle, mock_ref, qp_key.clone(), qp);
+            let init_handle = proc.spawn("initializer", initializer)?;
+            // Bind well-known ports so PeerInfo/NotifyRts can route.
+            let _ = init_handle.bind::<QueuePairInitializer<MockManager>>();
+            Ok(Harness {
+                proc,
+                init_handle,
+                state,
+                qp_key,
+            })
+        }
+
+        async fn await_done(&self) -> QpKey {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(key) = self.state.lock().unwrap().done.first().cloned() {
+                    return key;
+                }
+                if Instant::now() >= deadline {
+                    panic!(
+                        "QpInitializerDone not delivered within 5s; state={:?}",
+                        self.state.lock().unwrap()
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        async fn await_failed(&self) -> (QpKey, String) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(entry) = self.state.lock().unwrap().failed.first().cloned() {
+                    return entry;
+                }
+                if Instant::now() >= deadline {
+                    panic!(
+                        "QpInitializerFailed was not delivered within 5s; state={:?}",
+                        self.state.lock().unwrap()
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_peer_info_error_transitions_to_failed() {
+        let harness = Harness::build(
+            QpGuard::new(fake_qp()),
+            MockResponse::Error("peer rejected".into()),
+        )
+        .unwrap();
+        let (key, error) = harness.await_failed().await;
+        assert_eq!(key, harness.qp_key);
+        assert_eq!(error, "peer rejected");
+        // No spurious done callbacks.
+        assert!(harness.state.lock().unwrap().done.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_initial_timeout_transitions_to_failed() {
+        // Drop the configured per-handshake budget to 200ms so the
+        // test doesn't sit on the default 30s.
+        let lock = hyperactor_config::global::lock();
+        let _guard = lock.override_key(
+            crate::config::RDMA_QP_INIT_TIMEOUT,
+            Duration::from_millis(200),
+        );
+
+        let harness = Harness::build(QpGuard::new(fake_qp()), MockResponse::DropReply).unwrap();
+        let (key, error) = harness.await_failed().await;
+        assert_eq!(key, harness.qp_key);
+        assert!(
+            error.contains("timed out"),
+            "expected timeout error, got {error}"
+        );
+    }
+
+    /// Real loopback handshake. The mock replies `Success`, the
+    /// initializer connects the qp to itself and sends `NotifyRts` to
+    /// the mock; the test then delivers `NotifyRts` directly to the
+    /// initializer's well-known port to drive it to success.
+    #[tokio::test]
+    async fn test_loopback_handshake_succeeds() -> Result<()> {
+        let Some((qp, info)) = loopback_qp() else {
+            panic!("Skipping test: RDMA devices not available");
+        };
+        let harness = Harness::build(qp, MockResponse::Success(info))?;
+
+        let (peer, _) = harness.proc.instance("peer")?;
+        harness.init_handle.send(&peer, NotifyRts)?;
+
+        let key = harness.await_done().await;
+        assert_eq!(key, harness.qp_key);
+        let state = harness.state.lock().unwrap();
+        assert!(state.failed.is_empty());
+        assert_eq!(
+            state.notify_rts, 1,
+            "initializer must send exactly one NotifyRts to the peer after qp.connect"
+        );
+        Ok(())
+    }
+
+    /// Real loopback `qp.connect` succeeds and the initializer
+    /// flips `our_rts_sent`, but the test never delivers `NotifyRts`
+    /// back to the initializer's port. The rearmed timer fires and
+    /// the handshake is reported as failed.
+    #[tokio::test]
+    async fn test_notify_rts_timeout_after_peer_info() -> Result<()> {
+        let Some((qp, info)) = loopback_qp() else {
+            panic!("Skipping test: RDMA devices not available");
+        };
+        let lock = hyperactor_config::global::lock();
+        let _guard = lock.override_key(
+            crate::config::RDMA_QP_INIT_TIMEOUT,
+            Duration::from_millis(200),
+        );
+
+        let harness = Harness::build(qp, MockResponse::Success(info))?;
+        let (key, error) = harness.await_failed().await;
+        assert_eq!(key, harness.qp_key);
+        assert!(
+            error.contains("timed out"),
+            "expected timeout error, got {error}"
+        );
+        // Receiving exactly one NotifyRts confirms the initializer
+        // ran `qp.connect` + sent NotifyRts to the peer and was
+        // waiting on the peer's `NotifyRts` when the rearmed timer
+        // fired.
+        assert_eq!(harness.state.lock().unwrap().notify_rts, 1);
+        Ok(())
+    }
+
+    fn fake_undeliverable(proc: &Proc, error: &str) -> Undeliverable<MessageEnvelope> {
+        let mut envelope = MessageEnvelope::serialize(
+            proc.proc_addr().actor_addr("test-sender"),
+            proc.proc_addr()
+                .actor_addr("test-dest")
+                .port_addr(Port::from(0u64)),
+            &0u64,
+            Flattrs::default(),
+        )
+        .unwrap();
+        envelope.set_error(DeliveryError::Mailbox(error.into()));
+        Undeliverable(envelope)
+    }
+
+    /// In an awaiting state, an undeliverable message returned to the
+    /// initializer trips `handle_undeliverable_message` into `fail()`,
+    /// which reports `QpInitializerFailed` to the owner with the
+    /// envelope's error message.
+    #[tokio::test]
+    async fn test_undeliverable_in_awaiting_transitions_to_failed() {
+        let harness = Harness::build(QpGuard::new(fake_qp()), MockResponse::DropReply).unwrap();
+        let undeliverable = fake_undeliverable(&harness.proc, "simulated bounce");
+        let (peer, _) = harness.proc.instance("peer").unwrap();
+        harness.init_handle.send(&peer, undeliverable).unwrap();
+        let (key, error) = harness.await_failed().await;
+        assert_eq!(key, harness.qp_key);
+        assert!(
+            error.contains("simulated bounce"),
+            "expected delivery error, got {error}"
+        );
+    }
+
+    /// `PeerInfo` carries a `PortRef<NotifyRts>` attested to a bogus
+    /// address; the initializer's send bounces back as undeliverable
+    /// after `our_rts_sent` is set, and `handle_undeliverable_message`
+    /// trips `fail()`.
+    #[tokio::test]
+    async fn test_notify_rts_undeliverable_transitions_to_failed() -> Result<()> {
+        let Some((qp, info)) = loopback_qp() else {
+            panic!("Skipping test: RDMA devices not available");
+        };
+        let harness = Harness::build(qp, MockResponse::SuccessWithBogusNotifyRts(info))?;
+        let (key, error) = harness.await_failed().await;
+        assert_eq!(key, harness.qp_key);
+        assert!(
+            error.contains("address not routable"),
+            "expected delivery error, got {error:?}"
+        );
+        Ok(())
+    }
+
+    /// Once the initializer is terminal, a late undeliverable is
+    /// just warn-logged and must not produce a second
+    /// `QpInitializerFailed` callback.
+    #[tokio::test]
+    async fn test_undeliverable_after_terminated_does_not_re_fail() {
+        let harness = Harness::build(
+            QpGuard::new(fake_qp()),
+            MockResponse::Error("first fail".into()),
+        )
+        .unwrap();
+        let _ = harness.await_failed().await;
+
+        let undeliverable = fake_undeliverable(&harness.proc, "late bounce");
+        let (peer, _) = harness.proc.instance("peer").unwrap();
+        harness.init_handle.send(&peer, undeliverable).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(harness.state.lock().unwrap().failed.len(), 1);
     }
 }

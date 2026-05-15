@@ -37,7 +37,7 @@ kubectl cp hello_kubernetes_job.py monarch-tests/hello-controller:/tmp/hello_kub
 
 # Run with --provision to create MonarchMesh CRDs from Python
 kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision
- 
+
 # (Optional) Run with Kueue for gang scheduling (mesh level)
 kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision --kueue user-queue
 ```
@@ -107,7 +107,7 @@ kubectl exec -it hello-controller -n monarch-tests -- /bin/bash
 
 # Inside the controller, run the example
 python /tmp/hello_kubernetes_job.py
- 
+
 # (Optional) Run with Kueue for gang scheduling
 python /tmp/hello_kubernetes_job.py --kueue user-queue
 ```
