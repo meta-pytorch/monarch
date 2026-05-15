@@ -3403,11 +3403,14 @@ mod tests {
 
         mbox.post(envelope, return_handle);
 
-        let Undeliverable(undelivered) =
+        let Undeliverable::Message(undelivered) =
             tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
                 .await
                 .expect("timed out waiting for undeliverable")
-                .expect("return port closed");
+                .expect("return port closed")
+        else {
+            panic!("expected returned message");
+        };
         assert!(
             undelivered
                 .error_msg()
