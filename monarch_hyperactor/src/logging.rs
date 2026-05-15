@@ -19,6 +19,7 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -244,7 +245,7 @@ impl LoggingMeshClient {
                 reply: reply_tx.bind(),
                 version: version_tx.bind(),
             },
-        )?;
+        );
 
         let version = version_rx.recv().await?;
 
@@ -422,14 +423,12 @@ impl LoggingMeshClient {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         // Always update the client actor's aggregation window.
-        self.client_actor
-            .send(
-                instance.deref(),
-                LogClientMessage::SetAggregate {
-                    aggregate_window_sec,
-                },
-            )
-            .map_err(anyhow::Error::msg)?;
+        self.client_actor.send(
+            instance.deref(),
+            LogClientMessage::SetAggregate {
+                aggregate_window_sec,
+            },
+        );
 
         Ok(())
     }

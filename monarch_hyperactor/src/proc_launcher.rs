@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::ActorHandle;
+use hyperactor::Endpoint as _;
 use hyperactor::Instance;
 use hyperactor::Mailbox;
 use hyperactor_mesh::proc_launcher::LaunchOptions;
@@ -699,9 +700,7 @@ impl ProcLauncher for ActorProcLauncher {
             message: pickled_args.into(),
         };
 
-        self.spawner
-            .send(&self.instance, message)
-            .map_err(|e| ProcLauncherError::Other(format!("send to spawner failed: {e}")))?;
+        self.spawner.send(&self.instance, message);
 
         let mut active_procs: tokio::sync::MutexGuard<'_, HashSet<hyperactor::ProcAddr>> =
             self.active_procs.lock().await;
@@ -783,9 +782,8 @@ impl ProcLauncher for ActorProcLauncher {
             message: pickled.into(),
         };
 
-        self.spawner
-            .send(&self.instance, message)
-            .map_err(|e| ProcLauncherError::Terminate(format!("send failed: {e}")))
+        self.spawner.send(&self.instance, message);
+        Ok(())
     }
 
     /// Forcefully kill a proc.
@@ -824,9 +822,8 @@ impl ProcLauncher for ActorProcLauncher {
             message: pickled.into(),
         };
 
-        self.spawner
-            .send(&self.instance, message)
-            .map_err(|e| ProcLauncherError::Kill(format!("send failed: {e}")))
+        self.spawner.send(&self.instance, message);
+        Ok(())
     }
 }
 

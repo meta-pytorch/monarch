@@ -22,6 +22,7 @@ use crate::Instance;
 use crate::OncePortRef;
 use crate::PortRef;
 use crate::RemoteSpawn;
+use crate::endpoint::Endpoint as _;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableMessageError;
@@ -93,11 +94,15 @@ impl Actor for PingPongActor {
         undelivered: crate::mailbox::Undeliverable<crate::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         match &self.undeliverable_port_ref {
-            Some(port) => port.send(cx, undelivered).unwrap(),
-            None => {
-                let Undeliverable(envelope) = undelivered;
-                anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
-            }
+            Some(port) => port.send(cx, undelivered),
+            None => match undelivered {
+                Undeliverable::Message(envelope) => {
+                    anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+                }
+                Undeliverable::Lost(lost) => {
+                    anyhow::bail!(UndeliverableMessageError::Lost { lost });
+                }
+            },
         }
 
         Ok(())
@@ -120,13 +125,13 @@ impl Handler<PingPongMessage> for PingPongActor {
             anyhow::bail!("PingPong handler encountered an Error");
         }
         if ttl == 0 {
-            done_port.send(cx, true)?;
+            done_port.send(cx, true);
         } else {
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }
             let next_message = PingPongMessage(ttl - 1, cx.bind(), done_port);
-            pong_actor.send(cx, next_message)?;
+            pong_actor.send(cx, next_message);
         }
         Ok(())
     }

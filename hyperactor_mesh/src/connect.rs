@@ -48,6 +48,7 @@ use futures::stream::FusedStream;
 use futures::task::Context;
 use futures::task::Poll;
 use hyperactor::ActorAddr;
+use hyperactor::Endpoint as _;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::context;
@@ -265,10 +266,8 @@ impl<C: context::Actor> AsyncWrite for OwnedWriteHalf<C> {
                 "write after shutdown",
             )));
         }
-        match this.port.send(&*this.caps, Io::Data(buf.into())) {
-            Ok(()) => Poll::Ready(Ok(buf.len())),
-            Err(e) => Poll::Ready(Err(std::io::Error::other(e))),
-        }
+        this.port.send(&*this.caps, Io::Data(buf.into()));
+        Poll::Ready(Ok(buf.len()))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
@@ -280,14 +279,10 @@ impl<C: context::Actor> AsyncWrite for OwnedWriteHalf<C> {
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         // Send EOF on shutdown.
-        match self.port.send(&self.caps, Io::Eof) {
-            Ok(()) => {
-                let mut this = self.project();
-                *this.shutdown = true;
-                Poll::Ready(Ok(()))
-            }
-            Err(e) => Poll::Ready(Err(std::io::Error::other(e))),
-        }
+        self.port.send(&self.caps, Io::Eof);
+        let mut this = self.project();
+        *this.shutdown = true;
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -381,7 +376,7 @@ pub async fn accept<C: context::Actor>(
             id: self_id,
             conn: tx.bind(),
         },
-    )?;
+    );
     Ok(ActorConnection {
         reader: OwnedReadHalf::new(message.id.clone(), rx),
         writer: OwnedWriteHalf::new(message.id, caps, message.conn),
@@ -429,7 +424,7 @@ mod tests {
         let (client, _) = proc.instance("client")?;
         let (connect, completer) = Connect::allocate(client.self_addr().clone(), client);
         let actor = proc.spawn("actor", EchoActor {})?;
-        actor.send(&completer.caps, connect)?;
+        actor.send(&completer.caps, connect);
         let (mut rd, mut wr) = completer.complete().await?.into_split();
         let send = [3u8, 4u8, 5u8, 6u8];
         try_join!(

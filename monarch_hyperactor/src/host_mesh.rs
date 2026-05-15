@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use hyperactor::ActorHandle;
+use hyperactor::Endpoint as _;
 use hyperactor::Instance;
 use hyperactor::Proc;
 use hyperactor::id::Label;
@@ -527,16 +528,14 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
         // We don't need the ack, and this temporary proc doesn't have a mailbox
         // receiver set up anyways. Just ignore the message.
         port.return_undeliverable(false);
-        agent
-            .send(
-                &instance,
-                ShutdownHost {
-                    timeout: Duration::from_secs(10),
-                    max_in_flight: 16,
-                    ack: port,
-                },
-            )
-            .map_err(|e| PyException::new_err(e.to_string()))?;
+        agent.send(
+            &instance,
+            ShutdownHost {
+                timeout: Duration::from_secs(10),
+                max_in_flight: 16,
+                ack: port,
+            },
+        );
 
         // Join the host's mailbox server to flush receive-side acks
         // before the process exits.

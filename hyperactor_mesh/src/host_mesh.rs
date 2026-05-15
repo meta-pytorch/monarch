@@ -47,6 +47,7 @@
 
 use hyperactor::Actor;
 use hyperactor::ActorRef;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
@@ -348,9 +349,7 @@ async fn push_config_to_host(
     // exact bypass HM-3 prohibits.
     request_port.return_undeliverable(false);
 
-    if let Err(send_err) = request_port.send(cx, msg) {
-        return Err(ConfigPushFailure::SendFailed(Box::new(send_err)));
-    }
+    request_port.send(cx, msg);
 
     match tokio::time::timeout(per_host_timeout, reply_receiver.recv()).await {
         Ok(Ok(())) => Ok(()),
@@ -1363,17 +1362,13 @@ impl HostMeshRef {
                     // If this proc dies or some other issue renders the reply undeliverable,
                     // the reply does not need to be returned to the sender.
                     reply_tx.return_undeliverable(false);
-                    mesh_agent
-                        .send(
-                            cx,
-                            resource::GetState {
-                                id: proc_name.clone(),
-                                reply: reply_tx,
-                            },
-                        )
-                        .map_err(|e| {
-                            crate::Error::SendingError(mesh_agent.actor_addr().clone(), e.into())
-                        })?;
+                    mesh_agent.send(
+                        cx,
+                        resource::GetState {
+                            id: proc_name.clone(),
+                            reply: reply_tx,
+                        },
+                    );
                     let state = match tokio::time::timeout(
                         hyperactor_config::global::get(PROC_SPAWN_MAX_IDLE),
                         reply_rx.recv(),
@@ -1508,17 +1503,13 @@ impl HostMeshRef {
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
             let host = HostRef(addr);
-            host.mesh_agent()
-                .send(
-                    cx,
-                    resource::Stop {
-                        id: proc_resource_id.clone(),
-                        reason: reason.clone(),
-                    },
-                )
-                .map_err(|e| {
-                    crate::Error::SendingError(host.mesh_agent().actor_addr().clone(), Box::new(e))
-                })?;
+            host.mesh_agent().send(
+                cx,
+                resource::Stop {
+                    id: proc_resource_id.clone(),
+                    reason: reason.clone(),
+                },
+            );
             host.mesh_agent()
                 .wait_rank_status(cx, proc_resource_id, Status::Stopped, port.bind())
                 .await
@@ -1635,7 +1626,7 @@ impl HostMeshRef {
                 id: proc_resource_id,
                 reply,
             };
-            let send_result = if let Some(expires_after) = keepalive {
+            if let Some(expires_after) = keepalive {
                 let mut keepalive_port = host.mesh_agent().port();
                 keepalive_port.return_undeliverable(false);
                 keepalive_port.send(
@@ -1644,13 +1635,10 @@ impl HostMeshRef {
                         expires_after,
                         get_state,
                     },
-                )
+                );
             } else {
-                send_port.send(cx, get_state)
-            };
-            send_result.map_err(|e| {
-                crate::Error::CallError(host.mesh_agent().actor_addr().clone(), e.into())
-            })?;
+                send_port.send(cx, get_state);
+            }
         }
 
         let mut states = Vec::with_capacity(num_ranks);
