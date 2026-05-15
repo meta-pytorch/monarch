@@ -352,6 +352,7 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -402,13 +403,13 @@ async fn query_introspect(
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
     let mut reply_ref = reply_handle.bind();
     reply_ref.return_undeliverable(false);
-    introspect_port.send(
+    introspect_port.post(
         cx,
         IntrospectMessage::Query {
             view,
             reply: reply_ref,
         },
-    )?;
+    );
     tokio::time::timeout(timeout, reply_rx.recv())
         .await
         .map_err(|_| anyhow::anyhow!("timed out {}", err_ctx))?
@@ -427,13 +428,13 @@ async fn query_child_introspect(
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
     let mut reply_ref = reply_handle.bind();
     reply_ref.return_undeliverable(false);
-    introspect_port.send(
+    introspect_port.post(
         cx,
         IntrospectMessage::QueryChild {
             child_ref,
             reply: reply_ref,
         },
-    )?;
+    );
     tokio::time::timeout(timeout, reply_rx.recv())
         .await
         .map_err(|_| anyhow::anyhow!("timed out {}", err_ctx))?
@@ -1053,14 +1054,23 @@ impl Actor for MeshAdminAgent {
     async fn handle_undeliverable_message(
         &mut self,
         _cx: &Instance<Self>,
-        hyperactor::mailbox::Undeliverable(envelope): hyperactor::mailbox::Undeliverable<
-            hyperactor::mailbox::MessageEnvelope,
-        >,
+        undeliverable: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        tracing::debug!(
-            "admin agent: undeliverable message to {} (port not bound?), ignoring",
-            envelope.dest(),
-        );
+        match undeliverable {
+            hyperactor::mailbox::Undeliverable::Message(envelope) => {
+                tracing::debug!(
+                    "admin agent: undeliverable message to {} (port not bound?), ignoring",
+                    envelope.dest(),
+                );
+            }
+            hyperactor::mailbox::Undeliverable::Lost(lost) => {
+                tracing::debug!(
+                    "admin agent: lost message to {} ({}), ignoring",
+                    lost.dest,
+                    lost.error,
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -1085,9 +1095,7 @@ impl Handler<MeshAdminMessage> for MeshAdminAgent {
                 let resp = MeshAdminAddrResponse {
                     addr: self.admin_host.clone(),
                 };
-                if let Err(e) = reply.send(cx, resp) {
-                    tracing::debug!("GetAdminAddr reply failed (caller gone?): {e}");
-                }
+                reply.post(cx, resp);
             }
         }
         Ok(())
@@ -1120,9 +1128,7 @@ impl Handler<ResolveReferenceMessage> for MeshAdminAgent {
                         .await
                         .map_err(|e| format!("{:#}", e)),
                 );
-                if let Err(e) = reply.send(cx, response) {
-                    tracing::debug!("Resolve reply failed (caller gone?): {e}");
-                }
+                reply.post(cx, response);
             }
         }
         Ok(())
@@ -2079,33 +2085,19 @@ fn parse_proc_reference(raw: &str) -> Result<(String, ProcAddr), ApiError> {
 ///
 /// Returns `Ok(true)` if the actor responds, `Ok(false)` if the
 /// actor is absent or unresponsive (timeout / recv error).
-/// Returns `Err(ApiError)` on bridge-side send failure — a real
-/// infrastructure problem, not an absent actor.
 async fn probe_actor(
     cx: &Instance<()>,
     agent_id: &hyperactor::ActorAddr,
 ) -> Result<bool, ApiError> {
     let port = hyperactor::PortRef::<IntrospectMessage>::attest_handler_port(agent_id);
     let (handle, rx) = open_once_port::<IntrospectResult>(cx);
-    port.send(
+    port.post(
         cx,
         IntrospectMessage::Query {
             view: IntrospectView::Entity,
             reply: handle.bind(),
         },
-    )
-    .map_err(|e| {
-        tracing::warn!(
-            name = "pyspy_probe_send_failed",
-            %agent_id,
-            error = %e,
-        );
-        ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to send probe to {}: {}", agent_id, e),
-            details: None,
-        }
-    })?;
+    );
 
     let timeout = hyperactor_config::global::get(crate::config::MESH_ADMIN_QUERY_CHILD_TIMEOUT);
     match tokio::time::timeout(timeout, rx.recv()).await {
@@ -2161,14 +2153,9 @@ impl ResolvedProcHandler {
             result: reply_ref,
         };
         match self {
-            Self::Host(r) => r.send(cx, msg),
-            Self::Proc(r) => r.send(cx, msg),
-        }
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to send PySpyDump: {}", e),
-            details: None,
-        })?;
+            Self::Host(r) => r.post(cx, msg),
+            Self::Proc(r) => r.post(cx, msg),
+        };
         tokio::time::timeout(timeout, reply_rx.recv())
             .await
             .map_err(|_| ApiError {
@@ -2197,14 +2184,9 @@ impl ResolvedProcHandler {
             result: reply_ref,
         };
         match self {
-            Self::Host(r) => r.send(cx, msg),
-            Self::Proc(r) => r.send(cx, msg),
-        }
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to send PySpyProfile: {}", e),
-            details: None,
-        })?;
+            Self::Host(r) => r.post(cx, msg),
+            Self::Proc(r) => r.post(cx, msg),
+        };
         tokio::time::timeout(timeout, reply_rx.recv())
             .await
             .map_err(|_| ApiError {
@@ -2229,14 +2211,9 @@ impl ResolvedProcHandler {
         reply_ref.return_undeliverable(false);
         let msg = ConfigDump { result: reply_ref };
         match self {
-            Self::Host(r) => r.send(cx, msg),
-            Self::Proc(r) => r.send(cx, msg),
-        }
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to send ConfigDump: {}", e),
-            details: None,
-        })?;
+            Self::Host(r) => r.post(cx, msg),
+            Self::Proc(r) => r.post(cx, msg),
+        };
         tokio::time::timeout(timeout, reply_rx.recv())
             .await
             .map_err(|_| ApiError {
@@ -3517,16 +3494,14 @@ mod tests {
 
         // Spawn a user proc via CreateOrUpdate<ProcSpec>.
         let user_proc_name = ResourceId::unique(Label::new("user-proc").unwrap());
-        host_agent_ref
-            .send(
-                &client,
-                resource::CreateOrUpdate {
-                    id: user_proc_name.clone(),
-                    rank: Rank::new(0),
-                    spec: ProcSpec::default(),
-                },
-            )
-            .unwrap();
+        host_agent_ref.post(
+            &client,
+            resource::CreateOrUpdate {
+                id: user_proc_name.clone(),
+                rank: Rank::new(0),
+                spec: ProcSpec::default(),
+            },
+        );
 
         // Wait for the user proc to boot.
         tokio::time::sleep(Duration::from_secs(2)).await;

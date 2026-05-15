@@ -13,6 +13,7 @@ use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Unbind;
 use hyperactor::port::Port;
@@ -78,7 +79,7 @@ where
         cx: &Context<Self>,
         GenericMessage(message): GenericMessage<T>,
     ) -> anyhow::Result<()> {
-        self.forward_port.send(cx, format!("{message:?}"))?;
+        self.forward_port.post(cx, format!("{message:?}"));
         Ok(())
     }
 }
@@ -89,7 +90,7 @@ struct TestMessage(String);
 #[async_trait]
 impl Handler<TestMessage> for TestActor {
     async fn handle(&mut self, cx: &Context<Self>, msg: TestMessage) -> anyhow::Result<()> {
-        self.forward_port.send(cx, msg.0)?;
+        self.forward_port.post(cx, msg.0);
         Ok(())
     }
 }
@@ -100,7 +101,7 @@ struct MyGeneric<T>(T);
 #[async_trait]
 impl Handler<()> for TestActor {
     async fn handle(&mut self, cx: &Context<Self>, _msg: ()) -> anyhow::Result<()> {
-        self.forward_port.send(cx, "()".to_string())?;
+        self.forward_port.post(cx, "()".to_string());
         Ok(())
     }
 }
@@ -108,7 +109,7 @@ impl Handler<()> for TestActor {
 #[async_trait]
 impl Handler<MyGeneric<()>> for TestActor {
     async fn handle(&mut self, cx: &Context<Self>, _msg: MyGeneric<()>) -> anyhow::Result<()> {
-        self.forward_port.send(cx, "MyGeneric<()>".to_string())?;
+        self.forward_port.post(cx, "MyGeneric<()>".to_string());
         Ok(())
     }
 }
@@ -116,7 +117,7 @@ impl Handler<MyGeneric<()>> for TestActor {
 #[async_trait]
 impl Handler<u64> for TestActor {
     async fn handle(&mut self, cx: &Context<Self>, msg: u64) -> anyhow::Result<()> {
-        self.forward_port.send(cx, format!("u64: {msg}"))?;
+        self.forward_port.post(cx, format!("u64: {msg}"));
         Ok(())
     }
 }
@@ -131,6 +132,7 @@ hyperactor::behavior!(
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::Endpoint as _;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::IndexedErasedUnbound;
     use hyperactor::proc::Proc;
@@ -157,9 +159,7 @@ mod tests {
                 .actor_addr()
                 .port_addr(Port::from(TestMessage::port()));
             let port_ref: reference::PortRef<TestMessage> = reference::PortRef::attest(port_id);
-            port_ref
-                .send(&client, TestMessage("abc".to_string()))
-                .unwrap();
+            port_ref.post(&client, TestMessage("abc".to_string()));
             assert_eq!(rx.recv().await.unwrap(), "abc");
         }
         {
@@ -168,7 +168,7 @@ mod tests {
                 .actor_addr()
                 .port_addr(Port::from(<()>::port()));
             let port_ref: reference::PortRef<()> = reference::PortRef::attest(port_id);
-            port_ref.send(&client, ()).unwrap();
+            port_ref.post(&client, ());
             assert_eq!(rx.recv().await.unwrap(), "()");
         }
         {
@@ -177,7 +177,7 @@ mod tests {
                 .actor_addr()
                 .port_addr(Port::from(<u64>::port()));
             let port_ref: reference::PortRef<u64> = reference::PortRef::attest(port_id);
-            port_ref.send(&client, 987654321).unwrap();
+            port_ref.post(&client, 987654321);
             assert_eq!(rx.recv().await.unwrap(), "u64: 987654321");
         }
         {
@@ -186,7 +186,7 @@ mod tests {
                 .actor_addr()
                 .port_addr(Port::from(MyGeneric::<()>::port()));
             let port_ref: reference::PortRef<MyGeneric<()>> = reference::PortRef::attest(port_id);
-            port_ref.send(&client, MyGeneric(())).unwrap();
+            port_ref.post(&client, MyGeneric(()));
             assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
         }
         {
@@ -200,7 +200,7 @@ mod tests {
                 .port_addr(Port::from(<IndexedErasedUnbound<TestMessage>>::port()));
             let port_ref: reference::PortRef<IndexedErasedUnbound<TestMessage>> =
                 reference::PortRef::attest(port_id);
-            port_ref.send(&client, indexed_msg).unwrap();
+            port_ref.post(&client, indexed_msg);
             assert_eq!(rx.recv().await.unwrap(), "efg");
         }
         {
@@ -213,7 +213,7 @@ mod tests {
                 .port_addr(Port::from(<IndexedErasedUnbound<()>>::port()));
             let port_ref: reference::PortRef<IndexedErasedUnbound<()>> =
                 reference::PortRef::attest(port_id);
-            port_ref.send(&client, indexed_msg).unwrap();
+            port_ref.post(&client, indexed_msg);
             assert_eq!(rx.recv().await.unwrap(), "()");
         }
         {
@@ -226,7 +226,7 @@ mod tests {
                 .port_addr(Port::from(<IndexedErasedUnbound<MyGeneric<()>>>::port()));
             let port_ref: reference::PortRef<IndexedErasedUnbound<MyGeneric<()>>> =
                 reference::PortRef::attest(port_id);
-            port_ref.send(&client, indexed_msg).unwrap();
+            port_ref.post(&client, indexed_msg);
             assert_eq!(rx.recv().await.unwrap(), "MyGeneric<()>");
         }
     }
@@ -238,29 +238,24 @@ mod tests {
         let (tx, mut rx) = client.open_port();
         let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).unwrap();
 
-        actor_handle.send(&client, 123u64).unwrap();
-        actor_handle
-            .send(&client, TestMessage("foo".to_string()))
-            .unwrap();
+        actor_handle.post(&client, 123u64);
+        actor_handle.post(&client, TestMessage("foo".to_string()));
 
         let myref: reference::ActorRef<TestActorAlias> = actor_handle.bind();
-        myref.port().send(&client, MyGeneric(())).unwrap();
-        myref
-            .port()
-            .send(&client, TestMessage("biz".to_string()))
-            .unwrap();
-        myref.port().send(&client, 999u64).unwrap();
-        myref.port().send(&client, ()).unwrap();
+        myref.port().post(&client, MyGeneric(()));
+        myref.port().post(&client, TestMessage("biz".to_string()));
+        myref.port().post(&client, 999u64);
+        myref.port().post(&client, ());
         {
             let erased_msg =
                 ErasedUnbound::try_from_message(TestMessage("bar".to_string())).unwrap();
             let indexed_msg = IndexedErasedUnbound::<TestMessage>::from(erased_msg);
-            myref.port().send(&client, indexed_msg).unwrap();
+            myref.port().post(&client, indexed_msg);
         }
         {
             let erased_msg = ErasedUnbound::try_from_message(()).unwrap();
             let indexed_msg = IndexedErasedUnbound::<MyGeneric<()>>::from(erased_msg);
-            myref.port().send(&client, indexed_msg).unwrap();
+            myref.port().post(&client, indexed_msg);
         }
 
         assert_eq!(rx.recv().await.unwrap(), "u64: 123");
@@ -288,7 +283,7 @@ mod tests {
             .actor_addr()
             .port_addr(Port::from(GenericMessage::<u64>::port()));
         let port_ref: reference::PortRef<GenericMessage<u64>> = reference::PortRef::attest(port_id);
-        port_ref.send(&client, GenericMessage(42)).unwrap();
+        port_ref.post(&client, GenericMessage(42));
         assert_eq!(rx.recv().await.unwrap(), "42");
 
         assert_ne!(

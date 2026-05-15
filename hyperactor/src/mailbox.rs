@@ -26,7 +26,7 @@
 //! let mbox = Mailbox::new(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
 //!
-//! port.send(&client, 123).unwrap();
+//! port.send(&client, 123);
 //! assert_eq!(receiver.recv().await.unwrap(), 123u64);
 //! # })
 //! ```
@@ -46,7 +46,7 @@
 //!
 //! let (port, receiver) = mbox.open_once_port::<u64>();
 //!
-//! port.send(&client, 123u64).unwrap();
+//! port.send(&client, 123u64);
 //! assert_eq!(receiver.recv().await.unwrap(), 123u64);
 //! # })
 //! ```
@@ -141,6 +141,8 @@ use typeuri::Named;
 
 use crate::ActorAddr;
 use crate::Addr;
+use crate::Endpoint;
+use crate::EndpointLocation;
 // for macros
 use crate::OncePortRef;
 use crate::PortAddr;
@@ -169,6 +171,7 @@ use crate::port::Port;
 
 mod undeliverable;
 /// For [`Undeliverable`], a message type for delivery failures.
+pub use undeliverable::LostMessage;
 pub use undeliverable::Undeliverable;
 pub use undeliverable::UndeliverableMessageError;
 pub use undeliverable::custom_monitored_return_handle;
@@ -1073,8 +1076,8 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 .build()
                 .expect("mailbox server proc builder is valid");
             let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
-            while let Ok(Undeliverable(mut envelope)) = undeliverable_rx.recv().await {
-                if let Ok(Undeliverable(e)) =
+            while let Ok(Undeliverable::Message(mut envelope)) = undeliverable_rx.recv().await {
+                if let Ok(Undeliverable::Message(e)) =
                     envelope.deserialized::<Undeliverable<MessageEnvelope>>()
                 {
                     // A non-returnable undeliverable.
@@ -1087,10 +1090,10 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 let sender_id: ActorAddr = envelope.sender().clone();
                 let return_port =
                     PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&sender_id);
-                return_port.send_serialized(
+                return_port.post_serialized(
                     &client,
                     Flattrs::new(),
-                    wirevalue::Any::serialize(&Undeliverable(envelope)).unwrap(),
+                    wirevalue::Any::serialize(&Undeliverable::Message(envelope)).unwrap(),
                 );
             }
         });
@@ -1358,7 +1361,8 @@ impl<C: context::Actor, M: RemoteMessage> Sink<M> for PortSink<C, M> {
     }
 
     fn start_send(self: Pin<&mut Self>, item: M) -> Result<(), Self::Error> {
-        self.port.send(&self.cx, item)
+        crate::Endpoint::post(&self.port, &self.cx, item);
+        Ok(())
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -1991,8 +1995,10 @@ impl<M: Message> PortHandle<M> {
         }
     }
 
-    /// Send a message to this port.
-    pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
+    pub(crate) fn try_send<C>(&self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    where
+        C: context::Actor,
+    {
         let closed = self.inner.mailbox.inner.closed.read().unwrap();
 
         if let Some(status) = &*closed {
@@ -2043,7 +2049,32 @@ impl<M: Message> PortHandle<M> {
             )
         })
     }
+}
 
+impl<M> Endpoint<M> for &PortHandle<M>
+where
+    M: Message,
+{
+    fn endpoint_location(&self) -> EndpointLocation {
+        self.location().into()
+    }
+
+    fn post<C>(self, cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
+        if let Err(err) = self.try_send(cx, message) {
+            cx.instance()
+                .report_lost_message(LostMessage::from_send_error::<M>(
+                    cx.mailbox().actor_addr().clone(),
+                    self.endpoint_location(),
+                    &err,
+                ));
+        }
+    }
+}
+
+impl<M: Message> PortHandle<M> {
     /// A contravariant map: using the provided function to translate
     /// `R`-typed messages to `M`-typed ones, delivered on this port.
     pub fn contramap<R, F>(&self, unmap: F) -> PortHandle<R>
@@ -2134,10 +2165,20 @@ impl<M: Message> OncePortHandle<M> {
     pub fn port_addr(&self) -> &PortAddr {
         &self.port_id
     }
+}
 
-    /// Send a message to this port. The send operation will consume the
-    /// port handle, as the port accepts at most one message.
-    pub fn send(self, _cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
+impl<M> Endpoint<M> for OncePortHandle<M>
+where
+    M: Message,
+{
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Port(self.port_id.clone())
+    }
+
+    fn post<C>(self, _cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
         // TODO: Assign seq to the message if the port is bound to a handler port
         // in the future.
         assert!(
@@ -2148,14 +2189,21 @@ impl<M: Message> OncePortHandle<M> {
         );
 
         let actor_id = self.mailbox.actor_addr().clone();
-        self.sender.send(message).map_err(|_| {
+        let endpoint_location = self.endpoint_location();
+        if let Err(err) = self.sender.send(message).map_err(|_| {
             // Here, the value is returned when the port is
             // closed.  We should consider having a similar
             // API for send_once, though arguably it makes less
             // sense in this context.
             MailboxSenderError::new_unbound::<M>(actor_id, MailboxSenderErrorKind::Closed)
-        })?;
-        Ok(())
+        }) {
+            _cx.instance()
+                .report_lost_message(LostMessage::from_send_error::<M>(
+                    _cx.mailbox().actor_addr().clone(),
+                    endpoint_location,
+                    &err,
+                ));
+        }
     }
 }
 
@@ -3289,6 +3337,7 @@ mod tests {
     use crate::accum::ReducerMode;
     use crate::channel::ChannelTransport;
     use crate::context::Mailbox as MailboxContext;
+    use crate::endpoint::Endpoint as _;
     use crate::proc::Proc;
     use crate::testing::ids::test_actor_id;
     use crate::testing::ids::test_port_id;
@@ -3354,11 +3403,14 @@ mod tests {
 
         mbox.post(envelope, return_handle);
 
-        let Undeliverable(undelivered) =
+        let Undeliverable::Message(undelivered) =
             tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
                 .await
                 .expect("timed out waiting for undeliverable")
-                .expect("return port closed");
+                .expect("return port closed")
+        else {
+            panic!("expected returned message");
+        };
         assert!(
             undelivered
                 .error_msg()
@@ -3376,28 +3428,28 @@ mod tests {
             .open_accum_port(accum::join_semilattice::<accum::Max<i64>>());
 
         for i in -3..4 {
-            port.send(&client, accum::Max(i)).unwrap();
+            port.post(&client, accum::Max(i));
             let received: accum::Max<i64> = receiver.recv().await.unwrap();
             let msg = received.get();
             assert_eq!(msg, &i);
         }
         // Send a smaller or same value. Should still receive the previous max.
         for i in -3..4 {
-            port.send(&client, accum::Max(i)).unwrap();
+            port.post(&client, accum::Max(i));
             assert_eq!(receiver.recv().await.unwrap().get(), &3);
         }
         // send a larger value. Should receive the new max.
-        port.send(&client, accum::Max(4)).unwrap();
+        port.post(&client, accum::Max(4));
         assert_eq!(receiver.recv().await.unwrap().get(), &4);
 
         // Send multiple updates. Should only receive the final change.
         for i in 5..10 {
-            port.send(&client, accum::Max(i)).unwrap();
+            port.post(&client, accum::Max(i));
         }
         assert_eq!(receiver.recv().await.unwrap().get(), &9);
-        port.send(&client, accum::Max(1)).unwrap();
-        port.send(&client, accum::Max(3)).unwrap();
-        port.send(&client, accum::Max(2)).unwrap();
+        port.post(&client, accum::Max(1));
+        port.post(&client, accum::Max(3));
+        port.post(&client, accum::Max(2));
         assert_eq!(receiver.recv().await.unwrap().get(), &9);
     }
 
@@ -3432,7 +3484,7 @@ mod tests {
 
         // let port_id = port.port_addr().clone();
 
-        port.send(&client, 123u64).unwrap();
+        port.post(&client, 123u64);
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
 
         // // The borrow checker won't let us send again on the port
@@ -3481,11 +3533,12 @@ mod tests {
             return_handle.clone(),
         );
 
-        let Undeliverable(envelope) =
-            tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
-                .await
-                .expect("undeliverable mismatch should arrive")
-                .unwrap();
+        let envelope = tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
+            .await
+            .expect("undeliverable mismatch should arrive")
+            .unwrap()
+            .into_message()
+            .expect("expected returned envelope");
         assert!(
             envelope
                 .error_msg()
@@ -3531,11 +3584,12 @@ mod tests {
         mbox.serialize_and_send(&port, 123u64, return_handle.clone())
             .unwrap();
 
-        let Undeliverable(envelope) =
-            tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
-                .await
-                .expect("closed port should produce undeliverable")
-                .unwrap();
+        let envelope = tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
+            .await
+            .expect("closed port should produce undeliverable")
+            .unwrap()
+            .into_message()
+            .expect("expected returned envelope");
         let first_error = envelope.error_msg().expect("expected delivery error");
         assert!(
             first_error.contains("port not bound in mailbox"),
@@ -3548,11 +3602,12 @@ mod tests {
 
         mbox.serialize_and_send(&port, 456u64, return_handle)
             .unwrap();
-        let Undeliverable(envelope) =
-            tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
-                .await
-                .expect("removed port should produce unbound undeliverable")
-                .unwrap();
+        let envelope = tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
+            .await
+            .expect("removed port should produce unbound undeliverable")
+            .unwrap()
+            .into_message()
+            .expect("expected returned envelope");
         let second_error = envelope.error_msg().expect("expected delivery error");
         assert_eq!(
             first_error, second_error,
@@ -3575,11 +3630,12 @@ mod tests {
             return_handle.clone(),
         );
 
-        let Undeliverable(envelope) =
-            tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
-                .await
-                .expect("once-port mismatch should arrive")
-                .unwrap();
+        let envelope = tokio::time::timeout(Duration::from_secs(1), return_receiver.recv())
+            .await
+            .expect("once-port mismatch should arrive")
+            .unwrap()
+            .into_message()
+            .expect("expected returned envelope");
         assert!(
             envelope
                 .error_msg()
@@ -3640,7 +3696,7 @@ mod tests {
         let proc = Proc::configured(test_proc_id("0"), BoxedMailboxSender::new(muxer));
         let (client, _) = proc.instance("client").unwrap();
 
-        port.send(&client, 123u64).unwrap();
+        port.post(&client, 123u64);
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
 
         /*
@@ -3856,10 +3912,10 @@ mod tests {
             Ok(())
         });
 
-        port.send(&client, 10).unwrap();
-        port.send(&client, 5).unwrap();
-        port.send(&client, 1).unwrap();
-        port.send(&client, 0).unwrap();
+        port.post(&client, 10);
+        port.post(&client, 5);
+        port.post(&client, 1);
+        port.post(&client, 0);
 
         assert_eq!(count.load(Ordering::SeqCst), 16);
     }
@@ -3934,7 +3990,7 @@ mod tests {
             wirevalue::Any::serialize(&1u64).unwrap(),
             Flattrs::new(),
         );
-        return_handle.send(&client, Undeliverable(message)).unwrap();
+        return_handle.post(&client, Undeliverable::Message(message));
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -3977,9 +4033,7 @@ mod tests {
         );
         let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
-        return_handle
-            .send(&client, Undeliverable(envelope.clone()))
-            .unwrap();
+        return_handle.post(&client, Undeliverable::Message(envelope.clone()));
         // Check we receive the undelivered message.
         assert!(
             tokio::time::timeout(tokio::time::Duration::from_secs(1), return_receiver.recv())
@@ -3989,7 +4043,7 @@ mod tests {
         // Setup a monitor for the receiver and show that if there are
         // no outstanding return handles it terminates.
         let monitor_handle = tokio::spawn(async move {
-            while let Ok(Undeliverable(mut envelope)) = return_receiver.recv().await {
+            while let Ok(Undeliverable::Message(mut envelope)) = return_receiver.recv().await {
                 envelope.set_error(DeliveryError::BrokenLink(
                     "returned in unit test".to_string(),
                 ));
@@ -4493,7 +4547,13 @@ mod tests {
 
         // Verify the undeliverable message has the correct destination
         let split_port_ref: PortAddr = split_port_id;
-        assert_eq!(undeliverable.0.dest(), &split_port_ref);
+        assert_eq!(
+            undeliverable
+                .into_message()
+                .expect("expected returned envelope")
+                .dest(),
+            &split_port_ref
+        );
 
         // Verify no additional messages arrived at the original receiver
         let msg = receiver.try_recv().unwrap();
@@ -4658,11 +4718,12 @@ mod tests {
         AsyncLoopForwarder.post(envelope, ret_port.clone());
 
         // We expect the undeliverable to come back once TTL expires.
-        let Undeliverable(undelivered) =
-            tokio::time::timeout(Duration::from_secs(5), ret_rx.recv())
-                .await
-                .expect("timed out waiting for undeliverable")
-                .expect("channel closed");
+        let undelivered = tokio::time::timeout(Duration::from_secs(5), ret_rx.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("channel closed")
+            .into_message()
+            .expect("expected returned envelope");
 
         // Sanity: round-trip payload still deserializes.
         let got: u64 = undelivered.deserialized().expect("deserialize");
@@ -4720,8 +4781,7 @@ mod tests {
 
         handle
             .contramap(|m| (1, m))
-            .send(&client, "hello".to_string())
-            .unwrap();
+            .post(&client, "hello".to_string());
         assert_eq!(rx.recv().await.unwrap(), (1, "hello".to_string()));
     }
 
@@ -4791,7 +4851,11 @@ mod tests {
             .expect("timed out waiting for undeliverable")
             .expect("return port closed");
 
-        let err = undeliverable.0.error_msg().expect("expected error");
+        let err = undeliverable
+            .into_message()
+            .expect("expected returned envelope")
+            .error_msg()
+            .expect("expected error");
         assert!(
             err.contains(&format!("owner {} is stopped", actor_id)),
             "error should indicate actor stopped: {}",
@@ -4832,7 +4896,11 @@ mod tests {
             .expect("timed out waiting for undeliverable")
             .expect("return port closed");
 
-        let err = undeliverable.0.error_msg().expect("expected error");
+        let err = undeliverable
+            .into_message()
+            .expect("expected returned envelope")
+            .error_msg()
+            .expect("expected error");
         assert!(
             err.contains(&format!("owner {} failed", actor_id)),
             "error should indicate actor failed: {}",
@@ -4852,10 +4920,7 @@ mod tests {
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
 
-        let result = port_handle.send(&client, 42u64);
-
-        assert!(result.is_err(), "send should fail when actor is stopped");
-        let err = result.unwrap_err();
+        let err = port_handle.try_send(&client, 42u64).unwrap_err();
         assert_matches!(
             err.kind(),
             MailboxSenderErrorKind::Mailbox(mailbox_err)
@@ -4879,10 +4944,7 @@ mod tests {
             "test failure".to_string(),
         )));
 
-        let result = port_handle.send(&client, 42u64);
-
-        assert!(result.is_err(), "send should fail when actor is failed");
-        let err = result.unwrap_err();
+        let err = port_handle.try_send(&client, 42u64).unwrap_err();
         assert_matches!(
             err.kind(),
             MailboxSenderErrorKind::Mailbox(mailbox_err)
@@ -4903,7 +4965,7 @@ mod tests {
         assert!(port_ref.reducer_spec().is_some());
 
         // Send a single value via the bound port
-        port_ref.send(&client, 42).unwrap();
+        port_ref.post(&client, 42);
 
         // Should receive the value
         let result = receiver.recv().await.unwrap();

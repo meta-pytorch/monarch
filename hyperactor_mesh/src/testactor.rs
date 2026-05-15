@@ -23,6 +23,7 @@ use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RefClient;
@@ -127,7 +128,7 @@ impl Handler<GetActorId> for TestActor {
         GetActorId(reply): GetActorId,
     ) -> Result<(), anyhow::Error> {
         let seq_info = cx.headers().get(SEQ_INFO);
-        reply.send(cx, (cx.self_addr().clone(), seq_info))?;
+        reply.post(cx, (cx.self_addr().clone(), seq_info));
         Ok(())
     }
 }
@@ -220,7 +221,7 @@ impl Handler<Forward> for TestActor {
         visited.push(this);
         let next = to_visit.front().cloned();
         anyhow::ensure!(next.is_some(), "unexpected forward chain termination");
-        next.unwrap().send(cx, Forward { to_visit, visited })?;
+        next.unwrap().post(cx, Forward { to_visit, visited });
         Ok(())
     }
 }
@@ -250,7 +251,7 @@ impl Handler<GetCastInfo> for TestActor {
         cx: &Context<Self>,
         GetCastInfo { cast_info }: GetCastInfo,
     ) -> Result<(), anyhow::Error> {
-        cast_info.send(cx, (cx.cast_point(), cx.bind(), cx.sender().clone()))?;
+        cast_info.post(cx, (cx.cast_point(), cx.bind(), cx.sender().clone()));
         Ok(())
     }
 }
@@ -306,7 +307,7 @@ impl Handler<GetConfigAttrs> for TestActor {
             hyperactor_config::global::attrs(),
             bincode::config::legacy(),
         )?;
-        reply.send(cx, attrs)?;
+        reply.post(cx, attrs);
         Ok(())
     }
 }
@@ -395,7 +396,7 @@ impl Handler<NextSupervisionFailure> for WrapperActor {
         let mesh = if let Some(mesh) = self.mesh.as_ref() {
             mesh.deref()
         } else {
-            msg.0.send(cx, None)?;
+            msg.0.post(cx, None);
             return Ok(());
         };
         let failure = match tokio::time::timeout(
@@ -410,7 +411,7 @@ impl Handler<NextSupervisionFailure> for WrapperActor {
             // If we timeout, send back None.
             Err(_) => None,
         };
-        msg.0.send(cx, failure)?;
+        msg.0.post(cx, failure);
         Ok(())
     }
 }
@@ -423,7 +424,7 @@ impl Handler<MeshFailure> for WrapperActor {
         tracing::info!("got supervision event from child: {}", msg);
         // Send to a port so the client can view the messages.
         // Ignore the error if there is one.
-        let _ = self.supervisor.send(cx, msg.clone());
+        let _ = self.supervisor.post(cx, msg.clone());
         Ok(())
     }
 }

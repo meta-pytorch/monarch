@@ -22,6 +22,7 @@ use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
 use hyperactor_config::Flattrs;
@@ -92,7 +93,7 @@ impl Handler<NextNumber> for SieveActor {
         }
         match &self.next {
             Some(next) => {
-                next.send(cx, msg)?;
+                next.post(cx, msg);
             }
             None => {
                 tracing::info!(
@@ -100,7 +101,7 @@ impl Handler<NextNumber> for SieveActor {
                     discovered = msg.number,
                     "new prime discovered, spawning child"
                 );
-                msg.prime_collector.send(cx, msg.number)?;
+                msg.prime_collector.post(cx, msg.number);
 
                 self.next = Some(
                     SieveActor::new(SieveParams { prime: msg.number }, Flattrs::default())
@@ -206,14 +207,13 @@ async fn main() -> Result<ExitCode> {
 
                 _ = tick.tick() => {
                     sieve_head
-                        .send(
+                        .post(
                             instance,
                             NextNumber {
                                 number: candidate,
                                 prime_collector: prime_collector_ref.clone(),
                             },
-                        )
-                        .unwrap();
+                        );
                     candidate += 1;
                 }
             }
