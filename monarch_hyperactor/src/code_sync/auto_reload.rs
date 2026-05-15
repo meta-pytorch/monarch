@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
 use hyperactor_config::Flattrs;
@@ -111,7 +112,7 @@ impl Handler<AutoReloadMessage> for AutoReloadActor {
             anyhow::Ok(())
         }
         .await;
-        result.send(cx, res.map_err(|e| format!("{:#?}", e)))?;
+        result.send(cx, res.map_err(|e| format!("{:#?}", e)));
         Ok(())
     }
 }

@@ -27,6 +27,7 @@ use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Addr;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -35,6 +36,7 @@ use hyperactor::PortRef;
 use hyperactor::Proc;
 use hyperactor::ProcAddr;
 use hyperactor::RefClient;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor_config::Flattrs;
@@ -831,18 +833,7 @@ impl Handler<resource::GetRankStatus> for HostAgent {
             StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                 .expect("valid single-run overlay")
         };
-        let result = get_rank_status.reply.send(cx, overlay);
-        // Ignore errors, because returning Err from here would cause the HostAgent
-        // to be stopped, which would take down the entire host. This only means
-        // some actor that requested the rank status failed to receive it.
-        if let Err(e) = result {
-            tracing::warn!(
-                actor = %cx.self_addr(),
-                "failed to send GetRankStatus reply to {} due to error: {}",
-                get_rank_status.reply.port_addr().actor_addr(),
-                e
-            );
-        }
+        get_rank_status.reply.send(cx, overlay);
         Ok(())
     }
 }
@@ -1072,7 +1063,7 @@ impl Handler<DrainHost> for HostAgent {
             // Selective drain: stop only procs belonging to the named mesh.
             self.drain_by_mesh_name(cx, msg.timeout, msg.host_mesh_id.as_ref())
                 .await;
-            msg.ack.send(cx, ())?;
+            msg.ack.send(cx, ());
             return Ok(());
         }
 
@@ -1082,12 +1073,12 @@ impl Handler<DrainHost> for HostAgent {
             other @ (HostAgentState::Detached(_) | HostAgentState::Draining) => {
                 // Nothing to drain — ack immediately.
                 self.state = other;
-                msg.ack.send(cx, ())?;
+                msg.ack.send(cx, ());
                 return Ok(());
             }
             HostAgentState::Shutdown => {
                 self.state = HostAgentState::Shutdown;
-                msg.ack.send(cx, ())?;
+                msg.ack.send(cx, ());
                 return Ok(());
             }
         };
@@ -1122,7 +1113,7 @@ impl Handler<DrainComplete> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: DrainComplete) -> anyhow::Result<()> {
         self.state = HostAgentState::Detached(msg.host);
         self.created.clear();
-        msg.ack.send(cx, ())?;
+        msg.ack.send(cx, ());
         Ok(())
     }
 }
@@ -1142,7 +1133,7 @@ impl Handler<ShutdownHost> for HostAgent {
 
         // Ack after children are terminated so the caller does not
         // tear down the host's networking prematurely.
-        msg.ack.send(cx, ())?;
+        msg.ack.send(cx, ());
 
         // Drop the host and signal the bootstrap loop to drain the
         // mailbox and exit.
@@ -1244,18 +1235,7 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
             },
         };
 
-        let result = get_state.reply.send(cx, state);
-        // Ignore errors, because returning Err from here would cause the HostAgent
-        // to be stopped, which would take down the entire host. This only means
-        // some actor that requested the state of a proc failed to receive it.
-        if let Err(e) = result {
-            tracing::warn!(
-                actor = %cx.self_addr(),
-                "failed to send GetState reply to {} due to error: {}",
-                get_state.reply.port_addr().actor_addr(),
-                e
-            );
-        }
+        get_state.reply.send(cx, state);
         Ok(())
     }
 }
@@ -1319,8 +1299,7 @@ impl Handler<crate::proc_agent::SelfCheck> for HostAgent {
 #[async_trait]
 impl Handler<resource::List> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, list: resource::List) -> anyhow::Result<()> {
-        list.reply
-            .send(cx, self.created.keys().cloned().collect())?;
+        list.reply.send(cx, self.created.keys().cloned().collect());
         Ok(())
     }
 }
@@ -1400,17 +1379,9 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
 
         let mut headers = Flattrs::new();
         headers.set(crate::proc_agent::STREAM_STATE_SUBSCRIBER, true);
-        if let Err(e) = stream_state
+        stream_state
             .subscriber
-            .send_with_headers(cx, headers, state)
-        {
-            tracing::warn!(
-                actor = %cx.self_addr(),
-                "failed to send initial StreamState to {}: {}",
-                stream_state.subscriber.port_addr().actor_id(),
-                e,
-            );
-        }
+            .send_with_headers(cx, headers, state);
         Ok(())
     }
 }
@@ -1445,7 +1416,7 @@ impl Handler<SetClientConfig> for HostAgent {
             msg.attrs,
         );
         tracing::debug!("installed client config override on host agent");
-        msg.done.send(cx, ())?;
+        msg.done.send(cx, ());
         Ok(())
     }
 }
@@ -1480,7 +1451,7 @@ impl Handler<GetLocalProc> for HostAgent {
 
         match agent {
             Err(e) => anyhow::bail!("error booting local proc: {}", e),
-            Ok(agent) => proc_mesh_agent.send(cx, agent.clone())?,
+            Ok(agent) => proc_mesh_agent.send(cx, agent.clone()),
         };
 
         Ok(())
@@ -1517,11 +1488,7 @@ impl Handler<ConfigDump> for HostAgent {
         message: ConfigDump,
     ) -> Result<(), anyhow::Error> {
         let entries = hyperactor_config::global::config_entries();
-        // Reply is best-effort: the caller may have timed out and dropped
-        // the once-port.  That must not crash this actor.
-        if let Err(e) = message.result.send(cx, ConfigDumpResult { entries }) {
-            tracing::warn!("HostAgent: ConfigDump reply undeliverable (caller timed out): {e}",);
-        }
+        message.result.send(cx, ConfigDumpResult { entries });
         Ok(())
     }
 }
@@ -2008,8 +1975,7 @@ mod tests {
                     child_ref: Addr::Proc(system_proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
-            )
-            .unwrap();
+            );
             let payload = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx.recv())
                 .await
                 .expect("QueryChild timed out")

@@ -25,6 +25,7 @@ use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -173,32 +174,32 @@ impl _Controller {
             tracebacks,
             response_port,
         };
-        self.controller_handle
-            .blocking_lock()
-            .send(instance.deref(), msg)
-            .map_err(to_py_error)
+        hyperactor::Endpoint::send(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            msg,
+        );
+        Ok(())
     }
 
     fn _drop_refs(&mut self, instance: &PyInstance, refs: Vec<Ref>) -> PyResult<()> {
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::DropRefs { refs },
-            )
-            .map_err(to_py_error)
+        hyperactor::Endpoint::send(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::DropRefs { refs },
+        );
+        Ok(())
     }
 
     fn _sync_at_exit(&mut self, instance: &PyInstance, port: PyPortId) -> PyResult<()> {
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::SyncAtExit {
-                    port: reference::PortRef::attest(reference::PortAddr::from(port)),
-                },
-            )
-            .map_err(to_py_error)
+        hyperactor::Endpoint::send(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::SyncAtExit {
+                port: reference::PortRef::attest(reference::PortAddr::from(port)),
+            },
+        );
+        Ok(())
     }
 
     fn _send<'py>(
@@ -214,27 +215,24 @@ impl _Controller {
             slices.iter().map(|x| x.into()).collect::<Vec<Slice>>()
         };
         let message: WorkerMessage = convert(message)?;
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::Send { slices, message },
-            )
-            .map_err(to_py_error)
+        hyperactor::Endpoint::send(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::Send { slices, message },
+        );
+        Ok(())
     }
 
     fn _drain_and_stop(&mut self, py: Python<'_>, instance: &PyInstance) -> PyResult<()> {
         let (stop_worker_port, stop_worker_receiver) = instance.open_once_port();
 
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::StopWorkers {
-                    response_port: stop_worker_port,
-                },
-            )
-            .map_err(to_py_error)?;
+        hyperactor::Endpoint::send(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::StopWorkers {
+                response_port: stop_worker_port,
+            },
+        );
         signal_safe_block_on(py, async move { stop_worker_receiver.recv().await })?
             .map_err(to_py_error)?
             .map_err(PyRuntimeError::new_err)?;
@@ -372,10 +370,10 @@ impl Invocation {
                                     .expect("complete runs should not overlap");
                             }
                         }
-                        port.send(sender, overlay.into())?;
+                        port.send(sender, overlay.into());
                     } else {
                         for result in results {
-                            port.send(sender, result)?;
+                            port.send(sender, result);
                         }
                     }
                 }
@@ -425,13 +423,13 @@ impl Invocation {
                                             )
                                             .expect("exception runs should not overlap");
                                     }
-                                    port.send(sender, overlay.into())?;
+                                    port.send(sender, overlay.into());
                                 } else {
                                     for rank in ranks.iter() {
                                         port.send(
                                             sender,
                                             exception.as_ref().clone().into_rank(rank),
-                                        )?;
+                                        );
                                     }
                                 }
                             }
@@ -671,7 +669,7 @@ impl History {
                         )
                     }
                 };
-                port.send(sender, result)?;
+                port.send(sender, result);
                 self.exit_port = None;
             }
         }
@@ -809,9 +807,9 @@ impl MeshControllerActor {
                             DebuggerMessage::Action {
                                 action: DebuggerAction::Write { bytes },
                             },
-                        )
+                        );
                     })
-                    .await?;
+                    .await;
                 }
                 DebuggerAction::Write { bytes } => {
                     monarch_hyperactor::runtime::monarch_with_gil(
@@ -833,16 +831,13 @@ impl MeshControllerActor {
             }
         }
         if self.debugger_active.is_none() {
-            self.debugger_active = self.debugger_paused.pop_front().and_then(|pdb_actor| {
-                pdb_actor
-                    .send(
-                        this,
-                        DebuggerMessage::Action {
-                            action: DebuggerAction::Attach(),
-                        },
-                    )
-                    .map(|_| pdb_actor)
-                    .ok()
+            self.debugger_active = self.debugger_paused.pop_front().inspect(|pdb_actor| {
+                pdb_actor.send(
+                    this,
+                    DebuggerMessage::Action {
+                        action: DebuggerAction::Attach(),
+                    },
+                );
             });
         }
         Ok(())
@@ -988,9 +983,9 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
                     .stop(this, "client requested stop".to_string())
                     .await;
                 if worker_stop_result.is_ok() && broker_stop_result.is_ok() {
-                    response_port.send(this, Ok(()))?;
+                    response_port.send(this, Ok(()));
                 } else {
-                    response_port.send(this, Err(format!("stopping mesh workers failed: tensor worker result: {:?}, broker result: {:?}", worker_stop_result, broker_stop_result)))?;
+                    response_port.send(this, Err(format!("stopping mesh workers failed: tensor worker result: {:?}, broker result: {:?}", worker_stop_result, broker_stop_result)));
                 }
             }
         }

@@ -27,6 +27,7 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -321,14 +322,12 @@ impl TcpManagerActor {
                     let len = std::cmp::min(chunk_size, size - offset);
                     let mut buf = BytesMut::zeroed(len);
                     if let Err(e) = mem.read_at(offset, &mut buf) {
-                        error_port
-                            .send(
-                                &instance,
-                                TransferError {
-                                    message: format!("read_at failed at offset {offset}: {e}"),
-                                },
-                            )
-                            .unwrap();
+                        error_port.send(
+                            &instance,
+                            TransferError {
+                                message: format!("read_at failed at offset {offset}: {e}"),
+                            },
+                        );
                         return;
                     }
 
@@ -339,16 +338,12 @@ impl TcpManagerActor {
                     };
 
                     if let Err(e) = conn.send(chunk).await {
-                        error_port
-                            .send(
-                                &instance,
-                                TransferError {
-                                    message: format!(
-                                        "failed to send chunk at offset {offset}: {e}"
-                                    ),
-                                },
-                            )
-                            .unwrap();
+                        error_port.send(
+                            &instance,
+                            TransferError {
+                                message: format!("failed to send chunk at offset {offset}: {e}"),
+                            },
+                        );
                         return;
                     }
                 }
@@ -423,8 +418,7 @@ impl Actor for TcpManagerActor {
                                                 "parallel channel receive error: {e}"
                                             ),
                                         },
-                                    )
-                                    .unwrap();
+                                    );
                                 break;
                             }
                         },
@@ -452,15 +446,13 @@ impl Actor for TcpManagerActor {
                         let transfer_id = chunk.transfer_id;
                         drop(entry);
                         let (_, state) = transfers.remove(&transfer_id).unwrap();
-                        result_port
-                            .send(
-                                &instance,
-                                SendTransferResult {
-                                    done: state.done,
-                                    result: Err(e.to_string()),
-                                },
-                            )
-                            .unwrap();
+                        result_port.send(
+                            &instance,
+                            SendTransferResult {
+                                done: state.done,
+                                result: Err(e.to_string()),
+                            },
+                        );
                         continue;
                     }
 
@@ -469,15 +461,13 @@ impl Actor for TcpManagerActor {
                         let transfer_id = chunk.transfer_id;
                         drop(entry);
                         let (_, state) = transfers.remove(&transfer_id).unwrap();
-                        result_port
-                            .send(
-                                &instance,
-                                SendTransferResult {
-                                    done: state.done,
-                                    result: Ok(()),
-                                },
-                            )
-                            .unwrap();
+                        result_port.send(
+                            &instance,
+                            SendTransferResult {
+                                done: state.done,
+                                result: Ok(()),
+                            },
+                        );
                     }
                 }
                 rx.join().await;
@@ -599,7 +589,7 @@ impl Handler<RegisterTransferLocal> for TcpManagerActor {
     ) -> Result<(), anyhow::Error> {
         let transfer_id =
             self.register_transfer(message.local_memory, message.total_chunks, message.done);
-        message.reply.send(cx, transfer_id)?;
+        message.reply.send(cx, transfer_id);
         Ok(())
     }
 }
@@ -628,7 +618,8 @@ impl Handler<SendTransferResult> for TcpManagerActor {
         cx: &Context<Self>,
         message: SendTransferResult,
     ) -> Result<(), anyhow::Error> {
-        Ok(message.done.send(cx, message.result)?)
+        message.done.send(cx, message.result);
+        Ok(())
     }
 }
 
@@ -707,7 +698,7 @@ impl TcpBackend {
                 chunk_size,
                 dest_addr,
             },
-        )?;
+        );
 
         let remaining = deadline.saturating_duration_since(Instant::now());
         let result = tokio_timeout(remaining, done_rx.recv())
@@ -742,7 +733,7 @@ impl TcpBackend {
                 done: done_ref,
                 reply: id_handle,
             },
-        )?;
+        );
 
         let transfer_id = id_rx
             .recv()

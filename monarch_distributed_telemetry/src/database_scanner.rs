@@ -20,6 +20,7 @@ use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use hyperactor as reference;
+use hyperactor::Endpoint as _;
 use hyperactor::Instance;
 use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
@@ -763,14 +764,7 @@ impl DatabaseScanner {
                         let msg = QueryResponse {
                             data: Part::from(data),
                         };
-                        if let Err(e) = dest_ref.send(instance, msg) {
-                            tracing::debug!(
-                                "Scanner {}: send error for batch {}: {:?}",
-                                rank,
-                                count,
-                                e
-                            );
-                        }
+                        dest_ref.send(instance, msg);
                         count += 1;
                     }
                 }

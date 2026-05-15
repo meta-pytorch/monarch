@@ -8,6 +8,7 @@
 
 use anyhow::Result;
 use anyhow::anyhow;
+use hyperactor::Endpoint as _;
 use hyperactor::context::Mailbox;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::context;
@@ -111,7 +112,7 @@ CONSTANT = "modified_constant"
         AutoReloadMessage {
             result: result_tx.bind(),
         },
-    )?;
+    );
 
     // Wait for reload to complete
     let reload_result = result_rx.recv().await?;
