@@ -13,7 +13,7 @@
 //! methods for establishing connections and performing RDMA operations.
 
 /// Maximum size for a single RDMA operation in bytes (1 GiB).
-const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
+pub(super) const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
 
 use std::io::Error;
 use std::result::Result;
@@ -73,6 +73,16 @@ impl PollCompletionError {
     /// error state due to a different work request's failure.
     pub fn is_wr_flush_err(&self) -> bool {
         self.status == Some(rdmaxcel_sys::ibv_wc_status::IBV_WC_WR_FLUSH_ERR)
+    }
+
+    /// Test-only constructor
+    #[cfg(test)]
+    pub(super) fn for_test(message: &str) -> Self {
+        Self {
+            message: message.to_string(),
+            status: None,
+            vendor_err: None,
+        }
     }
 }
 
