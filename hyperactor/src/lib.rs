@@ -66,6 +66,7 @@ pub mod addr;
 pub mod channel;
 pub mod config;
 pub mod context;
+pub mod endpoint;
 /// Gateway management for proc connectivity.
 pub mod gateway;
 pub mod id;
@@ -121,6 +122,8 @@ pub use addr::AddrParseError;
 pub use addr::Location;
 pub use addr::PortAddr;
 pub use addr::ProcAddr;
+pub use endpoint::Endpoint;
+pub use endpoint::RemoteEndpoint;
 pub use gateway::Gateway;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
@@ -216,4 +219,10 @@ mod private {
     impl<A: crate::Actor> Sealed for &crate::proc::Context<'_, A> {}
     impl Sealed for crate::mailbox::Mailbox {}
     impl Sealed for &crate::mailbox::Mailbox {}
+    impl<A: crate::Actor> Sealed for &crate::actor::ActorHandle<A> {}
+    impl<M: crate::Message> Sealed for &crate::mailbox::PortHandle<M> {}
+    impl<M: crate::Message> Sealed for crate::mailbox::OncePortHandle<M> {}
+    impl<A: crate::actor::Referable> Sealed for &crate::ref_::ActorRef<A> {}
+    impl<M: crate::RemoteMessage> Sealed for &crate::ref_::PortRef<M> {}
+    impl<M: crate::RemoteMessage> Sealed for crate::ref_::OncePortRef<M> {}
 }
