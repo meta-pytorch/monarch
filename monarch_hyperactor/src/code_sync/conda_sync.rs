@@ -88,7 +88,7 @@ impl Handler<CondaSyncMessage> for CondaSyncActor {
         let res = async {
             let workspace = workspace.resolve()?;
             let (connect_msg, completer) = Connect::allocate(cx.self_addr().clone(), cx);
-            connect.send(cx, connect_msg)?;
+            connect.send(cx, connect_msg);
             let (mut read, mut write) = completer.complete().await?.into_split();
             let path_prefix_replacements = path_prefix_replacements
                 .into_iter()
@@ -110,7 +110,7 @@ impl Handler<CondaSyncMessage> for CondaSyncActor {
             })
         }
         .await;
-        result.send(cx, res.map_err(|e| format!("{:#?}", e)))?;
+        result.send(cx, res.map_err(|e| format!("{:#?}", e)));
         Ok(())
     }
 }
