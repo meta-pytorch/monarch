@@ -25,11 +25,13 @@ use hyperactor::Addr;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Data;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortAddr;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::Unbind;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
@@ -225,13 +227,7 @@ impl ActorInstanceState {
         for subscriber in &self.subscribers {
             let mut headers = Flattrs::new();
             headers.set(STREAM_STATE_SUBSCRIBER, true);
-            if let Err(e) = subscriber.send_with_headers(cx, headers, state.clone()) {
-                tracing::warn!(
-                    "failed to send state update to subscriber {}: {}",
-                    subscriber.port_addr(),
-                    e,
-                );
-            }
+            subscriber.post_with_headers(cx, headers, state.clone());
         }
 
         // One-shot waiters (predicated).
@@ -242,7 +238,7 @@ impl ActorInstanceState {
                 let overlay =
                     crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status.clone())])
                         .expect("valid single-run overlay");
-                let _ = reply.send(cx, overlay);
+                let _ = reply.post(cx, overlay);
                 false
             } else {
                 true
@@ -673,8 +669,11 @@ impl Actor for ProcAgent {
         cx: &Instance<Self>,
         envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        if let Some(true) = envelope.0.headers().get(STREAM_STATE_SUBSCRIBER) {
-            let dest_port_id: PortAddr = envelope.0.dest().clone();
+        let Some(returned) = envelope.as_message() else {
+            return handle_undeliverable_message(cx, envelope);
+        };
+        if let Some(true) = returned.headers().get(STREAM_STATE_SUBSCRIBER) {
+            let dest_port_id: PortAddr = returned.dest().clone();
             let port = PortRef::<resource::State<ActorState>>::attest(dest_port_id);
             // Remove this subscriber from whichever actor instance holds it.
             for instance in self.actor_states.values_mut() {
@@ -831,7 +830,7 @@ impl Handler<ConfigDump> for ProcAgent {
         let entries = hyperactor_config::global::config_entries();
         // Reply is best-effort: the caller may have timed out and dropped
         // the once-port.  That must not crash this actor.
-        let _ = message.result.send(cx, ConfigDumpResult { entries });
+        let _ = message.result.post(cx, ConfigDumpResult { entries });
         Ok(())
     }
 }
@@ -1012,18 +1011,7 @@ impl Handler<resource::GetRankStatus> for ProcAgent {
             StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                 .expect("valid single-run overlay")
         };
-        let result = get_rank_status.reply.send(cx, overlay);
-        // Ignore errors, because returning Err from here would cause the ProcAgent
-        // to be stopped, which would prevent querying and spawning other actors.
-        // This only means some actor that requested the state of an actor failed to receive it.
-        if let Err(e) = result {
-            tracing::warn!(
-                actor = %cx.self_addr(),
-                "failed to send GetRankStatus reply to {} due to error: {}",
-                get_rank_status.reply.port_addr().actor_addr(),
-                e
-            );
-        }
+        get_rank_status.reply.post(cx, overlay);
         Ok(())
     }
 }
@@ -1051,7 +1039,7 @@ impl Handler<resource::WaitRankStatus> for ProcAgent {
                 StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                     .expect("valid single-run overlay")
             };
-            let _ = msg.reply.send(cx, overlay);
+            let _ = msg.reply.post(cx, overlay);
             return Ok(());
         }
 
@@ -1082,15 +1070,7 @@ impl Handler<resource::GetState<ActorState>> for ProcAgent {
             },
         };
 
-        let result = get_state.reply.send(cx, state);
-        if let Err(e) = result {
-            tracing::warn!(
-                actor = %cx.self_addr(),
-                "failed to send GetState reply to {} due to error: {}",
-                get_state.reply.port_addr().actor_addr(),
-                e
-            );
-        }
+        get_state.reply.post(cx, state);
         Ok(())
     }
 }
@@ -1120,17 +1100,9 @@ impl Handler<resource::StreamState<ActorState>> for ProcAgent {
         // Send the current state immediately.
         let mut headers = Flattrs::new();
         headers.set(STREAM_STATE_SUBSCRIBER, true);
-        if let Err(e) = stream_state
+        stream_state
             .subscriber
-            .send_with_headers(cx, headers, state)
-        {
-            tracing::warn!(
-                actor = %cx.self_addr(),
-                "failed to send initial StreamState to {}: {}",
-                stream_state.subscriber.port_addr().actor_addr(),
-                e,
-            );
-        }
+            .post_with_headers(cx, headers, state);
         Ok(())
     }
 }
@@ -1177,7 +1149,7 @@ impl Handler<NewClientInstance> for ProcAgent {
         NewClientInstance { client_instance }: NewClientInstance,
     ) -> anyhow::Result<()> {
         let (instance, _handle) = self.proc.instance("client")?;
-        client_instance.send(cx, instance)?;
+        client_instance.post(cx, instance);
         Ok(())
     }
 }
@@ -1197,7 +1169,7 @@ impl Handler<GetProc> for ProcAgent {
         cx: &Context<Self>,
         GetProc { proc }: GetProc,
     ) -> anyhow::Result<()> {
-        proc.send(cx, self.proc.clone())?;
+        proc.post(cx, self.proc.clone());
         Ok(())
     }
 }
@@ -1308,14 +1280,13 @@ mod tests {
         // timeout so a misrouted reply fails fast rather than hanging.
         let query = |client: &hyperactor::Instance<()>| {
             let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-            port.send(
+            port.post(
                 client,
                 IntrospectMessage::QueryChild {
                     child_ref: Addr::Proc(proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
-            )
-            .unwrap();
+            );
             reply_rx
         };
         let recv = |rx: hyperactor::mailbox::OncePortReceiver<IntrospectResult>| async move {
@@ -1421,18 +1392,13 @@ mod tests {
         let query_task = tokio::spawn(async move {
             loop {
                 let (reply_port, reply_rx) = query_client.open_once_port::<IntrospectResult>();
-                if query_port
-                    .send(
-                        &query_client,
-                        IntrospectMessage::QueryChild {
-                            child_ref: Addr::Proc(query_proc_id.clone()),
-                            reply: reply_port.bind(),
-                        },
-                    )
-                    .is_err()
-                {
-                    break;
-                }
+                query_port.post(
+                    &query_client,
+                    IntrospectMessage::QueryChild {
+                        child_ref: Addr::Proc(query_proc_id.clone()),
+                        reply: reply_port.bind(),
+                    },
+                );
                 match tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx.recv()).await
                 {
                     Ok(Ok(_)) => {
@@ -1483,14 +1449,13 @@ mod tests {
 
         // Final consistency check: QueryChild should still work.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        port.send(
+        port.post(
             &client,
             IntrospectMessage::QueryChild {
                 child_ref: Addr::Proc(proc.proc_addr().clone()),
                 reply: reply_port.bind(),
             },
-        )
-        .unwrap();
+        );
         let final_payload =
             tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx.recv())
                 .await
@@ -1737,14 +1702,13 @@ mod tests {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-            port.send(
+            port.post(
                 &client,
                 IntrospectMessage::QueryChild {
                     child_ref: Addr::Proc(proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
-            )
-            .unwrap();
+            );
             let payload = tokio::time::timeout(std::time::Duration::from_secs(3), reply_rx.recv())
                 .await
                 .expect("QueryChild timed out")

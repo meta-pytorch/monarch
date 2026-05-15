@@ -13,6 +13,7 @@ use hyperactor::Actor;
 use hyperactor::ActorAddr;
 use hyperactor::ActorRef;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
@@ -80,7 +81,7 @@ impl Actor for Parent {
             this.port::<token::Joined<ActorRef<WorkerLike>>>().bind(),
             TokenOptions::default(),
         )?;
-        self.token_out.send(this, token.to_string())?;
+        self.token_out.post(this, token.to_string());
         Ok(())
     }
 
@@ -89,7 +90,7 @@ impl Actor for Parent {
         this: &Instance<Self>,
         event: &ActorSupervisionEvent,
     ) -> anyhow::Result<bool> {
-        self.events.send(this, event.clone())?;
+        self.events.post(this, event.clone());
         this.exit("remote supervision event observed")?;
         Ok(true)
     }
@@ -102,7 +103,7 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
         cx: &Context<Self>,
         message: token::Joined<ActorRef<WorkerLike>>,
     ) -> anyhow::Result<()> {
-        self.linked.send(cx, message.peer.actor_addr().clone())?;
+        self.linked.post(cx, message.peer.actor_addr().clone());
         cx.spawn(Supervisor::new(
             message.peer,
             KeepaliveLink::new(Duration::from_millis(100), Duration::from_millis(300)),
@@ -155,7 +156,7 @@ impl Handler<ParentControl> for ParentRoot {
             .as_ref()
             .expect("parent must be spawned before control message");
         match message {
-            ParentControl::Exit => parent.send(cx, ParentExit)?,
+            ParentControl::Exit => parent.post(cx, ParentExit),
             ParentControl::Kill => parent.kill("test parent killed")?,
         }
         Ok(())
@@ -172,7 +173,7 @@ struct SupervisedChild {
 #[async_trait]
 impl Actor for SupervisedChild {
     async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-        self.ready.send(this, this.self_addr().clone())?;
+        self.ready.post(this, this.self_addr().clone());
         if let Some(ChildAction::StopAfter(delay)) = self.action.take() {
             this.self_message_with_delay(ChildControl::Stop, delay)?;
         }
@@ -185,7 +186,7 @@ impl Actor for SupervisedChild {
         mode: StopMode,
         reason: &str,
     ) -> anyhow::Result<()> {
-        self.stopped.send(this, reason.to_string())?;
+        self.stopped.post(this, reason.to_string());
         this.close();
         match mode {
             StopMode::Stop => this.exit(reason)?,
@@ -222,7 +223,7 @@ impl Actor for WorkerRoot {
             stopped: self.child_stopped.clone(),
             action: self.child_action.take(),
         }))?;
-        self.worker_out.send(this, worker.bind::<WorkerLike>())?;
+        self.worker_out.post(this, worker.bind::<WorkerLike>());
         self.worker = Some(worker);
         Ok(())
     }
@@ -385,7 +386,7 @@ async fn test_token_join_parent_exit_stops_child_first() -> anyhow::Result<()> {
 
     harness
         .parent_root
-        .send(&harness.observer, ParentControl::Exit)?;
+        .post(&harness.observer, ParentControl::Exit);
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
     assert_eq!(reason, "parent stopping");
@@ -404,7 +405,7 @@ async fn test_token_join_parent_kill_stops_child() -> anyhow::Result<()> {
 
     harness
         .parent_root
-        .send(&harness.observer, ParentControl::Kill)?;
+        .post(&harness.observer, ParentControl::Kill);
 
     let reason = recv(&mut harness.child_stopped_rx).await?;
     assert_eq!(reason, "parent stopping");
@@ -422,7 +423,7 @@ async fn test_token_join_parent_kill_stops_child() -> anyhow::Result<()> {
 async fn test_token_join_worker_kill_notifies_parent() -> anyhow::Result<()> {
     let mut harness = Harness::new().await?;
 
-    harness.worker_root.send(&harness.observer, WorkerControl)?;
+    harness.worker_root.post(&harness.observer, WorkerControl);
 
     let event = recv(&mut harness.parent_events_rx).await?;
     assert!(matches!(event.actor_status, ActorStatus::Failed(_)));

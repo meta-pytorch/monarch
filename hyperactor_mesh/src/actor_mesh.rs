@@ -22,7 +22,9 @@ use std::time::Duration;
 
 use hyperactor::ActorLocal;
 use hyperactor::ActorRef;
+use hyperactor::Endpoint as _;
 use hyperactor::PortRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::UnboundPort;
@@ -159,17 +161,13 @@ impl<A: Referable> ActorMesh<A> {
             let id = self.id.resource_id().clone();
             let num_ranks = self.current_ref.region().num_ranks();
             let result: crate::Result<()> = async {
-                controller
-                    .send(
-                        cx,
-                        resource::Stop {
-                            id: id.clone(),
-                            reason,
-                        },
-                    )
-                    .map_err(|e| {
-                        crate::Error::SendingError(controller.actor_addr().clone(), Box::new(e))
-                    })?;
+                controller.post(
+                    cx,
+                    resource::Stop {
+                        id: id.clone(),
+                        reason,
+                    },
+                );
                 // The controller processes messages serially, and its `Stop`
                 // handler already awaits the underlying ProcAgent wait, which
                 // sends its own `WaitRankStatus` to the ProcAgents and
@@ -180,17 +178,13 @@ impl<A: Referable> ActorMesh<A> {
                 // abort-budget exhaustion). We just need to serialize
                 // behind the Stop handler and read the result.
                 let (port, mut rx) = cx.mailbox().open_port();
-                controller
-                    .send(
-                        cx,
-                        resource::GetState::<resource::mesh::State<()>> {
-                            id: id.clone(),
-                            reply: port.bind(),
-                        },
-                    )
-                    .map_err(|e| {
-                        crate::Error::SendingError(controller.actor_addr().clone(), Box::new(e))
-                    })?;
+                controller.post(
+                    cx,
+                    resource::GetState::<resource::mesh::State<()>> {
+                        id: id.clone(),
+                        reply: port.bind(),
+                    },
+                );
                 let statuses = rx.recv().await?;
                 let Some(state) = &statuses.state else {
                     return Err(Error::Other(anyhow::anyhow!(
@@ -599,9 +593,7 @@ impl<A: Referable> ActorMeshRef<A> {
             let rebound_message = unbound
                 .bind()
                 .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-            actor
-                .send_with_headers(cx, headers, rebound_message)
-                .map_err(|e| Error::SendingError(actor.actor_addr().clone(), Box::new(e)))?;
+            actor.post_with_headers(cx, headers, rebound_message);
         }
         Ok(())
     }
@@ -785,9 +777,7 @@ impl<A: Referable> ActorMeshRef<A> {
             .expect("infallible because CastMessage should not fail for serialization");
 
             // TODO: load balancing instead of always using the first comm actor
-            root_comm_actor
-                .send_with_headers(cx, headers, cast_message)
-                .expect("infallible because CastMessage should not fail for serialization");
+            root_comm_actor.post_with_headers(cx, headers, cast_message);
         }
     }
     /// Query the state of all actors in this mesh.
@@ -911,9 +901,7 @@ impl<A: Referable> ActorMeshRef<A> {
     ) {
         let (tx, rx) = cx.mailbox().open_port();
         let tx = tx.bind();
-        controller
-            .send(cx, Subscribe(tx.clone()))
-            .expect("failed to send Subscribe");
+        controller.post(cx, Subscribe(tx.clone()));
         (tx, into_watch(rx))
     }
 
@@ -997,7 +985,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 let mut port = controller.port();
                 // We don't care if the controller is unreachable for an unsubscribe.
                 port.return_undeliverable(false);
-                let _ = port.send(cx, Unsubscribe(subscriber_port));
+                let _ = port.post(cx, Unsubscribe(subscriber_port));
             }
             // If we successfully got a message back, we can't unsubscribe because
             // the receiver might be shared with other calls to next_supervision_event,
@@ -1178,6 +1166,7 @@ mod tests {
     use std::collections::HashSet;
     use std::ops::Deref;
 
+    use hyperactor::Endpoint as _;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::context::Mailbox as _;
@@ -1290,12 +1279,10 @@ mod tests {
         // exist).
         amr.get(0)
             .expect("rank 0 exists")
-            .send(instance, testactor::GetActorId(port.bind()))
-            .expect("send to rank 0 should succeed");
+            .post(instance, testactor::GetActorId(port.bind()));
         amr.get(3)
             .expect("rank 3 exists")
-            .send(instance, testactor::GetActorId(port.bind()))
-            .expect("send to rank 3 should succeed");
+            .post(instance, testactor::GetActorId(port.bind()));
         let id_a = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
             .expect("timed out waiting for first reply")
@@ -1787,12 +1774,10 @@ mod tests {
 
         // Verify ping-pong works initially
         let (done_tx, done_rx) = instance.open_once_port();
-        ping_handle
-            .send(
-                instance,
-                PingPongMessage(2, pong_handle.clone(), done_tx.bind()),
-            )
-            .unwrap();
+        ping_handle.post(
+            instance,
+            PingPongMessage(2, pong_handle.clone(), done_tx.bind()),
+        );
         assert!(
             done_rx.recv().await.unwrap(),
             "Initial ping-pong should work"
@@ -1819,12 +1804,10 @@ mod tests {
         for i in 1..=n {
             let ttl = 66 + i as u64; // Avoid ttl = 66 (which would cause other test behavior)
             let (once_tx, _once_rx) = instance.open_once_port();
-            ping_handle
-                .send(
-                    instance,
-                    PingPongMessage(ttl, pong_handle.clone(), once_tx.bind()),
-                )
-                .unwrap();
+            ping_handle.post(
+                instance,
+                PingPongMessage(ttl, pong_handle.clone(), once_tx.bind()),
+            );
         }
 
         // Collect all undeliverable messages.
@@ -1836,10 +1819,11 @@ mod tests {
             match tokio::time::timeout(std::time::Duration::from_secs(1), undeliverable_rx.recv())
                 .await
             {
-                Ok(Ok(Undeliverable(envelope))) => {
+                Ok(Ok(Undeliverable::Message(envelope))) => {
                     let _: PingPongMessage = envelope.deserialized().unwrap();
                     count += 1;
                 }
+                Ok(Ok(Undeliverable::Lost(_))) => break,
                 Ok(Err(_)) => break, // Channel closed
                 Err(_) => break,     // Timeout
             }
@@ -1898,9 +1882,7 @@ mod tests {
         // `DrainAndStop` will sit queued in the signal mailbox until this
         // handler completes. Nothing forcibly aborts it.
         for actor_ref in sleep_mesh.values() {
-            actor_ref
-                .send(instance, std::time::Duration::from_secs(5))
-                .unwrap();
+            actor_ref.post(instance, std::time::Duration::from_secs(5));
         }
 
         // Give actors time to start sleeping
