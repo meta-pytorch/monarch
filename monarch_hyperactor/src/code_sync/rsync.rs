@@ -26,6 +26,7 @@ use futures::try_join;
 use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Unbind;
 use hyperactor::context;
@@ -360,7 +361,7 @@ impl Handler<RsyncMessage> for RsyncActor {
                 .resolve()
                 .context("resolving workspace location")?;
             let (connect_msg, completer) = Connect::allocate(cx.self_addr().clone(), cx);
-            connect.send(cx, connect_msg)?;
+            connect.post(cx, connect_msg);
 
             // some machines (e.g. github CI) do not have ipv6, so try ipv6 then fallback to ipv4
             let ipv6_lo: SocketAddr = "[::1]:0".parse()?;
@@ -380,7 +381,7 @@ impl Handler<RsyncMessage> for RsyncActor {
             anyhow::Ok(rsync_result)
         }
         .await;
-        result.send(cx, res.map_err(|e| format!("{:#?}", e)))?;
+        result.post(cx, res.map_err(|e| format!("{:#?}", e)));
         Ok(())
     }
 }

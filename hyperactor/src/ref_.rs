@@ -25,7 +25,10 @@ use typeuri::Named;
 use crate::Actor;
 use crate::ActorAddr;
 use crate::ActorHandle;
+use crate::Endpoint;
+use crate::EndpointLocation;
 use crate::PortAddr;
+use crate::RemoteEndpoint;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::accum::ReducerSpec;
@@ -33,6 +36,7 @@ use crate::accum::StreamingReducerOpts;
 use crate::actor::Referable;
 use crate::context;
 use crate::context::MailboxExt;
+use crate::mailbox::LostMessage;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
 use crate::mailbox::PortSink;
@@ -56,32 +60,6 @@ impl<A: Referable> ActorRef<A> {
         A: RemoteHandles<M>,
     {
         PortRef::attest(self.actor_addr.port_addr(Port::from(<M as Named>::port())))
-    }
-
-    /// Send an [`M`]-typed message to the referenced actor.
-    pub fn send<M: RemoteMessage>(
-        &self,
-        cx: &impl context::Actor,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
-    where
-        A: RemoteHandles<M>,
-    {
-        self.port().send(cx, message)
-    }
-
-    /// Send an [`M`]-typed message to the referenced actor, with additional context provided by
-    /// headers.
-    pub fn send_with_headers<M: RemoteMessage>(
-        &self,
-        cx: &impl context::Actor,
-        headers: Flattrs,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
-    where
-        A: RemoteHandles<M>,
-    {
-        self.port().send_with_headers(cx, headers, message)
     }
 
     /// The caller guarantees that the provided actor ID is also a valid,
@@ -113,6 +91,36 @@ impl<A: Referable> ActorRef<A> {
         A: Actor,
     {
         cx.instance().proc().resolve_actor_ref(self)
+    }
+}
+
+impl<A, M> Endpoint<M> for &ActorRef<A>
+where
+    A: Referable + RemoteHandles<M>,
+    M: RemoteMessage,
+{
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Actor(self.actor_addr.clone())
+    }
+
+    fn post<C>(self, cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
+        RemoteEndpoint::post_with_headers(self, cx, Flattrs::new(), message)
+    }
+}
+
+impl<A, M> RemoteEndpoint<M> for &ActorRef<A>
+where
+    A: Referable + RemoteHandles<M>,
+    M: RemoteMessage,
+{
+    fn post_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
+    where
+        C: context::Actor,
+    {
+        RemoteEndpoint::post_with_headers(&self.port(), cx, headers, message)
     }
 }
 
@@ -295,34 +303,9 @@ impl<M: RemoteMessage> PortRef<M> {
         once
     }
 
-    /// Send a message to this port, provided a sending capability, such as
+    /// Post a serialized message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
-    pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Flattrs::new(), message)
-    }
-
-    /// Send a message to this port, provided a sending capability, such as
-    /// [`crate::actor::Instance`]. Additional context can be provided in the form of
-    /// headers.
-    pub fn send_with_headers(
-        &self,
-        cx: &impl context::Actor,
-        headers: Flattrs,
-        message: M,
-    ) -> Result<(), MailboxSenderError> {
-        let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
-            MailboxSenderError::new_bound(
-                self.port_addr.clone(),
-                MailboxSenderErrorKind::Serialize(err.into()),
-            )
-        })?;
-        self.send_serialized(cx, headers, serialized);
-        Ok(())
-    }
-
-    /// Send a serialized message to this port, provided a sending capability, such as
-    /// [`crate::actor::Instance`].
-    pub fn send_serialized(
+    pub fn post_serialized(
         &self,
         cx: &impl context::Actor,
         mut headers: Flattrs,
@@ -354,6 +337,51 @@ impl<M: RemoteMessage> PortRef<M> {
     /// should be returned to the sender.
     pub fn return_undeliverable(&mut self, return_undeliverable: bool) {
         self.return_undeliverable = return_undeliverable;
+    }
+}
+
+impl<M> Endpoint<M> for &PortRef<M>
+where
+    M: RemoteMessage,
+{
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Port(self.port_addr.clone())
+    }
+
+    fn post<C>(self, cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
+        RemoteEndpoint::post_with_headers(self, cx, Flattrs::new(), message)
+    }
+}
+
+impl<M> RemoteEndpoint<M> for &PortRef<M>
+where
+    M: RemoteMessage,
+{
+    fn post_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
+    where
+        C: context::Actor,
+    {
+        let serialized = match wirevalue::Any::serialize(&message).map_err(|err| {
+            MailboxSenderError::new_bound(
+                self.port_addr.clone(),
+                MailboxSenderErrorKind::Serialize(err.into()),
+            )
+        }) {
+            Ok(serialized) => serialized,
+            Err(err) => {
+                cx.instance()
+                    .report_lost_message(LostMessage::from_send_error::<M>(
+                        cx.mailbox().actor_addr().clone(),
+                        self.endpoint_location(),
+                        &err,
+                    ));
+                return;
+            }
+        };
+        self.post_serialized(cx, headers, serialized);
     }
 }
 
@@ -495,37 +523,6 @@ impl<M: RemoteMessage> OncePortRef<M> {
         self.port_addr
     }
 
-    /// Send a message to this port, provided a sending capability, such as
-    /// [`crate::actor::Instance`].
-    pub fn send(self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Flattrs::new(), message)
-    }
-
-    /// Send a message to this port, provided a sending capability, such as
-    /// [`crate::actor::Instance`]. Additional context can be provided in the form of headers.
-    pub fn send_with_headers(
-        self,
-        cx: &impl context::Actor,
-        mut headers: Flattrs,
-        message: M,
-    ) -> Result<(), MailboxSenderError> {
-        crate::mailbox::headers::set_send_timestamp(&mut headers);
-        let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
-            MailboxSenderError::new_bound(
-                self.port_addr.clone(),
-                MailboxSenderErrorKind::Serialize(err.into()),
-            )
-        })?;
-        cx.post(
-            self.port_addr.clone(),
-            headers,
-            serialized,
-            self.return_undeliverable,
-            context::SeqInfoPolicy::AssignNew,
-        );
-        Ok(())
-    }
-
     /// Get whether or not messages sent to this port that are undeliverable should
     /// be returned to the sender.
     pub fn get_return_undeliverable(&self) -> bool {
@@ -536,6 +533,58 @@ impl<M: RemoteMessage> OncePortRef<M> {
     /// should be returned to the sender.
     pub fn return_undeliverable(&mut self, return_undeliverable: bool) {
         self.return_undeliverable = return_undeliverable;
+    }
+}
+
+impl<M> Endpoint<M> for OncePortRef<M>
+where
+    M: RemoteMessage,
+{
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Port(self.port_addr.clone())
+    }
+
+    fn post<C>(self, cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
+        RemoteEndpoint::post_with_headers(self, cx, Flattrs::new(), message)
+    }
+}
+
+impl<M> RemoteEndpoint<M> for OncePortRef<M>
+where
+    M: RemoteMessage,
+{
+    fn post_with_headers<C>(self, cx: &C, mut headers: Flattrs, message: M)
+    where
+        C: context::Actor,
+    {
+        crate::mailbox::headers::set_send_timestamp(&mut headers);
+        let serialized = match wirevalue::Any::serialize(&message).map_err(|err| {
+            MailboxSenderError::new_bound(
+                self.port_addr.clone(),
+                MailboxSenderErrorKind::Serialize(err.into()),
+            )
+        }) {
+            Ok(serialized) => serialized,
+            Err(err) => {
+                cx.instance()
+                    .report_lost_message(LostMessage::from_send_error::<M>(
+                        cx.mailbox().actor_addr().clone(),
+                        self.endpoint_location(),
+                        &err,
+                    ));
+                return;
+            }
+        };
+        cx.post(
+            self.port_addr.clone(),
+            headers,
+            serialized,
+            self.return_undeliverable,
+            context::SeqInfoPolicy::AssignNew,
+        );
     }
 }
 

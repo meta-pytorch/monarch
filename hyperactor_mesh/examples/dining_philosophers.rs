@@ -19,6 +19,7 @@ use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
@@ -123,10 +124,10 @@ impl PhilosopherActor {
         self.waiter
             .get()
             .ok_or(anyhow::anyhow!("uninitialized waiter port"))?
-            .send(
+            .post(
                 cx,
                 WaiterMessage::RequestChopsticks((self.rank, left, right)),
-            )?;
+            );
         self.chopsticks = (ChopstickStatus::Requested, ChopstickStatus::Requested);
         Ok(())
     }
@@ -142,7 +143,7 @@ impl PhilosopherActor {
         self.waiter
             .get()
             .ok_or(anyhow::anyhow!("uninitialized waiter port"))?
-            .send(cx, WaiterMessage::ReleaseChopsticks((left, right)))?;
+            .post(cx, WaiterMessage::ReleaseChopsticks((left, right)));
         self.chopsticks = (ChopstickStatus::None, ChopstickStatus::None);
         Ok(())
     }

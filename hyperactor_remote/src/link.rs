@@ -103,6 +103,7 @@ mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::Context;
+    use hyperactor::Endpoint as _;
     use hyperactor::Handler;
     use hyperactor::Label;
     use hyperactor::PortRef;
@@ -161,7 +162,7 @@ mod tests {
             this: &Instance<Self>,
             event: &ActorSupervisionEvent,
         ) -> anyhow::Result<bool> {
-            self.events.send(this, event.clone())?;
+            self.events.post(this, event.clone());
             Ok(true)
         }
     }

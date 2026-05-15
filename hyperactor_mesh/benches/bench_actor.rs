@@ -14,6 +14,7 @@ use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
@@ -58,7 +59,7 @@ impl Handler<BenchMessage> for BenchActor {
     ) -> Result<(), anyhow::Error> {
         tokio::time::sleep(self.processing_time.clone()).await;
 
-        let _ = msg.reply.send(ctx, msg.step);
+        let _ = msg.reply.post(ctx, msg.step);
         Ok(())
     }
 }
