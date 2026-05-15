@@ -210,7 +210,7 @@ impl Handler<CudaActorMessage> for CudaActor {
                     .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
                 let rdma_handle = handle.request_buffer(cx, local_memory).await?;
 
-                reply.send(cx, (rdma_handle, dptr));
+                reply.post(cx, (rdma_handle, dptr));
                 Ok(())
             }
             CudaActorMessage::FillBuffer {
@@ -229,7 +229,7 @@ impl Handler<CudaActorMessage> for CudaActor {
                     ));
                 }
 
-                reply.send(cx, ());
+                reply.post(cx, ());
                 Ok(())
             }
             CudaActorMessage::VerifyBuffer {
@@ -248,7 +248,7 @@ impl Handler<CudaActorMessage> for CudaActor {
                     ));
                 }
 
-                reply.send(cx, ());
+                reply.post(cx, ());
                 Ok(())
             }
         }

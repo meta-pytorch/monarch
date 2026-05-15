@@ -256,7 +256,7 @@ impl<M: Bind> IndexedErasedUnbound<M> {
         let port_handle = mailbox.open_enqueue_port::<IndexedErasedUnbound<M>>({
             move |_, m| {
                 let bound_m = m.downcast()?.bind()?;
-                actor_ref.send(&cx, bound_m);
+                actor_ref.post(&cx, bound_m);
                 Ok(())
             }
         });

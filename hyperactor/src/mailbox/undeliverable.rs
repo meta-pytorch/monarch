@@ -225,7 +225,7 @@ pub(crate) fn return_undeliverable(
         let client = &CLIENT
             .get_or_init(|| Proc::runtime().instance("global_return_client").unwrap())
             .0;
-        crate::Endpoint::send(&return_handle, client, Undeliverable::message(envelope));
+        crate::Endpoint::post(&return_handle, client, Undeliverable::message(envelope));
     }
 }
 

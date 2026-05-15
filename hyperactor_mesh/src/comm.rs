@@ -209,7 +209,7 @@ impl Actor for CommActor {
             // original sender of the cast message.
             message_envelope.set_header(CAST_ORIGINATING_SENDER, sender.clone());
 
-            return_port.send(cx, Undeliverable::Message(message_envelope.clone()));
+            return_port.post(cx, Undeliverable::Message(message_envelope.clone()));
             return Ok(());
         }
 
@@ -222,7 +222,7 @@ impl Actor for CommActor {
                 cx.self_addr(),
                 return_port.port_addr(),
             )));
-            return_port.send(cx, Undeliverable::Message(message_envelope.clone()));
+            return_port.post(cx, Undeliverable::Message(message_envelope.clone()));
             return Ok(());
         }
 
@@ -249,9 +249,9 @@ impl CommActor {
         if let Some(cast_actor_mesh_id) = cx.headers().get(CAST_ACTOR_MESH_ID) {
             let mut headers = Flattrs::new();
             headers.set(CAST_ACTOR_MESH_ID, cast_actor_mesh_id);
-            child.send_with_headers(cx, headers, message);
+            child.post_with_headers(cx, headers, message);
         } else {
-            child.send(cx, message);
+            child.post(cx, message);
         }
         Ok(())
     }
@@ -696,9 +696,9 @@ pub mod test_utils {
             // For CastWithUnsplitPort, send a reply so the test can
             // verify that the unsplit port is still directly reachable.
             if let TestMessage::CastWithUnsplitPort { ref reply_to } = msg {
-                reply_to.send(cx, 42);
+                reply_to.post(cx, 42);
             }
-            self.forward_port.send(cx, msg);
+            self.forward_port.post(cx, msg);
             Ok(())
         }
     }
@@ -771,7 +771,7 @@ mod tests {
         let comm_ref = comm_handle.bind::<CommActor>();
         let mut peers = HashMap::new();
         peers.insert(0, comm_ref);
-        comm_handle.send(client, CommMeshConfig::new(0, peers));
+        comm_handle.post(client, CommMeshConfig::new(0, peers));
     }
 
     /// Send a message before config, send config, send another after config,
@@ -785,9 +785,9 @@ mod tests {
         let (client, mut rx, comm_handle, actor_mesh_id, _guards) =
             buffering_fixture(proc_name).await;
 
-        comm_handle.send(&client, make_msg(&client, &actor_mesh_id, "buffered"));
+        comm_handle.post(&client, make_msg(&client, &actor_mesh_id, "buffered"));
         send_config(&client, &comm_handle);
-        comm_handle.send(&client, make_msg(&client, &actor_mesh_id, "direct"));
+        comm_handle.post(&client, make_msg(&client, &actor_mesh_id, "direct"));
 
         assert_eq!(
             rx.recv().await.unwrap(),
@@ -1181,12 +1181,12 @@ mod tests {
                 ranks.iter().zip(reply_tos.iter()).enumerate()
             {
                 let rank_u64 = rank as u64;
-                reply_to1.send(instance, rank_u64);
+                reply_to1.post(instance, rank_u64);
                 let my_reply = MyReply {
                     sender: dest_actor.actor_addr().clone(),
                     value: rank_u64,
                 };
-                reply_to2.send(instance, my_reply.clone());
+                reply_to2.post(instance, my_reply.clone());
 
                 assert_eq!(reply1_rx.recv().await.unwrap(), rank_u64);
                 assert_eq!(reply2_rx.recv().await.unwrap(), my_reply);
@@ -1211,7 +1211,7 @@ mod tests {
                         sender: dest_actor.actor_addr().clone(),
                         value,
                     };
-                    reply_to2.send(instance, my_reply.clone());
+                    reply_to2.post(instance, my_reply.clone());
                     sent2.push(my_reply);
                 }
                 assert!(
@@ -1270,7 +1270,7 @@ mod tests {
         {
             for j in 0..n {
                 let value = (i + j) as u64;
-                reply_to1.send(instance, value);
+                reply_to1.post(instance, value);
                 sum += value;
             }
         }
@@ -1624,7 +1624,7 @@ mod tests {
         // Only the first message will be delivered successfully.
         let num_replies = setup.reply_tos.len();
         for (i, reply_to) in setup.reply_tos.into_iter().enumerate() {
-            reply_to.send(setup.instance, i as u64);
+            reply_to.post(setup.instance, i as u64);
         }
 
         // OncePort receives exactly one value (the first to arrive)
@@ -1661,7 +1661,7 @@ mod tests {
         // Each actor replies with its index
         let mut expected_sum = 0u64;
         for (i, reply_to) in setup.reply_tos.into_iter().enumerate() {
-            reply_to.send(setup.instance, i as u64);
+            reply_to.post(setup.instance, i as u64);
             expected_sum += i as u64;
         }
 
