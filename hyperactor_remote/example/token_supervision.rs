@@ -127,7 +127,7 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
             write_text(path, "linked").await?;
         }
         if let Some(delay) = self.exit_after_link {
-            cx.self_message_with_delay(ParentCommand::Exit, delay)?;
+            cx.post_after(cx, ParentCommand::Exit, delay);
         }
         Ok(())
     }
