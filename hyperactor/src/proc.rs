@@ -1262,11 +1262,7 @@ impl Proc {
     /// Call `abort` on the `JoinHandle` associated with the given
     /// root actor. If successful return `Some(root.clone())` else
     /// `None`.
-    pub fn abort_root_actor(
-        &self,
-        root: &ActorId,
-        this_handle: Option<&JoinHandle<()>>,
-    ) -> Option<impl Future<Output = ActorAddr>> {
+    pub fn abort_root_actor(&self, root: &ActorId) -> Option<impl Future<Output = ActorAddr>> {
         self.state()
             .instances
             .get(root)
@@ -1276,23 +1272,14 @@ impl Proc {
                 let actor_addr = cell.actor_addr().clone();
                 let r1 = actor_addr.clone();
                 let r2 = actor_addr;
-                // If abort_root_actor was called from inside an actor task, we don't want to abort that actor's task yet.
-                let skip_abort = this_handle.is_some_and(|this_h| {
-                    cell.inner
-                        .actor_task_handle
-                        .get()
-                        .is_some_and(|other_h| std::ptr::eq(this_h, other_h))
-                });
                 // `Instance::start()` is infallible and should
                 // complete quickly, so calling `wait()` on `actor_task_handle`
                 // should be safe (i.e., not hang forever).
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        if !skip_abort {
-                            let h = cell.inner.actor_task_handle.wait();
-                            tracing::debug!("{}: aborting {:?}", r1, h);
-                            h.abort();
-                        }
+                        let h = cell.inner.actor_task_handle.wait();
+                        tracing::debug!("{}: aborting {:?}", r1, h);
+                        h.abort();
                     })
                     .await
                     .unwrap();
@@ -1341,45 +1328,13 @@ impl Proc {
     /// Stop the proc. Returns a pair of:
     /// - the actors observed to stop;
     /// - the actors not observed to stop when timeout.
-    ///
-    /// If `cx` is specified, it means this method was called from inside an actor
-    /// in which case we shouldn't wait for it to stop and need to delay aborting
-    /// its task.
-    pub async fn destroy_and_wait<A: Actor>(
-        &mut self,
-        timeout: Duration,
-        cx: Option<&Context<'_, A>>,
-        reason: &str,
-    ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error> {
-        self.destroy_and_wait_except_current::<A>(timeout, cx, false, reason)
-            .await
-    }
-
-    /// Stop the proc. Returns a pair of:
-    /// - the actors observed to stop;
-    /// - the actors not observed to stop when timeout.
-    ///
-    /// If `cx` is specified, it means this method was called from inside an actor
-    /// in which case we shouldn't wait for it to stop and need to delay aborting
-    /// its task.
-    /// If except_current is true, don't stop the actor represented by "cx" at
-    /// all.
     #[hyperactor::instrument(fields(subject = self.proc_addr().subject().to_string()))]
-    pub async fn destroy_and_wait_except_current<A: Actor>(
+    pub async fn destroy_and_wait(
         &mut self,
         timeout: Duration,
-        cx: Option<&Context<'_, A>>,
-        except_current: bool,
         reason: &str,
     ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error> {
         tracing::debug!("proc stopping");
-
-        let (this_handle, this_actor_id) = cx.map_or((None, None), |cx| {
-            (
-                Some(cx.actor_task_handle().expect("cannot call destroy_and_wait from inside an actor unless actor has finished starting")),
-                Some(cx.self_addr())
-            )
-        });
 
         let coordinator_id = self.supervision_coordinator_actor_addr().cloned();
 
@@ -1406,7 +1361,6 @@ impl Proc {
 
         let waits: Vec<_> = statuses
             .iter_mut()
-            .filter(|(actor_id, _)| Some(*actor_id) != this_actor_id)
             .map(|(actor_id, root)| {
                 let actor_id = actor_id.clone();
                 async move {
@@ -1431,7 +1385,7 @@ impl Proc {
             .iter()
             .filter(|(actor_id, _)| !stopped_actors.contains(actor_id))
             .map(|(actor_id, _)| {
-                let f = self.abort_root_actor(actor_id.id(), this_handle);
+                let f = self.abort_root_actor(actor_id.id());
                 async move {
                     let _ = if let Some(f) = f { Some(f.await) } else { None };
                     // If `is_none(&_)` then the associated actor's
@@ -1449,9 +1403,7 @@ impl Proc {
         // events have already been enqueued by this point, and the
         // coordinator's DrainAndStop path drains queued supervision
         // events before exiting.
-        if let Some(ref coord_id) = coordinator_id
-            && this_actor_id != Some(coord_id)
-        {
+        if let Some(ref coord_id) = coordinator_id {
             if let Some(mut status) = self.stop_actor(coord_id.id(), reason.to_string()) {
                 let stopped = tokio::time::timeout(
                     timeout,
@@ -1462,7 +1414,7 @@ impl Proc {
                 if stopped {
                     stopped_actors.push(coord_id.clone());
                 } else {
-                    if let Some(f) = self.abort_root_actor(coord_id.id(), this_handle) {
+                    if let Some(f) = self.abort_root_actor(coord_id.id()) {
                         f.await;
                     }
                     aborted_actors.push(coord_id.clone());
@@ -1487,14 +1439,6 @@ impl Proc {
             }
             Ok(Ok(())) => {}
         }
-
-        if let Some(this_handle) = this_handle
-            && let Some(this_actor_id) = this_actor_id
-            && !except_current
-        {
-            tracing::debug!("{}: aborting (delayed) {:?}", this_actor_id, this_handle);
-            this_handle.abort()
-        };
 
         tracing::info!(
             "destroy_and_wait: {} actors stopped, {} actors aborted",
@@ -5340,7 +5284,7 @@ mod tests {
         // simultaneously, supervision event delivery would fail and crash
         // the process. The fact that this completes without crashing proves
         // the coordinator outlived the other actors.
-        proc.destroy_and_wait::<()>(Duration::from_secs(5), None, "test")
+        proc.destroy_and_wait(Duration::from_secs(5), "test")
             .await
             .unwrap();
 
