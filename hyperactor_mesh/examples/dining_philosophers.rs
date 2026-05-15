@@ -124,7 +124,7 @@ impl PhilosopherActor {
         self.waiter
             .get()
             .ok_or(anyhow::anyhow!("uninitialized waiter port"))?
-            .send(
+            .post(
                 cx,
                 WaiterMessage::RequestChopsticks((self.rank, left, right)),
             );
@@ -143,7 +143,7 @@ impl PhilosopherActor {
         self.waiter
             .get()
             .ok_or(anyhow::anyhow!("uninitialized waiter port"))?
-            .send(cx, WaiterMessage::ReleaseChopsticks((left, right)));
+            .post(cx, WaiterMessage::ReleaseChopsticks((left, right)));
         self.chopsticks = (ChopstickStatus::None, ChopstickStatus::None);
         Ok(())
     }

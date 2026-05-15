@@ -254,7 +254,7 @@ impl Actor for DrainWorker {
         // Bundle host + ack into DrainComplete so the parent sends the ack
         // AFTER restoring state (prevents race with ShutdownHost).
         if let (Some(host), Some(ack)) = (self.host.take(), self.ack.take()) {
-            let _ = self.done_notify.send(this, DrainComplete { host, ack });
+            let _ = self.done_notify.post(this, DrainComplete { host, ack });
         }
 
         Ok(())
@@ -829,7 +829,7 @@ impl Handler<resource::GetRankStatus> for HostAgent {
             StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                 .expect("valid single-run overlay")
         };
-        get_rank_status.reply.send(cx, overlay);
+        get_rank_status.reply.post(cx, overlay);
         Ok(())
     }
 }
@@ -860,7 +860,7 @@ impl Handler<resource::WaitRankStatus> for HostAgent {
                 if status >= msg.min_status {
                     let overlay = StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
                         .expect("valid single-run overlay");
-                    let _ = msg.reply.send(cx, overlay);
+                    let _ = msg.reply.post(cx, overlay);
                     return Ok(());
                 }
 
@@ -884,7 +884,7 @@ impl Handler<resource::WaitRankStatus> for HostAgent {
                     Status::Failed(e.to_string()),
                 )])
                 .expect("valid single-run overlay");
-                let _ = msg.reply.send(cx, overlay);
+                let _ = msg.reply.post(cx, overlay);
             }
             None => {
                 // Proc doesn't exist yet. Stash the waiter with a
@@ -937,7 +937,7 @@ impl Handler<ProcStatusChanged> for HostAgent {
                 let overlay =
                     StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status.clone())])
                         .expect("valid single-run overlay");
-                let _ = reply.send(cx, overlay);
+                let _ = reply.post(cx, overlay);
             } else {
                 waiters.push((min_status, rank, reply));
             }
@@ -956,7 +956,7 @@ impl HostAgent {
     fn notify_proc_status_changed(&self, id: &ResourceId) {
         if let Some(port) = &self.proc_status_port {
             let client = Instance::<()>::self_client();
-            let _ = port.send(client, ProcStatusChanged { id: id.clone() });
+            let _ = port.post(client, ProcStatusChanged { id: id.clone() });
         }
     }
 
@@ -1008,13 +1008,13 @@ fn start_proc_watch<S>(
                 Ok(()) => {
                     let status = to_status(&*rx.borrow());
                     let terminated = status.is_terminated();
-                    let _ = port.send(client, ProcStatusChanged { id: id.clone() });
+                    let _ = port.post(client, ProcStatusChanged { id: id.clone() });
                     if terminated {
                         return;
                     }
                 }
                 Err(_) => {
-                    let _ = port.send(client, ProcStatusChanged { id: id.clone() });
+                    let _ = port.post(client, ProcStatusChanged { id: id.clone() });
                     return;
                 }
             }
@@ -1059,7 +1059,7 @@ impl Handler<DrainHost> for HostAgent {
             // Selective drain: stop only procs belonging to the named mesh.
             self.drain_by_mesh_name(cx, msg.timeout, msg.host_mesh_id.as_ref())
                 .await;
-            msg.ack.send(cx, ());
+            msg.ack.post(cx, ());
             return Ok(());
         }
 
@@ -1069,12 +1069,12 @@ impl Handler<DrainHost> for HostAgent {
             other @ (HostAgentState::Detached(_) | HostAgentState::Draining) => {
                 // Nothing to drain — ack immediately.
                 self.state = other;
-                msg.ack.send(cx, ());
+                msg.ack.post(cx, ());
                 return Ok(());
             }
             HostAgentState::Shutdown => {
                 self.state = HostAgentState::Shutdown;
-                msg.ack.send(cx, ());
+                msg.ack.post(cx, ());
                 return Ok(());
             }
         };
@@ -1109,7 +1109,7 @@ impl Handler<DrainComplete> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: DrainComplete) -> anyhow::Result<()> {
         self.state = HostAgentState::Detached(msg.host);
         self.created.clear();
-        msg.ack.send(cx, ());
+        msg.ack.post(cx, ());
         Ok(())
     }
 }
@@ -1129,7 +1129,7 @@ impl Handler<ShutdownHost> for HostAgent {
 
         // Ack after children are terminated so the caller does not
         // tear down the host's networking prematurely.
-        msg.ack.send(cx, ());
+        msg.ack.post(cx, ());
 
         // Drop the host and signal the bootstrap loop to drain the
         // mailbox and exit.
@@ -1231,7 +1231,7 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
             },
         };
 
-        get_state.reply.send(cx, state);
+        get_state.reply.post(cx, state);
         Ok(())
     }
 }
@@ -1295,7 +1295,7 @@ impl Handler<crate::proc_agent::SelfCheck> for HostAgent {
 #[async_trait]
 impl Handler<resource::List> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, list: resource::List) -> anyhow::Result<()> {
-        list.reply.send(cx, self.created.keys().cloned().collect());
+        list.reply.post(cx, self.created.keys().cloned().collect());
         Ok(())
     }
 }
@@ -1377,7 +1377,7 @@ impl Handler<resource::StreamState<ProcState>> for HostAgent {
         headers.set(crate::proc_agent::STREAM_STATE_SUBSCRIBER, true);
         stream_state
             .subscriber
-            .send_with_headers(cx, headers, state);
+            .post_with_headers(cx, headers, state);
         Ok(())
     }
 }
@@ -1412,7 +1412,7 @@ impl Handler<SetClientConfig> for HostAgent {
             msg.attrs,
         );
         tracing::debug!("installed client config override on host agent");
-        msg.done.send(cx, ());
+        msg.done.post(cx, ());
         Ok(())
     }
 }
@@ -1447,7 +1447,7 @@ impl Handler<GetLocalProc> for HostAgent {
 
         match agent {
             Err(e) => anyhow::bail!("error booting local proc: {}", e),
-            Ok(agent) => proc_mesh_agent.send(cx, agent.clone()),
+            Ok(agent) => proc_mesh_agent.post(cx, agent.clone()),
         };
 
         Ok(())
@@ -1484,7 +1484,7 @@ impl Handler<ConfigDump> for HostAgent {
         message: ConfigDump,
     ) -> Result<(), anyhow::Error> {
         let entries = hyperactor_config::global::config_entries();
-        message.result.send(cx, ConfigDumpResult { entries });
+        message.result.post(cx, ConfigDumpResult { entries });
         Ok(())
     }
 }
@@ -1965,7 +1965,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-            port.send(
+            port.post(
                 &client,
                 IntrospectMessage::QueryChild {
                     child_ref: Addr::Proc(system_proc.proc_addr().clone()),
