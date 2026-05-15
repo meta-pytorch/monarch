@@ -2254,7 +2254,14 @@ mod tests {
             .expect("timed out waiting for undeliverable")
             .expect("channel closed");
 
-        assert_eq!(undeliverable.0.dest().actor_id(), bogus_actor.id());
+        assert_eq!(
+            undeliverable
+                .into_message()
+                .expect("expected returned envelope")
+                .dest()
+                .actor_id(),
+            bogus_actor.id()
+        );
     }
 
     #[tokio::test]
@@ -2302,7 +2309,14 @@ mod tests {
             .expect("timed out waiting for undeliverable")
             .expect("channel closed");
 
-        assert_eq!(undeliverable.0.dest().actor_id(), bogus_actor.id());
+        assert_eq!(
+            undeliverable
+                .into_message()
+                .expect("expected returned envelope")
+                .dest()
+                .actor_id(),
+            bogus_actor.id()
+        );
     }
 
     #[tokio::test]
