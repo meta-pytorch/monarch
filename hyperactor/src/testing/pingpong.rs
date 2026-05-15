@@ -22,6 +22,7 @@ use crate::Instance;
 use crate::OncePortRef;
 use crate::PortRef;
 use crate::RemoteSpawn;
+use crate::endpoint::Endpoint as _;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableMessageError;
@@ -94,10 +95,14 @@ impl Actor for PingPongActor {
     ) -> Result<(), anyhow::Error> {
         match &self.undeliverable_port_ref {
             Some(port) => port.send(cx, undelivered).unwrap(),
-            None => {
-                let Undeliverable(envelope) = undelivered;
-                anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
-            }
+            None => match undelivered {
+                Undeliverable::Message(envelope) => {
+                    anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+                }
+                Undeliverable::Lost(lost) => {
+                    anyhow::bail!(UndeliverableMessageError::Lost { lost });
+                }
+            },
         }
 
         Ok(())

@@ -1685,6 +1685,7 @@ pub mod testing {
     use hyperactor::Actor;
     use hyperactor::ActorAddr;
     use hyperactor::Context;
+    use hyperactor::Endpoint as _;
     use hyperactor::Handler;
     use hyperactor::OncePortRef;
     /// Just a simple actor, available in both the bootstrap binary as well as
@@ -1716,6 +1717,7 @@ mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::Context;
+    use hyperactor::Endpoint as _;
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::OncePortRef;
@@ -2252,7 +2254,14 @@ mod tests {
             .expect("timed out waiting for undeliverable")
             .expect("channel closed");
 
-        assert_eq!(undeliverable.0.dest().actor_id(), bogus_actor.id());
+        assert_eq!(
+            undeliverable
+                .into_message()
+                .expect("expected returned envelope")
+                .dest()
+                .actor_id(),
+            bogus_actor.id()
+        );
     }
 
     #[tokio::test]
@@ -2300,7 +2309,14 @@ mod tests {
             .expect("timed out waiting for undeliverable")
             .expect("channel closed");
 
-        assert_eq!(undeliverable.0.dest().actor_id(), bogus_actor.id());
+        assert_eq!(
+            undeliverable
+                .into_message()
+                .expect("expected returned envelope")
+                .dest()
+                .actor_id(),
+            bogus_actor.id()
+        );
     }
 
     #[tokio::test]

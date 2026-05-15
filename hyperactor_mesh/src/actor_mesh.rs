@@ -22,7 +22,9 @@ use std::time::Duration;
 
 use hyperactor::ActorLocal;
 use hyperactor::ActorRef;
+use hyperactor::Endpoint as _;
 use hyperactor::PortRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::UnboundPort;
@@ -1178,6 +1180,7 @@ mod tests {
     use std::collections::HashSet;
     use std::ops::Deref;
 
+    use hyperactor::Endpoint as _;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::context::Mailbox as _;
@@ -1836,10 +1839,11 @@ mod tests {
             match tokio::time::timeout(std::time::Duration::from_secs(1), undeliverable_rx.recv())
                 .await
             {
-                Ok(Ok(Undeliverable(envelope))) => {
+                Ok(Ok(Undeliverable::Message(envelope))) => {
                     let _: PingPongMessage = envelope.deserialized().unwrap();
                     count += 1;
                 }
+                Ok(Ok(Undeliverable::Lost(_))) => break,
                 Ok(Err(_)) => break, // Channel closed
                 Err(_) => break,     // Timeout
             }

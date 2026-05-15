@@ -166,6 +166,7 @@ use crate::channel::ChannelTransport;
 use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
+use crate::endpoint::Endpoint as _;
 use crate::gateway::Gateway;
 use crate::id::ActorId;
 use crate::id::Label;
@@ -2033,6 +2034,43 @@ impl<A: Actor> Instance<A> {
     /// This instance's actor address.
     pub fn self_addr(&self) -> &ActorAddr {
         self.inner.self_addr()
+    }
+
+    /// Report a message that could not be delivered and could not be returned.
+    pub(crate) fn report_lost_message(&self, lost: crate::mailbox::LostMessage) {
+        static REPORT_LOST_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
+
+        let mailbox = &self.inner.mailbox;
+        let return_handle = mailbox.bound_return_handle().unwrap_or_else(|| {
+            let actor_id = mailbox.actor_addr();
+            if REPORT_LOST_WARNED_MAILBOXES
+                .get_or_init(DashSet::new)
+                .insert(actor_id.clone())
+            {
+                let bt = std::backtrace::Backtrace::force_capture();
+                tracing::warn!(
+                    actor_id = ?actor_id,
+                    backtrace = ?bt,
+                    "actor attempted to report a lost message without binding Undeliverable<MessageEnvelope>"
+                );
+            }
+            crate::mailbox::monitored_return_handle()
+        });
+
+        if let Err(error) = crate::Endpoint::send(
+            &return_handle,
+            self,
+            crate::mailbox::Undeliverable::lost(lost.clone()),
+        ) {
+            tracing::error!(
+                sender = %lost.sender,
+                dest = %lost.dest,
+                message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                error = %lost.error,
+                return_error = %error,
+                "lost message could not be reported"
+            );
+        }
     }
 
     /// Snapshot of this actor's introspection payload.
@@ -4859,14 +4897,14 @@ mod tests {
         // fail `root_1_1_1`, the supervision msg should be propagated to
         // `root_1` because `root_1` has set `true` to `handle_supervision_event`.
         root_1_1_1
-            .send::<String>(&client, "some random failure".into())
+            .send(&client, "some random failure".to_string())
             .unwrap();
 
         // fail `root_2_1`, the supervision msg should be propagated to
         // ProcSupervisionCoordinator.
         let root_2_1_id = root_2_1.actor_addr().clone();
         root_2_1
-            .send::<String>(&client, "some random failure".into())
+            .send(&client, "some random failure".to_string())
             .unwrap();
 
         // Wait for root_1 to handle the supervision event from the

@@ -39,6 +39,7 @@ use humantime::format_duration;
 use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
+use hyperactor::Endpoint as _;
 use hyperactor::ProcAddr;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;

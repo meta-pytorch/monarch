@@ -8,6 +8,7 @@
 
 use anyhow::Result;
 use anyhow::anyhow;
+use hyperactor::Endpoint as _;
 use hyperactor::context::Mailbox;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::context;

@@ -25,11 +25,13 @@ use hyperactor::Addr;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Data;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortAddr;
 use hyperactor::PortHandle;
 use hyperactor::PortRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::Unbind;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
@@ -673,8 +675,11 @@ impl Actor for ProcAgent {
         cx: &Instance<Self>,
         envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        if let Some(true) = envelope.0.headers().get(STREAM_STATE_SUBSCRIBER) {
-            let dest_port_id: PortAddr = envelope.0.dest().clone();
+        let Some(returned) = envelope.as_message() else {
+            return handle_undeliverable_message(cx, envelope);
+        };
+        if let Some(true) = returned.headers().get(STREAM_STATE_SUBSCRIBER) {
+            let dest_port_id: PortAddr = returned.dest().clone();
             let port = PortRef::<resource::State<ActorState>>::attest(dest_port_id);
             // Remove this subscriber from whichever actor instance holds it.
             for instance in self.actor_states.values_mut() {
