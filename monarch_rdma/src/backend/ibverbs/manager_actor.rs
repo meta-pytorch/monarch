@@ -849,7 +849,7 @@ impl Handler<EnsureQueuePair<IbvManagerActor>> for IbvManagerActor {
         let state = match self.ensure_queue_pair_impl(cx, sender, &qp_key) {
             Ok(state) => state,
             Err(e) => {
-                reply.send(cx, PeerInfo(Err(e.to_string())))?;
+                reply.send(cx, PeerInfo(Err(e.to_string())));
                 return Ok(());
             }
         };
@@ -858,7 +858,7 @@ impl Handler<EnsureQueuePair<IbvManagerActor>> for IbvManagerActor {
                 info, initializer, ..
             } => {
                 let notify_rts = initializer.bind::<QueuePairInitializer<Self>>().port();
-                reply.send(cx, PeerInfo(Ok((info.clone(), notify_rts))))?;
+                reply.send(cx, PeerInfo(Ok((info.clone(), notify_rts))));
             }
             QpState::Ready(_) => {
                 // `Ready` means a prior handshake completed and the
@@ -871,10 +871,10 @@ impl Handler<EnsureQueuePair<IbvManagerActor>> for IbvManagerActor {
                     PeerInfo(Err(format!(
                         "EnsureQueuePair on already-Ready entry {qp_key:?}"
                     ))),
-                )?;
+                );
             }
             QpState::Failed(error) => {
-                reply.send(cx, PeerInfo(Err(error.clone())))?;
+                reply.send(cx, PeerInfo(Err(error.clone())));
             }
         }
         Ok(())
@@ -935,14 +935,14 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
         let state = match self.ensure_queue_pair_impl(cx, other, &qp_key) {
             Ok(state) => state,
             Err(e) => {
-                reply.send(cx, Err(e.to_string()))?;
+                reply.send(cx, Err(e.to_string()));
                 return Ok(());
             }
         };
         match state {
             QpState::Pending { waiters, .. } => waiters.push(reply),
-            QpState::Ready(qp) => reply.send(cx, Ok(qp.clone()))?,
-            QpState::Failed(error) => reply.send(cx, Err(error.clone()))?,
+            QpState::Ready(qp) => reply.send(cx, Ok(qp.clone())),
+            QpState::Failed(error) => reply.send(cx, Err(error.clone())),
         }
         Ok(())
     }
@@ -966,12 +966,7 @@ impl Handler<QpInitializerDone> for IbvManagerActor {
                 ..
             }) => {
                 for w in waiters {
-                    let waiter_dbg = format!("{w:?}");
-                    if let Err(e) = w.send(cx, Ok(qp.clone())) {
-                        tracing::error!(
-                            "QpInitializerDone: failed to deliver to waiter {waiter_dbg} for {qp_key:?}: {e}"
-                        );
-                    }
+                    w.send(cx, Ok(qp.clone()));
                 }
                 initializer
             }
@@ -1010,12 +1005,7 @@ impl Handler<QpInitializerFailed> for IbvManagerActor {
                 ..
             }) => {
                 for w in waiters {
-                    let waiter_dbg = format!("{w:?}");
-                    if let Err(e) = w.send(cx, Err(error.clone())) {
-                        tracing::error!(
-                            "QpInitializerFailed: failed to deliver to waiter {waiter_dbg} for {qp_key:?}: {e}"
-                        );
-                    }
+                    w.send(cx, Err(error.clone()));
                 }
                 initializer
             }

@@ -764,14 +764,7 @@ impl DatabaseScanner {
                         let msg = QueryResponse {
                             data: Part::from(data),
                         };
-                        if let Err(e) = dest_ref.send(instance, msg) {
-                            tracing::debug!(
-                                "Scanner {}: send error for batch {}: {:?}",
-                                rank,
-                                count,
-                                e
-                            );
-                        }
+                        dest_ref.send(instance, msg);
                         count += 1;
                     }
                 }
