@@ -11,6 +11,18 @@ use std::iter::zip;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::shape::Range;
+
+/// Compute the greatest common divisor of two numbers.
+fn gcd(mut left: usize, mut right: usize) -> usize {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
+}
+
 /// The type of error for slice operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -385,6 +397,241 @@ impl Slice {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Return the half-open rank range covering values in this slice.
+    ///
+    /// The bounds are cheap to compute from the slice's offset, sizes, and
+    /// strides. They are a coarse range: strided slices may not contain every
+    /// value within the returned interval.
+    ///
+    /// ```text
+    /// contiguous: Slice::new(4, sizes=[4], strides=[1])
+    /// values:     4 5 6 7
+    /// bounds:    [4-------8)
+    ///
+    /// strided:    Slice::new(4, sizes=[4], strides=[2])
+    /// values:     4 . 6 . 8 . 10
+    /// bounds:    [4--------------11)
+    /// ```
+    pub fn rank_bounds(&self) -> Option<Range> {
+        if self.is_empty() {
+            return None;
+        }
+
+        let max_delta: usize = self
+            .sizes
+            .iter()
+            .zip(&self.strides)
+            .map(|(size, stride)| size.saturating_sub(1) * stride)
+            .sum();
+        let max = self.offset + max_delta;
+        Some(Range(self.offset, Some(max + 1), 1))
+    }
+
+    /// Return whether this slice and `other` contain any common values.
+    ///
+    /// This avoids eagerly materializing either slice. It first prunes by
+    /// bounds and stride congruence, then recursively subdivides
+    /// non-contiguous slices until a definitive answer is available.
+    ///
+    /// Fast cases are `O(d)` for dimension count `d`: empty slices, disjoint
+    /// bounds, overlapping contiguous intervals, or singleton membership.
+    /// Stride-congruence pruning also rejects interleaved cases such as
+    /// even/odd ranks in `O(d log s)` for max stride `s`. The remaining worst
+    /// case recursively splits sparse multidimensional slices and can visit
+    /// `O(n + m)` sub-slices for `n = self.len()` and `m = other.len()`.
+    ///
+    /// ```text
+    /// overlapping:
+    /// self:   0 . 2 . 4 . 6
+    /// other:      2 3 4
+    /// common:     ^   ^
+    ///
+    /// bounds overlap but congruence rejects:
+    /// self:   0 . 2 . 4 . 6
+    /// other:  . 1 . 3 . 5 . 7
+    /// common: none
+    /// ```
+    pub fn intersects(&self, other: &Slice) -> bool {
+        fn recurse(left: &Slice, right: &Slice) -> bool {
+            let (Some(left_bounds), Some(right_bounds)) = (left.rank_bounds(), right.rank_bounds())
+            else {
+                return false;
+            };
+
+            if !left_bounds.bounds_overlap(&right_bounds) {
+                return false;
+            }
+
+            if !left.congruence_may_overlap(right) {
+                return false;
+            }
+
+            if left.is_contiguous() && right.is_contiguous() {
+                return true;
+            }
+
+            if left.len() == 1 {
+                return right.contains(left.offset());
+            }
+
+            if right.len() == 1 {
+                return left.contains(right.offset());
+            }
+
+            if left.len() >= right.len() {
+                if let Some((first, second)) = left.split_largest_dim() {
+                    recurse(&first, right) || recurse(&second, right)
+                } else {
+                    right.contains(left.offset())
+                }
+            } else if let Some((first, second)) = right.split_largest_dim() {
+                recurse(left, &first) || recurse(left, &second)
+            } else {
+                left.contains(right.offset())
+            }
+        }
+
+        recurse(self, other)
+    }
+
+    /// Return whether every value in `other` is also contained in this slice.
+    ///
+    /// This is equivalent to `other.enforce_embedding(self).is_ok()`, but it
+    /// is structured to avoid that direct per-rank walk in common cases. It
+    /// uses bounds and recursive subdivision so large contained intervals,
+    /// failed bounds checks, and singleton checks can complete without
+    /// materializing every value in `other`.
+    ///
+    /// Fast cases are `O(d)` for dimension count `d`: empty slices, failed
+    /// bounds containment, contiguous `self`, or singleton `other`. The
+    /// remaining worst case recursively splits `other` and can visit
+    /// `O(other.len())` sub-slices.
+    ///
+    /// ```text
+    /// contained:
+    /// self:   0 . 2 . 4 . 6
+    /// other:      2 . 4
+    /// result: true
+    ///
+    /// not contained:
+    /// self:   0 . 2 . 4 . 6
+    /// other:      2 3 4
+    ///              ^ rank 3 is missing from self
+    /// result: false
+    /// ```
+    pub fn contains_slice(&self, other: &Slice) -> bool {
+        fn recurse(outer: &Slice, inner: &Slice) -> bool {
+            if inner.is_empty() {
+                return true;
+            }
+            if outer.is_empty() {
+                return false;
+            }
+
+            let (Some(outer_bounds), Some(inner_bounds)) =
+                (outer.rank_bounds(), inner.rank_bounds())
+            else {
+                return inner.is_empty();
+            };
+
+            if !outer_bounds.bounds_contains(&inner_bounds) {
+                return false;
+            }
+
+            if outer.is_contiguous() {
+                return true;
+            }
+
+            if inner.len() == 1 {
+                return outer.contains(inner.offset());
+            }
+
+            let Some((first, second)) = inner.split_largest_dim() else {
+                return outer.contains(inner.offset());
+            };
+            recurse(outer, &first) && recurse(outer, &second)
+        }
+
+        recurse(self, other)
+    }
+
+    /// Return the gcd of strides that can actually affect produced ranks.
+    ///
+    /// Dimensions with size `0` or `1` do not vary, so their stride never
+    /// contributes to `offset + sum(coord[i] * stride[i])` and must not
+    /// constrain the congruence class.
+    ///
+    /// ```text
+    /// Slice::new(1, sizes=[4],    strides=[2])    -> values 1,3,5,7 -> gcd 2
+    /// Slice::new(7, sizes=[1],    strides=[99])   -> values 7       -> gcd 0
+    /// Slice::new(0, sizes=[2, 3], strides=[6, 2]) -> values 0,2,4,6,8,10 -> gcd 2
+    /// ```
+    fn active_stride_gcd(&self) -> usize {
+        self.sizes
+            .iter()
+            .zip(&self.strides)
+            .filter(|(size, _)| **size > 1)
+            .map(|(_, stride)| *stride)
+            .fold(0, gcd)
+    }
+
+    /// Return whether the two slices share a possible stride congruence class.
+    ///
+    /// Every value in a slice is congruent to `offset mod active_stride_gcd`.
+    /// If two slices disagree modulo the gcd of their active stride gcds, they
+    /// cannot intersect. This is a necessary, not sufficient, overlap test.
+    ///
+    /// ```text
+    /// even ranks: offset 0, gcd 2 -> 0 mod 2
+    /// odd ranks:  offset 1, gcd 2 -> 1 mod 2
+    ///
+    /// offset diff = 1, modulus = gcd(2, 2) = 2
+    /// 1 % 2 != 0, so the slices cannot overlap.
+    /// ```
+    fn congruence_may_overlap(&self, other: &Slice) -> bool {
+        let modulus = gcd(self.active_stride_gcd(), other.active_stride_gcd());
+        if modulus == 0 {
+            return self.offset == other.offset;
+        }
+        self.offset.abs_diff(other.offset).is_multiple_of(modulus)
+    }
+
+    /// Split this slice in half along its largest varying dimension.
+    ///
+    /// This preserves the represented set exactly: the returned slices are
+    /// disjoint and their union is `self`. The recursive relationship helpers
+    /// use this to refine coarse bounds/congruence checks until a sub-slice is
+    /// contiguous or scalar.
+    ///
+    /// ```text
+    /// 2 x 6 slice split along dim 1:
+    ///
+    /// original:
+    /// 0  1  2  | 3  4  5
+    /// 6  7  8  | 9 10 11
+    ///
+    /// first:        second:
+    /// 0 1 2         3  4  5
+    /// 6 7 8         9 10 11
+    /// ```
+    fn split_largest_dim(&self) -> Option<(Slice, Slice)> {
+        let (dim, size) = self
+            .sizes
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, size)| *size > 1)
+            .max_by_key(|(_, size)| *size)?;
+        let mid = size / 2;
+        let left = self
+            .select(dim, 0, mid, 1)
+            .expect("splitting a valid slice should produce a valid left slice");
+        let right = self
+            .select(dim, mid, size, 1)
+            .expect("splitting a valid slice should produce a valid right slice");
+        Some((left, right))
     }
 
     /// Iterator over the slice's indices.
@@ -828,9 +1075,79 @@ where
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
+    use std::collections::BTreeSet;
     use std::vec;
 
+    use proptest::prelude::*;
+
     use super::*;
+
+    fn small_sizes() -> impl Strategy<Value = Vec<usize>> {
+        prop::collection::vec(1usize..=4, 0..=4)
+            .prop_filter("slice length must stay small", |sizes| {
+                sizes.iter().product::<usize>() <= 64
+            })
+    }
+
+    fn scaled_row_major_slice(
+        offset: usize,
+        sizes: Vec<usize>,
+        stride_scale: usize,
+    ) -> impl Strategy<Value = Slice> {
+        Just({
+            let row_major = Slice::new_row_major(sizes);
+            let strides = row_major
+                .strides()
+                .iter()
+                .map(|stride| stride * stride_scale)
+                .collect();
+            Slice::new(offset, row_major.sizes().to_vec(), strides).unwrap()
+        })
+    }
+
+    fn arbitrary_slice() -> impl Strategy<Value = Slice> {
+        prop_oneof![
+            (0usize..=32).prop_map(|offset| Slice::new(offset, vec![0], vec![1]).unwrap()),
+            (0usize..=32, small_sizes(), 1usize..=4).prop_flat_map(
+                |(offset, sizes, stride_scale)| {
+                    scaled_row_major_slice(offset, sizes, stride_scale)
+                }
+            ),
+        ]
+    }
+
+    fn value_set(slice: &Slice) -> BTreeSet<usize> {
+        slice.iter().collect()
+    }
+
+    proptest! {
+
+        #[test]
+        fn prop_intersects_matches_materialized_sets(left in arbitrary_slice(), right in arbitrary_slice()) {
+            let left_values = value_set(&left);
+            let right_values = value_set(&right);
+            let expected = left_values.iter().any(|value| right_values.contains(value));
+
+            prop_assert_eq!(left.intersects(&right), expected);
+            prop_assert_eq!(left.intersects(&right), right.intersects(&left));
+        }
+
+        #[test]
+        fn prop_contains_slice_matches_materialized_subset(outer in arbitrary_slice(), inner in arbitrary_slice()) {
+            let outer_values = value_set(&outer);
+            let inner_values = value_set(&inner);
+            let expected = inner_values.is_subset(&outer_values);
+
+            prop_assert_eq!(outer.contains_slice(&inner), expected);
+            prop_assert!(outer.contains_slice(&Slice::new(0, vec![0], vec![1]).unwrap()));
+        }
+
+        #[test]
+        fn prop_contains_matches_materialized_membership(slice in arbitrary_slice(), value in 0usize..=256) {
+            prop_assert_eq!(slice.contains(value), value_set(&slice).contains(&value));
+        }
+
+    }
 
     #[test]
     fn test_cartesian_iterator() {
@@ -1105,6 +1422,56 @@ mod tests {
             // ∀ `loc` ∈ `c`, `c.get(c.index(loc)) == loc`.
             assert_eq!(c.get(c.index(loc).unwrap()).unwrap(), loc);
         }
+    }
+
+    #[test]
+    fn test_slice_rank_bounds() {
+        let slice = Slice::new(5, vec![2, 3], vec![10, 2]).unwrap();
+        assert_eq!(slice.rank_bounds(), Some(Range(5, Some(20), 1)));
+
+        let scalar = Slice::new(7, vec![], vec![]).unwrap();
+        assert_eq!(scalar.rank_bounds(), Some(Range(7, Some(8), 1)));
+
+        let empty = Slice::new(7, vec![0], vec![1]).unwrap();
+        assert_eq!(empty.rank_bounds(), None);
+    }
+
+    #[test]
+    fn test_slice_intersects() {
+        let base = Slice::new_row_major([4, 4]);
+        let row0 = base.select(0, 0, 1, 1).unwrap();
+        let row1 = base.select(0, 1, 2, 1).unwrap();
+        let col2 = base.select(1, 2, 3, 1).unwrap();
+
+        assert!(!row0.intersects(&row1));
+        assert!(row1.intersects(&col2));
+
+        let evens = Slice::new(0, vec![8], vec![2]).unwrap();
+        let odds = Slice::new(1, vec![8], vec![2]).unwrap();
+        assert!(!evens.intersects(&odds));
+        assert!(evens.intersects(&Slice::new(6, vec![2], vec![4]).unwrap()));
+
+        let even_cols = base.select(1, 0, 4, 2).unwrap();
+        let odd_cols = base.select(1, 1, 4, 2).unwrap();
+        assert!(!even_cols.intersects(&odd_cols));
+    }
+
+    #[test]
+    fn test_slice_contains_slice() {
+        let base = Slice::new_row_major([4, 4]);
+        let row1 = base.select(0, 1, 2, 1).unwrap();
+        let col2 = base.select(1, 2, 3, 1).unwrap();
+
+        assert!(base.contains_slice(&row1));
+        assert!(!row1.contains_slice(&col2));
+
+        let evens = Slice::new(0, vec![8], vec![2]).unwrap();
+        assert!(evens.contains_slice(&Slice::new(4, vec![3], vec![2]).unwrap()));
+        assert!(!evens.contains_slice(&Slice::new(4, vec![3], vec![1]).unwrap()));
+
+        let empty = Slice::new(0, vec![0], vec![1]).unwrap();
+        assert!(evens.contains_slice(&empty));
+        assert!(!empty.contains_slice(&evens));
     }
 
     #[test]

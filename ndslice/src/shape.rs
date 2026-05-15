@@ -448,6 +448,59 @@ impl Range {
     pub(crate) fn is_empty(&self) -> bool {
         matches!(self, Range(begin, Some(end), _) if end <= begin)
     }
+
+    /// Return whether this range's half-open bounds overlap `other`'s bounds.
+    ///
+    /// This treats [`Range`] as a bounded interval and intentionally ignores
+    /// stride. A strided range may still skip values inside its bounds.
+    ///
+    /// ```text
+    /// self:       [2, 9)
+    /// other:         [5, 12)
+    /// overlap:       ^^^^
+    /// ```
+    pub(crate) fn bounds_overlap(&self, other: &Self) -> bool {
+        if self.is_empty() || other.is_empty() {
+            return false;
+        }
+
+        let Range(self_begin, self_end, _) = self;
+        let Range(other_begin, other_end, _) = other;
+        let self_starts_before_other_ends =
+            other_end.is_none_or(|other_end| *self_begin < other_end);
+        let other_starts_before_self_ends = self_end.is_none_or(|self_end| *other_begin < self_end);
+        self_starts_before_other_ends && other_starts_before_self_ends
+    }
+
+    /// Return whether this range's half-open bounds fully contain `other`'s
+    /// bounds.
+    ///
+    /// This treats [`Range`] as a bounded interval and intentionally ignores
+    /// stride. A strided range may still skip values inside its bounds.
+    ///
+    /// ```text
+    /// self:       [0, 9)
+    /// other:        [2, 7)
+    /// contained:    ^^^^^
+    /// ```
+    pub(crate) fn bounds_contains(&self, other: &Self) -> bool {
+        if other.is_empty() {
+            return true;
+        }
+        if self.is_empty() {
+            return false;
+        }
+
+        let Range(self_begin, self_end, _) = self;
+        let Range(other_begin, other_end, _) = other;
+        let starts_inside = self_begin <= other_begin;
+        let ends_inside = match (self_end, other_end) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(self_end), Some(other_end)) => other_end <= self_end,
+        };
+        starts_inside && ends_inside
+    }
 }
 
 impl fmt::Display for Range {
