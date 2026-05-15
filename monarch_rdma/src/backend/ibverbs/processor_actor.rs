@@ -24,6 +24,7 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
@@ -144,14 +145,7 @@ where
         let (reply, rx) = cx
             .mailbox()
             .open_once_port::<Result<IbvMemoryRegionView, String>>();
-        self.manager
-            .send(cx, RegisterMr { addr, size, reply })
-            .map_err(|e| {
-                format!(
-                    "Requesting MR registration from {:?} failed [virtual_addr=0x{:x}, size={}]: {}",
-                    self.manager, addr, size, e
-                )
-            })?;
+        self.manager.send(cx, RegisterMr { addr, size, reply });
         let mrv = rx
             .recv()
             .await
@@ -187,21 +181,14 @@ where
     ) -> Result<OwnedMutexGuard<Qp>, String> {
         if !self.peer_qps.contains_key(qp_key) {
             let (reply, rx) = cx.mailbox().open_once_port::<Result<Qp, String>>();
-            self.manager
-                .send(
-                    cx,
-                    RequestQueuePair {
-                        qp_key: qp_key.clone(),
-                        remote_manager,
-                        reply,
-                    },
-                )
-                .map_err(|e| {
-                    format!(
-                        "Requesting QP from {:?} failed for {} -> {} on {}: {}",
-                        self.manager, qp_key.self_device, qp_key.other_id, qp_key.other_device, e
-                    )
-                })?;
+            self.manager.send(
+                cx,
+                RequestQueuePair {
+                    qp_key: qp_key.clone(),
+                    remote_manager,
+                    reply,
+                },
+            );
             let qp = rx
                 .recv()
                 .await
@@ -335,9 +322,7 @@ where
             reply,
         } = msg;
         let results = self.process_batch(cx, ops, timeout).await;
-        reply
-            .send(cx, results)
-            .map_err(|e| anyhow::anyhow!("SubmitOps reply send failed: {e}"))?;
+        reply.send(cx, results);
         Ok(())
     }
 }
@@ -411,7 +396,7 @@ mod tests {
                     _domain: null_domain(),
                 }),
             );
-            msg.reply.send(cx, Ok(mrv))?;
+            msg.reply.send(cx, Ok(mrv));
             Ok(())
         }
     }
@@ -432,7 +417,7 @@ mod tests {
                 .unwrap()
                 .request_qp_calls
                 .push(msg.qp_key.clone());
-            msg.reply.send(cx, Ok(MockQp))?;
+            msg.reply.send(cx, Ok(MockQp));
             Ok(())
         }
     }
@@ -532,17 +517,14 @@ mod tests {
         ops: Vec<IbvOp<MockManagerActor>>,
     ) -> Vec<Result<(), String>> {
         let (reply, rx) = harness.client.mailbox().open_once_port();
-        harness
-            .processor
-            .send(
-                &harness.client,
-                SubmitOps {
-                    ops,
-                    timeout: Duration::from_secs(5),
-                    reply,
-                },
-            )
-            .unwrap();
+        harness.processor.send(
+            &harness.client,
+            SubmitOps {
+                ops,
+                timeout: Duration::from_secs(5),
+                reply,
+            },
+        );
         rx.recv().await.unwrap()
     }
 
