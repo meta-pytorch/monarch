@@ -186,7 +186,12 @@ impl Actor for CommActor {
         cx: &Instance<Self>,
         undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        let Undeliverable(mut message_envelope) = undelivered;
+        let mut message_envelope = match undelivered {
+            Undeliverable::Message(message_envelope) => message_envelope,
+            Undeliverable::Lost(lost) => {
+                anyhow::bail!(UndeliverableMessageError::Lost { lost });
+            }
+        };
 
         // 1. Case delivery failure at a "forwarding" step.
         if let Ok(ForwardMessage { message, .. }) =
@@ -205,7 +210,7 @@ impl Actor for CommActor {
             message_envelope.set_header(CAST_ORIGINATING_SENDER, sender.clone());
 
             return_port
-                .send(cx, Undeliverable(message_envelope.clone()))
+                .send(cx, Undeliverable::Message(message_envelope.clone()))
                 .map_err(|err| {
                     let error = DeliveryError::BrokenLink(format!(
                         "error occured when returning ForwardMessage to the original \
@@ -231,7 +236,7 @@ impl Actor for CommActor {
                 return_port.port_addr(),
             )));
             return_port
-                .send(cx, Undeliverable(message_envelope.clone()))
+                .send(cx, Undeliverable::Message(message_envelope.clone()))
                 .map_err(|err| {
                     let error = DeliveryError::BrokenLink(format!(
                         "error occured when returning cast message to the origin \
