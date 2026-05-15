@@ -67,4 +67,16 @@ declare_attrs! {
         Some("rdma_cq_busy_poll_window".to_string()),
     ))
     pub attr RDMA_CQ_BUSY_POLL_WINDOW: Option<Duration> = None;
+
+    /// Per-side budget for the `QueuePairInitializer` handshake. The
+    /// timer arms once when we send `EnsureQueuePair` and is rearmed
+    /// after we hit RTS while still waiting for the peer's
+    /// `NotifyRts`. If it fires the entry is tombstoned with a
+    /// `qp_initializer_failed` so further `RequestQueuePair` calls
+    /// for the same key surface the same error rather than hanging.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_QP_INIT_TIMEOUT".to_string()),
+        Some("rdma_qp_init_timeout".to_string()),
+    ))
+    pub attr RDMA_QP_INIT_TIMEOUT: Duration = Duration::from_secs(30);
 }
