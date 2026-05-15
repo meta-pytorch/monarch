@@ -1024,6 +1024,25 @@ impl From<rdmaxcel_sys::ibv_wc> for IbvWc {
 }
 
 impl IbvWc {
+    /// Test-only constructor
+    #[cfg(test)]
+    pub(super) fn for_test(wr_id: u64, valid: bool) -> Self {
+        Self {
+            wr_id,
+            len: 0,
+            valid,
+            error: None,
+            opcode: rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_WRITE,
+            bytes: None,
+            qp_num: 0,
+            src_qp: 0,
+            pkey_index: 0,
+            slid: 0,
+            sl: 0,
+            dlid_path_bits: 0,
+        }
+    }
+
     /// Returns the Work Request ID associated with this work completion.
     ///
     /// The Work Request ID is used to identify the specific operation that completed.
