@@ -13,6 +13,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
@@ -466,6 +467,11 @@ pub struct IbvTestEnv {
     pub actor_2: ActorRef<RdmaManagerActor>,
     pub ibv_actor_1: ActorRef<IbvManagerActor>,
     pub ibv_actor_2: ActorRef<IbvManagerActor>,
+    /// In-proc handles for the same actors as `ibv_actor_*`.
+    /// Tests that need to call local-only messages such as
+    /// `RequestQueuePair` go through these.
+    pub ibv_handle_1: ActorHandle<IbvManagerActor>,
+    pub ibv_handle_2: ActorHandle<IbvManagerActor>,
     pub rdma_handle_1: RdmaRemoteBuffer,
     pub rdma_handle_2: RdmaRemoteBuffer,
     pub local_memory_1: Arc<dyn RdmaLocalMemory>,
@@ -646,6 +652,14 @@ impl IbvTestEnv {
         let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2
             .resolve_ibv()
             .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 2"))?;
+        let ibv_handle_1: ActorHandle<IbvManagerActor> =
+            ibv_actor_1
+                .downcast_handle(&instance_1)
+                .ok_or_else(|| anyhow::anyhow!("ibv_actor_1 is not in proc_1"))?;
+        let ibv_handle_2: ActorHandle<IbvManagerActor> =
+            ibv_actor_2
+                .downcast_handle(&instance_2)
+                .ok_or_else(|| anyhow::anyhow!("ibv_actor_2 is not in proc_2"))?;
 
         // Fill buffer1 with test data
         if parsed_accel1.0 == "cuda" {
@@ -675,6 +689,8 @@ impl IbvTestEnv {
             actor_2,
             ibv_actor_1,
             ibv_actor_2,
+            ibv_handle_1,
+            ibv_handle_2,
             rdma_handle_1,
             rdma_handle_2,
             local_memory_1,
