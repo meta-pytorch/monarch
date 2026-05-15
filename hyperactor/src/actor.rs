@@ -35,6 +35,7 @@ use crate as hyperactor; // for macros
 use crate::ActorAddr;
 use crate::ActorRef;
 use crate::Data;
+use crate::EndpointLocation;
 use crate::Message;
 use crate::RemoteMessage;
 use crate::context;
@@ -206,11 +207,18 @@ pub trait Actor: Sized + Send + 'static {
 /// [`Actor::handle_undeliverable_message`] can fallback to this default.
 pub fn handle_undeliverable_message<A: Actor>(
     cx: &Instance<A>,
-    Undeliverable(envelope): Undeliverable<MessageEnvelope>,
+    undeliverable: Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
-    assert_eq!(envelope.sender(), cx.self_addr());
-
-    anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+    match undeliverable {
+        Undeliverable::Message(envelope) => {
+            assert_eq!(envelope.sender(), cx.self_addr());
+            anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+        }
+        Undeliverable::Lost(lost) => {
+            assert_eq!(&lost.sender, cx.self_addr());
+            anyhow::bail!(UndeliverableMessageError::Lost { lost });
+        }
+    }
 }
 
 /// An actor that does nothing. It is used to represent "client only" actors,
@@ -269,9 +277,18 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
         cx: &Context<Self>,
         message: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        let sender = message.0.sender().clone();
-        let dest = message.0.dest().clone();
-        let error = message.0.error_msg().unwrap_or(String::new());
+        let (sender, dest, error) = match &message {
+            Undeliverable::Message(envelope) => (
+                envelope.sender().to_string(),
+                envelope.dest().to_string(),
+                envelope.error_msg().unwrap_or(String::new()),
+            ),
+            Undeliverable::Lost(lost) => (
+                lost.sender.to_string(),
+                lost.dest.to_string(),
+                lost.error.clone(),
+            ),
+        };
         match self.handle_undeliverable_message(cx, message).await {
             Ok(_) => {
                 tracing::debug!(
@@ -876,6 +893,10 @@ where
     A: Actor + Handler<M>,
     M: Message,
 {
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Actor(self.actor_addr().clone())
+    }
+
     fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
     where
         C: context::Actor,

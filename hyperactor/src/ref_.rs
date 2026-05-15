@@ -26,6 +26,7 @@ use crate::Actor;
 use crate::ActorAddr;
 use crate::ActorHandle;
 use crate::Endpoint;
+use crate::EndpointLocation;
 use crate::PortAddr;
 use crate::RemoteEndpoint;
 use crate::RemoteHandles;
@@ -35,6 +36,7 @@ use crate::accum::StreamingReducerOpts;
 use crate::actor::Referable;
 use crate::context;
 use crate::context::MailboxExt;
+use crate::mailbox::LostMessage;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
 use crate::mailbox::PortSink;
@@ -97,6 +99,10 @@ where
     A: Referable + RemoteHandles<M>,
     M: RemoteMessage,
 {
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Actor(self.actor_addr.clone())
+    }
+
     fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
     where
         C: context::Actor,
@@ -343,6 +349,10 @@ impl<M> Endpoint<M> for &PortRef<M>
 where
     M: RemoteMessage,
 {
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Port(self.port_addr.clone())
+    }
+
     fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
     where
         C: context::Actor,
@@ -364,12 +374,23 @@ where
     where
         C: context::Actor,
     {
-        let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
+        let serialized = match wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 self.port_addr.clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
-        })?;
+        }) {
+            Ok(serialized) => serialized,
+            Err(err) => {
+                cx.instance()
+                    .report_lost_message(LostMessage::from_send_error::<M>(
+                        cx.mailbox().actor_addr().clone(),
+                        self.endpoint_location(),
+                        &err,
+                    ));
+                return Ok(());
+            }
+        };
         self.post_serialized(cx, headers, serialized);
         Ok(())
     }
@@ -530,6 +551,10 @@ impl<M> Endpoint<M> for OncePortRef<M>
 where
     M: RemoteMessage,
 {
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Port(self.port_addr.clone())
+    }
+
     fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
     where
         C: context::Actor,
@@ -552,12 +577,23 @@ where
         C: context::Actor,
     {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
+        let serialized = match wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 self.port_addr.clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
-        })?;
+        }) {
+            Ok(serialized) => serialized,
+            Err(err) => {
+                cx.instance()
+                    .report_lost_message(LostMessage::from_send_error::<M>(
+                        cx.mailbox().actor_addr().clone(),
+                        self.endpoint_location(),
+                        &err,
+                    ));
+                return Ok(());
+            }
+        };
         cx.post(
             self.port_addr.clone(),
             headers,
