@@ -35,9 +35,11 @@ use crate as hyperactor; // for macros
 use crate::ActorAddr;
 use crate::ActorRef;
 use crate::Data;
+use crate::EndpointLocation;
 use crate::Message;
 use crate::RemoteMessage;
 use crate::context;
+use crate::endpoint::Endpoint;
 use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
@@ -205,11 +207,18 @@ pub trait Actor: Sized + Send + 'static {
 /// [`Actor::handle_undeliverable_message`] can fallback to this default.
 pub fn handle_undeliverable_message<A: Actor>(
     cx: &Instance<A>,
-    Undeliverable(envelope): Undeliverable<MessageEnvelope>,
+    undeliverable: Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
-    assert_eq!(envelope.sender(), cx.self_addr());
-
-    anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+    match undeliverable {
+        Undeliverable::Message(envelope) => {
+            assert_eq!(envelope.sender(), cx.self_addr());
+            anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+        }
+        Undeliverable::Lost(lost) => {
+            assert_eq!(&lost.sender, cx.self_addr());
+            anyhow::bail!(UndeliverableMessageError::Lost { lost });
+        }
+    }
 }
 
 /// An actor that does nothing. It is used to represent "client only" actors,
@@ -268,9 +277,18 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
         cx: &Context<Self>,
         message: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        let sender = message.0.sender().clone();
-        let dest = message.0.dest().clone();
-        let error = message.0.error_msg().unwrap_or(String::new());
+        let (sender, dest, error) = match &message {
+            Undeliverable::Message(envelope) => (
+                envelope.sender().to_string(),
+                envelope.dest().to_string(),
+                envelope.error_msg().unwrap_or(String::new()),
+            ),
+            Undeliverable::Lost(lost) => (
+                lost.sender.to_string(),
+                lost.dest.to_string(),
+                lost.error.clone(),
+            ),
+        };
         match self.handle_undeliverable_message(cx, message).await {
             Ok(_) => {
                 tracing::debug!(
@@ -745,19 +763,6 @@ impl<A: Actor> ActorHandle<A> {
         self.cell.status().clone()
     }
 
-    /// Send a message to the actor. Messages sent through the handle
-    /// are always queued in process, and do not require serialization.
-    pub fn send<M: Message>(
-        &self,
-        cx: &impl context::Actor,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
-    where
-        A: Handler<M>,
-    {
-        self.ports.get().send(cx, message)
-    }
-
     /// Return a port for the provided message type handled by the actor.
     pub fn port<M: Message>(&self) -> PortHandle<M>
     where
@@ -880,6 +885,23 @@ impl<A: Actor> IntoFuture for ActorHandle<A> {
 impl<A: Actor> Debug for ActorHandle<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         f.debug_struct("ActorHandle").field("cell", &"..").finish()
+    }
+}
+
+impl<A, M> Endpoint<M> for &ActorHandle<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Actor(self.actor_addr().clone())
+    }
+
+    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    where
+        C: context::Actor,
+    {
+        Endpoint::send(&self.ports.get(), cx, message)
     }
 }
 
@@ -1598,7 +1620,7 @@ mod tests {
             // proc, this proc will route that evenlope to the dest actor.
             dest_proc: Proc,
             // Vec index is the message seq - 1, value is the order this message
-            // would be relayed to the dest actor. Dest actor is responsible to
+            // would be relayed to the dest actor. Endpoint actor is responsible to
             // ensure itself processes these messages in order.
             relay_orders: Vec<usize>,
         ) -> Self {

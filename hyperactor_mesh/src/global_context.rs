@@ -57,6 +57,7 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
@@ -267,8 +268,42 @@ impl Actor for GlobalClientActor {
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
-        Undeliverable(mut env): Undeliverable<MessageEnvelope>,
+        undeliverable: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
+        let mut env = match undeliverable {
+            Undeliverable::Message(env) => env,
+            Undeliverable::Lost(lost) => {
+                let actor_ref = lost.sender.clone();
+                let event = ActorSupervisionEvent::new(
+                    actor_ref.clone(),
+                    None,
+                    ActorStatus::generic_failure(format!(
+                        "message not delivered to {}: {}",
+                        lost.dest, lost.error
+                    )),
+                    None,
+                );
+                match get_global_supervision_sink() {
+                    Some(sink) => {
+                        if let Err(e) = sink.send(cx, event) {
+                            tracing::warn!(
+                                %e,
+                                actor=%actor_ref,
+                                "failed to forward supervision event from lost message"
+                            );
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            actor=%actor_ref,
+                            error=%lost.error,
+                            "no supervision sink; lost message logged but not forwarded"
+                        );
+                    }
+                }
+                return Ok(());
+            }
+        };
         env.set_error(DeliveryError::BrokenLink(
             "message returned to global root client".to_string(),
         ));
@@ -544,7 +579,7 @@ mod tests {
         let undeliverable_port =
             PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&client_actor_id);
         undeliverable_port
-            .send(client, Undeliverable(env))
+            .send(client, Undeliverable::Message(env))
             .expect("inject_undeliverable: send failed");
     }
 
