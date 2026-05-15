@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::ActorHandle;
+use hyperactor::Endpoint as _;
 use hyperactor::Instance;
 use hyperactor::Mailbox;
 use hyperactor_mesh::proc_launcher::LaunchOptions;

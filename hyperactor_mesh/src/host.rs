@@ -1685,6 +1685,7 @@ pub mod testing {
     use hyperactor::Actor;
     use hyperactor::ActorAddr;
     use hyperactor::Context;
+    use hyperactor::Endpoint as _;
     use hyperactor::Handler;
     use hyperactor::OncePortRef;
     /// Just a simple actor, available in both the bootstrap binary as well as
@@ -1716,6 +1717,7 @@ mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::Context;
+    use hyperactor::Endpoint as _;
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::OncePortRef;
