@@ -103,7 +103,7 @@ where
         EndpointLocation::Actor(self.actor_addr.clone())
     }
 
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    fn send<C>(self, cx: &C, message: M)
     where
         C: context::Actor,
     {
@@ -116,12 +116,7 @@ where
     A: Referable + RemoteHandles<M>,
     M: RemoteMessage,
 {
-    fn send_with_headers<C>(
-        self,
-        cx: &C,
-        headers: Flattrs,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
+    fn send_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
     where
         C: context::Actor,
     {
@@ -353,7 +348,7 @@ where
         EndpointLocation::Port(self.port_addr.clone())
     }
 
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    fn send<C>(self, cx: &C, message: M)
     where
         C: context::Actor,
     {
@@ -365,12 +360,7 @@ impl<M> RemoteEndpoint<M> for &PortRef<M>
 where
     M: RemoteMessage,
 {
-    fn send_with_headers<C>(
-        self,
-        cx: &C,
-        headers: Flattrs,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
+    fn send_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
     where
         C: context::Actor,
     {
@@ -388,11 +378,10 @@ where
                         self.endpoint_location(),
                         &err,
                     ));
-                return Ok(());
+                return;
             }
         };
         self.post_serialized(cx, headers, serialized);
-        Ok(())
     }
 }
 
@@ -555,7 +544,7 @@ where
         EndpointLocation::Port(self.port_addr.clone())
     }
 
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    fn send<C>(self, cx: &C, message: M)
     where
         C: context::Actor,
     {
@@ -567,12 +556,7 @@ impl<M> RemoteEndpoint<M> for OncePortRef<M>
 where
     M: RemoteMessage,
 {
-    fn send_with_headers<C>(
-        self,
-        cx: &C,
-        mut headers: Flattrs,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
+    fn send_with_headers<C>(self, cx: &C, mut headers: Flattrs, message: M)
     where
         C: context::Actor,
     {
@@ -591,7 +575,7 @@ where
                         self.endpoint_location(),
                         &err,
                     ));
-                return Ok(());
+                return;
             }
         };
         cx.post(
@@ -601,7 +585,6 @@ where
             self.return_undeliverable,
             context::SeqInfoPolicy::AssignNew,
         );
-        Ok(())
     }
 }
 
