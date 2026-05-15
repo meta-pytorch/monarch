@@ -26,7 +26,7 @@
 //! let mbox = Mailbox::new_detached(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
 //!
-//! port.send(&client, 123).unwrap();
+//! port.send(&client, 123);
 //! assert_eq!(receiver.recv().await.unwrap(), 123u64);
 //! # })
 //! ```
@@ -46,7 +46,7 @@
 //!
 //! let (port, receiver) = mbox.open_once_port::<u64>();
 //!
-//! port.send(&client, 123u64).unwrap();
+//! port.send(&client, 123u64);
 //! assert_eq!(receiver.recv().await.unwrap(), 123u64);
 //! # })
 //! ```
@@ -1365,7 +1365,8 @@ impl<C: context::Actor, M: RemoteMessage> Sink<M> for PortSink<C, M> {
     }
 
     fn start_send(self: Pin<&mut Self>, item: M) -> Result<(), Self::Error> {
-        crate::Endpoint::send(&self.port, &self.cx, item)
+        crate::Endpoint::send(&self.port, &self.cx, item);
+        Ok(())
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -2003,17 +2004,8 @@ impl<M: Message> PortHandle<M> {
             None => PortLocation::new_unbound::<M>(self.inner.mailbox.actor_addr().clone()),
         }
     }
-}
 
-impl<M> Endpoint<M> for &PortHandle<M>
-where
-    M: Message,
-{
-    fn endpoint_location(&self) -> EndpointLocation {
-        self.location().into()
-    }
-
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    pub(crate) fn try_send<C>(&self, cx: &C, message: M) -> Result<(), MailboxSenderError>
     where
         C: context::Actor,
     {
@@ -2024,17 +2016,10 @@ where
                 actor_id: self.inner.mailbox.actor_addr().clone(),
                 kind: MailboxErrorKind::OwnerTerminated(status.clone()),
             };
-            let err = MailboxSenderError::new_unbound::<M>(
+            return Err(MailboxSenderError::new_unbound::<M>(
                 self.inner.mailbox.actor_addr().clone(),
                 MailboxSenderErrorKind::Mailbox(err),
-            );
-            cx.instance()
-                .report_lost_message(LostMessage::from_send_error::<M>(
-                    cx.mailbox().actor_addr().clone(),
-                    self.endpoint_location(),
-                    &err,
-                ));
-            return Ok(());
+            ));
         }
         let mut headers = Flattrs::new();
 
@@ -2067,12 +2052,28 @@ where
         //   2.  another thread is trying to bind and thus waiting for write lock.
         // But we do not expect `sender.send` to use the same PortHandle, so this
         // deadlock scenario should not happen.
-        if let Err(err) = self.inner.sender.send(headers, message).map_err(|err| {
+        self.inner.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.inner.mailbox.actor_addr().clone(),
                 classify_sender_error(err),
             )
-        }) {
+        })
+    }
+}
+
+impl<M> Endpoint<M> for &PortHandle<M>
+where
+    M: Message,
+{
+    fn endpoint_location(&self) -> EndpointLocation {
+        self.location().into()
+    }
+
+    fn send<C>(self, cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
+        if let Err(err) = self.try_send(cx, message) {
             cx.instance()
                 .report_lost_message(LostMessage::from_send_error::<M>(
                     cx.mailbox().actor_addr().clone(),
@@ -2080,7 +2081,6 @@ where
                     &err,
                 ));
         }
-        Ok(())
     }
 }
 
@@ -2185,7 +2185,7 @@ where
         EndpointLocation::Port(self.port_id.clone())
     }
 
-    fn send<C>(self, _cx: &C, message: M) -> Result<(), MailboxSenderError>
+    fn send<C>(self, _cx: &C, message: M)
     where
         C: context::Actor,
     {
@@ -2214,7 +2214,6 @@ where
                     &err,
                 ));
         }
-        Ok(())
     }
 }
 
@@ -3416,28 +3415,28 @@ mod tests {
             .open_accum_port(accum::join_semilattice::<accum::Max<i64>>());
 
         for i in -3..4 {
-            port.send(&client, accum::Max(i)).unwrap();
+            port.send(&client, accum::Max(i));
             let received: accum::Max<i64> = receiver.recv().await.unwrap();
             let msg = received.get();
             assert_eq!(msg, &i);
         }
         // Send a smaller or same value. Should still receive the previous max.
         for i in -3..4 {
-            port.send(&client, accum::Max(i)).unwrap();
+            port.send(&client, accum::Max(i));
             assert_eq!(receiver.recv().await.unwrap().get(), &3);
         }
         // send a larger value. Should receive the new max.
-        port.send(&client, accum::Max(4)).unwrap();
+        port.send(&client, accum::Max(4));
         assert_eq!(receiver.recv().await.unwrap().get(), &4);
 
         // Send multiple updates. Should only receive the final change.
         for i in 5..10 {
-            port.send(&client, accum::Max(i)).unwrap();
+            port.send(&client, accum::Max(i));
         }
         assert_eq!(receiver.recv().await.unwrap().get(), &9);
-        port.send(&client, accum::Max(1)).unwrap();
-        port.send(&client, accum::Max(3)).unwrap();
-        port.send(&client, accum::Max(2)).unwrap();
+        port.send(&client, accum::Max(1));
+        port.send(&client, accum::Max(3));
+        port.send(&client, accum::Max(2));
         assert_eq!(receiver.recv().await.unwrap().get(), &9);
     }
 
@@ -3472,7 +3471,7 @@ mod tests {
 
         // let port_id = port.port_addr().clone();
 
-        port.send(&client, 123u64).unwrap();
+        port.send(&client, 123u64);
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
 
         // // The borrow checker won't let us send again on the port
@@ -3684,7 +3683,7 @@ mod tests {
         let proc = Proc::configured(test_proc_id("0"), BoxedMailboxSender::new(muxer));
         let (client, _) = proc.instance("client").unwrap();
 
-        port.send(&client, 123u64).unwrap();
+        port.send(&client, 123u64);
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
 
         /*
@@ -3900,10 +3899,10 @@ mod tests {
             Ok(())
         });
 
-        port.send(&client, 10).unwrap();
-        port.send(&client, 5).unwrap();
-        port.send(&client, 1).unwrap();
-        port.send(&client, 0).unwrap();
+        port.send(&client, 10);
+        port.send(&client, 5);
+        port.send(&client, 1);
+        port.send(&client, 0);
 
         assert_eq!(count.load(Ordering::SeqCst), 16);
     }
@@ -3978,9 +3977,7 @@ mod tests {
             wirevalue::Any::serialize(&1u64).unwrap(),
             Flattrs::new(),
         );
-        return_handle
-            .send(&client, Undeliverable::Message(message))
-            .unwrap();
+        return_handle.send(&client, Undeliverable::Message(message));
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -4023,9 +4020,7 @@ mod tests {
         );
         let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
-        return_handle
-            .send(&client, Undeliverable::Message(envelope.clone()))
-            .unwrap();
+        return_handle.send(&client, Undeliverable::Message(envelope.clone()));
         // Check we receive the undelivered message.
         assert!(
             tokio::time::timeout(tokio::time::Duration::from_secs(1), return_receiver.recv())
@@ -4788,8 +4783,7 @@ mod tests {
 
         handle
             .contramap(|m| (1, m))
-            .send(&client, "hello".to_string())
-            .unwrap();
+            .send(&client, "hello".to_string());
         assert_eq!(rx.recv().await.unwrap(), (1, "hello".to_string()));
     }
 
@@ -4937,10 +4931,7 @@ mod tests {
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
 
-        let result = port_handle.send(&client, 42u64);
-
-        assert!(result.is_err(), "send should fail when actor is stopped");
-        let err = result.unwrap_err();
+        let err = port_handle.try_send(&client, 42u64).unwrap_err();
         assert_matches!(
             err.kind(),
             MailboxSenderErrorKind::Mailbox(mailbox_err)
@@ -4967,10 +4958,7 @@ mod tests {
             "test failure".to_string(),
         )));
 
-        let result = port_handle.send(&client, 42u64);
-
-        assert!(result.is_err(), "send should fail when actor is failed");
-        let err = result.unwrap_err();
+        let err = port_handle.try_send(&client, 42u64).unwrap_err();
         assert_matches!(
             err.kind(),
             MailboxSenderErrorKind::Mailbox(mailbox_err)
@@ -4991,7 +4979,7 @@ mod tests {
         assert!(port_ref.reducer_spec().is_some());
 
         // Send a single value via the bound port
-        port_ref.send(&client, 42).unwrap();
+        port_ref.send(&client, 42);
 
         // Should receive the value
         let result = receiver.recv().await.unwrap();
