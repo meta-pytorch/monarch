@@ -4402,7 +4402,9 @@ mod tests {
             return_handle,
         );
 
-        let Undeliverable(envelope) = undeliverable_rx.recv().await.unwrap();
+        let Undeliverable::Message(envelope) = undeliverable_rx.recv().await.unwrap() else {
+            panic!("expected returned message");
+        };
         assert_eq!(envelope.dest(), &remote_dest);
     }
 
