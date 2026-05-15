@@ -2036,6 +2036,43 @@ impl<A: Actor> Instance<A> {
         self.inner.self_addr()
     }
 
+    /// Report a message that could not be delivered and could not be returned.
+    pub(crate) fn report_lost_message(&self, lost: crate::mailbox::LostMessage) {
+        static REPORT_LOST_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
+
+        let mailbox = &self.inner.mailbox;
+        let return_handle = mailbox.bound_return_handle().unwrap_or_else(|| {
+            let actor_id = mailbox.actor_addr();
+            if REPORT_LOST_WARNED_MAILBOXES
+                .get_or_init(DashSet::new)
+                .insert(actor_id.clone())
+            {
+                let bt = std::backtrace::Backtrace::force_capture();
+                tracing::warn!(
+                    actor_id = ?actor_id,
+                    backtrace = ?bt,
+                    "actor attempted to report a lost message without binding Undeliverable<MessageEnvelope>"
+                );
+            }
+            crate::mailbox::monitored_return_handle()
+        });
+
+        if let Err(error) = crate::Endpoint::send(
+            &return_handle,
+            self,
+            crate::mailbox::Undeliverable::lost(lost.clone()),
+        ) {
+            tracing::error!(
+                sender = %lost.sender,
+                dest = %lost.dest,
+                message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                error = %lost.error,
+                return_error = %error,
+                "lost message could not be reported"
+            );
+        }
+    }
+
     /// Snapshot of this actor's introspection payload.
     ///
     /// Returns an [`IntrospectResult`] built from live [`InstanceCell`]

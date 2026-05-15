@@ -177,7 +177,13 @@ mod tests {
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_matches!(
-            &return_rx.recv().await.unwrap().into_inner().errors()[..],
+            &return_rx
+                .recv()
+                .await
+                .unwrap()
+                .into_message()
+                .expect("expected returned envelope")
+                .errors()[..],
             &[DeliveryError::BrokenLink(_)]
         );
 
