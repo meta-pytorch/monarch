@@ -839,7 +839,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 
 /// Introspect task: runs on a dedicated tokio task per actor,
 /// handling [`IntrospectMessage`] by reading [`InstanceCell`]
-/// directly and replying via the actor's [`Mailbox`].
+/// directly and replying through the owning [`Proc`](crate::Proc).
 ///
 /// The actor's message loop never sees these messages.
 ///
@@ -848,7 +848,6 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 /// Exercises S1, S2, S4, S5, S6, S11 (see module doc).
 pub(crate) async fn serve_introspect(
     cell: InstanceCell,
-    mailbox: crate::mailbox::Mailbox,
     mut receiver: crate::mailbox::PortReceiver<IntrospectMessage>,
 ) {
     use crate::actor::ActorStatus;
@@ -917,7 +916,7 @@ pub(crate) async fn serve_introspect(
                     },
                     IntrospectView::Actor => live_actor_payload(&cell),
                 };
-                mailbox.serialize_and_send_once(
+                cell.proc().serialize_and_send_once(
                     reply,
                     payload,
                     crate::mailbox::monitored_return_handle(),
@@ -947,7 +946,7 @@ pub(crate) async fn serve_introspect(
                         as_of: SystemTime::now(),
                     }
                 });
-                mailbox.serialize_and_send_once(
+                cell.proc().serialize_and_send_once(
                     reply,
                     payload,
                     crate::mailbox::monitored_return_handle(),
