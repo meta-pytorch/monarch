@@ -128,7 +128,7 @@ impl Handler<GetActorId> for TestActor {
         GetActorId(reply): GetActorId,
     ) -> Result<(), anyhow::Error> {
         let seq_info = cx.headers().get(SEQ_INFO);
-        reply.send(cx, (cx.self_addr().clone(), seq_info))?;
+        reply.send(cx, (cx.self_addr().clone(), seq_info));
         Ok(())
     }
 }
@@ -221,7 +221,7 @@ impl Handler<Forward> for TestActor {
         visited.push(this);
         let next = to_visit.front().cloned();
         anyhow::ensure!(next.is_some(), "unexpected forward chain termination");
-        next.unwrap().send(cx, Forward { to_visit, visited })?;
+        next.unwrap().send(cx, Forward { to_visit, visited });
         Ok(())
     }
 }
@@ -251,7 +251,7 @@ impl Handler<GetCastInfo> for TestActor {
         cx: &Context<Self>,
         GetCastInfo { cast_info }: GetCastInfo,
     ) -> Result<(), anyhow::Error> {
-        cast_info.send(cx, (cx.cast_point(), cx.bind(), cx.sender().clone()))?;
+        cast_info.send(cx, (cx.cast_point(), cx.bind(), cx.sender().clone()));
         Ok(())
     }
 }
@@ -307,7 +307,7 @@ impl Handler<GetConfigAttrs> for TestActor {
             hyperactor_config::global::attrs(),
             bincode::config::legacy(),
         )?;
-        reply.send(cx, attrs)?;
+        reply.send(cx, attrs);
         Ok(())
     }
 }
@@ -396,7 +396,7 @@ impl Handler<NextSupervisionFailure> for WrapperActor {
         let mesh = if let Some(mesh) = self.mesh.as_ref() {
             mesh.deref()
         } else {
-            msg.0.send(cx, None)?;
+            msg.0.send(cx, None);
             return Ok(());
         };
         let failure = match tokio::time::timeout(
@@ -411,7 +411,7 @@ impl Handler<NextSupervisionFailure> for WrapperActor {
             // If we timeout, send back None.
             Err(_) => None,
         };
-        msg.0.send(cx, failure)?;
+        msg.0.send(cx, failure);
         Ok(())
     }
 }

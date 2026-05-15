@@ -256,9 +256,7 @@ impl PythonPortHandle {
 #[pymethods]
 impl PythonPortHandle {
     fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(instance.deref(), message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        self.inner.send(instance.deref(), message);
         Ok(())
     }
 
@@ -294,9 +292,7 @@ impl PythonPortRef {
     }
 
     fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(instance.deref(), message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        self.inner.send(instance.deref(), message);
         Ok(())
     }
 
@@ -445,8 +441,7 @@ impl PythonOncePortHandle {
         let Some(port) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
         };
-        port.send(instance.deref(), message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        port.send(instance.deref(), message);
         Ok(())
     }
 
@@ -492,9 +487,7 @@ impl PythonOncePortRef {
             return Err(PyErr::new::<PyValueError, _>("OncePortRef is already used"));
         };
         let port_ref: hyperactor::OncePortRef<PythonMessage> = port_ref;
-        port_ref
-            .send(instance.deref(), message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        port_ref.send(instance.deref(), message);
         Ok(())
     }
 
@@ -628,13 +621,13 @@ impl EitherPortRef {
         message: crate::actor::PythonMessage,
     ) -> anyhow::Result<()> {
         match self {
-            EitherPortRef::Unbounded(port_ref) => port_ref.inner.send(cx, message)?,
+            EitherPortRef::Unbounded(port_ref) => port_ref.inner.send(cx, message),
             EitherPortRef::Once(once_port_ref) => {
                 let port = once_port_ref
                     .inner
                     .take()
                     .ok_or_else(|| anyhow::anyhow!("OncePortRef already used"))?;
-                port.send(cx, message)?;
+                port.send(cx, message);
             }
         }
         Ok(())
@@ -652,14 +645,14 @@ impl EitherPortRef {
     ) -> anyhow::Result<()> {
         match self {
             EitherPortRef::Unbounded(port_ref) => {
-                port_ref.inner.send_with_headers(cx, headers, message)?
+                port_ref.inner.send_with_headers(cx, headers, message)
             }
             EitherPortRef::Once(once_port_ref) => {
                 let port = once_port_ref
                     .inner
                     .take()
                     .ok_or_else(|| anyhow::anyhow!("OncePortRef already used"))?;
-                port.send_with_headers(cx, headers, message)?;
+                port.send_with_headers(cx, headers, message);
             }
         }
         Ok(())

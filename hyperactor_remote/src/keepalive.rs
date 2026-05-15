@@ -364,7 +364,7 @@ impl KeepaliveWorker {
                 generation,
                 reply: this.port::<KeepaliveAck>().bind().into_once(),
             },
-        )?;
+        );
 
         this.self_message_with_delay(SendKeepalive { generation }, self.interval)?;
         this.self_message_with_delay(AckDeadline { generation }, self.timeout)?;
@@ -401,7 +401,7 @@ impl Handler<Keepalive> for KeepaliveSupervisor {
             KeepaliveAck {
                 generation: message.generation,
             },
-        )?;
+        );
         self.schedule_deadline(cx)
     }
 }
@@ -485,7 +485,7 @@ mod tests {
             this: &Instance<Self>,
             event: &ActorSupervisionEvent,
         ) -> anyhow::Result<bool> {
-            self.events.send(this, event.clone())?;
+            self.events.send(this, event.clone());
             Ok(true)
         }
     }
@@ -515,15 +515,13 @@ mod tests {
             .unwrap();
         let (reply, ack_rx) = parent.open_once_port::<KeepaliveAck>();
 
-        supervisor
-            .send(
-                &parent,
-                Keepalive {
-                    generation: 41,
-                    reply: reply.bind(),
-                },
-            )
-            .unwrap();
+        supervisor.send(
+            &parent,
+            Keepalive {
+                generation: 41,
+                reply: reply.bind(),
+            },
+        );
 
         let ack = ack_rx.recv().await.unwrap();
         assert_eq!(ack.generation, 41);
