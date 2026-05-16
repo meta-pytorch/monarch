@@ -1364,16 +1364,20 @@ where
     async fn handle_undeliverable_message(
         &mut self,
         this: &Instance<Self>,
-        Undeliverable(envelope): Undeliverable<MessageEnvelope>,
+        undeliverable: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
+        let error = match undeliverable {
+            Undeliverable::Message(envelope) => envelope.error_msg().unwrap_or_default(),
+            Undeliverable::Lost(lost) => lost.error,
+        };
         if self.terminal {
             tracing::warn!(
                 "undeliverable message after handshake terminated: {}",
-                envelope.error_msg().unwrap_or_default()
+                error
             );
             return Ok(());
         }
-        self.fail(this, envelope.error_msg().unwrap_or_default())
+        self.fail(this, error)
     }
 }
 
@@ -1854,7 +1858,7 @@ mod tests {
         )
         .unwrap();
         envelope.set_error(DeliveryError::Mailbox(error.into()));
-        Undeliverable(envelope)
+        Undeliverable::Message(envelope)
     }
 
     /// In an awaiting state, an undeliverable message returned to the

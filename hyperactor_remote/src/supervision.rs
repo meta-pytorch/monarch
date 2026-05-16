@@ -977,7 +977,7 @@ mod tests {
         .unwrap();
         worker
             .port::<Undeliverable<MessageEnvelope>>()
-            .send(&client, Undeliverable(envelope))
+            .send(&client, Undeliverable::Message(envelope))
             .unwrap();
 
         let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
@@ -1145,7 +1145,7 @@ mod tests {
         .unwrap();
         worker
             .port::<Undeliverable<MessageEnvelope>>()
-            .send(&inst, Undeliverable(envelope))
+            .send(&inst, Undeliverable::Message(envelope))
             .unwrap();
 
         // Under `Detach`, the worker clears its session and stops the

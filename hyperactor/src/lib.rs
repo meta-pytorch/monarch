@@ -123,6 +123,7 @@ pub use addr::Location;
 pub use addr::PortAddr;
 pub use addr::ProcAddr;
 pub use endpoint::Endpoint;
+pub use endpoint::EndpointLocation;
 pub use endpoint::RemoteEndpoint;
 pub use gateway::Gateway;
 #[doc(inline)]
