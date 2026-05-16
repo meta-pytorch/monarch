@@ -158,7 +158,7 @@ impl ProcMesh {
             );
         }
 
-        let root_comm_actor = ActorRef::attest(
+        let _root_comm_actor: ActorRef<CommActor> = ActorRef::attest(
             ranks
                 .first()
                 .expect("root mesh cannot be empty")
@@ -219,7 +219,7 @@ impl ProcMesh {
             }
         }
 
-        let mut proc_mesh = Self {
+        let proc_mesh = Self {
             id,
             comm_actor_name: Some(comm_actor_name.clone()),
             current_ref,
@@ -239,13 +239,8 @@ impl ProcMesh {
         // Now that we have all of the spawned comm actors, kick them all into
         // mesh mode.
         for (rank, comm_actor) in &address_book {
-            comm_actor
-                .send(cx, CommMeshConfig::new(*rank, address_book.clone()))
-                .map_err(|e| Error::SendingError(comm_actor.actor_addr().clone(), Box::new(e)))?
+            comm_actor.send(cx, CommMeshConfig::new(*rank, address_book.clone()));
         }
-
-        // The comm actor is now set up and ready to go.
-        proc_mesh.current_ref.root_comm_actor = Some(root_comm_actor);
 
         Ok(proc_mesh)
     }
@@ -271,34 +266,26 @@ impl ProcMesh {
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         if let Some(controller) = self.controller.take() {
             let id = self.id.resource_id().clone();
-            controller
-                .send(
-                    cx,
-                    resource::Stop {
-                        id: id.clone(),
-                        reason,
-                    },
-                )
-                .map_err(|e| {
-                    crate::Error::SendingError(controller.actor_addr().clone(), Box::new(e))
-                })?;
+            controller.send(
+                cx,
+                resource::Stop {
+                    id: id.clone(),
+                    reason,
+                },
+            );
 
             // The controller processes messages serially, so by the time it
             // gets to this `GetState`, its `health_state.statuses` already
             // reflects the outcome of `stop_proc_mesh` (Stopping, Stopped,
             // Failed, or Timeout on `PROC_STOP_MAX_IDLE` exhaustion).
             let (port, mut rx) = cx.mailbox().open_port();
-            controller
-                .send(
-                    cx,
-                    resource::GetState::<resource::mesh::State<()>> {
-                        id: id.clone(),
-                        reply: port.bind(),
-                    },
-                )
-                .map_err(|e| {
-                    crate::Error::SendingError(controller.actor_addr().clone(), Box::new(e))
-                })?;
+            controller.send(
+                cx,
+                resource::GetState::<resource::mesh::State<()>> {
+                    id: id.clone(),
+                    reply: port.bind(),
+                },
+            );
 
             let statuses = rx.recv().await?;
             let Some(state) = &statuses.state else {

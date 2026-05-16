@@ -980,9 +980,7 @@ impl StreamActor {
         let message = LocalStateBrokerMessage::Set(x as usize, state);
 
         let broker = BrokerId::new(params.broker_id).resolve(cx).await;
-        broker
-            .send(cx, message)
-            .map_err(|e| CallFunctionError::Error(e.into()))?;
+        broker.send(cx, message);
         let result = recv
             .recv()
             .await
@@ -1069,13 +1067,8 @@ impl StreamMessageHandler for StreamActor {
         };
 
         let event = self.cuda_stream().map(|stream| stream.record_event(None));
-        first_use_sender.send(cx, (event, result)).map_err(|err| {
-            anyhow!(
-                "failed sending first use event for borrow {:?}: {:?}",
-                borrow,
-                err
-            )
-        })
+        first_use_sender.send(cx, (event, result));
+        Ok(())
     }
 
     async fn borrow_first_use(
@@ -1152,13 +1145,8 @@ impl StreamMessageHandler for StreamActor {
             Err(e) => Err(e),
         };
 
-        last_use_sender.send(cx, (event, tensor)).map_err(|err| {
-            anyhow!(
-                "failed sending last use event for borrow {:?}: {:?}",
-                borrow,
-                err
-            )
-        })
+        last_use_sender.send(cx, (event, tensor));
+        Ok(())
     }
 
     async fn borrow_drop(

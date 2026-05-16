@@ -44,7 +44,7 @@ impl Handler<Subscribe> for CounterActor {
         let port: reference::PortRef<u64> = subscriber.0;
         self.subscribers.push(port);
         for port in &self.subscribers {
-            port.send(cx, self.n)?;
+            port.send(cx, self.n);
         }
         self.n += 1;
         Ok(())
@@ -67,7 +67,7 @@ impl Actor for CountClient {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         // Subscribe to the counter on initialization. We give it our u64 port to report
         // messages back to.
-        self.counter.send(this, Subscribe(this.port().bind()))?;
+        self.counter.send(this, Subscribe(this.port().bind()));
         Ok(())
     }
 }
