@@ -18,6 +18,7 @@ use std::time::Duration;
 use hyperactor::Actor;
 use hyperactor::ActorAddr;
 use hyperactor::ActorRef;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::ProcAddr;
 use hyperactor::RemoteMessage;

@@ -12,9 +12,11 @@ use std::hash::Hasher;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use hyperactor::Endpoint as _;
 use hyperactor::Mailbox;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
 use hyperactor::accum::ReducerFactory;
