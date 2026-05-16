@@ -7,7 +7,6 @@
  */
 
 #![allow(internal_features)]
-#![feature(assert_matches)]
 #![feature(sync_unsafe_cell)]
 #![feature(mpmc_channel)]
 #![feature(cfg_version)]
@@ -699,10 +698,10 @@ pub fn set_entity_dispatcher(dispatcher: Box<dyn EntityEventDispatcher>) {
                 EntityEventState::Dispatching(_) => Vec::new(),
             };
         for event in buffered {
-            if let EntityEventState::Dispatching(d) = &*state {
-                if let Err(e) = d.dispatch(event) {
-                    tracing::error!("failed to dispatch buffered entity event: {:?}", e);
-                }
+            if let EntityEventState::Dispatching(d) = &*state
+                && let Err(e) = d.dispatch(event)
+            {
+                tracing::error!("failed to dispatch buffered entity event: {:?}", e);
             }
         }
     }

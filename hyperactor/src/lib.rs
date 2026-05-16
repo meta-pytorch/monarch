@@ -47,7 +47,6 @@
 //! | Actor     | `addr,proc_name,name[pid]`    |
 
 #![feature(anonymous_lifetime_in_impl_trait)]
-#![feature(assert_matches)]
 #![feature(associated_type_defaults)]
 #![feature(box_patterns)]
 #![feature(btree_cursors)]

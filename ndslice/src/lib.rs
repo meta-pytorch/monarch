@@ -17,7 +17,6 @@
 //! macros and other higher-level constructs, enabling reuse in both
 //! runtime and macro contexts.
 
-#![feature(assert_matches)]
 #![recursion_limit = "512"]
 
 mod slice;

@@ -118,16 +118,16 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
                 return;
             }
         };
-        if self.tx.send(data).is_err() {
-            if let Some(return_channel) = return_channel {
-                return_channel
-                    .send(SendError {
-                        error: ChannelError::Closed,
-                        message,
-                        reason: None,
-                    })
-                    .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
-            }
+        if self.tx.send(data).is_err()
+            && let Some(return_channel) = return_channel
+        {
+            return_channel
+                .send(SendError {
+                    error: ChannelError::Closed,
+                    message,
+                    reason: None,
+                })
+                .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
         }
     }
 

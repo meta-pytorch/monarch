@@ -42,6 +42,10 @@ use crate::shape::PyRegion;
     name = "ProcMesh",
     module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
 )]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "PyO3 #[pyclass] enum; Box wrapping interacts with PyO3 codegen and Python interop — separate diff"
+)]
 pub enum PyProcMesh {
     Owned(PyProcMeshImpl),
     Ref(PyProcMeshRefImpl),

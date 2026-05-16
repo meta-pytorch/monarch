@@ -27,7 +27,6 @@
 //! for details.
 
 #![feature(min_specialization)]
-#![feature(assert_matches)]
 
 use std::cell::UnsafeCell;
 use std::cmp::min;

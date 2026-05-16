@@ -491,7 +491,7 @@ impl Bind for PythonMessage {
 impl PythonMessage {
     #[new]
     #[pyo3(signature = (kind, message))]
-    pub fn new<'py>(kind: PythonMessageKind, message: PyRef<'py, FrozenBuffer>) -> PyResult<Self> {
+    pub fn new(kind: PythonMessageKind, message: PyRef<'_, FrozenBuffer>) -> PyResult<Self> {
         Ok(PythonMessage::new_from_buf(kind, message.inner.clone()))
     }
 

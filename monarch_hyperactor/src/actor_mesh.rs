@@ -523,6 +523,10 @@ pub(crate) struct PyActorMeshRef {
     name = "PythonActorMeshImpl",
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "PyO3 #[pyclass] enum; Box wrapping interacts with PyO3 codegen and Python interop — separate diff"
+)]
 pub(crate) enum PythonActorMeshImpl {
     Owned(PyActorMesh),
     Ref(PyActorMeshRef),

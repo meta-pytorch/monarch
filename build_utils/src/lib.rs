@@ -349,10 +349,10 @@ pub fn link_libstdcpp_static() {
                 None
             }
         });
-    if let Some(gcc_lib_path) = gcc_lib_path {
-        if !gcc_lib_path.as_os_str().is_empty() {
-            println!("cargo:rustc-link-search=native={}", gcc_lib_path.display());
-        }
+    if let Some(gcc_lib_path) = gcc_lib_path
+        && !gcc_lib_path.as_os_str().is_empty()
+    {
+        println!("cargo:rustc-link-search=native={}", gcc_lib_path.display());
     }
     println!("cargo:rustc-link-lib=static=stdc++");
 }
@@ -519,9 +519,13 @@ mod tests {
 
     #[test]
     fn test_find_cuda_home_env_var() {
-        env::set_var("CUDA_HOME", "/test/cuda");
+        // SAFETY: this is the only test in the crate that touches CUDA_HOME,
+        // and `find_cuda_home` is not invoked concurrently from any other
+        // test, so no other thread races on the variable.
+        unsafe { env::set_var("CUDA_HOME", "/test/cuda") };
         let result = find_cuda_home();
-        env::remove_var("CUDA_HOME");
+        // SAFETY: same as above.
+        unsafe { env::remove_var("CUDA_HOME") };
         assert_eq!(result, Some("/test/cuda".to_string()));
     }
 

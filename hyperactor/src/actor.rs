@@ -281,7 +281,7 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
     ) -> Result<(), anyhow::Error> {
         let sender = message.0.sender().clone();
         let dest = message.0.dest().clone();
-        let error = message.0.error_msg().unwrap_or(String::new());
+        let error = message.0.error_msg().unwrap_or_default();
         match self.handle_undeliverable_message(cx, message).await {
             Ok(_) => {
                 tracing::debug!(

@@ -406,7 +406,7 @@ pub async fn rsync_mesh<C: context::Actor + Copy + Unpin>(
             .err_into::<anyhow::Error>()
             .try_for_each_concurrent(None, |connect| async move {
                 let (mut local, mut stream) = try_join!(
-                    TcpStream::connect(daemon_addr.clone()).err_into(),
+                    TcpStream::connect(*daemon_addr).err_into(),
                     accept(cx, cx.instance().self_addr().clone(), connect),
                 )?;
                 tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
