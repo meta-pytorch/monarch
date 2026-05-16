@@ -94,7 +94,7 @@ impl Actor for PingPongActor {
         undelivered: crate::mailbox::Undeliverable<crate::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         match &self.undeliverable_port_ref {
-            Some(port) => port.send(cx, undelivered),
+            Some(port) => port.post(cx, undelivered),
             None => match undelivered {
                 Undeliverable::Message(envelope) => {
                     anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
@@ -125,13 +125,13 @@ impl Handler<PingPongMessage> for PingPongActor {
             anyhow::bail!("PingPong handler encountered an Error");
         }
         if ttl == 0 {
-            done_port.send(cx, true);
+            done_port.post(cx, true);
         } else {
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }
             let next_message = PingPongMessage(ttl - 1, cx.bind(), done_port);
-            pong_actor.send(cx, next_message);
+            pong_actor.post(cx, next_message);
         }
         Ok(())
     }

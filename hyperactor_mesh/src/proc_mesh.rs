@@ -239,7 +239,7 @@ impl ProcMesh {
         // Now that we have all of the spawned comm actors, kick them all into
         // mesh mode.
         for (rank, comm_actor) in &address_book {
-            comm_actor.send(cx, CommMeshConfig::new(*rank, address_book.clone()));
+            comm_actor.post(cx, CommMeshConfig::new(*rank, address_book.clone()));
         }
 
         Ok(proc_mesh)
@@ -266,7 +266,7 @@ impl ProcMesh {
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         if let Some(controller) = self.controller.take() {
             let id = self.id.resource_id().clone();
-            controller.send(
+            controller.post(
                 cx,
                 resource::Stop {
                     id: id.clone(),
@@ -279,7 +279,7 @@ impl ProcMesh {
             // reflects the outcome of `stop_proc_mesh` (Stopping, Stopped,
             // Failed, or Timeout on `PROC_STOP_MAX_IDLE` exhaustion).
             let (port, mut rx) = cx.mailbox().open_port();
-            controller.send(
+            controller.post(
                 cx,
                 resource::GetState::<resource::mesh::State<()>> {
                     id: id.clone(),
