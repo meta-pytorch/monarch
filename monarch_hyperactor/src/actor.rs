@@ -762,7 +762,7 @@ impl PythonActor {
                             // exiting the loop.
                             // Else, continue handling messages.
                             if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
-                                for supervision_event in supervision_rx.drain() {
+                                while let Ok(supervision_event) = supervision_rx.try_recv() {
                                     if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
                                         break 'messages Some(err);
                                     }
@@ -787,7 +787,7 @@ impl PythonActor {
                             Err(err) => break Some(err),
                         }
                     }
-                    Ok(supervision_event) = supervision_rx.recv() => {
+                    Some(supervision_event) = supervision_rx.recv() => {
                         if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
                             break Some(err);
                         }

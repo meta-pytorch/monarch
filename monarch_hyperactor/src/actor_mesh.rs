@@ -864,7 +864,7 @@ mod tests {
     #[derive(Debug)]
     struct TestClient {
         signal_rx: PortReceiver<Signal>,
-        supervision_rx: PortReceiver<ActorSupervisionEvent>,
+        supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
     }
 
@@ -895,7 +895,7 @@ mod tests {
                             }
                         }
                         _ = self.signal_rx.recv() => {}
-                        Ok(event) = self.supervision_rx.recv() => {
+                        Some(event) = self.supervision_rx.recv() => {
                             let _ = instance
                                 .handle_supervision_event(&mut self, event)
                                 .await;
