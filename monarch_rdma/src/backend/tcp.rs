@@ -19,14 +19,14 @@ use std::sync::Arc;
 use hyperactor::ActorRef;
 use manager_actor::TcpManagerActor;
 
-use crate::RdmaLocalMemory;
 use crate::RdmaOpType;
+use crate::local_memory::KeepaliveLocalMemory;
 
 /// A single operation for the [`TcpBackend`](manager_actor::TcpBackend).
 #[derive(Debug)]
 pub struct TcpOp {
     pub op_type: RdmaOpType,
-    pub local_memory: Arc<dyn RdmaLocalMemory>,
+    pub local_memory: Arc<KeepaliveLocalMemory>,
     pub remote_tcp_manager: ActorRef<TcpManagerActor>,
     pub remote_buf_id: usize,
 }

@@ -35,7 +35,7 @@ mod mlx5dv_tests;
 mod test_utils;
 
 use crate::RdmaOpType;
-use crate::local_memory::RdmaLocalMemory;
+use crate::local_memory::KeepaliveLocalMemory;
 
 /// Lazily-initialized ibverbs transport details for a registered memory
 /// region. Retrieved on demand from the [`IbvManagerActor`] via
@@ -59,7 +59,7 @@ pub struct IbvBuffer {
 #[derive(Debug, Named)]
 pub struct IbvOp<M: Referable = IbvManagerActor> {
     pub op_type: RdmaOpType,
-    pub local_memory: Arc<dyn RdmaLocalMemory>,
+    pub local_memory: Arc<KeepaliveLocalMemory>,
     pub remote_buffer: IbvBuffer,
     pub remote_manager: ActorRef<M>,
 }

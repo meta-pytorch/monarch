@@ -86,8 +86,8 @@ use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::backend::ibverbs::manager_actor::IbvManagerLocalMessageClient;
 use monarch_rdma::cu_check;
-use monarch_rdma::local_memory::RdmaLocalMemory;
-use monarch_rdma::local_memory::UnsafeLocalMemory;
+use monarch_rdma::local_memory::Keepalive;
+use monarch_rdma::local_memory::KeepaliveLocalMemory;
 use ndslice::Extent;
 use ndslice::ViewExt;
 use serde::Deserialize;
@@ -143,6 +143,21 @@ pub fn ping_pong(
 
     if result == 0 { Ok(()) } else { Err(result) }
 }
+
+// HACK — `NoKeepalive` keeps nothing alive. The CUDA allocation
+// for this actor's device buffer is leaked for the lifetime of the
+// process; the actor's `Drop` does not free it.
+//
+// We tolerate the lie here *temporarily* because the actual implementation
+// logic is unchanged from the pre-`Keepalive` version. If it was correct
+// before, it's still correct now.
+//
+// TODO(samlurye): replace `NoKeepalive` with a real `CudaAllocation`
+// keepalive (or equivalent) and arrange for the buffer to be released
+// while the CUDA context is still live, e.g., via an explicit
+// shutdown handler on the actor.
+struct NoKeepalive;
+impl Keepalive for NoKeepalive {}
 
 // Constants for default values
 const DEFAULT_BUFFER_SIZE_MB: usize = 32; // `must be multiple of 2MB
@@ -434,8 +449,9 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
         if self.rdma_buffer_handle.is_none() {
             let addr = self.cu_ptr;
             let size = self.cpu_buffer.len();
-            let local_memory: Arc<dyn RdmaLocalMemory> =
-                Arc::new(UnsafeLocalMemory::new(addr, size));
+            // See the module-level note on `NoKeepalive`.
+            let local_memory: Arc<KeepaliveLocalMemory> =
+                Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(NoKeepalive)));
             let handle = self
                 .rdma_manager
                 .downcast_handle(cx)
