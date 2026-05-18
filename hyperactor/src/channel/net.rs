@@ -2193,6 +2193,7 @@ pub fn try_tls_connector() -> Option<tokio_rustls::TlsConnector> {
 
 #[cfg(test)]
 mod tests {
+
     #![expect(
         clippy::await_holding_invalid_type,
         reason = "tracing_test::traced_test macro expansion holds tracing::span::Entered across awaits; can't be fixed in our code"

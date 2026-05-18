@@ -83,8 +83,8 @@ use monarch_rdma::IbvConfig;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
-use monarch_rdma::local_memory::RdmaLocalMemory;
-use monarch_rdma::local_memory::UnsafeLocalMemory;
+use monarch_rdma::local_memory::Keepalive;
+use monarch_rdma::local_memory::KeepaliveLocalMemory;
 use ndslice::extent;
 use ndslice::view::Ranked;
 use serde::Deserialize;
@@ -94,6 +94,23 @@ use typeuri::Named;
 
 // Constants to control the setup.
 const BUFFER_SIZE: usize = 8;
+
+// HACK — `NoKeepalive` keeps nothing alive. The
+// `Box<[u8]>` fields on `ParameterServerActor` / `WorkerActor`
+// (`weights_data`, `grad_buffer_data`, `local_gradients`) own the
+// backing storage; the `KeepaliveLocalMemory` clones registered with
+// RDMA carry only an empty marker.
+//
+// We tolerate the lie here *temporarily* because the actual implementation
+// logic is unchanged from the pre-`Keepalive` version. If it was correct
+// before, it's still correct now.
+//
+// TODO(samlurye): rework the actor fields so the RDMA-registered
+// buffer is the single source of truth (e.g., `Arc<KeepaliveLocal-
+// Memory>` with a `Box<[u8]>` keepalive), and route the local
+// gradient/weight math through the `KeepaliveLocalMemory` API.
+struct NoKeepalive;
+impl Keepalive for NoKeepalive {}
 
 // Parameter Server Actor
 #[derive(Debug)]
@@ -181,8 +198,9 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
         if self.weights_handle.is_none() {
             let addr = self.weights_data.as_ptr() as usize;
             let size = self.weights_data.len();
-            let local_memory: Arc<dyn RdmaLocalMemory> =
-                Arc::new(UnsafeLocalMemory::new(addr, size));
+            // See the module-level note on `NoKeepalive`.
+            let local_memory: Arc<KeepaliveLocalMemory> =
+                Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(NoKeepalive)));
             let handle = self
                 .owner_ref
                 .downcast_handle(cx)
@@ -201,8 +219,9 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
             std::collections::hash_map::Entry::Vacant(e) => {
                 let addr = self.grad_buffer_data[rank].as_ptr() as usize;
                 let size = self.grad_buffer_data[rank].len();
-                let local_memory: Arc<dyn RdmaLocalMemory> =
-                    Arc::new(UnsafeLocalMemory::new(addr, size));
+                // See the module-level note on `NoKeepalive`.
+                let local_memory: Arc<KeepaliveLocalMemory> =
+                    Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(NoKeepalive)));
                 let handle = self
                     .owner_ref
                     .downcast_handle(cx)
@@ -372,9 +391,11 @@ impl Handler<WorkerStep> for WorkerActor {
             .ps_grad_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(UnsafeLocalMemory::new(
+        // See the module-level note on `NoKeepalive`.
+        let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
             self.local_gradients.as_ptr() as usize,
             self.local_gradients.len(),
+            Arc::new(NoKeepalive),
         ));
 
         ps_grad_handle.write_from_local(cx, local_memory, 5).await?;
@@ -405,9 +426,11 @@ impl Handler<WorkerUpdate> for WorkerActor {
             .ps_weights_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(UnsafeLocalMemory::new(
+        // See the module-level note on `NoKeepalive`.
+        let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
             self.weights_data.as_ptr() as usize,
             self.weights_data.len(),
+            Arc::new(NoKeepalive),
         ));
         ps_weights_handle
             .read_into_local(cx, local_memory, 5)
@@ -488,7 +511,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     let _child = command.spawn().unwrap();
 
     let host_mesh = HostMeshRef::from_hosts(
-        HostMeshId::unique(Label::new("test").unwrap()),
+        HostMeshId::instance(Label::new("test").unwrap()),
         vec![host_addr],
     );
     let ps_proc_mesh = host_mesh

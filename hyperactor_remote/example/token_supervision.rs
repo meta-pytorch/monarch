@@ -214,7 +214,7 @@ async fn run_joiner(args: JoinerArgs) -> anyhow::Result<()> {
         ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Localhost)),
         "token_supervision_joiner".to_string(),
     )?;
-    let (joiner, _joiner_handle) = proc.instance("joiner")?;
+    let (joiner, _joiner_handle) = proc.client("joiner")?;
     let worker = proc.spawn(
         "worker",
         Worker::new(DemoChild {

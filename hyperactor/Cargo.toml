@@ -92,4 +92,4 @@ default = []
 stdio-write-probe = []
 
 [lints]
-rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
+workspace = true
