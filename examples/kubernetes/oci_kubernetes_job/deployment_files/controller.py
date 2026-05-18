@@ -20,6 +20,7 @@ from kubernetes.client import (
     V1EnvVar,
     V1HostPathVolumeSource,
     V1PodSpec,
+    V1PodTemplateSpec,
     V1ResourceRequirements,
     V1SecurityContext,
     V1Volume,
@@ -51,10 +52,10 @@ with open(TRAIN_SCRIPT, "r") as _f:
     _TRAIN_SCRIPT_CONTENT = _f.read()
 
 
-def build_gpu_pod_spec(
+def build_gpu_pod_template(
     image: str, gpus_per_host: int, gpu_vendor: str, rdma: bool
-) -> V1PodSpec:
-    """Build a V1PodSpec for a MonarchMesh worker pod.
+) -> V1PodTemplateSpec:
+    """Build a V1PodTemplateSpec for a MonarchMesh worker pod.
 
     Without ``rdma``: GPU resources and shared memory for NCCL.
 
@@ -124,22 +125,24 @@ def build_gpu_pod_spec(
     else:
         gpu_resources = {f"{gpu_vendor}.com/gpu": str(gpus_per_host)}
 
-    return V1PodSpec(
-        containers=[
-            V1Container(
-                name="worker",
-                image=image,
-                command=["python", "-u", "-c", bootstrap],
-                env=env,
-                security_context=security_context,
-                resources=V1ResourceRequirements(
-                    limits=gpu_resources,
-                    requests=gpu_resources,
-                ),
-                volume_mounts=volume_mounts,
-            )
-        ],
-        volumes=volumes,
+    return V1PodTemplateSpec(
+        spec=V1PodSpec(
+            containers=[
+                V1Container(
+                    name="worker",
+                    image=image,
+                    command=["python", "-u", "-c", bootstrap],
+                    env=env,
+                    security_context=security_context,
+                    resources=V1ResourceRequirements(
+                        limits=gpu_resources,
+                        requests=gpu_resources,
+                    ),
+                    volume_mounts=volume_mounts,
+                )
+            ],
+            volumes=volumes,
+        ),
     )
 
 
@@ -180,7 +183,7 @@ async def main(
     # ~~~~~~~~~~~~~~~~~~~~~
     # Create a ``KubernetesJob`` in the ``monarch-tests`` namespace.
     # With ``--provision``, the job creates MonarchMesh CRDs via the K8s API
-    # using ``pod_spec`` for full control over the pod template (needed for
+    # using ``pod_template`` for full control over the pod template (needed for
     # the shared memory volume that NCCL requires). Without ``--provision``,
     # it attaches to pre-provisioned pods.
 
@@ -189,7 +192,7 @@ async def main(
         k8s_job.add_mesh(
             mesh_name,
             num_replicas=num_hosts,
-            pod_spec=build_gpu_pod_spec(image, gpus_per_host, gpu_vendor, rdma),
+            pod_template=build_gpu_pod_template(image, gpus_per_host, gpu_vendor, rdma),
         )
     else:
         k8s_job.add_mesh(mesh_name, num_replicas=num_hosts)

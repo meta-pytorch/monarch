@@ -22,20 +22,22 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
-use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
 use hyperactor::Addr;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
+use hyperactor::PortRef;
 use hyperactor::Proc;
 use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxServerHandle;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -172,7 +174,11 @@ impl HostAgentMode {
 pub(crate) struct ProcCreationState {
     pub(crate) rank: usize,
     pub(crate) host_mesh_id: Option<HostMeshId>,
-    pub(crate) created: Result<(ProcAddr, hyperactor_reference::ActorRef<ProcAgent>), HostError>,
+    pub(crate) created: Result<(ProcAddr, ActorRef<ProcAgent>), HostError>,
+    /// "Owner is alive" deadline communicated by the controller via
+    /// `KeepaliveGetState`. The host's `SelfCheck` reaper compares against this
+    /// and tears down procs whose owner has stopped extending the keepalive.
+    pub(crate) expiry_time: Option<std::time::SystemTime>,
 }
 
 /// Actor name used when spawning the host mesh agent on the system proc.
@@ -206,7 +212,7 @@ struct ProcStatusChanged {
 /// Not exported — delivered locally via PortHandle (no serialization).
 struct DrainComplete {
     host: HostAgentMode,
-    ack: hyperactor_reference::PortRef<()>,
+    ack: PortRef<()>,
 }
 
 /// Child actor whose only job is to run `host.terminate_children()` in
@@ -218,7 +224,7 @@ struct DrainWorker {
     host: Option<HostAgentMode>,
     timeout: Duration,
     max_in_flight: usize,
-    ack: Option<hyperactor_reference::PortRef<()>>,
+    ack: Option<PortRef<()>>,
     done_notify: PortHandle<DrainComplete>,
 }
 
@@ -267,6 +273,8 @@ impl fmt::Debug for DrainWorker {
         resource::CreateOrUpdate<ProcSpec>,
         resource::Stop,
         resource::GetState<ProcState>,
+        resource::KeepaliveGetState<ProcState>,
+        resource::StreamState<ProcState> { cast = true },
         resource::GetRankStatus { cast = true },
         resource::WaitRankStatus { cast = true },
         resource::List,
@@ -277,6 +285,7 @@ impl fmt::Debug for DrainWorker {
         PySpyDump,
         PySpyProfile,
         ConfigDump,
+        crate::proc_agent::SelfCheck,
     ]
 )]
 pub struct HostAgent {
@@ -285,14 +294,8 @@ pub struct HostAgent {
     /// Pending `WaitRankStatus` waiters, keyed by resource name.
     /// Each entry is `(min_status, rank, reply_port)`. Only touched
     /// from `&mut self` handlers.
-    pending_proc_waiters: HashMap<
-        ResourceId,
-        Vec<(
-            resource::Status,
-            usize,
-            hyperactor_reference::PortRef<crate::StatusOverlay>,
-        )>,
-    >,
+    pending_proc_waiters:
+        HashMap<ResourceId, Vec<(resource::Status, usize, PortRef<crate::StatusOverlay>)>>,
     /// Procs that already have an active bridge task watching their status.
     watching: HashSet<ResourceId>,
     /// Port handle for sending `ProcStatusChanged` to self. Set in `init()`.
@@ -302,7 +305,7 @@ pub struct HostAgent {
     /// `crate::host::LOCAL_PROC_NAME`).
     local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
     /// Handle to the host's frontend mailbox server, set during `init` after
-    /// `this.bind::<Self>()` ensures the actor port is registered before the
+    /// `this.bind::<Self>()` ensures the handler port is registered before the
     /// mailbox starts routing messages. Sent back to the bootstrap loop via
     /// `shutdown_tx` when the host shuts down so the caller can
     /// drain it.
@@ -518,9 +521,9 @@ impl Actor for HostAgent {
 
             let proc = match child_ref {
                 Addr::Proc(proc_ref) => {
-                    if *proc_ref == *system_proc.proc_addr() {
+                    if *proc_ref == system_proc.proc_addr() {
                         Some((&system_proc, SERVICE_PROC_NAME))
-                    } else if *proc_ref == *local_proc.proc_addr() {
+                    } else if *proc_ref == local_proc.proc_addr() {
                         Some((&local_proc, LOCAL_PROC_NAME))
                     } else {
                         None
@@ -539,20 +542,24 @@ impl Actor for HostAgent {
                     // all_actor_ids() causes convoy starvation with
                     // concurrent insert/remove operations, stalling
                     // the spawn/exit path. all_instance_keys() just
-                    // clones keys — microseconds per shard. The
-                    // is_system check uses individual point lookups
-                    // outside the iteration. Stale keys (terminal
-                    // actors) may appear but are harmless — the TUI
-                    // handles "not found" gracefully.
+                    // clones keys — microseconds per shard. Actor
+                    // addresses and the is_system check use individual
+                    // point lookups outside the iteration. Stale keys
+                    // are harmless: if the point lookup fails, the actor
+                    // has already gone away.
                     let all_keys = proc.all_instance_keys();
                     let mut actors: Vec<hyperactor::introspect::IntrospectRef> =
                         Vec::with_capacity(all_keys.len());
                     let mut system_actors: Vec<crate::introspect::NodeRef> = Vec::new();
                     for id in all_keys {
-                        if proc.get_instance(&id).is_some_and(|cell| cell.is_system()) {
-                            system_actors.push(crate::introspect::NodeRef::Actor(id.clone()));
+                        if let Some(cell) = proc.get_instance_by_id(&id) {
+                            let actor_addr = cell.actor_addr().clone();
+                            if cell.is_system() {
+                                system_actors
+                                    .push(crate::introspect::NodeRef::Actor(actor_addr.clone()));
+                            }
+                            actors.push(hyperactor::introspect::IntrospectRef::Actor(actor_addr));
                         }
-                        actors.push(hyperactor::introspect::IntrospectRef::Actor(id));
                     }
                     let mut attrs = hyperactor_config::Attrs::new();
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
@@ -571,7 +578,7 @@ impl Actor for HostAgent {
                     // Per-actor max from the live actor scan.
                     let mut queue_max: u64 = 0;
                     for aid in proc.all_instance_keys() {
-                        if let Some(cell) = proc.get_instance(&aid) {
+                        if let Some(cell) = proc.get_instance_by_id(&aid) {
                             queue_max = queue_max.max(cell.queue_depth());
                         }
                     }
@@ -626,6 +633,14 @@ impl Actor for HostAgent {
         });
 
         self.proc_status_port = Some(this.port::<ProcStatusChanged>());
+
+        // Kick off the SelfCheck reaper if the orphan timeout is configured.
+        // The reaper walks `created` looking for procs whose owner stopped
+        // extending the keepalive and tears them down.
+        if let Some(delay) = hyperactor_config::global::get(crate::proc_agent::MESH_ORPHAN_TIMEOUT)
+        {
+            this.self_message_with_delay(crate::proc_agent::SelfCheck::default(), delay)?;
+        }
 
         Ok(())
     }
@@ -694,18 +709,17 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                 rank,
                 host_mesh_id: create_or_update.spec.host_mesh_id.clone(),
                 created,
+                expiry_time: None,
             },
         );
 
         // Transition Detached → Attached on first proc creation.
-        if was_empty {
-            if let HostAgentState::Detached(_) = &self.state {
-                let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
-                    HostAgentState::Detached(h) => h,
-                    _ => unreachable!(),
-                };
-                self.state = HostAgentState::Attached(host);
-            }
+        if was_empty && let HostAgentState::Detached(_) = &self.state {
+            let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
+                HostAgentState::Detached(h) => h,
+                _ => unreachable!(),
+            };
+            self.state = HostAgentState::Attached(host);
         }
 
         // If any WaitRankStatus messages arrived before this proc
@@ -1155,11 +1169,21 @@ impl Handler<ShutdownHost> for HostAgent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Named, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Named,
+    Serialize,
+    Deserialize,
+    hyperactor::Bind,
+    hyperactor::Unbind
+)]
 pub struct ProcState {
-    pub proc_id: hyperactor_reference::ProcAddr,
+    pub proc_id: ProcAddr,
     pub create_rank: usize,
-    pub mesh_agent: hyperactor_reference::ActorRef<ProcAgent>,
+    pub mesh_agent: ActorRef<ProcAgent>,
     pub bootstrap_command: Option<BootstrapCommand>,
     pub proc_status: Option<bootstrap::ProcStatus>,
 }
@@ -1235,10 +1259,156 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
 }
 
 #[async_trait]
+impl Handler<crate::proc_agent::SelfCheck> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        _: crate::proc_agent::SelfCheck,
+    ) -> anyhow::Result<()> {
+        // Walk procs and tear down any whose owner-supplied keepalive has
+        // lapsed. Mirrors the proc-agent reaper but at host scope: we
+        // address the same problem (a controller/client died abruptly)
+        // for proc-level cleanup so the host doesn't leak children.
+        let Some(duration) = hyperactor_config::global::get(crate::proc_agent::MESH_ORPHAN_TIMEOUT)
+        else {
+            return Ok(());
+        };
+        let now = std::time::SystemTime::now();
+        let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
+
+        let expired: Vec<ResourceId> = self
+            .created
+            .iter()
+            .filter_map(|(id, state)| {
+                let expiry = state.expiry_time?;
+                if now > expiry { Some(id.clone()) } else { None }
+            })
+            .collect();
+
+        if !expired.is_empty() {
+            tracing::info!(
+                "stopping {} orphaned procs past their keepalive expiry",
+                expired.len(),
+            );
+        }
+
+        for id in expired {
+            if let Some(ProcCreationState {
+                created: Ok((proc_id, _)),
+                ..
+            }) = self.created.get(&id)
+            {
+                let proc_id = proc_id.clone();
+                if let Some(host) = self.host() {
+                    host.request_stop(cx, &proc_id, timeout, "orphaned").await;
+                }
+                // Don't reap repeatedly while teardown is in flight.
+                if let Some(state) = self.created.get_mut(&id) {
+                    state.expiry_time = None;
+                }
+            }
+        }
+
+        cx.self_message_with_delay(crate::proc_agent::SelfCheck::default(), duration)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl Handler<resource::List> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, list: resource::List) -> anyhow::Result<()> {
         list.reply
             .send(cx, self.created.keys().cloned().collect())?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::KeepaliveGetState<ProcState>> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: resource::KeepaliveGetState<ProcState>,
+    ) -> anyhow::Result<()> {
+        // Record the new expiry so the periodic SelfCheck reaper knows the
+        // owner is still alive. If the owner stops extending the keepalive
+        // (e.g. its process dies abruptly), the proc will be reaped past
+        // `expires_after`.
+        if let Some(state) = self.created.get_mut(&message.get_state.id) {
+            state.expiry_time = Some(message.expires_after);
+        }
+        <Self as Handler<resource::GetState<ProcState>>>::handle(self, cx, message.get_state).await
+    }
+}
+
+#[async_trait]
+impl Handler<resource::StreamState<ProcState>> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        stream_state: resource::StreamState<ProcState>,
+    ) -> anyhow::Result<()> {
+        // TODO: register `subscriber` for ongoing updates. For now send the
+        // current state once so the controller has an initial snapshot.
+        let state = match self.created.get(&stream_state.id) {
+            Some(ProcCreationState {
+                rank,
+                created: Ok((proc_id, mesh_agent)),
+                ..
+            }) => {
+                let (raw_status, proc_status, bootstrap_command) = match self.host() {
+                    Some(host) => {
+                        let (status, proc_status) = host.proc_status(proc_id).await;
+                        (status, proc_status, host.bootstrap_command())
+                    }
+                    None => (resource::Status::Unknown, None, None),
+                };
+                let status = raw_status.clamp_min(self.min_proc_status());
+                resource::State {
+                    id: stream_state.id.clone(),
+                    status,
+                    state: Some(ProcState {
+                        proc_id: proc_id.clone(),
+                        create_rank: *rank,
+                        mesh_agent: mesh_agent.clone(),
+                        bootstrap_command,
+                        proc_status,
+                    }),
+                    generation: 0,
+                    timestamp: std::time::SystemTime::now(),
+                }
+            }
+            Some(ProcCreationState {
+                created: Err(e), ..
+            }) => resource::State {
+                id: stream_state.id.clone(),
+                status: resource::Status::Failed(e.to_string()),
+                state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
+            },
+            None => resource::State {
+                id: stream_state.id.clone(),
+                status: resource::Status::NotExist,
+                state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
+            },
+        };
+
+        let mut headers = Flattrs::new();
+        headers.set(crate::proc_agent::STREAM_STATE_SUBSCRIBER, true);
+        if let Err(e) = stream_state
+            .subscriber
+            .send_with_headers(cx, headers, state)
+        {
+            tracing::warn!(
+                actor = %cx.self_addr(),
+                "failed to send initial StreamState to {}: {}",
+                stream_state.subscriber.port_addr().actor_id(),
+                e,
+            );
+        }
         Ok(())
     }
 }
@@ -1258,7 +1428,7 @@ impl Handler<resource::List> for HostAgent {
 pub struct SetClientConfig {
     pub attrs: Attrs,
     #[reply]
-    pub done: hyperactor_reference::PortRef<()>,
+    pub done: PortRef<()>,
 }
 wirevalue::register_type!(SetClientConfig);
 
@@ -1358,6 +1528,7 @@ impl Handler<ConfigDump> for HostAgent {
 mod tests {
     use std::assert_matches;
 
+    use hyperactor::ActorAddr;
     use hyperactor::Proc;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::id::Label;
@@ -1367,7 +1538,6 @@ mod tests {
     use crate::mesh_id::ResourceId;
     use crate::resource::CreateOrUpdateClient;
     use crate::resource::GetStateClient;
-    use crate::resource::StopClient;
     use crate::resource::WaitRankStatusClient;
 
     #[tokio::test]
@@ -1426,7 +1596,7 @@ mod tests {
                 ..
             } if id == resource_id
               && proc_id == id.proc_addr(host_addr.clone())
-              && mesh_agent == hyperactor_reference::ActorRef::attest(id.proc_addr(host_addr.clone()).actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
+              && mesh_agent == ActorRef::attest(id.proc_addr(host_addr.clone()).actor_addr(crate::proc_agent::PROC_AGENT_ACTOR_NAME)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }
@@ -1526,8 +1696,7 @@ mod tests {
             .unwrap();
 
         // Stop the proc.
-        host_agent
-            .stop(&client, id, "test".to_string())
+        crate::resource::StopClient::stop(&host_agent, &client, id, "test".to_string())
             .await
             .unwrap();
 
@@ -1772,7 +1941,6 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_service_proc_query_child_has_queue_stats() {
-        use hyperactor as hyperactor_reference;
         use hyperactor::actor::ActorStatus;
         use hyperactor::introspect::IntrospectMessage;
         use hyperactor::introspect::IntrospectResult;
@@ -1824,9 +1992,8 @@ mod tests {
         let agent_ref = system_proc
             .proc_addr()
             .actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
-        let agent_id: hyperactor_reference::ActorAddr = agent_ref;
-        let port =
-            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let agent_id: ActorAddr = agent_ref;
+        let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
 
         // Poll until we see non-zero watermark (evidence of queue
         // traffic since startup).
@@ -1836,7 +2003,7 @@ mod tests {
             port.send(
                 &client,
                 IntrospectMessage::QueryChild {
-                    child_ref: hyperactor_reference::Addr::Proc(system_proc.proc_addr().clone()),
+                    child_ref: Addr::Proc(system_proc.proc_addr().clone()),
                     reply: reply_port.bind(),
                 },
             )

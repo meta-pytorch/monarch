@@ -197,6 +197,12 @@ pub enum Error {
     )]
     ActorStopError { statuses: RankedValues<Status> },
 
+    #[error(
+        "error stopping proc mesh: statuses: {}",
+        RankedValues::invert(statuses)
+    )]
+    ProcMeshStopError { statuses: RankedValues<Status> },
+
     #[error("error spawning actor: {0}")]
     SingletonActorSpawnError(anyhow::Error),
 
@@ -323,7 +329,7 @@ mod tests {
         assert!(structurally_equal(&actual, &expected));
     }
 
-    #[cfg(FALSE)]
+    #[cfg(false)]
     #[test]
     fn shouldnt_compile() {
         let _ = sel!(foobar);

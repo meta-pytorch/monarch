@@ -92,15 +92,14 @@ where
 
         loop {
             // Check if we've received all expected batches
-            if let Some(expected) = expected_batches {
-                if batch_count >= expected {
+            if let Some(expected) = expected_batches
+                && batch_count >= expected {
                     tracing::info!(
                         "QueryEngine reader: received all {} expected batches",
                         expected
                     );
                     break;
                 }
-            }
 
             tokio::select! {
                 biased;
@@ -119,11 +118,10 @@ where
                                     for item in iter {
                                         if let Ok(tuple) = item {
                                             // Each item is (rank_dict, count) - get second element
-                                            if let Ok(count_val) = tuple.get_item(1) {
-                                                if let Ok(count) = count_val.extract::<usize>() {
+                                            if let Ok(count_val) = tuple.get_item(1)
+                                                && let Ok(count) = count_val.extract::<usize>() {
                                                     total += count;
                                                 }
-                                            }
                                         }
                                     }
                                 }

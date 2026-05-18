@@ -15,9 +15,25 @@
 //! - Queue pair creation and connection establishment
 //! - RDMA domain and protection domain management
 //! - Device selection and PCI-to-RDMA device mapping
+//!
+//! ## Queue-pair lifecycle
+//!
+//! Bringing up a queue pair to a peer is a two-sided handshake (each
+//! side has its own QP and must learn the other side's endpoint
+//! before transitioning `INIT → RTR → RTS`). Doing all of that in
+//! response to a single message would block our actor loop while
+//! awaiting peer RPCs, and the peer's symmetric request would block
+//! waiting for us — a deadlock.
+//!
+//! Instead, [`IbvManagerActor`] does only sync bookkeeping in the
+//! handler and offloads the handshake to a per-QP child actor,
+//! [`QueuePairInitializer`]. The store of QPs ([`Self::qps`]) is
+//! keyed by [`QpKey`] and holds a [`QpState`]: `Pending { info,
+//! initializer, waiters }` while the handshake runs, `Ready(qp)`
+//! once this side is RTS and has observed the peer's RTS, or
+//! `Failed(error)` as a tombstone after a fatal error.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -28,18 +44,17 @@ use async_trait::async_trait;
 use backoff::ExponentialBackoff;
 use backoff::ExponentialBackoffBuilder;
 use backoff::backoff::Backoff;
-use futures::lock::Mutex;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
-use hyperactor::OncePortRef;
+use hyperactor::PortRef;
 use hyperactor::RefClient;
+use hyperactor::actor::Referable;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -49,14 +64,20 @@ use super::IbvOp;
 use super::domain::IbvDomain;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDevice;
+use super::primitives::IbvMemoryRegion;
 use super::primitives::IbvMemoryRegionView;
 use super::primitives::IbvQpInfo;
 use super::primitives::ibverbs_supported;
 use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
+use super::queue_pair::PeerInfo;
 use super::queue_pair::PollCompletionError;
 use super::queue_pair::PollTarget;
+use super::queue_pair::QpGuard;
+use super::queue_pair::QpKey;
+use super::queue_pair::QueuePairInitializer;
+use super::queue_pair::destroy_qp;
 use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
@@ -65,59 +86,63 @@ use crate::local_memory::RdmaLocalMemory;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::GetIbvActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
-use crate::rdma_manager_actor::get_rdmaxcel_error_message;
 use crate::validate_execution_context;
 
-/// Messages handled by [`IbvManagerActor`].
+/// Cross-proc message: peer asks for our endpoint, lazily creating
+/// the entry on our side if absent. Generic over the manager actor
+/// type so tests can swap in a mock.
+#[derive(Debug, Serialize, Deserialize, Named)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub(super) struct EnsureQueuePair<A: Referable> {
+    pub(super) sender: ActorRef<A>,
+    pub(super) sender_device: String,
+    pub(super) receiver_device: String,
+    pub(super) reply: PortRef<PeerInfo>,
+}
+wirevalue::register_type!(EnsureQueuePair<IbvManagerActor>);
+
+/// Per-QpKey state in [`IbvManagerActor::qps`].
+///
+/// `Pending` covers the entire handshake (an initializer is running);
+/// `Ready` is the terminal usable state; `Failed` is a tombstone that
+/// records the error so subsequent `RequestQueuePair` / `EnsureQueuePair`
+/// calls for the same key surface the same error rather than retrying
+/// or hanging.
+///
+/// TODO: add recovery — allow retries via an explicit message or after
+/// a backoff. For now the entry stays `Failed` for the life of the
+/// manager.
+#[derive(Debug)]
+enum QpState {
+    Pending {
+        /// Local endpoint, captured when the QP was first created so
+        /// repeated `EnsureQueuePair` calls don't have to re-extract it.
+        info: IbvQpInfo,
+        /// Child actor driving the handshake. Stopped on
+        /// `QpInitializerDone`/`QpInitializerFailed`.
+        initializer: ActorHandle<QueuePairInitializer<IbvManagerActor>>,
+        /// Local `RequestQueuePair` callers waiting for the QP. Drained
+        /// to `Ok(qp.clone())` on `Ready`, or `Err(_)` on failure.
+        waiters: Vec<OncePortHandle<Result<IbvQueuePair, String>>>,
+    },
+    Ready(IbvQueuePair),
+    Failed(String),
+}
+
+/// Cross-proc messages handled by [`IbvManagerActor`].
+///
+/// `EnsureQueuePair` is defined as a separate top-level message
+/// because it's generic over the manager actor type to allow
+/// mocking in tests.
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub enum IbvManagerMessage {
     /// Release a buffer registration by `remote_buf_id`. Fire-and-forget
     /// (no reply port) to avoid blocking the caller during teardown.
     ReleaseBuffer { remote_buf_id: usize },
-    RequestQueuePair {
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-        #[reply]
-        reply: OncePortRef<Result<IbvQueuePair, String>>,
-    },
-    Connect {
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-        endpoint: IbvQpInfo,
-    },
-    InitializeQP {
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-        #[reply]
-        reply: OncePortRef<bool>,
-    },
-    ConnectionInfo {
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-        #[reply]
-        reply: OncePortRef<IbvQpInfo>,
-    },
-    ReleaseQueuePair {
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-        qp: IbvQueuePair,
-    },
-    GetQpState {
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-        #[reply]
-        reply: OncePortRef<u32>,
-    },
 }
 wirevalue::register_type!(IbvManagerMessage);
 
-/// Local-only messages for MR registration/deregistration.
+/// Local-only messages for [`IbvManagerActor`].
 #[derive(Handler, HandleClient, Debug)]
 pub enum IbvManagerLocalMessage {
     /// Register a memory region, returning the MR view and device name.
@@ -126,12 +151,6 @@ pub enum IbvManagerLocalMessage {
         size: usize,
         #[reply]
         reply: OncePortHandle<Result<(IbvMemoryRegionView, String), String>>,
-    },
-    /// Deregister a memory region by its MR view id.
-    DeregisterMr {
-        id: usize,
-        #[reply]
-        reply: OncePortHandle<Result<(), String>>,
     },
     /// Register a remote-facing buffer's MR and return its
     /// [`IbvBuffer`]. Called by
@@ -146,6 +165,39 @@ pub enum IbvManagerLocalMessage {
         #[reply]
         reply: OncePortHandle<Result<IbvBuffer, String>>,
     },
+    /// User-facing entry point: get a connected `IbvQueuePair` for
+    /// `(self_device, other actor's id, other_device)`. Lazily creates
+    /// the QP + initializer if absent; if a handshake is in flight,
+    /// the reply port is queued and answered when the QP becomes
+    /// `Ready` (or fails).
+    ///
+    /// No `#[reply]` because the handler may park `reply` on the
+    /// `Pending` entry and answer it later from [`QpInitializerDone`]/
+    /// [`QpInitializerFailed`].
+    RequestQueuePair {
+        other: ActorRef<IbvManagerActor>,
+        self_device: String,
+        other_device: String,
+        reply: OncePortHandle<Result<IbvQueuePair, String>>,
+    },
+}
+
+/// Local-only handshake-success report. The initializer sends this
+/// to its owning manager once both sides have reached RTS, handing
+/// over the freshly-connected [`QpGuard`].
+#[derive(Debug)]
+pub(super) struct QpInitializerDone {
+    pub(super) qp_key: QpKey,
+    pub(super) qp: QpGuard,
+}
+
+/// Local-only handshake-failure report. The initializer sends this
+/// to its owning manager when the handshake aborted; the underlying
+/// QP has already been dropped on the initializer side.
+#[derive(Debug)]
+pub(super) struct QpInitializerFailed {
+    pub(super) qp_key: QpKey,
+    pub(super) error: String,
 }
 
 /// Adaptive wait between completion polls.
@@ -227,17 +279,14 @@ pub(super) fn lookup_segment_for_address(
     segments: &[rdmaxcel_sys::rdma_segment_info_t],
     addr: usize,
     size: usize,
-    id: usize,
-) -> Option<IbvMemoryRegionView> {
+) -> Option<SegmentInfo> {
     for segment in segments {
         let start_addr = segment.phys_address;
         let end_addr = start_addr + segment.mr_size;
         if start_addr <= addr && addr + size <= end_addr {
             let offset = addr - start_addr;
             let rdma_addr = segment.mr_addr + offset;
-            return Some(IbvMemoryRegionView {
-                id,
-                virtual_addr: addr,
+            return Some(SegmentInfo {
                 rdma_addr,
                 size,
                 lkey: segment.lkey,
@@ -248,6 +297,19 @@ pub(super) fn lookup_segment_for_address(
     None
 }
 
+/// Result of a successful [`lookup_segment_for_address`] hit. Just
+/// the device-derived facts about the matched mkey; the caller
+/// composes these with whatever provenance it needs (mrv id,
+/// device name, refcounted owners) when materializing an
+/// [`IbvMemoryRegionView`].
+#[derive(Debug)]
+pub(super) struct SegmentInfo {
+    pub(super) rdma_addr: usize,
+    pub(super) size: usize,
+    pub(super) lkey: u32,
+    pub(super) rkey: u32,
+}
+
 /// Manages all ibverbs-specific RDMA resources and operations.
 ///
 /// This struct handles memory registration, queue pair management,
@@ -256,35 +318,42 @@ pub(super) fn lookup_segment_for_address(
 #[hyperactor::export(
     handlers = [
         IbvManagerMessage,
+        EnsureQueuePair<IbvManagerActor>,
     ],
 )]
 pub struct IbvManagerActor {
     owner: OnceLock<ActorHandle<RdmaManagerActor>>,
 
-    // Nested map: local_device -> (ActorId, remote_device) -> IbvQueuePair
-    device_qps: HashMap<String, HashMap<(ActorId, String), IbvQueuePair>>,
+    /// Per-QP state, keyed from this manager's perspective. See [`QpKey`].
+    qps: HashMap<QpKey, QpState>,
 
-    // Track QPs currently being created to prevent duplicate creation
-    // Wrapped in Arc<Mutex> to allow safe concurrent access
-    pending_qp_creation: Arc<Mutex<HashSet<(String, ActorId, String)>>>,
-
-    // Map of RDMA device names to their domains and loopback QPs
-    // Created lazily when memory is registered for a specific device
-    device_domains: HashMap<String, (IbvDomain, Option<IbvQueuePair>)>,
+    /// Map of RDMA device names to their domains and loopback QPs.
+    /// Created lazily when memory is registered for a specific
+    /// device. `Arc<IbvDomain>` so every `IbvMemoryRegionView`
+    /// registered against the domain can hold a clone and keep the
+    /// PD alive until the last MR is dereg'd.
+    device_domains: HashMap<String, (Arc<IbvDomain>, Option<IbvQueuePair>)>,
 
     config: IbvConfig,
 
     mlx5dv_enabled: bool,
 
-    // Map of unique IbvMemoryRegionView to ibv_mr*.  In case of cuda w/ pytorch its -1
-    // since its managed independently.  Only used for registration/deregistration purposes
-    mr_map: HashMap<usize, usize>,
+    /// Singleton Arc owning the CUDA segment scanner state. `Some`
+    /// once `register_segments` succeeds; cloned into every
+    /// segment-backed view. `deregister_segments` runs from the
+    /// `IbvMemoryRegion::Segments` Drop when the last reference goes
+    /// away.
+    segments_mr: Option<Arc<IbvMemoryRegion>>,
 
-    // Id for next mrv created
+    /// Id for next mrv created.
     mrv_id: usize,
 
-    // Map from buffer_id to registration details.
-    buffer_registrations: HashMap<usize, IbvBuffer>,
+    /// Map from buffer_id to the buffer's `(IbvBuffer, view)`. The
+    /// view keeps the MR (and its PD) alive for the lifetime of the
+    /// registration; `ReleaseBuffer` drops the entry, and the FFI
+    /// resources are released by the `Arc`s' `Drop`s once no other
+    /// holder of those views remains.
+    buffer_registrations: HashMap<usize, (IbvBuffer, IbvMemoryRegionView)>,
 }
 
 #[async_trait]
@@ -304,65 +373,49 @@ impl Actor for IbvManagerActor {
 
 impl Drop for IbvManagerActor {
     fn drop(&mut self) {
-        // Helper function to destroy QP resources
-        // We can't use Drop on IbvQueuePair because it derives Clone
-        // Note: rdmaxcel_qp_destroy handles destroying both the QP and its CQs internally,
-        // so we must NOT call ibv_destroy_cq separately (would cause double-free/SIGSEGV)
-        fn destroy_queue_pair(qp: &IbvQueuePair, _context: &str) {
-            unsafe {
-                if qp.qp != 0 {
-                    let rdmaxcel_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
-                    rdmaxcel_sys::rdmaxcel_qp_destroy(rdmaxcel_qp);
+        // 1. Clean up QPs. `Pending` entries hold the qp via the
+        // initializer; signal the initializer to stop and let the
+        // runtime tear it down. `Failed` is a tombstone with no
+        // resources. Pending waiters won't be answered and their
+        // callers will observe the dropped reply ports as `Err(_)`.
+        for (_key, state) in self.qps.drain() {
+            match state {
+                QpState::Ready(_) => {
+                    // TODO(slurye): Proper cleanup of QPs. Currently there's no safe way to do this
+                    // because `IbvQueuePair` can have arbitrary clones and there's no way to guarantee
+                    // that none of them are still in use.
                 }
+                QpState::Pending { initializer, .. } => {
+                    let _ = initializer.drain_and_stop("IbvManagerActor dropped");
+                }
+                QpState::Failed(_) => {}
             }
         }
 
-        // 1. Clean up all queue pairs (both regular and loopback)
-        for (_device_name, device_map) in self.device_qps.drain() {
-            for ((actor_id, _remote_device), qp) in device_map {
-                destroy_queue_pair(&qp, &format!("actor {:?}", actor_id));
-            }
-        }
+        // 2. Drop buffer registrations. Each entry's
+        // `IbvMemoryRegionView` carries the only manager-side
+        // reference to that MR's `Arc<IbvMemoryRegion>` and its
+        // `Arc<IbvDomain>`. They run their FFI cleanup from their
+        // `Drop`s once no surviving view holds a clone.
+        self.buffer_registrations.clear();
 
-        // 2. Clean up device domains (which contain PDs and loopback QPs)
-        for (device_name, (domain, qp)) in self.device_domains.drain() {
+        // 3. Drop the segments-owner Arc. `deregister_segments`
+        // runs from `IbvMemoryRegion::Segments::Drop` when the last
+        // segment-backed view also goes away.
+        self.segments_mr.take();
+
+        // 4. Drop device domains (PDs + loopback QPs). Loopback QPs
+        // are tied to this map only; destroy them explicitly. PD
+        // teardown waits on the last `Arc<IbvDomain>` clone (held
+        // by any outstanding view) to drop.
+        for (_device_name, (domain, qp)) in self.device_domains.drain() {
             if let Some(qp) = qp {
-                destroy_queue_pair(&qp, &format!("loopback QP on device {}", device_name));
+                // SAFETY: `device_domains` is the only holder of
+                // these loopback QPs; we just drained it and the
+                // manager is being dropped, so no clones survive.
+                unsafe { destroy_qp(&qp) };
             }
             drop(domain);
-        }
-
-        // 3. Clean up memory regions
-        let _mr_count = self.mr_map.len();
-        for (id, mr_ptr) in self.mr_map.drain() {
-            if mr_ptr != 0 {
-                unsafe {
-                    let result = rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr);
-                    if result != 0 {
-                        tracing::error!(
-                            "Failed to deregister MR with id {}: error code {}",
-                            id,
-                            result
-                        );
-                    }
-                }
-            }
-        }
-
-        // 4. Deregister all CUDA segments (if using mlx5dv)
-        // The segment scanner in Python handles compatibility checks
-        if self.mlx5dv_enabled {
-            unsafe {
-                let result = rdmaxcel_sys::deregister_segments();
-                if result != 0 {
-                    let error_msg = get_rdmaxcel_error_message(result);
-                    tracing::error!(
-                        "Failed to deregister CUDA segments: {} (error code: {})",
-                        error_msg,
-                        result
-                    );
-                }
-            }
         }
     }
 }
@@ -415,12 +468,11 @@ impl IbvManagerActor {
 
         let actor = Self {
             owner: OnceLock::new(),
-            device_qps: HashMap::new(),
-            pending_qp_creation: Arc::new(Mutex::new(HashSet::new())),
+            qps: HashMap::new(),
             device_domains: HashMap::new(),
             config,
             mlx5dv_enabled,
-            mr_map: HashMap::new(),
+            segments_mr: None,
             mrv_id: 0,
             buffer_registrations: HashMap::new(),
         };
@@ -433,15 +485,15 @@ impl IbvManagerActor {
         &mut self,
         device_name: &str,
         rdma_device: &IbvDevice,
-    ) -> Result<(IbvDomain, Option<IbvQueuePair>), anyhow::Error> {
+    ) -> Result<(Arc<IbvDomain>, Option<IbvQueuePair>), anyhow::Error> {
         if let Some((domain, qp)) = self.device_domains.get(device_name) {
-            return Ok((domain.clone(), qp.clone()));
+            return Ok((Arc::clone(domain), qp.clone()));
         }
 
         // Create new domain for this device
-        let domain = IbvDomain::new(rdma_device.clone()).map_err(|e| {
+        let domain = Arc::new(IbvDomain::new(rdma_device.clone()).map_err(|e| {
             anyhow::anyhow!("could not create domain for device {}: {}", device_name, e)
-        })?;
+        })?);
 
         // Print device info if MONARCH_DEBUG_RDMA=1 is set (before initial QP creation)
         crate::print_device_info_if_debug_enabled(domain.context);
@@ -449,14 +501,15 @@ impl IbvManagerActor {
         // Create loopback QP for this domain if mlx5dv is supported (needed for segment registration)
         // For EFA, we don't need a loopback QP for segment scanning
         let qp = if mlx5dv_supported() && !crate::efa::is_efa_device() {
-            let mut qp = IbvQueuePair::new(domain.context, domain.pd, self.config.clone())
-                .map_err(|e| {
+            let mut qp = QpGuard::new(
+                IbvQueuePair::new(domain.context, domain.pd, self.config.clone()).map_err(|e| {
                     anyhow::anyhow!(
                         "could not create loopback QP for device {}: {}",
                         device_name,
                         e
                     )
-                })?;
+                })?,
+            );
 
             // Get connection info and connect to itself
             let endpoint = qp.get_qp_info().map_err(|e| {
@@ -476,8 +529,9 @@ impl IbvManagerActor {
             None
         };
 
+        let qp = qp.map(|qp| qp.into_inner());
         self.device_domains
-            .insert(device_name.to_string(), (domain.clone(), qp.clone()));
+            .insert(device_name.to_string(), (Arc::clone(&domain), qp.clone()));
         Ok((domain, qp))
     }
 
@@ -514,16 +568,12 @@ impl IbvManagerActor {
     }
 
     fn find_cuda_segment_for_address(
-        &mut self,
+        &self,
         addr: usize,
         size: usize,
         pd: *mut rdmaxcel_sys::ibv_pd,
-    ) -> Option<IbvMemoryRegionView> {
-        let registered_segments = get_registered_cuda_segments(pd);
-        let id = self.mrv_id;
-        let mrv = lookup_segment_for_address(&registered_segments, addr, size, id)?;
-        self.mrv_id += 1;
-        Some(mrv)
+    ) -> Option<SegmentInfo> {
+        lookup_segment_for_address(&get_registered_cuda_segments(pd), addr, size)
     }
 
     fn register_mr_impl(
@@ -585,18 +635,17 @@ impl IbvManagerActor {
                     | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC
             };
 
-            let mut mr: *mut rdmaxcel_sys::ibv_mr = std::ptr::null_mut();
             let mrv;
 
             if is_cuda {
                 // First, try to use segment scanning if mlx5dv is enabled
-                let mut segment_mrv = None;
+                let mut segment_info = None;
                 if self.mlx5dv_enabled {
                     // Try to find in already registered segments
-                    segment_mrv = self.find_cuda_segment_for_address(addr, size, domain.pd);
+                    segment_info = self.find_cuda_segment_for_address(addr, size, domain.pd);
 
                     // If not found, trigger a re-sync with the allocator and retry
-                    if segment_mrv.is_none() {
+                    if segment_info.is_none() {
                         let (mut pds, mut qps) = self.build_per_device_pd_qp_arrays();
                         let err = rdmaxcel_sys::register_segments(
                             pds.as_mut_ptr(),
@@ -607,14 +656,40 @@ impl IbvManagerActor {
                         // Only retry if register_segments succeeded
                         // If it fails (e.g., scanner returns 0 segments), we'll fall back to dmabuf
                         if err == 0 {
-                            segment_mrv = self.find_cuda_segment_for_address(addr, size, domain.pd);
+                            // The scanner just registered (or
+                            // re-synced) global segment state. Lazily
+                            // install the singleton `segments_mr` now,
+                            // independent of whether *this* address
+                            // matches a segment. Without this, a
+                            // subsequent retry that doesn't find a
+                            // segment would leak the newly-registered
+                            // global state on manager teardown.
+                            self.segments_mr
+                                .get_or_insert_with(|| Arc::new(IbvMemoryRegion::Segments));
+                            segment_info =
+                                self.find_cuda_segment_for_address(addr, size, domain.pd);
                         }
                     }
                 }
 
                 // Use segment if found, otherwise fall back to direct dmabuf registration
-                if let Some(mrv_from_segment) = segment_mrv {
-                    mrv = mrv_from_segment;
+                if let Some(info) = segment_info {
+                    let segments_mr = Arc::clone(
+                        self.segments_mr
+                            .get_or_insert_with(|| Arc::new(IbvMemoryRegion::Segments)),
+                    );
+                    let id = self.mrv_id;
+                    self.mrv_id += 1;
+                    mrv = IbvMemoryRegionView::new(
+                        id,
+                        addr,
+                        info.rdma_addr,
+                        info.size,
+                        info.lkey,
+                        info.rkey,
+                        device_name.clone(),
+                        segments_mr,
+                    );
                 } else {
                     // Dmabuf path: used when mlx5dv is disabled OR scanner returns no segments
                     let mut fd: i32 = -1;
@@ -634,24 +709,30 @@ impl IbvManagerActor {
                             fd
                         ));
                     }
-                    mr =
+                    let mr =
                         rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
                     if mr.is_null() {
                         return Err(anyhow::anyhow!("Failed to register dmabuf MR"));
                     }
-                    mrv = IbvMemoryRegionView {
-                        id: self.mrv_id,
-                        virtual_addr: addr,
-                        rdma_addr: (*mr).addr as usize,
-                        size,
-                        lkey: (*mr).lkey,
-                        rkey: (*mr).rkey,
-                    };
+                    let id = self.mrv_id;
                     self.mrv_id += 1;
+                    mrv = IbvMemoryRegionView::new(
+                        id,
+                        addr,
+                        (*mr).addr as usize,
+                        size,
+                        (*mr).lkey,
+                        (*mr).rkey,
+                        device_name.clone(),
+                        Arc::new(IbvMemoryRegion::Direct {
+                            mr,
+                            _domain: Arc::clone(&domain),
+                        }),
+                    );
                 }
             } else {
                 // CPU memory path
-                mr = rdmaxcel_sys::ibv_reg_mr(
+                let mr = rdmaxcel_sys::ibv_reg_mr(
                     domain.pd,
                     addr as *mut std::ffi::c_void,
                     size,
@@ -662,209 +743,71 @@ impl IbvManagerActor {
                     return Err(anyhow::anyhow!("failed to register standard MR"));
                 }
 
-                mrv = IbvMemoryRegionView {
-                    id: self.mrv_id,
-                    virtual_addr: addr,
-                    rdma_addr: (*mr).addr as usize,
-                    size,
-                    lkey: (*mr).lkey,
-                    rkey: (*mr).rkey,
-                };
+                let id = self.mrv_id;
                 self.mrv_id += 1;
+                mrv = IbvMemoryRegionView::new(
+                    id,
+                    addr,
+                    (*mr).addr as usize,
+                    size,
+                    (*mr).lkey,
+                    (*mr).rkey,
+                    device_name.clone(),
+                    Arc::new(IbvMemoryRegion::Direct {
+                        mr,
+                        _domain: Arc::clone(&domain),
+                    }),
+                );
             }
-            self.mr_map.insert(mrv.id, mr as usize);
             Ok((mrv, device_name))
         }
     }
 
-    fn deregister_mr_impl(&mut self, id: usize) -> Result<(), anyhow::Error> {
-        if let Some(mr_ptr) = self.mr_map.remove(&id) {
-            if mr_ptr != 0 {
-                unsafe {
-                    rdmaxcel_sys::ibv_dereg_mr(mr_ptr as *mut rdmaxcel_sys::ibv_mr);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn request_queue_pair_impl(
+    /// Lazy QP creation: if `qp_key` is absent, create the local
+    /// `IbvQueuePair`, capture its `IbvQpInfo`, and spawn a
+    /// `QueuePairInitializer` to drive the handshake. Returns the
+    /// `QpState` entry — either the freshly-inserted `Pending` one,
+    /// or the existing `Pending`/`Ready`/`Failed`.
+    fn ensure_queue_pair_impl(
         &mut self,
         cx: &Context<'_, Self>,
         other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-    ) -> Result<IbvQueuePair, anyhow::Error> {
-        let self_ref: ActorRef<IbvManagerActor> = cx.bind();
-        let other_id = other.actor_addr().id().clone();
-
-        // Use the nested map structure: local_device -> (actor_id, remote_device) -> IbvQueuePair
-        let inner_key = (other_id.clone(), other_device.clone());
-
-        // Check if queue pair exists in map
-        let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
-            self.device_qps.get(&self_device);
-        if let Some(device_map) = device_map {
-            if let Some(qp) = device_map.get(&inner_key) {
-                return Ok(qp.clone());
-            }
+        qp_key: &QpKey,
+    ) -> Result<&mut QpState, anyhow::Error> {
+        if !self.qps.contains_key(qp_key) {
+            let self_device = &qp_key.self_device;
+            let rdma_device = super::primitives::get_all_devices()
+                .into_iter()
+                .find(|d| d.name() == self_device)
+                .ok_or_else(|| anyhow::anyhow!("RDMA device '{}' not found", self_device))?;
+            let (domain, _) = self.get_or_create_device_domain(self_device, &rdma_device)?;
+            // Wrap the freshly-created QP in a `QpGuard` immediately
+            // so that any early-return path below (e.g. `get_qp_info`
+            // failing) destroys the underlying `rdmaxcel_qp_t` via
+            // the guard's `Drop` rather than leaking it.
+            let mut qp = QpGuard::new(
+                IbvQueuePair::new(domain.context, domain.pd, self.config.clone())
+                    .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {}", e))?,
+            );
+            let info = qp
+                .get_qp_info()
+                .map_err(|e| anyhow::anyhow!("could not extract QP info: {}", e))?;
+            let initializer =
+                QueuePairInitializer::new(Instance::handle(cx), other, qp_key.clone(), qp)
+                    .spawn(cx)?;
+            self.qps.insert(
+                qp_key.clone(),
+                QpState::Pending {
+                    info,
+                    initializer,
+                    waiters: Vec::new(),
+                },
+            );
         }
-
-        // Try to acquire lock and mark as pending (hold lock only once!)
-        let pending_key = (self_device.clone(), other_id.clone(), other_device.clone());
-        let mut pending: futures::lock::MutexGuard<'_, HashSet<(String, ActorId, String)>> =
-            self.pending_qp_creation.lock().await;
-
-        if pending.contains(&pending_key) {
-            // Another task is creating this QP, release lock and wait
-            drop(pending);
-
-            // Loop checking device_qps until QP is created (no more locks needed)
-            // Timeout after 1 second
-            let start = Instant::now();
-            let timeout = Duration::from_secs(1);
-
-            loop {
-                tokio::time::sleep(Duration::from_micros(200)).await;
-
-                // Check if QP was created while we waited
-                let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
-                    self.device_qps.get(&self_device);
-                if let Some(device_map) = device_map {
-                    if let Some(qp) = device_map.get(&inner_key) {
-                        return Ok(qp.clone());
-                    }
-                }
-
-                // Check for timeout
-                if start.elapsed() >= timeout {
-                    return Err(anyhow::anyhow!(
-                        "Timeout waiting for QP creation (device {} -> actor {} device {}). \
-                         Another task is creating it but hasn't completed in 1 second",
-                        self_device,
-                        other_id,
-                        other_device
-                    ));
-                }
-            }
-        } else {
-            // Not pending, add to set and proceed with creation
-            pending.insert(pending_key.clone());
-            drop(pending);
-            // Fall through to create QP
-        }
-
-        // Queue pair doesn't exist - need to create connection
-        let result = async {
-            let is_loopback =
-                other_id == *self_ref.actor_addr().id() && self_device == other_device;
-
-            if is_loopback {
-                // Loopback connection setup
-                self.initialize_qp(cx, other.clone(), self_device.clone(), other_device.clone())
-                    .await?;
-                let endpoint = self
-                    .connection_info(cx, other.clone(), other_device.clone(), self_device.clone())
-                    .await?;
-                self.connect(
-                    cx,
-                    other.clone(),
-                    self_device.clone(),
-                    other_device.clone(),
-                    endpoint,
-                )
-                .await?;
-            } else {
-                // Remote connection setup
-                self.initialize_qp(cx, other.clone(), self_device.clone(), other_device.clone())
-                    .await?;
-                other
-                    .initialize_qp(
-                        cx,
-                        self_ref.clone(),
-                        other_device.clone(),
-                        self_device.clone(),
-                    )
-                    .await?;
-                let other_endpoint: IbvQpInfo = other
-                    .connection_info(
-                        cx,
-                        self_ref.clone(),
-                        other_device.clone(),
-                        self_device.clone(),
-                    )
-                    .await?;
-                self.connect(
-                    cx,
-                    other.clone(),
-                    self_device.clone(),
-                    other_device.clone(),
-                    other_endpoint,
-                )
-                .await?;
-                let local_endpoint = self
-                    .connection_info(cx, other.clone(), self_device.clone(), other_device.clone())
-                    .await?;
-                other
-                    .connect(
-                        cx,
-                        self_ref.clone(),
-                        other_device.clone(),
-                        self_device.clone(),
-                        local_endpoint,
-                    )
-                    .await?;
-
-                // BARRIER: Ensure remote side has completed its connection and is ready
-                let remote_state = other
-                    .get_qp_state(
-                        cx,
-                        self_ref.clone(),
-                        other_device.clone(),
-                        self_device.clone(),
-                    )
-                    .await?;
-
-                if remote_state != rdmaxcel_sys::ibv_qp_state::IBV_QPS_RTS {
-                    return Err(anyhow::anyhow!(
-                        "Remote QP not in RTS state after connection setup. \
-                         Local is ready but remote is in state {}. \
-                         This indicates a synchronization issue in connection setup.",
-                        remote_state
-                    ));
-                }
-            }
-
-            // Now that connection is established, get and clone the queue pair
-            let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
-                self.device_qps.get(&self_device);
-            if let Some(device_map) = device_map {
-                if let Some(qp) = device_map.get(&inner_key) {
-                    Ok(qp.clone())
-                } else {
-                    Err(anyhow::anyhow!(
-                        "Failed to create connection for actor {} on device {}",
-                        other_id,
-                        other_device
-                    ))
-                }
-            } else {
-                Err(anyhow::anyhow!(
-                    "Failed to create connection for actor {} on device {} - no device map",
-                    other_id,
-                    other_device
-                ))
-            }
-        }
-        .await;
-
-        // Always remove from pending set when done (success or failure)
-        let mut pending: futures::lock::MutexGuard<'_, HashSet<(String, ActorId, String)>> =
-            self.pending_qp_creation.lock().await;
-        pending.remove(&pending_key);
-        drop(pending);
-
-        result
+        Ok(self
+            .qps
+            .get_mut(qp_key)
+            .expect("entry just inserted or pre-existing"))
     }
 }
 
@@ -876,182 +819,64 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         _cx: &Context<Self>,
         remote_buf_id: usize,
     ) -> Result<(), anyhow::Error> {
-        if let Some(buf) = self.buffer_registrations.remove(&remote_buf_id) {
-            self.deregister_mr_impl(buf.mr_id)
-                .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
-        }
+        // Dropping the entry releases the manager's `Arc` clones on
+        // the view's MR and PD; FFI cleanup happens via their `Drop`s
+        // once the last referencing view is gone.
+        self.buffer_registrations.remove(&remote_buf_id);
         Ok(())
     }
+}
 
-    async fn request_queue_pair(
+#[async_trait]
+impl Handler<EnsureQueuePair<IbvManagerActor>> for IbvManagerActor {
+    async fn handle(
         &mut self,
         cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-    ) -> Result<Result<IbvQueuePair, String>, anyhow::Error> {
-        Ok(self
-            .request_queue_pair_impl(cx, other, self_device, other_device)
-            .await
-            .map_err(|e| e.to_string()))
-    }
-
-    async fn connect(
-        &mut self,
-        _cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-        endpoint: IbvQpInfo,
+        msg: EnsureQueuePair<IbvManagerActor>,
     ) -> Result<(), anyhow::Error> {
-        tracing::debug!("connecting with {:?}", other);
-        let other_id = other.actor_addr().id().clone();
-
-        let inner_key = (other_id.clone(), other_device.clone());
-
-        let device_map: Option<&mut HashMap<(ActorId, String), IbvQueuePair>> =
-            self.device_qps.get_mut(&self_device);
-        if let Some(device_map) = device_map {
-            match device_map.get_mut(&inner_key) {
-                Some(qp) => {
-                    qp.connect(&endpoint).map_err(|e| {
-                        anyhow::anyhow!("could not connect to RDMA endpoint: {}", e)
-                    })?;
-                    Ok(())
-                }
-                None => Err(anyhow::anyhow!(
-                    "No connection found for actor {}",
-                    other_id
-                )),
+        let EnsureQueuePair {
+            sender,
+            sender_device,
+            receiver_device,
+            reply,
+        } = msg;
+        let qp_key = QpKey {
+            self_device: receiver_device,
+            other_id: sender.actor_addr().id().clone(),
+            other_device: sender_device,
+        };
+        let state = match self.ensure_queue_pair_impl(cx, sender, &qp_key) {
+            Ok(state) => state,
+            Err(e) => {
+                reply.send(cx, PeerInfo(Err(e.to_string())))?;
+                return Ok(());
             }
-        } else {
-            Err(anyhow::anyhow!(
-                "No device map found for device {}",
-                self_device
-            ))
-        }
-    }
-
-    async fn initialize_qp(
-        &mut self,
-        _cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-    ) -> Result<bool, anyhow::Error> {
-        let other_id = other.actor_addr().id().clone();
-        let inner_key = (other_id.clone(), other_device.clone());
-
-        // Check if QP already exists in nested structure
-        let device_map: Option<&HashMap<(ActorId, String), IbvQueuePair>> =
-            self.device_qps.get(&self_device);
-        if let Some(device_map) = device_map {
-            if device_map.contains_key(&inner_key) {
-                return Ok(true);
+        };
+        match state {
+            QpState::Pending {
+                info, initializer, ..
+            } => {
+                let notify_rts = initializer.bind::<QueuePairInitializer<Self>>().port();
+                reply.send(cx, PeerInfo(Ok((info.clone(), notify_rts))))?;
+            }
+            QpState::Ready(_) => {
+                // `Ready` means a prior handshake completed and the
+                // initializer was stopped — we can't hand back an
+                // initializer ref. Reaching here represents a logic
+                // error (peer is asking us to redo a handshake we've
+                // already finished); surface it as `Err`.
+                reply.send(
+                    cx,
+                    PeerInfo(Err(format!(
+                        "EnsureQueuePair on already-Ready entry {qp_key:?}"
+                    ))),
+                )?;
+            }
+            QpState::Failed(error) => {
+                reply.send(cx, PeerInfo(Err(error.clone())))?;
             }
         }
-
-        // The domain is guaranteed to exist here: register_mr is always called before
-        // initialize_qp, either in execute_op or in register_remote_buffer at
-        // buffer-creation time, and register_mr always calls get_or_create_device_domain.
-        let (domain, _) = self.device_domains.get(&self_device).ok_or_else(|| {
-            anyhow::anyhow!(
-                "device domain for '{}' not found; register_mr must be called before initialize_qp",
-                self_device
-            )
-        })?;
-        let (domain_context, domain_pd) = (domain.context, domain.pd);
-
-        let qp = IbvQueuePair::new(domain_context, domain_pd, self.config.clone())
-            .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {}", e))?;
-
-        // Insert the QP into the nested map structure
-        self.device_qps
-            .entry(self_device.clone())
-            .or_insert_with(HashMap::new)
-            .insert(inner_key, qp);
-
-        tracing::debug!(
-            "successfully created a connection with {:?} for local device {} -> remote device {}",
-            other,
-            self_device,
-            other_device
-        );
-
-        Ok(true)
-    }
-
-    async fn connection_info(
-        &mut self,
-        _cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-    ) -> Result<IbvQpInfo, anyhow::Error> {
-        tracing::debug!("getting connection info with {:?}", other);
-        let other_id = other.actor_addr().id().clone();
-
-        let inner_key = (other_id.clone(), other_device.clone());
-
-        let device_map: Option<&mut HashMap<(ActorId, String), IbvQueuePair>> =
-            self.device_qps.get_mut(&self_device);
-        if let Some(device_map) = device_map {
-            match device_map.get_mut(&inner_key) {
-                Some(qp) => {
-                    let connection_info = qp.get_qp_info()?;
-                    Ok(connection_info)
-                }
-                None => Err(anyhow::anyhow!(
-                    "No connection found for actor {}",
-                    other_id
-                )),
-            }
-        } else {
-            Err(anyhow::anyhow!(
-                "No device map found for self device {}",
-                self_device
-            ))
-        }
-    }
-
-    async fn release_queue_pair(
-        &mut self,
-        _cx: &Context<Self>,
-        _other: ActorRef<IbvManagerActor>,
-        _self_device: String,
-        _other_device: String,
-        _qp: IbvQueuePair,
-    ) -> Result<(), anyhow::Error> {
         Ok(())
-    }
-
-    async fn get_qp_state(
-        &mut self,
-        _cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
-        self_device: String,
-        other_device: String,
-    ) -> Result<u32, anyhow::Error> {
-        let other_id = other.actor_addr().id().clone();
-        let inner_key = (other_id.clone(), other_device.clone());
-
-        let device_map: Option<&mut HashMap<(ActorId, String), IbvQueuePair>> =
-            self.device_qps.get_mut(&self_device);
-        if let Some(device_map) = device_map {
-            match device_map.get_mut(&inner_key) {
-                Some(qp) => qp.state(),
-                None => Err(anyhow::anyhow!(
-                    "No connection found for actor {} on device {}",
-                    other_id,
-                    other_device
-                )),
-            }
-        } else {
-            Err(anyhow::anyhow!(
-                "No device map found for self device {}",
-                self_device
-            ))
-        }
     }
 }
 
@@ -1067,21 +892,13 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
         Ok(self.register_mr_impl(addr, size).map_err(|e| e.to_string()))
     }
 
-    async fn deregister_mr(
-        &mut self,
-        _cx: &Context<Self>,
-        id: usize,
-    ) -> Result<Result<(), String>, anyhow::Error> {
-        Ok(self.deregister_mr_impl(id).map_err(|e| e.to_string()))
-    }
-
     async fn register_remote_buffer(
         &mut self,
         _cx: &Context<Self>,
         remote_buf_id: usize,
         local: Arc<dyn RdmaLocalMemory>,
     ) -> Result<Result<IbvBuffer, String>, anyhow::Error> {
-        if let Some(buf) = self.buffer_registrations.get(&remote_buf_id) {
+        if let Some((buf, _)) = self.buffer_registrations.get(&remote_buf_id) {
             return Ok(Ok(buf.clone()));
         }
         let (mrv, device_name) = match self.register_mr_impl(local.addr(), local.size()) {
@@ -1096,9 +913,151 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
             size: mrv.size,
             device_name,
         };
-        self.buffer_registrations.insert(remote_buf_id, buf.clone());
+        self.buffer_registrations
+            .insert(remote_buf_id, (buf.clone(), mrv));
         Ok(Ok(buf))
     }
+
+    async fn request_queue_pair(
+        &mut self,
+        cx: &Context<Self>,
+        other: ActorRef<IbvManagerActor>,
+        self_device: String,
+        other_device: String,
+        reply: OncePortHandle<Result<IbvQueuePair, String>>,
+    ) -> Result<(), anyhow::Error> {
+        let qp_key = QpKey {
+            self_device,
+            other_id: other.actor_addr().id().clone(),
+            other_device,
+        };
+        let state = match self.ensure_queue_pair_impl(cx, other, &qp_key) {
+            Ok(state) => state,
+            Err(e) => {
+                reply.send(cx, Err(e.to_string()))?;
+                return Ok(());
+            }
+        };
+        match state {
+            QpState::Pending { waiters, .. } => waiters.push(reply),
+            QpState::Ready(qp) => reply.send(cx, Ok(qp.clone()))?,
+            QpState::Failed(error) => reply.send(cx, Err(error.clone()))?,
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<QpInitializerDone> for IbvManagerActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: QpInitializerDone,
+    ) -> Result<(), anyhow::Error> {
+        let QpInitializerDone { qp_key, qp } = msg;
+        let qp = qp.into_inner();
+        // Take the entry out, transition to Ready, drain waiters,
+        // then stop the initializer.
+        let initializer = match self.qps.remove(&qp_key) {
+            Some(QpState::Pending {
+                waiters,
+                initializer,
+                ..
+            }) => {
+                for w in waiters {
+                    let waiter_dbg = format!("{w:?}");
+                    if let Err(e) = w.send(cx, Ok(qp.clone())) {
+                        tracing::error!(
+                            "QpInitializerDone: failed to deliver to waiter {waiter_dbg} for {qp_key:?}: {e}"
+                        );
+                    }
+                }
+                initializer
+            }
+            other => {
+                unreachable!("QpInitializerDone received but state is {other:?}: {qp_key:?}")
+            }
+        };
+        self.qps.insert(qp_key.clone(), QpState::Ready(qp));
+        initializer.drain_and_stop("QpInitializerDone")?;
+        let status = initializer.await;
+        if status.is_failed() {
+            // The QP itself is already `Ready` and waiters have been
+            // drained, so a non-clean initializer shutdown is not
+            // user-visible — log and move on rather than crashing
+            // the manager.
+            tracing::error!(
+                "QueuePairInitializer for {qp_key:?} terminated with failure after Done: {status:?}"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<QpInitializerFailed> for IbvManagerActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: QpInitializerFailed,
+    ) -> Result<(), anyhow::Error> {
+        let QpInitializerFailed { qp_key, error } = msg;
+        let initializer = match self.qps.remove(&qp_key) {
+            Some(QpState::Pending {
+                waiters,
+                initializer,
+                ..
+            }) => {
+                for w in waiters {
+                    let waiter_dbg = format!("{w:?}");
+                    if let Err(e) = w.send(cx, Err(error.clone())) {
+                        tracing::error!(
+                            "QpInitializerFailed: failed to deliver to waiter {waiter_dbg} for {qp_key:?}: {e}"
+                        );
+                    }
+                }
+                initializer
+            }
+            other => {
+                unreachable!("QpInitializerFailed received but state is {other:?}: {qp_key:?}")
+            }
+        };
+        // Tombstone the entry: subsequent `RequestQueuePair` calls
+        // for the same key surface the same error rather than
+        // retrying or hanging. TODO: add recovery.
+        self.qps.insert(qp_key.clone(), QpState::Failed(error));
+        initializer.drain_and_stop("QpInitializerFailed")?;
+        let status = initializer.await;
+        if status.is_failed() {
+            tracing::error!(
+                "QueuePairInitializer for {qp_key:?} terminated with failure after Failed: {status:?}"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Free helper around [`IbvManagerLocalMessage::RequestQueuePair`] — opens
+/// a `OncePortHandle` for the reply, sends the message, and awaits the
+/// answer. Exists because `RequestQueuePair` doesn't use `#[reply]`
+/// (the handler may park the port until the QP becomes `Ready`), so
+/// the auto-derived client method only does fire-and-forget.
+pub(super) async fn request_queue_pair(
+    actor: &ActorHandle<IbvManagerActor>,
+    cx: &(impl hyperactor::context::Actor + Send + Sync),
+    other: ActorRef<IbvManagerActor>,
+    self_device: String,
+    other_device: String,
+) -> Result<Result<IbvQueuePair, String>, anyhow::Error> {
+    let (reply, rx) = cx
+        .mailbox()
+        .open_once_port::<Result<IbvQueuePair, String>>();
+    actor
+        .request_queue_pair(cx, other, self_device, other_device, reply)
+        .await?;
+    rx.recv()
+        .await
+        .map_err(|e| anyhow::anyhow!("request_queue_pair port closed: {e}"))
 }
 
 /// Wrapper around [`ActorHandle<IbvManagerActor>`] that moves the RDMA
@@ -1196,15 +1155,17 @@ impl IbvBackend {
         ))
     }
 
-    /// Core submit logic: registers local MR via actor message, resolves remote
-    /// IbvBuffer lazily, executes the op locally, and deregisters local MR.
+    /// Core submit logic: registers a local MR via actor message,
+    /// resolves the remote `IbvBuffer` lazily, and executes the op.
+    /// `local_mrv` is kept in scope for the duration of the op so
+    /// its `Arc<IbvMemoryRegion>` (and the PD it lives on) survive
+    /// until completion; on drop, the FFI MR is deregistered.
     async fn execute_op(
         &self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
         op: IbvOp,
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
-        // Register the local memory via actor message
         let (local_mrv, local_device_name) = self
             .register_mr(cx, op.local_memory.addr(), op.local_memory.size())
             .await?
@@ -1219,16 +1180,16 @@ impl IbvBackend {
             device_name: local_device_name,
         };
 
-        let op_result = async {
-            let mut qp = self
-                .request_queue_pair(
-                    cx,
-                    op.remote_manager.clone(),
-                    local_buffer.device_name.clone(),
-                    op.remote_buffer.device_name.clone(),
-                )
-                .await?
-                .map_err(|e| anyhow::anyhow!(e))?;
+        let result = async {
+            let mut qp = request_queue_pair(
+                &self.0,
+                cx,
+                op.remote_manager.clone(),
+                local_buffer.device_name.clone(),
+                op.remote_buffer.device_name.clone(),
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
 
             let wr_id = match op.op_type {
                 RdmaOpType::WriteFromLocal => qp.put(local_buffer.clone(), op.remote_buffer)?,
@@ -1240,22 +1201,8 @@ impl IbvBackend {
         }
         .await;
 
-        // Always deregister the locally registered MR via actor message
-        let dereg_result = self
-            .deregister_mr(cx, local_buffer.mr_id)
-            .await?
-            .map_err(|e| anyhow::anyhow!(e));
-
-        match (op_result, dereg_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(e), Ok(())) => Err(e),
-            (Ok(()), Err(e)) => Err(e),
-            (Err(op_err), Err(dereg_err)) => Err(anyhow::anyhow!(
-                "deregister MR error: {}; op error: {}",
-                dereg_err,
-                op_err
-            )),
-        }
+        drop(local_mrv);
+        result
     }
 }
 

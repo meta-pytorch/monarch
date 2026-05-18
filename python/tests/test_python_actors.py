@@ -59,7 +59,8 @@ from monarch.actor import (
     ProcMesh,
 )
 from monarch.config import configure, configured, parametrize_config
-from monarch.tools.config import defaults
+from monarch.tools.config import Config
+from monarch.tools.config.workspace import Workspace
 from scoped_state import scoped_state
 from typing_extensions import assert_type
 
@@ -1125,7 +1126,10 @@ async def test_sync_workspace() -> None:
         pm = host.spawn_procs(per_host={"gpus": 1})
         code_sync_mesh = host
 
-        config = defaults.config("slurm", workspace_src)
+        config = Config(
+            scheduler="slurm",
+            workspace=Workspace(dirs={workspace_src: ""}),
+        )
         await code_sync_mesh.sync_workspace(
             workspace=config.workspace, auto_reload=True
         )
@@ -1811,6 +1815,25 @@ def test_context_propagated_through_python_task_spawn_blocking():
     a = p.spawn("test_pytokio_actor", TestPytokioActor)
     a.context_propagated_through_spawn_blocking.call().get()
     p.stop().get()
+
+
+@pytest.mark.timeout(15)
+def test_future_get_inside_async_loop_warns():
+    """Calling Future.get() from inside an active asyncio loop is deprecated:
+    it blocks the surrounding loop. Verify a DeprecationWarning fires while
+    the call still completes for backward compatibility; this will become a
+    RuntimeError in monarch v0.6.
+    """
+
+    async def runner() -> int:
+        async def inner() -> int:
+            return 1
+
+        f: Future[int] = Future(coro=inner())
+        with pytest.warns(DeprecationWarning, match="event loop"):
+            return f.get()
+
+    assert asyncio.run(runner()) == 1
 
 
 class ActorWithCleanup(Actor):
