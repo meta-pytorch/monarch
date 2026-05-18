@@ -16,3 +16,6 @@ typeuri = { version = "0.0.0", path = "../typeuri" }
 
 [dev-dependencies]
 bincode = { version = "2", features = ["serde"] }
+
+[lints]
+workspace = true

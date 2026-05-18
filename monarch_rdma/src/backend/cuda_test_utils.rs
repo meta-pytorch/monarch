@@ -30,7 +30,6 @@ use crate::RdmaManagerMessageClient;
 use crate::RdmaRemoteBuffer;
 use crate::local_memory::Keepalive;
 use crate::local_memory::KeepaliveLocalMemory;
-use crate::local_memory::RdmaLocalMemory;
 use crate::register_segment_scanner;
 
 /// One physical chunk mapped into an expandable segment's VA
@@ -572,7 +571,7 @@ impl SenderMessageHandler for SenderActor {
 
         let mut remotes = Vec::with_capacity(buffers.len());
         for &(offset, size) in &buffers {
-            let local: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
+            let local: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
                 alloc.ptr() + offset,
                 size,
                 Arc::new(alloc.clone()),
@@ -580,7 +579,10 @@ impl SenderMessageHandler for SenderActor {
             // Pre-fill so reads return a known sequence; write_at
             // routes to the GPU path for CUDA-backed memory.
             let fill = vec![pattern; size];
-            local.write_at(0, &fill)?;
+            // SAFETY: `local` is freshly constructed and not yet
+            // registered, so no other thread holds a view of this
+            // sub-range of `alloc` while we initialize it.
+            unsafe { local.write_at(0, &fill) }?;
             remotes.push(handle.request_buffer(cx, local).await?);
         }
 
@@ -660,7 +662,7 @@ impl ReceiverMessageHandler for ReceiverActor {
         // read.
         let buf: Box<[u8]> = vec![!expected_pattern; size].into_boxed_slice();
         let addr = buf.as_ptr() as usize;
-        let local: Arc<dyn RdmaLocalMemory> =
+        let local: Arc<KeepaliveLocalMemory> =
             Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(buf)));
 
         let read_result = remote
@@ -673,7 +675,10 @@ impl ReceiverMessageHandler for ReceiverActor {
         }
 
         let mut got = vec![0u8; size];
-        if let Err(e) = local.read_at(0, &mut got) {
+        // SAFETY: `local` is the sole handle to this fresh CPU
+        // allocation; the `read_into_local` call above has already
+        // completed.
+        if let Err(e) = unsafe { local.read_at(0, &mut got) } {
             return Ok(Err(format!("post-read inspect failed: {e}")));
         }
         if let Some(idx) = got.iter().position(|&b| b != expected_pattern) {
@@ -696,7 +701,7 @@ impl ReceiverMessageHandler for ReceiverActor {
     ) -> Result<Result<(), String>, anyhow::Error> {
         let buf: Box<[u8]> = vec![pattern; size].into_boxed_slice();
         let addr = buf.as_ptr() as usize;
-        let local: Arc<dyn RdmaLocalMemory> =
+        let local: Arc<KeepaliveLocalMemory> =
             Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(buf)));
 
         let result = remote

@@ -130,9 +130,9 @@ mod tests {
     async fn test_proc_dialer() {
         let dir = tempfile::tempdir().unwrap();
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
-        let first = hyperactor::ProcAddr::unique(local_addr.clone(), "first");
-        let second = hyperactor::ProcAddr::unique(local_addr.clone(), "second");
-        let third = hyperactor::ProcAddr::unique(local_addr.clone(), "third");
+        let first = hyperactor::ProcAddr::instance(local_addr.clone(), "first");
+        let second = hyperactor::ProcAddr::instance(local_addr.clone(), "second");
+        let third = hyperactor::ProcAddr::instance(local_addr.clone(), "third");
         let (first_serve, _) = local_proc_addr(dir.path(), first.id()).unwrap();
         let (_first_addr, mut first_rx) = channel::serve::<MessageEnvelope>(first_serve).unwrap();
         let (second_serve, _) = local_proc_addr(dir.path(), second.id()).unwrap();
