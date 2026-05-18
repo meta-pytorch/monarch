@@ -849,8 +849,20 @@ fn row_major_index(indices: &[usize], sizes: impl IntoIterator<Item = usize>) ->
 mod tests {
     use super::*;
 
+    macro_rules! rankrect {
+        (offset = $offset:expr; $($name:ident = $size:expr),+ $(,)?) => {{
+            let extent = Extent::new(vec![$(Dim::new(stringify!($name), $size)),+]).unwrap();
+            let strides = row_major_strides([$($size),+]);
+            RankRect::affine(extent, Rank($offset), strides).unwrap()
+        }};
+        ($($name:ident = $size:expr),+ $(,)?) => {{
+            RankRect::new(Extent::new(vec![$(Dim::new(stringify!($name), $size)),+]).unwrap())
+                .unwrap()
+        }};
+    }
+
     fn host_gpu_rect() -> RankRect {
-        RankRect::new(Extent::new(vec![Dim::new("host", 2), Dim::new("gpu", 4)]).unwrap()).unwrap()
+        rankrect!(host = 2, gpu = 4)
     }
 
     #[test]
