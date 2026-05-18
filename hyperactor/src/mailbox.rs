@@ -17,6 +17,7 @@
 //!
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
+//! # use hyperactor::Endpoint as _;
 //! # use hyperactor::Proc;
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
@@ -36,6 +37,7 @@
 //!
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
+//! # use hyperactor::Endpoint as _;
 //! # use hyperactor::Proc;
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
@@ -1076,25 +1078,51 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 .build()
                 .expect("mailbox server proc builder is valid");
             let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
-            while let Ok(Undeliverable::Message(mut envelope)) = undeliverable_rx.recv().await {
-                if let Ok(Undeliverable::Message(e)) =
-                    envelope.deserialized::<Undeliverable<MessageEnvelope>>()
-                {
-                    // A non-returnable undeliverable.
-                    UndeliverableMailboxSender.post(e, monitored_return_handle());
-                    continue;
+            while let Ok(undeliverable) = undeliverable_rx.recv().await {
+                match undeliverable {
+                    Undeliverable::Message(mut envelope) => {
+                        match envelope.deserialized::<Undeliverable<MessageEnvelope>>() {
+                            Ok(Undeliverable::Message(e)) => {
+                                // A non-returnable undeliverable.
+                                UndeliverableMailboxSender.post(e, monitored_return_handle());
+                                continue;
+                            }
+                            Ok(Undeliverable::Lost(lost)) => {
+                                tracing::error!(
+                                    sender = %lost.sender,
+                                    dest = %lost.dest,
+                                    message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                                    error = %lost.error,
+                                    "lost message was undeliverable"
+                                );
+                                continue;
+                            }
+                            Err(_) => {}
+                        }
+                        envelope.set_error(DeliveryError::BrokenLink(
+                            "message was undeliverable".to_owned(),
+                        ));
+                        let sender_id: ActorAddr = envelope.sender().clone();
+                        let return_port =
+                            PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(
+                                &sender_id,
+                            );
+                        return_port.post_serialized(
+                            &client,
+                            Flattrs::new(),
+                            wirevalue::Any::serialize(&Undeliverable::Message(envelope)).unwrap(),
+                        );
+                    }
+                    Undeliverable::Lost(lost) => {
+                        tracing::error!(
+                            sender = %lost.sender,
+                            dest = %lost.dest,
+                            message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                            error = %lost.error,
+                            "lost message was undeliverable"
+                        );
+                    }
                 }
-                envelope.set_error(DeliveryError::BrokenLink(
-                    "message was undeliverable".to_owned(),
-                ));
-                let sender_id: ActorAddr = envelope.sender().clone();
-                let return_port =
-                    PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&sender_id);
-                return_port.post_serialized(
-                    &client,
-                    Flattrs::new(),
-                    wirevalue::Any::serialize(&Undeliverable::Message(envelope)).unwrap(),
-                );
             }
         });
 
@@ -4015,7 +4043,7 @@ mod tests {
         assert!(msg_str.contains("sender:") && msg_str.contains("quux_0"));
         assert!(msg_str.contains("dest:") && msg_str.contains("corge_0"));
 
-        proc.destroy_and_wait::<()>(tokio::time::Duration::from_secs(1), None, "test cleanup")
+        proc.destroy_and_wait(tokio::time::Duration::from_secs(1), "test cleanup")
             .await
             .unwrap();
     }

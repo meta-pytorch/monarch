@@ -260,7 +260,7 @@ pub struct SelectIterator<'a> {
     iter: DimSliceIterator,
 }
 
-impl<'a> Iterator for SelectIterator<'a> {
+impl Iterator for SelectIterator<'_> {
     type Item = Shape;
 
     fn next(&mut self) -> Option<Self::Item> {
