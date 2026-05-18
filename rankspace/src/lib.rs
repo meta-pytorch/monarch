@@ -466,6 +466,10 @@ pub enum RankSpaceError {
     #[error("stride {stride} is smaller than previous coordinate space {space}")]
     StrideTooSmall { stride: usize, space: usize },
 
+    /// Rank arithmetic overflowed.
+    #[error("rank arithmetic overflow")]
+    RankArithmeticOverflow,
+
     /// Dimension ranges must have nonzero steps.
     #[error("dimension range step must be nonzero")]
     ZeroStep,
@@ -636,14 +640,20 @@ impl RankRect {
 
         let mut extent = self.extent.clone();
         let mut strides = self.strides.clone();
+        let offset_delta = resolved
+            .start
+            .checked_mul(strides[dim_index])
+            .ok_or(RankSpaceError::RankArithmeticOverflow)?;
         let offset = Rank(
             self.offset
                 .0
-                .checked_add(resolved.start * strides[dim_index])
-                .expect("restricted rank offset should fit usize"),
+                .checked_add(offset_delta)
+                .ok_or(RankSpaceError::RankArithmeticOverflow)?,
         );
         extent.set_dim_size(dim_index, resolved.len);
-        strides[dim_index] *= resolved.step;
+        strides[dim_index] = strides[dim_index]
+            .checked_mul(resolved.step)
+            .ok_or(RankSpaceError::RankArithmeticOverflow)?;
         Self::affine(extent, offset, strides)
     }
 
@@ -663,11 +673,14 @@ impl RankRect {
             });
         }
 
+        let offset_delta = index
+            .checked_mul(self.strides[dim_index])
+            .ok_or(RankSpaceError::RankArithmeticOverflow)?;
         let offset = Rank(
             self.offset
                 .0
-                .checked_add(index * self.strides[dim_index])
-                .expect("fixed rank offset should fit usize"),
+                .checked_add(offset_delta)
+                .ok_or(RankSpaceError::RankArithmeticOverflow)?,
         );
         let mut extent = self.extent.clone();
         let mut strides = self.strides.clone();
@@ -1057,6 +1070,61 @@ mod tests {
         assert_eq!(
             space.iter_ranks().collect::<Vec<_>>(),
             vec![Rank(0), Rank(1), Rank(2), Rank(3)]
+        );
+    }
+
+    #[test]
+    fn restrict_reports_rank_arithmetic_overflow() {
+        let rect = RankRect {
+            extent: Extent::new(vec![Dim::new("host", 3)]).unwrap(),
+            offset: Rank(usize::MAX),
+            strides: vec![1],
+        };
+
+        assert_eq!(
+            rect.restrict("host", 1).unwrap_err(),
+            RankSpaceError::RankArithmeticOverflow
+        );
+
+        let rect = RankRect {
+            extent: Extent::new(vec![Dim::new("host", 3)]).unwrap(),
+            offset: Rank(0),
+            strides: vec![usize::MAX],
+        };
+
+        assert_eq!(
+            rect.restrict("host", 2).unwrap_err(),
+            RankSpaceError::RankArithmeticOverflow
+        );
+        assert_eq!(
+            rect.restrict("host", DimRange::with_step(0, Some(2), 2).unwrap())
+                .unwrap_err(),
+            RankSpaceError::RankArithmeticOverflow
+        );
+    }
+
+    #[test]
+    fn fix_reports_rank_arithmetic_overflow() {
+        let rect = RankRect {
+            extent: Extent::new(vec![Dim::new("host", 3)]).unwrap(),
+            offset: Rank(usize::MAX),
+            strides: vec![1],
+        };
+
+        assert_eq!(
+            rect.fix("host", 1).unwrap_err(),
+            RankSpaceError::RankArithmeticOverflow
+        );
+
+        let rect = RankRect {
+            extent: Extent::new(vec![Dim::new("host", 3)]).unwrap(),
+            offset: Rank(0),
+            strides: vec![usize::MAX],
+        };
+
+        assert_eq!(
+            rect.fix("host", 2).unwrap_err(),
+            RankSpaceError::RankArithmeticOverflow
         );
     }
 }
