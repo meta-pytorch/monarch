@@ -1358,6 +1358,7 @@ impl Proc {
             .iter()
             .filter(|entry| entry.key().uid().is_singleton())
             .filter_map(|entry| entry.value().upgrade())
+            .filter(|cell| !matches!(*cell.status().borrow(), ActorStatus::Client))
             .map(|cell| cell.actor_addr().clone())
             .collect::<Vec<_>>()
         {
@@ -4991,7 +4992,12 @@ mod tests {
         root.await;
 
         for actor in [root_1, root_2, root_2_1] {
-            actor.post(&client, TestActorMessage::Noop());
+            assert!(
+                actor
+                    .port::<TestActorMessage>()
+                    .try_send(&client, TestActorMessage::Noop())
+                    .is_err()
+            );
             assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "parent stopping");
         }
     }
@@ -5081,7 +5087,8 @@ mod tests {
 
         // Drain closes runtime-dispatched handler ingress, so new
         // sends to the actor's handler port are rejected.
-        handle.post(&client, ());
+        let err = handle.port::<()>().try_send(&client, ()).unwrap_err();
+        assert_matches!(err.kind(), crate::mailbox::MailboxSenderErrorKind::Closed);
 
         release_stop.notify_one();
         assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
@@ -5597,7 +5604,21 @@ mod tests {
         actor_handle.drain_and_stop("healthy shutdown").unwrap();
         actor_handle.await;
 
-        handle_for_send.post(&client, TestActorMessage::Noop());
+        // Try to send a message to the stopped actor
+        let result = handle_for_send
+            .port::<TestActorMessage>()
+            .try_send(&client, TestActorMessage::Noop());
+
+        assert!(result.is_err(), "send should fail when actor is stopped");
+        let err = result.unwrap_err();
+        assert_matches!(
+            err.kind(),
+            crate::mailbox::MailboxSenderErrorKind::Mailbox(mailbox_err)
+                if matches!(
+                    mailbox_err.kind(),
+                    crate::mailbox::MailboxErrorKind::OwnerTerminated(ActorStatus::Stopped(reason)) if reason == "healthy shutdown"
+                )
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -5620,7 +5641,22 @@ mod tests {
         );
         actor_handle.await;
 
-        handle_for_send.post(&client, TestActorMessage::Noop());
+        // Try to send a message to the failed actor
+        let result = handle_for_send
+            .port::<TestActorMessage>()
+            .try_send(&client, TestActorMessage::Noop());
+
+        assert!(result.is_err(), "send should fail when actor has failed");
+        let err = result.unwrap_err();
+        assert_matches!(
+            err.kind(),
+            crate::mailbox::MailboxSenderErrorKind::Mailbox(mailbox_err)
+                if matches!(
+                    mailbox_err.kind(),
+                    crate::mailbox::MailboxErrorKind::OwnerTerminated(ActorStatus::Failed(ActorErrorKind::Generic(msg)))
+                        if msg.contains("intentional failure")
+                )
+        );
     }
 
     /// Wait for a terminated snapshot to appear for the given actor.
