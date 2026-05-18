@@ -228,7 +228,7 @@ pub(crate) fn return_undeliverable(
         // A global client for returning undeliverable messages.
         static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
         let client = &CLIENT
-            .get_or_init(|| Proc::runtime().instance("global_return_client").unwrap())
+            .get_or_init(|| Proc::runtime().client("global_return_client").unwrap())
             .0;
         let envelope_copy = envelope.clone();
         if return_handle

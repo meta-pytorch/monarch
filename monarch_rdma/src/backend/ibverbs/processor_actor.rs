@@ -363,7 +363,8 @@ mod tests {
     use super::super::primitives::IbvMemoryRegion;
     use super::*;
     use crate::RdmaOpType;
-    use crate::local_memory::RdmaLocalMemory;
+    use crate::local_memory::Keepalive;
+    use crate::local_memory::KeepaliveLocalMemory;
 
     fn null_domain() -> Arc<IbvDomain> {
         Arc::new(IbvDomain {
@@ -438,25 +439,17 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct FakeLocalMemory {
-        addr: usize,
-        size: usize,
-    }
+    /// No-op [`Keepalive`] for tests that mint a [`KeepaliveLocalMemory`]
+    /// from a fake address never actually read or written through.
+    struct FakeKeepalive;
+    impl Keepalive for FakeKeepalive {}
 
-    impl RdmaLocalMemory for FakeLocalMemory {
-        fn addr(&self) -> usize {
-            self.addr
-        }
-        fn size(&self) -> usize {
-            self.size
-        }
-        fn read_at(&self, _offset: usize, _dst: &mut [u8]) -> anyhow::Result<()> {
-            unimplemented!("test stub")
-        }
-        fn write_at(&self, _offset: usize, _src: &[u8]) -> anyhow::Result<()> {
-            unimplemented!("test stub")
-        }
+    fn fake_local_memory(addr: usize, size: usize) -> Arc<KeepaliveLocalMemory> {
+        Arc::new(KeepaliveLocalMemory::new(
+            addr,
+            size,
+            Arc::new(FakeKeepalive),
+        ))
     }
 
     fn fake_remote_ref(label: &str, uid: u64) -> ActorRef<MockManagerActor> {
@@ -473,7 +466,7 @@ mod tests {
     ) -> IbvOp<MockManagerActor> {
         IbvOp {
             op_type: RdmaOpType::WriteFromLocal,
-            local_memory: Arc::new(FakeLocalMemory { addr, size }),
+            local_memory: fake_local_memory(addr, size),
             remote_buffer: IbvBuffer {
                 mr_id: 1,
                 lkey: 0,
@@ -502,8 +495,8 @@ mod tests {
     }
 
     async fn setup_with_lru(lru_capacity: usize) -> Harness {
-        let proc = Proc::new();
-        let (client, _) = proc.instance("client").unwrap();
+        let proc = Proc::anonymous();
+        let (client, _) = proc.client("client").unwrap();
         let mgr_inner = Arc::new(StdMutex::new(MockManagerInner::default()));
         let mgr = MockManagerActor {
             inner: Arc::clone(&mgr_inner),

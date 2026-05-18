@@ -75,4 +75,4 @@ proptest = "1.11.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [lints]
-rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
+workspace = true

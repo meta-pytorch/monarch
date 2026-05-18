@@ -543,7 +543,7 @@ use py::import_cloudpickle;
 /// [`ProcLauncher`] methods don't take a context parameter, but
 /// sending actor messages does. This launcher stores an
 /// [`Instance<()>`] ("client-only" actor) to use as the send context.
-/// The instance is created via [`Proc::instance()`] and must remain
+/// The instance is created via [`Proc::client()`] and must remain
 /// valid for the lifetime of the launcher.
 #[derive(Debug)]
 pub struct ActorProcLauncher {
@@ -558,7 +558,7 @@ pub struct ActorProcLauncher {
     /// Client-only actor instance used as the send context for all
     /// messages to `spawner`.
     ///
-    /// Created via `Proc::instance()`. The `()` type indicates this
+    /// Created via `Proc::client()`. The `()` type indicates this
     /// is not a real actor—just a sending context. Must outlive the
     /// launcher.
     instance: Instance<()>,
@@ -579,7 +579,7 @@ impl ActorProcLauncher {
     ///   `ProcLauncher` ABC.
     /// * `mailbox` - Mailbox used to create one-shot exit ports.
     /// * `instance` - Send context for `ActorHandle::send` (typically
-    ///   from `Proc::instance()`). Any valid instance granting send
+    ///   from `Proc::client()`). Any valid instance granting send
     ///   capability is sufficient; it need not be
     ///   `Instance<PythonActor>`. Must remain valid for the
     ///   launcher's lifetime.
