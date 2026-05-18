@@ -119,7 +119,7 @@ pub fn global_root_client() -> &'static Instance<()> {
         ).unwrap();
 
         // 2. Start an actual actor instance in that proc, called "client".
-        let (client, handle) = client_proc.instance("client").expect("root instance create");
+        let (client, handle) = client_proc.client("client").expect("root instance create");
 
         (client, handle)
     }).0

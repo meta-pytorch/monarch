@@ -5,7 +5,7 @@ We begin in a process that can already run hyperactor code and create an instanc
 ```rust
 let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
     .unwrap();
-let (instance, _handle) = proc.instance("client").unwrap();
+let (instance, _handle) = proc.client("client").unwrap();
 ```
 
 This gives us a proc + mailbox we can use to tell the mesh to do things. That's two separate things happening, so let's spell them out.
@@ -35,20 +35,20 @@ Under the hood it does (cf. `Proc::direct` in the source):
 **Why we start with this:** it's the simplest shape — "one OS process, one hyperactor proc, reachable on a real address."
 
 
-## 1.2 What `proc.instance("client")` does
+## 1.2 What `proc.client("client")` does
 
 Once we have a proc (from `Proc::direct(...)` or otherwise), we usually want "a handle into that proc" that we can drive from plain Rust code. That's what
 
 ```rust
-let (instance, handle) = proc.instance("client")?;
+let (instance, handle) = proc.client("client")?;
 ```
 
 gives you.
 
-Here's what that actually does, based on the `Proc::instance(...)` implementation.
+Here's what that actually does, based on the `Proc::client(...)` implementation.
 
 1. **Allocates a root actor id on that proc**
-   The proc keeps a map of root names. Calling `instance("client")` says: "reserve the name `client` on this proc and give me an `ActorId` for it."
+   The proc keeps a map of root names. Calling `client("client")` says: "reserve the name `client` on this proc and give me an `ActorId` for it."
    That becomes something like:
 
    ```text
@@ -65,7 +65,7 @@ Here's what that actually does, based on the `Proc::instance(...)` implementatio
    - can create children
    - can be turned into a real running actor later
 
-   Because this is `proc.instance(...)` (not `proc.spawn(...)`), it does **not** start an actor loop. The instance is in the "client" shape.
+   Because this is `proc.client(...)` (not `proc.spawn(...)`), it does **not** start an actor loop. The instance is in the "client" shape.
 
 3. **Returns both the instance and a handle**
    You get:
@@ -79,17 +79,17 @@ In the bootstrapping flow we're describing, we often need "a proc-local, control
 - send messages to actors in the mesh (once hosts/procs are up)
 - hand out ports that mesh actors can use to talk back to us
 
-`proc.instance("…")` gives us exactly that: an addressable actor slot on this proc that we control from code.
+`proc.client("…")` gives us exactly that: an addressable actor slot on this proc that we control from code.
 
 Important: this instance is created in "client" / detached mode — there's no actor task running for it - so nothing will automatically read and handle incoming messages. If you open ports on this instance, mesh actors can send to them, but **you** (the calling code) are responsible for receiving/draining those messages.
 
-`proc.instance("client")` is the cheapest way to get that: you get an actor-shaped participant inside the proc without having to define a whole actor type up front.
+`proc.client("client")` is the cheapest way to get that: you get an actor-shaped participant inside the proc without having to define a whole actor type up front.
 
 So this pattern:
 
 ```rust
 let proc = Proc::direct(...).await?;
-let (instance, _handle) = proc.instance("client")?;
+let (instance, _handle) = proc.client("client")?;
 ```
 
 means:

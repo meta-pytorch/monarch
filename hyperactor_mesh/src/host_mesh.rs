@@ -477,7 +477,7 @@ impl HostMesh {
 
         let host = HostRef(addr);
         let host_mesh_ref = HostMeshRef::new(
-            HostMeshId::unique(Label::new("local").unwrap()),
+            HostMeshId::instance(Label::new("local").unwrap()),
             extent!(hosts = 1).into(),
             vec![host],
         )?;
@@ -513,7 +513,7 @@ impl HostMesh {
             host_refs.push(Self::create_in_process_host(addr).await?);
         }
         HostMeshRef::new(
-            HostMeshId::unique(Label::new("local").unwrap()),
+            HostMeshId::instance(Label::new("local").unwrap()),
             extent!(hosts = n).into(),
             host_refs,
         )
@@ -576,7 +576,7 @@ impl HostMesh {
         }
 
         let host_mesh_ref = HostMeshRef::new(
-            HostMeshId::unique(Label::new("process").unwrap()),
+            HostMeshId::instance(Label::new("process").unwrap()),
             extent.into(),
             hosts,
         )?;
@@ -863,7 +863,7 @@ impl Drop for HostMeshShutdownGuard {
                                  relying on PDEATHSIG/manager Drop"
                             );
                         }
-                        Ok(proc) => match proc.instance("drop") {
+                        Ok(proc) => match proc.client("drop") {
                             Err(e) => {
                                 tracing::warn!(
                                     error = %e,
@@ -1158,7 +1158,7 @@ impl HostMeshRef {
     {
         self.spawn_inner(
             cx,
-            ProcMeshId::unique(Label::strip(name)),
+            ProcMeshId::instance(Label::strip(name)),
             per_host,
             proc_bind,
             per_rank_bootstrap,
@@ -1264,7 +1264,7 @@ impl HostMeshRef {
         for (host_rank, host) in self.ranks.iter().enumerate() {
             for per_host_rank in 0..per_host.num_ranks() {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
-                let proc_name = ResourceId::unique(Label::strip(&format!(
+                let proc_name = ResourceId::instance(Label::strip(&format!(
                     "{}-{}",
                     proc_mesh_id
                         .display_label()
@@ -2253,7 +2253,7 @@ mod tests {
         // production-shape failure mode.
         let unreachable = free_localhost_addr();
 
-        let id = HostMeshId::unique(Label::new("hm_test").unwrap());
+        let id = HostMeshId::instance(Label::new("hm_test").unwrap());
         let result = HostMesh::attach(instance, id, vec![unreachable.clone()]).await;
 
         // HM-2: attach returns Err on any failed config push.

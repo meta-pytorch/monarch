@@ -487,7 +487,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     let _child = command.spawn().unwrap();
 
     let host_mesh = HostMeshRef::from_hosts(
-        HostMeshId::unique(Label::new("test").unwrap()),
+        HostMeshId::instance(Label::new("test").unwrap()),
         vec![host_addr],
     );
     let ps_proc_mesh = host_mesh

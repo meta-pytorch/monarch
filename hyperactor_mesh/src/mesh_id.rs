@@ -101,9 +101,14 @@ impl ResourceId {
         Self(Uid::Singleton(label))
     }
 
+    /// Create an instance [`ResourceId`] with a random uid and the given label.
+    pub fn instance(label: Label) -> Self {
+        Self(Uid::instance_labeled(label))
+    }
+
     /// Create a unique [`ResourceId`] with a random uid and the given label.
     pub fn unique(label: Label) -> Self {
-        Self(Uid::instance_labeled(label))
+        Self::instance(label)
     }
 
     /// Create a resource id from a resource-name string.
@@ -321,9 +326,14 @@ macro_rules! define_mesh_id {
                 Self(ResourceId::singleton(label))
             }
 
+            /// Create an instance mesh id with a random uid and the given label.
+            pub fn instance(label: Label) -> Self {
+                Self(ResourceId::instance(label))
+            }
+
             /// Create a unique mesh id with a random uid and the given label.
             pub fn unique(label: Label) -> Self {
-                Self(ResourceId::unique(label))
+                Self::instance(label)
             }
 
             /// Returns the uid.
@@ -460,7 +470,7 @@ mod tests {
 
     #[test]
     fn test_resource_id_unique() {
-        let id = ResourceId::unique(Label::new("workers").unwrap());
+        let id = ResourceId::instance(Label::new("workers").unwrap());
         assert!(id.uid().is_instance());
         assert_eq!(id.label().map(|l| l.as_str()), Some("workers"));
     }
@@ -679,11 +689,11 @@ mod tests {
         assert_eq!(host.to_string(), "local");
         assert_eq!(*host.uid(), Uid::Singleton(Label::new("local").unwrap()));
 
-        let proc_ = ProcMeshId::unique(Label::new("workers").unwrap());
+        let proc_ = ProcMeshId::instance(Label::new("workers").unwrap());
         assert!(proc_.uid().is_instance());
         assert_eq!(proc_.label().map(|l| l.as_str()), Some("workers"));
 
-        let actor = ActorMeshId::unique(Label::new("trainers").unwrap());
+        let actor = ActorMeshId::instance(Label::new("trainers").unwrap());
         assert!(actor.uid().is_instance());
         assert_eq!(actor.label().map(|l| l.as_str()), Some("trainers"));
     }
@@ -759,7 +769,7 @@ mod tests {
 
     #[test]
     fn test_mesh_id_resource_id_conversion() {
-        let host = HostMeshId::unique(Label::new("test").unwrap());
+        let host = HostMeshId::instance(Label::new("test").unwrap());
         let resource_id: ResourceId = host.clone().into();
         assert_eq!(host.uid(), resource_id.uid());
         assert_eq!(
@@ -789,8 +799,8 @@ mod tests {
 
     #[test]
     fn test_unique_ids_differ() {
-        let a = ResourceId::unique(Label::new("test").unwrap());
-        let b = ResourceId::unique(Label::new("test").unwrap());
+        let a = ResourceId::instance(Label::new("test").unwrap());
+        let b = ResourceId::instance(Label::new("test").unwrap());
         assert_ne!(a, b);
     }
 

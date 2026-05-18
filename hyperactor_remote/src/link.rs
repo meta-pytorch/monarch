@@ -60,7 +60,7 @@ impl LinkSpec {
 
     /// Create a worker-side link spec with a fresh uid.
     pub fn new(actor_type: impl Into<String>, params: Data) -> Self {
-        Self::with_uid(actor_type, Uid::instance(), params)
+        Self::with_uid(actor_type, Uid::anonymous(), params)
     }
 
     /// Create a worker-side link spec with an explicit uid.
@@ -169,7 +169,7 @@ mod tests {
     #[tokio::test]
     async fn test_link_spec_spawns_supervised_child() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.instance("parent").unwrap();
+        let (parent, _parent_handle) = proc.client("parent").unwrap();
         let uid = Uid::instance_labeled(Label::new("link").unwrap());
 
         let link = LinkSpec::for_actor_uid::<TestLinkActor>(
@@ -189,7 +189,7 @@ mod tests {
     #[tokio::test]
     async fn test_link_actor_failure_propagates_to_parent() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.instance("client").unwrap();
+        let (client, _client_handle) = proc.client("client").unwrap();
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let uid = Uid::instance_labeled(Label::new("link").unwrap());
         let link = LinkSpec::for_actor_uid::<TestLinkActor>(
