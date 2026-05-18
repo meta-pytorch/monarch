@@ -333,7 +333,7 @@ pub struct InstanceWrapper<M: RemoteMessage> {
 
 impl<M: RemoteMessage> InstanceWrapper<M> {
     pub fn new(proc: &PyProc, actor_name: &str) -> Result<Self> {
-        let instance = proc.inner.instance(actor_name)?.0;
+        let instance = proc.inner.client(actor_name)?.0;
         // TEMPORARY: remove after using fixed handler ports.
         let (_handler_port, message_receiver) = instance.bind_handler_port::<M>();
 
