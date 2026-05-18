@@ -273,7 +273,7 @@ impl Actor for GlobalClientActor {
         let mut env = match undeliverable {
             Undeliverable::Message(env) => env,
             Undeliverable::Lost(lost) => {
-                let actor_ref = lost.sender.clone();
+                let actor_ref = lost.dest.actor_addr();
                 let event = ActorSupervisionEvent::new(
                     actor_ref.clone(),
                     None,
