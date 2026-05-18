@@ -187,12 +187,12 @@ pub(crate) fn build_client(config: &TuiConfig) -> (String, reqwest::Client) {
     // 2. Auto-detect (when no CLI certs were provided).
     // This runs even with an explicit https:// scheme, so the client
     // picks up the mTLS identity from Meta well-known paths.
-    if config.tls_ca.is_none() {
-        if let Some(bundle) = hyperactor::channel::try_tls_pem_bundle() {
-            let (b, ok) = add_tls_from_bundle(builder, &bundle);
-            builder = b;
-            use_tls = use_tls || ok;
-        }
+    if config.tls_ca.is_none()
+        && let Some(bundle) = hyperactor::channel::try_tls_pem_bundle()
+    {
+        let (b, ok) = add_tls_from_bundle(builder, &bundle);
+        builder = b;
+        use_tls = use_tls || ok;
     }
 
     let scheme = if use_tls { "https" } else { "http" };

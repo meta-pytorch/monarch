@@ -104,7 +104,7 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version }}"
           PRERELEASE="${{ github.event.inputs.is_prerelease }}"
-          TAGS="ghcr.io/${{ github.repository }}:${VERSION}-cuda12.8"
+          TAGS="ghcr.io/${{ github.repository }}:${VERSION}-cuda12.6"
           if [[ "$PRERELEASE" == "false" ]]; then
             TAGS="$TAGS,ghcr.io/${{ github.repository }}:latest"
           fi
@@ -118,7 +118,7 @@ jobs:
           push: true # Push the image to the registry
           tags: ${{ steps.determine-tags.outputs.tags }}
           build-args: |
-            PYTORCH_TAG=2.12.0-cuda12.8-cudnn9-runtime
+            PYTORCH_TAG=2.12.0-cuda12.6-cudnn9-runtime
             MONARCH_VERSION=${{ github.event.inputs.version }}
 
   create-docs-branch:

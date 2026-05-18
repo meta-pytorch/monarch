@@ -429,6 +429,7 @@ fn check_type_uri(
 mod tests {
     use hyperactor::Actor;
     use hyperactor::Context;
+    use hyperactor::PortHandle;
     use hyperactor::Proc;
 
     use super::*;
@@ -490,6 +491,45 @@ mod tests {
     )]
     struct OtherJoinerRef;
 
+    #[derive(
+        Clone,
+        Debug,
+        Serialize,
+        Deserialize,
+        Named,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        Bind,
+        Unbind
+    )]
+    enum MultiJoinerRef {
+        One,
+        Two,
+        Three,
+    }
+
+    #[derive(Debug)]
+    struct CreatorActor {
+        creator_joined: PortHandle<Joined<JoinerRef>>,
+        token_out: PortHandle<Token<CreatorRef, JoinerRef>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Actor for CreatorActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            let token = create(
+                this,
+                CreatorRef,
+                self.creator_joined.bind(),
+                Options::default(),
+            )?;
+            self.token_out.send(this, token)?;
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn test_create_delivers_join_to_both_sides() {
         let proc = Proc::isolated();
@@ -547,6 +587,69 @@ mod tests {
             JoinResult::Rejected {
                 reason: "token already joined".to_string()
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multi_token_accepts_every_join() {
+        let proc = Proc::isolated();
+        let (creator, _creator_hndl) = proc.instance("creator").unwrap();
+        let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<MultiJoinerRef>>();
+        let token = create(
+            &creator,
+            CreatorRef,
+            creator_joined.bind(),
+            Options {
+                policy: Policy::Multi,
+            },
+        )
+        .unwrap();
+
+        let (joiner1, _joiner1_handle) = proc.instance("joiner1").unwrap();
+        let (joiner2, _joiner2_handle) = proc.instance("joiner2").unwrap();
+        let (joiner3, _joiner3_handle) = proc.instance("joiner3").unwrap();
+
+        let (r1, mut r1_rx) = joiner1.open_port::<JoinResult<CreatorRef>>();
+        let (r2, mut r2_rx) = joiner2.open_port::<JoinResult<CreatorRef>>();
+        let (r3, mut r3_rx) = joiner3.open_port::<JoinResult<CreatorRef>>();
+
+        token
+            .join(&joiner1, MultiJoinerRef::One, r1.bind())
+            .unwrap();
+        token
+            .join(&joiner2, MultiJoinerRef::Two, r2.bind())
+            .unwrap();
+        token
+            .join(&joiner3, MultiJoinerRef::Three, r3.bind())
+            .unwrap();
+
+        let mut joined = vec![
+            creator_joined_rx.recv().await.unwrap().peer,
+            creator_joined_rx.recv().await.unwrap().peer,
+            creator_joined_rx.recv().await.unwrap().peer,
+        ];
+        joined.sort();
+
+        assert_eq!(
+            joined,
+            vec![
+                MultiJoinerRef::One,
+                MultiJoinerRef::Two,
+                MultiJoinerRef::Three,
+            ]
+        );
+
+        assert_eq!(
+            r1_rx.recv().await.unwrap(),
+            JoinResult::Joined { peer: CreatorRef }
+        );
+        assert_eq!(
+            r2_rx.recv().await.unwrap(),
+            JoinResult::Joined { peer: CreatorRef }
+        );
+        assert_eq!(
+            r3_rx.recv().await.unwrap(),
+            JoinResult::Joined { peer: CreatorRef }
         );
     }
 
@@ -632,5 +735,73 @@ mod tests {
 
         rendezvous.stop("test").unwrap();
         rendezvous.await;
+    }
+
+    #[test]
+    fn test_token_from_str_rejects_corrupt_base64() {
+        let result: Result<Token<CreatorRef, JoinerRef>, _> = "%%%".parse();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_token_from_str_rejects_invalid_json() {
+        let encoded = BASE64_STANDARD.encode(b"not json at all");
+        let result: Result<Token<CreatorRef, JoinerRef>, _> = encoded.parse();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_token_from_str_rejects_mismatched_type_uris() {
+        let proc = Proc::isolated();
+        let rendezvous = proc.spawn("rendezvous", RendezvousStub).unwrap();
+        let token = Token::<CreatorRef, JoinerRef>::new(
+            rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
+        );
+
+        let encoded = token.encode().unwrap();
+        let result: Result<Token<CreatorRef, OtherJoinerRef>, _> = encoded.parse();
+        assert!(result.is_err());
+
+        rendezvous.stop("test").unwrap();
+        rendezvous.await;
+    }
+
+    #[tokio::test]
+    async fn test_join_fails_after_creator_stops() {
+        let proc = Proc::isolated();
+        let (inst, _inst_handle) = proc.instance("inst").unwrap();
+        let (creator_joined, _creator_joined_rx) = inst.open_port::<Joined<JoinerRef>>();
+        let (token_out, mut token_out_rx) = inst.open_port::<Token<CreatorRef, JoinerRef>>();
+
+        let creator_handle = proc
+            .spawn(
+                "creator",
+                CreatorActor {
+                    creator_joined,
+                    token_out,
+                },
+            )
+            .unwrap();
+
+        let token = token_out_rx.recv().await.unwrap();
+
+        // Stop the creator; its supervised rendezvous actor dies with
+        // it.
+        creator_handle.stop("test").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), creator_handle)
+            .await
+            .unwrap();
+
+        let (joiner, _joiner_handle) = proc.instance("joiner").unwrap();
+        let (result, mut result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
+        token.join(&joiner, JoinerRef, result.bind()).unwrap();
+
+        // No rendezvous actor remains to send a result.
+        let timed_out =
+            tokio::time::timeout(std::time::Duration::from_millis(500), result_rx.recv()).await;
+        assert!(
+            timed_out.is_err(),
+            "join should produce no result after creator stops"
+        );
     }
 }

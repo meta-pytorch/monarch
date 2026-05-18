@@ -714,14 +714,12 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         );
 
         // Transition Detached → Attached on first proc creation.
-        if was_empty {
-            if let HostAgentState::Detached(_) = &self.state {
-                let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
-                    HostAgentState::Detached(h) => h,
-                    _ => unreachable!(),
-                };
-                self.state = HostAgentState::Attached(host);
-            }
+        if was_empty && let HostAgentState::Detached(_) = &self.state {
+            let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
+                HostAgentState::Detached(h) => h,
+                _ => unreachable!(),
+            };
+            self.state = HostAgentState::Attached(host);
         }
 
         // If any WaitRankStatus messages arrived before this proc

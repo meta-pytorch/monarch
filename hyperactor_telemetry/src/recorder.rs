@@ -149,7 +149,7 @@ impl Entry {
 
     fn set_str(&mut self, name: &'static str, value: &str) {
         self.reset();
-        let mut buf = self.buffer.take().unwrap_or_else(String::new);
+        let mut buf = self.buffer.take().unwrap_or_default();
         buf.clear();
         buf.push_str(value);
         self.name = name;
@@ -158,7 +158,7 @@ impl Entry {
 
     fn set_error(&mut self, name: &'static str, value: &(dyn std::error::Error + 'static)) {
         self.reset();
-        let mut buf = self.buffer.take().unwrap_or_else(String::new);
+        let mut buf = self.buffer.take().unwrap_or_default();
 
         let mut formatter =
             core::fmt::Formatter::new(&mut buf, core::fmt::FormattingOptions::new());
@@ -172,7 +172,7 @@ impl Entry {
 
     fn set_debug(&mut self, name: &'static str, value: &dyn std::fmt::Debug) {
         self.reset();
-        let mut buf = self.buffer.take().unwrap_or_else(String::new);
+        let mut buf = self.buffer.take().unwrap_or_default();
 
         let mut formatter =
             core::fmt::Formatter::new(&mut buf, core::fmt::FormattingOptions::new());
@@ -399,8 +399,8 @@ impl Recording {
             .collect();
 
         snapshot
-            .iter()
-            .filter_map(|(id, _)| {
+            .keys()
+            .filter_map(|id| {
                 if parents.contains(id) {
                     None
                 } else {
@@ -537,12 +537,12 @@ where
 
         attrs.record(&mut visitor);
 
-        if let Some(keys) = visitor.keys() {
-            if let Some(span) = ctx.span(id) {
-                let mut extensions: tracing_subscriber::registry::ExtensionsMut<'_> =
-                    span.extensions_mut();
-                extensions.insert(keys);
-            }
+        if let Some(keys) = visitor.keys()
+            && let Some(span) = ctx.span(id)
+        {
+            let mut extensions: tracing_subscriber::registry::ExtensionsMut<'_> =
+                span.extensions_mut();
+            extensions.insert(keys);
         }
     }
 

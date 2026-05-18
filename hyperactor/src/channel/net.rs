@@ -900,6 +900,10 @@ pub(crate) fn listen_with_prebound(
 /// Bind a listener for the given channel address. Returns the listener
 /// and the canonical address callers should advertise (which encodes
 /// the transport — e.g. `ChannelAddr::Tls` for TLS).
+#[expect(
+    dead_code,
+    reason = "canonical listen() entry point; callers currently route through listen_with_prebound"
+)]
 pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
     listen_with_prebound(addr, None)
 }
@@ -2189,6 +2193,11 @@ pub fn try_tls_connector() -> Option<tokio_rustls::TlsConnector> {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::await_holding_invalid_type,
+        reason = "tracing_test::traced_test macro expansion holds tracing::span::Entered across awaits; can't be fixed in our code"
+    )]
+
     use std::assert_matches;
     use std::collections::VecDeque;
     use std::marker::PhantomData;
@@ -2756,7 +2765,7 @@ mod tests {
                 server_reader,
                 client_writer,
                 task_coordination_token.clone(),
-                self.debug_log_sampling_rate.clone(),
+                self.debug_log_sampling_rate,
                 /*is_from_client*/ false,
             ));
             let _client_relay_task_handle = tokio::spawn(relay_message::<M>(
@@ -2767,7 +2776,7 @@ mod tests {
                 client_reader,
                 server_writer,
                 task_coordination_token,
-                self.debug_log_sampling_rate.clone(),
+                self.debug_log_sampling_rate,
                 /*is_from_client*/ true,
             ));
 
