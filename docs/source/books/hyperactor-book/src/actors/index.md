@@ -2,7 +2,7 @@
 
 Hyperactor programs are structured around actors: isolated state machines that process messages asynchronously.
 
-Each actor runs in isolation, and maintains private internal state. Actors interact with the outside world through typed message ports and follow strict lifecycle semantics managed by the runtime.
+Each actor runs in isolation, and maintains private internal state. Actors interact with the outside world through typed handler ports and follow strict lifecycle semantics managed by the runtime.
 
 This chapter introduces the actor system in hyperactor. We'll cover:
 

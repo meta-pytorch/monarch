@@ -11,7 +11,7 @@ import functools
 import inspect
 import logging
 import warnings
-from typing import Callable, Optional, overload, Sequence, TypeVar
+from typing import Callable, Dict, Optional, overload, Sequence, TypeVar
 
 import opentelemetry.metrics as metrics  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
 import opentelemetry.trace as trace  # @manual=fbsource//third-party/pypi/opentelemetry-api:opentelemetry-api
@@ -97,6 +97,47 @@ def traced(
     if fn is not None:
         return decorator(fn)
     return decorator
+
+
+def log_with_tracing(
+    level: int,
+    msg: object,
+    *args: object,
+    stack_info: bool = False,
+    stacklevel: int = 1,
+    extra: Dict[str, object] | None = None,
+    logger: logging.Logger | None = None,
+) -> None:
+    """Emit a log record through the normal `logging` handler chain and also
+    forward it directly to Rust tracing.
+
+    Use this in library code that must guarantee the event reaches the
+    tracing backend even when no `TracingForwarder` handler is attached to
+    the calling process's loggers (e.g., a non-actor driver process).
+    `stacklevel=1` attributes the record's pathname/lineno/funcName to the
+    immediate caller of `log_with_tracing`.
+    """
+    logger = logger or logging.getLogger(__name__)
+
+    fn, lno, func, sinfo = logger.findCaller(
+        stack_info=stack_info,
+        stacklevel=stacklevel + 1,
+    )
+
+    record = logger.makeRecord(
+        logger.name,
+        level,
+        fn,
+        lno,
+        msg,
+        args,
+        None,
+        func,
+        extra=extra,
+        sinfo=sinfo,
+    )
+    logger.handle(record)
+    forward_to_tracing(record)
 
 
 class TracingForwarder(logging.Handler):
