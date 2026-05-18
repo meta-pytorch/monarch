@@ -711,21 +711,6 @@ impl Proc {
             .expect("singleton proc builder is valid")
     }
 
-    /// Create a proc with an anonymous instance id on the default gateway.
-    pub fn new() -> Self {
-        Self::anonymous()
-    }
-
-    /// Create a proc with a random id and display label on the default gateway.
-    pub fn unique(label: impl AsRef<str>) -> Self {
-        Self::instance(label)
-    }
-
-    /// Create a proc with a singleton id on the default gateway.
-    pub fn named(name: impl AsRef<str>) -> Self {
-        Self::singleton(name)
-    }
-
     /// Create a proc with a random id on a fresh local-only gateway.
     pub fn isolated() -> Self {
         Self::builder()

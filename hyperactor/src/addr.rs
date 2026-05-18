@@ -158,16 +158,6 @@ impl ProcAddr {
         )
     }
 
-    /// Create a ProcAddr with a unique (random) uid and the given label.
-    pub fn unique(addr: ChannelAddr, base_name: impl AsRef<str>) -> Self {
-        Self::instance(addr, base_name)
-    }
-
-    /// Create a ProcAddr singleton with a label stripped from the given name.
-    pub fn named(addr: ChannelAddr, name: impl AsRef<str>) -> Self {
-        Self::singleton(addr, name)
-    }
-
     /// Create an ActorAddr singleton with the provided name within this proc.
     pub fn actor_addr(&self, name: impl AsRef<str>) -> ActorAddr {
         let uid = Uid::singleton(Label::strip(name.as_ref()));
