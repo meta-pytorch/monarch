@@ -514,7 +514,7 @@ mod tests {
                 self.creator_joined.bind(),
                 Options::default(),
             )?;
-            self.token_out.send(this, token)?;
+            self.token_out.send(this, token);
             Ok(())
         }
     }
