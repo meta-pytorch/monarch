@@ -790,7 +790,7 @@ where
     mapper: F,
 }
 
-impl<'a, T, F> MapSlice<'a, T, F>
+impl<T, F> MapSlice<'_, T, F>
 where
     F: Fn(usize) -> T,
 {

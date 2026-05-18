@@ -437,17 +437,17 @@ impl PathFilesystem for ReadOnlyFs {
         idx += 1;
 
         for (name, maybe_attr) in children {
-            if offset < idx {
-                if let Some(attr) = maybe_attr {
-                    entries.push(Ok(DirectoryEntryPlus {
-                        kind: attr.kind,
-                        name: OsString::from(&name),
-                        offset: idx as i64,
-                        attr,
-                        entry_ttl: TTL,
-                        attr_ttl: TTL,
-                    }));
-                }
+            if offset < idx
+                && let Some(attr) = maybe_attr
+            {
+                entries.push(Ok(DirectoryEntryPlus {
+                    kind: attr.kind,
+                    name: OsString::from(&name),
+                    offset: idx as i64,
+                    attr,
+                    entry_ttl: TTL,
+                    attr_ttl: TTL,
+                }));
             }
             idx += 1;
         }
@@ -620,10 +620,10 @@ fn mount_read_only_filesystem(
 
             if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
                 for line in mounts.lines() {
-                    if let Some(mp) = line.split_whitespace().nth(1) {
-                        if mp == mount_point {
-                            return Ok(());
-                        }
+                    if let Some(mp) = line.split_whitespace().nth(1)
+                        && mp == mount_point
+                    {
+                        return Ok(());
                     }
                 }
             }

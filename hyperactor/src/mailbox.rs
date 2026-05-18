@@ -17,6 +17,7 @@
 //!
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
+//! # use hyperactor::Endpoint as _;
 //! # use hyperactor::Proc;
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
@@ -36,6 +37,7 @@
 //!
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
+//! # use hyperactor::Endpoint as _;
 //! # use hyperactor::Proc;
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
@@ -1076,25 +1078,51 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 .build()
                 .expect("mailbox server proc builder is valid");
             let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
-            while let Ok(Undeliverable::Message(mut envelope)) = undeliverable_rx.recv().await {
-                if let Ok(Undeliverable::Message(e)) =
-                    envelope.deserialized::<Undeliverable<MessageEnvelope>>()
-                {
-                    // A non-returnable undeliverable.
-                    UndeliverableMailboxSender.post(e, monitored_return_handle());
-                    continue;
+            while let Ok(undeliverable) = undeliverable_rx.recv().await {
+                match undeliverable {
+                    Undeliverable::Message(mut envelope) => {
+                        match envelope.deserialized::<Undeliverable<MessageEnvelope>>() {
+                            Ok(Undeliverable::Message(e)) => {
+                                // A non-returnable undeliverable.
+                                UndeliverableMailboxSender.post(e, monitored_return_handle());
+                                continue;
+                            }
+                            Ok(Undeliverable::Lost(lost)) => {
+                                tracing::error!(
+                                    sender = %lost.sender,
+                                    dest = %lost.dest,
+                                    message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                                    error = %lost.error,
+                                    "lost message was undeliverable"
+                                );
+                                continue;
+                            }
+                            Err(_) => {}
+                        }
+                        envelope.set_error(DeliveryError::BrokenLink(
+                            "message was undeliverable".to_owned(),
+                        ));
+                        let sender_id: ActorAddr = envelope.sender().clone();
+                        let return_port =
+                            PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(
+                                &sender_id,
+                            );
+                        return_port.post_serialized(
+                            &client,
+                            Flattrs::new(),
+                            wirevalue::Any::serialize(&Undeliverable::Message(envelope)).unwrap(),
+                        );
+                    }
+                    Undeliverable::Lost(lost) => {
+                        tracing::error!(
+                            sender = %lost.sender,
+                            dest = %lost.dest,
+                            message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                            error = %lost.error,
+                            "lost message was undeliverable"
+                        );
+                    }
                 }
-                envelope.set_error(DeliveryError::BrokenLink(
-                    "message was undeliverable".to_owned(),
-                ));
-                let sender_id: ActorAddr = envelope.sender().clone();
-                let return_port =
-                    PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&sender_id);
-                return_port.post_serialized(
-                    &client,
-                    Flattrs::new(),
-                    wirevalue::Any::serialize(&Undeliverable::Message(envelope)).unwrap(),
-                );
             }
         });
 
@@ -1993,17 +2021,8 @@ impl<M: Message> PortHandle<M> {
             None => PortLocation::new_unbound::<M>(self.inner.mailbox.actor_addr().clone()),
         }
     }
-}
 
-impl<M> Endpoint<M> for &PortHandle<M>
-where
-    M: Message,
-{
-    fn endpoint_location(&self) -> EndpointLocation {
-        self.location().into()
-    }
-
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    pub(crate) fn try_send<C>(&self, cx: &C, message: M) -> Result<(), MailboxSenderError>
     where
         C: context::Actor,
     {
@@ -2018,13 +2037,7 @@ where
                 self.inner.mailbox.actor_addr().clone(),
                 MailboxSenderErrorKind::Mailbox(err),
             );
-            cx.instance()
-                .report_lost_message(LostMessage::from_send_error::<M>(
-                    cx.mailbox().actor_addr().clone(),
-                    self.endpoint_location(),
-                    &err,
-                ));
-            return Ok(());
+            return Err(err);
         }
         let mut headers = Flattrs::new();
 
@@ -2057,12 +2070,28 @@ where
         //   2.  another thread is trying to bind and thus waiting for write lock.
         // But we do not expect `sender.send` to use the same PortHandle, so this
         // deadlock scenario should not happen.
-        if let Err(err) = self.inner.sender.send(headers, message).map_err(|err| {
+        self.inner.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.inner.mailbox.actor_addr().clone(),
                 classify_sender_error(err),
             )
-        }) {
+        })
+    }
+}
+
+impl<M> Endpoint<M> for &PortHandle<M>
+where
+    M: Message,
+{
+    fn endpoint_location(&self) -> EndpointLocation {
+        self.location().into()
+    }
+
+    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    where
+        C: context::Actor,
+    {
+        if let Err(err) = self.try_send(cx, message) {
             cx.instance()
                 .report_lost_message(LostMessage::from_send_error::<M>(
                     cx.mailbox().actor_addr().clone(),
@@ -3404,11 +3433,14 @@ mod tests {
 
         mbox.post(envelope, return_handle);
 
-        let Undeliverable(undelivered) =
+        let Undeliverable::Message(undelivered) =
             tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
                 .await
                 .expect("timed out waiting for undeliverable")
-                .expect("return port closed");
+                .expect("return port closed")
+        else {
+            panic!("expected returned message");
+        };
         assert!(
             undelivered
                 .error_msg()
@@ -4015,7 +4047,7 @@ mod tests {
         assert!(msg_str.contains("sender:") && msg_str.contains("quux_0"));
         assert!(msg_str.contains("dest:") && msg_str.contains("corge_0"));
 
-        proc.destroy_and_wait::<()>(tokio::time::Duration::from_secs(1), None, "test cleanup")
+        proc.destroy_and_wait(tokio::time::Duration::from_secs(1), "test cleanup")
             .await
             .unwrap();
     }

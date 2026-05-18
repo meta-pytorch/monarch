@@ -665,6 +665,10 @@ pub mod test_utils {
     }
 
     #[derive(Debug, Named, Serialize, Deserialize, PartialEq, Clone, Bind, Unbind)]
+    #[expect(
+        clippy::large_enum_variant,
+        reason = "test fixture; CastAndReply carries #[binding(include)] PortRefs whose Bind/Unbind derive interaction with Box<T> needs verification — separate diff"
+    )]
     pub enum TestMessage {
         Forward(String),
         CastAndReply {
@@ -1015,7 +1019,7 @@ mod tests {
             }
 
             for (src, path) in &self.0 {
-                write!(f, "{} -> {}\n", src, vec_to_string(path))?;
+                writeln!(f, "{} -> {}", src, vec_to_string(path))?;
             }
             Ok(())
         }

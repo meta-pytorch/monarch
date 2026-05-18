@@ -286,9 +286,7 @@ impl PythonPortRef {
             inner: hyperactor::PortRef::attest(port.inner),
         }
     }
-    fn __reduce__<'py>(
-        slf: Bound<'py, PythonPortRef>,
-    ) -> PyResult<(Bound<'py, PyType>, (PyPortId,))> {
+    fn __reduce__(slf: Bound<'_, PythonPortRef>) -> PyResult<(Bound<'_, PyType>, (PyPortId,))> {
         let id: PyPortId = (*slf.borrow()).inner.port_addr().clone().into();
         Ok((slf.get_type(), (id,)))
     }
@@ -477,9 +475,9 @@ impl PythonOncePortRef {
             inner: port.map(|port| hyperactor::PortRef::attest(port.inner).into_once()),
         }
     }
-    fn __reduce__<'py>(
-        slf: Bound<'py, PythonOncePortRef>,
-    ) -> PyResult<(Bound<'py, PyType>, (Option<PyPortId>,))> {
+    fn __reduce__(
+        slf: Bound<'_, PythonOncePortRef>,
+    ) -> PyResult<(Bound<'_, PyType>, (Option<PyPortId>,))> {
         let id: Option<PyPortId> = (*slf.borrow())
             .inner
             .as_ref()
@@ -700,7 +698,7 @@ struct PythonAccumulator {
 }
 
 impl PythonAccumulator {
-    fn new<'py>(py: Python<'py>, accumulator: Py<PyAny>) -> PyResult<Self> {
+    fn new(py: Python<'_>, accumulator: Py<PyAny>) -> PyResult<Self> {
         let py_reducer = accumulator.getattr(py, "reducer")?;
         let reducer: Option<wirevalue::Any> = if py_reducer.is_none(py) {
             None

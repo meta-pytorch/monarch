@@ -82,7 +82,7 @@ pub(crate) struct Token<'a> {
     pub(crate) span: Span,
 }
 
-impl<'a> Token<'a> {
+impl Token<'_> {
     pub(crate) fn eof(pos: usize) -> Self {
         Self {
             kind: TokenKind::Eof,

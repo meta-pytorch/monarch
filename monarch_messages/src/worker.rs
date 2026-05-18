@@ -414,10 +414,8 @@ impl ResolvableFunction {
     /// when called.
     pub fn panic_if_requested(&self) {
         match self {
-            Self::FunctionPath(func) => {
-                if func.path == "__test_panic" {
-                    panic!("__test_panic called");
-                }
+            Self::FunctionPath(func) if func.path == "__test_panic" => {
+                panic!("__test_panic called");
             }
             _ => (),
         }
