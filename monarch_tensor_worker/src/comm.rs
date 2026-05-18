@@ -436,7 +436,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn all_reduce() {
         test_setup().unwrap();
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _handle) = proc.instance("client").unwrap();
 
         let unique_id = UniqueId::new_nccl().unwrap();
@@ -503,7 +503,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn group_send_recv() {
         test_setup().unwrap();
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _handle) = proc.instance("client").unwrap();
 
         let unique_id = UniqueId::new_nccl().unwrap();
@@ -578,7 +578,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn reduce() -> Result<()> {
         test_setup()?;
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _handle) = proc.instance("client")?;
 
         let unique_id = UniqueId::new_nccl()?;
@@ -650,7 +650,7 @@ mod tests {
     async fn worker_reduce() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let world_size = 4;
@@ -838,7 +838,7 @@ mod tests {
     async fn send_tensor() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let handle1 = proc
@@ -1023,7 +1023,7 @@ mod tests {
     async fn send_tensor_local() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let handle = proc

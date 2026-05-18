@@ -83,7 +83,7 @@ pub(crate) fn pack_files_into(buf_ptr: usize, files: &[FileInfo], max_threads: u
     // This prevents all large chunks from landing on a single thread
     // (e.g. 64 x 64 MB data.bin chunks all on thread 0 while threads
     // 1-15 get only tiny .py files).
-    work_units.sort_by(|a, b| b.size.cmp(&a.size));
+    work_units.sort_by_key(|w| std::cmp::Reverse(w.size));
 
     let num_threads = work_units.len().clamp(1, max_threads);
     let mut per_thread: Vec<Vec<&ReadWork>> = vec![Vec::new(); num_threads];

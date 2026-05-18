@@ -82,7 +82,7 @@ py_global!(
 );
 py_global!(make_future, "monarch._src.actor.future", "Future");
 
-fn unpickle_from_part<'py>(py: Python<'py>, part: Part) -> PyResult<Bound<'py, PyAny>> {
+fn unpickle_from_part(py: Python<'_>, part: Part) -> PyResult<Bound<'_, PyAny>> {
     unpickle(
         py,
         FrozenBuffer {
@@ -290,7 +290,7 @@ async fn collect_value(
     qualified_endpoint_name: &Option<String>,
 ) -> PyResult<(Part, Option<usize>)> {
     enum RaceResult {
-        Message(PythonMessage),
+        Message(Box<PythonMessage>),
         SupervisionError(PyErr),
         RecvError(String),
     }
@@ -304,7 +304,7 @@ async fn collect_value(
                         Some(err) => RaceResult::SupervisionError(err),
                         None => {
                             match rx.recv().await {
-                                Ok(msg) => RaceResult::Message(msg),
+                                Ok(msg) => RaceResult::Message(Box::new(msg)),
                                 Err(e) => RaceResult::RecvError(e.to_string()),
                             }
                         }
@@ -312,33 +312,32 @@ async fn collect_value(
                 }
                 msg = rx.recv() => {
                     match msg {
-                        Ok(m) => RaceResult::Message(m),
+                        Ok(m) => RaceResult::Message(Box::new(m)),
                         Err(e) => RaceResult::RecvError(e.to_string()),
                     }
                 }
             }
         }
         _ => match rx.recv().await {
-            Ok(msg) => RaceResult::Message(msg),
+            Ok(msg) => RaceResult::Message(Box::new(msg)),
             Err(e) => RaceResult::RecvError(e.to_string()),
         },
     };
 
     match race_result {
-        RaceResult::Message(PythonMessage {
-            kind: PythonMessageKind::Result { rank, .. },
-            message,
-            ..
-        }) => Ok((message, rank)),
-        RaceResult::Message(PythonMessage {
-            kind: PythonMessageKind::Exception { .. },
-            message,
-            ..
-        }) => Python::attach(|py| Err(PyErr::from_value(unpickle_from_part(py, message)?))),
-        RaceResult::Message(msg) => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unexpected message kind {:?}",
-            msg.kind
-        ))),
+        RaceResult::Message(boxed) => {
+            let PythonMessage { kind, message, .. } = *boxed;
+            match kind {
+                PythonMessageKind::Result { rank, .. } => Ok((message, rank)),
+                PythonMessageKind::Exception { .. } => {
+                    Python::attach(|py| Err(PyErr::from_value(unpickle_from_part(py, message)?)))
+                }
+                other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unexpected message kind {:?}",
+                    other
+                ))),
+            }
+        }
         RaceResult::RecvError(e) => Err(pyo3::exceptions::PyEOFError::new_err(format!(
             "Port closed: {}",
             e
@@ -369,7 +368,7 @@ async fn collect_valuemesh(
     );
 
     enum RaceResult {
-        Collected(PythonMessage),
+        Collected(Box<PythonMessage>),
         SupervisionError(PyErr),
         RecvError(String),
     }
@@ -388,20 +387,21 @@ async fn collect_valuemesh(
                 }
                 batch = rx.recv() => {
                     match batch {
-                        Ok(b) => RaceResult::Collected(b),
+                        Ok(b) => RaceResult::Collected(Box::new(b)),
                         Err(e) => RaceResult::RecvError(e.to_string()),
                     }
                 }
             }
         }
         None => match rx.recv().await {
-            Ok(batch) => RaceResult::Collected(batch),
+            Ok(batch) => RaceResult::Collected(Box::new(batch)),
             Err(e) => RaceResult::RecvError(e.to_string()),
         },
     };
 
     match race_result {
-        RaceResult::Collected(msg) => {
+        RaceResult::Collected(boxed) => {
+            let msg = *boxed;
             let overlay = msg.into_overlay().map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
                     "failed to extract overlay from collected responses: {e}"

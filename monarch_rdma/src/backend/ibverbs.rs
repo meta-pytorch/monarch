@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use hyperactor::ActorRef;
+use hyperactor::actor::Referable;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -19,6 +20,7 @@ pub mod device_selection;
 pub(crate) mod domain;
 pub mod manager_actor;
 pub mod primitives;
+mod processor_actor;
 pub mod queue_pair;
 
 use manager_actor::IbvManagerActor;
@@ -51,10 +53,26 @@ pub struct IbvBuffer {
 }
 
 /// A single RDMA op for the [`IbvBackend`](manager_actor::IbvBackend).
-#[derive(Debug, Clone, Named)]
-pub struct IbvOp {
+///
+/// Generic over the manager actor type so unit tests can swap in a
+/// mock; production code uses the default `IbvOp<IbvManagerActor>`.
+#[derive(Debug, Named)]
+pub struct IbvOp<M: Referable = IbvManagerActor> {
     pub op_type: RdmaOpType,
     pub local_memory: Arc<dyn RdmaLocalMemory>,
     pub remote_buffer: IbvBuffer,
-    pub remote_manager: ActorRef<IbvManagerActor>,
+    pub remote_manager: ActorRef<M>,
+}
+
+// Hand-rolled `Clone` to avoid the `M: Clone` bound the derive macro
+// would add (`ActorRef<M>` is `Clone` for all `M: Referable`).
+impl<M: Referable> Clone for IbvOp<M> {
+    fn clone(&self) -> Self {
+        Self {
+            op_type: self.op_type,
+            local_memory: Arc::clone(&self.local_memory),
+            remote_buffer: self.remote_buffer.clone(),
+            remote_manager: self.remote_manager.clone(),
+        }
+    }
 }

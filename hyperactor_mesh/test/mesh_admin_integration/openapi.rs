@@ -250,10 +250,10 @@ fn escape_pointer_segment(s: &str) -> String {
 fn rewrite_component_refs_to_defs(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            if let Some(Value::String(r)) = map.get_mut("$ref") {
-                if let Some(suffix) = r.strip_prefix("#/components/schemas/") {
-                    *r = format!("#/$defs/{suffix}");
-                }
+            if let Some(Value::String(r)) = map.get_mut("$ref")
+                && let Some(suffix) = r.strip_prefix("#/components/schemas/")
+            {
+                *r = format!("#/$defs/{suffix}");
             }
             for v in map.values_mut() {
                 rewrite_component_refs_to_defs(v);

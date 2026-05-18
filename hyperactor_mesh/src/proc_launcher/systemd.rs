@@ -71,7 +71,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use hyperactor as hyperactor_reference;
 use hyperactor::channel::ChannelAddr;
 use tokio::sync::oneshot;
 use tracing::Instrument;
@@ -1623,10 +1622,10 @@ mod tests {
             // was still alive.
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {
-                if let Ok(content) = std::fs::read_to_string(&marker) {
-                    if content.contains("running") {
-                        break;
-                    }
+                if let Ok(content) = std::fs::read_to_string(&marker)
+                    && content.contains("running")
+                {
+                    break;
                 }
                 assert!(
                     std::time::Instant::now() < deadline,

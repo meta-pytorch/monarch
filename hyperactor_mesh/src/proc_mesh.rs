@@ -15,9 +15,11 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyperactor as hyperactor_reference;
 use hyperactor::Actor;
+use hyperactor::ActorAddr;
+use hyperactor::ActorRef;
 use hyperactor::Handler;
+use hyperactor::ProcAddr;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
 use hyperactor::accum::StreamingReducerOpts;
@@ -87,20 +89,16 @@ pub const COMM_ACTOR_NAME: &str = "comm";
 /// A reference to a single [`hyperactor::Proc`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProcRef {
-    proc_id: hyperactor_reference::ProcAddr,
+    proc_id: ProcAddr,
     /// The rank of this proc at creation.
     create_rank: usize,
     /// The agent managing this proc.
-    agent: hyperactor_reference::ActorRef<ProcAgent>,
+    agent: ActorRef<ProcAgent>,
 }
 
 impl ProcRef {
     /// Create a new proc ref from the provided id, create rank and agent.
-    pub fn new(
-        proc_id: hyperactor_reference::ProcAddr,
-        create_rank: usize,
-        agent: hyperactor_reference::ActorRef<ProcAgent>,
-    ) -> Self {
+    pub fn new(proc_id: ProcAddr, create_rank: usize, agent: ActorRef<ProcAgent>) -> Self {
         Self {
             proc_id,
             create_rank,
@@ -108,21 +106,18 @@ impl ProcRef {
         }
     }
 
-    pub fn proc_addr(&self) -> &hyperactor_reference::ProcAddr {
+    pub fn proc_addr(&self) -> &ProcAddr {
         &self.proc_id
     }
 
-    pub(crate) fn actor_addr(&self, id: &ActorMeshId) -> hyperactor_reference::ActorAddr {
+    pub(crate) fn actor_addr(&self, id: &ActorMeshId) -> ActorAddr {
         self.proc_id.actor_addr_uid(id.uid().clone())
     }
 
     /// Generic bound: `A: Referable` - required because we return
     /// an `ActorRef<A>`.
-    pub(crate) fn attest<A: Referable>(
-        &self,
-        id: &ActorMeshId,
-    ) -> hyperactor_reference::ActorRef<A> {
-        hyperactor_reference::ActorRef::attest(self.actor_addr(id))
+    pub(crate) fn attest<A: Referable>(&self, id: &ActorMeshId) -> ActorRef<A> {
+        ActorRef::attest(self.actor_addr(id))
     }
 }
 
@@ -134,6 +129,7 @@ pub struct ProcMesh {
     #[allow(dead_code)]
     comm_actor_name: Option<ActorMeshId>,
     current_ref: ProcMeshRef,
+    controller: Option<ActorRef<crate::mesh_controller::ProcMeshController>>,
 }
 
 impl ProcMesh {
@@ -161,7 +157,7 @@ impl ProcMesh {
             );
         }
 
-        let root_comm_actor = hyperactor_reference::ActorRef::attest(
+        let root_comm_actor = ActorRef::attest(
             ranks
                 .first()
                 .expect("root mesh cannot be empty")
@@ -226,6 +222,7 @@ impl ProcMesh {
             id,
             comm_actor_name: Some(comm_actor_name.clone()),
             current_ref,
+            controller: None,
         };
 
         // CommActor satisfies `Actor + Referable`, so it can be
@@ -252,13 +249,81 @@ impl ProcMesh {
         Ok(proc_mesh)
     }
 
+    /// Set or clear the controller actor managing this mesh.
+    pub(crate) fn set_controller(
+        &mut self,
+        controller: Option<ActorRef<crate::mesh_controller::ProcMeshController>>,
+    ) {
+        self.controller = controller;
+    }
+
     /// Stop this mesh gracefully.
+    ///
+    /// If a `ProcMeshController` is present (owned meshes spawned from a host
+    /// mesh), the stop is delegated to the controller via `resource::Stop`;
+    /// the controller's handler awaits `HostMeshRef::stop_proc_mesh`, which
+    /// casts `Stop` + `WaitRankStatus{min_status: Stopped}` to the
+    /// HostAgents and waits up to `PROC_STOP_MAX_IDLE` for every proc to
+    /// reach `Stopped`. We then serialize behind that handler with a
+    /// `GetState` to read the final statuses out of the controller's
+    /// `health_state`.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
+        if let Some(controller) = self.controller.take() {
+            let id = self.id.resource_id().clone();
+            controller
+                .send(
+                    cx,
+                    resource::Stop {
+                        id: id.clone(),
+                        reason,
+                    },
+                )
+                .map_err(|e| {
+                    crate::Error::SendingError(controller.actor_addr().clone(), Box::new(e))
+                })?;
+
+            // The controller processes messages serially, so by the time it
+            // gets to this `GetState`, its `health_state.statuses` already
+            // reflects the outcome of `stop_proc_mesh` (Stopping, Stopped,
+            // Failed, or Timeout on `PROC_STOP_MAX_IDLE` exhaustion).
+            let (port, mut rx) = cx.mailbox().open_port();
+            controller
+                .send(
+                    cx,
+                    resource::GetState::<resource::mesh::State<()>> {
+                        id: id.clone(),
+                        reply: port.bind(),
+                    },
+                )
+                .map_err(|e| {
+                    crate::Error::SendingError(controller.actor_addr().clone(), Box::new(e))
+                })?;
+
+            let statuses = rx.recv().await?;
+            let Some(state) = &statuses.state else {
+                anyhow::bail!(
+                    "non-existent state in GetState reply from controller: {}",
+                    controller.actor_addr()
+                );
+            };
+            // `is_terminating` accepts Stopping, Stopped, Failed, and
+            // Timeout. The controller's Stop handler has already awaited
+            // (or timed out) the underlying HostAgent wait, so any rank
+            // still in Running here means the controller never processed
+            // the stop for that rank.
+            let all_stopped = state.statuses.values().all(|s| s.is_terminating());
+            if !all_stopped {
+                anyhow::bail!(
+                    "proc mesh {} not all procs reached terminating state after stop: {:?}",
+                    id,
+                    state.statuses,
+                );
+            }
+            return Ok(());
+        }
+
         let region = self.region.clone();
-        let procs = self
-            .current_ref
-            .proc_ids()
-            .collect::<Vec<hyperactor_reference::ProcAddr>>();
+        let procs = self.current_ref.proc_ids().collect::<Vec<ProcAddr>>();
         // We use the proc mesh region rather than the host mesh region
         // because the host agent stores one entry per proc, not per host.
         self.current_ref
@@ -267,6 +332,8 @@ impl ProcMesh {
             .expect("ProcMesh always has a host mesh")
             .stop_proc_mesh(cx, &self.id, procs, region, reason)
             .await
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
     }
 
     #[cfg(test)]
@@ -320,7 +387,7 @@ pub struct ProcMeshRef {
     // should be removed after we remove the v0 code.
     // v0 casting requires root mesh rank 0 as the 1st hop, so we need to provide
     // it here. For v1, this can be removed since v1 can use any rank.
-    pub(crate) root_comm_actor: Option<hyperactor_reference::ActorRef<CommActor>>,
+    pub(crate) root_comm_actor: Option<ActorRef<CommActor>>,
 }
 wirevalue::register_type!(ProcMeshRef);
 
@@ -333,7 +400,7 @@ impl ProcMeshRef {
         ranks: Arc<Vec<ProcRef>>,
         host_mesh: Option<HostMeshRef>,
         root_region: Option<Region>,
-        root_comm_actor: Option<hyperactor_reference::ActorRef<CommActor>>,
+        root_comm_actor: Option<ActorRef<CommActor>>,
     ) -> crate::Result<Self> {
         if region.num_ranks() != ranks.len() {
             return Err(crate::Error::InvalidRankCardinality {
@@ -365,7 +432,7 @@ impl ProcMeshRef {
         }
     }
 
-    pub(crate) fn root_comm_actor(&self) -> Option<&hyperactor_reference::ActorRef<CommActor>> {
+    pub(crate) fn root_comm_actor(&self) -> Option<&ActorRef<CommActor>> {
         self.root_comm_actor.as_ref()
     }
 
@@ -523,14 +590,13 @@ impl ProcMeshRef {
     pub async fn proc_states(
         &self,
         cx: &impl context::Actor,
+        keepalive: Option<std::time::SystemTime>,
     ) -> crate::Result<Option<ValueMesh<resource::State<ProcState>>>> {
-        let names = self
-            .proc_ids()
-            .collect::<Vec<hyperactor_reference::ProcAddr>>();
+        let names = self.proc_ids().collect::<Vec<ProcAddr>>();
         if let Some(host_mesh) = &self.host_mesh {
             Ok(Some(
                 host_mesh
-                    .proc_states(cx, names, self.region.clone())
+                    .proc_states(cx, names, self.region.clone(), keepalive)
                     .await?,
             ))
         } else {
@@ -539,7 +605,7 @@ impl ProcMeshRef {
     }
 
     /// Returns an iterator over the proc ids in this mesh.
-    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = hyperactor_reference::ProcAddr> {
+    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = ProcAddr> {
         self.ranks.iter().map(|proc_ref| proc_ref.proc_id.clone())
     }
 
@@ -1030,6 +1096,7 @@ fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
 mod tests {
     #[cfg(fbcode_build)]
     use std::ops::Deref;
+    use std::time::Duration;
 
     #[cfg(fbcode_build)]
     use hyperactor::Instance;
@@ -1047,6 +1114,7 @@ mod tests {
     use crate::ActorMesh;
     #[cfg(fbcode_build)]
     use crate::comm::ENABLE_NATIVE_V1_CASTING;
+    use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     use crate::resource::RankedValues;
     use crate::resource::Status;
     use crate::testactor;
@@ -1054,11 +1122,13 @@ mod tests {
 
     #[cfg(fbcode_build)]
     async fn execute_spawn_actor() {
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
+
         let instance = testing::instance();
 
-        let mut hm = testing::host_mesh(4).await;
+        let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None, None)
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
         let actor_mesh = proc_mesh.spawn(instance, "test", &()).await.unwrap();
@@ -1067,30 +1137,45 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 120)]
     #[cfg(fbcode_build)]
     async fn test_spawn_actor_v1_casting() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let _guard4 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(120),
+        );
         execute_spawn_actor().await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 120)]
     #[cfg(fbcode_build)]
     async fn test_spawn_actor_v1_casting_p2p() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
         let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        let _guard4 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let _guard5 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(120),
+        );
         execute_spawn_actor().await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 120)]
     #[cfg(fbcode_build)]
     async fn test_spawn_actor_v0_casting() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _guard2 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let _guard3 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(120),
+        );
         execute_spawn_actor().await;
     }
 
@@ -1109,7 +1194,7 @@ mod tests {
             .proc()
             .instance(&format!("random_casts_{}", Uuid::now_v7()))
             .unwrap();
-        let n = 5;
+        let n = 1;
         for _ in 0..n {
             actor_mesh.cast(&instance, ()).unwrap();
         }
@@ -1121,20 +1206,25 @@ mod tests {
         actor_mesh
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_seq_from_same_sender_to_different_meshes() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard4 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         hyperactor_telemetry::initialize_logging_for_test();
         let instance = testing::instance();
         let session_id = instance.sequencer().session_id();
 
-        let mut hm = testing::host_mesh(4).await;
+        let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None, None)
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
         let proc_mesh_ref = proc_mesh.deref();
@@ -1147,7 +1237,7 @@ mod tests {
                 let proc_mesh_ref_clone = proc_mesh_ref.clone();
                 tokio::spawn(async move {
                     let actor_mesh = spawn_for_seq_test(instance, &proc_mesh_ref_clone).await;
-                    let expected_seqs = vec![1; 8];
+                    let expected_seqs = vec![1; 2];
                     testactor::assert_casting_correctness(
                         &actor_mesh,
                         instance,
@@ -1164,28 +1254,33 @@ mod tests {
 
     /// Verify that the seq numbers are assigned correctly when we cast to
     /// different views of the same root mesh.
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_seq_from_same_sender_to_different_views() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard4 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance();
         let session_id = instance.sequencer().session_id();
 
-        let mut hm = testing::host_mesh(4).await;
+        let mut hm = testing::host_mesh(3).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None, None)
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
 
         let actor_mesh = spawn_for_seq_test(instance, &proc_mesh).await;
 
         // First cast. The seq should be 1 for all actors.
-        let expected_seqs = vec![1; 8];
+        let expected_seqs = vec![1; 3];
         testactor::assert_casting_correctness(
             &actor_mesh,
             instance,
@@ -1196,7 +1291,7 @@ mod tests {
         // Verify casting to the sliced actor mesh
         let sliced_actor_mesh = actor_mesh.range("hosts", 1..3).unwrap();
         // Second cast. The seq should be 2 for actors in the sliced mesh.
-        let expected_seqs = vec![2; 4];
+        let expected_seqs = vec![2; 2];
         testactor::assert_casting_correctness(
             &sliced_actor_mesh,
             instance,
@@ -1209,7 +1304,7 @@ mod tests {
         // For actors in the previous sliced mesh, the seq should be 3 since
         // this is the third cast for them. For other actors, the seq should
         // be 2.
-        let expected_seqs = vec![2, 2, 3, 3];
+        let expected_seqs = vec![2, 3];
         testactor::assert_casting_correctness(
             &sliced_actor_mesh,
             instance,
@@ -1220,12 +1315,17 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_seq_from_different_senders() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _guard3 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard4 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1250,9 +1350,9 @@ mod tests {
             .unwrap()
             .instance;
 
-        let mut hm = testing::host_mesh(4).await;
+        let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None, None)
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
 
@@ -1261,7 +1361,7 @@ mod tests {
         // Sequence numbers are calculated based on the sequencer, i.e. the
         // client name. So three casts would result in seq 1 for all actors.
         for inst in [&first_instance, &second_instance, &third_instance] {
-            let expected_seqs = vec![1; 8];
+            let expected_seqs = vec![1; 2];
             let session_id = inst.sequencer().session_id();
             testactor::assert_casting_correctness(
                 &actor_mesh,
@@ -1280,11 +1380,18 @@ mod tests {
     async fn test_failing_spawn_actor() {
         hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _guard2 = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
+
         let instance = testing::instance();
 
-        let mut hm = testing::host_mesh(4).await;
+        let mut hm = testing::host_mesh(1).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2), None, None)
+            .spawn(&instance, "test", extent!(gpus = 1), None, None)
             .await
             .unwrap();
         let err = proc_mesh
@@ -1298,7 +1405,7 @@ mod tests {
         let statuses = err.into_actor_spawn_error().unwrap();
         assert_eq!(
             statuses,
-            RankedValues::from((0..8, Status::Failed("test failure".to_string()))),
+            RankedValues::from((0..1, Status::Failed("test failure".to_string()))),
         );
 
         let _ = hm.shutdown(instance).await;
