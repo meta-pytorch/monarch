@@ -501,7 +501,7 @@ mod tests {
     }
 
     async fn setup_with_lru(lru_capacity: usize) -> Harness {
-        let proc = Proc::new();
+        let proc = Proc::anonymous();
         let (client, _) = proc.client("client").unwrap();
         let mgr_inner = Arc::new(StdMutex::new(MockManagerInner::default()));
         let mgr = MockManagerActor {

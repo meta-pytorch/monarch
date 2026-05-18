@@ -285,7 +285,7 @@ impl MessageEnvelope {
     pub(crate) fn new_unknown(dest: impl Into<PortAddr>, data: wirevalue::Any) -> Self {
         // Create a synthetic "unknown" actor ID for messages with no known sender
         let unknown_addr = ChannelAddr::any(ChannelTransport::Local);
-        let unknown_proc_ref = ProcAddr::unique(unknown_addr, "unknown");
+        let unknown_proc_ref = ProcAddr::instance(unknown_addr, "unknown");
         let unknown_actor_ref =
             ActorAddr::root(unknown_proc_ref, crate::id::Label::strip("unknown"));
         Self::new(unknown_actor_ref, dest, data, Flattrs::new())
@@ -1059,7 +1059,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
             static NEXT_RANK: AtomicUsize = AtomicUsize::new(0);
             let rank = NEXT_RANK.fetch_add(1, Ordering::Relaxed);
             let addr = ChannelAddr::any(ChannelTransport::Local);
-            let proc_id = ProcAddr::unique(addr, format!("mailbox_server_{}", rank));
+            let proc_id = ProcAddr::instance(addr, format!("mailbox_server_{}", rank));
             // Use this mailbox server as the forwarder, so we can use it to
             // return message back to the sender.
             //
@@ -3737,7 +3737,7 @@ mod tests {
         // The actor must be on unix:@4 so that after unbinding, the prefix
         // route for world1_1 (unix!@3) is the fallback, not world1_1/actor1 (unix!@4).
         let direct_actor_ref: ActorAddr =
-            ProcAddr::named("unix:@4".parse().unwrap(), "my_proc").actor_addr("my_actor");
+            ProcAddr::singleton("unix:@4".parse().unwrap(), "my_proc").actor_addr("my_actor");
         router.bind(
             Addr::Actor(direct_actor_ref.clone()),
             "unix:@5".parse().unwrap(),
