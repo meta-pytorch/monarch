@@ -1516,7 +1516,7 @@ impl Proc {
         parent_id: &ActorAddr,
     ) -> Result<ActorAddr, anyhow::Error> {
         assert_eq!(parent_id.proc_id(), self.proc_id());
-        Ok(parent_id.unique_child())
+        Ok(parent_id.anonymous_child())
     }
 
     /// Ensure that the requested child uid is available in this proc.
@@ -2784,7 +2784,7 @@ impl<A: Actor> Instance<A> {
     /// The actor type is resolved through the remote spawn registry. The child
     /// receives an empty environment.
     pub async fn gspawn(&self, actor_type: &str, params: Data) -> anyhow::Result<AnyActorHandle> {
-        self.gspawn_uid(actor_type, crate::id::Uid::instance(), params)
+        self.gspawn_uid(actor_type, crate::id::Uid::anonymous(), params)
             .await
     }
 
@@ -4410,7 +4410,7 @@ mod tests {
             !lookup_actor
                 .actor_exists(
                     &client,
-                    ActorRef::attest(target_actor.actor_addr().unique_child())
+                    ActorRef::attest(target_actor.actor_addr().anonymous_child())
                 )
                 .await
                 .unwrap()

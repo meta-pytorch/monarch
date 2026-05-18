@@ -3517,7 +3517,7 @@ mod tests {
         let (client, _handle) = client_proc.client("client").unwrap();
 
         // Spawn a user proc via CreateOrUpdate<ProcSpec>.
-        let user_proc_name = ResourceId::unique(Label::new("user-proc").unwrap());
+        let user_proc_name = ResourceId::instance(Label::new("user-proc").unwrap());
         host_agent_ref
             .send(
                 &client,

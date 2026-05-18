@@ -116,7 +116,7 @@ impl KeepaliveLink {
         self,
         this: &Instance<A>,
     ) -> anyhow::Result<(ActorHandle<KeepaliveSupervisor>, LinkSpec)> {
-        self.spawn_supervisor_uid(this, Uid::instance())
+        self.spawn_supervisor_uid(this, Uid::anonymous())
     }
 
     /// Spawn the supervisor side and return the worker-side link spec,
@@ -172,7 +172,7 @@ impl KeepaliveWorkerParams {
 
     /// Create a worker-side link spec for a keepalive worker actor with a fresh uid.
     pub fn link_spec(self) -> anyhow::Result<LinkSpec> {
-        self.link_spec_uid(Uid::instance())
+        self.link_spec_uid(Uid::anonymous())
     }
 
     /// Create a worker-side link spec for a keepalive worker actor with an explicit uid.
@@ -599,7 +599,7 @@ mod tests {
         let (client, _client_handle) = proc.client("client").unwrap();
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let supervisor = proc.spawn("silent_supervisor", SilentSupervisor).unwrap();
-        let uid = Uid::instance();
+        let uid = Uid::anonymous();
         let link = KeepaliveWorkerParams::new(
             supervisor.port::<Keepalive>().bind(),
             KeepaliveParams::new(Duration::from_millis(100), Duration::from_millis(10)),

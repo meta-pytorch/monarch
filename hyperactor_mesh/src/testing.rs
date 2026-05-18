@@ -322,7 +322,9 @@ pub async fn host_mesh(n: usize) -> HostMeshShutdownGuard {
         cmd.spawn().unwrap();
     }
 
-    let host_mesh =
-        HostMeshRef::from_hosts(HostMeshId::unique(Label::new("test").unwrap()), host_addrs);
+    let host_mesh = HostMeshRef::from_hosts(
+        HostMeshId::instance(Label::new("test").unwrap()),
+        host_addrs,
+    );
     HostMesh::take(host_mesh).shutdown_guard()
 }
