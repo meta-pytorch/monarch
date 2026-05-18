@@ -1166,7 +1166,7 @@ mod tests {
 
     #[test]
     fn test_reference_prefix_relationships() {
-        let proc_ref = ProcAddr::named(ChannelAddr::Local(42), "service");
+        let proc_ref = ProcAddr::singleton(ChannelAddr::Local(42), "service");
         let actor_ref = proc_ref.actor_addr("host_agent");
         let port_ref = actor_ref.port_addr(Port::from(7u64));
 

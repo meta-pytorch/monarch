@@ -681,7 +681,7 @@ impl Proc {
         name: &'static str,
         forwarder: BoxedMailboxSender,
     ) -> Self {
-        let proc_addr = ProcAddr::named(addr, name);
+        let proc_addr = ProcAddr::singleton(addr, name);
         Self::from_parts_unchecked(
             proc_addr.id().clone(),
             Gateway::configured(proc_addr.location().clone(), forwarder),
@@ -754,7 +754,7 @@ impl Proc {
     /// independent instances, so each one receives a unique proc id.
     pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
-        let proc_id = ProcAddr::unique(addr, name);
+        let proc_id = ProcAddr::instance(addr, name);
         let proc = Self::builder()
             .proc_id(proc_id.id().clone())
             .shared_gateway(Gateway::configured(
@@ -790,7 +790,7 @@ impl Proc {
         // envelope ever escapes into the forwarder: it should be
         // dropped, not bounced to the fake sender.
         let signal_actor_id = ActorAddr::root(
-            ProcAddr::named(ChannelAddr::any(channel::ChannelTransport::Local), "attach"),
+            ProcAddr::singleton(ChannelAddr::any(channel::ChannelTransport::Local), "attach"),
             crate::id::Label::strip("attach"),
         );
         let signal_port = signal_actor_id.port_addr(crate::port::Port::from(0u64));
@@ -946,7 +946,7 @@ impl Proc {
         static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
         RUNTIME_PROC.get_or_init(|| {
             let addr = ChannelAddr::any(ChannelTransport::Local);
-            let proc_id = ProcAddr::unique(addr, "hyperactor_runtime");
+            let proc_id = ProcAddr::instance(addr, "hyperactor_runtime");
             Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
         })
     }
@@ -4036,10 +4036,10 @@ mod tests {
         let local_addr = ChannelAddr::Local(1);
         let remote_addr = ChannelAddr::Local(2);
 
-        let proc_local = ProcAddr::unique(local_addr.clone(), "shared");
+        let proc_local = ProcAddr::instance(local_addr.clone(), "shared");
         let proc_same_id_other_location =
             ProcAddr::new(proc_local.id().clone(), remote_addr.into());
-        let proc_other_id_same_location = ProcAddr::unique(local_addr, "other");
+        let proc_other_id_same_location = ProcAddr::instance(local_addr, "other");
         assert_eq!(
             proc_local.id(),
             proc_same_id_other_location.id(),
@@ -4105,8 +4105,8 @@ mod tests {
     #[test]
     fn test_local_delivery_service_and_local_compare_full_proc_addr() {
         for name in [LEGACY_SERVICE_PROC_NAME, LEGACY_LOCAL_PROC_NAME] {
-            let local = ProcAddr::named(ChannelAddr::Local(1), name);
-            let same_id_other_location = ProcAddr::named(ChannelAddr::Local(2), name);
+            let local = ProcAddr::singleton(ChannelAddr::Local(1), name);
+            let same_id_other_location = ProcAddr::singleton(ChannelAddr::Local(2), name);
             let proc = match name {
                 LEGACY_SERVICE_PROC_NAME => Proc::legacy_service_pseudo_singleton(
                     ChannelAddr::Local(1),
@@ -4124,15 +4124,15 @@ mod tests {
             assert!(!proc.is_local_delivery_target(&same_id_other_location));
         }
 
-        let shared = ProcAddr::named(ChannelAddr::Local(1), "shared");
-        let shared_other_location = ProcAddr::named(ChannelAddr::Local(2), "shared");
+        let shared = ProcAddr::singleton(ChannelAddr::Local(1), "shared");
+        let shared_other_location = ProcAddr::singleton(ChannelAddr::Local(2), "shared");
         let proc = Proc::configured(
             shared.clone(),
             BoxedMailboxSender::new(PanickingMailboxSender),
         );
         assert!(proc.is_local_delivery_target(&shared_other_location));
 
-        let service_instance = ProcAddr::unique(ChannelAddr::Local(1), "service");
+        let service_instance = ProcAddr::instance(ChannelAddr::Local(1), "service");
         let service_instance_other_location =
             ProcAddr::new(service_instance.id().clone(), ChannelAddr::Local(2).into());
         let proc = Proc::configured(
@@ -4147,7 +4147,7 @@ mod tests {
         for name in [LEGACY_SERVICE_PROC_NAME, LEGACY_LOCAL_PROC_NAME] {
             let result = std::panic::catch_unwind(|| {
                 Proc::configured(
-                    ProcAddr::named(ChannelAddr::Local(1), name),
+                    ProcAddr::singleton(ChannelAddr::Local(1), name),
                     BoxedMailboxSender::new(PanickingMailboxSender),
                 );
             });
@@ -4361,7 +4361,7 @@ mod tests {
         let (client, _) = proc.client("client").unwrap();
         let (return_handle, mut undeliverable_rx) =
             client.open_port::<Undeliverable<MessageEnvelope>>();
-        let remote_proc = ProcAddr::unique(ChannelAddr::Local(1234), "remote");
+        let remote_proc = ProcAddr::instance(ChannelAddr::Local(1234), "remote");
         let remote_dest = remote_proc.actor_addr("worker").port_addr(Port::from(0));
 
         proc.post(

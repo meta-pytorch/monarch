@@ -1696,7 +1696,7 @@ mod tests {
 
     impl Harness {
         fn build(qp: QpGuard, response: MockResponse) -> Result<Self> {
-            let proc = Proc::new();
+            let proc = Proc::anonymous();
             let state = Arc::new(Mutex::new(MockState::default()));
             let mock = MockManager {
                 state: state.clone(),

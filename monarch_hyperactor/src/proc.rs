@@ -166,7 +166,7 @@ impl PyActorAddr {
             PyValueError::new_err(format!("Failed to parse channel address '{}': {}", addr, e))
         })?;
         Ok(Self {
-            inner: hyperactor::ProcAddr::named(addr, proc_name).actor_addr(actor_name),
+            inner: hyperactor::ProcAddr::singleton(addr, proc_name).actor_addr(actor_name),
         })
     }
 

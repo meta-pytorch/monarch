@@ -529,7 +529,7 @@ async fn duplex_accept_loop(
             // `remote` label so procs attached to different host
             // generations sharing a frontend address (e.g., after
             // restart on the same ip:port) cannot collide.
-            let proc_id = ProcAddr::unique(frontend_addr.clone(), "remote");
+            let proc_id = ProcAddr::instance(frontend_addr.clone(), "remote");
 
             let assignment = BootstrapAssignment {
                 proc_id: proc_id.clone(),

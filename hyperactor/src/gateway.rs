@@ -489,7 +489,7 @@ mod tests {
         assert_eq!(received, 222);
         assert_eq!(forwarded.load(Ordering::SeqCst), 0);
 
-        let stranger_proc = ProcAddr::unique(ChannelAddr::Local(9999), "stranger");
+        let stranger_proc = ProcAddr::instance(ChannelAddr::Local(9999), "stranger");
         let stranger_dest = stranger_proc
             .actor_addr("ghost")
             .port_addr(Port::from(0u64));
@@ -759,7 +759,7 @@ mod tests {
         // Fabricate a destination — its contents don't matter; the
         // bounce happens at WeakGateway::upgrade before any demux
         // would run.
-        let dest_proc = ProcAddr::unique(ChannelAddr::Local(1234), "stranger");
+        let dest_proc = ProcAddr::instance(ChannelAddr::Local(1234), "stranger");
         let dest = dest_proc.actor_addr("ghost").port_addr(Port::from(0u64));
         let envelope = MessageEnvelope::serialize(
             test_actor_id("test", "sender"),
