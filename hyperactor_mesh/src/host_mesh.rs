@@ -1218,12 +1218,12 @@ impl HostMeshRef {
                 "per_host dims overlap with existing dims when spawning proc mesh"
             )));
         }
-        if let Some(proc_bind) = proc_bind.as_ref() {
-            if proc_bind.len() != per_host.num_ranks() {
-                return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
-                    "proc_bind length does not match per_host extent"
-                )));
-            }
+        if let Some(proc_bind) = proc_bind.as_ref()
+            && proc_bind.len() != per_host.num_ranks()
+        {
+            return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
+                "proc_bind length does not match per_host extent"
+            )));
         }
 
         let extent = self
@@ -2147,6 +2147,7 @@ mod tests {
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_mins(1),
         );
+        let _guard4 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_mins(2));
 
         // Unset env vars that were mirrored by TestOverride, so child
         // processes don't inherit them. This allows Runtime layer to
@@ -2164,6 +2165,14 @@ mod tests {
             .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
+        let proc_ids = proc_mesh
+            .proc_ids()
+            .map(|proc_addr| proc_addr.id().clone())
+            .collect::<Vec<_>>();
+        let unique_proc_ids = proc_ids.iter().collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(proc_ids.len(), 2);
+        assert_eq!(unique_proc_ids.len(), proc_ids.len());
 
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(instance, "test", &()).await.unwrap();

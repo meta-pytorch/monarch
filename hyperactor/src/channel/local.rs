@@ -33,6 +33,12 @@ struct Ports {
 }
 
 impl Ports {
+    fn reserve(&mut self) -> u64 {
+        let port = self.next_port;
+        self.next_port += 1;
+        port
+    }
+
     fn alloc(
         &mut self,
     ) -> (
@@ -40,14 +46,28 @@ impl Ports {
         mpsc::UnboundedReceiver<Message>,
         watch::Sender<TxStatus>,
     ) {
-        let port = self.next_port;
-        self.next_port += 1;
+        let port = self.reserve();
+        let (rx, status_tx) = self.bind(port).expect("fresh local port must bind");
+        (port, rx, status_tx)
+    }
+
+    fn bind(
+        &mut self,
+        port: u64,
+    ) -> Result<(mpsc::UnboundedReceiver<Message>, watch::Sender<TxStatus>), ChannelError> {
+        if self.ports.contains_key(&port) {
+            return Err(ChannelError::InvalidAddress(format!(
+                "local addr already bound: {}",
+                port
+            )));
+        }
+        self.next_port = self.next_port.max(port.saturating_add(1));
         let (tx, rx) = mpsc::unbounded_channel::<Message>();
         let (status_tx, status_rx) = watch::channel(TxStatus::Active);
         if self.ports.insert(port, (tx.clone(), status_rx)).is_some() {
             panic!("port reused")
         }
-        (port, rx, status_tx)
+        Ok((rx, status_tx))
     }
 
     fn free(&mut self, port: u64) {
@@ -98,16 +118,16 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
                 return;
             }
         };
-        if self.tx.send(data).is_err() {
-            if let Some(return_channel) = return_channel {
-                return_channel
-                    .send(SendError {
-                        error: ChannelError::Closed,
-                        message,
-                        reason: None,
-                    })
-                    .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
-            }
+        if self.tx.send(data).is_err()
+            && let Some(return_channel) = return_channel
+        {
+            return_channel
+                .send(SendError {
+                    error: ChannelError::Closed,
+                    message,
+                    reason: None,
+                })
+                .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
         }
     }
 
@@ -180,6 +200,22 @@ pub fn serve<M: RemoteMessage>() -> (u64, LocalRx<M>) {
             _phantom: PhantomData,
         },
     )
+}
+
+/// Reserve a local address that can be served later.
+pub fn reserve() -> u64 {
+    PORTS.lock().unwrap().reserve()
+}
+
+/// Bind a specific local port. The server is shut down when the returned Rx is dropped.
+pub fn bind<M: RemoteMessage>(port: u64) -> Result<LocalRx<M>, ChannelError> {
+    let (data_rx, status_tx) = PORTS.lock().unwrap().bind(port)?;
+    Ok(LocalRx {
+        data_rx,
+        status_tx,
+        port,
+        _phantom: PhantomData,
+    })
 }
 
 #[cfg(test)]

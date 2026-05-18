@@ -659,21 +659,21 @@ impl History {
                 invocation.complete(sender)?;
             }
         }
-        if let Some(port) = &self.exit_port {
-            if self.min_incomplete_seq >= self.seq_lower_bound {
-                let result = match &self.unreported_exception {
-                    Some(exception) => exception.as_ref().clone(),
-                    None => {
-                        // the byte string is just a Python None
-                        PythonMessage::new_from_buf(
-                            PythonMessageKind::Result { rank: None },
-                            b"\x80\x04N.".to_vec(),
-                        )
-                    }
-                };
-                port.send(sender, result)?;
-                self.exit_port = None;
-            }
+        if let Some(port) = &self.exit_port
+            && self.min_incomplete_seq >= self.seq_lower_bound
+        {
+            let result = match &self.unreported_exception {
+                Some(exception) => exception.as_ref().clone(),
+                None => {
+                    // the byte string is just a Python None
+                    PythonMessage::new_from_buf(
+                        PythonMessageKind::Result { rank: None },
+                        b"\x80\x04N.".to_vec(),
+                    )
+                }
+            };
+            port.send(sender, result)?;
+            self.exit_port = None;
         }
         Ok(())
     }

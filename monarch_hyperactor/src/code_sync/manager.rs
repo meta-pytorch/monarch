@@ -147,6 +147,10 @@ pub struct WorkspaceConfig {
 }
 
 #[derive(Handler, Clone, Serialize, Deserialize, Debug, Named, Bind, Unbind)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "actor message enum with Handler/Bind/Unbind derives; boxing fields ripples into handler call sites and may require derive-macro changes — separate diff"
+)]
 pub enum CodeSyncMessage {
     Sync {
         workspace: WorkspaceLocation,
@@ -419,7 +423,7 @@ pub async fn code_sync_mesh(
             let daemon =
                 RsyncDaemon::spawn(TcpListener::bind(&addrs[..]).await?, &local_workspace).await?;
 
-            let daemon_addr = daemon.addr().clone();
+            let daemon_addr = *daemon.addr();
             let (rsync_conns_tx, rsync_conns_rx) = instance.open_port::<Connect>();
             (
                 Method::Rsync {
@@ -433,7 +437,7 @@ pub async fn code_sync_mesh(
                         .err_into::<anyhow::Error>()
                         .try_for_each_concurrent(None, |connect| async move {
                             let (mut local, mut stream) = try_join!(
-                                TcpStream::connect(daemon_addr.clone()).err_into(),
+                                TcpStream::connect(daemon_addr).err_into(),
                                 accept(instance, instance.self_addr().clone(), connect),
                             )?;
                             tokio::io::copy_bidirectional(&mut local, &mut stream).await?;

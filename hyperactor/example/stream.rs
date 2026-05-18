@@ -81,7 +81,7 @@ impl Handler<u64> for CountClient {
 
 #[tokio::main]
 async fn main() {
-    let proc = Proc::local();
+    let proc = Proc::isolated();
 
     let counter_actor: ActorHandle<CounterActor> =
         proc.spawn("counter", CounterActor::default()).unwrap();

@@ -66,6 +66,8 @@ pub mod addr;
 pub mod channel;
 pub mod config;
 pub mod context;
+/// Gateway management for proc connectivity.
+pub mod gateway;
 pub mod id;
 mod init;
 pub mod introspect;
@@ -107,6 +109,7 @@ pub mod internal_macro_support {
 
 pub use actor::Actor;
 pub use actor::ActorHandle;
+pub use actor::AnyActorHandle;
 pub use actor::Handler;
 pub use actor::HandlerInfo;
 pub use actor::RemoteHandles;
@@ -118,6 +121,7 @@ pub use addr::AddrParseError;
 pub use addr::Location;
 pub use addr::PortAddr;
 pub use addr::ProcAddr;
+pub use gateway::Gateway;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]

@@ -320,21 +320,19 @@ fn send_state_change(
     // Don't send a message to the owner for non-failure events such as "stopped".
     // Those events are always initiated by the owner, who don't need to be
     // told that they were stopped.
-    if is_failed {
-        if let Some(owner) = &health_state.owner {
-            if let Err(error) = owner.send(cx, failure_message.clone()) {
-                tracing::warn!(
-                    name = "SupervisionEvent",
-                    actor_mesh = %mesh_name,
-                    %event,
-                    %error,
-                    "failed to send supervision event to owner {}: {}. dropping event",
-                    owner.port_addr(),
-                    error
-                );
-            } else {
-                tracing::info!(actor_mesh = %mesh_name, %event, "sent supervision failure message to owner {}", owner.port_addr());
-            }
+    if is_failed && let Some(owner) = &health_state.owner {
+        if let Err(error) = owner.send(cx, failure_message.clone()) {
+            tracing::warn!(
+                name = "SupervisionEvent",
+                actor_mesh = %mesh_name,
+                %event,
+                %error,
+                "failed to send supervision event to owner {}: {}. dropping event",
+                owner.port_addr(),
+                error
+            );
+        } else {
+            tracing::info!(actor_mesh = %mesh_name, %event, "sent supervision failure message to owner {}", owner.port_addr());
         }
     }
     // Subscribers get all messages, even for non-failures like Stopped, because
@@ -730,14 +728,14 @@ where
         //
         // TODO(SF, 2026-03-32, T261106175): follow up in hyperactor on bind
         // semantics here. `cx.port()` plus later actor-ref export currently
-        // hits `bind()` -> `bind_actor_port()` on the same handle, and
-        // `bind_actor_port()` still panics on an already-bound handle. This
-        // workaround uses `attest_message_port(...)` to avoid the eager
+        // hits `bind()` -> `bind_handler_port()` on the same handle, and
+        // `bind_handler_port()` still panics on an already-bound handle. This
+        // workaround uses `attest_handler_port(...)` to avoid the eager
         // bind, but the longer-term fix is to clarify whether that bind
         // path should be idempotent and eliminate the need for attestation
         // here.
         let subscriber =
-            hyperactor::PortRef::<resource::State<T::StateInner>>::attest_message_port(
+            hyperactor::PortRef::<resource::State<T::StateInner>>::attest_handler_port(
                 &this.self_addr().clone(),
             )
             .unsplit();
@@ -1522,6 +1520,7 @@ mod tests {
     use super::proc_status_to_actor_status;
     use crate::ActorMesh;
     use crate::bootstrap::ProcStatus;
+    use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     use crate::mesh_id::ActorMeshId;
     use crate::mesh_id::HostMeshId;
     use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
@@ -1698,9 +1697,14 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Some(Duration::from_secs(2)));
         let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
-        let num_replicas = 2;
+        let num_replicas = 1;
 
         // Host mesh for the test actors (these survive the crash).
         // host_mesh_with_config propagates config overrides to child

@@ -84,8 +84,8 @@ pub(crate) fn new_undeliverable_port() -> (
     PortHandle<Undeliverable<MessageEnvelope>>,
     PortReceiver<Undeliverable<MessageEnvelope>>,
 ) {
-    let proc = Proc::local();
-    crate::mailbox::Mailbox::new_detached(proc.proc_addr().actor_addr("undeliverable"))
+    let proc = Proc::isolated();
+    crate::mailbox::Mailbox::new(proc.proc_addr().actor_addr("undeliverable"))
         .open_port::<Undeliverable<MessageEnvelope>>()
 }
 

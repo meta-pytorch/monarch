@@ -22,7 +22,7 @@ jobs:
       # TODO add 3.14 once we figure out py03 issue
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: linux.g5.4xlarge.nvidia.gpu
-      torch-spec: 'torch==2.11.0 --extra-index-url https://download.pytorch.org/whl/cu128'
+      torch-spec: 'torch==2.12.0 --extra-index-url https://download.pytorch.org/whl/cu128'
       gpu-arch-type: cuda
       gpu-arch-version: '12.8'
       version: ${{ github.event.inputs.version }}
@@ -34,15 +34,23 @@ jobs:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: linux.arm64.2xlarge
       docker-image: 'pytorch/manylinuxaarch64-builder:cuda12.8'
-      torch-spec: 'torch==2.11.0 --extra-index-url https://download.pytorch.org/whl/cu128'
+      torch-spec: 'torch==2.12.0 --extra-index-url https://download.pytorch.org/whl/cu128'
       gpu-arch-type: cuda
       gpu-arch-version: '12.8'
       version: ${{ github.event.inputs.version }}
       platform: aarch64
 
+  build-macos:
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      runner: macos-latest
+      torch-spec: 'torch==2.12.0 --extra-index-url https://download.pytorch.org/whl/cpu'
+      version: ${{ github.event.inputs.version }}
+
   publish:
     name: Publish to PyPI
-    needs: [build-x86_64, build-aarch64]
+    needs: [build-x86_64, build-aarch64, build-macos]
     runs-on: ubuntu-latest
     environment: stable
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -96,7 +104,7 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version }}"
           PRERELEASE="${{ github.event.inputs.is_prerelease }}"
-          TAGS="ghcr.io/${{ github.repository }}:${VERSION}-cuda12.8"
+          TAGS="ghcr.io/${{ github.repository }}:${VERSION}-cuda12.6"
           if [[ "$PRERELEASE" == "false" ]]; then
             TAGS="$TAGS,ghcr.io/${{ github.repository }}:latest"
           fi
@@ -110,7 +118,7 @@ jobs:
           push: true # Push the image to the registry
           tags: ${{ steps.determine-tags.outputs.tags }}
           build-args: |
-            PYTORCH_TAG=2.11.0-cuda12.8-cudnn9-runtime
+            PYTORCH_TAG=2.12.0-cuda12.6-cudnn9-runtime
             MONARCH_VERSION=${{ github.event.inputs.version }}
 
   create-docs-branch:

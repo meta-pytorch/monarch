@@ -65,7 +65,7 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_ENABLE_NATIVE_V1_CASTING".to_string()),
         Some("enable_native_v1_casting".to_string()),
     ))
-    pub attr ENABLE_NATIVE_V1_CASTING: bool = false;
+    pub attr ENABLE_NATIVE_V1_CASTING: bool = true;
 }
 
 /// Parameters to initialize the CommActor
@@ -191,7 +191,7 @@ impl Actor for CommActor {
             message_envelope.deserialized::<ForwardMessage>()
         {
             let sender = message.sender();
-            let return_port = PortRef::attest_message_port(sender);
+            let return_port = PortRef::attest_handler_port(sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to forward the cast message; returning to origin {}",
                 cx.self_addr(),
@@ -221,7 +221,7 @@ impl Actor for CommActor {
 
         // 2. Case delivery failure at a "deliver here" step.
         if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
-            let return_port = PortRef::attest_message_port(&sender);
+            let return_port = PortRef::attest_handler_port(&sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to deliver the cast message to the dest \
                 actor; returning to origin {}",
@@ -658,6 +658,10 @@ pub mod test_utils {
     }
 
     #[derive(Debug, Named, Serialize, Deserialize, PartialEq, Clone, Bind, Unbind)]
+    #[expect(
+        clippy::large_enum_variant,
+        reason = "test fixture; CastAndReply carries #[binding(include)] PortRefs whose Bind/Unbind derive interaction with Box<T> needs verification — separate diff"
+    )]
     pub enum TestMessage {
         Forward(String),
         CastAndReply {
@@ -900,7 +904,7 @@ mod tests {
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
                 uuid::Uuid::new_v4(),
-                crate::ValueMesh::from_single(region, 0u64),
+                crate::ValueMesh::from_single(region, 1u64),
             )
             .unwrap();
             let frame = RoutingFrame::root(sel!(*), slice);
@@ -1008,7 +1012,7 @@ mod tests {
             }
 
             for (src, path) in &self.0 {
-                write!(f, "{} -> {}\n", src, vec_to_string(path))?;
+                writeln!(f, "{} -> {}", src, vec_to_string(path))?;
             }
             Ok(())
         }
@@ -1082,7 +1086,7 @@ mod tests {
 
     //  Given a port tree,
     //     * remove the client port, i.e. the 1st element of the path;
-    //     * verify all remaining ports are comm actor ports;
+    //     * verify all remaining ports are comm handler ports;
     //     * remove the actor information and return a rank-based tree representation.
     //
     //  The rank-based tree representation is what [collect_commactor_routing_tree] returns.
