@@ -84,6 +84,17 @@ fn gen_embeddable_rect_pair() -> impl Strategy<Value = (RankRect, RankRect)> {
     })
 }
 
+fn gen_movable_rect_pattern() -> impl Strategy<Value = (RankRect, RankRect, RankRect)> {
+    gen_embeddable_rect_pair().prop_flat_map(|(parent, local)| {
+        (Just((parent, local)), 0..=32usize, 1..=4usize).prop_map(
+            |((parent, local), offset, stride_scale)| {
+                let target = scaled_like(&parent, offset, stride_scale);
+                (parent, local, target)
+            },
+        )
+    })
+}
+
 fn gen_sparse_space(
     dims: RangeInclusive<usize>,
     max_size: usize,
@@ -100,6 +111,51 @@ fn gen_sparse_space(
             let space = RankSpace::dense(rect).without(RankMask::ranks(occluded.iter().copied()));
             (space, occluded)
         })
+}
+
+fn gen_sparse_scaled_space(
+    dims: RangeInclusive<usize>,
+    max_size: usize,
+) -> impl Strategy<Value = RankSpace> {
+    gen_scaled_rect(dims, max_size, 32, 4)
+        .prop_flat_map(|rect| {
+            let ranks = rect.iter_ranks().collect::<Vec<_>>();
+            let max_occlusions = ranks.len().min(16);
+            let rank_strategy = prop::sample::subsequence(ranks, 0..=max_occlusions);
+            (Just(rect), rank_strategy)
+        })
+        .prop_map(|(rect, occluded)| RankSpace::dense(rect).without(RankMask::ranks(occluded)))
+}
+
+fn gen_embeddable_space_pair() -> impl Strategy<Value = (RankSpace, RankSpace)> {
+    gen_embeddable_rect_pair()
+        .prop_flat_map(|(parent, local)| {
+            let parent_ranks = parent.iter_ranks().collect::<Vec<_>>();
+            let local_ranks = local.iter_ranks().collect::<Vec<_>>();
+            let max_parent_occlusions = parent_ranks.len().min(16);
+            let max_local_occlusions = local_ranks.len().min(16);
+            let parent_occlusion =
+                prop::sample::subsequence(parent_ranks, 0..=max_parent_occlusions);
+            let local_occlusion = prop::sample::subsequence(local_ranks, 0..=max_local_occlusions);
+            (Just((parent, local)), parent_occlusion, local_occlusion)
+        })
+        .prop_map(|((parent, local), parent_occlusion, local_occlusion)| {
+            (
+                RankSpace::dense(parent).without(RankMask::ranks(parent_occlusion)),
+                RankSpace::dense(local).without(RankMask::ranks(local_occlusion)),
+            )
+        })
+}
+
+fn gen_movable_space_pattern() -> impl Strategy<Value = (RankSpace, RankSpace, RankSpace)> {
+    gen_embeddable_space_pair().prop_flat_map(|(parent, local)| {
+        (Just((parent, local)), 0..=32usize, 1..=4usize).prop_map(
+            |((parent, local), offset, stride_scale)| {
+                let target = RankSpace::dense(scaled_like(parent.base(), offset, stride_scale));
+                (parent, local, target)
+            },
+        )
+    })
 }
 
 fn gen_restriction(
@@ -148,6 +204,19 @@ fn coord_at(index: usize, sizes: impl IntoIterator<Item = usize>) -> Option<Vec<
 
 fn rank_set(rect: &RankRect) -> BTreeSet<Rank> {
     rect.iter_ranks().collect()
+}
+
+fn visible_rank_set(space: &RankSpace) -> BTreeSet<Rank> {
+    space.iter_ranks().collect()
+}
+
+fn scaled_like(rect: &RankRect, offset: usize, stride_scale: usize) -> RankRect {
+    let strides = row_major_strides(rect.extent().sizes())
+        .into_iter()
+        .map(|stride| stride * stride_scale)
+        .collect();
+    RankRect::affine(rect.extent().clone(), Rank(offset), strides)
+        .expect("generated target parent is valid")
 }
 
 fn row_major_strides(sizes: impl IntoIterator<Item = usize>) -> Vec<usize> {
@@ -350,6 +419,32 @@ proptest! {
     }
 
     #[test]
+    fn rank_rect_project_embed_roundtrips(
+        (parent, local) in gen_embeddable_rect_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local rect is embeddable");
+        let projected = parent.project(&embedded).expect("embedded rect is projectable");
+
+        prop_assert_eq!(rank_set(&projected), rank_set(&local));
+        prop_assert_eq!(parent.embed(&projected), Ok(embedded));
+    }
+
+    #[test]
+    fn rank_rect_projected_pattern_embeds_in_moved_parent(
+        (parent, local, target) in gen_movable_rect_pattern(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local rect is embeddable");
+        let pattern = parent.project(&embedded).expect("embedded rect is projectable");
+        let moved = target.embed(&pattern).expect("pattern fits target parent");
+        let expected = pattern
+            .iter_ranks()
+            .map(|rank| target.rank_at(rank.get()).expect("pattern rank is in target"))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(rank_set(&moved), expected);
+    }
+
+    #[test]
     fn sparse_space_iterates_base_ranks_minus_occlusions(
         (space, occluded) in gen_sparse_space(1..=4, 8)
     ) {
@@ -405,5 +500,112 @@ proptest! {
         for rank in space.iter_ranks() {
             prop_assert_eq!(base.get_rank(rank), compact.get_rank(rank));
         }
+    }
+
+    #[test]
+    fn rank_space_intersects_matches_materialized_sets(
+        (left, _) in gen_sparse_space(0..=4, 4),
+        (right, _) in gen_sparse_space(0..=4, 4),
+    ) {
+        let left_ranks = visible_rank_set(&left);
+        let right_ranks = visible_rank_set(&right);
+        let expected = left_ranks.iter().any(|rank| right_ranks.contains(rank));
+
+        prop_assert_eq!(left.intersects(&right), expected);
+        prop_assert_eq!(left.intersects(&right), right.intersects(&left));
+    }
+
+    #[test]
+    fn rank_space_contains_space_matches_materialized_sets(
+        (outer, _) in gen_sparse_space(0..=4, 4),
+        (inner, _) in gen_sparse_space(0..=4, 4),
+    ) {
+        let outer_ranks = visible_rank_set(&outer);
+        let inner_ranks = visible_rank_set(&inner);
+
+        prop_assert_eq!(outer.contains_space(&inner), inner_ranks.is_subset(&outer_ranks));
+    }
+
+    #[test]
+    fn rank_space_bounds_match_materialized_visible_min_and_max(
+        space in gen_sparse_scaled_space(0..=4, 4),
+    ) {
+        let ranks = visible_rank_set(&space);
+
+        if ranks.is_empty() {
+            prop_assert_eq!(space.rank_bounds(), None);
+        } else {
+            let min = *ranks.iter().next().unwrap();
+            let max = *ranks.iter().next_back().unwrap();
+            let bounds = space.rank_bounds().expect("visible ranks are non-empty");
+
+            prop_assert_eq!(bounds.start(), min);
+            prop_assert_eq!(bounds.end(), max.get().checked_add(1).map(Rank));
+            for rank in ranks {
+                prop_assert!(bounds.start() <= rank);
+                prop_assert!(bounds.end().is_none_or(|end| rank < end));
+            }
+        }
+    }
+
+    #[test]
+    fn rank_space_embed_matches_materialized_parent_image(
+        (parent, local) in gen_embeddable_space_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local space is embeddable");
+        let expected = local
+            .iter_ranks()
+            .filter_map(|rank| parent.base().rank_at(rank.get()))
+            .filter(|rank| parent.contains_rank(*rank))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(visible_rank_set(&embedded), expected);
+    }
+
+    #[test]
+    fn rank_space_project_matches_materialized_parent_indices(
+        (parent, local) in gen_embeddable_space_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local space is embeddable");
+        let projected = parent.project(&embedded).expect("embedded space is projectable");
+        let expected = local
+            .base()
+            .iter_ranks()
+            .filter(|rank| local.contains_rank(*rank))
+            .filter(|rank| {
+                parent
+                    .base()
+                    .rank_at(rank.get())
+                    .is_some_and(|base_rank| parent.contains_rank(base_rank))
+            })
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(visible_rank_set(&projected), expected);
+    }
+
+    #[test]
+    fn rank_space_project_embed_roundtrips_visible_ranks(
+        (parent, local) in gen_embeddable_space_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local space is embeddable");
+        let projected = parent.project(&embedded).expect("embedded space is projectable");
+        let reembedded = parent.embed(&projected).expect("projected space is embeddable");
+
+        prop_assert_eq!(visible_rank_set(&reembedded), visible_rank_set(&embedded));
+    }
+
+    #[test]
+    fn rank_space_projected_pattern_embeds_in_moved_parent(
+        (parent, local, target) in gen_movable_space_pattern(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local space is embeddable");
+        let pattern = parent.project(&embedded).expect("embedded space is projectable");
+        let moved = target.embed(&pattern).expect("pattern fits target parent");
+        let expected = pattern
+            .iter_ranks()
+            .filter_map(|rank| target.base().rank_at(rank.get()))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(visible_rank_set(&moved), expected);
     }
 }
