@@ -127,29 +127,29 @@ See [Channel Addresses](../channels/addresses.md) and [Transmits and Receives](.
 
 ### The Service Proc and Local Proc
 
-The host creates two procs identified by `ProcId`:
+The host creates two procs, each with a `ProcAddr` combining a fresh instance identity and the frontend location:
 
 **Service Proc:**
 ```rust
-let service_proc_id = ProcId(
+let service_proc_id = ProcAddr::instance(
     frontend_addr.clone(),
-    "service".to_string()
+    "service",
 );
-let service_proc = Proc::configured(service_proc_id, router.boxed());
+let service_proc = Proc::configured(service_proc_id.clone(), router.boxed());
 ```
 
 **Local Proc:**
 ```rust
-let local_proc_id = ProcId(
+let local_proc_id = ProcAddr::instance(
     frontend_addr.clone(),
-    "local".to_string()
+    "local",
 );
-let local_proc = Proc::configured(local_proc_id, router.boxed());
+let local_proc = Proc::configured(local_proc_id.clone(), router.boxed());
 ```
 
 Both procs:
 - Live within the host process
-- Use `ProcId(frontend_addr, name)` as their identity
+- Use `ProcAddr::instance(frontend_addr, name)` as their identity — a fresh instance uid with `name` as display metadata and the frontend channel address as location
 - Forward outbound messages through the `DialMailboxRouter`
 - The service proc hosts system-level actors that manage proc lifecycle and coordination
 - The local proc hosts user-level actors
