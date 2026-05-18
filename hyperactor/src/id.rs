@@ -228,13 +228,8 @@ impl Uid {
         Uid::Instance(rand::random(), None)
     }
 
-    /// Create a fresh instance with a random uid.
-    pub fn instance() -> Self {
-        Self::anonymous()
-    }
-
     /// Create a fresh instance with a random uid and display label.
-    pub fn instance_labeled(label: Label) -> Self {
+    pub fn instance(label: Label) -> Self {
         Uid::Instance(rand::random(), Some(label))
     }
 
@@ -497,7 +492,7 @@ impl ProcId {
     /// Create an instance [`ProcId`] with a random uid and the given label.
     pub fn instance(label: Label) -> Self {
         Self {
-            uid: Uid::instance_labeled(label),
+            uid: Uid::instance(label),
         }
     }
 
@@ -635,15 +630,10 @@ impl ActorId {
         }
     }
 
-    /// Create an instance [`ActorId`] with a random uid and no label.
-    pub fn instance(proc_id: ProcId) -> Self {
-        Self::anonymous(proc_id)
-    }
-
     /// Create an instance [`ActorId`] with a random uid and the given label.
-    pub fn instance_labeled(label: Label, proc_id: ProcId) -> Self {
+    pub fn instance(label: Label, proc_id: ProcId) -> Self {
         Self {
-            uid: Uid::instance_labeled(label),
+            uid: Uid::instance(label),
             proc_id,
         }
     }
@@ -1393,7 +1383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_actor_id_instance() {
+    fn test_actor_id_anonymous() {
         let proc_id = ProcId::singleton(Label::new("my-proc").unwrap());
         let aid = ActorId::anonymous(proc_id.clone());
         assert!(aid.uid().is_instance());
@@ -1404,14 +1394,14 @@ mod tests {
     }
 
     #[test]
-    fn test_actor_id_instance_labeled() {
+    fn test_actor_id_instance() {
         let label = Label::new("my-actor").unwrap();
         let proc_id = ProcId::singleton(Label::new("my-proc").unwrap());
-        let aid = ActorId::instance_labeled(label.clone(), proc_id.clone());
+        let aid = ActorId::instance(label.clone(), proc_id.clone());
         assert!(aid.uid().is_instance());
         assert_eq!(aid.proc_id(), &proc_id);
         assert_eq!(aid.label(), Some(&label));
-        let aid2 = ActorId::instance_labeled(label, proc_id);
+        let aid2 = ActorId::instance(label, proc_id);
         assert_ne!(aid, aid2);
     }
 
