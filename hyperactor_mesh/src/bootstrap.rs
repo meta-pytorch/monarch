@@ -2465,7 +2465,7 @@ mod tests {
         proc.clone().serve(proc_rx);
         let proc_ref: ProcAddr = test_proc_id("client_0");
         router.bind(proc_ref, proc_addr.clone());
-        let (client, _handle) = proc.instance("client").unwrap();
+        let (client, _handle) = proc.client("client").unwrap();
 
         let (tap_tx, mut tap_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         test_tap::install(tap_tx);
@@ -2980,6 +2980,7 @@ mod tests {
     /// - `backend_addr`: a mailbox address served by the **parent
     ///   (host) proc** here; the spawned bootstrap process dials this
     ///   so its messages route via the host.
+    #[cfg(fbcode_build)]
     async fn make_proc_id_and_backend_addr(
         instance: &hyperactor::Instance<()>,
         _tag: &str,
@@ -3005,7 +3006,7 @@ mod tests {
         // Create a root direct-addressed proc + client instance.
         let root =
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
-        let (instance, _handle) = root.instance("client").unwrap();
+        let (instance, _handle) = root.client("client").unwrap();
 
         let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
         let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_term").await;
@@ -3072,7 +3073,7 @@ mod tests {
         // Root proc + client instance (so the child can dial back).
         let root =
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
-        let (instance, _handle) = root.instance("client").unwrap();
+        let (instance, _handle) = root.client("client").unwrap();
 
         let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
 
@@ -3126,7 +3127,7 @@ mod tests {
         // Create a local instance just to call the local bootstrap actor.
         // We should find a way to avoid this for local handles.
         let temp_proc = Proc::isolated();
-        let (temp_instance, _) = temp_proc.instance("temp").unwrap();
+        let (temp_instance, _) = temp_proc.client("temp").unwrap();
 
         let handle = host(
             ChannelAddr::any(ChannelTransport::Unix),
@@ -3169,6 +3170,7 @@ mod tests {
     }
 
     impl DummyLauncher {
+        #[allow(dead_code)]
         fn new(marker: u64) -> Self {
             Self { marker }
         }

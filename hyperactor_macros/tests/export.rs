@@ -147,7 +147,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_binds() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).unwrap();
         //  This will call binds
@@ -236,7 +236,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ref_alias() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).unwrap();
 
@@ -278,7 +278,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_generic_export() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let actor_handle = proc
             .spawn("generic", GenericActor::<u64>::new(tx.bind()))

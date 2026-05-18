@@ -22,7 +22,7 @@
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
 //! # let proc = Proc::isolated();
-//! # let (client, _) = proc.instance("client").unwrap();
+//! # let (client, _) = proc.client("client").unwrap();
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
 //! let mbox = Mailbox::new(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
@@ -42,7 +42,7 @@
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
 //! # let proc = Proc::isolated();
-//! # let (client, _) = proc.instance("client").unwrap();
+//! # let (client, _) = proc.client("client").unwrap();
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
 //! let mbox = Mailbox::new(actor_id);
 //!
@@ -290,7 +290,7 @@ impl MessageEnvelope {
     pub(crate) fn new_unknown(dest: impl Into<PortAddr>, data: wirevalue::Any) -> Self {
         // Create a synthetic "unknown" actor ID for messages with no known sender
         let unknown_addr = ChannelAddr::any(ChannelTransport::Local);
-        let unknown_proc_ref = ProcAddr::unique(unknown_addr, "unknown");
+        let unknown_proc_ref = ProcAddr::instance(unknown_addr, "unknown");
         let unknown_actor_ref =
             ActorAddr::root(unknown_proc_ref, crate::id::Label::strip("unknown"));
         Self::new(unknown_actor_ref, dest, data, Flattrs::new())
@@ -1064,7 +1064,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
             static NEXT_RANK: AtomicUsize = AtomicUsize::new(0);
             let rank = NEXT_RANK.fetch_add(1, Ordering::Relaxed);
             let addr = ChannelAddr::any(ChannelTransport::Local);
-            let proc_id = ProcAddr::unique(addr, format!("mailbox_server_{}", rank));
+            let proc_id = ProcAddr::instance(addr, format!("mailbox_server_{}", rank));
             // Use this mailbox server as the forwarder, so we can use it to
             // return message back to the sender.
             //
@@ -1077,7 +1077,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 ))
                 .build()
                 .expect("mailbox server proc builder is valid");
-            let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
+            let (client, _) = proc.client("undeliverable_supervisor").unwrap();
             while let Ok(undeliverable) = undeliverable_rx.recv().await {
                 match undeliverable {
                     Undeliverable::Message(mut envelope) => {
@@ -3452,7 +3452,7 @@ mod tests {
     #[tokio::test]
     async fn test_mailbox_accum() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (port, mut receiver) = client
             .mailbox()
             .open_accum_port(accum::join_semilattice::<accum::Max<i64>>());
@@ -3508,7 +3508,7 @@ mod tests {
     #[ignore] // error behavior changed, but we will bring it back
     async fn test_mailbox_once() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
 
         let (port, receiver) = client.open_once_port::<u64>();
 
@@ -3724,7 +3724,7 @@ mod tests {
         let (port, receiver) = mbox0.open_once_port::<u64>();
 
         let proc = Proc::configured(test_proc_id("0"), BoxedMailboxSender::new(muxer));
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
 
         port.send(&client, 123u64).unwrap();
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
@@ -3823,7 +3823,7 @@ mod tests {
         // The actor must be on unix:@4 so that after unbinding, the prefix
         // route for world1_1 (unix!@3) is the fallback, not world1_1/actor1 (unix!@4).
         let direct_actor_ref: ActorAddr =
-            ProcAddr::named("unix:@4".parse().unwrap(), "my_proc").actor_addr("my_actor");
+            ProcAddr::singleton("unix:@4".parse().unwrap(), "my_proc").actor_addr("my_actor");
         router.bind(
             Addr::Actor(direct_actor_ref.clone()),
             "unix:@5".parse().unwrap(),
@@ -3933,7 +3933,7 @@ mod tests {
     #[tokio::test]
     async fn test_enqueue_port() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
 
         let count = Arc::new(AtomicUsize::new(0));
         let count_clone = count.clone();
@@ -4010,7 +4010,7 @@ mod tests {
         let proc_id = test_proc_id("quux_0");
         let mut proc = Proc::configured(proc_id.clone(), proc_forwarder);
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
 
         let foo = proc.spawn("foo", Foo).unwrap();
         let return_handle = foo.port::<Undeliverable<MessageEnvelope>>();
@@ -4064,7 +4064,7 @@ mod tests {
             Flattrs::new(),
         );
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         return_handle
             .send(&client, Undeliverable::Message(envelope.clone()))
             .unwrap();
@@ -4257,8 +4257,8 @@ mod tests {
         reducer_mode: ReducerMode,
     ) -> Setup {
         let proc = Proc::isolated();
-        let (actor0, actor0_handle) = proc.instance("actor0").unwrap();
-        let (actor1, actor1_handle) = proc.instance("actor1").unwrap();
+        let (actor0, actor0_handle) = proc.client("actor0").unwrap();
+        let (actor1, actor1_handle) = proc.client("actor1").unwrap();
 
         // Open a port on actor0
         let (port_handle, receiver) = actor0.open_port::<u64>();
@@ -4388,7 +4388,7 @@ mod tests {
         let _config_guard =
             config.override_key(crate::config::SPLIT_MAX_BUFFER_AGE, Duration::from_mins(10));
         let proc = Proc::isolated();
-        let (actor, _actor_handle) = proc.instance("actor").unwrap();
+        let (actor, _actor_handle) = proc.client("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
         // Split it
@@ -4511,7 +4511,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_once_mode_basic() {
         let proc = Proc::isolated();
-        let (actor, _actor_handle) = proc.instance("actor").unwrap();
+        let (actor, _actor_handle) = proc.client("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
 
@@ -4539,7 +4539,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_once_mode_teardown() {
         let proc = Proc::isolated();
-        let (actor, _actor_handle) = proc.instance("actor").unwrap();
+        let (actor, _actor_handle) = proc.client("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
 
@@ -4810,7 +4810,7 @@ mod tests {
     #[tokio::test]
     async fn test_port_contramap() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (handle, mut rx) = client.open_port();
 
         handle
@@ -4951,7 +4951,7 @@ mod tests {
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
 
@@ -4976,7 +4976,7 @@ mod tests {
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
 
         mailbox.close(ActorStatus::Failed(ActorErrorKind::Generic(
             "test failure".to_string(),
@@ -4996,7 +4996,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_open_reduce_port() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
 
         // Open an accumulator port with sum reducer
         let (port_handle, receiver) = client.mailbox().open_reduce_port(accum::sum::<u64>());
@@ -5016,7 +5016,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_open_reduce_port_reducer_spec_preserved() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
 
         // Test that different accumulators produce different reducer_specs
         let (sum_handle, _) = client.mailbox().open_reduce_port(accum::sum::<u64>());

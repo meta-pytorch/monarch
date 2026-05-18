@@ -117,7 +117,7 @@ impl KeepaliveLink {
         self,
         this: &Instance<A>,
     ) -> anyhow::Result<(ActorHandle<KeepaliveSupervisor>, LinkSpec)> {
-        self.spawn_supervisor_uid(this, Uid::instance())
+        self.spawn_supervisor_uid(this, Uid::anonymous())
     }
 
     /// Spawn the supervisor side and return the worker-side link spec,
@@ -173,7 +173,7 @@ impl KeepaliveWorkerParams {
 
     /// Create a worker-side link spec for a keepalive worker actor with a fresh uid.
     pub fn link_spec(self) -> anyhow::Result<LinkSpec> {
-        self.link_spec_uid(Uid::instance())
+        self.link_spec_uid(Uid::anonymous())
     }
 
     /// Create a worker-side link spec for a keepalive worker actor with an explicit uid.
@@ -507,7 +507,7 @@ mod tests {
     #[tokio::test]
     async fn test_keepalive_supervisor_replies_to_keepalive() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.instance("parent").unwrap();
+        let (parent, _parent_handle) = proc.client("parent").unwrap();
         let supervisor = parent
             .spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
                 Duration::from_secs(60),
@@ -535,7 +535,7 @@ mod tests {
     #[tokio::test]
     async fn test_keepalive_supervisor_failure_propagates_to_parent() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.instance("client").unwrap();
+        let (client, _client_handle) = proc.client("client").unwrap();
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let supervisor =
             KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(Duration::from_millis(10)));
@@ -565,7 +565,7 @@ mod tests {
     #[tokio::test]
     async fn test_keepalive_worker_sends_keepalives() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.instance("parent").unwrap();
+        let (parent, _parent_handle) = proc.client("parent").unwrap();
         let supervisor = parent
             .spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
                 Duration::from_secs(60),
@@ -597,10 +597,10 @@ mod tests {
     #[tokio::test]
     async fn test_keepalive_worker_failure_propagates_to_parent() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.instance("client").unwrap();
+        let (client, _client_handle) = proc.client("client").unwrap();
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let supervisor = proc.spawn("silent_supervisor", SilentSupervisor).unwrap();
-        let uid = Uid::instance();
+        let uid = Uid::anonymous();
         let link = KeepaliveWorkerParams::new(
             supervisor.port::<Keepalive>().bind(),
             KeepaliveParams::new(Duration::from_millis(100), Duration::from_millis(10)),
@@ -635,7 +635,7 @@ mod tests {
     #[tokio::test]
     async fn test_keepalive_link_spawn_mints_shared_worker_spec() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.instance("parent").unwrap();
+        let (parent, _parent_handle) = proc.client("parent").unwrap();
 
         let (supervisor, worker_link) =
             KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))

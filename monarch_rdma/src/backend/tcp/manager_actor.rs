@@ -52,11 +52,11 @@ use tokio_util::sync::CancellationToken;
 use typeuri::Named;
 
 use super::TcpOp;
-use crate::RdmaLocalMemory;
 use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
+use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_manager_actor::GetTcpActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::rdma_manager_actor::RdmaManagerMessageClient;
@@ -87,7 +87,7 @@ wirevalue::register_type!(TcpDataChunk);
 #[derive(Debug)]
 struct TransferState {
     /// Buffer backing this transfer, provided at construction.
-    local_memory: Arc<dyn RdmaLocalMemory>,
+    local_memory: Arc<KeepaliveLocalMemory>,
 
     /// Number of chunks received so far.
     chunks_received: usize,
@@ -103,7 +103,7 @@ struct TransferState {
 impl TransferState {
     fn new(
         total_chunks: usize,
-        local_memory: Arc<dyn RdmaLocalMemory>,
+        local_memory: Arc<KeepaliveLocalMemory>,
         done: OncePortRef<Result<(), String>>,
     ) -> Self {
         Self {
@@ -143,7 +143,7 @@ struct TransferError {
 /// a remote TcpManagerActor.
 #[derive(Debug)]
 struct RegisterTransferLocal {
-    local_memory: Arc<dyn RdmaLocalMemory>,
+    local_memory: Arc<KeepaliveLocalMemory>,
     total_chunks: usize,
     done: OncePortRef<Result<(), String>>,
     // The transfer ID
@@ -155,7 +155,7 @@ struct RegisterTransferLocal {
 #[derive(Debug)]
 struct ExecuteTransferLocal {
     transfer_id: usize,
-    local_memory: Arc<dyn RdmaLocalMemory>,
+    local_memory: Arc<KeepaliveLocalMemory>,
     chunk_size: usize,
     dest_addr: ChannelAddr,
 }
@@ -248,7 +248,7 @@ impl TcpManagerActor {
 
     fn register_transfer(
         &mut self,
-        local_memory: Arc<dyn RdmaLocalMemory>,
+        local_memory: Arc<KeepaliveLocalMemory>,
         total_chunks: usize,
         done: OncePortRef<Result<(), String>>,
     ) -> usize {
@@ -265,7 +265,7 @@ impl TcpManagerActor {
         &mut self,
         cx: &Context<Self>,
         transfer_id: usize,
-        local_memory: Arc<dyn RdmaLocalMemory>,
+        local_memory: Arc<KeepaliveLocalMemory>,
         chunk_size: usize,
         dest_addr: ChannelAddr,
     ) -> Result<()> {
@@ -305,7 +305,7 @@ impl TcpManagerActor {
                     hyperactor_mesh::shortuuid::ShortUuid::generate()
                 );
                 let (instance, _handle) = proc
-                    .instance(&sender_name)
+                    .client(&sender_name)
                     .expect("failed to create sender instance");
 
                 loop {
@@ -321,7 +321,9 @@ impl TcpManagerActor {
                     let offset = idx * chunk_size;
                     let len = std::cmp::min(chunk_size, size - offset);
                     let mut buf = BytesMut::zeroed(len);
-                    if let Err(e) = mem.read_at(offset, &mut buf) {
+                    // SAFETY: the caller is responsible for ensuring that no other
+                    // component writes the target byte range concurrently.
+                    if let Err(e) = unsafe { mem.read_at(offset, &mut buf) } {
                         error_port
                             .send(
                                 &instance,
@@ -407,7 +409,7 @@ impl Actor for TcpManagerActor {
 
             tokio::spawn(async move {
                 let (instance, _handle) = proc
-                    .instance(&receiver_name.to_string())
+                    .client(&receiver_name.to_string())
                     .expect("failed to create receiver instance");
 
                 loop {
@@ -445,7 +447,9 @@ impl Actor for TcpManagerActor {
                     let mut write_offset = chunk.offset;
                     let fragments = chunk.data.into_inner();
                     let write_err = fragments.iter().find_map(|fragment| {
-                        let result = entry.local_memory.write_at(write_offset, fragment);
+                        // SAFETY: the caller is responsible for ensuring that no other
+                        // component reads or writes the target byte range concurrently.
+                        let result = unsafe { entry.local_memory.write_at(write_offset, fragment) };
                         write_offset += fragment.len();
                         result.err()
                     });
@@ -520,7 +524,11 @@ impl TcpManagerMessageHandler for TcpManagerActor {
         };
 
         let bytes = data.into_bytes();
-        if let Err(e) = mem.write_at(offset, &bytes) {
+        // SAFETY: the remote peer that issued this `WriteChunk` had to
+        // register the buffer locally first; its caller is responsible
+        // for ensuring no other component reads or writes the target byte
+        // range concurrently.
+        if let Err(e) = unsafe { mem.write_at(offset, &bytes) } {
             return Ok(Err(e.to_string()));
         }
 
@@ -542,7 +550,11 @@ impl TcpManagerMessageHandler for TcpManagerActor {
         };
 
         let mut buf = BytesMut::zeroed(size);
-        if let Err(e) = mem.read_at(offset, &mut buf) {
+        // SAFETY: the remote peer that issued this `ReadChunk` had to
+        // register the buffer locally first; its caller is responsible
+        // for ensuring no other component writes the target byte range
+        // concurrently.
+        if let Err(e) = unsafe { mem.read_at(offset, &mut buf) } {
             return Ok(Err(e.to_string()));
         }
         Ok(Ok(TcpChunk(Part::from(buf.freeze()))))
@@ -800,7 +812,10 @@ impl TcpBackend {
             let len = std::cmp::min(chunk_size, size - offset);
 
             let mut buf = vec![0u8; len];
-            op.local_memory.read_at(offset, &mut buf)?;
+            // SAFETY: `op.local_memory` is the caller's buffer; that
+            // caller is responsible for excluding external writers
+            // while the `write_from_local` operation is in flight.
+            unsafe { op.local_memory.read_at(offset, &mut buf) }?;
             let data = Part::from(Bytes::from(buf));
 
             tokio_timeout(
@@ -854,7 +869,11 @@ impl TcpBackend {
                 data.len()
             );
 
-            op.local_memory.write_at(offset, &data)?;
+            // SAFETY: `op.local_memory` is the caller's buffer; that
+            // caller is responsible for excluding external readers
+            // and writers while the `read_into_local` operation is in
+            // flight.
+            unsafe { op.local_memory.write_at(offset, &data) }?;
 
             offset += len;
         }
@@ -954,7 +973,6 @@ mod tests {
     use crate::RdmaOpType;
     use crate::backend::RdmaBackend;
     use crate::local_memory::KeepaliveLocalMemory;
-    use crate::local_memory::RdmaLocalMemory;
     use crate::rdma_manager_actor::GetTcpActorRefClient;
     use crate::rdma_manager_actor::RdmaManagerActor;
 
@@ -966,7 +984,7 @@ mod tests {
         instance: hyperactor::Instance<()>,
         tcp_backend: TcpBackend,
         rdma_remote_buf: crate::RdmaRemoteBuffer,
-        local_memory: Arc<dyn RdmaLocalMemory>,
+        local_memory: Arc<KeepaliveLocalMemory>,
     }
 
     impl Drop for TcpTestProcEnv {
@@ -994,7 +1012,7 @@ mod tests {
                 ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
                 format!("tcp_test_{id}"),
             )?;
-            let (instance, _) = proc.instance("client")?;
+            let (instance, _) = proc.client("client")?;
 
             let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
             let rdma_handle = proc.spawn("rdma_manager", rdma_actor)?;
@@ -1027,7 +1045,7 @@ mod tests {
             buffer_size: usize,
         ) -> anyhow::Result<Self> {
             let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let (instance, _) = proc.instance(&format!("client_{id}"))?;
+            let (instance, _) = proc.client(&format!("client_{id}"))?;
 
             let (local_memory, rdma_remote_buf) =
                 Self::alloc_cpu_buffer(&instance, rdma_handle, buffer_size).await?;
@@ -1046,10 +1064,10 @@ mod tests {
             instance: &hyperactor::Instance<()>,
             rdma_handle: &ActorHandle<RdmaManagerActor>,
             buffer_size: usize,
-        ) -> anyhow::Result<(Arc<dyn RdmaLocalMemory>, crate::RdmaRemoteBuffer)> {
+        ) -> anyhow::Result<(Arc<KeepaliveLocalMemory>, crate::RdmaRemoteBuffer)> {
             let cpu_buf = vec![0u8; buffer_size].into_boxed_slice();
             let ptr = cpu_buf.as_ptr() as usize;
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
+            let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
                 ptr,
                 buffer_size,
                 Arc::new(cpu_buf),
@@ -1098,6 +1116,24 @@ mod tests {
 
     // --- Shared test helpers ---
 
+    /// Test-only wrapper around [`KeepaliveLocalMemory::write_at`].
+    ///
+    /// Every [`TcpTestProcEnv`] owns a distinct CPU buffer that no
+    /// other thread accesses outside of explicit, serialized test
+    /// operations, so the safety obligation of `write_at` is trivially
+    /// satisfied across the whole module.
+    fn test_write(mem: &KeepaliveLocalMemory, offset: usize, src: &[u8]) -> anyhow::Result<()> {
+        // SAFETY: see the function-level comment.
+        unsafe { mem.write_at(offset, src) }
+    }
+
+    /// Test-only wrapper around [`KeepaliveLocalMemory::read_at`]. See
+    /// [`test_write`] for the safety rationale.
+    fn test_read(mem: &KeepaliveLocalMemory, offset: usize, dst: &mut [u8]) -> anyhow::Result<()> {
+        // SAFETY: see the function-level comment.
+        unsafe { mem.read_at(offset, dst) }
+    }
+
     /// Fill envs[0], write to envs[1], verify.
     async fn do_write_test(
         envs: &mut [TcpTestProcEnv],
@@ -1108,7 +1144,7 @@ mod tests {
         for (i, byte) in src.iter_mut().enumerate() {
             *byte = (i % 256) as u8;
         }
-        envs[0].local_memory.write_at(0, &src)?;
+        test_write(&envs[0].local_memory, 0, &src)?;
 
         let remote = envs[1].rdma_remote_buf.clone();
         let env = &mut envs[0];
@@ -1125,7 +1161,7 @@ mod tests {
             .await?;
 
         let mut dst = vec![0u8; buf_size];
-        envs[1].local_memory.read_at(0, &mut dst)?;
+        test_read(&envs[1].local_memory, 0, &mut dst)?;
         for (i, byte) in dst.iter().enumerate() {
             assert_eq!(*byte, (i % 256) as u8, "mismatch at offset {i} after write");
         }
@@ -1142,7 +1178,7 @@ mod tests {
         for (i, byte) in src.iter_mut().enumerate() {
             *byte = ((i * 7 + 3) % 256) as u8;
         }
-        envs[1].local_memory.write_at(0, &src)?;
+        test_write(&envs[1].local_memory, 0, &src)?;
 
         let remote = envs[1].rdma_remote_buf.clone();
         let env = &mut envs[0];
@@ -1159,7 +1195,7 @@ mod tests {
             .await?;
 
         let mut dst = vec![0u8; buf_size];
-        envs[0].local_memory.read_at(0, &mut dst)?;
+        test_read(&envs[0].local_memory, 0, &mut dst)?;
         for (i, byte) in dst.iter().enumerate() {
             assert_eq!(
                 *byte,
@@ -1180,7 +1216,7 @@ mod tests {
         for (i, byte) in src.iter_mut().enumerate() {
             *byte = ((i * 13 + 5) % 256) as u8;
         }
-        envs[0].local_memory.write_at(0, &src)?;
+        test_write(&envs[0].local_memory, 0, &src)?;
 
         let remote = envs[1].rdma_remote_buf.clone();
         let env = &mut envs[0];
@@ -1196,7 +1232,7 @@ mod tests {
             )
             .await?;
 
-        envs[0].local_memory.write_at(0, &vec![0u8; buf_size])?;
+        test_write(&envs[0].local_memory, 0, &vec![0u8; buf_size])?;
 
         let env = &mut envs[0];
         env.tcp_backend
@@ -1212,7 +1248,7 @@ mod tests {
             .await?;
 
         let mut dst = vec![0u8; buf_size];
-        envs[0].local_memory.read_at(0, &mut dst)?;
+        test_read(&envs[0].local_memory, 0, &mut dst)?;
         for (i, byte) in dst.iter().enumerate() {
             assert_eq!(
                 *byte,
@@ -1269,7 +1305,7 @@ mod tests {
         for (i, byte) in src.iter_mut().enumerate() {
             *byte = (i % 251) as u8;
         }
-        envs[0].local_memory.write_at(0, &src)?;
+        test_write(&envs[0].local_memory, 0, &src)?;
 
         let remote = envs[1].rdma_remote_buf.clone();
         let env = &mut envs[0];
@@ -1286,7 +1322,7 @@ mod tests {
             .await?;
 
         let mut dst = vec![0u8; buf_size];
-        envs[1].local_memory.read_at(0, &mut dst)?;
+        test_read(&envs[1].local_memory, 0, &mut dst)?;
         for (i, byte) in dst.iter().enumerate() {
             assert_eq!(*byte, (i % 251) as u8, "mismatch at offset {i}");
         }
@@ -1308,7 +1344,7 @@ mod tests {
         for (i, byte) in src.iter_mut().enumerate() {
             *byte = ((i * 3 + 17) % 256) as u8;
         }
-        envs[1].local_memory.write_at(0, &src)?;
+        test_write(&envs[1].local_memory, 0, &src)?;
 
         let remote = envs[1].rdma_remote_buf.clone();
         let env = &mut envs[0];
@@ -1325,7 +1361,7 @@ mod tests {
             .await?;
 
         let mut dst = vec![0u8; buf_size];
-        envs[0].local_memory.read_at(0, &mut dst)?;
+        test_read(&envs[0].local_memory, 0, &mut dst)?;
         for (i, byte) in dst.iter().enumerate() {
             assert_eq!(*byte, ((i * 3 + 17) % 256) as u8, "mismatch at offset {i}");
         }
@@ -1347,7 +1383,7 @@ mod tests {
         for (i, byte) in src.iter_mut().enumerate() {
             *byte = ((i * 41 + 7) % 256) as u8;
         }
-        envs[0].local_memory.write_at(0, &src)?;
+        test_write(&envs[0].local_memory, 0, &src)?;
 
         let remote = envs[1].rdma_remote_buf.clone();
         let env = &mut envs[0];
@@ -1363,7 +1399,7 @@ mod tests {
             )
             .await?;
 
-        envs[0].local_memory.write_at(0, &vec![0u8; buf_size])?;
+        test_write(&envs[0].local_memory, 0, &vec![0u8; buf_size])?;
 
         let env = &mut envs[0];
         env.tcp_backend
@@ -1379,7 +1415,7 @@ mod tests {
             .await?;
 
         let mut dst = vec![0u8; buf_size];
-        envs[0].local_memory.read_at(0, &mut dst)?;
+        test_read(&envs[0].local_memory, 0, &mut dst)?;
         for (i, byte) in dst.iter().enumerate() {
             assert_eq!(
                 *byte,
@@ -1422,7 +1458,7 @@ mod tests {
         for (i, byte) in src.iter_mut().enumerate() {
             *byte = (i % 256) as u8;
         }
-        envs[0].local_memory.write_at(0, &src)?;
+        test_write(&envs[0].local_memory, 0, &src)?;
 
         // Normal write should succeed.
         let remote = envs[1].rdma_remote_buf.clone();
@@ -1566,7 +1602,7 @@ mod tests {
                 ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
                 format!("tcp_gpu_test_{id}"),
             )?;
-            let (instance, _) = proc.instance("client")?;
+            let (instance, _) = proc.client("client")?;
 
             let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
             let rdma_handle = proc.spawn("rdma_manager", rdma_actor)?;
@@ -1579,7 +1615,7 @@ mod tests {
             );
 
             let alloc = CudaAllocator::get().allocate(device, buffer_size, buffer_size);
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
+            let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
                 alloc.ptr(),
                 buffer_size,
                 Arc::new(alloc),
@@ -1673,7 +1709,7 @@ mod tests {
         for (i, byte) in src.iter_mut().enumerate() {
             *byte = (i % 256) as u8;
         }
-        envs[0].local_memory.write_at(0, &src)?;
+        test_write(&envs[0].local_memory, 0, &src)?;
         let remote = envs[1].rdma_remote_buf.clone();
         let env = &mut envs[0];
         env.tcp_backend
@@ -1784,12 +1820,12 @@ mod tests {
         for (i, byte) in src0.iter_mut().enumerate() {
             *byte = (i % 256) as u8;
         }
-        envs[0].local_memory.write_at(0, &src0)?;
+        test_write(&envs[0].local_memory, 0, &src0)?;
         let mut src2 = vec![0u8; buf_size];
         for (i, byte) in src2.iter_mut().enumerate() {
             *byte = ((i * 3 + 7) % 256) as u8;
         }
-        envs[2].local_memory.write_at(0, &src2)?;
+        test_write(&envs[2].local_memory, 0, &src2)?;
 
         // Pair 1: envs[0] -> envs[1], Pair 2: envs[2] -> envs[3].
         let remote_1 = envs[1].rdma_remote_buf.clone();
@@ -1824,12 +1860,12 @@ mod tests {
         r2?;
 
         let mut dst1 = vec![0u8; buf_size];
-        envs[1].local_memory.read_at(0, &mut dst1)?;
+        test_read(&envs[1].local_memory, 0, &mut dst1)?;
         for (i, byte) in dst1.iter().enumerate() {
             assert_eq!(*byte, (i % 256) as u8, "pair 1 mismatch at offset {i}");
         }
         let mut dst3 = vec![0u8; buf_size];
-        envs[3].local_memory.read_at(0, &mut dst3)?;
+        test_read(&envs[3].local_memory, 0, &mut dst3)?;
         for (i, byte) in dst3.iter().enumerate() {
             assert_eq!(
                 *byte,
@@ -1857,12 +1893,12 @@ mod tests {
         for (i, byte) in src1.iter_mut().enumerate() {
             *byte = ((i * 11 + 3) % 256) as u8;
         }
-        envs[1].local_memory.write_at(0, &src1)?;
+        test_write(&envs[1].local_memory, 0, &src1)?;
         let mut src3 = vec![0u8; buf_size];
         for (i, byte) in src3.iter_mut().enumerate() {
             *byte = ((i * 5 + 13) % 256) as u8;
         }
-        envs[3].local_memory.write_at(0, &src3)?;
+        test_write(&envs[3].local_memory, 0, &src3)?;
 
         // Pair 1: envs[0] <- envs[1], Pair 2: envs[2] <- envs[3].
         let remote_1 = envs[1].rdma_remote_buf.clone();
@@ -1897,7 +1933,7 @@ mod tests {
         r2?;
 
         let mut dst0 = vec![0u8; buf_size];
-        envs[0].local_memory.read_at(0, &mut dst0)?;
+        test_read(&envs[0].local_memory, 0, &mut dst0)?;
         for (i, byte) in dst0.iter().enumerate() {
             assert_eq!(
                 *byte,
@@ -1906,7 +1942,7 @@ mod tests {
             );
         }
         let mut dst2 = vec![0u8; buf_size];
-        envs[2].local_memory.read_at(0, &mut dst2)?;
+        test_read(&envs[2].local_memory, 0, &mut dst2)?;
         for (i, byte) in dst2.iter().enumerate() {
             assert_eq!(
                 *byte,
@@ -1934,12 +1970,12 @@ mod tests {
         for (i, byte) in src0.iter_mut().enumerate() {
             *byte = (i % 256) as u8;
         }
-        envs[0].local_memory.write_at(0, &src0)?;
+        test_write(&envs[0].local_memory, 0, &src0)?;
         let mut src3 = vec![0u8; buf_size];
         for (i, byte) in src3.iter_mut().enumerate() {
             *byte = ((i * 7 + 13) % 256) as u8;
         }
-        envs[3].local_memory.write_at(0, &src3)?;
+        test_write(&envs[3].local_memory, 0, &src3)?;
 
         // Write envs[0] -> envs[1], read envs[2] <- envs[3] concurrently.
         let remote_1 = envs[1].rdma_remote_buf.clone();
@@ -1974,12 +2010,12 @@ mod tests {
         read_result?;
 
         let mut dst1 = vec![0u8; buf_size];
-        envs[1].local_memory.read_at(0, &mut dst1)?;
+        test_read(&envs[1].local_memory, 0, &mut dst1)?;
         for (i, byte) in dst1.iter().enumerate() {
             assert_eq!(*byte, (i % 256) as u8, "write mismatch at offset {i}");
         }
         let mut dst2 = vec![0u8; buf_size];
-        envs[2].local_memory.read_at(0, &mut dst2)?;
+        test_read(&envs[2].local_memory, 0, &mut dst2)?;
         for (i, byte) in dst2.iter().enumerate() {
             assert_eq!(
                 *byte,

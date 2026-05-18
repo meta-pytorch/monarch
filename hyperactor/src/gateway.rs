@@ -452,13 +452,13 @@ mod tests {
             .build()
             .unwrap();
 
-        let (alpha_client, _) = alpha.instance("client").unwrap();
+        let (alpha_client, _) = alpha.client("client").unwrap();
         let (alpha_port, mut alpha_rx) = alpha_client.bind_handler_port::<u64>();
         let PortLocation::Bound(alpha_dest) = alpha_port.location() else {
             panic!("alpha handler port must be bound");
         };
 
-        let (beta_client, _) = beta.instance("client").unwrap();
+        let (beta_client, _) = beta.client("client").unwrap();
         let (beta_port, mut beta_rx) = beta_client.bind_handler_port::<u64>();
         let PortLocation::Bound(beta_dest) = beta_port.location() else {
             panic!("beta handler port must be bound");
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(received, 222);
         assert_eq!(forwarded.load(Ordering::SeqCst), 0);
 
-        let stranger_proc = ProcAddr::unique(ChannelAddr::Local(9999), "stranger");
+        let stranger_proc = ProcAddr::instance(ChannelAddr::Local(9999), "stranger");
         let stranger_dest = stranger_proc
             .actor_addr("ghost")
             .port_addr(Port::from(0u64));
@@ -532,7 +532,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let (client, _) = alpha.instance("client").unwrap();
+        let (client, _) = alpha.client("client").unwrap();
         let (undeliverable_msg_tx, mut undeliverable_rx) =
             client.open_port::<Undeliverable<MessageEnvelope>>();
 
@@ -753,14 +753,14 @@ mod tests {
 
         // Scratch proc just to host the return port.
         let scratch = Proc::isolated();
-        let (scratch_client, _) = scratch.instance("return").unwrap();
+        let (scratch_client, _) = scratch.client("return").unwrap();
         let (return_handle, mut return_rx) =
             scratch_client.open_port::<Undeliverable<MessageEnvelope>>();
 
         // Fabricate a destination — its contents don't matter; the
         // bounce happens at WeakGateway::upgrade before any demux
         // would run.
-        let dest_proc = ProcAddr::unique(ChannelAddr::Local(1234), "stranger");
+        let dest_proc = ProcAddr::instance(ChannelAddr::Local(1234), "stranger");
         let dest = dest_proc.actor_addr("ghost").port_addr(Port::from(0u64));
         let envelope = MessageEnvelope::serialize(
             test_actor_id("test", "sender"),
@@ -830,7 +830,7 @@ mod tests {
         assert_eq!(gateway.inner.procs.read().unwrap().len(), 1);
 
         // Verify the new proc is reachable via the gateway.
-        let (client, _) = second.instance("client").unwrap();
+        let (client, _) = second.client("client").unwrap();
         let (port, mut rx) = client.bind_handler_port::<u64>();
         let dest = port.bind().port_addr().clone();
 
