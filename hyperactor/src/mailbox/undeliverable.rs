@@ -66,6 +66,7 @@ use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
+use crate::mailbox::UndeliverableMailboxSender;
 use crate::mailbox::headers::OPERATION_ADVERB;
 use crate::mailbox::headers::OPERATION_ENDPOINT;
 use crate::mailbox::headers::RUST_MESSAGE_TYPE;
@@ -225,7 +226,13 @@ pub(crate) fn return_undeliverable(
         let client = &CLIENT
             .get_or_init(|| Proc::runtime().instance("global_return_client").unwrap())
             .0;
-        crate::Endpoint::send(&return_handle, client, Undeliverable::message(envelope));
+        let envelope_copy = envelope.clone();
+        if return_handle
+            .try_send(client, Undeliverable::message(envelope))
+            .is_err()
+        {
+            UndeliverableMailboxSender.post(envelope_copy, /*unused*/ return_handle)
+        }
     }
 }
 

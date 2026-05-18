@@ -657,7 +657,7 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///     );
 ///
 ///     let _ = proc
-///         .destroy_and_wait::<()>(Duration::from_secs(1), None)
+///         .destroy_and_wait(Duration::from_secs(1), "example cleanup")
 ///         .await?;
 ///     Ok(())
 /// }

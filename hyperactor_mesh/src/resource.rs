@@ -475,7 +475,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            expires_after: self.expires_after.clone(),
+            expires_after: self.expires_after,
             get_state: self.get_state.clone(),
         }
     }

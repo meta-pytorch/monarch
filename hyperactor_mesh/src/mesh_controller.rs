@@ -312,11 +312,9 @@ fn send_state_change(
     // Don't send a message to the owner for non-failure events such as "stopped".
     // Those events are always initiated by the owner, who don't need to be
     // told that they were stopped.
-    if is_failed {
-        if let Some(owner) = &health_state.owner {
-            owner.send(cx, failure_message.clone());
-            tracing::info!(actor_mesh = %mesh_name, %event, "sent supervision failure message to owner {}", owner.port_addr());
-        }
+    if is_failed && let Some(owner) = &health_state.owner {
+        owner.send(cx, failure_message.clone());
+        tracing::info!(actor_mesh = %mesh_name, %event, "sent supervision failure message to owner {}", owner.port_addr());
     }
     // Subscribers get all messages, even for non-failures like Stopped, because
     // they need to know if the owner stopped the mesh.

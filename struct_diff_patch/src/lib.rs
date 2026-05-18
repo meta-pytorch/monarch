@@ -456,8 +456,8 @@ mod tests {
         assert_eq!(tuple_value, DerivedTuple("baz".into(), false));
 
         let mut unit = DerivedUnit;
-        let unit_patch = unit.diff(&DerivedUnit);
-        unit_patch.apply(&mut unit).unwrap();
+        unit.diff(&DerivedUnit);
+        ().apply(&mut unit).unwrap();
     }
 
     #[test]
