@@ -305,11 +305,6 @@ impl ActorAddr {
         Self::new(child_id, self.location.clone())
     }
 
-    /// Create an ActorAddr for a child actor with a random uid.
-    pub fn unique_child(&self) -> Self {
-        self.anonymous_child()
-    }
-
     /// Whether this is a root actor (singleton uid).
     pub fn is_root(&self) -> bool {
         self.id.uid().is_singleton()
