@@ -763,11 +763,11 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     // Create separate host meshes for each device to maintain different configs
     let host_mesh_1 = HostMeshRef::from_hosts(
-        HostMeshId::unique(Label::new("cuda-ping-pong-host1").unwrap()),
+        HostMeshId::instance(Label::new("cuda-ping-pong-host1").unwrap()),
         vec![host_addrs[0].clone()],
     );
     let host_mesh_2 = HostMeshRef::from_hosts(
-        HostMeshId::unique(Label::new("cuda-ping-pong-host2").unwrap()),
+        HostMeshId::instance(Label::new("cuda-ping-pong-host2").unwrap()),
         vec![host_addrs[1].clone()],
     );
 
