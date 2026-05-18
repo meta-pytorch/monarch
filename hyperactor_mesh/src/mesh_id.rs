@@ -101,9 +101,14 @@ impl ResourceId {
         Self(Uid::Singleton(label))
     }
 
+    /// Create an instance [`ResourceId`] with a random uid and the given label.
+    pub fn instance(label: Label) -> Self {
+        Self(Uid::instance_labeled(label))
+    }
+
     /// Create a unique [`ResourceId`] with a random uid and the given label.
     pub fn unique(label: Label) -> Self {
-        Self(Uid::instance_labeled(label))
+        Self::instance(label)
     }
 
     /// Create a resource id from a resource-name string.
@@ -321,9 +326,14 @@ macro_rules! define_mesh_id {
                 Self(ResourceId::singleton(label))
             }
 
+            /// Create an instance mesh id with a random uid and the given label.
+            pub fn instance(label: Label) -> Self {
+                Self(ResourceId::instance(label))
+            }
+
             /// Create a unique mesh id with a random uid and the given label.
             pub fn unique(label: Label) -> Self {
-                Self(ResourceId::unique(label))
+                Self::instance(label)
             }
 
             /// Returns the uid.
