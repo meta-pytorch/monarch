@@ -329,7 +329,7 @@ mod tests {
         assert!(structurally_equal(&actual, &expected));
     }
 
-    #[cfg(FALSE)]
+    #[cfg(false)]
     #[test]
     fn shouldnt_compile() {
         let _ = sel!(foobar);
