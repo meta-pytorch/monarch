@@ -746,10 +746,10 @@ fn mount_chunked_fuse(
             // Check /proc/mounts directly (authoritative source).
             if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
                 for line in mounts.lines() {
-                    if let Some(mp) = line.split_whitespace().nth(1) {
-                        if mp == mount_point {
-                            return Ok(());
-                        }
+                    if let Some(mp) = line.split_whitespace().nth(1)
+                        && mp == mount_point
+                    {
+                        return Ok(());
                     }
                 }
             }

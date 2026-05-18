@@ -315,6 +315,10 @@ pub enum LogMessage {
     HandleClient,
     RefClient
 )]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "actor message enum with Handler/HandleClient/RefClient derives; boxing fields ripples into client/handler call sites and may require derive-macro changes — separate diff"
+)]
 pub enum LogClientMessage {
     SetAggregate {
         /// The time window in seconds to aggregate logs. If None, aggregation is disabled.
@@ -1987,7 +1991,7 @@ mod tests {
 
         // Test that result is always between 0.0 and 1.0
         let distance = normalized_edit_distance("completely", "different");
-        assert!(distance >= 0.0 && distance <= 1.0);
+        assert!((0.0..=1.0).contains(&distance));
     }
 
     #[tokio::test]
