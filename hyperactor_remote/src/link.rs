@@ -170,7 +170,7 @@ mod tests {
     async fn test_link_spec_spawns_supervised_child() {
         let proc = Proc::isolated();
         let (parent, _parent_handle) = proc.client("parent").unwrap();
-        let uid = Uid::instance_labeled(Label::new("link").unwrap());
+        let uid = Uid::instance(Label::new("link").unwrap());
 
         let link = LinkSpec::for_actor_uid::<TestLinkActor>(
             uid.clone(),
@@ -191,7 +191,7 @@ mod tests {
         let proc = Proc::isolated();
         let (client, _client_handle) = proc.client("client").unwrap();
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
-        let uid = Uid::instance_labeled(Label::new("link").unwrap());
+        let uid = Uid::instance(Label::new("link").unwrap());
         let link = LinkSpec::for_actor_uid::<TestLinkActor>(
             uid.clone(),
             bincode::serde::encode_to_vec((), bincode::config::legacy()).unwrap(),

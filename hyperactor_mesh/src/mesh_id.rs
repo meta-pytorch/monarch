@@ -103,7 +103,7 @@ impl ResourceId {
 
     /// Create an instance [`ResourceId`] with a random uid and the given label.
     pub fn instance(label: Label) -> Self {
-        Self(Uid::instance_labeled(label))
+        Self(Uid::instance(label))
     }
 
     /// Create a unique [`ResourceId`] with a random uid and the given label.

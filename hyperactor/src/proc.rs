@@ -1542,7 +1542,7 @@ impl Proc {
     ) -> Result<ActorAddr, anyhow::Error> {
         assert_eq!(parent_id.proc_id(), self.proc_id());
         let proc_id = self.proc_id().clone();
-        let actor_id = crate::id::ActorId::instance_labeled(crate::id::Label::strip(name), proc_id);
+        let actor_id = crate::id::ActorId::instance(crate::id::Label::strip(name), proc_id);
         Ok(ActorAddr::new(actor_id, self.default_location()))
     }
 
