@@ -1217,12 +1217,12 @@ impl HostMeshRef {
                 "per_host dims overlap with existing dims when spawning proc mesh"
             )));
         }
-        if let Some(proc_bind) = proc_bind.as_ref() {
-            if proc_bind.len() != per_host.num_ranks() {
-                return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
-                    "proc_bind length does not match per_host extent"
-                )));
-            }
+        if let Some(proc_bind) = proc_bind.as_ref()
+            && proc_bind.len() != per_host.num_ranks()
+        {
+            return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
+                "proc_bind length does not match per_host extent"
+            )));
         }
 
         let extent = self

@@ -443,7 +443,7 @@ impl<'a> ExtentPointsIterator<'a> {
     }
 }
 
-impl<'a> Iterator for ExtentPointsIterator<'a> {
+impl Iterator for ExtentPointsIterator<'_> {
     type Item = Point;
 
     /// Advances the iterator and returns the next [`Point`] in
@@ -577,7 +577,7 @@ pub struct CoordIter<'a> {
     axis: usize,
 }
 
-impl<'a> Iterator for CoordIter<'a> {
+impl Iterator for CoordIter<'_> {
     type Item = usize;
 
     /// Computes and returns the coordinate for the current axis, then
@@ -1791,10 +1791,10 @@ pub trait ViewExt: View {
     fn extent(&self) -> Extent;
 
     /// Iterate over all points in this region.
-    fn iter<'a>(&'a self) -> impl Iterator<Item = (Point, Self::Item)> + 'a;
+    fn iter(&self) -> impl Iterator<Item = (Point, Self::Item)> + '_;
 
     /// Iterate over the values in the region.
-    fn values<'a>(&'a self) -> impl Iterator<Item = Self::Item> + 'a;
+    fn values(&self) -> impl Iterator<Item = Self::Item> + '_;
 }
 
 impl<T: View> ViewExt for T {

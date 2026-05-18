@@ -388,8 +388,7 @@ impl DatabaseScanner {
 
         // Build destination PortRef once
         let dest_port_id: reference::PortAddr = dest.clone().into();
-        let dest_ref: reference::PortRef<QueryResponse> =
-            reference::PortRef::attest(dest_port_id.into());
+        let dest_ref: reference::PortRef<QueryResponse> = reference::PortRef::attest(dest_port_id);
 
         // Execute scan, streaming batches directly to destination
         self.execute_scan_streaming(
