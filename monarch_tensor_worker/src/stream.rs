@@ -1984,7 +1984,7 @@ mod tests {
             let proc = Proc::isolated();
             let (_, controller_actor, controller_rx) =
                 proc.attach_actor::<ControllerActor, ControllerMessage>("controller")?;
-            let (client, _handle) = proc.instance("client")?;
+            let (client, _handle) = proc.client("client")?;
             let (supervision_tx, supervision_rx) = client.open_port();
             proc.set_supervision_coordinator(supervision_tx)?;
             let stream_actor = proc.spawn(
