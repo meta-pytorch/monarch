@@ -1577,11 +1577,7 @@ async fn handle_async_endpoint_panic(
         ENDPOINT_ACTOR_ERROR.add(1, attributes);
         static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
         let client = &CLIENT
-            .get_or_init(|| {
-                get_proc_runtime()
-                    .instance("async_endpoint_handler")
-                    .unwrap()
-            })
+            .get_or_init(|| get_proc_runtime().client("async_endpoint_handler").unwrap())
             .0;
         panic_sender
             .send(&client, Signal::Kill(panic.to_string()))
