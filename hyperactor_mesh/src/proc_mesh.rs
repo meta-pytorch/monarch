@@ -629,7 +629,7 @@ impl ProcMeshRef {
         C::A: Handler<MeshFailure>,
     {
         // Spawning from a string is never a system actor.
-        let id = ActorMeshId::unique(Label::strip(name));
+        let id = ActorMeshId::instance(Label::strip(name));
         self.spawn_with_name(cx, id, params, None, false).await
     }
 
@@ -1192,7 +1192,7 @@ mod tests {
 
         let (instance, _) = cx
             .proc()
-            .instance(&format!("random_casts_{}", Uuid::now_v7()))
+            .client(&format!("random_casts_{}", Uuid::now_v7()))
             .unwrap();
         let n = 1;
         for _ in 0..n {
