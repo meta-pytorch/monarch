@@ -223,9 +223,14 @@ pub enum UidParseError {
 }
 
 impl Uid {
+    /// Create a fresh instance with a random uid and no display label.
+    pub fn anonymous() -> Self {
+        Uid::Instance(rand::random(), None)
+    }
+
     /// Create a fresh instance with a random uid.
     pub fn instance() -> Self {
-        Uid::Instance(rand::random(), None)
+        Self::anonymous()
     }
 
     /// Create a fresh instance with a random uid and display label.
@@ -622,12 +627,17 @@ impl ActorId {
         }
     }
 
-    /// Create an instance [`ActorId`] with a random uid and no label.
-    pub fn instance(proc_id: ProcId) -> Self {
+    /// Create an anonymous instance [`ActorId`] with a random uid.
+    pub fn anonymous(proc_id: ProcId) -> Self {
         Self {
-            uid: Uid::instance(),
+            uid: Uid::anonymous(),
             proc_id,
         }
+    }
+
+    /// Create an instance [`ActorId`] with a random uid and no label.
+    pub fn instance(proc_id: ProcId) -> Self {
+        Self::anonymous(proc_id)
     }
 
     /// Create an instance [`ActorId`] with a random uid and the given label.

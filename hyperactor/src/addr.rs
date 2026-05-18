@@ -300,9 +300,14 @@ impl ActorAddr {
     }
 
     /// Create an ActorAddr for a child actor with a random uid.
-    pub fn unique_child(&self) -> Self {
-        let child_id = id::ActorId::instance(self.id.proc_id().clone());
+    pub fn anonymous_child(&self) -> Self {
+        let child_id = id::ActorId::anonymous(self.id.proc_id().clone());
         Self::new(child_id, self.location.clone())
+    }
+
+    /// Create an ActorAddr for a child actor with a random uid.
+    pub fn unique_child(&self) -> Self {
+        self.anonymous_child()
     }
 
     /// Whether this is a root actor (singleton uid).
