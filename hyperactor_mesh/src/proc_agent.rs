@@ -1148,7 +1148,7 @@ impl Handler<NewClientInstance> for ProcAgent {
         cx: &Context<Self>,
         NewClientInstance { client_instance }: NewClientInstance,
     ) -> anyhow::Result<()> {
-        let (instance, _handle) = self.proc.instance("client")?;
+        let (instance, _handle) = self.proc.client("client")?;
         client_instance.post(cx, instance);
         Ok(())
     }
@@ -1272,7 +1272,7 @@ mod tests {
 
         // Client instance for opening reply ports.
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
@@ -1377,7 +1377,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
@@ -1385,7 +1385,7 @@ mod tests {
         // Concurrent query task: send QueryChild(Proc) every 10ms.
         let query_client_proc =
             Proc::direct(ChannelTransport::Unix.any(), "query_client".to_string()).unwrap();
-        let (query_client, _qc_handle) = query_client_proc.instance("qc").unwrap();
+        let (query_client, _qc_handle) = query_client_proc.client("qc").unwrap();
         let query_port = port.clone();
         let query_proc_id = proc.proc_addr().clone();
         let query_count = Arc::new(AtomicUsize::new(0));
@@ -1489,7 +1489,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (client, _client_handle) = proc.instance("client").unwrap();
+        let (client, _client_handle) = proc.client("client").unwrap();
         let agent_ref: ActorRef<ProcAgent> = agent_handle.bind();
 
         let actor_type = hyperactor::actor::remote::Remote::collect()
@@ -1674,7 +1674,7 @@ mod tests {
 
         let client_proc =
             Proc::direct(ChannelTransport::Unix.any(), "qd_client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         // Spawn a blocking actor with a shared gate.
         let gate = Arc::new(tokio::sync::Notify::new());

@@ -82,7 +82,7 @@ pub struct Supervisor {
 impl Supervisor {
     /// Create a supervisor proxy for `worker`.
     pub fn new(worker: ActorRef<WorkerLike>, link: KeepaliveLink, options: LinkOptions) -> Self {
-        Self::new_uid(worker, link, options, hyperactor::Uid::instance())
+        Self::new_uid(worker, link, options, hyperactor::Uid::anonymous())
     }
 
     /// Create a supervisor proxy with an explicit session id.
@@ -820,8 +820,8 @@ mod tests {
     #[tokio::test]
     async fn test_child_failure_propagates_to_parent() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.instance("client").unwrap();
-        let session_id = Uid::instance();
+        let (client, _client_handle) = proc.client("client").unwrap();
+        let session_id = Uid::anonymous();
 
         let (child_addr, worker, parent, _stopped_rx, mut event_rx) = spawn_supervised_pair(
             &proc,
@@ -867,8 +867,8 @@ mod tests {
     #[tokio::test]
     async fn test_parent_stop_stops_remote_child_before_parent_finishes() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.instance("client").unwrap();
-        let session_id = Uid::instance();
+        let (client, _client_handle) = proc.client("client").unwrap();
+        let session_id = Uid::anonymous();
 
         let (_child_addr, worker, parent, mut stopped_rx, _event_rx) = spawn_supervised_pair(
             &proc,
@@ -913,7 +913,7 @@ mod tests {
     #[tokio::test]
     async fn test_worker_undeliverable_supervisor_session_stops_child() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.instance("client").unwrap();
+        let (client, _client_handle) = proc.client("client").unwrap();
         let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
         let (stopped, mut stopped_rx) = client.open_port::<String>();
         let (supervisor, mut supervisor_rx) = client.open_port::<WorkerSupervisor>();
@@ -926,7 +926,7 @@ mod tests {
                 .spawn_supervisor(&client)
                 .unwrap();
         let _child_addr = ready_rx.recv().await.unwrap();
-        let session_id = hyperactor::Uid::instance();
+        let session_id = hyperactor::Uid::anonymous();
 
         worker.post(
             &client,
@@ -995,7 +995,7 @@ mod tests {
     #[tokio::test]
     async fn test_parent_kill_stops_remote_child() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.instance("client").unwrap();
+        let (client, _client_handle) = proc.client("client").unwrap();
         let (ready, mut ready_rx) = client.open_port::<ActorAddr>();
         let (stopped, mut stopped_rx) = client.open_port::<String>();
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
@@ -1071,7 +1071,7 @@ mod tests {
     #[tokio::test]
     async fn test_detach_orphan_policy_leaves_child_running_on_supervisor_loss() {
         let proc = Proc::isolated();
-        let (inst, _client_handle) = proc.instance("inst").unwrap();
+        let (inst, _client_handle) = proc.client("inst").unwrap();
         let (ready, mut ready_rx) = inst.open_port::<ActorAddr>();
         let (stopped, mut stopped_rx) = inst.open_port::<String>();
         let (supervisor, mut supervisor_rx) = inst.open_port::<WorkerSupervisor>();
@@ -1084,7 +1084,7 @@ mod tests {
                 .spawn_supervisor(&inst)
                 .unwrap();
         let _child_addr = ready_rx.recv().await.unwrap();
-        let session_id = hyperactor::Uid::instance();
+        let session_id = hyperactor::Uid::anonymous();
 
         worker.post(
             &inst,
@@ -1173,8 +1173,8 @@ mod tests {
     #[tokio::test]
     async fn test_supervised_worker_unlink_stops_child_under_stop_policy() {
         let proc = Proc::isolated();
-        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
-        let session_id = Uid::instance();
+        let (inst, _inst_hndl) = proc.client("inst").unwrap();
+        let session_id = Uid::anonymous();
 
         let (_child_addr, worker, parent, mut stopped_rx, mut events_rx) = spawn_supervised_pair(
             &proc,
@@ -1256,8 +1256,8 @@ mod tests {
     #[tokio::test]
     async fn test_supervised_worker_unlink_leaves_child_running_under_detach_policy() {
         let proc = Proc::isolated();
-        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
-        let session_id = Uid::instance();
+        let (inst, _inst_hndl) = proc.client("inst").unwrap();
+        let session_id = Uid::anonymous();
 
         let (_child_addr, worker, parent, mut stopped_rx, mut events_rx) = spawn_supervised_pair(
             &proc,
@@ -1353,8 +1353,8 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_link_rejects_second_supervisor() {
         let proc = Proc::isolated();
-        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
-        let session_id1 = Uid::instance();
+        let (inst, _inst_hndl) = proc.client("inst").unwrap();
+        let session_id1 = Uid::anonymous();
         let (_child_addr, worker, parent1, _stopped_rx, mut events_rx1) = spawn_supervised_pair(
             &proc,
             &inst,
@@ -1372,7 +1372,7 @@ mod tests {
         // Spawn a second parent whose Supervisor targets the same
         // worker with a different session id. Its Link will be
         // rejected.
-        let session_id2 = Uid::instance();
+        let session_id2 = Uid::anonymous();
         let (events2, mut events_rx2) = inst.open_port::<ActorSupervisionEvent>();
         let parent2 = proc
             .spawn(
@@ -1459,7 +1459,7 @@ mod tests {
     #[tokio::test]
     async fn test_stop_before_linked_propagates_via_pending_stop() {
         let proc = Proc::isolated();
-        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
+        let (inst, _inst_hndl) = proc.client("inst").unwrap();
         let (link_started, mut link_started_rx) = inst.open_port::<()>();
         let (received_stop, mut received_stop_rx) = inst.open_port::<String>();
         let (events, _events_rx) = inst.open_port::<ActorSupervisionEvent>();
@@ -1475,7 +1475,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let session_id = Uid::instance();
+        let session_id = Uid::anonymous();
         let parent = proc
             .spawn(
                 "parent",
@@ -1542,7 +1542,7 @@ mod tests {
     #[tokio::test]
     async fn test_drain_and_stop_propagates_through_worker_after_child_work() {
         let proc = Proc::isolated();
-        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
+        let (inst, _inst_hndl) = proc.client("inst").unwrap();
         let (ready, mut ready_rx) = inst.open_port::<ActorAddr>();
         let (stopped, mut stopped_rx) = inst.open_port::<String>();
         let (drained, mut drained_rx) = inst.open_port::<String>();
@@ -1564,7 +1564,7 @@ mod tests {
             )
             .unwrap();
         let _child_addr = ready_rx.recv().await.unwrap();
-        let session_id = Uid::instance();
+        let session_id = Uid::anonymous();
         let parent = proc
             .spawn(
                 "parent",
@@ -1637,8 +1637,8 @@ mod tests {
     #[tokio::test]
     async fn test_worker_accepts_relink_after_unlink_under_detach_policy() {
         let proc = Proc::isolated();
-        let (inst, _inst_hndl) = proc.instance("inst").unwrap();
-        let session_id1 = Uid::instance();
+        let (inst, _inst_hndl) = proc.client("inst").unwrap();
+        let session_id1 = Uid::anonymous();
         let (_child_addr, worker, parent1, mut stopped_rx, mut events_rx1) = spawn_supervised_pair(
             &proc,
             &inst,
@@ -1678,7 +1678,7 @@ mod tests {
             "child should survive unlink under OrphanPolicy::Detach"
         );
 
-        let session_id2 = Uid::instance();
+        let session_id2 = Uid::anonymous();
         let (events2, mut events_rx2) = inst.open_port::<ActorSupervisionEvent>();
         let parent2 = proc
             .spawn(

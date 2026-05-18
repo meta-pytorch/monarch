@@ -1694,7 +1694,7 @@ mod tests {
 
     impl Harness {
         fn build(qp: QpGuard, response: MockResponse) -> Result<Self> {
-            let proc = Proc::new();
+            let proc = Proc::anonymous();
             let state = Arc::new(Mutex::new(MockState::default()));
             let mock = MockManager {
                 state: state.clone(),
@@ -1796,7 +1796,7 @@ mod tests {
         };
         let harness = Harness::build(qp, MockResponse::Success(info))?;
 
-        let (peer, _) = harness.proc.instance("peer")?;
+        let (peer, _) = harness.proc.client("peer")?;
         harness.init_handle.post(&peer, NotifyRts);
 
         let key = harness.await_done().await;
@@ -1862,7 +1862,7 @@ mod tests {
     async fn test_undeliverable_in_awaiting_transitions_to_failed() {
         let harness = Harness::build(QpGuard::new(fake_qp()), MockResponse::DropReply).unwrap();
         let undeliverable = fake_undeliverable(&harness.proc, "simulated bounce");
-        let (peer, _) = harness.proc.instance("peer").unwrap();
+        let (peer, _) = harness.proc.client("peer").unwrap();
         harness.init_handle.post(&peer, undeliverable);
         let (key, error) = harness.await_failed().await;
         assert_eq!(key, harness.qp_key);
@@ -1904,7 +1904,7 @@ mod tests {
         let _ = harness.await_failed().await;
 
         let undeliverable = fake_undeliverable(&harness.proc, "late bounce");
-        let (peer, _) = harness.proc.instance("peer").unwrap();
+        let (peer, _) = harness.proc.client("peer").unwrap();
         harness.init_handle.post(&peer, undeliverable);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(harness.state.lock().unwrap().failed.len(), 1);

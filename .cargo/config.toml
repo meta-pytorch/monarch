@@ -50,4 +50,5 @@ rustflags = [
     "-Amismatched_lifetime_syntaxes",
     "-Asuspicious_double_ref_op",
     "-Aunused_braces",
+    "-Astable_features"
 ]
