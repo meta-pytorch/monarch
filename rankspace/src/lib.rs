@@ -540,9 +540,61 @@ pub enum RankSpaceError {
     #[error("rank arithmetic overflow")]
     RankArithmeticOverflow,
 
+    /// The requested embedding cannot be represented as one rank rectangle.
+    #[error("incompatible embedding")]
+    IncompatibleEmbedding,
+
     /// Dimension ranges must have nonzero steps.
     #[error("dimension range step must be nonzero")]
     ZeroStep,
+}
+
+/// A coarse half-open interval over base ranks.
+///
+/// `end == None` means the interval includes ranks through `usize::MAX`;
+/// this is needed because one-past-`usize::MAX` cannot be represented as a
+/// [`Rank`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RankBounds {
+    start: Rank,
+    end: Option<Rank>,
+}
+
+impl RankBounds {
+    /// Creates non-empty base-rank bounds.
+    pub fn new(start: Rank, end: Option<Rank>) -> Option<Self> {
+        if end.is_some_and(|end| end <= start) {
+            return None;
+        }
+        Some(Self { start, end })
+    }
+
+    /// Returns the inclusive lower bound.
+    pub fn start(&self) -> Rank {
+        self.start
+    }
+
+    /// Returns the exclusive upper bound, if representable.
+    pub fn end(&self) -> Option<Rank> {
+        self.end
+    }
+
+    /// Returns true if these bounds overlap.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        let self_starts_before_other_ends = other.end.is_none_or(|end| self.start < end);
+        let other_starts_before_self_ends = self.end.is_none_or(|end| other.start < end);
+        self_starts_before_other_ends && other_starts_before_self_ends
+    }
+
+    /// Returns true if these bounds fully contain `other`.
+    pub fn contains(&self, other: &Self) -> bool {
+        self.start <= other.start
+            && match (self.end, other.end) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(self_end), Some(other_end)) => other_end <= self_end,
+            }
+    }
 }
 
 /// A dense affine rectangular embedding into base rank space.
@@ -699,6 +751,332 @@ impl RankRect {
         }
     }
 
+    /// Returns the coarse half-open base-rank interval covering this rectangle.
+    ///
+    /// Strided rectangles may not contain every rank inside these bounds.
+    pub fn rank_bounds(&self) -> Option<RankBounds> {
+        if self.is_empty() {
+            return None;
+        }
+
+        let max_delta = self.extent.dims().iter().zip(&self.strides).try_fold(
+            0usize,
+            |delta, (dim, stride)| {
+                let dim_delta = dim.size().checked_sub(1)?.checked_mul(*stride)?;
+                delta.checked_add(dim_delta)
+            },
+        )?;
+        let max = self.offset.0.checked_add(max_delta)?;
+        RankBounds::new(self.offset, max.checked_add(1).map(Rank))
+    }
+
+    /// Returns whether this rectangle and `other` share any base rank.
+    ///
+    /// This is an exact set operation over the ranks produced by each affine
+    /// rectangle. It uses bounds and stride-congruence pruning before splitting
+    /// sparse rectangles recursively.
+    pub fn intersects(&self, other: &Self) -> bool {
+        fn recurse(left: &RankRect, right: &RankRect) -> bool {
+            let (Some(left_bounds), Some(right_bounds)) = (left.rank_bounds(), right.rank_bounds())
+            else {
+                return false;
+            };
+
+            if !left_bounds.overlaps(&right_bounds) {
+                return false;
+            }
+
+            if !left.congruence_may_overlap(right) {
+                return false;
+            }
+
+            if left.is_contiguous() && right.is_contiguous() {
+                return true;
+            }
+
+            if left.cardinality() == 1 {
+                return right.contains_rank(left.offset);
+            }
+
+            if right.cardinality() == 1 {
+                return left.contains_rank(right.offset);
+            }
+
+            if left.cardinality() >= right.cardinality() {
+                if let Some((first, second)) = left.split_largest_dim() {
+                    recurse(&first, right) || recurse(&second, right)
+                } else {
+                    right.contains_rank(left.offset)
+                }
+            } else if let Some((first, second)) = right.split_largest_dim() {
+                recurse(left, &first) || recurse(left, &second)
+            } else {
+                left.contains_rank(right.offset)
+            }
+        }
+
+        recurse(self, other)
+    }
+
+    /// Returns whether every rank in `other` is also contained in this rectangle.
+    ///
+    /// This is an exact set operation over the ranks produced by each affine
+    /// rectangle. It avoids rank materialization in common cases, but may split
+    /// `other` recursively for sparse rectangles.
+    pub fn contains_rect(&self, other: &Self) -> bool {
+        fn recurse(outer: &RankRect, inner: &RankRect) -> bool {
+            if inner.is_empty() {
+                return true;
+            }
+            if outer.is_empty() {
+                return false;
+            }
+
+            let (Some(outer_bounds), Some(inner_bounds)) =
+                (outer.rank_bounds(), inner.rank_bounds())
+            else {
+                return false;
+            };
+
+            if !outer_bounds.contains(&inner_bounds) {
+                return false;
+            }
+
+            if outer.is_contiguous() {
+                return true;
+            }
+
+            if inner.cardinality() == 1 {
+                return outer.contains_rank(inner.offset);
+            }
+
+            let Some((first, second)) = inner.split_largest_dim() else {
+                return outer.contains_rank(inner.offset);
+            };
+            recurse(outer, &first) && recurse(outer, &second)
+        }
+
+        recurse(self, other)
+    }
+
+    /// Embeds `local` through this rectangle.
+    ///
+    /// Ranks produced by `local` are interpreted as local row-major indices into
+    /// `self`. The returned rectangle maps `local`'s coordinates directly into
+    /// `self`'s base-rank coordinate system.
+    ///
+    /// For an affine parent rectangle, parent local indices and final base
+    /// ranks are different coordinate systems:
+    ///
+    /// ```text
+    /// parent coordinates -> parent local indices
+    ///
+    ///           gpu
+    ///         0  1  2  3
+    /// host 0  0  1  2  3
+    ///      1  4  5  6  7
+    ///
+    /// parent coordinates -> final base ranks
+    ///
+    ///           gpu
+    ///         0   1   2   3
+    /// host 0  10  12  14  16
+    ///      1  18  20  22  24
+    /// ```
+    ///
+    /// a local rectangle can name parent local indices rather than final base
+    /// ranks:
+    ///
+    /// ```text
+    /// local coordinates -> parent local indices
+    ///
+    ///               local gpu
+    ///               0  1
+    /// local host 0  1  3
+    ///            1  5  7
+    /// ```
+    ///
+    /// Embedding composes those two mappings:
+    ///
+    /// ```text
+    /// local coordinates -> final base ranks
+    ///
+    ///               local gpu
+    ///               0  1
+    /// local host 0  12  16
+    ///            1  20  24
+    /// ```
+    ///
+    /// For example, local coordinate `[host = 1, gpu = 0]` first selects
+    /// parent local index `5`, then resolves to final base rank `20`.
+    pub fn embed(&self, local: &Self) -> Result<Self, RankSpaceError> {
+        if local.is_empty() {
+            return Self::new(local.extent.clone());
+        }
+
+        let base_offset = self
+            .rank_at(local.offset.get())
+            .ok_or(RankSpaceError::IncompatibleEmbedding)?;
+        let strides = local
+            .extent
+            .dims()
+            .iter()
+            .zip(&local.strides)
+            .map(|(dim, stride)| {
+                if dim.size() <= 1 {
+                    return Ok(1);
+                }
+                let local_rank = local
+                    .offset
+                    .get()
+                    .checked_add(*stride)
+                    .ok_or(RankSpaceError::RankArithmeticOverflow)?;
+                let base_rank = self
+                    .rank_at(local_rank)
+                    .ok_or(RankSpaceError::IncompatibleEmbedding)?;
+                base_rank
+                    .get()
+                    .checked_sub(base_offset.get())
+                    .ok_or(RankSpaceError::IncompatibleEmbedding)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let embedded = Self::affine(local.extent.clone(), base_offset, strides)
+            .map_err(|_| RankSpaceError::IncompatibleEmbedding)?;
+
+        if self.is_contiguous() && self.contains_local_indices(local) {
+            return Ok(embedded);
+        }
+
+        for local_index in 0..local.cardinality() {
+            let coord = local
+                .coord_at(local_index)
+                .ok_or(RankSpaceError::IncompatibleEmbedding)?;
+            let local_rank = local
+                .rank_of(coord.indices())
+                .ok_or(RankSpaceError::IncompatibleEmbedding)?;
+            let expected = self
+                .rank_at(local_rank.get())
+                .ok_or(RankSpaceError::IncompatibleEmbedding)?;
+            if embedded.rank_of(coord.indices()) != Some(expected) {
+                return Err(RankSpaceError::IncompatibleEmbedding);
+            }
+        }
+
+        Ok(embedded)
+    }
+
+    /// Projects `rect` into this rectangle's local row-major index space.
+    ///
+    /// This is the reverse coordinate transform of [`RankRect::embed`]. Ranks
+    /// produced by `rect` are interpreted as base ranks in the same coordinate
+    /// system as `self`. The returned rectangle maps `rect`'s coordinates to
+    /// local row-major indices into `self`.
+    ///
+    /// Every rank in `rect` must be contained in `self`, and the inverse image
+    /// must be representable as one affine rectangle.
+    ///
+    /// Projection keeps `rect`'s coordinate system, but changes what its ranks
+    /// mean. Starting with the same parent:
+    ///
+    /// ```text
+    /// parent coordinates -> parent local indices
+    ///
+    ///           gpu
+    ///         0  1  2  3
+    /// host 0  0  1  2  3
+    ///      1  4  5  6  7
+    ///
+    /// parent coordinates -> final base ranks
+    ///
+    ///           gpu
+    ///         0   1   2   3
+    /// host 0  10  12  14  16
+    ///      1  18  20  22  24
+    /// ```
+    ///
+    /// and an extracted rectangle in base-rank coordinates:
+    ///
+    /// ```text
+    /// extracted coordinates -> base ranks
+    ///
+    ///           local gpu
+    ///           0  1
+    /// host 0    12  16
+    ///      1    20  24
+    /// ```
+    ///
+    /// projection returns a rectangle with the same extracted coordinates, but
+    /// whose ranks are parent local row-major indices:
+    ///
+    /// ```text
+    /// extracted coordinates -> parent local indices
+    ///
+    ///           local gpu
+    ///           0  1
+    /// host 0    1  3
+    ///      1    5  7
+    /// ```
+    ///
+    /// For example, extracted coordinate `[host = 1, gpu = 0]` has base rank
+    /// `20`; projected through the parent, that rank becomes parent local index
+    /// `5`, which is parent coordinate `[host = 1, gpu = 1]`.
+    pub fn project(&self, rect: &Self) -> Result<Self, RankSpaceError> {
+        if rect.is_empty() {
+            return Self::new(rect.extent.clone());
+        }
+
+        let offset = Rank(
+            self.local_index_of(rect.offset)
+                .ok_or(RankSpaceError::IncompatibleEmbedding)?,
+        );
+        let strides = rect
+            .extent
+            .dims()
+            .iter()
+            .zip(&rect.strides)
+            .map(|(dim, stride)| {
+                if dim.size() <= 1 {
+                    return Ok(1);
+                }
+                let rank = rect
+                    .offset
+                    .get()
+                    .checked_add(*stride)
+                    .map(Rank)
+                    .ok_or(RankSpaceError::RankArithmeticOverflow)?;
+                let local_index = self
+                    .local_index_of(rank)
+                    .ok_or(RankSpaceError::IncompatibleEmbedding)?;
+                local_index
+                    .checked_sub(offset.get())
+                    .ok_or(RankSpaceError::IncompatibleEmbedding)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let projected = Self::affine(rect.extent.clone(), offset, strides)
+            .map_err(|_| RankSpaceError::IncompatibleEmbedding)?;
+
+        if self.is_contiguous() && self.contains_rect(rect) {
+            return Ok(projected);
+        }
+
+        for local_index in 0..rect.cardinality() {
+            let coord = rect
+                .coord_at(local_index)
+                .ok_or(RankSpaceError::IncompatibleEmbedding)?;
+            let rank = rect
+                .rank_of(coord.indices())
+                .ok_or(RankSpaceError::IncompatibleEmbedding)?;
+            let expected = self
+                .local_index_of(rank)
+                .ok_or(RankSpaceError::IncompatibleEmbedding)?;
+            if projected.rank_of(coord.indices()) != Some(Rank(expected)) {
+                return Err(RankSpaceError::IncompatibleEmbedding);
+            }
+        }
+
+        Ok(projected)
+    }
+
     /// Restricts a dimension while preserving dimensionality.
     pub fn restrict(&self, dim: &str, range: impl Into<DimRange>) -> Result<Self, RankSpaceError> {
         let dim_index = self
@@ -757,6 +1135,56 @@ impl RankRect {
         extent.remove_dim(dim_index);
         strides.remove(dim_index);
         Self::affine(extent, offset, strides)
+    }
+
+    fn is_contiguous(&self) -> bool {
+        self.strides == row_major_strides(self.extent.sizes())
+    }
+
+    fn contains_local_indices(&self, rect: &Self) -> bool {
+        rect.rank_bounds()
+            .and_then(|bounds| bounds.end())
+            .is_some_and(|end| end.get() <= self.cardinality())
+    }
+
+    fn active_stride_gcd(&self) -> usize {
+        self.extent
+            .dims()
+            .iter()
+            .zip(&self.strides)
+            .filter(|(dim, _)| dim.size() > 1)
+            .map(|(_, stride)| *stride)
+            .fold(0, gcd)
+    }
+
+    fn congruence_may_overlap(&self, other: &Self) -> bool {
+        let modulus = gcd(self.active_stride_gcd(), other.active_stride_gcd());
+        if modulus == 0 {
+            return self.offset == other.offset;
+        }
+        self.offset
+            .get()
+            .abs_diff(other.offset.get())
+            .is_multiple_of(modulus)
+    }
+
+    fn split_largest_dim(&self) -> Option<(Self, Self)> {
+        let dim = self
+            .extent
+            .dims()
+            .iter()
+            .enumerate()
+            .filter(|(_, dim)| dim.size() > 1)
+            .max_by_key(|(_, dim)| dim.size())
+            .map(|(_, dim)| dim)?;
+        let mid = dim.size() / 2;
+        let first = self
+            .restrict(dim.name(), 0..mid)
+            .expect("splitting valid rectangle should produce a valid first half");
+        let second = self
+            .restrict(dim.name(), mid..dim.size())
+            .expect("splitting valid rectangle should produce a valid second half");
+        Some((first, second))
     }
 
     fn coord_at(&self, local_index: usize) -> Option<Coord> {
@@ -970,6 +1398,15 @@ impl From<RankRect> for RankSpace {
     }
 }
 
+fn gcd(mut left: usize, mut right: usize) -> usize {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
+}
+
 fn row_major_strides(sizes: impl IntoIterator<Item = usize>) -> Vec<usize> {
     let sizes = sizes.into_iter().collect::<Vec<_>>();
     let mut strides = vec![1; sizes.len()];
@@ -1152,6 +1589,160 @@ mod tests {
         assert_eq!(
             space.iter_ranks().collect::<Vec<_>>(),
             vec![Rank(0), Rank(1), Rank(2), Rank(3)]
+        );
+    }
+
+    #[test]
+    fn rank_bounds_cover_rect_ranks() {
+        let rect = RankRect::affine(
+            Extent::new(vec![Dim::new("row", 2), Dim::new("col", 3)]).unwrap(),
+            Rank(5),
+            vec![10, 2],
+        )
+        .unwrap();
+
+        assert_eq!(rect.rank_bounds(), RankBounds::new(Rank(5), Some(Rank(20))));
+
+        let max_rank = rankrect!(offset = usize::MAX; scalar = 1);
+        assert_eq!(
+            max_rank.rank_bounds(),
+            RankBounds::new(Rank(usize::MAX), None)
+        );
+    }
+
+    #[test]
+    fn rank_rect_relationships_match_expected_sets() {
+        let base = host_gpu_rect();
+        let host0 = base.fix("host", 0).unwrap();
+        let host1 = base.fix("host", 1).unwrap();
+        let gpu2 = base.fix("gpu", 2).unwrap();
+        let even_gpus = base
+            .restrict("gpu", DimRange::with_step(0, None, 2).unwrap())
+            .unwrap();
+        let odd_gpus = base
+            .restrict("gpu", DimRange::with_step(1, None, 2).unwrap())
+            .unwrap();
+
+        assert!(base.contains_rect(&host0));
+        assert!(base.contains_rect(&gpu2));
+        assert!(!host0.intersects(&host1));
+        assert!(host1.intersects(&gpu2));
+        assert!(!even_gpus.intersects(&odd_gpus));
+        assert!(
+            even_gpus.contains_rect(
+                &RankRect::affine(
+                    Extent::new(vec![Dim::new("x", 2)]).unwrap(),
+                    Rank(0),
+                    vec![2]
+                )
+                .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn embed_reindexes_local_rank_rect_into_base_ranks() {
+        let base = host_gpu_rect();
+        let local = RankRect::affine(
+            Extent::new(vec![Dim::new("host", 2), Dim::new("gpu", 2)]).unwrap(),
+            Rank(1),
+            vec![4, 2],
+        )
+        .unwrap();
+        let embedded = base.embed(&local).unwrap();
+
+        assert_eq!(embedded.offset(), Rank(1));
+        assert_eq!(embedded.strides(), &[4, 2]);
+        assert_eq!(
+            embedded.iter_ranks().collect::<Vec<_>>(),
+            vec![Rank(1), Rank(3), Rank(5), Rank(7)]
+        );
+    }
+
+    #[test]
+    fn embed_short_circuits_contiguous_parent_validation() {
+        let base = RankRect::from_sizes([usize::MAX]).unwrap();
+        let local = RankRect::from_sizes([usize::MAX]).unwrap();
+
+        assert_eq!(base.embed(&local).unwrap(), local);
+    }
+
+    #[test]
+    fn embed_rejects_local_indices_outside_parent() {
+        let base = rankrect!(x = 4);
+        let local = rankrect!(offset = 3; i = 2);
+
+        assert_eq!(
+            base.embed(&local).unwrap_err(),
+            RankSpaceError::IncompatibleEmbedding
+        );
+    }
+
+    #[test]
+    fn project_reindexes_base_ranks_into_local_indices() {
+        let base = host_gpu_rect();
+        let rect = base
+            .restrict("gpu", DimRange::with_step(1, None, 2).unwrap())
+            .unwrap();
+        let projected = base.project(&rect).unwrap();
+
+        assert_eq!(projected.offset(), Rank(1));
+        assert_eq!(projected.strides(), &[4, 2]);
+        assert_eq!(
+            projected.iter_ranks().collect::<Vec<_>>(),
+            vec![Rank(1), Rank(3), Rank(5), Rank(7)]
+        );
+        assert_eq!(base.embed(&projected).unwrap(), rect);
+    }
+
+    #[test]
+    fn project_short_circuits_contiguous_parent_validation() {
+        let base = RankRect::from_sizes([usize::MAX]).unwrap();
+        let rect = RankRect::from_sizes([usize::MAX]).unwrap();
+
+        assert_eq!(base.project(&rect).unwrap(), rect);
+    }
+
+    #[test]
+    fn project_rejects_base_ranks_outside_parent() {
+        let base = rankrect!(x = 4);
+        let rect = rankrect!(offset = 3; i = 2);
+
+        assert_eq!(
+            base.project(&rect).unwrap_err(),
+            RankSpaceError::IncompatibleEmbedding
+        );
+    }
+
+    #[test]
+    fn project_rejects_non_affine_inverse() {
+        let column_major = RankRect::affine(
+            Extent::new(vec![Dim::new("row", 2), Dim::new("col", 3)]).unwrap(),
+            Rank(0),
+            vec![1, 2],
+        )
+        .unwrap();
+        let flat = RankRect::from_sizes([6]).unwrap();
+
+        assert_eq!(
+            column_major.project(&flat).unwrap_err(),
+            RankSpaceError::IncompatibleEmbedding
+        );
+    }
+
+    #[test]
+    fn embed_rejects_non_affine_composition() {
+        let column_major = RankRect::affine(
+            Extent::new(vec![Dim::new("row", 2), Dim::new("col", 3)]).unwrap(),
+            Rank(0),
+            vec![1, 2],
+        )
+        .unwrap();
+        let flat_local = RankRect::from_sizes([6]).unwrap();
+
+        assert_eq!(
+            column_major.embed(&flat_local).unwrap_err(),
+            RankSpaceError::IncompatibleEmbedding
         );
     }
 
