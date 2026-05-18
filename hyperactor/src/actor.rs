@@ -107,13 +107,7 @@ pub trait Actor: Sized + Send + 'static {
         mode: StopMode,
         reason: &str,
     ) -> Result<(), anyhow::Error> {
-        // After `close`, no more messages may be enqueued.
-        // exit_after_drain will drain any pending messages before exiting.
-        this.close();
-        match mode {
-            StopMode::Stop => this.exit(reason).map_err(anyhow::Error::from),
-            StopMode::DrainAndStop => this.exit_after_drain(reason).map_err(anyhow::Error::from),
-        }
+        handle_stop(this, mode, reason)
     }
 
     /// Cleanup things used by this actor before shutting down. Notably this function
@@ -213,6 +207,23 @@ pub fn handle_undeliverable_message<A: Actor>(
     anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
 }
 
+/// Default implementation of [`Actor::handle_stop`]. Defined as a free
+/// function so that `Actor` implementations that override
+/// [`Actor::handle_stop`] can fall back to this default.
+pub fn handle_stop<A: Actor>(
+    this: &Instance<A>,
+    mode: StopMode,
+    reason: &str,
+) -> Result<(), anyhow::Error> {
+    // After `close`, no more messages may be enqueued.
+    // exit_after_drain will drain any pending messages before exiting.
+    this.close();
+    match mode {
+        StopMode::Stop => this.exit(reason).map_err(anyhow::Error::from),
+        StopMode::DrainAndStop => this.exit_after_drain(reason).map_err(anyhow::Error::from),
+    }
+}
+
 /// An actor that does nothing. It is used to represent "client only" actors,
 /// returned by [`Proc::instance`].
 #[async_trait]
@@ -271,7 +282,7 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
     ) -> Result<(), anyhow::Error> {
         let sender = message.0.sender().clone();
         let dest = message.0.dest().clone();
-        let error = message.0.error_msg().unwrap_or(String::new());
+        let error = message.0.error_msg().unwrap_or_default();
         match self.handle_undeliverable_message(cx, message).await {
             Ok(_) => {
                 tracing::debug!(

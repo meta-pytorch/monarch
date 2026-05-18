@@ -1065,10 +1065,10 @@ pub enum LocalProcStatus {
 /// The proc runs inside this same OS process; there is **no** child
 /// process to signal. Lifecycle is purely proc-level:
 /// - `terminate(timeout)`: delegates to
-///   `Proc::destroy_and_wait(timeout, None)`, which drains and, at the
+///   `Proc::destroy_and_wait(timeout)`, which drains and, at the
 ///   deadline, aborts remaining actors.
 /// - `kill()`: uses a zero deadline to emulate a forced stop via
-///   `destroy_and_wait(Duration::ZERO, None)`.
+///   `destroy_and_wait(Duration::ZERO)`.
 /// - `wait()`: trivial (no external lifecycle to observe).
 ///
 ///   No OS signals are sent or required.
@@ -1118,10 +1118,7 @@ impl<S> LocalProcManager<S> {
         let stopping = Arc::clone(&self.stopping);
         let reason = reason.to_string();
         tokio::spawn(async move {
-            if let Err(e) = proc_handle
-                .destroy_and_wait::<()>(timeout, None, &reason)
-                .await
-            {
+            if let Err(e) = proc_handle.destroy_and_wait(timeout, &reason).await {
                 tracing::warn!(error = %e, "request_stop(local): destroy_and_wait failed");
             }
             if let Some(tx) = stopping.lock().await.get(&proc_ref) {
@@ -1177,7 +1174,7 @@ where
 
         let results = stream::iter(procs.into_iter().map(|mut p| async move {
             // For local manager, graceful proc-level stop.
-            match p.destroy_and_wait::<()>(timeout, None, reason).await {
+            match p.destroy_and_wait(timeout, reason).await {
                 Ok(_) => true,
                 Err(e) => {
                     tracing::warn!(error=%e, "terminate_all(local): destroy_and_wait failed");
@@ -1217,7 +1214,7 @@ where
             guard.remove(proc)
         };
         if let Some(mut p) = procs {
-            p.destroy_and_wait::<()>(timeout, None, reason).await
+            p.destroy_and_wait(timeout, reason).await
         } else {
             Err(anyhow::anyhow!("proc {} doesn't exist", proc))
         }
@@ -1312,7 +1309,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         // Graceful stop of the *proc* (actors) with a deadline. This
         // will drain and then abort remaining actors at expiry.
         let _ = proc
-            .destroy_and_wait::<()>(timeout, None, reason)
+            .destroy_and_wait(timeout, reason)
             .await
             .map_err(TerminateError::Io)?;
 
@@ -1331,7 +1328,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         };
 
         let _ = proc
-            .destroy_and_wait::<()>(Duration::from_millis(0), None, "kill")
+            .destroy_and_wait(Duration::from_millis(0), "kill")
             .await
             .map_err(TerminateError::Io)?;
 
