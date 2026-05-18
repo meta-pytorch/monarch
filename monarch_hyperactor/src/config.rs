@@ -288,7 +288,7 @@ where
             key.name(),
         ))
     })?;
-    let val: Option<P> = hyperactor_config::global::try_get_cloned(key.clone())
+    let val: Option<P> = hyperactor_config::global::try_get_cloned(*key)
         .map(|v| v.try_into())
         .transpose()?;
     val.map(|v| v.into_py_any(py)).transpose()
@@ -314,7 +314,7 @@ where
     let key = key.downcast_ref::<T>().expect("cannot fail");
     let runtime = hyperactor_config::global::runtime_attrs();
     let val: Option<P> = runtime
-        .get(key.clone())
+        .get(*key)
         .cloned()
         .map(|v| v.try_into())
         .transpose()?;
@@ -334,7 +334,7 @@ fn set_runtime_config_py<T: AttrValue + Debug>(
     // Again, can't fail unless there's a bug in the code in this file.
     let key = key.downcast_ref().expect("cannot fail");
     let mut attrs = Attrs::new();
-    attrs.set(key.clone(), value);
+    attrs.set(*key, value);
     hyperactor_config::global::create_or_merge(Source::Runtime, attrs);
     Ok(())
 }
