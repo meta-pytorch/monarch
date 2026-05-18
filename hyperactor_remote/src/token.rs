@@ -533,7 +533,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_delivers_join_to_both_sides() {
         let proc = Proc::isolated();
-        let (creator, _creator_handle) = proc.instance("creator").unwrap();
+        let (creator, _creator_handle) = proc.client("creator").unwrap();
         let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<JoinerRef>>();
         let token = create(
             &creator,
@@ -542,7 +542,7 @@ mod tests {
             Options::default(),
         )
         .unwrap();
-        let (joiner, _joiner_handle) = proc.instance("joiner").unwrap();
+        let (joiner, _joiner_handle) = proc.client("joiner").unwrap();
         let (join_result, mut join_result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
 
         token.join(&joiner, JoinerRef, join_result.bind()).unwrap();
@@ -557,7 +557,7 @@ mod tests {
     #[tokio::test]
     async fn test_once_token_rejects_later_joins() {
         let proc = Proc::isolated();
-        let (creator, _creator_handle) = proc.instance("creator").unwrap();
+        let (creator, _creator_handle) = proc.client("creator").unwrap();
         let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<JoinerRef>>();
         let token = create(
             &creator,
@@ -568,7 +568,7 @@ mod tests {
             },
         )
         .unwrap();
-        let (joiner, _joiner_handle) = proc.instance("joiner").unwrap();
+        let (joiner, _joiner_handle) = proc.client("joiner").unwrap();
         let (first_result, mut first_result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
         let (second_result, mut second_result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
 
@@ -593,7 +593,7 @@ mod tests {
     #[tokio::test]
     async fn test_multi_token_accepts_every_join() {
         let proc = Proc::isolated();
-        let (creator, _creator_hndl) = proc.instance("creator").unwrap();
+        let (creator, _creator_hndl) = proc.client("creator").unwrap();
         let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<MultiJoinerRef>>();
         let token = create(
             &creator,
@@ -605,9 +605,9 @@ mod tests {
         )
         .unwrap();
 
-        let (joiner1, _joiner1_handle) = proc.instance("joiner1").unwrap();
-        let (joiner2, _joiner2_handle) = proc.instance("joiner2").unwrap();
-        let (joiner3, _joiner3_handle) = proc.instance("joiner3").unwrap();
+        let (joiner1, _joiner1_handle) = proc.client("joiner1").unwrap();
+        let (joiner2, _joiner2_handle) = proc.client("joiner2").unwrap();
+        let (joiner3, _joiner3_handle) = proc.client("joiner3").unwrap();
 
         let (r1, mut r1_rx) = joiner1.open_port::<JoinResult<CreatorRef>>();
         let (r2, mut r2_rx) = joiner2.open_port::<JoinResult<CreatorRef>>();
@@ -769,7 +769,7 @@ mod tests {
     #[tokio::test]
     async fn test_join_fails_after_creator_stops() {
         let proc = Proc::isolated();
-        let (inst, _inst_handle) = proc.instance("inst").unwrap();
+        let (inst, _inst_handle) = proc.client("inst").unwrap();
         let (creator_joined, _creator_joined_rx) = inst.open_port::<Joined<JoinerRef>>();
         let (token_out, mut token_out_rx) = inst.open_port::<Token<CreatorRef, JoinerRef>>();
 
@@ -792,7 +792,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (joiner, _joiner_handle) = proc.instance("joiner").unwrap();
+        let (joiner, _joiner_handle) = proc.client("joiner").unwrap();
         let (result, mut result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
         token.join(&joiner, JoinerRef, result.bind()).unwrap();
 

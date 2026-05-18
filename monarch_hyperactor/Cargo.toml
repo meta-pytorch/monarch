@@ -63,4 +63,4 @@ default = []
 packaged_rsync = []
 
 [lints]
-rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
+workspace = true

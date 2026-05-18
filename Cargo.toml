@@ -77,3 +77,6 @@ default-members = [
     "torch-sys-cuda",
     "wirevalue",
 ]
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fbcode_build)'] }
