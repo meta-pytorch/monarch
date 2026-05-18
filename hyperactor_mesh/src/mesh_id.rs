@@ -106,11 +106,6 @@ impl ResourceId {
         Self(Uid::instance(label))
     }
 
-    /// Create a unique [`ResourceId`] with a random uid and the given label.
-    pub fn unique(label: Label) -> Self {
-        Self::instance(label)
-    }
-
     /// Create a resource id from a resource-name string.
     ///
     /// This accepts the mesh resource-id grammar, falling back to a stripped
@@ -331,11 +326,6 @@ macro_rules! define_mesh_id {
                 Self(ResourceId::instance(label))
             }
 
-            /// Create a unique mesh id with a random uid and the given label.
-            pub fn unique(label: Label) -> Self {
-                Self::instance(label)
-            }
-
             /// Returns the uid.
             pub fn uid(&self) -> &Uid {
                 self.0.uid()
@@ -469,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resource_id_unique() {
+    fn test_resource_id_instance() {
         let id = ResourceId::instance(Label::new("workers").unwrap());
         assert!(id.uid().is_instance());
         assert_eq!(id.label().map(|l| l.as_str()), Some("workers"));
@@ -798,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unique_ids_differ() {
+    fn test_instance_ids_differ() {
         let a = ResourceId::instance(Label::new("test").unwrap());
         let b = ResourceId::instance(Label::new("test").unwrap());
         assert_ne!(a, b);
