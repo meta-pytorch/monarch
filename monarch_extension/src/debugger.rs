@@ -90,7 +90,7 @@ impl PdbActor {
         })
     }
 
-    fn send<'py>(&self, py: Python<'py>, action: DebuggerAction) -> PyResult<()> {
+    fn send(&self, py: Python<'_>, action: DebuggerAction) -> PyResult<()> {
         let controller_actor_ref = self.controller_actor_ref.clone();
         let instance = self.instance.clone();
         let actor_id = instance.blocking_lock().actor_addr().clone();
@@ -206,7 +206,7 @@ mod tests {
     fn test_pdb_actor() {
         Python::initialize();
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (_, controller_ref, controller_rx) = proc
             .attach_actor::<ControllerActor, ControllerMessage>("controller")
             .unwrap();

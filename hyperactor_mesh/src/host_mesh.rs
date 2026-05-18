@@ -105,6 +105,7 @@ use crate::mesh_id::HostMeshId;
 use crate::mesh_id::ProcMeshId;
 use crate::mesh_id::ResourceId;
 use crate::proc_agent::ProcAgent;
+use crate::proc_mesh::ProcMeshRef;
 use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
@@ -145,12 +146,12 @@ declare_attrs! {
 
 /// A reference to a single host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Named, Serialize, Deserialize)]
-pub struct HostRef(ChannelAddr);
+pub struct HostRef(pub(crate) ChannelAddr);
 wirevalue::register_type!(HostRef);
 
 impl HostRef {
     /// The host mesh agent associated with this host.
-    fn mesh_agent(&self) -> ActorRef<HostAgent> {
+    pub(crate) fn mesh_agent(&self) -> ActorRef<HostAgent> {
         ActorRef::attest(
             self.service_proc()
                 .actor_addr(host_agent::HOST_MESH_AGENT_ACTOR_NAME),
@@ -1217,12 +1218,12 @@ impl HostMeshRef {
                 "per_host dims overlap with existing dims when spawning proc mesh"
             )));
         }
-        if let Some(proc_bind) = proc_bind.as_ref() {
-            if proc_bind.len() != per_host.num_ranks() {
-                return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
-                    "proc_bind length does not match per_host extent"
-                )));
-            }
+        if let Some(proc_bind) = proc_bind.as_ref()
+            && proc_bind.len() != per_host.num_ranks()
+        {
+            return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
+                "proc_bind length does not match per_host extent"
+            )));
         }
 
         let extent = self
@@ -1424,11 +1425,17 @@ impl HostMeshRef {
             }
         }
 
-        let mesh = ProcMesh::create(cx, proc_mesh_id, extent, self.clone(), procs).await;
-        if let Ok(ref mesh) = mesh {
+        let mut mesh = ProcMesh::create(cx, proc_mesh_id, extent, self.clone(), procs).await;
+        if let Ok(ref mut mesh) = mesh {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
-            // mesh can be preserved.
-            let controller = ProcMeshController::new(mesh.deref().clone());
+            // mesh can be preserved. Procs reached a non-terminating state above,
+            // so seed the controller's per-rank statuses as Running.
+            let mesh_ref: ProcMeshRef = (**mesh).clone();
+            let region = ndslice::view::Ranked::region(&mesh_ref).clone();
+            let initial_statuses: crate::ValueMesh<resource::Status> =
+                std::iter::repeat_n(resource::Status::Running, region.num_ranks())
+                    .collect_mesh::<crate::ValueMesh<_>>(region)?;
+            let controller = ProcMeshController::new(mesh_ref, None, None, initial_statuses);
             // hyperactor::proc AI-3: controller name must include mesh
             // identity for proc-wide ActorAddr uniqueness.
             let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.id());
@@ -1442,7 +1449,8 @@ impl HostMeshRef {
             // Undeliverable). Without this, the controller's mailbox has no
             // port entries and messages (including introspection queries)
             // are returned as undeliverable.
-            let _: ActorRef<ProcMeshController> = controller_handle.bind();
+            let controller_ref: ActorRef<ProcMeshController> = controller_handle.bind();
+            mesh.set_controller(Some(controller_ref));
         }
         mesh
     }
@@ -1457,6 +1465,16 @@ impl HostMeshRef {
         &self.ranks
     }
 
+    /// Stop every proc in this proc mesh.
+    ///
+    /// On success returns the final per-rank `StatusMesh`, in which every
+    /// rank is guaranteed to be `is_terminated()` (`Stopped`, `Failed`, or
+    /// `Timeout`). Callers can apply these statuses to controller health
+    /// state so that subsequent `GetState` queries reflect reality.
+    ///
+    /// Returns `crate::Error::ProcMeshStopError` if any rank did not reach
+    /// a terminal state within `PROC_STOP_MAX_IDLE`; the error carries the
+    /// best-known per-rank statuses for the same purpose.
     #[hyperactor::instrument(fields(host_mesh=self.id.to_string(), proc_mesh=proc_mesh_id.to_string()))]
     pub(crate) async fn stop_proc_mesh(
         &self,
@@ -1465,7 +1483,7 @@ impl HostMeshRef {
         procs: impl IntoIterator<Item = ProcAddr>,
         region: Region,
         reason: String,
-    ) -> anyhow::Result<()> {
+    ) -> crate::Result<crate::StatusMesh> {
         // Accumulator outputs full StatusMesh snapshots; seed with
         // NotExist.
         let mut proc_names = Vec::new();
@@ -1490,16 +1508,21 @@ impl HostMeshRef {
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
             let host = HostRef(addr);
-            host.mesh_agent().send(
-                cx,
-                resource::Stop {
-                    id: proc_resource_id.clone(),
-                    reason: reason.clone(),
-                },
-            )?;
+            host.mesh_agent()
+                .send(
+                    cx,
+                    resource::Stop {
+                        id: proc_resource_id.clone(),
+                        reason: reason.clone(),
+                    },
+                )
+                .map_err(|e| {
+                    crate::Error::SendingError(host.mesh_agent().actor_addr().clone(), Box::new(e))
+                })?;
             host.mesh_agent()
                 .wait_rank_status(cx, proc_resource_id, Status::Stopped, port.bind())
-                .await?;
+                .await
+                .map_err(|e| crate::Error::CallError(host.mesh_agent().actor_addr().clone(), e))?;
 
             tracing::info!(
                 name = "ProcMeshStatus",
@@ -1532,18 +1555,22 @@ impl HostMeshRef {
             Ok(statuses) => {
                 let all_stopped = statuses.values().all(|s| s.is_terminated());
                 if !all_stopped {
+                    let legacy = mesh_to_rankedvalues_with_default(
+                        &statuses,
+                        Status::NotExist,
+                        Status::is_not_exist,
+                        num_ranks,
+                    );
                     tracing::error!(
                         name = "ProcMeshStatus",
                         status = "FailedToStop",
                         "failed to terminate proc mesh: {:?}",
                         statuses,
                     );
-                    return Err(anyhow::anyhow!(
-                        "failed to terminate proc mesh: {:?}",
-                        statuses,
-                    ));
+                    return Err(crate::Error::ProcMeshStopError { statuses: legacy });
                 }
                 tracing::info!(name = "ProcMeshStatus", status = "Stopped");
+                Ok(statuses)
             }
             Err(complete) => {
                 // Fill remaining ranks with a timeout status via the
@@ -1557,29 +1584,29 @@ impl HostMeshRef {
                 tracing::error!(
                     name = "ProcMeshStatus",
                     status = "StoppingTimeout",
-                    "failed to terminate proc mesh before timeout: {:?}",
-                    legacy,
-                );
-                return Err(anyhow::anyhow!(
                     "failed to terminate proc mesh {} before timeout: {:?}",
                     proc_mesh_id,
-                    legacy
-                ));
+                    legacy,
+                );
+                Err(crate::Error::ProcMeshStopError { statuses: legacy })
             }
         }
-        Ok(())
     }
 
     /// Get the state of all procs with Name in this host mesh.
     /// The procs iterator must be in rank order.
     /// The returned ValueMesh will have a non-empty inner state unless there
     /// was a timeout reaching the host mesh agent.
+    ///
+    /// If `keepalive` is `Some`, send `KeepaliveGetState` so the host agent
+    /// extends each proc's expiry time; otherwise send a plain `GetState`.
     #[allow(clippy::result_large_err)]
     pub(crate) async fn proc_states(
         &self,
         cx: &impl context::Actor,
         procs: impl IntoIterator<Item = ProcAddr>,
         region: Region,
+        keepalive: Option<std::time::SystemTime>,
     ) -> crate::Result<ValueMesh<resource::State<ProcState>>> {
         let (tx, mut rx) = cx.mailbox().open_port();
 
@@ -1604,17 +1631,26 @@ impl HostMeshRef {
             // can handle the error as it pleases. Set this so an undeliverable message doesn't cause
             // a supervision crash.
             send_port.return_undeliverable(false);
-            send_port
-                .send(
+            let get_state = resource::GetState {
+                id: proc_resource_id,
+                reply,
+            };
+            let send_result = if let Some(expires_after) = keepalive {
+                let mut keepalive_port = host.mesh_agent().port();
+                keepalive_port.return_undeliverable(false);
+                keepalive_port.send(
                     cx,
-                    resource::GetState {
-                        id: proc_resource_id,
-                        reply,
+                    resource::KeepaliveGetState {
+                        expires_after,
+                        get_state,
                     },
                 )
-                .map_err(|e| {
-                    crate::Error::CallError(host.mesh_agent().actor_addr().clone(), e.into())
-                })?;
+            } else {
+                send_port.send(cx, get_state)
+            };
+            send_result.map_err(|e| {
+                crate::Error::CallError(host.mesh_agent().actor_addr().clone(), e.into())
+            })?;
         }
 
         let mut states = Vec::with_capacity(num_ranks);
@@ -2111,6 +2147,7 @@ mod tests {
             hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
             Duration::from_mins(1),
         );
+        let _guard4 = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_mins(2));
 
         // Unset env vars that were mirrored by TestOverride, so child
         // processes don't inherit them. This allows Runtime layer to
@@ -2128,6 +2165,14 @@ mod tests {
             .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
+        let proc_ids = proc_mesh
+            .proc_ids()
+            .map(|proc_addr| proc_addr.id().clone())
+            .collect::<Vec<_>>();
+        let unique_proc_ids = proc_ids.iter().collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(proc_ids.len(), 2);
+        assert_eq!(unique_proc_ids.len(), proc_ids.len());
 
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(instance, "test", &()).await.unwrap();

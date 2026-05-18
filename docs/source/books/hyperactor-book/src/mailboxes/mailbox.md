@@ -2,7 +2,7 @@
 
 A `Mailbox` represents an actor's in-process inbox. It owns and manages all of the actor's ports, provides APIs to open and bind them, and routes messages based on their destination `PortId`.
 
-A mailbox routes local messages directly to its ports. If a message is addressed to a different actor, the mailbox uses its configured forwarder to relay the message. If the message cannot be delivered-for instance, if the destination port is unbound-the mailbox wraps it as undeliverable and returns it via the supplied handle.
+A mailbox routes messages for its actor directly to its ports. If a message is addressed to a different actor, the mailbox treats it as undeliverable; cross-actor and cross-proc routing happens through `Proc` and `Gateway`.
 
 This section covers:
 
@@ -10,30 +10,21 @@ This section covers:
 - Port binding and registration
 - Internal mailbox state and delivery logic
 
-The `State` holds all delivery infrastructure: active ports, the actor's ID, a port allocator, and a forwarding mechanism. Multiple clones of a `Mailbox` share access to the same state:
+The `State` holds the actor's ID, active ports, and a port allocator. Multiple clones of a `Mailbox` share access to the same state:
 ```rust
 pub struct Mailbox {
     state: Arc<State>,
 }
 ```
-The `new` function creates a mailbox with the provided actor ID and forwarder for external destinations:
+The `new` function creates a mailbox with the provided actor ID:
 ```rust
 impl Mailbox {
-    pub fn new(actor_id: ActorId, forwarder: BoxedMailboxSender) -> Self {
+    pub fn new(actor_id: ActorId) -> Self {
         Self {
-            state: Arc::new(State::new(actor_id, forwarder)),
+            state: Arc::new(State::new(actor_id)),
         }
     }
 }
-```
-`new_detached` mailboxes are not connected to an external message forwarder and can only deliver to its own ports:
-```rust
-impl Mailbox {
-    pub fn new_detached(actor_id: ActorId) -> Self {
-        Self {
-            state: Arc::new(State::new(actor_id, BOXED_PANICKING_MAILBOX_SENDER.clone())),
-        }
-    }
 ```
 
 A mailbox can open ports, each identified by a unique `PortId` within the owning actor. The most common form is `open_port`, which creates a fresh, unbounded channel for message delivery:

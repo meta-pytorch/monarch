@@ -74,6 +74,10 @@ struct PhilosopherActor {
 
 /// Message from the waiter to a philosopher
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "example actor message with #[binding(include)] PortRef whose Bind/Unbind derive interaction with Box<T> needs verification — separate diff"
+)]
 enum PhilosopherMessage {
     Start(#[binding(include)] reference::PortRef<WaiterMessage>),
     GrantChopstick(usize),

@@ -94,17 +94,6 @@ use hyperactor::mailbox::MailboxServerError;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
-use tokio::process::Child;
-use tokio::process::Command;
-use tokio::sync::Mutex;
-use tokio::sync::watch;
-use tokio::task::JoinSet;
-
-use crate::mesh_id::ResourceId;
-/// Name of the system service proc on a host — hosts the admin actor
-/// layer (HostMeshAgent, MeshAdminAgent, bridge).
-pub const SERVICE_PROC_NAME: &str = "service";
-
 /// Name of the local client proc on a host.
 ///
 /// See LP-1 (lazy activation) in module doc.
@@ -113,7 +102,18 @@ pub const SERVICE_PROC_NAME: &str = "service";
 /// `GetLocalProc` is never sent, so the local proc remains empty
 /// throughout the program's lifetime. Code that inspects the local
 /// proc's actors must not assume they exist.
-pub const LOCAL_PROC_NAME: &str = "local";
+pub use hyperactor::proc::LEGACY_LOCAL_PROC_NAME as LOCAL_PROC_NAME;
+/// Name of the system service proc on a host.
+///
+/// Hosts the admin actor layer: HostMeshAgent, MeshAdminAgent, and bridge.
+pub use hyperactor::proc::LEGACY_SERVICE_PROC_NAME as SERVICE_PROC_NAME;
+use tokio::process::Child;
+use tokio::process::Command;
+use tokio::sync::Mutex;
+use tokio::sync::watch;
+use tokio::task::JoinSet;
+
+use crate::mesh_id::ResourceId;
 
 /// [`MailboxSender`] adapter that wraps outbound [`MessageEnvelope`]s
 /// in [`Host2Client::Envelope`] before posting to a
@@ -253,12 +253,12 @@ impl<M: ProcManager> Host<M> {
         // These use with_name (not unique) because their uniqueness is
         // guaranteed by the ChannelAddr component, and the Name type's
         // '-' delimiter must not collide with a hash suffix.
-        let service_proc_id =
-            ResourceId::proc_addr_from_name(frontend_addr.clone(), SERVICE_PROC_NAME);
-        let local_proc_id = ResourceId::proc_addr_from_name(frontend_addr.clone(), LOCAL_PROC_NAME);
         let combined = router.fallback(dial_router.boxed());
-        let service_proc = Proc::configured(service_proc_id.clone(), combined.clone());
-        let local_proc = Proc::configured(local_proc_id.clone(), combined);
+        let service_proc =
+            Proc::legacy_service_pseudo_singleton(frontend_addr.clone(), combined.clone());
+        let local_proc = Proc::legacy_local_pseudo_singleton(frontend_addr.clone(), combined);
+        let service_proc_id = service_proc.proc_addr().clone();
+        let local_proc_id = local_proc.proc_addr().clone();
 
         // Register the local procs' muxers so the router delivers to
         // them without dialing. We bind the muxer (not the Proc) to
@@ -1065,10 +1065,10 @@ pub enum LocalProcStatus {
 /// The proc runs inside this same OS process; there is **no** child
 /// process to signal. Lifecycle is purely proc-level:
 /// - `terminate(timeout)`: delegates to
-///   `Proc::destroy_and_wait(timeout, None)`, which drains and, at the
+///   `Proc::destroy_and_wait(timeout)`, which drains and, at the
 ///   deadline, aborts remaining actors.
 /// - `kill()`: uses a zero deadline to emulate a forced stop via
-///   `destroy_and_wait(Duration::ZERO, None)`.
+///   `destroy_and_wait(Duration::ZERO)`.
 /// - `wait()`: trivial (no external lifecycle to observe).
 ///
 ///   No OS signals are sent or required.
@@ -1118,10 +1118,7 @@ impl<S> LocalProcManager<S> {
         let stopping = Arc::clone(&self.stopping);
         let reason = reason.to_string();
         tokio::spawn(async move {
-            if let Err(e) = proc_handle
-                .destroy_and_wait::<()>(timeout, None, &reason)
-                .await
-            {
+            if let Err(e) = proc_handle.destroy_and_wait(timeout, &reason).await {
                 tracing::warn!(error = %e, "request_stop(local): destroy_and_wait failed");
             }
             if let Some(tx) = stopping.lock().await.get(&proc_ref) {
@@ -1177,7 +1174,7 @@ where
 
         let results = stream::iter(procs.into_iter().map(|mut p| async move {
             // For local manager, graceful proc-level stop.
-            match p.destroy_and_wait::<()>(timeout, None, reason).await {
+            match p.destroy_and_wait(timeout, reason).await {
                 Ok(_) => true,
                 Err(e) => {
                     tracing::warn!(error=%e, "terminate_all(local): destroy_and_wait failed");
@@ -1217,7 +1214,7 @@ where
             guard.remove(proc)
         };
         if let Some(mut p) = procs {
-            p.destroy_and_wait::<()>(timeout, None, reason).await
+            p.destroy_and_wait(timeout, reason).await
         } else {
             Err(anyhow::anyhow!("proc {} doesn't exist", proc))
         }
@@ -1312,7 +1309,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         // Graceful stop of the *proc* (actors) with a deadline. This
         // will drain and then abort remaining actors at expiry.
         let _ = proc
-            .destroy_and_wait::<()>(timeout, None, reason)
+            .destroy_and_wait(timeout, reason)
             .await
             .map_err(TerminateError::Io)?;
 
@@ -1331,7 +1328,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         };
 
         let _ = proc
-            .destroy_and_wait::<()>(Duration::from_millis(0), None, "kill")
+            .destroy_and_wait(Duration::from_millis(0), "kill")
             .await
             .map_err(TerminateError::Io)?;
 
@@ -1346,7 +1343,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
 ///   - `Actor`: the agent actually runs inside the proc.
 ///   - `Referable`: callers hold `ActorRef<A>` to the agent; this
 ///     bound is required for typed remote refs.
-///   - `Binds<A>`: lets the runtime wire the agent's message ports.
+///   - `Binds<A>`: lets the runtime wire the agent's handler ports.
 /// - `F: Future<Output = anyhow::Result<ActorHandle<A>>> + Send`:
 ///   the spawn closure returns a Send future (we `tokio::spawn` it).
 /// - `S: Fn(Proc) -> F + Sync`: the factory can be called from
