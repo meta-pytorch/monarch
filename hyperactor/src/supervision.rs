@@ -245,7 +245,7 @@ mod tests {
     use crate::channel::ChannelAddr;
 
     fn test_event(name: &str, status: ActorStatus) -> ActorSupervisionEvent {
-        let proc_id = ProcAddr::named(ChannelAddr::Local(0), "test_proc");
+        let proc_id = ProcAddr::singleton(ChannelAddr::Local(0), "test_proc");
         ActorSupervisionEvent::new(
             proc_id.actor_addr(name),
             Some(name.to_string()),
@@ -259,7 +259,7 @@ mod tests {
         addr: ChannelAddr,
         status: ActorStatus,
     ) -> ActorSupervisionEvent {
-        let proc_id = ProcAddr::named(addr, "test_proc");
+        let proc_id = ProcAddr::singleton(addr, "test_proc");
         ActorSupervisionEvent::new(proc_id.actor_addr(name), None, status, None)
     }
 
@@ -573,7 +573,7 @@ mod tests {
     /// root cause for structured failure attribution.
     #[test]
     fn test_sv1_actually_failing_actor_returns_stopped_child() {
-        let proc_id = ProcAddr::named(ChannelAddr::Local(0), "test_proc");
+        let proc_id = ProcAddr::singleton(ChannelAddr::Local(0), "test_proc");
         let child_id = proc_id.actor_addr("proc_agent");
         let parent_id = proc_id.actor_addr("controller");
 

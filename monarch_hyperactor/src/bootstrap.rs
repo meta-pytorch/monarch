@@ -127,7 +127,7 @@ pub fn attach_to_workers(
     // drops illegal characters, falls back to "nil" if empty. Callers pass names
     // derived from experiment / job names that may contain uppercase or punctuation;
     // rejecting them surfaces as an opaque PyException far from the input site.
-    let name = HostMeshId::unique(Label::strip(name.unwrap_or("hosts")));
+    let name = HostMeshId::instance(Label::strip(name.unwrap_or("hosts")));
     let instance = instance.clone();
     PyPythonTask::new(async move {
         let results = try_join_all(tasks).await?;

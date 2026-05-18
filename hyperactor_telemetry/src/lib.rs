@@ -113,7 +113,9 @@ use tracing_subscriber::fmt::FormatFields;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::registry::LookupSpan;
 
+#[cfg(all(fbcode_build, target_os = "linux"))]
 use crate::config::ENABLE_OTEL_METRICS;
+#[cfg(all(fbcode_build, target_os = "linux"))]
 use crate::config::ENABLE_OTEL_TRACING;
 use crate::config::ENABLE_RECORDER_TRACING;
 use crate::config::ENABLE_SQLITE_TRACING;
@@ -121,6 +123,7 @@ use crate::config::MONARCH_FILE_LOG_LEVEL;
 use crate::config::MONARCH_LOG_SUFFIX;
 use crate::config::USE_UNIFIED_LAYER;
 use crate::recorder::Recorder;
+#[cfg(all(fbcode_build, target_os = "linux"))]
 use crate::sqlite::get_reloadable_sqlite_layer;
 
 /// Hash any hashable value to a u64 using DefaultHasher.
@@ -830,7 +833,7 @@ pub struct TimerGuard<'a> {
     start: Instant,
 }
 
-impl<'a> Drop for TimerGuard<'a> {
+impl Drop for TimerGuard<'_> {
     fn drop(&mut self) {
         let now = Instant::now();
         let dur = now.duration_since(self.start);
@@ -1129,6 +1132,9 @@ fn initialize_logging_with_log_prefix_impl(
     prefix_env_var: Option<String>,
     mock_scuba: bool,
 ) -> Box<dyn TelemetryTestHandle> {
+    #[cfg(not(all(fbcode_build, target_os = "linux")))]
+    let _ = mock_scuba;
+
     let use_unified = hyperactor_config::global::get(USE_UNIFIED_LAYER);
     let should_install_subscriber = !tracing::dispatcher::has_been_set();
 
