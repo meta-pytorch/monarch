@@ -421,7 +421,7 @@ mod tests {
     #[tokio::test]
     async fn test_simple_connection() -> Result<()> {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client")?;
+        let (client, _) = proc.client("client")?;
         let (connect, completer) = Connect::allocate(client.self_addr().clone(), client);
         let actor = proc.spawn("actor", EchoActor {})?;
         actor.post(&completer.caps, connect);
@@ -446,7 +446,7 @@ mod tests {
     #[tokio::test]
     async fn test_connection_close_on_drop() -> Result<()> {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.instance("client")?;
+        let (client, _client_handle) = proc.client("client")?;
 
         let (connect, completer) =
             Connect::allocate(client.self_addr().clone(), client.clone_for_py());
@@ -473,7 +473,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_eof_on_drop_after_shutdown() -> Result<()> {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.instance("client")?;
+        let (client, _client_handle) = proc.client("client")?;
 
         let (connect, completer) =
             Connect::allocate(client.self_addr().clone(), client.clone_for_py());

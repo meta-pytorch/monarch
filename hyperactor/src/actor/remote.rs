@@ -262,7 +262,7 @@ mod tests {
             .gspawn(
                 &Proc::isolated(),
                 "hyperactor::actor::remote::tests::MyActor",
-                Uid::instance_labeled(Label::new("actor").unwrap()),
+                Uid::instance(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(true, bincode::config::legacy()).unwrap(),
                 Flattrs::default(),
             )
@@ -273,7 +273,7 @@ mod tests {
             .gspawn(
                 &Proc::isolated(),
                 "hyperactor::actor::remote::tests::MyActor",
-                Uid::instance_labeled(Label::new("actor").unwrap()),
+                Uid::instance(Label::new("actor").unwrap()),
                 bincode::serde::encode_to_vec(false, bincode::config::legacy()).unwrap(),
                 Flattrs::default(),
             )
@@ -286,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn test_instance_gspawn_child_returns_erased_handle() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.instance("parent").unwrap();
+        let (parent, _parent_handle) = proc.client("parent").unwrap();
 
         let child = parent
             .gspawn(
@@ -307,8 +307,8 @@ mod tests {
     #[tokio::test]
     async fn test_instance_gspawn_uid_uses_explicit_uid() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.instance("parent").unwrap();
-        let uid = Uid::instance_labeled(Label::new("child").unwrap());
+        let (parent, _parent_handle) = proc.client("parent").unwrap();
+        let uid = Uid::instance(Label::new("child").unwrap());
 
         let child = parent
             .gspawn_uid(
@@ -328,8 +328,8 @@ mod tests {
     #[tokio::test]
     async fn test_instance_gspawn_uid_rejects_duplicate_uid() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.instance("parent").unwrap();
-        let uid = Uid::instance_labeled(Label::new("child").unwrap());
+        let (parent, _parent_handle) = proc.client("parent").unwrap();
+        let uid = Uid::instance(Label::new("child").unwrap());
 
         let child = parent
             .gspawn_uid(
