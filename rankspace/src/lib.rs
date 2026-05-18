@@ -121,6 +121,76 @@
 //!      1      5  7
 //! ```
 //!
+//! Projection and embedding let you separate a reusable local pattern from the
+//! concrete base ranks where that pattern happens to appear. [`RankRect::project`]
+//! captures a rectangle as parent-local row-major indices. [`RankRect::embed`]
+//! interprets such a captured pattern in a parent rectangle:
+//!
+//! ```text
+//! project: concrete base ranks -> parent-local pattern
+//! embed:   parent-local pattern -> concrete base ranks
+//! ```
+//!
+//! This is useful for operations such as tiling. Suppose one parent maps local
+//! indices to base ranks with `offset = 10` and `strides = [8, 2]`:
+//!
+//! ```text
+//! parent A coordinates -> parent A base ranks
+//!
+//!           gpu
+//!         0   1   2   3
+//! host 0  10  12  14  16
+//!      1  18  20  22  24
+//! ```
+//!
+//! The right half of that rectangle is the concrete tile `{14, 16, 22, 24}`:
+//!
+//! ```text
+//! tile in parent A base ranks
+//!
+//!           local gpu
+//!           0   1
+//! host 0    14  16
+//!      1    22  24
+//! ```
+//!
+//! Projecting the tile through parent A captures the shape as parent-local
+//! indices `{2, 3, 6, 7}`:
+//!
+//! ```text
+//! captured tile pattern
+//!
+//!           local gpu
+//!           0  1
+//! host 0    2  3
+//!      1    6  7
+//! ```
+//!
+//! That captured pattern can then be embedded into another compatible parent.
+//! If parent B has `offset = 100` and `strides = [40, 5]`, the same tile
+//! pattern resolves to different base ranks:
+//!
+//! ```text
+//! parent B coordinates -> parent B base ranks
+//!
+//!           gpu
+//!         0    1    2    3
+//! host 0  100  105  110  115
+//!      1  140  145  150  155
+//!
+//! captured tile pattern embedded in parent B
+//!
+//!           local gpu
+//!           0    1
+//! host 0    110  115
+//!      1    150  155
+//! ```
+//!
+//! The captured pattern is more than an extent: it includes offset and strides
+//! in parent-local index space. This lets it represent affine slices, strided
+//! tiles, and fixed-dimension subspaces. If a target parent cannot realize that
+//! affine local-index pattern, embedding returns an error.
+//!
 //! [`RankMask`] is a set of ranks in base-rank coordinates. Masks are not
 //! relative to a particular subspace or view. This keeps set operations about
 //! ranks, while projection into local coordinates remains a view concern:
@@ -979,8 +1049,20 @@ fn row_major_index(indices: &[usize], sizes: impl IntoIterator<Item = usize>) ->
 mod tests {
     use super::*;
 
+    macro_rules! rankrect {
+        (offset = $offset:expr; $($name:ident = $size:expr),+ $(,)?) => {{
+            let extent = Extent::new(vec![$(Dim::new(stringify!($name), $size)),+]).unwrap();
+            let strides = row_major_strides([$($size),+]);
+            RankRect::affine(extent, Rank($offset), strides).unwrap()
+        }};
+        ($($name:ident = $size:expr),+ $(,)?) => {{
+            RankRect::new(Extent::new(vec![$(Dim::new(stringify!($name), $size)),+]).unwrap())
+                .unwrap()
+        }};
+    }
+
     fn host_gpu_rect() -> RankRect {
-        RankRect::new(Extent::new(vec![Dim::new("host", 2), Dim::new("gpu", 4)]).unwrap()).unwrap()
+        rankrect!(host = 2, gpu = 4)
     }
 
     #[test]
