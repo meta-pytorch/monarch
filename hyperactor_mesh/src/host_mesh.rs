@@ -863,7 +863,7 @@ impl Drop for HostMeshShutdownGuard {
                                  relying on PDEATHSIG/manager Drop"
                             );
                         }
-                        Ok(proc) => match proc.instance("drop") {
+                        Ok(proc) => match proc.client("drop") {
                             Err(e) => {
                                 tracing::warn!(
                                     error = %e,

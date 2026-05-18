@@ -1563,7 +1563,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         let id = ResourceId::unique(Label::new("proc1").unwrap());
 
@@ -1624,7 +1624,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         let id = ResourceId::unique(Label::new("proc1").unwrap());
         host_agent
@@ -1675,7 +1675,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         let id = ResourceId::unique(Label::new("proc1").unwrap());
         host_agent
@@ -1732,7 +1732,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         let id = ResourceId::unique(Label::new("proc1").unwrap());
 
@@ -1781,7 +1781,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         let mesh_a = HostMeshId::unique(Label::new("mesh-a").unwrap());
         let mesh_b = HostMeshId::unique(Label::new("mesh-b").unwrap());
@@ -1885,7 +1885,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         let mesh_a = HostMeshId::unique(Label::new("mesh-a").unwrap());
         let mesh_b = HostMeshId::unique(Label::new("mesh-b").unwrap());
@@ -1972,7 +1972,7 @@ mod tests {
 
         let client_proc =
             Proc::direct(ChannelTransport::Unix.any(), "qd_client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         // Spawn a proc so the host_agent processes at least one
         // CreateOrUpdate message, which goes through the work queue.

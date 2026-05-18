@@ -264,7 +264,7 @@ impl Harness {
         let observer_proc = local_proc("observer")?;
         let parent_proc = local_proc("parent")?;
         let worker_proc = local_proc("worker")?;
-        let (observer, _observer_handle) = observer_proc.instance("observer")?;
+        let (observer, _observer_handle) = observer_proc.client("observer")?;
         let (token_out, mut token_out_rx) = observer.open_port::<String>();
         let (parent_linked, mut parent_linked_rx) = observer.open_port::<ActorAddr>();
         let (parent_events, parent_events_rx) = observer.open_port::<ActorSupervisionEvent>();

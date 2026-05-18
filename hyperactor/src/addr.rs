@@ -139,18 +139,33 @@ impl ProcAddr {
         self.id.label()
     }
 
-    /// Create a ProcAddr with a unique (random) uid and the given label.
-    pub fn unique(addr: ChannelAddr, base_name: impl AsRef<str>) -> Self {
+    /// Create a ProcAddr with an anonymous instance proc id.
+    pub fn anonymous(addr: ChannelAddr) -> Self {
+        Self::new(id::ProcId::anonymous(), Location::from(addr))
+    }
+
+    /// Create a ProcAddr with an instance proc id and the given display label.
+    pub fn instance(addr: ChannelAddr, base_name: impl AsRef<str>) -> Self {
         let label = Label::strip(base_name.as_ref());
         Self::new(id::ProcId::instance(label), Location::from(addr))
     }
 
-    /// Create a ProcAddr singleton with a label stripped from the given name.
-    pub fn named(addr: ChannelAddr, name: impl AsRef<str>) -> Self {
+    /// Create a ProcAddr with a singleton proc id identified by the given name.
+    pub fn singleton(addr: ChannelAddr, name: impl AsRef<str>) -> Self {
         Self::new(
             id::ProcId::singleton(Label::strip(name.as_ref())),
             Location::from(addr),
         )
+    }
+
+    /// Create a ProcAddr with a unique (random) uid and the given label.
+    pub fn unique(addr: ChannelAddr, base_name: impl AsRef<str>) -> Self {
+        Self::instance(addr, base_name)
+    }
+
+    /// Create a ProcAddr singleton with a label stripped from the given name.
+    pub fn named(addr: ChannelAddr, name: impl AsRef<str>) -> Self {
+        Self::singleton(addr, name)
     }
 
     /// Create an ActorAddr singleton with the provided name within this proc.
@@ -796,6 +811,42 @@ mod tests {
         let loc: Location = ChannelAddr::Local(42).into();
         let pref = ProcAddr::new(pid, loc);
         assert_eq!(pref.to_string(), format!("{}@inproc://42", pref.id()));
+    }
+
+    #[test]
+    fn test_proc_addr_identity_constructors() {
+        let anonymous = ProcAddr::anonymous(ChannelAddr::Local(1));
+        assert!(
+            matches!(anonymous.id().uid(), Uid::Instance(_, None)),
+            "anonymous proc addr must have an unlabeled instance id"
+        );
+        assert_eq!(anonymous.label(), None);
+        assert_eq!(*anonymous.location().addr(), ChannelAddr::Local(1));
+
+        let instance = ProcAddr::instance(ChannelAddr::Local(2), "worker");
+        assert!(
+            matches!(
+                instance.id().uid(),
+                Uid::Instance(_, Some(label)) if label.as_str() == "worker"
+            ),
+            "instance proc addr must have a labeled instance id"
+        );
+        assert_eq!(instance.label().map(|label| label.as_str()), Some("worker"));
+        assert_eq!(*instance.location().addr(), ChannelAddr::Local(2));
+
+        let singleton = ProcAddr::singleton(ChannelAddr::Local(3), "controller");
+        assert!(
+            matches!(
+                singleton.id().uid(),
+                Uid::Singleton(label) if label.as_str() == "controller"
+            ),
+            "singleton proc addr must have a singleton id"
+        );
+        assert_eq!(
+            singleton.label().map(|label| label.as_str()),
+            Some("controller")
+        );
+        assert_eq!(*singleton.location().addr(), ChannelAddr::Local(3));
     }
 
     #[test]
