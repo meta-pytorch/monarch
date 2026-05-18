@@ -491,7 +491,7 @@ impl Bind for PythonMessage {
 impl PythonMessage {
     #[new]
     #[pyo3(signature = (kind, message))]
-    pub fn new<'py>(kind: PythonMessageKind, message: PyRef<'py, FrozenBuffer>) -> PyResult<Self> {
+    pub fn new(kind: PythonMessageKind, message: PyRef<'_, FrozenBuffer>) -> PyResult<Self> {
         Ok(PythonMessage::new_from_buf(kind, message.inner.clone()))
     }
 
@@ -710,8 +710,7 @@ impl PythonActor {
         // (matching GlobalClientActor::fresh_instance).
         instance.set_system();
 
-        // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
-        // are bound.
+        // Bind to ensure the Undeliverable<MessageEnvelope> port is bound.
         let _client_ref = handle.bind::<PythonActor>();
 
         get_tokio_runtime().spawn(async move {
@@ -763,7 +762,7 @@ impl PythonActor {
                             // exiting the loop.
                             // Else, continue handling messages.
                             if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
-                                for supervision_event in supervision_rx.drain() {
+                                while let Ok(supervision_event) = supervision_rx.try_recv() {
                                     if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
                                         break 'messages Some(err);
                                     }
@@ -780,14 +779,15 @@ impl PythonActor {
                                 need_drain = matches!(signal, Signal::DrainAndStop(_));
                                 break None;
                             },
+                            Ok(Signal::ExitRequested(_)) => break None,
                             Ok(Signal::ChildStopped(_)) => {},
-                            Ok(Signal::Abort(reason)) => {
+                            Ok(Signal::Kill(reason)) => {
                                 break Some(ActorError { actor_id: Box::new(instance.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
                             },
                             Err(err) => break Some(err),
                         }
                     }
-                    Ok(supervision_event) = supervision_rx.recv() => {
+                    Some(supervision_event) = supervision_rx.recv() => {
                         if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
                             break Some(err);
                         }
@@ -897,7 +897,7 @@ impl Actor for PythonActor {
             // Create an error port that converts PythonMessage to an abort signal.
             // This allows Python to send errors that trigger actor supervision.
             let error_port: hyperactor::PortHandle<PythonMessage> =
-                this.port::<Signal>().contramap(|msg: PythonMessage| {
+                this.signal_port().contramap(|msg: PythonMessage| {
                     monarch_with_gil_blocking(|py| {
                         let err = match msg.kind {
                             PythonMessageKind::Exception { .. } => {
@@ -917,7 +917,7 @@ impl Actor for PythonActor {
                                 SerializablePyErr::from(py, &py_err)
                             }
                         };
-                        Signal::Abort(err.to_string())
+                        Signal::Kill(err.to_string())
                     })
                 });
 
@@ -1034,7 +1034,7 @@ impl Actor for PythonActor {
             envelope.0.sender(),
             ins.self_addr(),
             "undeliverable message was returned to the wrong actor. \
-            Return address = {}, src actor = {}, dest actor port = {}, message type = {}, envelope headers = {}",
+            Return address = {}, src actor = {}, dest handler port = {}, message type = {}, envelope headers = {}",
             envelope.0.sender(),
             ins.self_addr(),
             envelope.0.dest(),
@@ -1311,7 +1311,7 @@ impl PythonActor {
 
         // Spawn a child actor to await the Python handler method.
         tokio::spawn(handle_async_endpoint_panic(
-            cx.port(),
+            cx.signal_port(),
             PythonTask::new(future)?,
             receiver,
             cx.self_addr().to_string(),
@@ -1584,8 +1584,8 @@ async fn handle_async_endpoint_panic(
             })
             .0;
         panic_sender
-            .send(&client, Signal::Abort(panic.to_string()))
-            .expect("Unable to send panic message");
+            .send(&client, Signal::Kill(panic.to_string()))
+            .expect("unable to send panic message");
     }
 
     // Record latency in microseconds

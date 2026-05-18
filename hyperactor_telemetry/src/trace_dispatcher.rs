@@ -302,17 +302,17 @@ impl TraceEventDispatcher {
         }
         let _reset = InSendGuard;
 
-        if let Some(sender) = &self.sender {
-            if let Err(mpsc::TrySendError::Full(_)) = sender.try_send(event) {
-                let dropped = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(sender) = &self.sender
+            && let Err(mpsc::TrySendError::Full(_)) = sender.try_send(event)
+        {
+            let dropped = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
 
-                if dropped == 1 || dropped.is_multiple_of(1000) {
-                    eprintln!(
-                        "[telemetry]: {}  events and log lines dropped que to full queue (capacity: {})",
-                        dropped, QUEUE_CAPACITY
-                    );
-                    self.send_drop_event(dropped);
-                }
+            if dropped == 1 || dropped.is_multiple_of(1000) {
+                eprintln!(
+                    "[telemetry]: {}  events and log lines dropped que to full queue (capacity: {})",
+                    dropped, QUEUE_CAPACITY
+                );
+                self.send_drop_event(dropped);
             }
         }
     }
@@ -536,14 +536,13 @@ fn worker_loop(
                     None => true,
                 },
                 _ => true,
-            } {
-                if let Err(e) = sink.consume(&event) {
-                    eprintln!(
-                        "[telemetry] sink {} failed to consume event: {}",
-                        sink.name(),
-                        e
-                    );
-                }
+            } && let Err(e) = sink.consume(&event)
+            {
+                eprintln!(
+                    "[telemetry] sink {} failed to consume event: {}",
+                    sink.name(),
+                    e
+                );
             }
         }
     }
@@ -608,10 +607,10 @@ fn worker_loop(
 
 impl Drop for WorkerHandle {
     fn drop(&mut self) {
-        if let Some(handle) = self.join_handle.take() {
-            if let Err(e) = handle.join() {
-                eprintln!("[telemetry] worker thread panicked: {:?}", e);
-            }
+        if let Some(handle) = self.join_handle.take()
+            && let Err(e) = handle.join()
+        {
+            eprintln!("[telemetry] worker thread panicked: {:?}", e);
         }
     }
 }

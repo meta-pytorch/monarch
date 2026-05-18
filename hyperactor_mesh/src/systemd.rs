@@ -1213,10 +1213,9 @@ mod tests {
                     // for this unit.
                     if let Some((_, expected_marker)) =
                         units.iter().find(|(name, _)| name == &unit_name)
+                        && line.contains(expected_marker)
                     {
-                        if line.contains(expected_marker) {
-                            seen_markers.insert(unit_name.clone(), true);
-                        }
+                        seen_markers.insert(unit_name.clone(), true);
                     }
 
                     // Check if we've seen all markers.
@@ -1311,7 +1310,7 @@ mod tests {
             conn: &'a Connection,
             name: String,
         }
-        impl<'a> Cleanup<'a> {
+        impl Cleanup<'_> {
             async fn run(self) {
                 let _ = stop_unit_best_effort(self.conn, &self.name).await;
             }

@@ -130,7 +130,7 @@ hyperactor::behavior!(ShoppingApi, ShoppingList, ClearList, GetItemCount,);
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let mut proc = Proc::local();
+    let mut proc = Proc::isolated();
 
     // Spawn our actor, and get a handle for rank 0.
     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =
@@ -201,7 +201,7 @@ async fn main() -> Result<(), anyhow::Error> {
     );
 
     let _ = proc
-        .destroy_and_wait::<()>(Duration::from_secs(1), None, "example cleanup")
+        .destroy_and_wait(Duration::from_secs(1), "example cleanup")
         .await?;
     Ok(())
 }
