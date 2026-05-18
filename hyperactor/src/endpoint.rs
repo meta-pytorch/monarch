@@ -92,7 +92,7 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_actor_handle() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let handle = proc
             .spawn("echo", EchoActor { tx: tx.bind() })
@@ -106,7 +106,7 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_port_handle() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (tx, mut rx) = client.open_port();
 
         Endpoint::send(&tx, &client, 123u64).expect("send to port handle should succeed");
@@ -117,7 +117,7 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_once_port_handle() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (tx, rx) = client.open_once_port();
 
         Endpoint::send(tx, &client, 123u64).expect("send to once port handle should succeed");
@@ -140,7 +140,7 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_port_ref() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (tx, mut rx) = client.open_port();
         let port_ref = tx.bind();
 
@@ -152,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_once_port_ref() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (tx, rx) = client.open_once_port();
         let port_ref = tx.bind();
 
@@ -164,7 +164,7 @@ mod tests {
     #[tokio::test]
     async fn test_remote_endpoint_headers() {
         let proc = Proc::isolated();
-        let (client, _) = proc.instance("client").unwrap();
+        let (client, _) = proc.client("client").unwrap();
         let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
         let port = client.mailbox_for_py().open_handler_enqueue_port(
             move |headers: Flattrs, message: u64| {

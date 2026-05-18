@@ -38,7 +38,7 @@ impl LocalSpawner {
 impl CanSpawn for LocalSpawner {
     async fn spawn<A: Actor>(&self, params: A::Params) -> ActorHandle<A::Message> {
         let state = self.0.as_ref().expect("invalid spawner");
-        let actor_id = state.root.unique_child();
+        let actor_id = state.root.anonymous_child();
         A::do_spawn(state.sender.clone(), actor_id.into(), params, self.clone())
             .await
             .unwrap()

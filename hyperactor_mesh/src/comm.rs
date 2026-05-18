@@ -766,9 +766,9 @@ mod tests {
         use hyperactor::id::Label;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), proc_name.to_string()).unwrap();
-        let (client, client_handle) = proc.instance("client").unwrap();
+        let (client, client_handle) = proc.client("client").unwrap();
 
-        let actor_mesh_id = crate::mesh_id::ActorMeshId::unique(Label::new("test").unwrap());
+        let actor_mesh_id = crate::mesh_id::ActorMeshId::instance(Label::new("test").unwrap());
 
         let (tx, rx) = open_port(&client);
         let forward_port = tx.bind();
@@ -1342,7 +1342,7 @@ mod tests {
             forward_port: tx.bind(),
         };
         let actor_name =
-            crate::mesh_id::ActorMeshId::unique(hyperactor::id::Label::new("test").unwrap());
+            crate::mesh_id::ActorMeshId::instance(hyperactor::id::Label::new("test").unwrap());
         // Make this actor a "system" actor to avoid spawning a controller actor.
         // This test is verifying the whole comm tree, so we want fewer actors
         // involved.
@@ -1577,7 +1577,7 @@ mod tests {
             forward_port: tx.bind(),
         };
         let actor_name =
-            crate::mesh_id::ActorMeshId::unique(hyperactor::id::Label::new("test").unwrap());
+            crate::mesh_id::ActorMeshId::instance(hyperactor::id::Label::new("test").unwrap());
         // Make this actor a "system" actor to avoid spawning a controller actor.
         let actor_mesh: crate::ActorMesh<TestActor> = proc_mesh
             .spawn_with_name(&instance, actor_name, &params, None, true)
@@ -1734,7 +1734,7 @@ mod tests {
             forward_port: tx.bind(),
         };
         let actor_name =
-            crate::mesh_id::ActorMeshId::unique(hyperactor::id::Label::new("test").unwrap());
+            crate::mesh_id::ActorMeshId::instance(hyperactor::id::Label::new("test").unwrap());
         let actor_mesh: ActorMesh<TestActor> = proc_mesh
             .spawn_with_name(&instance, actor_name, &params, None, true)
             .await
