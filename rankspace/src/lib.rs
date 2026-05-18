@@ -36,6 +36,9 @@
 
 pub mod view;
 
+#[cfg(test)]
+mod property_tests;
+
 use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
