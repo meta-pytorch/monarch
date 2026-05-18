@@ -440,9 +440,9 @@ impl ClientActor {
     /// or the timeout is reached in which case it will return None
     /// If the actor has been stopped, this returns an error.
     #[pyo3(signature = (*, timeout_msec = None))]
-    fn get_next_message<'py>(
+    fn get_next_message(
         &mut self,
-        py: Python<'py>,
+        py: Python<'_>,
         timeout_msec: Option<u64>,
     ) -> PyResult<Py<PyAny>> {
         let instance = self.instance.clone();

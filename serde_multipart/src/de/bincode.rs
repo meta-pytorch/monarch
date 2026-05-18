@@ -77,7 +77,7 @@ where
     }
 }
 
-impl<'de, 'a, R, O> serde::Deserializer<'de> for &'a mut Deserializer<R, O>
+impl<'de, R, O> serde::Deserializer<'de> for &mut Deserializer<R, O>
 where
     R: BincodeRead<'de>,
     O: Options,
@@ -355,7 +355,7 @@ where
     }
 }
 
-impl<'de, 'a, R, O> serde::de::VariantAccess<'de> for &'a mut Deserializer<R, O>
+impl<'de, R, O> serde::de::VariantAccess<'de> for &mut Deserializer<R, O>
 where
     R: BincodeRead<'de>,
     O: Options,
