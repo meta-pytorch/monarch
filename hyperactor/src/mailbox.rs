@@ -17,6 +17,7 @@
 //!
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
+//! # use hyperactor::Endpoint as _;
 //! # use hyperactor::Proc;
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
@@ -36,6 +37,7 @@
 //!
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
+//! # use hyperactor::Endpoint as _;
 //! # use hyperactor::Proc;
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
@@ -3976,7 +3978,7 @@ mod tests {
         assert!(msg_str.contains("sender:") && msg_str.contains("quux_0"));
         assert!(msg_str.contains("dest:") && msg_str.contains("corge_0"));
 
-        proc.destroy_and_wait::<()>(tokio::time::Duration::from_secs(1), None, "test cleanup")
+        proc.destroy_and_wait(tokio::time::Duration::from_secs(1), "test cleanup")
             .await
             .unwrap();
     }

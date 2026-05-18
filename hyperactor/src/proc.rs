@@ -379,6 +379,10 @@ wirevalue::register_type!(AttachRequest);
 /// Wire protocol for the host -> client direction on a duplex attach
 /// connection.
 #[derive(Debug, Serialize, Deserialize, typeuri::Named)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "wire-protocol enum; boxing Envelope ripples through all channel/networking construction and destructure sites and needs a wire-compatibility review — separate diff"
+)]
 pub enum Host2Client {
     /// First message: identity assignment from the host.
     Bootstrap(BootstrapAssignment),
@@ -524,7 +528,7 @@ pub struct ActorInstance<A: Actor> {
     /// Handle to the actor (used for lifecycle control and port access).
     pub handle: ActorHandle<A>,
     /// Supervision events delivered to this actor.
-    pub supervision: PortReceiver<ActorSupervisionEvent>,
+    pub supervision: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     /// Control signals for the actor.
     pub signal: PortReceiver<Signal>,
     /// Primary work queue for handler dispatch.
@@ -1086,10 +1090,10 @@ impl Proc {
         F: FnMut(&InstanceCell, usize),
     {
         for entry in self.state().instances.iter() {
-            if entry.key().uid().is_singleton() {
-                if let Some(cell) = entry.value().upgrade() {
-                    cell.traverse(f);
-                }
+            if entry.key().uid().is_singleton()
+                && let Some(cell) = entry.value().upgrade()
+            {
+                cell.traverse(f);
             }
         }
     }
@@ -1263,11 +1267,7 @@ impl Proc {
     /// Call `abort` on the `JoinHandle` associated with the given
     /// root actor. If successful return `Some(root.clone())` else
     /// `None`.
-    pub fn abort_root_actor(
-        &self,
-        root: &ActorId,
-        this_handle: Option<&JoinHandle<()>>,
-    ) -> Option<impl Future<Output = ActorAddr>> {
+    pub fn abort_root_actor(&self, root: &ActorId) -> Option<impl Future<Output = ActorAddr>> {
         self.state()
             .instances
             .get(root)
@@ -1277,23 +1277,14 @@ impl Proc {
                 let actor_addr = cell.actor_addr().clone();
                 let r1 = actor_addr.clone();
                 let r2 = actor_addr;
-                // If abort_root_actor was called from inside an actor task, we don't want to abort that actor's task yet.
-                let skip_abort = this_handle.is_some_and(|this_h| {
-                    cell.inner
-                        .actor_task_handle
-                        .get()
-                        .is_some_and(|other_h| std::ptr::eq(this_h, other_h))
-                });
                 // `Instance::start()` is infallible and should
                 // complete quickly, so calling `wait()` on `actor_task_handle`
                 // should be safe (i.e., not hang forever).
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        if !skip_abort {
-                            let h = cell.inner.actor_task_handle.wait();
-                            tracing::debug!("{}: aborting {:?}", r1, h);
-                            h.abort();
-                        }
+                        let h = cell.inner.actor_task_handle.wait();
+                        tracing::debug!("{}: aborting {:?}", r1, h);
+                        h.abort();
                     })
                     .await
                     .unwrap();
@@ -1342,45 +1333,13 @@ impl Proc {
     /// Stop the proc. Returns a pair of:
     /// - the actors observed to stop;
     /// - the actors not observed to stop when timeout.
-    ///
-    /// If `cx` is specified, it means this method was called from inside an actor
-    /// in which case we shouldn't wait for it to stop and need to delay aborting
-    /// its task.
-    pub async fn destroy_and_wait<A: Actor>(
-        &mut self,
-        timeout: Duration,
-        cx: Option<&Context<'_, A>>,
-        reason: &str,
-    ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error> {
-        self.destroy_and_wait_except_current::<A>(timeout, cx, false, reason)
-            .await
-    }
-
-    /// Stop the proc. Returns a pair of:
-    /// - the actors observed to stop;
-    /// - the actors not observed to stop when timeout.
-    ///
-    /// If `cx` is specified, it means this method was called from inside an actor
-    /// in which case we shouldn't wait for it to stop and need to delay aborting
-    /// its task.
-    /// If except_current is true, don't stop the actor represented by "cx" at
-    /// all.
     #[hyperactor::instrument(fields(subject = self.proc_addr().subject().to_string()))]
-    pub async fn destroy_and_wait_except_current<A: Actor>(
+    pub async fn destroy_and_wait(
         &mut self,
         timeout: Duration,
-        cx: Option<&Context<'_, A>>,
-        except_current: bool,
         reason: &str,
     ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error> {
         tracing::debug!("proc stopping");
-
-        let (this_handle, this_actor_id) = cx.map_or((None, None), |cx| {
-            (
-                Some(cx.actor_task_handle().expect("cannot call destroy_and_wait from inside an actor unless actor has finished starting")),
-                Some(cx.self_addr())
-            )
-        });
 
         let coordinator_id = self.supervision_coordinator_actor_addr().cloned();
 
@@ -1407,7 +1366,6 @@ impl Proc {
 
         let waits: Vec<_> = statuses
             .iter_mut()
-            .filter(|(actor_id, _)| Some(*actor_id) != this_actor_id)
             .map(|(actor_id, root)| {
                 let actor_id = actor_id.clone();
                 async move {
@@ -1432,7 +1390,7 @@ impl Proc {
             .iter()
             .filter(|(actor_id, _)| !stopped_actors.contains(actor_id))
             .map(|(actor_id, _)| {
-                let f = self.abort_root_actor(actor_id.id(), this_handle);
+                let f = self.abort_root_actor(actor_id.id());
                 async move {
                     let _ = if let Some(f) = f { Some(f.await) } else { None };
                     // If `is_none(&_)` then the associated actor's
@@ -1451,23 +1409,19 @@ impl Proc {
         // coordinator's DrainAndStop path drains queued supervision
         // events before exiting.
         if let Some(ref coord_id) = coordinator_id
-            && this_actor_id != Some(coord_id)
+            && let Some(mut status) = self.stop_actor(coord_id.id(), reason.to_string())
         {
-            if let Some(mut status) = self.stop_actor(coord_id.id(), reason.to_string()) {
-                let stopped = tokio::time::timeout(
-                    timeout,
-                    status.wait_for(|s: &ActorStatus| s.is_terminal()),
-                )
-                .await
-                .is_ok();
-                if stopped {
-                    stopped_actors.push(coord_id.clone());
-                } else {
-                    if let Some(f) = self.abort_root_actor(coord_id.id(), this_handle) {
-                        f.await;
-                    }
-                    aborted_actors.push(coord_id.clone());
+            let stopped =
+                tokio::time::timeout(timeout, status.wait_for(|s: &ActorStatus| s.is_terminal()))
+                    .await
+                    .is_ok();
+            if stopped {
+                stopped_actors.push(coord_id.clone());
+            } else {
+                if let Some(f) = self.abort_root_actor(coord_id.id()) {
+                    f.await;
                 }
+                aborted_actors.push(coord_id.clone());
             }
         }
 
@@ -1488,14 +1442,6 @@ impl Proc {
             }
             Ok(Ok(())) => {}
         }
-
-        if let Some(this_handle) = this_handle
-            && let Some(this_actor_id) = this_actor_id
-            && !except_current
-        {
-            tracing::debug!("{}: aborting (delayed) {:?}", this_actor_id, this_handle);
-            this_handle.abort()
-        };
 
         tracing::info!(
             "destroy_and_wait: {} actors stopped, {} actors aborted",
@@ -1684,7 +1630,7 @@ impl MailboxSender for Proc {
         if self.is_local_delivery_target(&dest_proc) {
             self.state().proc_muxer.post(envelope, return_handle)
         } else {
-            self.forwarder().post(envelope, return_handle)
+            self.state().gateway.post(envelope, return_handle)
         }
     }
 
@@ -1871,7 +1817,10 @@ impl<A: Actor> Drop for InstanceState<A> {
 pub struct InstanceReceivers<A: Actor> {
     /// Signal and supervision receivers for the actor loop. `None`
     /// for detached/client instances that don't run an actor loop.
-    actor_loop: Option<(PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>)>,
+    actor_loop: Option<(
+        PortReceiver<Signal>,
+        mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    )>,
     /// Work queue for dispatching messages to actor handlers.
     work: mpsc::UnboundedReceiver<WorkCell<A>>,
     /// Introspect message receiver for the dedicated introspect task.
@@ -1911,10 +1860,10 @@ impl<A: Actor> Instance<A> {
             None
         } else {
             let (signal_port, signal_receiver) = mailbox.open_port::<Signal>();
-            let (supervision_port, supervision_receiver) =
-                mailbox.open_port::<ActorSupervisionEvent>();
+            let (supervision_tx, supervision_receiver) =
+                mpsc::unbounded_channel::<ActorSupervisionEvent>();
             Some((
-                (signal_port, supervision_port),
+                (signal_port, supervision_tx),
                 (signal_receiver, supervision_receiver),
             ))
         };
@@ -2365,7 +2314,10 @@ impl<A: Actor> Instance<A> {
     async fn serve(
         mut self,
         mut actor: A,
-        actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
+        actor_loop_receivers: (
+            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+        ),
         mut work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
     ) {
         let result = self
@@ -2423,7 +2375,7 @@ impl<A: Actor> Instance<A> {
         if let Some(parent) = self.inner.cell.maybe_unlink_parent() {
             if let Some(event) = event {
                 // Parent exists, failure should be propagated to the parent.
-                parent.send_supervision_event_or_crash(&self, event);
+                parent.send_supervision_event_or_crash(event);
             }
             // TODO: we should get rid of this signal, and use *only* supervision events for
             // the purpose of conveying lifecycle changes
@@ -2457,7 +2409,10 @@ impl<A: Actor> Instance<A> {
     async fn run_actor_tree(
         &mut self,
         actor: &mut A,
-        mut actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
+        mut actor_loop_receivers: (
+            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+        ),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
     ) -> Result<String, ActorError> {
         // It is okay to catch all panics here, because we are in a tokio task,
@@ -2576,7 +2531,10 @@ impl<A: Actor> Instance<A> {
     async fn run(
         &mut self,
         actor: &mut A,
-        actor_loop_receivers: &mut (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
+        actor_loop_receivers: &mut (
+            PortReceiver<Signal>,
+            mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+        ),
         work_rx: &mut mpsc::UnboundedReceiver<WorkCell<A>>,
     ) -> Result<String, ActorError> {
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
@@ -2629,7 +2587,7 @@ impl<A: Actor> Instance<A> {
                     let _ = ACTOR_MESSAGE_HANDLER_DURATION.start(metric_pairs);
                     let work = work.expect("inconsistent work queue state");
                     if let Err(err) = work.handle(actor, self).await {
-                        for supervision_event in supervision_event_receiver.drain() {
+                        while let Ok(supervision_event) = supervision_event_receiver.try_recv() {
                             self.handle_supervision_event(actor, supervision_event).await?;
                         }
                         let kind = ActorErrorKind::processing(err);
@@ -2639,7 +2597,7 @@ impl<A: Actor> Instance<A> {
                         });
                     }
                 }
-                Ok(supervision_event) = supervision_event_receiver.recv() => {
+                Some(supervision_event) = supervision_event_receiver.recv() => {
                     self.handle_supervision_event(actor, supervision_event).await?;
                 }
             }
@@ -3028,7 +2986,10 @@ struct InstanceCellState {
     proc: Proc,
 
     /// Control port handles to the actor loop, if one is running.
-    actor_loop: Option<(PortHandle<Signal>, PortHandle<ActorSupervisionEvent>)>,
+    actor_loop: Option<(
+        PortHandle<Signal>,
+        mpsc::UnboundedSender<ActorSupervisionEvent>,
+    )>,
 
     /// An observer that stores the current status of the actor.
     status: watch::Receiver<ActorStatus>,
@@ -3177,7 +3138,10 @@ impl InstanceCell {
         actor_id: ActorAddr,
         actor_type: ActorType,
         proc: Proc,
-        actor_loop: Option<(PortHandle<Signal>, PortHandle<ActorSupervisionEvent>)>,
+        actor_loop: Option<(
+            PortHandle<Signal>,
+            mpsc::UnboundedSender<ActorSupervisionEvent>,
+        )>,
         status: watch::Receiver<ActorStatus>,
         parent: Option<InstanceCell>,
         ports: Arc<dyn Any + Send + Sync>,
@@ -3286,14 +3250,10 @@ impl InstanceCell {
     /// Note that "let it crash" is the default behavior when a supervision event
     /// cannot be delivered upstream. It is the upstream's responsibility to
     /// detect and handle crashes.
-    pub fn send_supervision_event_or_crash(
-        &self,
-        child_cx: &impl context::Actor, // context of the child who sends the event.
-        event: ActorSupervisionEvent,
-    ) {
+    pub fn send_supervision_event_or_crash(&self, event: ActorSupervisionEvent) {
         match &self.inner.actor_loop {
-            Some((_, supervision_port)) => {
-                if let Err(err) = supervision_port.send(child_cx, event.clone()) {
+            Some((_, supervision_tx)) => {
+                if let Err(err) = supervision_tx.send(event.clone()) {
                     if !event.is_error() {
                         // Normal lifecycle events (e.g. clean stop) that fail to
                         // send are silently dropped. This happens when a child
@@ -5341,7 +5301,7 @@ mod tests {
         // simultaneously, supervision event delivery would fail and crash
         // the process. The fact that this completes without crashing proves
         // the coordinator outlived the other actors.
-        proc.destroy_and_wait::<()>(Duration::from_secs(5), None, "test")
+        proc.destroy_and_wait(Duration::from_secs(5), "test")
             .await
             .unwrap();
 

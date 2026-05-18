@@ -29,10 +29,10 @@ use crate::get_env_var_with_rerun;
 /// 3. Finding hipcc in PATH and resolving symlinks
 pub fn validate_rocm_installation() -> Result<String, BuildError> {
     // Try ROCM_PATH environment variable first
-    if let Ok(rocm_path) = get_env_var_with_rerun("ROCM_PATH") {
-        if Path::new(&rocm_path).join("bin/hipcc").exists() {
-            return Ok(rocm_path);
-        }
+    if let Ok(rocm_path) = get_env_var_with_rerun("ROCM_PATH")
+        && Path::new(&rocm_path).join("bin/hipcc").exists()
+    {
+        return Ok(rocm_path);
     }
 
     // Try default location /opt/rocm (handles versioned installs like /opt/rocm-7.1.1 via symlink)
@@ -48,10 +48,10 @@ pub fn validate_rocm_installation() -> Result<String, BuildError> {
     // Try finding hipcc in PATH and resolving symlinks
     if let Ok(hipcc_path) = which("hipcc") {
         // Resolve symlinks to get the real path
-        if let Ok(real_hipcc) = fs::canonicalize(&hipcc_path) {
-            if let Some(rocm_home) = real_hipcc.parent().and_then(|p| p.parent()) {
-                return Ok(rocm_home.to_string_lossy().to_string());
-            }
+        if let Ok(real_hipcc) = fs::canonicalize(&hipcc_path)
+            && let Some(rocm_home) = real_hipcc.parent().and_then(|p| p.parent())
+        {
+            return Ok(rocm_home.to_string_lossy().to_string());
         }
     }
 
@@ -67,17 +67,17 @@ pub fn get_rocm_version(rocm_home: &str) -> Result<(u32, u32), BuildError> {
     if let Ok(content) = fs::read_to_string(&version_file) {
         // Parse version like "6.0.2" or "7.0.0"
         let parts: Vec<&str> = content.trim().split('.').collect();
-        if parts.len() >= 2 {
-            if let (Ok(major), Ok(minor)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
-                // Enforce ROCm 7.0+ requirement
-                if major < 7 {
-                    return Err(BuildError::CommandFailed(format!(
-                        "ROCm {}.{} detected, but ROCm 7.0+ is required",
-                        major, minor
-                    )));
-                }
-                return Ok((major, minor));
+        if parts.len() >= 2
+            && let (Ok(major), Ok(minor)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>())
+        {
+            // Enforce ROCm 7.0+ requirement
+            if major < 7 {
+                return Err(BuildError::CommandFailed(format!(
+                    "ROCm {}.{} detected, but ROCm 7.0+ is required",
+                    major, minor
+                )));
             }
+            return Ok((major, minor));
         }
     }
 

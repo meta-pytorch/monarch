@@ -441,10 +441,10 @@ impl Drop for SqliteTracing {
         }
 
         // Delete the temporary file if it exists
-        if let Some(db_path) = &self.db_path {
-            if db_path.exists() {
-                let _ = fs::remove_file(db_path);
-            }
+        if let Some(db_path) = &self.db_path
+            && db_path.exists()
+        {
+            let _ = fs::remove_file(db_path);
         }
     }
 }

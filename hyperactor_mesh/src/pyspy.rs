@@ -667,11 +667,11 @@ impl Handler<RunPySpyProfile> for PySpyProfileWorker {
 /// See PS-3 in `introspect` module doc.
 fn resolve_candidates(pyspy_bin_env: Option<String>) -> Vec<(String, String)> {
     let mut candidates = vec![];
-    if let Some(path) = pyspy_bin_env {
-        if !path.is_empty() {
-            let label = format!("PYSPY_BIN={}", path);
-            candidates.push((path, label));
-        }
+    if let Some(path) = pyspy_bin_env
+        && !path.is_empty()
+    {
+        let label = format!("PYSPY_BIN={}", path);
+        candidates.push((path, label));
     }
     candidates.push(("py-spy".to_string(), "py-spy on PATH".to_string()));
     candidates

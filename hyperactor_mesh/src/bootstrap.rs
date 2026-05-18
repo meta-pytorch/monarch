@@ -1797,10 +1797,10 @@ impl BootstrapProcManager {
             }
 
             // Fall back to launcher-provided tail if we didn't capture.
-            if stderr_tail.is_empty() {
-                if let Some(tail) = exit_result.stderr_tail {
-                    stderr_tail = tail;
-                }
+            if stderr_tail.is_empty()
+                && let Some(tail) = exit_result.stderr_tail
+            {
+                stderr_tail = tail;
             }
 
             let tail_str = if stderr_tail.is_empty() {

@@ -50,35 +50,34 @@ pub fn derive_named(input: TokenStream) -> TokenStream {
     let has_generics = !type_params.is_empty();
 
     for attr in &input.attrs {
-        if attr.path().is_ident("named") {
-            if let Ok(meta) = attr.parse_args_with(
+        if attr.path().is_ident("named")
+            && let Ok(meta) = attr.parse_args_with(
                 syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
-            ) {
-                for item in meta {
-                    if let Meta::NameValue(MetaNameValue {
-                        path,
-                        value: Expr::Lit(expr_lit),
-                        ..
-                    }) = item
-                    {
-                        if path.is_ident("name") {
-                            if let Lit::Str(name) = expr_lit.lit {
-                                typename = quote! { #name };
-                            } else {
-                                return TokenStream::from(
-                                    syn::Error::new_spanned(path, "invalid name")
-                                        .to_compile_error(),
-                                );
-                            }
+            )
+        {
+            for item in meta {
+                if let Meta::NameValue(MetaNameValue {
+                    path,
+                    value: Expr::Lit(expr_lit),
+                    ..
+                }) = item
+                {
+                    if path.is_ident("name") {
+                        if let Lit::Str(name) = expr_lit.lit {
+                            typename = quote! { #name };
                         } else {
                             return TokenStream::from(
-                                syn::Error::new_spanned(
-                                    path,
-                                    "unsupported attribute (only `name` is supported)",
-                                )
-                                .to_compile_error(),
+                                syn::Error::new_spanned(path, "invalid name").to_compile_error(),
                             );
                         }
+                    } else {
+                        return TokenStream::from(
+                            syn::Error::new_spanned(
+                                path,
+                                "unsupported attribute (only `name` is supported)",
+                            )
+                            .to_compile_error(),
+                        );
                     }
                 }
             }

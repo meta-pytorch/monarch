@@ -494,8 +494,8 @@ impl<C: Actor> Worker<C> {
         let supervisor = session.supervisor.clone();
         let session_id = session.session_id.clone();
         let orphan_policy = session.options.orphan_policy;
-        if let Some(child) = &self.child_handle {
-            if supervisor
+        if let Some(child) = &self.child_handle
+            && supervisor
                 .send(
                     cx,
                     WorkerSupervisor::SupervisionEvent {
@@ -513,10 +513,9 @@ impl<C: Actor> Worker<C> {
                     },
                 )
                 .is_err()
-            {
-                self.handle_orphaned_supervisor("supervisor session undeliverable")?;
-                return Ok(());
-            }
+        {
+            self.handle_orphaned_supervisor("supervisor session undeliverable")?;
+            return Ok(());
         }
         let session = self
             .session

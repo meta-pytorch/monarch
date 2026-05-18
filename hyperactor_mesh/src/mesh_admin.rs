@@ -838,23 +838,23 @@ fn build_http_client() -> reqwest::Client {
 
     if let Some(bundle) = hyperactor::channel::try_tls_pem_bundle() {
         let mut ca_bytes = Vec::new();
-        if let Ok(mut reader) = bundle.ca.reader() {
-            if reader.read_to_end(&mut ca_bytes).is_ok() {
-                let (builder, ca_installed) = crate::mesh_admin_client::add_tls(
-                    reqwest::Client::builder(),
-                    &ca_bytes,
-                    None,
-                    None,
-                );
-                if ca_installed {
-                    if let Ok(client) = builder.build() {
-                        return client;
-                    }
-                    tracing::warn!(
-                        "mesh admin: failed to build reqwest client with root CA; \
-                         falling back to default trust store"
-                    );
+        if let Ok(mut reader) = bundle.ca.reader()
+            && reader.read_to_end(&mut ca_bytes).is_ok()
+        {
+            let (builder, ca_installed) = crate::mesh_admin_client::add_tls(
+                reqwest::Client::builder(),
+                &ca_bytes,
+                None,
+                None,
+            );
+            if ca_installed {
+                if let Ok(client) = builder.build() {
+                    return client;
                 }
+                tracing::warn!(
+                    "mesh admin: failed to build reqwest client with root CA; \
+                         falling back to default trust store"
+                );
             }
         }
     }
@@ -1653,11 +1653,11 @@ fn hoist_defs(
     shared: &mut serde_json::Map<String, serde_json::Value>,
 ) {
     if let Some(obj) = schema.as_object_mut() {
-        if let Some(defs) = obj.remove("$defs") {
-            if let Some(defs_map) = defs.as_object() {
-                for (k, v) in defs_map {
-                    shared.insert(k.clone(), v.clone());
-                }
+        if let Some(defs) = obj.remove("$defs")
+            && let Some(defs_map) = defs.as_object()
+        {
+            for (k, v) in defs_map {
+                shared.insert(k.clone(), v.clone());
             }
         }
         // Also remove $schema from embedded schemas — it's
@@ -1673,10 +1673,10 @@ fn hoist_defs(
 fn rewrite_refs(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
-            if let Some(serde_json::Value::String(r)) = map.get_mut("$ref") {
-                if r.starts_with("#/$defs/") {
-                    *r = r.replace("#/$defs/", "#/components/schemas/");
-                }
+            if let Some(serde_json::Value::String(r)) = map.get_mut("$ref")
+                && r.starts_with("#/$defs/")
+            {
+                *r = r.replace("#/$defs/", "#/components/schemas/");
             }
             for v in map.values_mut() {
                 rewrite_refs(v);
@@ -2936,18 +2936,19 @@ impl AdminHandle {
             return AdminHandle::Published(PublishedHandle::Mast(addr.to_string()));
         }
         // Strict URL parse — only http/https accepted.
-        if let Ok(parsed) = url::Url::parse(addr) {
-            if matches!(parsed.scheme(), "http" | "https") {
-                return AdminHandle::Url(addr.to_string());
-            }
+        if let Ok(parsed) = url::Url::parse(addr)
+            && matches!(parsed.scheme(), "http" | "https")
+        {
+            return AdminHandle::Url(addr.to_string());
         }
         // Infer https:// for bare host:port inputs (e.g. "myhost:1729").
         // This preserves the TUI's documented --addr behavior.
         let with_scheme = format!("https://{}", addr);
-        if let Ok(parsed) = url::Url::parse(&with_scheme) {
-            if parsed.host_str().is_some() && parsed.port().is_some() {
-                return AdminHandle::Url(with_scheme);
-            }
+        if let Ok(parsed) = url::Url::parse(&with_scheme)
+            && parsed.host_str().is_some()
+            && parsed.port().is_some()
+        {
+            return AdminHandle::Url(with_scheme);
         }
         AdminHandle::Unsupported(addr.to_string())
     }
@@ -3027,10 +3028,10 @@ mod advertised_host {
 
         // Candidate 2: host IPv6 address (Meta environments).
         #[cfg(fbcode_build)]
-        if let Ok(ip_str) = hyperactor::meta::host_ip::host_ipv6_address() {
-            if let Ok(ip) = ip_str.parse::<IpAddr>() {
-                candidates.push((format!("[{}]", ip), SanIdentity::Ip(ip)));
-            }
+        if let Ok(ip_str) = hyperactor::meta::host_ip::host_ipv6_address()
+            && let Ok(ip) = ip_str.parse::<IpAddr>()
+        {
+            candidates.push((format!("[{}]", ip), SanIdentity::Ip(ip)));
         }
 
         let cert_sans = load_cert_sans();
