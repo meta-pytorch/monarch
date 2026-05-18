@@ -4955,7 +4955,7 @@ mod tests {
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
 
-        let result = port_handle.send(&client, 42u64);
+        let result = port_handle.try_send(&client, 42u64);
 
         assert!(result.is_err(), "send should fail when actor is stopped");
         let err = result.unwrap_err();
@@ -4982,7 +4982,7 @@ mod tests {
             "test failure".to_string(),
         )));
 
-        let result = port_handle.send(&client, 42u64);
+        let result = port_handle.try_send(&client, 42u64);
 
         assert!(result.is_err(), "send should fail when actor is failed");
         let err = result.unwrap_err();
