@@ -102,6 +102,10 @@ impl LostMessage {
 }
 
 /// An undeliverable `M`-typed message.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "returned messages stay inline so callers can recover the original payload without extra allocation"
+)]
 #[derive(
     Debug,
     EnumAsInner,
