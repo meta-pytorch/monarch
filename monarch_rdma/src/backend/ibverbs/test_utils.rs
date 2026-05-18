@@ -549,8 +549,8 @@ impl IbvTestEnv {
             format!("rdma_test_{id}_b"),
         )?;
 
-        let (instance_1, _client_handle_1) = proc_1.instance("client")?;
-        let (instance_2, _client_handle_2) = proc_2.instance("client")?;
+        let (instance_1, _client_handle_1) = proc_1.client("client")?;
+        let (instance_2, _client_handle_2) = proc_2.client("client")?;
 
         let rdma_actor_1 = RdmaManagerActor::new(Some(config1), Flattrs::default()).await?;
         let rdma_actor_handle_1 = proc_1.spawn("rdma_manager", rdma_actor_1)?;

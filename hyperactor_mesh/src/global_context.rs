@@ -379,7 +379,7 @@ async fn bootstrap_host() -> GlobalState {
     // reasoning about the bootstrap sequence.
     let temp_proc = Proc::isolated();
     let (bootstrap_cx, _guard) = temp_proc
-        .instance("bootstrap")
+        .client("bootstrap")
         .expect("failed to create bootstrap instance");
     let local_proc_agent: ActorHandle<ProcAgent> = host_agent
         .get_local_proc(&bootstrap_cx)

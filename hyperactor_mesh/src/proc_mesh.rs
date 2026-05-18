@@ -1192,7 +1192,7 @@ mod tests {
 
         let (instance, _) = cx
             .proc()
-            .instance(&format!("random_casts_{}", Uuid::now_v7()))
+            .client(&format!("random_casts_{}", Uuid::now_v7()))
             .unwrap();
         let n = 1;
         for _ in 0..n {

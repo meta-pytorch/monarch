@@ -764,7 +764,7 @@ mod tests {
         use hyperactor::id::Label;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), proc_name.to_string()).unwrap();
-        let (client, client_handle) = proc.instance("client").unwrap();
+        let (client, client_handle) = proc.client("client").unwrap();
 
         let actor_mesh_id = crate::mesh_id::ActorMeshId::unique(Label::new("test").unwrap());
 
