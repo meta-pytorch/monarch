@@ -53,7 +53,7 @@ impl RemoteHandles<ShoppingList> for ShoppingListActor {}
 impl RemoteHandles<Signal> for ShoppingListActor {}
 
 impl Binds<ShoppingListActor> for ShoppingListActor {
-    fn bind(ports: &Ports<Self>) {
+    fn bind(ports: &HandlerPorts<Self>) {
         ports.bind::<ShoppingList>();
     }
 }

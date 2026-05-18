@@ -177,7 +177,7 @@ pub struct GlobalClientActor {
     /// The root client is a monitor, so it should process these
     /// events without crashing on routine routing/delivery failures
     /// it observes.
-    supervision_rx: PortReceiver<ActorSupervisionEvent>,
+    supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     /// Primary work queue for handler dispatch.
     ///
     /// Any bound handler message (e.g. `MeshFailure`,
@@ -195,7 +195,7 @@ impl GlobalClientActor {
                     work = self.work_rx.recv() => {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut self, instance).await {
-                            for supervision_event in self.supervision_rx.drain() {
+                            while let Ok(supervision_event) = self.supervision_rx.try_recv() {
                                 instance.handle_supervision_event(&mut self, supervision_event).await
                                     .expect("GlobalClientActor::handle_supervision_event is infallible");
                             }
@@ -209,7 +209,7 @@ impl GlobalClientActor {
                     _ = self.signal_rx.recv() => {
                         // TODO: do we need any signal handling for the root client?
                     }
-                    Ok(supervision_event) = self.supervision_rx.recv() => {
+                    Some(supervision_event) = self.supervision_rx.recv() => {
                         instance.handle_supervision_event(&mut self, supervision_event).await
                             .expect("GlobalClientActor::handle_supervision_event is infallible");
                     }
@@ -372,12 +372,12 @@ async fn bootstrap_host() -> GlobalState {
 
     // 5. Get local_proc via HostAgent (lazily boots ProcAgent).
     //
-    // We use a throwaway Proc::local() for the bootstrap request-reply
+    // We use a throwaway Proc::isolated() for the bootstrap request-reply
     // calls, matching Python's bootstrap_host() (host_mesh.rs:330-333).
     // This creates a temporary in-process-only proc context during init
     // — intentionally acceptable for cross-language symmetry and easier
     // reasoning about the bootstrap sequence.
-    let temp_proc = Proc::local();
+    let temp_proc = Proc::isolated();
     let (bootstrap_cx, _guard) = temp_proc
         .instance("bootstrap")
         .expect("failed to create bootstrap instance");
@@ -542,7 +542,7 @@ mod tests {
         // Target the global root client's well-known Undeliverable port.
         let client_actor_id: hyperactor::ActorAddr = client.self_addr().clone();
         let undeliverable_port =
-            PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(&client_actor_id);
+            PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&client_actor_id);
         undeliverable_port
             .send(client, Undeliverable(env))
             .expect("inject_undeliverable: send failed");

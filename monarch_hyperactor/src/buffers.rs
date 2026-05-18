@@ -136,7 +136,7 @@ impl Buffer {
     ///
     /// # Returns
     /// The number of bytes written (always equal to the length of input bytes)
-    fn write<'py>(&mut self, buff: &Bound<'py, PyBytes>) -> usize {
+    fn write(&mut self, buff: &Bound<'_, PyBytes>) -> usize {
         let bytes_written = buff.as_bytes().len();
 
         if bytes_written < self.threshold {
@@ -306,7 +306,7 @@ impl FrozenBuffer {
     /// # Returns
     /// A PyBytes object containing the bytes read from the buffer
     #[pyo3(signature=(size=-1))]
-    fn read<'py>(mut slf: PyRefMut<'py, Self>, size: i64) -> Bound<'py, PyBytes> {
+    fn read(mut slf: PyRefMut<'_, Self>, size: i64) -> Bound<'_, PyBytes> {
         let size = if size <= 0 {
             slf.inner.remaining() as i64
         } else {

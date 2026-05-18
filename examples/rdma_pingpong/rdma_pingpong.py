@@ -145,6 +145,7 @@ def main(
             V1PodAffinityTerm,
             V1PodAntiAffinity,
             V1PodSpec,
+            V1PodTemplateSpec,
             V1ResourceRequirements,
         )
         from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
@@ -160,40 +161,42 @@ def main(
         # required pod_affinity term keyed on your provider's fabric label
         # so the two replicas land on the same fabric. Without it, the example will fail.
         worker_resources = {"nvidia.com/gpu": "1", "rdma/ib": "1"}
-        pod_spec = V1PodSpec(
-            affinity=V1Affinity(
-                pod_anti_affinity=V1PodAntiAffinity(
-                    required_during_scheduling_ignored_during_execution=[
-                        V1PodAffinityTerm(
-                            topology_key="kubernetes.io/hostname",
-                            label_selector=V1LabelSelector(
-                                match_expressions=[
-                                    V1LabelSelectorRequirement(
-                                        key="monarch.pytorch.org/mesh-name",
-                                        operator="In",
-                                        values=["workers"],
-                                    ),
-                                ],
+        pod_template = V1PodTemplateSpec(
+            spec=V1PodSpec(
+                affinity=V1Affinity(
+                    pod_anti_affinity=V1PodAntiAffinity(
+                        required_during_scheduling_ignored_during_execution=[
+                            V1PodAffinityTerm(
+                                topology_key="kubernetes.io/hostname",
+                                label_selector=V1LabelSelector(
+                                    match_expressions=[
+                                        V1LabelSelectorRequirement(
+                                            key="monarch.pytorch.org/mesh-name",
+                                            operator="In",
+                                            values=["workers"],
+                                        ),
+                                    ],
+                                ),
                             ),
-                        ),
-                    ],
-                ),
-            ),
-            containers=[
-                V1Container(
-                    name="worker",
-                    image=k8s_image,
-                    command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
-                    env=[V1EnvVar(name="MONARCH_PORT", value="26600")],
-                    resources=V1ResourceRequirements(
-                        requests=worker_resources,
-                        limits=worker_resources,
+                        ],
                     ),
                 ),
-            ],
+                containers=[
+                    V1Container(
+                        name="worker",
+                        image=k8s_image,
+                        command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
+                        env=[V1EnvVar(name="MONARCH_PORT", value="26600")],
+                        resources=V1ResourceRequirements(
+                            requests=worker_resources,
+                            limits=worker_resources,
+                        ),
+                    ),
+                ],
+            ),
         )
         job = KubernetesJob(namespace=k8s_namespace)
-        job.add_mesh("workers", num_replicas=2, pod_spec=pod_spec)
+        job.add_mesh("workers", num_replicas=2, pod_template=pod_template)
     else:
         from monarch.job import SlurmJob
 

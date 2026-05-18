@@ -222,7 +222,7 @@ import os
 import socket
 import time
 
-from kubernetes.client import V1Container, V1EnvVar, V1PodSpec
+from kubernetes.client import V1Container, V1EnvVar, V1PodSpec, V1PodTemplateSpec
 from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
 from monarch.actor import Actor, endpoint
 from monarch.job.kubernetes import KubernetesJob
@@ -260,35 +260,37 @@ class WorkActor(Actor):
 
 
 # %%
-# Build the worker pod spec with OTEL environment variables.
+# Build the worker pod template with OTEL environment variables.
 
 
-def build_worker_pod_spec(port: int) -> V1PodSpec:
-    """Build a V1PodSpec with OTEL_EXPORTER_OTLP_ENDPOINT configured."""
-    return V1PodSpec(
-        containers=[
-            V1Container(
-                name="worker",
-                image="ghcr.io/meta-pytorch/monarch:latest",
-                image_pull_policy="Always",
-                command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
-                env=[
-                    V1EnvVar(name="MONARCH_PORT", value=str(port)),
-                    V1EnvVar(
-                        name="OTEL_EXPORTER_OTLP_ENDPOINT",
-                        value=_OTEL_ENDPOINT,
-                    ),
-                    V1EnvVar(
-                        name="OTEL_SERVICE_NAME",
-                        value="monarch-worker",
-                    ),
-                    V1EnvVar(
-                        name="MONARCH_FILE_LOG",
-                        value="trace",
-                    ),
-                ],
-            )
-        ]
+def build_worker_pod_template(port: int) -> V1PodTemplateSpec:
+    """Build a V1PodTemplateSpec with OTEL_EXPORTER_OTLP_ENDPOINT configured."""
+    return V1PodTemplateSpec(
+        spec=V1PodSpec(
+            containers=[
+                V1Container(
+                    name="worker",
+                    image="ghcr.io/meta-pytorch/monarch:latest",
+                    image_pull_policy="Always",
+                    command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
+                    env=[
+                        V1EnvVar(name="MONARCH_PORT", value=str(port)),
+                        V1EnvVar(
+                            name="OTEL_EXPORTER_OTLP_ENDPOINT",
+                            value=_OTEL_ENDPOINT,
+                        ),
+                        V1EnvVar(
+                            name="OTEL_SERVICE_NAME",
+                            value="monarch-worker",
+                        ),
+                        V1EnvVar(
+                            name="MONARCH_FILE_LOG",
+                            value="trace",
+                        ),
+                    ],
+                )
+            ]
+        ),
     )
 
 
@@ -324,7 +326,7 @@ def main():
     job.add_mesh(
         "workers",
         num_replicas=args.num_replicas,
-        pod_spec=build_worker_pod_spec(port),
+        pod_template=build_worker_pod_template(port),
         port=port,
     )
 

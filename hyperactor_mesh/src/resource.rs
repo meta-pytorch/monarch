@@ -312,6 +312,7 @@ pub struct State<S> {
     pub timestamp: std::time::SystemTime,
 }
 wirevalue::register_type!(State<ActorState>);
+wirevalue::register_type!(State<ProcState>);
 
 impl<S: Serialize> fmt::Display for State<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -474,7 +475,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            expires_after: self.expires_after.clone(),
+            expires_after: self.expires_after,
             get_state: self.get_state.clone(),
         }
     }
@@ -491,6 +492,7 @@ pub struct StreamState<S> {
     pub subscriber: PortRef<State<S>>,
 }
 wirevalue::register_type!(StreamState<ActorState>);
+wirevalue::register_type!(StreamState<ProcState>);
 
 // Cannot derive Bind and Unbind for this generic, implement manually.
 impl<S> Unbind for StreamState<S>

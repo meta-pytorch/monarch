@@ -445,7 +445,7 @@ fn create_map(py: Python) -> HashMap<u64, FnType> {
     m
 }
 
-pub fn convert<'py>(m: Bound<'py, PyAny>) -> PyResult<WorkerMessage> {
+pub fn convert(m: Bound<'_, PyAny>) -> PyResult<WorkerMessage> {
     let converter = {
         let typ = m.get_type().as_ptr() as u64;
         CONVERT_MAP.get_or_init(|| create_map(m.py()))[&typ]
