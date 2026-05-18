@@ -529,7 +529,7 @@ async fn duplex_accept_loop(
             // `remote` label so procs attached to different host
             // generations sharing a frontend address (e.g., after
             // restart on the same ip:port) cannot collide.
-            let proc_id = ProcAddr::unique(frontend_addr.clone(), "remote");
+            let proc_id = ProcAddr::instance(frontend_addr.clone(), "remote");
 
             let assignment = BootstrapAssignment {
                 proc_id: proc_id.clone(),
@@ -1786,8 +1786,8 @@ mod tests {
         let proc2 = procs.lock().await.get(&proc_id2).unwrap().clone();
 
         // Make sure they can talk to each other:
-        let (instance1, _handle) = proc1.instance("client").unwrap();
-        let (instance2, _handle) = proc2.instance("client").unwrap();
+        let (instance1, _handle) = proc1.client("client").unwrap();
+        let (instance2, _handle) = proc2.client("client").unwrap();
 
         let (port, mut rx) = instance1.mailbox().open_port();
 
@@ -1795,7 +1795,7 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap(), "hello".to_string());
 
         // Make sure that the system proc is also wired in correctly.
-        let (system_actor, _handle) = host.system_proc().instance("test").unwrap();
+        let (system_actor, _handle) = host.system_proc().client("test").unwrap();
 
         // system->proc
         port.bind()
@@ -1863,7 +1863,7 @@ mod tests {
             "test".to_string(),
         )
         .unwrap();
-        let (client_inst, _h) = client.instance("test").unwrap();
+        let (client_inst, _h) = client.client("test").unwrap();
         let (port, rx) = client_inst.mailbox().open_once_port();
         echo1.send(&client_inst, port.bind());
         let id = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -1895,7 +1895,7 @@ mod tests {
         //        client port.
         // Because `client_inst` runs in its own proc, the reply
         // traverses the host (not local delivery within proc1).
-        let (sys_inst, _h) = host.system_proc().instance("sys-client").unwrap();
+        let (sys_inst, _h) = host.system_proc().client("sys-client").unwrap();
         let (port3, rx3) = client_inst.mailbox().open_once_port();
         // Send from system -> child via a message that ultimately
         // replies to client's port
@@ -2172,8 +2172,8 @@ mod tests {
 
         // (1) Host -> remote: open a port on the remote proc, send from
         //     the system instance.
-        let (system_inst, _h) = host.system_proc().instance("test-sender").unwrap();
-        let (remote_inst, _rh) = remote_proc.instance("remote-client").unwrap();
+        let (system_inst, _h) = host.system_proc().client("test-sender").unwrap();
+        let (remote_inst, _rh) = remote_proc.client("remote-client").unwrap();
 
         let (remote_port, mut remote_rx) = remote_inst.mailbox().open_port();
         let remote_port = remote_port.bind();
@@ -2233,7 +2233,7 @@ mod tests {
         let bogus_port = bogus_actor.port_addr(Port::from(0u64));
         let bogus_dest = PortRef::<String>::attest(bogus_port);
 
-        let (trigger_inst, _h) = remote_proc.instance("trigger").unwrap();
+        let (trigger_inst, _h) = remote_proc.client("trigger").unwrap();
         collector_ref
             .port::<SendTo>()
             .send(&trigger_inst, bogus_dest);
@@ -2287,7 +2287,7 @@ mod tests {
         let bogus_port = bogus_actor.port_addr(Port::from(0u64));
         let bogus_dest = PortRef::<String>::attest(bogus_port);
 
-        let (trigger_inst, _h) = host.system_proc().instance("trigger").unwrap();
+        let (trigger_inst, _h) = host.system_proc().client("trigger").unwrap();
         collector_ref
             .port::<SendTo>()
             .send(&trigger_inst, bogus_dest);
@@ -2330,8 +2330,8 @@ mod tests {
 
         let remote_proc = Proc::attach_to_host(host.addr().clone()).await.unwrap();
 
-        let (system_inst, _h) = host.system_proc().instance("teardown-sender").unwrap();
-        let (remote_inst, _rh) = remote_proc.instance("teardown-client").unwrap();
+        let (system_inst, _h) = host.system_proc().client("teardown-sender").unwrap();
+        let (remote_inst, _rh) = remote_proc.client("teardown-client").unwrap();
 
         let (remote_port, mut remote_rx) = remote_inst.mailbox().open_port();
         let remote_port = remote_port.bind();
@@ -2395,7 +2395,7 @@ mod tests {
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
-        let (client_inst, _h) = client_proc.instance("requester").unwrap();
+        let (client_inst, _h) = client_proc.client("requester").unwrap();
         let (reply_port, reply_handle) = client_inst.mailbox().open_once_port::<ActorAddr>();
         let reply_port = reply_port.bind();
         echo_ref
@@ -2507,7 +2507,7 @@ mod tests {
                 let echo_ref = ActorRef::<EchoActor>::attest(echo_actor_id);
 
                 for ri in 0..M_REQUESTS {
-                    let (client_inst, _h) = client_proc.instance(&format!("req-{}", ri)).unwrap();
+                    let (client_inst, _h) = client_proc.client(&format!("req-{}", ri)).unwrap();
                     let (reply_port, reply_handle) =
                         client_inst.mailbox().open_once_port::<ActorAddr>();
                     let reply_port = reply_port.bind();
@@ -2578,7 +2578,7 @@ mod tests {
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
-        let (client_inst, _client_h) = client_proc.instance("requester").unwrap();
+        let (client_inst, _client_h) = client_proc.client("requester").unwrap();
 
         // Send a request to the echo actor on the host. The reply
         // travels back through the host's dial router → simplex dial

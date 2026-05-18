@@ -1160,7 +1160,7 @@ impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
 
     use std::collections::HashSet;
@@ -1200,7 +1200,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_actor_mesh_ref_lazy_materialization() {
         // 1) Bring up procs and spawn actors.
         let instance = testing::instance();
@@ -1297,7 +1296,6 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 300)]
-    #[cfg(fbcode_build)]
     async fn test_actor_states_with_panic() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1319,7 +1317,7 @@ mod tests {
             .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
-        let child_name = ActorMeshId::unique(Label::new("child").unwrap());
+        let child_name = ActorMeshId::instance(Label::new("child").unwrap());
 
         // Need to use a wrapper as there's no way to customize the handler for MeshFailure
         // on the client instance. The client would just panic with the message.
@@ -1399,7 +1397,6 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[cfg(fbcode_build)]
     #[assert_no_process_leak]
     #[async_timed_test(timeout_secs = 300)]
     async fn test_actor_states_with_process_exit() {
@@ -1430,7 +1427,7 @@ mod tests {
             .spawn(instance, "test2", Extent::unity(), None, None)
             .await
             .unwrap();
-        let child_name = ActorMeshId::unique(Label::new("child").unwrap());
+        let child_name = ActorMeshId::instance(Label::new("child").unwrap());
 
         // Need to use a wrapper as there's no way to customize the handler for MeshFailure
         // on the client instance. The client would just panic with the message.
@@ -1507,7 +1504,6 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 300)]
-    #[cfg(fbcode_build)]
     async fn test_actor_states_on_sliced_mesh() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1529,7 +1525,7 @@ mod tests {
                 .spawn(instance, "test", Extent::unity(), None, None)
                 .await
                 .unwrap();
-            let child_name = ActorMeshId::unique(Label::new("child").unwrap());
+            let child_name = ActorMeshId::instance(Label::new("child").unwrap());
 
             // Need to use a wrapper as there's no way to customize the handler for MeshFailure
             // on the client instance. The client would just panic with the message.
@@ -1585,7 +1581,6 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[cfg(fbcode_build)]
     async fn execute_cast(config: &hyperactor_config::global::ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
         let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
@@ -1629,7 +1624,6 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 60)]
-    #[cfg(fbcode_build)]
     async fn test_cast_with_selection_v1_fallback() {
         use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
         use hyperactor_mesh_macros::sel;
@@ -1692,14 +1686,12 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
     async fn test_cast() {
         let config = hyperactor_config::global::lock();
         execute_cast(&config).await;
     }
 
     #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
     async fn test_cast_p2p() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
@@ -1715,7 +1707,6 @@ mod tests {
     ///
     /// This is the V1 version of the test from
     /// hyperactor_multiprocess/src/proc_actor.rs::test_undeliverable_message_return.
-    #[cfg(fbcode_build)]
     #[assert_no_process_leak]
     #[async_timed_test(timeout_secs = 60)]
     async fn test_undeliverable_message_return() {
@@ -1848,7 +1839,6 @@ mod tests {
     /// continue running in the background: no code path in the mesh layer
     /// forcibly aborts them via `JoinHandle::abort()`.
     #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
     async fn test_actor_mesh_stop_timeout() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1944,7 +1934,6 @@ mod tests {
     /// equivalent of
     /// hyperactor_multiprocess/src/proc_actor.rs::test_stop
     #[async_timed_test(timeout_secs = 60)]
-    #[cfg(fbcode_build)]
     async fn test_actor_mesh_stop_graceful() {
         hyperactor_telemetry::initialize_logging_for_test();
 
