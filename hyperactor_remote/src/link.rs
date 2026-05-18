@@ -60,7 +60,7 @@ impl LinkSpec {
 
     /// Create a worker-side link spec with a fresh uid.
     pub fn new(actor_type: impl Into<String>, params: Data) -> Self {
-        Self::with_uid(actor_type, Uid::instance(), params)
+        Self::with_uid(actor_type, Uid::anonymous(), params)
     }
 
     /// Create a worker-side link spec with an explicit uid.

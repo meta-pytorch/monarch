@@ -483,7 +483,7 @@ impl ProcId {
     /// Create an anonymous instance [`ProcId`] with a random uid.
     pub fn anonymous() -> Self {
         Self {
-            uid: Uid::instance(),
+            uid: Uid::anonymous(),
         }
     }
 
@@ -1161,8 +1161,8 @@ mod tests {
 
     #[test]
     fn test_unique_uid_generation() {
-        let a = Uid::instance();
-        let b = Uid::instance();
+        let a = Uid::anonymous();
+        let b = Uid::anonymous();
         assert_ne!(a, b);
     }
 
@@ -1395,11 +1395,11 @@ mod tests {
     #[test]
     fn test_actor_id_instance() {
         let proc_id = ProcId::singleton(Label::new("my-proc").unwrap());
-        let aid = ActorId::instance(proc_id.clone());
+        let aid = ActorId::anonymous(proc_id.clone());
         assert!(aid.uid().is_instance());
         assert_eq!(aid.proc_id(), &proc_id);
         assert_eq!(aid.label(), None);
-        let aid2 = ActorId::instance(proc_id);
+        let aid2 = ActorId::anonymous(proc_id);
         assert_ne!(aid, aid2);
     }
 

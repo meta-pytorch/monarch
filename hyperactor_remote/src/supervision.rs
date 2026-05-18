@@ -81,7 +81,7 @@ pub struct Supervisor {
 impl Supervisor {
     /// Create a supervisor proxy for `worker`.
     pub fn new(worker: ActorRef<WorkerLike>, link: KeepaliveLink, options: LinkOptions) -> Self {
-        Self::new_uid(worker, link, options, hyperactor::Uid::instance())
+        Self::new_uid(worker, link, options, hyperactor::Uid::anonymous())
     }
 
     /// Create a supervisor proxy with an explicit session id.
@@ -838,7 +838,7 @@ mod tests {
     async fn test_child_failure_propagates_to_parent() {
         let proc = Proc::isolated();
         let (client, _client_handle) = proc.client("client").unwrap();
-        let session_id = Uid::instance();
+        let session_id = Uid::anonymous();
 
         let (child_addr, worker, parent, _stopped_rx, mut event_rx) = spawn_supervised_pair(
             &proc,
@@ -885,7 +885,7 @@ mod tests {
     async fn test_parent_stop_stops_remote_child_before_parent_finishes() {
         let proc = Proc::isolated();
         let (client, _client_handle) = proc.client("client").unwrap();
-        let session_id = Uid::instance();
+        let session_id = Uid::anonymous();
 
         let (_child_addr, worker, parent, mut stopped_rx, _event_rx) = spawn_supervised_pair(
             &proc,
@@ -943,7 +943,7 @@ mod tests {
                 .spawn_supervisor(&client)
                 .unwrap();
         let _child_addr = ready_rx.recv().await.unwrap();
-        let session_id = hyperactor::Uid::instance();
+        let session_id = hyperactor::Uid::anonymous();
 
         worker
             .send(
@@ -1104,7 +1104,7 @@ mod tests {
                 .spawn_supervisor(&inst)
                 .unwrap();
         let _child_addr = ready_rx.recv().await.unwrap();
-        let session_id = hyperactor::Uid::instance();
+        let session_id = hyperactor::Uid::anonymous();
 
         worker
             .send(
@@ -1197,7 +1197,7 @@ mod tests {
     async fn test_supervised_worker_unlink_stops_child_under_stop_policy() {
         let proc = Proc::isolated();
         let (inst, _inst_hndl) = proc.client("inst").unwrap();
-        let session_id = Uid::instance();
+        let session_id = Uid::anonymous();
 
         let (_child_addr, worker, parent, mut stopped_rx, mut events_rx) = spawn_supervised_pair(
             &proc,
@@ -1282,7 +1282,7 @@ mod tests {
     async fn test_supervised_worker_unlink_leaves_child_running_under_detach_policy() {
         let proc = Proc::isolated();
         let (inst, _inst_hndl) = proc.client("inst").unwrap();
-        let session_id = Uid::instance();
+        let session_id = Uid::anonymous();
 
         let (_child_addr, worker, parent, mut stopped_rx, mut events_rx) = spawn_supervised_pair(
             &proc,
@@ -1381,7 +1381,7 @@ mod tests {
     async fn test_concurrent_link_rejects_second_supervisor() {
         let proc = Proc::isolated();
         let (inst, _inst_hndl) = proc.client("inst").unwrap();
-        let session_id1 = Uid::instance();
+        let session_id1 = Uid::anonymous();
         let (_child_addr, worker, parent1, _stopped_rx, mut events_rx1) = spawn_supervised_pair(
             &proc,
             &inst,
@@ -1399,7 +1399,7 @@ mod tests {
         // Spawn a second parent whose Supervisor targets the same
         // worker with a different session id. Its Link will be
         // rejected.
-        let session_id2 = Uid::instance();
+        let session_id2 = Uid::anonymous();
         let (events2, mut events_rx2) = inst.open_port::<ActorSupervisionEvent>();
         let parent2 = proc
             .spawn(
@@ -1502,7 +1502,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let session_id = Uid::instance();
+        let session_id = Uid::anonymous();
         let parent = proc
             .spawn(
                 "parent",
@@ -1591,7 +1591,7 @@ mod tests {
             )
             .unwrap();
         let _child_addr = ready_rx.recv().await.unwrap();
-        let session_id = Uid::instance();
+        let session_id = Uid::anonymous();
         let parent = proc
             .spawn(
                 "parent",
@@ -1667,7 +1667,7 @@ mod tests {
     async fn test_worker_accepts_relink_after_unlink_under_detach_policy() {
         let proc = Proc::isolated();
         let (inst, _inst_hndl) = proc.client("inst").unwrap();
-        let session_id1 = Uid::instance();
+        let session_id1 = Uid::anonymous();
         let (_child_addr, worker, parent1, mut stopped_rx, mut events_rx1) = spawn_supervised_pair(
             &proc,
             &inst,
@@ -1709,7 +1709,7 @@ mod tests {
             "child should survive unlink under OrphanPolicy::Detach"
         );
 
-        let session_id2 = Uid::instance();
+        let session_id2 = Uid::anonymous();
         let (events2, mut events_rx2) = inst.open_port::<ActorSupervisionEvent>();
         let parent2 = proc
             .spawn(
