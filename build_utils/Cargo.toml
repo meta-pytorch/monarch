@@ -16,3 +16,6 @@ cc = "1.2.60"
 glob = "0.3.2"
 pyo3-build-config = { version = "0.26", features = ["resolve-config"] }
 which = "8.0.2"
+
+[lints]
+workspace = true

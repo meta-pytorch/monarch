@@ -1586,11 +1586,7 @@ async fn handle_async_endpoint_panic(
         ENDPOINT_ACTOR_ERROR.add(1, attributes);
         static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
         let client = &CLIENT
-            .get_or_init(|| {
-                get_proc_runtime()
-                    .instance("async_endpoint_handler")
-                    .unwrap()
-            })
+            .get_or_init(|| get_proc_runtime().client("async_endpoint_handler").unwrap())
             .0;
         panic_sender.send(&client, Signal::Kill(panic.to_string()));
     }
@@ -1857,7 +1853,7 @@ mod tests {
     fn to_py_error_preserves_proc_creation_message() {
         // State<ProcState> w/ `state.is_none()`
         let state: resource::State<ProcState> = resource::State {
-            id: ResourceId::unique(Label::new("my-proc").unwrap()),
+            id: ResourceId::instance(Label::new("my-proc").unwrap()),
             status: Status::Failed("boom".into()),
             state: None,
             generation: 0,
