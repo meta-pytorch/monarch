@@ -38,7 +38,7 @@
 //! - **S3.** Sender routing is unchanged -- senders target the same
 //!   `PortId` (`IntrospectMessage::port()`) across processes.
 //! - **S4.** `IntrospectMessage` never produces a `WorkCell` --
-//!   pre-registration via `open_message_port` gives the introspect
+//!   pre-registration via `bind_handler_port` gives the introspect
 //!   port its own channel, independent of the actor's work queue.
 //! - **S5.** Replies never use `PanickingMailboxSender` -- the
 //!   introspect task replies via `Mailbox::serialize_and_send_once`.
@@ -51,7 +51,7 @@
 //!   publish `Root` or `Error` payloads (only `Host` and `Proc`
 //!   variants).
 //! - **S9.** Port binding is single source of truth -- the introspect
-//!   port is bound exactly once via `bind_actor_port()` in
+//!   port is bound exactly once via `bind_handler_port()` in
 //!   `Instance::new()`.
 //! - **S10.** Introspect receiver lifecycle -- created in
 //!   `Instance::new()`, spawned in `start()`, dropped in
@@ -587,7 +587,7 @@ impl ActorAttrsView {
 /// The mesh layer constructs the API-facing `NodePayload` (with
 /// `properties`) from this via `derive_properties`.
 ///
-/// This is the internal wire type — it travels over actor ports
+/// This is the internal wire type — it travels over handler ports
 /// via `IntrospectMessage`. The presentation-layer `NodePayload`
 /// (with `NodeProperties`) lives in `hyperactor_mesh::introspect`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
@@ -839,7 +839,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 
 /// Introspect task: runs on a dedicated tokio task per actor,
 /// handling [`IntrospectMessage`] by reading [`InstanceCell`]
-/// directly and replying via the actor's [`Mailbox`].
+/// directly and replying through the owning [`Proc`](crate::Proc).
 ///
 /// The actor's message loop never sees these messages.
 ///
@@ -848,7 +848,6 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 /// Exercises S1, S2, S4, S5, S6, S11 (see module doc).
 pub(crate) async fn serve_introspect(
     cell: InstanceCell,
-    mailbox: crate::mailbox::Mailbox,
     mut receiver: crate::mailbox::PortReceiver<IntrospectMessage>,
 ) {
     use crate::actor::ActorStatus;
@@ -917,7 +916,7 @@ pub(crate) async fn serve_introspect(
                     },
                     IntrospectView::Actor => live_actor_payload(&cell),
                 };
-                mailbox.serialize_and_send_once(
+                cell.proc().serialize_and_send_once(
                     reply,
                     payload,
                     crate::mailbox::monitored_return_handle(),
@@ -947,7 +946,7 @@ pub(crate) async fn serve_introspect(
                         as_of: SystemTime::now(),
                     }
                 });
-                mailbox.serialize_and_send_once(
+                cell.proc().serialize_and_send_once(
                     reply,
                     payload,
                     crate::mailbox::monitored_return_handle(),

@@ -1981,7 +1981,7 @@ mod tests {
         async fn new_with_world_size(world_size: usize) -> Result<Self> {
             test_util::test_setup()?;
 
-            let proc = Proc::local();
+            let proc = Proc::isolated();
             let (_, controller_actor, controller_rx) =
                 proc.attach_actor::<ControllerActor, ControllerMessage>("controller")?;
             let (client, _handle) = proc.instance("client")?;

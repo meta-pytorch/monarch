@@ -368,7 +368,7 @@ Message Handling
     Enable reordering buffer in dest actor.
 
     - **Type**: ``bool``
-    - **Default**: ``False``
+    - **Default**: ``True``
     - **Environment**: ``HYPERACTOR_ENABLE_DEST_ACTOR_REORDERING_BUFFER``
 
 

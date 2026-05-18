@@ -20,10 +20,10 @@
 //! # use hyperactor::Proc;
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
-//! # let proc = Proc::local();
+//! # let proc = Proc::isolated();
 //! # let (client, _) = proc.instance("client").unwrap();
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
-//! let mbox = Mailbox::new_detached(actor_id);
+//! let mbox = Mailbox::new(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
 //!
 //! port.send(&client, 123).unwrap();
@@ -39,10 +39,10 @@
 //! # use hyperactor::Proc;
 //! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
-//! # let proc = Proc::local();
+//! # let proc = Proc::isolated();
 //! # let (client, _) = proc.instance("client").unwrap();
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
-//! let mbox = Mailbox::new_detached(actor_id);
+//! let mbox = Mailbox::new(actor_id);
 //!
 //! let (port, receiver) = mbox.open_once_port::<u64>();
 //!
@@ -112,7 +112,7 @@ use std::future::Future;
 use std::ops::Bound::Excluded;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::LazyLock;
+use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::Weak;
@@ -160,6 +160,8 @@ use crate::channel::ChannelTransport;
 use crate::channel::SendError;
 use crate::channel::TxStatus;
 use crate::context;
+use crate::gateway::Gateway;
+use crate::id::ActorId;
 use crate::metrics;
 use crate::ordering::SEQ_INFO;
 use crate::ordering::SeqInfo;
@@ -913,9 +915,6 @@ impl MailboxSender for UndeliverableMailboxSender {
     }
 }
 
-static BOXED_PANICKING_MAILBOX_SENDER: LazyLock<BoxedMailboxSender> =
-    LazyLock::new(|| BoxedMailboxSender::new(PanickingMailboxSender));
-
 /// Convenience boxing implementation for MailboxSender. Most APIs
 /// are parameterized on MailboxSender implementations, and it's thus
 /// difficult to work with dyn values.  BoxedMailboxSender bridges this
@@ -1063,7 +1062,16 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
             let proc_id = ProcAddr::unique(addr, format!("mailbox_server_{}", rank));
             // Use this mailbox server as the forwarder, so we can use it to
             // return message back to the sender.
-            let proc = Proc::configured(proc_id, BoxedMailboxSender::new(server));
+            //
+            // TODO(meriksen): use a global proc here when it materializes
+            let proc = Proc::builder()
+                .proc_id(proc_id.id().clone())
+                .shared_gateway(Gateway::configured(
+                    proc_id.location().clone(),
+                    BoxedMailboxSender::new(server),
+                ))
+                .build()
+                .expect("mailbox server proc builder is valid");
             let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
             while let Ok(Undeliverable(mut envelope)) = undeliverable_rx.recv().await {
                 if let Ok(Undeliverable(e)) =
@@ -1078,7 +1086,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 ));
                 let sender_id: ActorAddr = envelope.sender().clone();
                 let return_port =
-                    PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(&sender_id);
+                    PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&sender_id);
                 return_port.send_serialized(
                     &client,
                     Flattrs::new(),
@@ -1370,21 +1378,10 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
-    /// Create a new mailbox associated with the provided actor ID, using the provided
-    /// forwarder for external destinations.
-    pub fn new(actor_id: impl Into<ActorAddr>, forwarder: BoxedMailboxSender) -> Self {
+    /// Create a mailbox associated with the provided actor ID.
+    pub fn new(actor_id: impl Into<ActorAddr>) -> Self {
         Self {
-            inner: Arc::new(State::new(actor_id.into(), forwarder)),
-        }
-    }
-
-    /// Create a new detached mailbox associated with the provided actor ID.
-    pub fn new_detached(actor_id: impl Into<ActorAddr>) -> Self {
-        Self {
-            inner: Arc::new(State::new(
-                actor_id.into(),
-                BOXED_PANICKING_MAILBOX_SENDER.clone(),
-            )),
+            inner: Arc::new(State::new(actor_id.into())),
         }
     }
 
@@ -1413,15 +1410,15 @@ impl Mailbox {
         )
     }
 
-    /// Bind this message's actor port to this actor's mailbox. This method is
-    /// normally used:
+    /// Bind the handler port for message type `M` to this mailbox.
+    /// This method is normally used:
     ///   1. when we need to intercept a message sent to a handler, and re-route
     ///      that message to the returned receiver;
     ///   2. mock this message's handler when it is not implemented for this actor
     ///      type, with the returned receiver.
-    pub(crate) fn bind_actor_port<M: RemoteMessage>(&self) -> (PortHandle<M>, PortReceiver<M>) {
+    pub(crate) fn bind_handler_port<M: RemoteMessage>(&self) -> (PortHandle<M>, PortReceiver<M>) {
         let (handle, receiver) = self.open_port();
-        handle.bind_actor_port();
+        handle.bind_handler_port();
         (handle, receiver)
     }
 
@@ -1487,6 +1484,27 @@ impl Mailbox {
             self.clone(),
             self.inner.allocate_port(),
             UnboundedPortSender::Func(Arc::new(enqueue)),
+            None,
+            StreamingReducerOpts::default(),
+        )
+    }
+
+    /// Open a runtime-dispatched handler port that accepts M-typed
+    /// messages using the provided enqueue function.
+    pub(crate) fn open_handler_enqueue_port<M: Message>(
+        &self,
+        enqueue: impl Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
+    ) -> PortHandle<M> {
+        let port_index = self.inner.allocate_port();
+        let enqueue = Arc::new(enqueue);
+        let sender = Arc::new(HandlerPortSender::new(
+            UnboundedPortSender::Func(enqueue),
+            self.inner.handler_ingress.clone(),
+        ));
+        PortHandle::new_full(
+            self.clone(),
+            port_index,
+            UnboundedPortSender::Handler(sender),
             None,
             StreamingReducerOpts::default(),
         )
@@ -1583,7 +1601,7 @@ impl Mailbox {
         })
     }
 
-    /// Retrieve the bound undeliverable message port handle.
+    /// Retrieve the bound undeliverable handler port handle.
     pub fn bound_return_handle(&self) -> Option<PortHandle<Undeliverable<MessageEnvelope>>> {
         self.lookup_sender::<Undeliverable<MessageEnvelope>>()
             .map(|sender| PortHandle::new(self.clone(), self.inner.allocate_port(), sender))
@@ -1618,7 +1636,7 @@ impl Mailbox {
         PortRef::attest(port_ref)
     }
 
-    fn bind_to_actor_port<M: RemoteMessage>(&self, handle: &PortHandle<M>) {
+    fn bind_to_handler_port<M: RemoteMessage>(&self, handle: &PortHandle<M>) {
         assert_eq!(
             handle.inner.mailbox.actor_addr(),
             self.actor_addr(),
@@ -1670,6 +1688,27 @@ impl Mailbox {
         }
         let _ = closed.insert(status);
     }
+
+    /// Start draining handler ingress for this mailbox.
+    ///
+    /// Draining is a mailbox lifecycle property, but it is enforced
+    /// only by runtime-dispatched handler ports. New handler work is
+    /// rejected at the handler-port sender. Work that already entered
+    /// a handler-port sender before draining began is allowed to finish
+    /// enqueueing, and this method waits for those in-flight enqueue
+    /// attempts before it returns. After this method returns, no handler
+    /// work can still be entering the actor queue through a handler
+    /// port.
+    ///
+    /// Runtime/control ports and ordinary mailbox ports remain usable
+    /// while draining, so shutdown can continue and already accepted
+    /// work can flush.
+    ///
+    /// This is distinct from [`Mailbox::close`], which marks the
+    /// mailbox terminal and rejects all subsequent local delivery.
+    pub(crate) fn drain(&self) {
+        self.inner.handler_ingress.drain();
+    }
 }
 
 impl context::Mailbox for Mailbox {
@@ -1718,8 +1757,13 @@ impl MailboxSender for Mailbox {
             envelope.dest
         );
 
-        if envelope.dest().actor_addr() != self.inner.actor_id {
-            return self.inner.forwarder.post(envelope, return_handle);
+        if envelope.dest().actor_id() != self.inner.actor_id.id() {
+            let err = DeliveryError::Mailbox(format!(
+                "mailbox owner {} cannot deliver to {}",
+                self.inner.actor_id,
+                envelope.dest().actor_addr()
+            ));
+            return envelope.undeliverable(err, return_handle);
         }
 
         let port_index = envelope.dest().index();
@@ -1961,7 +2005,6 @@ impl<M: Message> PortHandle<M> {
                 MailboxSenderErrorKind::Mailbox(err),
             ));
         }
-
         let mut headers = Flattrs::new();
 
         crate::mailbox::headers::set_send_timestamp(&mut headers);
@@ -1996,7 +2039,7 @@ impl<M: Message> PortHandle<M> {
         self.inner.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.inner.mailbox.actor_addr().clone(),
-                MailboxSenderErrorKind::Other(err),
+                classify_sender_error(err),
             )
         })
     }
@@ -2036,12 +2079,12 @@ impl<M: RemoteMessage> PortHandle<M> {
         )
     }
 
-    /// Bind to this message's actor port. This method will panic if the handle
-    /// is already bound.
+    /// Bind this handle to the handler port for message type `M`. This method
+    /// will panic if the handle is already bound.
     ///
     /// This is used by [`actor::Binder`] implementations to bind actor refs.
     /// This is not intended for general use.
-    pub(crate) fn bind_actor_port(&self) {
+    pub(crate) fn bind_handler_port(&self) {
         let port_id = self
             .inner
             .mailbox
@@ -2057,7 +2100,7 @@ impl<M: RemoteMessage> PortHandle<M> {
             }
             *guard = Some(port_id);
         }
-        self.inner.mailbox.bind_to_actor_port(self);
+        self.inner.mailbox.bind_to_handler_port(self);
     }
 }
 
@@ -2095,13 +2138,13 @@ impl<M: Message> OncePortHandle<M> {
     /// Send a message to this port. The send operation will consume the
     /// port handle, as the port accepts at most one message.
     pub fn send(self, _cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        // TODO: Assign seq to the message if the port is bound to an actor port
+        // TODO: Assign seq to the message if the port is bound to a handler port
         // in the future.
         assert!(
-            !self.port_addr().is_actor_port(),
-            "OncePortHandle currently does not support actor ports; a \
+            !self.port_addr().is_handler_port(),
+            "OncePortHandle currently does not support handler ports; a \
             prerequisite of that support is to assign seq to messages \
-            if the port is actor port."
+            if the port is a handler port."
         );
 
         let actor_id = self.mailbox.actor_addr().clone();
@@ -2335,12 +2378,26 @@ trait SerializedSender: Send + Sync {
     ) -> Result<SerializedSendDisposition, SerializedSendFailure>;
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("handler port closed")]
+struct HandlerPortClosedError;
+
+fn classify_sender_error(err: anyhow::Error) -> MailboxSenderErrorKind {
+    if err.is::<HandlerPortClosedError>() {
+        MailboxSenderErrorKind::Closed
+    } else {
+        MailboxSenderErrorKind::Other(err)
+    }
+}
+
 /// A sender to an M-typed unbounded port.
 enum UnboundedPortSender<M: Message> {
     /// Send directly to the mpsc queue.
     Mpsc(mpsc::UnboundedSender<M>),
     /// Use the provided function to enqueue the item.
     Func(Arc<dyn Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync>),
+    /// A runtime-dispatched handler port that observes mailbox drain state.
+    Handler(Arc<HandlerPortSender<M>>),
 }
 
 impl<M: Message> UnboundedPortSender<M> {
@@ -2348,6 +2405,7 @@ impl<M: Message> UnboundedPortSender<M> {
         match self {
             Self::Mpsc(sender) => sender.send(message).map_err(anyhow::Error::from),
             Self::Func(func) => func(headers, message),
+            Self::Handler(sender) => sender.send(headers, message),
         }
     }
 }
@@ -2359,6 +2417,7 @@ impl<M: Message> Clone for UnboundedPortSender<M> {
         match self {
             Self::Mpsc(sender) => Self::Mpsc(sender.clone()),
             Self::Func(func) => Self::Func(func.clone()),
+            Self::Handler(sender) => Self::Handler(sender.clone()),
         }
     }
 }
@@ -2371,7 +2430,121 @@ impl<M: Message> Debug for UnboundedPortSender<M> {
                 .debug_tuple("UnboundedPortSender::Func")
                 .field(&"..")
                 .finish(),
+            Self::Handler(_) => f
+                .debug_tuple("UnboundedPortSender::Handler")
+                .field(&"..")
+                .finish(),
         }
+    }
+}
+
+const HANDLER_INGRESS_DRAINING: usize = 1usize << (usize::BITS as usize - 1);
+const HANDLER_INGRESS_ACTIVE_MASK: usize = !HANDLER_INGRESS_DRAINING;
+
+struct HandlerIngressGate {
+    state: AtomicUsize,
+    wait_lock: Mutex<()>,
+    drained: Condvar,
+}
+
+struct HandlerIngressGuard {
+    gate: Arc<HandlerIngressGate>,
+}
+
+impl HandlerIngressGate {
+    fn new() -> Self {
+        Self {
+            state: AtomicUsize::new(0),
+            wait_lock: Mutex::new(()),
+            drained: Condvar::new(),
+        }
+    }
+
+    fn try_enter(self: &Arc<Self>) -> Result<HandlerIngressGuard, HandlerPortClosedError> {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & HANDLER_INGRESS_DRAINING != 0 {
+                return Err(HandlerPortClosedError);
+            }
+
+            let active = state & HANDLER_INGRESS_ACTIVE_MASK;
+            assert!(
+                active < HANDLER_INGRESS_ACTIVE_MASK,
+                "too many active handler ingress sends"
+            );
+
+            match self.state.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(HandlerIngressGuard {
+                        gate: Arc::clone(self),
+                    });
+                }
+                Err(next_state) => state = next_state,
+            }
+        }
+    }
+
+    fn drain(&self) {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & HANDLER_INGRESS_DRAINING != 0 {
+                break;
+            }
+            match self.state.compare_exchange_weak(
+                state,
+                state | HANDLER_INGRESS_DRAINING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(next_state) => state = next_state,
+            }
+        }
+
+        let mut wait_guard = self.wait_lock.lock().unwrap();
+        while self.state.load(Ordering::Acquire) & HANDLER_INGRESS_ACTIVE_MASK != 0 {
+            wait_guard = self.drained.wait(wait_guard).unwrap();
+        }
+    }
+}
+
+impl Drop for HandlerIngressGuard {
+    fn drop(&mut self) {
+        let previous = self.gate.state.fetch_sub(1, Ordering::AcqRel);
+        assert!(
+            previous & HANDLER_INGRESS_ACTIVE_MASK != 0,
+            "handler ingress active count underflow"
+        );
+        if previous & HANDLER_INGRESS_DRAINING != 0 && previous & HANDLER_INGRESS_ACTIVE_MASK == 1 {
+            // Pair only the final active-count decrement during drain
+            // with the drain waiter's condvar mutex. Ordinary send
+            // completion stays on the atomic fast path, but the final
+            // sender still cannot notify between the waiter's state
+            // check and its transition to sleep.
+            let _wait_guard = self.gate.wait_lock.lock().unwrap();
+            self.gate.drained.notify_all();
+        }
+    }
+}
+
+struct HandlerPortSender<M: Message> {
+    sender: UnboundedPortSender<M>,
+    gate: Arc<HandlerIngressGate>,
+}
+
+impl<M: Message> HandlerPortSender<M> {
+    fn new(sender: UnboundedPortSender<M>, gate: Arc<HandlerIngressGate>) -> Self {
+        Self { sender, gate }
+    }
+
+    fn send(&self, headers: Flattrs, message: M) -> Result<(), anyhow::Error> {
+        let _guard = self.gate.try_enter()?;
+        self.sender.send(headers, message)
     }
 }
 
@@ -2390,7 +2563,7 @@ impl<M: Message> UnboundedSender<M> {
     #[allow(dead_code)]
     fn send(&self, headers: Flattrs, message: M) -> Result<(), MailboxSenderError> {
         self.sender.send(headers, message).map_err(|err| {
-            MailboxSenderError::new_bound(self.port_id.clone(), MailboxSenderErrorKind::Other(err))
+            MailboxSenderError::new_bound(self.port_id.clone(), classify_sender_error(err))
         })
     }
 }
@@ -2423,33 +2596,23 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
         // to provide type indexing, specifically in `IndexedErasedUnbound` which is used to
         // support port aggregation.
         match serialized.deserialized_unchecked() {
-            Ok(message) => {
-                match &self.sender {
-                    UnboundedPortSender::Mpsc(sender) => {
-                        sender
-                            .send(message)
-                            .map_err(anyhow::Error::from)
-                            .map_err(|_| SerializedSendFailure::Dead {
-                                data: serialized,
-                                headers,
-                            })?;
-                    }
-                    UnboundedPortSender::Func(func) => {
-                        func(headers.clone(), message).map_err(|err| {
-                            SerializedSendFailure::Error(SerializedSendError {
-                                data: serialized,
-                                error: MailboxSenderError::new_bound(
-                                    self.port_id.clone(),
-                                    MailboxSenderErrorKind::Other(err),
-                                ),
-                                headers,
-                            })
-                        })?;
-                    }
+            Ok(message) => match self.sender.send(headers.clone(), message) {
+                Ok(()) => Ok(SerializedSendDisposition::Delivered),
+                Err(_) if matches!(&self.sender, UnboundedPortSender::Mpsc(_)) => {
+                    Err(SerializedSendFailure::Dead {
+                        data: serialized,
+                        headers,
+                    })
                 }
-
-                Ok(SerializedSendDisposition::Delivered)
-            }
+                Err(err) => Err(SerializedSendFailure::Error(SerializedSendError {
+                    data: serialized,
+                    error: MailboxSenderError::new_bound(
+                        self.port_id.clone(),
+                        classify_sender_error(err),
+                    ),
+                    headers,
+                })),
+            },
             Err(err) => Err(SerializedSendFailure::Error(SerializedSendError {
                 data: serialized,
                 error: MailboxSenderError::new_bound(
@@ -2581,25 +2744,25 @@ struct State {
     /// The next port ID to allocate.
     next_port: AtomicU64,
 
-    /// The forwarder for this mailbox.
-    forwarder: BoxedMailboxSender,
-
     /// If a value is present, the mailbox has been closed with the provided
     /// status, and any subsequent `Mailbox::post_unchecked` calls will fail.
     closed: RwLock<Option<ActorStatus>>,
+
+    /// Gate that closes and drains runtime-dispatched handler ingress.
+    handler_ingress: Arc<HandlerIngressGate>,
 }
 
 impl State {
     /// Create a new state with the provided owning ActorAddr.
-    fn new(actor_id: ActorAddr, forwarder: BoxedMailboxSender) -> Self {
+    fn new(actor_id: ActorAddr) -> Self {
         Self {
             actor_id,
             ports: DashMap::new(),
             // The first 1024 ports are allocated to actor handlers.
             // Other port IDs are ephemeral.
             next_port: AtomicU64::new(USER_PORT_OFFSET),
-            forwarder,
             closed: RwLock::new(None),
+            handler_ingress: Arc::new(HandlerIngressGate::new()),
         }
     }
 
@@ -2627,7 +2790,7 @@ impl fmt::Debug for State {
 /// different underlying senders.
 #[derive(Clone)]
 pub struct MailboxMuxer {
-    mailboxes: Arc<DashMap<ActorAddr, Box<dyn MailboxSender + Send + Sync>>>,
+    mailboxes: Arc<DashMap<ActorId, Box<dyn MailboxSender + Send + Sync>>>,
 }
 
 impl Default for MailboxMuxer {
@@ -2648,12 +2811,7 @@ impl MailboxMuxer {
     /// sender. Returns false if there is already a sender associated
     /// with the actor. In this case, the sender is not replaced, and
     /// the caller must [`MailboxMuxer::unbind`] it first.
-    pub fn bind(
-        &self,
-        actor_id: impl Into<ActorAddr>,
-        sender: impl MailboxSender + 'static,
-    ) -> bool {
-        let actor_id = actor_id.into();
+    pub fn bind(&self, actor_id: ActorId, sender: impl MailboxSender + 'static) -> bool {
         match self.mailboxes.entry(actor_id) {
             Entry::Occupied(_) => false,
             Entry::Vacant(entry) => {
@@ -2665,20 +2823,15 @@ impl MailboxMuxer {
 
     /// Convenience function to bind a mailbox.
     pub fn bind_mailbox(&self, mailbox: Mailbox) -> bool {
-        self.bind(mailbox.actor_addr().clone(), mailbox)
+        self.bind(mailbox.actor_addr().id().clone(), mailbox)
     }
 
     /// Unbind the sender associated with the provided actor ID. After
     /// unbinding, the muxer will no longer be able to send messages to
     /// that actor.
     #[allow(dead_code)]
-    pub(crate) fn unbind(&self, actor_id: &ActorAddr) {
+    pub(crate) fn unbind(&self, actor_id: &ActorId) {
         self.mailboxes.remove(actor_id);
-    }
-
-    /// Returns a list of all actors bound to this muxer. Useful in debugging.
-    pub fn bound_actors(&self) -> Vec<ActorAddr> {
-        self.mailboxes.iter().map(|e| e.key().clone()).collect()
     }
 }
 
@@ -2690,7 +2843,7 @@ impl MailboxSender for MailboxMuxer {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let dest_actor_ref = envelope.dest().actor_addr();
-        match self.mailboxes.get(&dest_actor_ref) {
+        match self.mailboxes.get(dest_actor_ref.id()) {
             None => {
                 let err = format!(
                     "no mailbox for actor {} registered in muxer",
@@ -3171,7 +3324,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_basic() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (port, mut receiver) = mbox.open_port::<u64>();
         let port = port.bind();
 
@@ -3191,8 +3344,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_mailbox_rejects_messages_for_other_actors() {
+        let mbox = Mailbox::new(test_actor_id("0", "owner"));
+        let dest = test_actor_id("0", "other").port_addr(Port::from(1234));
+        let envelope =
+            MessageEnvelope::serialize(mbox.actor_addr().clone(), dest, &42u64, Flattrs::new())
+                .expect("serialize");
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        mbox.post(envelope, return_handle);
+
+        let Undeliverable(undelivered) =
+            tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+                .await
+                .expect("timed out waiting for undeliverable")
+                .expect("return port closed");
+        assert!(
+            undelivered
+                .error_msg()
+                .expect("expected error")
+                .contains("cannot deliver to")
+        );
+    }
+
+    #[tokio::test]
     async fn test_mailbox_accum() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let (port, mut receiver) = client
             .mailbox()
@@ -3226,7 +3403,7 @@ mod tests {
 
     #[test]
     fn test_port_and_reducer() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         // accum port could have reducer typehash
         {
             let accumulator = accum::join_semilattice::<accum::Max<u64>>();
@@ -3248,7 +3425,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // error behavior changed, but we will bring it back
     async fn test_mailbox_once() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         let (port, receiver) = client.open_once_port::<u64>();
@@ -3273,7 +3450,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // changed error behavior
     async fn test_mailbox_receiver_drop() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (port, mut receiver) = mbox.open_port::<u64>();
         // Make sure we go through "remote" path.
         let port = port.bind();
@@ -3291,7 +3468,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_type_mismatch_does_not_evict_unbounded_port() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (port, mut receiver) = mbox.open_port::<u64>();
         let port = port.bind();
         let port_index = port.port_addr().index();
@@ -3333,7 +3510,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_closed_unbounded_port_is_removed_after_send_failure() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let port_index = mbox.allocate_port();
         let port_id = mbox.actor_addr().port_addr(Port::from(port_index));
         let port = crate::PortRef::attest(port_id.clone());
@@ -3385,7 +3562,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_once_type_mismatch_preserves_sender_until_delivery() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (port, receiver) = mbox.open_once_port::<u64>();
         let port = port.bind();
         let port_index = port.port_addr().index();
@@ -3431,7 +3608,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_drain() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
 
         let (port, mut receiver) = mbox.open_port();
         let port = port.bind();
@@ -3452,11 +3629,11 @@ mod tests {
     async fn test_mailbox_muxer() {
         let muxer = MailboxMuxer::new();
 
-        let mbox0 = Mailbox::new_detached(test_actor_id("0", "actor1"));
-        let mbox1 = Mailbox::new_detached(test_actor_id("0", "actor2"));
+        let mbox0 = Mailbox::new(test_actor_id("0", "actor1"));
+        let mbox1 = Mailbox::new(test_actor_id("0", "actor2"));
 
-        muxer.bind(mbox0.actor_addr().clone(), mbox0.clone());
-        muxer.bind(mbox1.actor_addr().clone(), mbox1.clone());
+        muxer.bind(mbox0.actor_addr().id().clone(), mbox0.clone());
+        muxer.bind(mbox1.actor_addr().id().clone(), mbox1.clone());
 
         let (port, receiver) = mbox0.open_once_port::<u64>();
 
@@ -3479,7 +3656,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_client_server() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "actor0"));
+        let mbox = Mailbox::new(test_actor_id("0", "actor0"));
         let (tx, rx) = channel::local::new();
         let serve_handle = mbox.clone().serve(rx);
         let client = MailboxClient::new(tx);
@@ -3497,10 +3674,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_router() {
-        let mbox0 = Mailbox::new_detached(test_actor_id("world0_0", "actor0"));
-        let mbox1 = Mailbox::new_detached(test_actor_id("world1_0", "actor0"));
-        let mbox2 = Mailbox::new_detached(test_actor_id("world1_1", "actor0"));
-        let mbox3 = Mailbox::new_detached(test_actor_id("world1_1", "actor1"));
+        let mbox0 = Mailbox::new(test_actor_id("world0_0", "actor0"));
+        let mbox1 = Mailbox::new(test_actor_id("world1_0", "actor0"));
+        let mbox2 = Mailbox::new(test_actor_id("world1_1", "actor0"));
+        let mbox3 = Mailbox::new(test_actor_id("world1_1", "actor1"));
 
         let comms: Vec<(OncePortRef<u64>, OncePortReceiver<u64>)> =
             [&mbox0, &mbox1, &mbox2, &mbox3]
@@ -3527,7 +3704,7 @@ mod tests {
 
         // Test undeliverable messages, and that it is delivered with the appropriate fallback.
 
-        let mbox4 = Mailbox::new_detached(test_actor_id("fallback_0", "actor"));
+        let mbox4 = Mailbox::new(test_actor_id("fallback_0", "actor"));
 
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
@@ -3619,10 +3796,10 @@ mod tests {
     #[tokio::test]
     #[ignore] // TODO: there's a leak here, fix it
     async fn test_dial_mailbox_router_default() {
-        let mbox0 = Mailbox::new_detached(test_actor_id("world0_0", "actor0"));
-        let mbox1 = Mailbox::new_detached(test_actor_id("world1_0", "actor0"));
-        let mbox2 = Mailbox::new_detached(test_actor_id("world1_1", "actor0"));
-        let mbox3 = Mailbox::new_detached(test_actor_id("world1_1", "actor1"));
+        let mbox0 = Mailbox::new(test_actor_id("world0_0", "actor0"));
+        let mbox1 = Mailbox::new(test_actor_id("world1_0", "actor0"));
+        let mbox2 = Mailbox::new(test_actor_id("world1_1", "actor0"));
+        let mbox3 = Mailbox::new(test_actor_id("world1_1", "actor1"));
 
         // We don't need to dial here, since we gain direct access to the
         // underlying routers.
@@ -3669,7 +3846,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_enqueue_port() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         let count = Arc::new(AtomicUsize::new(0));
@@ -3742,7 +3919,7 @@ mod tests {
         use crate::testing::proc_supervison::ProcSupervisionCoordinator;
 
         let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
-            BOXED_PANICKING_MAILBOX_SENDER.clone(),
+            BoxedMailboxSender::new(PanickingMailboxSender),
         ));
         let proc_id = test_proc_id("quux_0");
         let mut proc = Proc::configured(proc_id.clone(), proc_forwarder);
@@ -3782,7 +3959,7 @@ mod tests {
         assert!(msg_str.contains("sender:") && msg_str.contains("quux_0"));
         assert!(msg_str.contains("dest:") && msg_str.contains("corge_0"));
 
-        proc.destroy_and_wait::<()>(tokio::time::Duration::from_secs(1), None, "test cleanup")
+        proc.destroy_and_wait(tokio::time::Duration::from_secs(1), "test cleanup")
             .await
             .unwrap();
     }
@@ -3798,7 +3975,7 @@ mod tests {
             wirevalue::Any::serialize(&1u64).unwrap(),
             Flattrs::new(),
         );
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         return_handle
             .send(&client, Undeliverable(envelope.clone()))
@@ -3833,10 +4010,7 @@ mod tests {
             // Create dummy state and port_id to create PortReceiver. They are
             // not used in the test.
             let dummy_actor_ref: ActorAddr = test_actor_id("world_0", "actor");
-            let dummy_state = State::new(
-                dummy_actor_ref.clone(),
-                BOXED_PANICKING_MAILBOX_SENDER.clone(),
-            );
+            let dummy_state = State::new(dummy_actor_ref.clone());
             let dummy_port_id = dummy_actor_ref.port_addr(Port::from(0));
             let (sender, receiver) = mpsc::unbounded_channel::<M>();
             let receiver = PortReceiver {
@@ -3994,7 +4168,7 @@ mod tests {
         reducer_spec: Option<ReducerSpec>,
         reducer_mode: ReducerMode,
     ) -> Setup {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (actor0, actor0_handle) = proc.instance("actor0").unwrap();
         let (actor1, actor1_handle) = proc.instance("actor1").unwrap();
 
@@ -4125,7 +4299,7 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _config_guard =
             config.override_key(crate::config::SPLIT_MAX_BUFFER_AGE, Duration::from_mins(10));
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
@@ -4248,7 +4422,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_once_mode_basic() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
@@ -4276,7 +4450,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_once_mode_teardown() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (actor, _actor_handle) = proc.instance("actor").unwrap();
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
@@ -4469,14 +4643,8 @@ mod tests {
     #[tokio::test]
     async fn message_ttl_expires_in_routing_loop_returns_to_sender() {
         let actor_id = test_actor_id("world_0", "ttl_actor");
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(AsyncLoopForwarder),
-        );
-        let (ret_port, mut ret_rx) = mailbox.bind_actor_port::<Undeliverable<MessageEnvelope>>();
+        let (ret_port, mut ret_rx) = undeliverable::new_undeliverable_port();
 
-        // Create a destination not owned by this mailbox to force
-        // forwarding.
         let remote_actor = test_actor_id("remote_world_1", "remote");
         let dest = remote_actor.port_addr(4242.into());
 
@@ -4487,10 +4655,7 @@ mod tests {
             MessageEnvelope::serialize(actor_id.clone(), dest.clone(), &payload, Flattrs::new())
                 .expect("serialize");
 
-        // Post it. This will start bouncing between forwarder and
-        // mailbox until TTL hits 0.
-        let return_handle = ret_port.clone();
-        mailbox.post(envelope, return_handle);
+        AsyncLoopForwarder.post(envelope, ret_port.clone());
 
         // We expect the undeliverable to come back once TTL expires.
         let Undeliverable(undelivered) =
@@ -4507,12 +4672,9 @@ mod tests {
     #[tokio::test]
     async fn message_ttl_success_local_delivery() {
         let actor_id = test_actor_id("world_0", "ttl_actor");
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let mailbox = Mailbox::new(actor_id.clone());
         let (_undeliverable_tx, mut undeliverable_rx) =
-            mailbox.bind_actor_port::<Undeliverable<MessageEnvelope>>();
+            mailbox.bind_handler_port::<Undeliverable<MessageEnvelope>>();
 
         // Open a local user u64 port.
         let (user_port, mut user_rx) = mailbox.open_port::<u64>();
@@ -4552,7 +4714,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_port_contramap() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let (handle, mut rx) = client.open_port();
 
@@ -4565,22 +4727,22 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "already bound")]
-    fn test_bind_port_handle_to_actor_port_twice() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+    fn test_bind_port_handle_to_handler_port_twice() {
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (handle, _rx) = mbox.open_port::<String>();
-        handle.bind_actor_port();
-        handle.bind_actor_port();
+        handle.bind_handler_port();
+        handle.bind_handler_port();
     }
 
     #[test]
-    fn test_bind_port_handle_to_actor_port() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+    fn test_bind_port_handle_to_handler_port() {
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let default_port = mbox.actor_addr().port_addr(Port::from(String::port()));
         let (handle, _rx) = mbox.open_port::<String>();
-        // Handle's port index is allocated by mailbox, not the actor port.
+        // Handle's port index is allocated by mailbox, not the handler port.
         assert_ne!(default_port.index(), handle.inner.port_index);
-        // Bind the handle to the actor port.
-        handle.bind_actor_port();
+        // Bind the handle to the handler port.
+        handle.bind_handler_port();
         assert_matches!(handle.location(), PortLocation::Bound(port) if port == default_port);
         // bind() can still be used, just it will not change handle's state.
         handle.bind();
@@ -4590,30 +4752,27 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "already bound")]
-    fn test_bind_port_handle_to_actor_port_when_already_bound() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+    fn test_bind_port_handle_to_handler_port_when_already_bound() {
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
         let (handle, _rx) = mbox.open_port::<String>();
         // Bound handle to the port allocated by mailbox.
         handle.bind();
         assert_matches!(handle.location(), PortLocation::Bound(port) if port.index() == handle.inner.port_index);
         // Since handle is already bound, call bind_to() on it will cause panic.
-        handle.bind_actor_port();
+        handle.bind_handler_port();
     }
 
     #[tokio::test]
     async fn test_mailbox_post_fails_when_actor_stopped() {
         let actor_id = test_actor_id("0", "stopped_actor");
 
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let mailbox = Mailbox::new(actor_id.clone());
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
 
         let (user_port, _user_rx) = mailbox.open_port::<u64>();
 
-        // Use a separate detached mailbox for the return handle since
+        // Use a separate return mailbox since
         // the main mailbox is stopped and won't accept messages.
         let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
 
@@ -4646,10 +4805,7 @@ mod tests {
 
         let actor_id = test_actor_id("0", "failed_actor");
 
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let mailbox = Mailbox::new(actor_id.clone());
 
         let (user_port, _user_rx) = mailbox.open_port::<u64>();
 
@@ -4657,7 +4813,7 @@ mod tests {
             "test failure".to_string(),
         )));
 
-        // Use a separate detached mailbox for the return handle since
+        // Use a separate return mailbox since
         // the main mailbox is failed and won't accept messages.
         let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
 
@@ -4688,13 +4844,10 @@ mod tests {
     async fn test_port_handle_send_fails_when_actor_stopped() {
         let actor_id = test_actor_id("0", "stopped_actor");
 
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let mailbox = Mailbox::new(actor_id.clone());
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
@@ -4716,13 +4869,10 @@ mod tests {
 
         let actor_id = test_actor_id("0", "failed_actor");
 
-        let mailbox = Mailbox::new(
-            actor_id.clone(),
-            BoxedMailboxSender::new(PanickingMailboxSender),
-        );
+        let mailbox = Mailbox::new(actor_id.clone());
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         mailbox.close(ActorStatus::Failed(ActorErrorKind::Generic(
@@ -4742,7 +4892,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_open_reduce_port() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         // Open an accumulator port with sum reducer
@@ -4762,7 +4912,7 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_open_reduce_port_reducer_spec_preserved() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
 
         // Test that different accumulators produce different reducer_specs
@@ -4786,7 +4936,7 @@ mod tests {
     /// mailbox.
     #[tokio::test]
     async fn test_flush_over_unix_channel() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "actor0"));
+        let mbox = Mailbox::new(test_actor_id("0", "actor0"));
 
         // Serve the mailbox on a unix domain socket channel.
         let (addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
@@ -4821,6 +4971,66 @@ mod tests {
 
         serve_handle.stop("test done");
         serve_handle.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn test_drain_waits_for_active_handler_enqueue() {
+        let mailbox = Mailbox::new(test_actor_id("drain", "actor"));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let delivered = Arc::new(AtomicUsize::new(0));
+
+        let port = mailbox.open_handler_enqueue_port({
+            let release = Arc::clone(&release);
+            let delivered = Arc::clone(&delivered);
+            move |_headers, _message: u64| {
+                entered_tx.send(()).unwrap();
+                let (lock, cvar) = &*release;
+                let mut released = lock.lock().unwrap();
+                while !*released {
+                    released = cvar.wait(released).unwrap();
+                }
+                delivered.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+
+        let sender = port.inner.sender.clone();
+        let sender_thread = std::thread::spawn(move || sender.send(Flattrs::new(), 1u64).unwrap());
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let (drained_tx, drained_rx) = std::sync::mpsc::channel();
+        let drain_thread = std::thread::spawn({
+            let mailbox = mailbox.clone();
+            move || {
+                mailbox.drain();
+                drained_tx.send(()).unwrap();
+            }
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while mailbox.inner.handler_ingress.state.load(Ordering::Acquire) & HANDLER_INGRESS_DRAINING
+            == 0
+        {
+            assert!(std::time::Instant::now() < deadline, "drain did not start");
+            std::thread::yield_now();
+        }
+        assert_matches!(
+            drained_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        let (lock, cvar) = &*release;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+
+        sender_thread.join().unwrap();
+        drained_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        drain_thread.join().unwrap();
+        assert_eq!(delivered.load(Ordering::SeqCst), 1);
+
+        let err = port.inner.sender.send(Flattrs::new(), 2u64).unwrap_err();
+        assert!(err.is::<HandlerPortClosedError>());
     }
 
     /// Helper: build a `MessageEnvelope` with a recognizable payload

@@ -182,7 +182,7 @@ mod tests {
     // Verify it compiles
     #[async_timed_test(timeout_secs = 30)]
     async fn test_client_macros() {
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, _) = proc.instance("client").unwrap();
         let actor_handle = proc.spawn("foo", TestVariantFormsActor {}).unwrap();
 

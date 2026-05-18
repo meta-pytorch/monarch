@@ -305,7 +305,7 @@ pub struct HostAgent {
     /// `crate::host::LOCAL_PROC_NAME`).
     local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
     /// Handle to the host's frontend mailbox server, set during `init` after
-    /// `this.bind::<Self>()` ensures the actor port is registered before the
+    /// `this.bind::<Self>()` ensures the handler port is registered before the
     /// mailbox starts routing messages. Sent back to the bootstrap loop via
     /// `shutdown_tx` when the host shuts down so the caller can
     /// drain it.
@@ -521,9 +521,9 @@ impl Actor for HostAgent {
 
             let proc = match child_ref {
                 Addr::Proc(proc_ref) => {
-                    if *proc_ref == *system_proc.proc_addr() {
+                    if *proc_ref == system_proc.proc_addr() {
                         Some((&system_proc, SERVICE_PROC_NAME))
-                    } else if *proc_ref == *local_proc.proc_addr() {
+                    } else if *proc_ref == local_proc.proc_addr() {
                         Some((&local_proc, LOCAL_PROC_NAME))
                     } else {
                         None
@@ -542,20 +542,24 @@ impl Actor for HostAgent {
                     // all_actor_ids() causes convoy starvation with
                     // concurrent insert/remove operations, stalling
                     // the spawn/exit path. all_instance_keys() just
-                    // clones keys — microseconds per shard. The
-                    // is_system check uses individual point lookups
-                    // outside the iteration. Stale keys (terminal
-                    // actors) may appear but are harmless — the TUI
-                    // handles "not found" gracefully.
+                    // clones keys — microseconds per shard. Actor
+                    // addresses and the is_system check use individual
+                    // point lookups outside the iteration. Stale keys
+                    // are harmless: if the point lookup fails, the actor
+                    // has already gone away.
                     let all_keys = proc.all_instance_keys();
                     let mut actors: Vec<hyperactor::introspect::IntrospectRef> =
                         Vec::with_capacity(all_keys.len());
                     let mut system_actors: Vec<crate::introspect::NodeRef> = Vec::new();
                     for id in all_keys {
-                        if proc.get_instance(&id).is_some_and(|cell| cell.is_system()) {
-                            system_actors.push(crate::introspect::NodeRef::Actor(id.clone()));
+                        if let Some(cell) = proc.get_instance_by_id(&id) {
+                            let actor_addr = cell.actor_addr().clone();
+                            if cell.is_system() {
+                                system_actors
+                                    .push(crate::introspect::NodeRef::Actor(actor_addr.clone()));
+                            }
+                            actors.push(hyperactor::introspect::IntrospectRef::Actor(actor_addr));
                         }
-                        actors.push(hyperactor::introspect::IntrospectRef::Actor(id));
                     }
                     let mut attrs = hyperactor_config::Attrs::new();
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
@@ -574,7 +578,7 @@ impl Actor for HostAgent {
                     // Per-actor max from the live actor scan.
                     let mut queue_max: u64 = 0;
                     for aid in proc.all_instance_keys() {
-                        if let Some(cell) = proc.get_instance(&aid) {
+                        if let Some(cell) = proc.get_instance_by_id(&aid) {
                             queue_max = queue_max.max(cell.queue_depth());
                         }
                     }
@@ -710,14 +714,12 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         );
 
         // Transition Detached → Attached on first proc creation.
-        if was_empty {
-            if let HostAgentState::Detached(_) = &self.state {
-                let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
-                    HostAgentState::Detached(h) => h,
-                    _ => unreachable!(),
-                };
-                self.state = HostAgentState::Attached(host);
-            }
+        if was_empty && let HostAgentState::Detached(_) = &self.state {
+            let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
+                HostAgentState::Detached(h) => h,
+                _ => unreachable!(),
+            };
+            self.state = HostAgentState::Attached(host);
         }
 
         // If any WaitRankStatus messages arrived before this proc
@@ -1536,7 +1538,6 @@ mod tests {
     use crate::mesh_id::ResourceId;
     use crate::resource::CreateOrUpdateClient;
     use crate::resource::GetStateClient;
-    use crate::resource::StopClient;
     use crate::resource::WaitRankStatusClient;
 
     #[tokio::test]
@@ -1695,8 +1696,7 @@ mod tests {
             .unwrap();
 
         // Stop the proc.
-        host_agent
-            .stop(&client, id, "test".to_string())
+        crate::resource::StopClient::stop(&host_agent, &client, id, "test".to_string())
             .await
             .unwrap();
 
@@ -1993,7 +1993,7 @@ mod tests {
             .proc_addr()
             .actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
         let agent_id: ActorAddr = agent_ref;
-        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
 
         // Poll until we see non-zero watermark (evidence of queue
         // traffic since startup).
