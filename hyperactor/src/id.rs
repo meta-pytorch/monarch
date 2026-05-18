@@ -475,6 +475,13 @@ impl ProcId {
         }
     }
 
+    /// Create an anonymous instance [`ProcId`] with a random uid.
+    pub fn anonymous() -> Self {
+        Self {
+            uid: Uid::instance(),
+        }
+    }
+
     /// Create a singleton [`ProcId`] identified by the given label.
     pub fn singleton(label: Label) -> Self {
         Self {

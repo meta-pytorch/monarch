@@ -596,7 +596,7 @@ impl<State> Builder<State> {
     }
 
     fn build_proc(proc_id: Option<ProcId>, gateway: Gateway) -> Result<Proc, anyhow::Error> {
-        let proc_id = proc_id.unwrap_or_else(|| ProcId::new(Uid::instance(), None));
+        let proc_id = proc_id.unwrap_or_else(ProcId::anonymous);
         if is_legacy_pseudo_singleton_proc_id(&proc_id) {
             anyhow::bail!(
                 "legacy pseudo-singleton proc id '{}' must be constructed with a dedicated Proc constructor",
@@ -688,27 +688,42 @@ impl Proc {
         )
     }
 
-    /// Create a proc with a random id on the default gateway.
-    pub fn new() -> Self {
+    /// Create a proc with an anonymous instance id on the default gateway.
+    pub fn anonymous() -> Self {
         Self::builder()
             .build()
-            .expect("default proc builder is valid")
+            .expect("anonymous proc builder is valid")
+    }
+
+    /// Create a proc with an instance id and display label on the default gateway.
+    pub fn instance(label: impl AsRef<str>) -> Self {
+        Self::builder()
+            .proc_id(ProcId::instance(Label::strip(label.as_ref())))
+            .build()
+            .expect("instance proc builder is valid")
+    }
+
+    /// Create a proc with a singleton id on the default gateway.
+    pub fn singleton(name: impl AsRef<str>) -> Self {
+        Self::builder()
+            .proc_id(ProcId::singleton(Label::strip(name.as_ref())))
+            .build()
+            .expect("singleton proc builder is valid")
+    }
+
+    /// Create a proc with an anonymous instance id on the default gateway.
+    pub fn new() -> Self {
+        Self::anonymous()
     }
 
     /// Create a proc with a random id and display label on the default gateway.
     pub fn unique(label: impl AsRef<str>) -> Self {
-        Self::builder()
-            .proc_id(ProcId::instance(Label::strip(label.as_ref())))
-            .build()
-            .expect("unique proc builder is valid")
+        Self::instance(label)
     }
 
     /// Create a proc with a singleton id on the default gateway.
     pub fn named(name: impl AsRef<str>) -> Self {
-        Self::builder()
-            .proc_id(ProcId::singleton(Label::strip(name.as_ref())))
-            .build()
-            .expect("named proc builder is valid")
+        Self::singleton(name)
     }
 
     /// Create a proc with a random id on a fresh local-only gateway.
@@ -3813,6 +3828,42 @@ mod tests {
             parent.send(cx, TestActorMessage::Spawn(tx)).unwrap();
             rx.await.unwrap()
         }
+    }
+
+    #[test]
+    fn test_proc_identity_constructors() {
+        let anonymous = Proc::anonymous();
+        assert!(
+            matches!(anonymous.proc_id().uid(), crate::id::Uid::Instance(_, None)),
+            "anonymous proc must have an unlabeled instance id"
+        );
+        assert_eq!(anonymous.proc_id().label(), None);
+
+        let instance = Proc::instance("worker");
+        assert!(
+            matches!(
+                instance.proc_id().uid(),
+                crate::id::Uid::Instance(_, Some(label)) if label.as_str() == "worker"
+            ),
+            "instance proc must have a labeled instance id"
+        );
+        assert_eq!(
+            instance.proc_id().label().map(|label| label.as_str()),
+            Some("worker")
+        );
+
+        let singleton = Proc::singleton("controller");
+        assert!(
+            matches!(
+                singleton.proc_id().uid(),
+                crate::id::Uid::Singleton(label) if label.as_str() == "controller"
+            ),
+            "singleton proc must have a singleton id"
+        );
+        assert_eq!(
+            singleton.proc_id().label().map(|label| label.as_str()),
+            Some("controller")
+        );
     }
 
     #[async_trait]
