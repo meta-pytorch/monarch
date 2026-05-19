@@ -423,6 +423,12 @@ impl RankRect {
     }
 
     /// Converts a local coordinate into a base rank.
+    ///
+    /// # See also
+    ///
+    /// [`Self::coord_of`] is the inverse: if
+    /// `self.rank_of(coord) == Some(rank)`, then `self.coord_of(rank)`
+    /// returns the same coordinate.
     pub fn rank_of(&self, coord: impl AsRef<[usize]>) -> Option<Rank> {
         let coord = coord.as_ref();
         if coord.len() != self.extent.len() {
@@ -443,6 +449,12 @@ impl RankRect {
     }
 
     /// Converts a base rank into a local coordinate.
+    ///
+    /// # See also
+    ///
+    /// [`Self::rank_of`] is the inverse: if
+    /// `self.coord_of(rank) == Some(coord)`, then
+    /// `self.rank_of(coord.indices()) == Some(rank)`.
     pub fn coord_of(&self, rank: Rank) -> Option<Coord> {
         if self.is_empty() {
             return None;
@@ -482,13 +494,25 @@ impl RankRect {
         self.coord_of(rank).is_some()
     }
 
-    /// Converts a visible local index into a base rank.
+    /// Converts a local row-major index into a base rank.
+    ///
+    /// # See also
+    ///
+    /// [`Self::local_index_of`] is the inverse: if
+    /// `self.rank_at(index) == Some(rank)`, then
+    /// `self.local_index_of(rank) == Some(index)`.
     pub fn rank_at(&self, local_index: usize) -> Option<Rank> {
         let coord = self.coord_at(local_index)?;
         self.rank_of(coord.indices())
     }
 
     /// Converts a base rank into its local row-major index.
+    ///
+    /// # See also
+    ///
+    /// [`Self::rank_at`] is the inverse: if
+    /// `self.local_index_of(rank) == Some(index)`, then
+    /// `self.rank_at(index) == Some(rank)`.
     pub fn local_index_of(&self, rank: Rank) -> Option<usize> {
         let coord = self.coord_of(rank)?;
         Some(row_major_index(coord.indices(), self.extent.sizes()))
@@ -502,8 +526,8 @@ impl RankRect {
         }
     }
 
-    /// Restricts a dimension while preserving dimensionality.
-    pub fn restrict(&self, dim: &str, range: impl Into<DimRange>) -> Result<Self, RankSpaceError> {
+    /// Selects a dimension while preserving dimensionality.
+    pub fn select(&self, dim: &str, range: impl Into<DimRange>) -> Result<Self, RankSpaceError> {
         let dim_index = self
             .dim_index(dim)
             .ok_or_else(|| RankSpaceError::UnknownDim {
@@ -716,12 +740,24 @@ impl RankSpace {
     }
 
     /// Converts a coordinate into a visible base rank.
+    ///
+    /// # See also
+    ///
+    /// [`Self::coord_of`] is the inverse for visible ranks: if
+    /// `self.rank_of(coord) == Some(rank)`, then `self.coord_of(rank)`
+    /// returns the same coordinate.
     pub fn rank_of(&self, coord: impl AsRef<[usize]>) -> Option<Rank> {
         let rank = self.base.rank_of(coord)?;
         self.contains_rank(rank).then_some(rank)
     }
 
     /// Converts a visible base rank into a coordinate in this space's base rect.
+    ///
+    /// # See also
+    ///
+    /// [`Self::rank_of`] is the inverse: if
+    /// `self.coord_of(rank) == Some(coord)`, then
+    /// `self.rank_of(coord.indices()) == Some(rank)`.
     pub fn coord_of(&self, rank: Rank) -> Option<Coord> {
         self.contains_rank(rank)
             .then(|| self.base.coord_of(rank))
@@ -729,11 +765,23 @@ impl RankSpace {
     }
 
     /// Converts a compact visible index into a base rank.
+    ///
+    /// # See also
+    ///
+    /// [`Self::local_index_of`] is the inverse: if
+    /// `self.rank_at(index) == Some(rank)`, then
+    /// `self.local_index_of(rank) == Some(index)`.
     pub fn rank_at(&self, local_index: usize) -> Option<Rank> {
         self.iter_ranks().nth(local_index)
     }
 
     /// Converts a visible base rank into its compact visible index.
+    ///
+    /// # See also
+    ///
+    /// [`Self::rank_at`] is the inverse: if
+    /// `self.local_index_of(rank) == Some(index)`, then
+    /// `self.rank_at(index) == Some(rank)`.
     pub fn local_index_of(&self, rank: Rank) -> Option<usize> {
         if !self.contains_rank(rank) {
             return None;
@@ -750,10 +798,10 @@ impl RankSpace {
             .filter(|&rank| !self.occlusion.contains(rank))
     }
 
-    /// Restricts the base rectangle while keeping occlusions in base-rank coordinates.
-    pub fn restrict(&self, dim: &str, range: impl Into<DimRange>) -> Result<Self, RankSpaceError> {
+    /// Selects the base rectangle while keeping occlusions in base-rank coordinates.
+    pub fn select(&self, dim: &str, range: impl Into<DimRange>) -> Result<Self, RankSpaceError> {
         Ok(Self {
-            base: self.base.restrict(dim, range)?,
+            base: self.base.select(dim, range)?,
             occlusion: self.occlusion.clone(),
         })
     }
@@ -881,10 +929,10 @@ mod tests {
     }
 
     #[test]
-    fn restrict_preserves_base_rank_coordinates() {
+    fn select_preserves_base_rank_coordinates() {
         let rect = host_gpu_rect();
         let gpus = rect
-            .restrict("gpu", DimRange::with_step(1, None, 2).unwrap())
+            .select("gpu", DimRange::with_step(1, None, 2).unwrap())
             .unwrap();
 
         assert_eq!(gpus.extent().dims()[1].size(), 2);
@@ -959,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn restrict_reports_rank_arithmetic_overflow() {
+    fn select_reports_rank_arithmetic_overflow() {
         let rect = RankRect {
             extent: Extent::new(vec![Dim::new("host", 3)]).unwrap(),
             offset: Rank(usize::MAX),
@@ -967,7 +1015,7 @@ mod tests {
         };
 
         assert_eq!(
-            rect.restrict("host", 1).unwrap_err(),
+            rect.select("host", 1).unwrap_err(),
             RankSpaceError::RankArithmeticOverflow
         );
 
@@ -978,11 +1026,11 @@ mod tests {
         };
 
         assert_eq!(
-            rect.restrict("host", 2).unwrap_err(),
+            rect.select("host", 2).unwrap_err(),
             RankSpaceError::RankArithmeticOverflow
         );
         assert_eq!(
-            rect.restrict("host", DimRange::with_step(0, Some(2), 2).unwrap())
+            rect.select("host", DimRange::with_step(0, Some(2), 2).unwrap())
                 .unwrap_err(),
             RankSpaceError::RankArithmeticOverflow
         );
