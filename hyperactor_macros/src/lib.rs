@@ -756,6 +756,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                         // TODO: should we propagate this error (to supervision), or send it back as an "RPC error"?
                         // This would require Result<Result<..., in order to handle RPC errors.
                         #construct_result_future
+                        use hyperactor::Endpoint as _;
                         #reply_port_arg.send(cx, #result_ident).map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                     }
                 });
@@ -895,7 +896,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
     // The client implementation methods.
     let mut impl_methods = Vec::new();
 
-    let send_message = quote! { self.send(cx, message)? };
+    let send_message = quote! { hyperactor::Endpoint::send(self, cx, message)? };
     let global_log_level = parse_log_level(&input.attrs).ok().unwrap_or(None);
 
     for message in &messages {

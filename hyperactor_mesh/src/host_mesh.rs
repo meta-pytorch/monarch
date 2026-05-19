@@ -47,6 +47,7 @@
 
 use hyperactor::Actor;
 use hyperactor::ActorRef;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;

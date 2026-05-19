@@ -13,6 +13,7 @@
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::OncePortRef;

@@ -10,18 +10,6 @@
 
 use hyperactor_config::Flattrs;
 
-use crate::Actor;
-use crate::ActorHandle;
-use crate::ActorRef;
-use crate::Handler;
-use crate::Message;
-use crate::OncePortHandle;
-use crate::OncePortRef;
-use crate::PortHandle;
-use crate::PortRef;
-use crate::RemoteHandles;
-use crate::RemoteMessage;
-use crate::actor::Referable;
 use crate::context;
 use crate::mailbox::MailboxSenderError;
 
@@ -53,132 +41,6 @@ pub trait RemoteEndpoint<M>: Endpoint<M> {
         C: context::Actor;
 }
 
-impl<A, M> Endpoint<M> for &ActorHandle<A>
-where
-    A: Actor + Handler<M>,
-    M: Message,
-{
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
-    where
-        C: context::Actor,
-    {
-        ActorHandle::send(self, cx, message)
-    }
-}
-
-impl<M> Endpoint<M> for &PortHandle<M>
-where
-    M: Message,
-{
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
-    where
-        C: context::Actor,
-    {
-        PortHandle::send(self, cx, message)
-    }
-}
-
-impl<M> Endpoint<M> for OncePortHandle<M>
-where
-    M: Message,
-{
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
-    where
-        C: context::Actor,
-    {
-        OncePortHandle::send(self, cx, message)
-    }
-}
-
-impl<A, M> Endpoint<M> for &ActorRef<A>
-where
-    A: Referable + RemoteHandles<M>,
-    M: RemoteMessage,
-{
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
-    where
-        C: context::Actor,
-    {
-        ActorRef::send(self, cx, message)
-    }
-}
-
-impl<A, M> RemoteEndpoint<M> for &ActorRef<A>
-where
-    A: Referable + RemoteHandles<M>,
-    M: RemoteMessage,
-{
-    fn send_with_headers<C>(
-        self,
-        cx: &C,
-        headers: Flattrs,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
-    where
-        C: context::Actor,
-    {
-        ActorRef::send_with_headers(self, cx, headers, message)
-    }
-}
-
-impl<M> Endpoint<M> for &PortRef<M>
-where
-    M: RemoteMessage,
-{
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
-    where
-        C: context::Actor,
-    {
-        PortRef::send(self, cx, message)
-    }
-}
-
-impl<M> RemoteEndpoint<M> for &PortRef<M>
-where
-    M: RemoteMessage,
-{
-    fn send_with_headers<C>(
-        self,
-        cx: &C,
-        headers: Flattrs,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
-    where
-        C: context::Actor,
-    {
-        PortRef::send_with_headers(self, cx, headers, message)
-    }
-}
-
-impl<M> Endpoint<M> for OncePortRef<M>
-where
-    M: RemoteMessage,
-{
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
-    where
-        C: context::Actor,
-    {
-        OncePortRef::send(self, cx, message)
-    }
-}
-
-impl<M> RemoteEndpoint<M> for OncePortRef<M>
-where
-    M: RemoteMessage,
-{
-    fn send_with_headers<C>(
-        self,
-        cx: &C,
-        headers: Flattrs,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
-    where
-        C: context::Actor,
-    {
-        OncePortRef::send_with_headers(self, cx, headers, message)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
@@ -188,6 +50,9 @@ mod tests {
     use typeuri::Named;
 
     use super::*;
+    use crate::Actor;
+    use crate::Handler;
+    use crate::PortRef;
     use crate::actor::Referable;
     use crate::actor::RemoteHandles;
     use crate::proc::Context;

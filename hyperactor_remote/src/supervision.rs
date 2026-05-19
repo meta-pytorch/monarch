@@ -24,6 +24,7 @@ use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::AnyActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;

@@ -402,6 +402,7 @@ mod tests {
     use tokio::time;
 
     use super::*;
+    use crate::Endpoint as _;
     use crate::Label;
     use crate::mailbox::MailboxSender;
     use crate::mailbox::PortLocation;

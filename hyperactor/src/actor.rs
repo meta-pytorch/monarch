@@ -38,6 +38,7 @@ use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
 use crate::context;
+use crate::endpoint::Endpoint;
 use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
@@ -756,19 +757,6 @@ impl<A: Actor> ActorHandle<A> {
         self.cell.status().clone()
     }
 
-    /// Send a message to the actor. Messages sent through the handle
-    /// are always queued in process, and do not require serialization.
-    pub fn send<M: Message>(
-        &self,
-        cx: &impl context::Actor,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
-    where
-        A: Handler<M>,
-    {
-        self.ports.get().send(cx, message)
-    }
-
     /// Return a port for the provided message type handled by the actor.
     pub fn port<M: Message>(&self) -> PortHandle<M>
     where
@@ -891,6 +879,19 @@ impl<A: Actor> IntoFuture for ActorHandle<A> {
 impl<A: Actor> Debug for ActorHandle<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         f.debug_struct("ActorHandle").field("cell", &"..").finish()
+    }
+}
+
+impl<A, M> Endpoint<M> for &ActorHandle<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    where
+        C: context::Actor,
+    {
+        Endpoint::send(&self.ports.get(), cx, message)
     }
 }
 
@@ -1609,7 +1610,7 @@ mod tests {
             // proc, this proc will route that evenlope to the dest actor.
             dest_proc: Proc,
             // Vec index is the message seq - 1, value is the order this message
-            // would be relayed to the dest actor. Dest actor is responsible to
+            // would be relayed to the dest actor. Endpoint actor is responsible to
             // ensure itself processes these messages in order.
             relay_orders: Vec<usize>,
         ) -> Self {

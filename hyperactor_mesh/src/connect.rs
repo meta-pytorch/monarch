@@ -48,6 +48,7 @@ use futures::stream::FusedStream;
 use futures::task::Context;
 use futures::task::Poll;
 use hyperactor::ActorAddr;
+use hyperactor::Endpoint as _;
 use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::context;

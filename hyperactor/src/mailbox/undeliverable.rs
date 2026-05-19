@@ -148,7 +148,7 @@ pub(crate) fn return_undeliverable(
             .get_or_init(|| Proc::runtime().client("global_return_client").unwrap())
             .0;
         let envelope_copy = envelope.clone();
-        if (return_handle.send(client, Undeliverable(envelope))).is_err() {
+        if crate::Endpoint::send(&return_handle, client, Undeliverable(envelope)).is_err() {
             UndeliverableMailboxSender.post(envelope_copy, /*unused*/ return_handle)
         }
     }

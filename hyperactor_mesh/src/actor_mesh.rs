@@ -22,7 +22,9 @@ use std::time::Duration;
 
 use hyperactor::ActorLocal;
 use hyperactor::ActorRef;
+use hyperactor::Endpoint as _;
 use hyperactor::PortRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::UnboundPort;
@@ -1178,6 +1180,7 @@ mod tests {
     use std::collections::HashSet;
     use std::ops::Deref;
 
+    use hyperactor::Endpoint as _;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::context::Mailbox as _;

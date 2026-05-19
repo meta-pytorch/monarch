@@ -103,6 +103,7 @@ mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::Context;
+    use hyperactor::Endpoint as _;
     use hyperactor::Handler;
     use hyperactor::Label;
     use hyperactor::PortRef;

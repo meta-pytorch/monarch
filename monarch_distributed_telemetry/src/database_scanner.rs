@@ -20,6 +20,7 @@ use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use hyperactor as reference;
+use hyperactor::Endpoint as _;
 use hyperactor::Instance;
 use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
