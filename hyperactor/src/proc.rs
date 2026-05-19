@@ -162,6 +162,7 @@ use crate::actor_local::ActorLocalStorage;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+#[cfg(test)]
 use crate::channel::ChannelTransport;
 use crate::config;
 use crate::context;
@@ -183,6 +184,7 @@ use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::OncePortReceiver;
+#[cfg(test)]
 use crate::mailbox::PanickingMailboxSender;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
@@ -191,6 +193,10 @@ use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
 use crate::subject::AsSubject as _;
+
+tokio::task_local! {
+    static CURRENT_TASK_PROC: Proc;
+}
 
 /// Legacy singleton proc name used for host-local client actors.
 ///
@@ -909,6 +915,29 @@ impl Proc {
         self.state().gateway.clone()
     }
 
+    /// Return the process-global proc.
+    pub fn global() -> Self {
+        static GLOBAL_PROC: OnceLock<Proc> = OnceLock::new();
+        GLOBAL_PROC.get_or_init(Proc::anonymous).clone()
+    }
+
+    /// Return the proc for the current execution context.
+    ///
+    /// Actor callbacks run with their owning proc installed as the current
+    /// proc. Outside an actor callback, this returns the process-global proc.
+    pub fn current() -> Self {
+        CURRENT_TASK_PROC
+            .try_with(Clone::clone)
+            .unwrap_or_else(|_| Self::global())
+    }
+
+    async fn with_current<F>(&self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        CURRENT_TASK_PROC.scope(self.clone(), future).await
+    }
+
     /// Shared sender used by the proc to forward messages to remote
     /// destinations.
     pub fn forwarder(&self) -> &BoxedMailboxSender {
@@ -924,16 +953,6 @@ impl Proc {
     /// Convenience accessor for state.
     fn state(&self) -> &ProcState {
         self.inner.as_ref()
-    }
-
-    /// A global runtime proc used by this crate.
-    pub(crate) fn runtime() -> &'static Proc {
-        static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
-        RUNTIME_PROC.get_or_init(|| {
-            let addr = ChannelAddr::any(ChannelTransport::Local);
-            let proc_id = ProcAddr::instance(addr, "hyperactor_runtime");
-            Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
-        })
     }
 
     /// Attach a mailbox to the proc with the provided root name.
@@ -2250,7 +2269,7 @@ impl<A: Actor> Instance<A> {
     pub fn self_client() -> &'static Instance<()> {
         static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
         &CLIENT
-            .get_or_init(|| Proc::runtime().client("self_message_client").unwrap())
+            .get_or_init(|| Proc::global().client("self_message_client").unwrap())
             .0
     }
 
@@ -2492,8 +2511,13 @@ impl<A: Actor> Instance<A> {
         // the GIL.
         let cleanup_result = if !did_panic {
             let cleanup_timeout = hyperactor_config::global::get(config::CLEANUP_TIMEOUT);
-            match tokio::time::timeout(cleanup_timeout, actor.cleanup(self, result.as_ref().err()))
-                .await
+            match tokio::time::timeout(
+                cleanup_timeout,
+                self.inner
+                    .proc
+                    .with_current(actor.cleanup(self, result.as_ref().err())),
+            )
+            .await
             {
                 Ok(Ok(x)) => Ok(x),
                 Ok(Err(e)) => Err(ActorError::new(
@@ -2539,8 +2563,9 @@ impl<A: Actor> Instance<A> {
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
 
         self.change_status(ActorStatus::Initializing);
-        actor
-            .init(self)
+        self.inner
+            .proc
+            .with_current(actor.init(self))
             .await
             .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::init(err)))?;
         let actor_id_str = self.self_addr().to_string();
@@ -2557,15 +2582,17 @@ impl<A: Actor> Instance<A> {
                     match signal? {
                         Signal::Stop(reason) => {
                             self.change_status(ActorStatus::Stopping);
-                            actor
-                                .handle_stop(self, StopMode::Stop, &reason)
+                            self.inner
+                                .proc
+                                .with_current(actor.handle_stop(self, StopMode::Stop, &reason))
                                 .await
                                 .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
                         },
                         Signal::DrainAndStop(reason) => {
                             self.change_status(ActorStatus::Stopping);
-                            actor
-                                .handle_stop(self, StopMode::DrainAndStop, &reason)
+                            self.inner
+                                .proc
+                                .with_current(actor.handle_stop(self, StopMode::DrainAndStop, &reason))
                                 .await
                                 .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
                         },
@@ -2621,8 +2648,10 @@ impl<A: Actor> Instance<A> {
         supervision_event: ActorSupervisionEvent,
     ) -> Result<(), ActorError> {
         // Handle the supervision event with the current actor.
-        match actor
-            .handle_supervision_event(self, &supervision_event)
+        match self
+            .inner
+            .proc
+            .with_current(actor.handle_supervision_event(self, &supervision_event))
             .await
         {
             Ok(true) => {
@@ -2733,8 +2762,10 @@ impl<A: Actor> Instance<A> {
         // &Instance<A>.
         let start = Instant::now();
         let subject_str = self.self_addr().subject().to_string();
-        let result = actor
-            .handle(&context, message)
+        let result = self
+            .inner
+            .proc
+            .with_current(actor.handle(&context, message))
             .instrument(self.inner.cell.inner.recording.span(&subject_str))
             .await;
         let elapsed_us = start.elapsed().as_micros() as u64;
@@ -3228,7 +3259,7 @@ impl InstanceCell {
             // A global signal client is used to send signals to the actor.
             static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
             let client = &CLIENT
-                .get_or_init(|| Proc::runtime().client("global_signal_client").unwrap())
+                .get_or_init(|| Proc::global().client("global_signal_client").unwrap())
                 .0;
             signal_port.send(&client, signal).map_err(ActorError::from)
         } else {
