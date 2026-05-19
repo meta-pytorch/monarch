@@ -48,17 +48,21 @@
 
 use std::sync::OnceLock;
 
+use enum_as_inner::EnumAsInner;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::ActorAddr;
 use crate::ActorHandle;
+use crate::EndpointLocation;
 use crate::Instance;
 // for macros
 use crate::Message;
 use crate::Proc;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::MailboxSender;
+use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
@@ -67,15 +71,67 @@ use crate::mailbox::headers::OPERATION_ADVERB;
 use crate::mailbox::headers::OPERATION_ENDPOINT;
 use crate::mailbox::headers::RUST_MESSAGE_TYPE;
 
-/// An undeliverable `M`-typed message (in practice `M` is
-/// [MessageEnvelope]).
+/// Metadata for a message that could not be delivered and could not be
+/// returned.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, typeuri::Named)]
-pub struct Undeliverable<M: Message>(pub M);
+pub struct LostMessage {
+    /// The actor that attempted the send.
+    pub sender: ActorAddr,
+    /// The destination that rejected the message.
+    pub dest: EndpointLocation,
+    /// The message type, if known.
+    pub message_type: Option<String>,
+    /// The delivery failure.
+    pub error: String,
+}
+
+impl LostMessage {
+    /// Construct lost-message metadata from a local send error.
+    pub(crate) fn from_send_error<M: Message>(
+        sender: ActorAddr,
+        dest: EndpointLocation,
+        error: &MailboxSenderError,
+    ) -> Self {
+        Self {
+            sender,
+            dest,
+            message_type: Some(std::any::type_name::<M>().to_string()),
+            error: error.to_string(),
+        }
+    }
+}
+
+/// An undeliverable `M`-typed message.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "returned messages stay inline so callers can recover the original payload without extra allocation"
+)]
+#[derive(
+    Debug,
+    EnumAsInner,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    typeuri::Named
+)]
+pub enum Undeliverable<M: Message> {
+    /// The message was returned intact.
+    Message(M),
+    /// The message was lost before it could be returned.
+    Lost(LostMessage),
+}
 
 impl<M: Message> Undeliverable<M> {
-    /// Return the inner M-typed message.
-    pub fn into_inner(self) -> M {
-        self.0
+    /// Construct an undeliverable message that preserves the original payload.
+    pub fn message(message: M) -> Self {
+        Self::Message(message)
+    }
+
+    /// Construct an undeliverable message that carries only lost-message
+    /// metadata.
+    pub fn lost(message: LostMessage) -> Self {
+        Self::Lost(message)
     }
 }
 
@@ -105,11 +161,25 @@ pub fn monitored_return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
         // dropped and the task will never return.
         let (h, _) = new_undeliverable_port();
         crate::init::get_runtime().spawn(async move {
-            while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-                envelope.set_error(DeliveryError::BrokenLink(
-                    "message returned to undeliverable port".to_string(),
-                ));
-                super::UndeliverableMailboxSender.post(envelope, /*unused */ h.clone());
+            while let Ok(undeliverable) = rx.recv().await {
+                match undeliverable {
+                    Undeliverable::Message(mut envelope) => {
+                        envelope.set_error(DeliveryError::BrokenLink(
+                            "message returned to undeliverable port".to_string(),
+                        ));
+                        super::UndeliverableMailboxSender
+                            .post(envelope, /*unused */ h.clone());
+                    }
+                    Undeliverable::Lost(lost) => {
+                        tracing::error!(
+                            sender = %lost.sender,
+                            dest = %lost.dest,
+                            message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                            error = %lost.error,
+                            "lost message returned to undeliverable port"
+                        );
+                    }
+                }
             }
         });
         return_handle
@@ -126,11 +196,24 @@ pub fn custom_monitored_return_handle(caller: &str) -> PortHandle<Undeliverable<
     let caller = caller.to_owned();
     let (return_handle, mut rx) = new_undeliverable_port();
     tokio::task::spawn(async move {
-        while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-            envelope.set_error(DeliveryError::BrokenLink(
-                "message returned to undeliverable port".to_string(),
-            ));
-            tracing::error!("{caller} took back an undeliverable message: {}", envelope);
+        while let Ok(undeliverable) = rx.recv().await {
+            match undeliverable {
+                Undeliverable::Message(mut envelope) => {
+                    envelope.set_error(DeliveryError::BrokenLink(
+                        "message returned to undeliverable port".to_string(),
+                    ));
+                    tracing::error!("{caller} took back an undeliverable message: {}", envelope);
+                }
+                Undeliverable::Lost(lost) => {
+                    tracing::error!(
+                        sender = %lost.sender,
+                        dest = %lost.dest,
+                        message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                        error = %lost.error,
+                        "{caller} took back a lost message"
+                    );
+                }
+            }
         }
     });
     return_handle
@@ -148,7 +231,10 @@ pub(crate) fn return_undeliverable(
             .get_or_init(|| Proc::runtime().client("global_return_client").unwrap())
             .0;
         let envelope_copy = envelope.clone();
-        if (return_handle.send(client, Undeliverable(envelope))).is_err() {
+        if return_handle
+            .try_send(client, Undeliverable::message(envelope))
+            .is_err()
+        {
             UndeliverableMailboxSender.post(envelope_copy, /*unused*/ return_handle)
         }
     }
@@ -169,6 +255,12 @@ pub enum UndeliverableMessageError {
         /// The undelivered message.
         envelope: MessageEnvelope,
     },
+
+    /// A message was lost before it could be returned.
+    Lost {
+        /// The lost-message metadata.
+        lost: LostMessage,
+    },
 }
 
 /// Compute the top-line prefix for a bounced envelope (UE-3, UE-4).
@@ -183,6 +275,9 @@ fn undeliverable_prefix(error: &UndeliverableMessageError) -> String {
     let envelope = match error {
         UndeliverableMessageError::DeliveryFailure { envelope }
         | UndeliverableMessageError::ReturnFailure { envelope } => envelope,
+        UndeliverableMessageError::Lost { lost } => {
+            return format!("lost message to {}", lost.dest);
+        }
     };
     if let Some(endpoint) = envelope.headers().get(OPERATION_ENDPOINT) {
         let adverb = envelope
@@ -201,6 +296,7 @@ fn undeliverable_prefix(error: &UndeliverableMessageError) -> String {
                 envelope.sender()
             )
         }
+        UndeliverableMessageError::Lost { lost } => format!("lost message to {}", lost.dest),
     }
 }
 
@@ -225,6 +321,22 @@ impl std::fmt::Display for UndeliverableMessageError {
                 "original sender",
                 "original dest",
             ),
+            UndeliverableMessageError::Lost { lost } => {
+                writeln!(f, "{}:", undeliverable_prefix(self))?;
+                writeln!(
+                    f,
+                    "\tdescription: message was lost before it could be returned"
+                )?;
+                writeln!(f, "\tsender: {}", lost.sender)?;
+                writeln!(f, "\tdest: {}", lost.dest)?;
+                writeln!(
+                    f,
+                    "\tmessage type: {}",
+                    lost.message_type.as_deref().unwrap_or("unknown")
+                )?;
+                writeln!(f, "\terror: {}", lost.error)?;
+                return Ok(());
+            }
         };
 
         writeln!(f, "{}:", undeliverable_prefix(self))?;
