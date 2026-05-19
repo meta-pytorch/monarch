@@ -303,9 +303,7 @@ impl TcpManagerActor {
                     "tcp_chunk_sender_{}",
                     hyperactor_mesh::shortuuid::ShortUuid::generate()
                 );
-                let (instance, _handle) = proc
-                    .client(&sender_name)
-                    .expect("failed to create sender instance");
+                let instance = proc.client(&sender_name);
 
                 loop {
                     if cancel.is_cancelled() {
@@ -407,9 +405,7 @@ impl Actor for TcpManagerActor {
             self.receiver_done = Some(done_rx);
 
             tokio::spawn(async move {
-                let (instance, _handle) = proc
-                    .client(&receiver_name.to_string())
-                    .expect("failed to create receiver instance");
+                let instance = proc.client(&receiver_name.to_string());
 
                 loop {
                     let chunk = tokio::select! {
@@ -980,7 +976,7 @@ mod tests {
     struct TcpTestProcEnv {
         proc: Proc,
         rdma_handle: ActorHandle<RdmaManagerActor>,
-        instance: hyperactor::Instance<()>,
+        instance: hyperactor::Client,
         tcp_backend: TcpBackend,
         rdma_remote_buf: crate::RdmaRemoteBuffer,
         local_memory: Arc<KeepaliveLocalMemory>,
@@ -1011,7 +1007,7 @@ mod tests {
                 ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
                 format!("tcp_test_{id}"),
             )?;
-            let (instance, _) = proc.client("client")?;
+            let instance = proc.client("client");
 
             let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
             let rdma_handle = proc.spawn("rdma_manager", rdma_actor)?;
@@ -1044,7 +1040,7 @@ mod tests {
             buffer_size: usize,
         ) -> anyhow::Result<Self> {
             let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let (instance, _) = proc.client(&format!("client_{id}"))?;
+            let instance = proc.client(&format!("client_{id}"));
 
             let (local_memory, rdma_remote_buf) =
                 Self::alloc_cpu_buffer(&instance, rdma_handle, buffer_size).await?;
@@ -1060,7 +1056,7 @@ mod tests {
         }
 
         async fn alloc_cpu_buffer(
-            instance: &hyperactor::Instance<()>,
+            instance: &hyperactor::Client,
             rdma_handle: &ActorHandle<RdmaManagerActor>,
             buffer_size: usize,
         ) -> anyhow::Result<(Arc<KeepaliveLocalMemory>, crate::RdmaRemoteBuffer)> {
@@ -1601,7 +1597,7 @@ mod tests {
                 ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
                 format!("tcp_gpu_test_{id}"),
             )?;
-            let (instance, _) = proc.client("client")?;
+            let instance = proc.client("client");
 
             let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
             let rdma_handle = proc.spawn("rdma_manager", rdma_actor)?;

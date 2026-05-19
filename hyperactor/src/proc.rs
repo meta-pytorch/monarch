@@ -162,7 +162,10 @@ use crate::actor_local::ActorLocalStorage;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+#[cfg(test)]
 use crate::channel::ChannelTransport;
+use crate::client::Client;
+use crate::client::ClientActor;
 use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
@@ -183,6 +186,7 @@ use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::OncePortHandle;
 use crate::mailbox::OncePortReceiver;
+#[cfg(test)]
 use crate::mailbox::PanickingMailboxSender;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
@@ -191,6 +195,10 @@ use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
 use crate::subject::AsSubject as _;
+
+tokio::task_local! {
+    static CURRENT_TASK_PROC: Proc;
+}
 
 /// Legacy singleton proc name used for host-local client actors.
 ///
@@ -909,6 +917,29 @@ impl Proc {
         self.state().gateway.clone()
     }
 
+    /// Return the process-global proc.
+    pub fn global() -> Self {
+        static GLOBAL_PROC: OnceLock<Proc> = OnceLock::new();
+        GLOBAL_PROC.get_or_init(Proc::anonymous).clone()
+    }
+
+    /// Return the proc for the current execution context.
+    ///
+    /// Actor callbacks run with their owning proc installed as the current
+    /// proc. Outside an actor callback, this returns the process-global proc.
+    pub fn current() -> Self {
+        CURRENT_TASK_PROC
+            .try_with(Clone::clone)
+            .unwrap_or_else(|_| Self::global())
+    }
+
+    async fn with_current<F>(&self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        CURRENT_TASK_PROC.scope(self.clone(), future).await
+    }
+
     /// Shared sender used by the proc to forward messages to remote
     /// destinations.
     pub fn forwarder(&self) -> &BoxedMailboxSender {
@@ -924,16 +955,6 @@ impl Proc {
     /// Convenience accessor for state.
     fn state(&self) -> &ProcState {
         self.inner.as_ref()
-    }
-
-    /// A global runtime proc used by this crate.
-    pub(crate) fn runtime() -> &'static Proc {
-        static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
-        RUNTIME_PROC.get_or_init(|| {
-            let addr = ChannelAddr::any(ChannelTransport::Local);
-            let proc_id = ProcAddr::instance(addr, "hyperactor_runtime");
-            Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
-        })
     }
 
     /// Attach a mailbox to the proc with the provided root name.
@@ -963,15 +984,15 @@ impl Proc {
     pub fn attach_actor<R, M>(
         &self,
         name: &str,
-    ) -> Result<(Instance<()>, ActorRef<R>, PortReceiver<M>), anyhow::Error>
+    ) -> Result<(Client, ActorRef<R>, PortReceiver<M>), anyhow::Error>
     where
         M: RemoteMessage,
         R: Referable + RemoteHandles<M>,
     {
-        let (instance, _handle) = self.client(name)?;
-        let (_handle, rx) = instance.bind_handler_port::<M>();
-        let actor_ref = ActorRef::attest(instance.self_addr().clone());
-        Ok((instance, actor_ref, rx))
+        let client = self.client(name);
+        let (_handle, rx) = client.bind_handler_port::<M>();
+        let actor_ref = ActorRef::attest(client.self_addr().clone());
+        Ok((client, actor_ref, rx))
     }
 
     /// Spawn a named (root) actor on this proc. The name of the actor must be
@@ -1010,12 +1031,12 @@ impl Proc {
     /// introspect task).  This is safe to call outside a Tokio
     /// runtime — unlike [`actor_instance`], it never calls
     /// `tokio::spawn`.
-    pub fn client(&self, name: &str) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
-        let actor_id: ActorAddr = self.allocate_root_id(name)?;
-        let (instance, _receivers) = Instance::new(self.clone(), actor_id, false, None);
-        let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
+    pub fn client(&self, label: &str) -> Client {
+        let actor_id = self.allocate_client_id(label);
+        let (instance, _receivers) =
+            Instance::<ClientActor>::new(self.clone(), actor_id, false, None);
         instance.change_status(ActorStatus::Client);
-        Ok((instance, handle))
+        Client::new(instance)
     }
 
     /// Create a lightweight client instance that handles
@@ -1499,6 +1520,15 @@ impl Proc {
     /// Create a root allocation in the proc from an explicit uid.
     fn allocate_root_uid(&self, uid: Uid) -> Result<ActorAddr, anyhow::Error> {
         self.reserve_root(uid)
+    }
+
+    fn allocate_client_id(&self, label: &str) -> ActorAddr {
+        let actor_id = if label.is_empty() {
+            ActorId::anonymous(self.proc_id().clone())
+        } else {
+            ActorId::instance(Label::strip(label), self.proc_id().clone())
+        };
+        ActorAddr::new(actor_id, self.default_location())
     }
 
     fn reserve_root(&self, uid: Uid) -> Result<ActorAddr, anyhow::Error> {
@@ -2133,6 +2163,16 @@ impl<A: Actor> Instance<A> {
         self.inner.mailbox.drain();
     }
 
+    pub(crate) fn status(&self) -> watch::Receiver<ActorStatus> {
+        self.inner.status_tx.subscribe()
+    }
+
+    pub(crate) fn close_client(&self, reason: &str) {
+        let status = ActorStatus::Stopped(reason.to_string());
+        self.inner.mailbox.close(status.clone());
+        self.change_status(status);
+    }
+
     /// Request immediate actor exit with the provided stop reason.
     pub fn exit(&self, reason: &str) -> Result<(), ActorError> {
         self.inner
@@ -2247,11 +2287,9 @@ impl<A: Actor> Instance<A> {
     /// (e.g. from background tokio tasks).
     // TODO: replace with a proper mechanism for sending to port
     // handles without an actor context.
-    pub fn self_client() -> &'static Instance<()> {
-        static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-        &CLIENT
-            .get_or_init(|| Proc::runtime().client("self_message_client").unwrap())
-            .0
+    pub fn self_client() -> &'static Client {
+        static CLIENT: OnceLock<Client> = OnceLock::new();
+        CLIENT.get_or_init(|| Proc::global().client("self_message_client"))
     }
 
     /// Send a message to the actor itself with a delay usually to trigger some event.
@@ -2265,7 +2303,7 @@ impl<A: Actor> Instance<A> {
         let self_id = self.self_addr().clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            if let Err(e) = port.send(&client, message) {
+            if let Err(e) = port.send(client, message) {
                 // TODO: this is a fire-n-forget thread. We need to
                 // handle errors in a better way.
                 tracing::info!("{}: error sending delayed message: {}", self_id, e);
@@ -2492,8 +2530,13 @@ impl<A: Actor> Instance<A> {
         // the GIL.
         let cleanup_result = if !did_panic {
             let cleanup_timeout = hyperactor_config::global::get(config::CLEANUP_TIMEOUT);
-            match tokio::time::timeout(cleanup_timeout, actor.cleanup(self, result.as_ref().err()))
-                .await
+            match tokio::time::timeout(
+                cleanup_timeout,
+                self.inner
+                    .proc
+                    .with_current(actor.cleanup(self, result.as_ref().err())),
+            )
+            .await
             {
                 Ok(Ok(x)) => Ok(x),
                 Ok(Err(e)) => Err(ActorError::new(
@@ -2539,8 +2582,9 @@ impl<A: Actor> Instance<A> {
         let (signal_receiver, supervision_event_receiver) = actor_loop_receivers;
 
         self.change_status(ActorStatus::Initializing);
-        actor
-            .init(self)
+        self.inner
+            .proc
+            .with_current(actor.init(self))
             .await
             .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::init(err)))?;
         let actor_id_str = self.self_addr().to_string();
@@ -2557,15 +2601,17 @@ impl<A: Actor> Instance<A> {
                     match signal? {
                         Signal::Stop(reason) => {
                             self.change_status(ActorStatus::Stopping);
-                            actor
-                                .handle_stop(self, StopMode::Stop, &reason)
+                            self.inner
+                                .proc
+                                .with_current(actor.handle_stop(self, StopMode::Stop, &reason))
                                 .await
                                 .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
                         },
                         Signal::DrainAndStop(reason) => {
                             self.change_status(ActorStatus::Stopping);
-                            actor
-                                .handle_stop(self, StopMode::DrainAndStop, &reason)
+                            self.inner
+                                .proc
+                                .with_current(actor.handle_stop(self, StopMode::DrainAndStop, &reason))
                                 .await
                                 .map_err(|err| ActorError::new(self.self_addr(), ActorErrorKind::processing(err)))?;
                         },
@@ -2621,8 +2667,10 @@ impl<A: Actor> Instance<A> {
         supervision_event: ActorSupervisionEvent,
     ) -> Result<(), ActorError> {
         // Handle the supervision event with the current actor.
-        match actor
-            .handle_supervision_event(self, &supervision_event)
+        match self
+            .inner
+            .proc
+            .with_current(actor.handle_supervision_event(self, &supervision_event))
             .await
         {
             Ok(true) => {
@@ -2733,8 +2781,10 @@ impl<A: Actor> Instance<A> {
         // &Instance<A>.
         let start = Instant::now();
         let subject_str = self.self_addr().subject().to_string();
-        let result = actor
-            .handle(&context, message)
+        let result = self
+            .inner
+            .proc
+            .with_current(actor.handle(&context, message))
             .instrument(self.inner.cell.inner.recording.span(&subject_str))
             .await;
         let elapsed_us = start.elapsed().as_micros() as u64;
@@ -3226,11 +3276,9 @@ impl InstanceCell {
     pub fn signal(&self, signal: Signal) -> Result<(), ActorError> {
         if let Some((signal_port, _)) = &self.inner.actor_loop {
             // A global signal client is used to send signals to the actor.
-            static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-            let client = &CLIENT
-                .get_or_init(|| Proc::runtime().client("global_signal_client").unwrap())
-                .0;
-            signal_port.send(&client, signal).map_err(ActorError::from)
+            static CLIENT: OnceLock<Client> = OnceLock::new();
+            let client = CLIENT.get_or_init(|| Proc::global().client("global_signal_client"));
+            signal_port.send(client, signal).map_err(ActorError::from)
         } else {
             tracing::warn!(
                 "{}: attempted to send signal {} to detached actor",
@@ -3851,6 +3899,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_current_proc_uses_stable_global_proc_outside_actor_context() {
+        let first = Proc::current();
+        let second = Proc::current();
+
+        assert_eq!(first.proc_id(), second.proc_id());
+        assert_eq!(
+            Gateway::current().proc_addr(first.proc_id()),
+            first.proc_addr()
+        );
+    }
+
     #[async_trait]
     #[crate::handle(TestActorMessage)]
     impl TestActorMessageHandler for TestActor {
@@ -3916,10 +3976,80 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct CurrentProcActor;
+
+    impl Actor for CurrentProcActor {}
+
+    #[derive(Handler, Debug)]
+    enum CurrentProcMessage {
+        Check(oneshot::Sender<CurrentProcSnapshot>),
+    }
+
+    #[derive(Debug)]
+    struct CurrentProcSnapshot {
+        current_proc_id: ProcId,
+        current_gateway_proc_addr: ProcAddr,
+        spawned_handle: ActorHandle<TestActor>,
+        client_proc_id: ProcId,
+    }
+
+    #[async_trait]
+    #[crate::handle(CurrentProcMessage)]
+    impl CurrentProcMessageHandler for CurrentProcActor {
+        async fn check(
+            &mut self,
+            _cx: &crate::Context<Self>,
+            reply: oneshot::Sender<CurrentProcSnapshot>,
+        ) -> Result<(), anyhow::Error> {
+            let current = Proc::current();
+            let spawned_handle = crate::spawn("current_spawned", TestActor)?;
+            let client = crate::client("current_client");
+            reply
+                .send(CurrentProcSnapshot {
+                    current_proc_id: current.proc_id().clone(),
+                    current_gateway_proc_addr: Gateway::current().proc_addr(current.proc_id()),
+                    spawned_handle,
+                    client_proc_id: client.self_addr().proc_id().clone(),
+                })
+                .unwrap();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_current_proc_tracks_actor_context() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let actor = proc
+            .spawn::<CurrentProcActor>("current", CurrentProcActor)
+            .unwrap();
+        let (tx, rx) = oneshot::channel();
+
+        actor.send(&client, CurrentProcMessage::Check(tx)).unwrap();
+        let snapshot = rx.await.unwrap();
+
+        assert_eq!(&snapshot.current_proc_id, proc.proc_id());
+        assert_eq!(snapshot.current_gateway_proc_addr, proc.proc_addr());
+        assert_eq!(
+            snapshot.spawned_handle.actor_addr().proc_id(),
+            proc.proc_id()
+        );
+        assert_eq!(&snapshot.client_proc_id, proc.proc_id());
+
+        snapshot
+            .spawned_handle
+            .drain_and_stop("test complete")
+            .unwrap();
+        snapshot.spawned_handle.await;
+        actor.drain_and_stop("test complete").unwrap();
+        actor.await;
+    }
+
     #[tokio::test]
     async fn test_client_instance_can_bind_signal_port() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let (_signal_port, _signal_rx) = client.bind_handler_port::<Signal>();
     }
@@ -3932,7 +4062,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_actor() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let handle = proc.spawn("test", TestActor).unwrap();
 
         // Check on the join handle.
@@ -3982,7 +4112,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_proc_actors_messaging() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let first = proc.spawn::<TestActor>("first", TestActor).unwrap();
         let second = proc.spawn::<TestActor>("second", TestActor).unwrap();
         let (tx, rx) = oneshot::channel::<()>();
@@ -4168,7 +4298,7 @@ mod tests {
         use crate::testing::ids::test_actor_id;
 
         let proc = Proc::isolated();
-        let (instance, _) = proc.client("worker").unwrap();
+        let instance = proc.client("worker");
         let (port, mut receiver) = instance.bind_handler_port::<u64>();
 
         let PortLocation::Bound(default_dest) = port.location() else {
@@ -4195,12 +4325,12 @@ mod tests {
     fn test_default_location_changes_new_bindings_not_lookup() {
         let proc = Proc::isolated();
         let gateway = proc.gateway();
-        let (_instance, handle) = proc.client("worker").unwrap();
+        let client = proc.client("worker");
 
-        let first_ref: ActorRef<()> = handle.bind();
+        let first_ref: ActorRef<()> = client.bind();
         let new_location = ChannelAddr::Local(9876).into();
         gateway.set_default_location(new_location);
-        let second_ref: ActorRef<()> = handle.bind();
+        let second_ref: ActorRef<()> = client.bind();
 
         assert_eq!(first_ref.actor_addr().id(), second_ref.actor_addr().id());
         assert_ne!(
@@ -4263,7 +4393,7 @@ mod tests {
         let proc = Proc::isolated();
         let gateway = proc.gateway();
         let initial_location = proc.default_location();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (port, mut receiver) = client.bind_handler_port::<u64>();
         let PortLocation::Bound(default_dest) = port.location() else {
             panic!("handler port must be bound");
@@ -4346,7 +4476,7 @@ mod tests {
         use crate::testing::ids::test_actor_id;
 
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (return_handle, mut undeliverable_rx) =
             client.open_port::<Undeliverable<MessageEnvelope>>();
         let remote_proc = ProcAddr::instance(ChannelAddr::Local(1234), "remote");
@@ -4393,7 +4523,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_actor_lookup() {
         let proc = Proc::isolated();
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let target_actor = proc.spawn::<TestActor>("target", TestActor).unwrap();
         let target_actor_ref = target_actor.bind();
@@ -4463,7 +4593,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_child() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let first = proc.spawn::<TestActor>("first", TestActor).unwrap();
         let second = TestActor::spawn_child(&client, &first).await;
@@ -4532,7 +4662,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_child_lifecycle() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let root_1 = TestActor::spawn_child(&client, &root).await;
@@ -4615,7 +4745,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_drain_and_stop_closes_handler_ingress() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let stop_started = Arc::new(tokio::sync::Notify::new());
         let release_stop = Arc::new(tokio::sync::Notify::new());
         let handle = proc
@@ -4643,7 +4773,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_parent_failure() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
@@ -4715,7 +4845,7 @@ mod tests {
         let state = Arc::new(AtomicUsize::new(0));
         let actor = TestActor(state.clone());
         let handle = proc.spawn::<TestActor>("test", actor).unwrap();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, rx) = client.open_once_port();
         handle.send(&client, tx).unwrap();
         let usize_handle = rx.recv().await.unwrap();
@@ -4737,7 +4867,7 @@ mod tests {
         // be actor failure(s) in this test which trigger supervision.
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let actor_handle = proc.spawn("test", TestActor).unwrap();
         actor_handle
             .panic(&client, "some random failure".to_string())
@@ -4813,7 +4943,7 @@ mod tests {
         };
 
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (mut reported_event, _coordinator) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
@@ -4906,13 +5036,14 @@ mod tests {
 
         let proc = Proc::isolated();
 
-        let (instance, handle) = proc.client("my_test_actor").unwrap();
+        let client = proc.client("my_test_actor");
+        let status = client.status();
 
-        let child_actor = TestActor.spawn(&instance).unwrap();
+        let child_actor = TestActor.spawn(&client).unwrap();
 
-        let (port, mut receiver) = instance.open_port();
+        let (port, mut receiver) = client.open_port();
         child_actor
-            .send(&instance, ("hello".to_string(), port.bind()))
+            .send(&client, ("hello".to_string(), port.bind()))
             .unwrap();
 
         let message = receiver.recv().await.unwrap();
@@ -4921,10 +5052,9 @@ mod tests {
         child_actor.drain_and_stop("test").unwrap();
         child_actor.await;
 
-        assert_eq!(*handle.status().borrow(), ActorStatus::Client);
-        drop(instance);
-        assert_matches!(*handle.status().borrow(), ActorStatus::Stopped(_));
-        handle.await;
+        assert_eq!(*status.borrow(), ActorStatus::Client);
+        drop(client);
+        assert_matches!(*status.borrow(), ActorStatus::Stopped(_));
     }
 
     // Tokio's I/O driver is not fork-safe on macOS, and this test intentionally
@@ -4943,7 +5073,7 @@ mod tests {
             // should cause the process to terminate.
             // ProcSupervisionCoordinator::set(&proc).await.unwrap();
             let root = proc.spawn("root", TestActor).unwrap();
-            let (client, _handle) = proc.client("client").unwrap();
+            let client = proc.client("client");
             root.fail(&client, anyhow::anyhow!("some random failure"))
                 .await
                 .unwrap();
@@ -5042,7 +5172,7 @@ mod tests {
 
         trace_and_block(async {
             let proc = Proc::isolated();
-            let (client, _) = proc.client("client").unwrap();
+            let client = proc.client("client");
             let handle = LoggingActor.spawn_detached().unwrap();
             handle.send(&client, "hello world".to_string()).unwrap();
             handle
@@ -5082,7 +5212,7 @@ mod tests {
         use crate::mailbox::MailboxSenderErrorKind;
 
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let actor_handle = proc.spawn("test", TestActor).unwrap();
 
         // Clone the handle before awaiting since await consumes the handle
@@ -5115,7 +5245,7 @@ mod tests {
         use crate::mailbox::MailboxSenderErrorKind;
 
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
@@ -5184,7 +5314,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_stored_on_stop() {
         let proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
 
         let handle = proc.spawn::<TestActor>("actor", TestActor).unwrap();
         let actor_id = handle.actor_addr().clone();
@@ -5228,7 +5358,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_stored_on_failure() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         // Supervision coordinator required for actor failure handling.
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
@@ -5258,7 +5388,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_stored_on_failure() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
@@ -5283,7 +5413,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_on_clean_stop() {
         let proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
 
         let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
         let cell = handle.cell().clone();
@@ -5305,7 +5435,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_coordinator_receives_clean_stop() {
         let proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
         let (mut reported_event, _coordinator_handle) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
@@ -5328,7 +5458,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_coordinator_shuts_down_last_during_destroy() {
         let mut proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
         let (mut reported_event, _coordinator_handle) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
@@ -5369,7 +5499,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_on_propagated_failure() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
@@ -5411,7 +5541,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_resolve_actor_ref_none_for_terminal_actor() {
         let proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
 
         let handle = proc.spawn::<TestActor>("target", TestActor).unwrap();
         let actor_ref: ActorRef<TestActor> = handle.bind();
@@ -5437,7 +5567,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_terminated_snapshot_has_failure_info() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
@@ -5481,7 +5611,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_propagated_failure_info() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
@@ -5664,7 +5794,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn test_stopped_snapshot_has_no_failure_info() {
         let proc = Proc::isolated();
-        let (_client, _client_handle) = proc.client("client").unwrap();
+        let _client = proc.client("client");
 
         let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
         let actor_id = handle.actor_addr().clone();
@@ -5700,7 +5830,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 10)]
     async fn test_queue_depth_increment_decrement() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let handle = proc.spawn("qd_test", TestActor).unwrap();
         let actor_ref: crate::ActorRef<TestActor> = handle.bind();
         let actor_id = actor_ref.actor_addr().clone();
@@ -5755,7 +5885,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 10)]
     async fn test_proc_queue_depth_aggregation_under_pressure() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         // Spawn two actors.
         let h1 = proc.spawn("a1", TestActor).unwrap();
@@ -5845,7 +5975,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 10)]
     async fn test_retained_queue_stats_burst_then_drain() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let h = proc.spawn("ret_test", TestActor).unwrap();
 
         // Block the actor.
