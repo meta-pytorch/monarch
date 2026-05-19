@@ -159,15 +159,14 @@ class KubernetesJob(JobTrait):
 
     *Pre-provisioned* -- connect to pre-provisioned pods discovered via label
     selectors. Compatible with the MonarchMesh operator, third-party
-    schedulers, or manually created pods. Used when ``image_spec`` or ``pod_spec``
-    is not specified in ``add_mesh``.
+    schedulers, or manually created pods. Used when ``image_spec`` or
+    ``pod_template`` is not specified in ``add_mesh``.
 
     *Provisioning* -- create MonarchMesh CRDs via the K8s API so the
     pre-installed operator provisions StatefulSets and Services
-    automatically. Pass ``image_spec`` or ``pod_spec`` (a ``V1PodSpec``) to
-    ``add_mesh`` to enable provisioning for that
-    mesh. If the MonarchMesh CRD
-    already exists, it is patched instead
+    automatically. Pass ``image_spec`` or ``pod_template`` (a
+    ``V1PodTemplateSpec``) to ``add_mesh`` to enable provisioning for that
+    mesh. If the MonarchMesh CRD already exists, it is patched instead
     of created.
     """
 
@@ -211,14 +210,15 @@ class KubernetesJob(JobTrait):
         pod_rank_label: str = "apps.kubernetes.io/pod-index",
         image_spec: ImageSpec | None = None,
         port: int = _DEFAULT_MONARCH_PORT,
-        pod_spec: client.V1PodSpec | None = None,
+        pod_template: client.V1PodTemplateSpec | None = None,
         labels: dict[str, str] | None = None,
+        annotations: dict[str, str] | None = None,
     ) -> None:
         """
         Add a mesh specification.
 
         In *attach-only* mode (default), meshes are discovered by label
-        selector. In *provisioning* mode (``image_spec`` or ``pod_spec``
+        selector. In *provisioning* mode (``image_spec`` or ``pod_template``
         supplied), a MonarchMesh CRD is created so the operator can
         provision the pods.
 
@@ -232,12 +232,18 @@ class KubernetesJob(JobTrait):
             label_selector: Custom label selector for pod discovery. Cannot be set when provisioning.
             pod_rank_label: Label key containing the pod rank. Cannot be customized when provisioning.
             image_spec: ``ImageSpec`` with container image and optional resources for simple provisioning.
-                   Mutually exclusive with ``pod_spec``.
+                   Mutually exclusive with ``pod_template``.
             port: Monarch worker port (default: 26600).
-            pod_spec: ``V1PodSpec`` for advanced provisioning (e.g. custom volumes, sidecars).
-                      Mutually exclusive with ``image_spec``.
+            pod_template: ``V1PodTemplateSpec`` for advanced provisioning (e.g. custom volumes, sidecars,
+                          pod-level labels/annotations). Mutually exclusive with ``image_spec``.
             labels: Optional labels to apply to the MonarchMesh CRD metadata.
-                    Only used when provisioning (``image_spec`` or ``pod_spec`` supplied).
+                    Propagated by the operator to the StatefulSet metadata. To set
+                    labels on the worker pods, use ``pod_template.metadata.labels``.
+                    Only used when provisioning (``image_spec`` or ``pod_template`` supplied).
+            annotations: Optional annotations to apply to the MonarchMesh CRD metadata.
+                    Propagated by the operator to the StatefulSet metadata. To set
+                    annotations on the worker pods, use ``pod_template.metadata.annotations``.
+                    Only used when provisioning (``image_spec`` or ``pod_template`` supplied).
 
         Raises:
             ValueError: On invalid name or conflicting parameters.
@@ -261,16 +267,18 @@ class KubernetesJob(JobTrait):
                 f"Mesh name '{name}' is invalid. Name must end with an alphanumeric character."
             )
 
-        provisioned = image_spec is not None or pod_spec is not None
+        provisioned = image_spec is not None or pod_template is not None
 
-        if image_spec is not None and pod_spec is not None:
-            raise ValueError("'image_spec' and 'pod_spec' are mutually exclusive.")
+        if image_spec is not None and pod_template is not None:
+            raise ValueError("'image_spec' and 'pod_template' are mutually exclusive.")
         if provisioned and label_selector is not None:
             raise ValueError("'label_selector' cannot be customized when provisioning.")
         if provisioned and pod_rank_label != "apps.kubernetes.io/pod-index":
             raise ValueError("'pod_rank_label' cannot be customized when provisioning.")
         if not provisioned and labels is not None:
             raise ValueError("'labels' can only be set when provisioning.")
+        if not provisioned and annotations is not None:
+            raise ValueError("'annotations' can only be set when provisioning.")
 
         mesh_entry: _MeshConfig = {
             # The service name has a suffix appended to it controlled by the MonarchMesh config.
@@ -286,10 +294,15 @@ class KubernetesJob(JobTrait):
         if labels is not None:
             mesh_entry["labels"] = labels
 
+        if annotations is not None:
+            mesh_entry["annotations"] = annotations
+
         if image_spec is not None:
-            mesh_entry["pod_spec"] = self._build_worker_pod_spec(image_spec, port)
-        elif pod_spec is not None:
-            mesh_entry["pod_spec"] = pod_spec
+            mesh_entry["pod_template"] = self._build_worker_pod_template(
+                image_spec, port
+            )
+        elif pod_template is not None:
+            mesh_entry["pod_template"] = pod_template
 
         self._meshes[name] = mesh_entry
 
@@ -320,8 +333,8 @@ class KubernetesJob(JobTrait):
         api = client.CustomObjectsApi(api_client)
 
         for mesh_name, mesh_config in provisioned.items():
-            pod_spec_dict = api_client.sanitize_for_serialization(
-                mesh_config["pod_spec"]
+            pod_template_dict = api_client.sanitize_for_serialization(
+                mesh_config["pod_template"]
             )
             metadata: Dict[str, Any] = {
                 "name": mesh_name,
@@ -329,6 +342,8 @@ class KubernetesJob(JobTrait):
             }
             if "labels" in mesh_config:
                 metadata["labels"] = mesh_config["labels"]
+            if "annotations" in mesh_config:
+                metadata["annotations"] = mesh_config["annotations"]
 
             body: Dict[str, Any] = {
                 "apiVersion": f"{_MONARCHMESH_GROUP}/{_MONARCHMESH_VERSION}",
@@ -337,7 +352,7 @@ class KubernetesJob(JobTrait):
                 "spec": {
                     "replicas": mesh_config["num_replicas"],
                     "port": mesh_config["port"],
-                    "podTemplate": pod_spec_dict,
+                    "podTemplate": pod_template_dict,
                 },
             }
 
@@ -366,14 +381,14 @@ class KubernetesJob(JobTrait):
                     raise
 
     @staticmethod
-    def _build_worker_pod_spec(
+    def _build_worker_pod_template(
         image_spec: ImageSpec,
         port: int,
-    ) -> client.V1PodSpec:
+    ) -> client.V1PodTemplateSpec:
         """
-        Build a V1PodSpec for the MonarchMesh CRD.
+        Build a V1PodTemplateSpec for the MonarchMesh CRD.
 
-        Generates a single-container pod spec with a worker bootstrap
+        Generates a single-container pod template with a worker bootstrap
         script that starts ``run_worker_loop_forever``.
 
         Args:
@@ -381,7 +396,7 @@ class KubernetesJob(JobTrait):
             port: Monarch worker port.
 
         Returns:
-            V1PodSpec suitable for the ``podTemplate`` CRD field.
+            V1PodTemplateSpec suitable for the ``podTemplate`` CRD field.
         """
         resources = None
         if image_spec.resources is not None:
@@ -398,7 +413,9 @@ class KubernetesJob(JobTrait):
             env=env,
             resources=resources,
         )
-        return client.V1PodSpec(containers=[container])
+        return client.V1PodTemplateSpec(
+            spec=client.V1PodSpec(containers=[container]),
+        )
 
     def _is_pod_worker_ready(self, pod: client.V1Pod) -> bool:
         """
@@ -683,8 +700,16 @@ class KubernetesJob(JobTrait):
                 )
 
         if attach_to is not None:
-            logger.info("Attaching context to duplex address: %s", attach_to)
-            context(attach_to=attach_to)
+            # Set the client_attach_addr config before the first
+            # `context()` call. _init_client_context reads it and calls
+            # `bootstrap_host(via=attach_addr)` so the client's gateway
+            # is connected to the remote gateway during bootstrap.
+            logger.info("Attaching client gateway via duplex address: %s", attach_to)
+            configure(client_attach_addr=attach_to)
+            # Force client context bootstrap now (before attach_to_workers
+            # below would otherwise trigger it) so the via connection is
+            # in place before we start attaching workers.
+            context()
 
         for mesh_name, pods in all_mesh_pods.items():
             # Create worker addresses using discovered IPs and ports

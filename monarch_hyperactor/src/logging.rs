@@ -19,6 +19,7 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -45,7 +46,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::context::PyInstance;
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 use crate::proc_mesh::PyProcMesh;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::monarch_with_gil;
@@ -68,7 +69,8 @@ pub enum LoggerRuntimeMessage {
 
 /// Simple Rust actor that invokes python logger APIs. It needs a python runtime.
 #[derive(Debug)]
-#[hyperactor::export(spawn = true, handlers = [LoggerRuntimeMessage {cast = true}])]
+#[hyperactor::export(handlers = [LoggerRuntimeMessage {cast = true}])]
+#[hyperactor::spawnable]
 pub struct LoggerRuntimeActor {
     logger: Arc<Py<PyAny>>,
 }
@@ -236,14 +238,14 @@ impl LoggingMeshClient {
         let (version_tx, version_rx) = cx.instance().open_once_port::<u64>();
 
         // First initialize a sync flush.
-        client_actor.send(
+        client_actor.post(
             cx,
             LogClientMessage::StartSyncFlush {
                 expected_procs: forwarder_mesh.region().num_ranks(),
                 reply: reply_tx.bind(),
                 version: version_tx.bind(),
             },
-        )?;
+        );
 
         let version = version_rx.recv().await?;
 
@@ -421,14 +423,12 @@ impl LoggingMeshClient {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
         // Always update the client actor's aggregation window.
-        self.client_actor
-            .send(
-                instance.deref(),
-                LogClientMessage::SetAggregate {
-                    aggregate_window_sec,
-                },
-            )
-            .map_err(anyhow::Error::msg)?;
+        self.client_actor.post(
+            instance.deref(),
+            LogClientMessage::SetAggregate {
+                aggregate_window_sec,
+            },
+        );
 
         Ok(())
     }
@@ -522,7 +522,7 @@ impl Drop for LoggingMeshClient {
 
 /// Turns a python exception into a string with a traceback. If the traceback doesn't
 /// exist or can't be formatted, returns just the exception message.
-pub(crate) fn format_traceback<'py>(py: Python<'py>, err: &PyErr) -> String {
+pub(crate) fn format_traceback(py: Python<'_>, err: &PyErr) -> String {
     let traceback = err.traceback(py);
     if traceback.is_some() {
         let inner = || -> PyResult<String> {
@@ -543,11 +543,11 @@ pub(crate) fn format_traceback<'py>(py: Python<'py>, err: &PyErr) -> String {
 }
 
 #[pyfunction]
-fn log_endpoint_exception<'py>(
-    py: Python<'py>,
+fn log_endpoint_exception(
+    py: Python<'_>,
     e: Py<PyAny>,
     endpoint: Py<PyAny>,
-    actor_id: PyActorId,
+    actor_id: PyActorAddr,
 ) {
     let pyerr = PyErr::from_value(e.into_bound(py));
     let exception_str = format_traceback(py, &pyerr);
@@ -612,7 +612,7 @@ mod tests {
         .expect("failed to bootstrap HostMesh");
 
         let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity(), None)
+            .spawn(&instance, "p0", Extent::unity(), None, None)
             .await
             .expect("failed to spawn ProcMesh");
 
@@ -635,8 +635,8 @@ mod tests {
             "should spawn exactly one proc"
         );
         assert_eq!(
-            instance.self_id().proc_ref(),
-            proc.proc_id().clone(),
+            instance.self_addr().proc_addr(),
+            proc.proc_addr().clone(),
             "returned Instance<()> should be bound to the root Proc"
         );
 
@@ -853,12 +853,11 @@ mod tests {
 
             // Await the returned PyPythonTask's future outside the
             // GIL.
-            let flush_result = flush_task
+            flush_task
                 .await_unit()
                 .await
                 .expect("flush failed (forwarding disabled)");
 
-            let _ = flush_result;
             drop(client_py); // See "NOTE ON LIFECYCLE / CLEANUP"
         }
 
@@ -886,12 +885,11 @@ mod tests {
 
             // Await the returned PyPythonTask's future outside the
             // GIL.
-            let flush_result = flush_task
+            flush_task
                 .await_unit()
                 .await
                 .expect("flush failed (forwarding enabled)");
 
-            let _ = flush_result;
             drop(client_py); // See note "NOTE ON LIFECYCLE / CLEANUP"
         }
 

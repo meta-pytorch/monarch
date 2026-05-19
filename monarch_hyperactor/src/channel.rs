@@ -44,7 +44,7 @@ pub enum PyChannelTransport {
 #[pymethods]
 impl PyChannelTransport {
     fn get(&self) -> Self {
-        self.clone()
+        *self
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {

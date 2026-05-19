@@ -52,7 +52,6 @@ jobs:
       - name: Run macOS CPU Rust tests
         shell: bash
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
           RUSTFLAGS: --cfg tracing_unstable
         run: |
           set -eux
@@ -69,3 +68,10 @@ jobs:
             --exclude monarch_extension \
             --exclude monarch_bench \
             --exclude monarch_conda
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-cpu-rust-macos-${{ github.sha }}
+          path: target/nextest/ci/junit.xml

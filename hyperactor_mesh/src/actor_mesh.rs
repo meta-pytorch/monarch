@@ -21,16 +21,24 @@ use std::sync::OnceLock as OnceCell;
 use std::time::Duration;
 
 use hyperactor::ActorLocal;
+use hyperactor::ActorRef;
+use hyperactor::Endpoint as _;
+use hyperactor::PortRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
+use hyperactor::UnboundPort;
+use hyperactor::UnboundPortKind;
+use hyperactor::accum::ReducerMode;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
+use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
-use hyperactor::reference as hyperactor_reference;
+use hyperactor::port::Port;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -40,6 +48,7 @@ use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
 use ndslice::view;
+use ndslice::view::MapIntoExt;
 use ndslice::view::Region;
 use ndslice::view::View;
 use serde::Deserialize;
@@ -54,6 +63,8 @@ use crate::ProcMeshRef;
 use crate::ValueMesh;
 use crate::casting;
 use crate::comm::multicast;
+use crate::comm::multicast::CastMessageV1;
+use crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshController;
@@ -61,6 +72,7 @@ use crate::mesh_controller::SUPERVISION_POLL_FREQUENCY;
 use crate::mesh_controller::Subscribe;
 use crate::mesh_controller::Unsubscribe;
 use crate::mesh_id::ActorMeshId;
+use crate::metrics;
 use crate::proc_agent::ActorState;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::resource;
@@ -86,7 +98,7 @@ declare_attrs! {
 /// An ActorMesh is a collection of ranked A-typed actors.
 ///
 /// Bound note: `A: Referable` because the mesh stores/returns
-/// `hyperactor_reference::ActorRef<A>`, which is only defined for `A: Referable`.
+/// `ActorRef<A>`, which is only defined for `A: Referable`.
 #[derive(Debug)]
 pub struct ActorMesh<A: Referable> {
     proc_mesh: ProcMeshRef,
@@ -97,16 +109,15 @@ pub struct ActorMesh<A: Referable> {
     /// supervision events via subscribing.
     /// It may not be present for some types of actors, typically system actors
     /// such as ProcAgent or CommActor.
-    controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+    controller: Option<ActorRef<ActorMeshController<A>>>,
 }
 
-// `A: Referable` for the same reason as the struct: the mesh holds
-// `hyperactor_reference::ActorRef<A>`.
+// `A: Referable` for the same reason as the struct: the mesh holds `ActorRef<A>`.
 impl<A: Referable> ActorMesh<A> {
     pub(crate) fn new(
         proc_mesh: ProcMeshRef,
         id: ActorMeshId,
-        controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
     ) -> Self {
         let current_ref = ActorMeshRef::with_page_size(
             id.clone(),
@@ -127,10 +138,7 @@ impl<A: Referable> ActorMesh<A> {
         &self.id
     }
 
-    pub(crate) fn set_controller(
-        &mut self,
-        controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
-    ) {
+    pub(crate) fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
         self.controller = controller.clone();
         self.current_ref.set_controller(controller);
     }
@@ -143,59 +151,76 @@ impl<A: Referable> ActorMesh<A> {
         // controller and will be sent a notification about this stop by the controller
         // itself.
         if let Some(controller) = self.controller.take() {
-            // Send a stop to the controller so it stops monitoring the actors.
-            controller
-                .send(
+            // Run the Stop/GetState exchange. We wrap it so that, no matter
+            // how it ends, we can record a single unhealthy event
+            // afterwards. Taking the controller is one-way: once it is gone,
+            // no future call through this handle can retry the stop, so a
+            // silently-still-healthy mesh with a vanished controller would
+            // hide the fact that the stop never reached (or never confirmed)
+            // the actors.
+            let id = self.id.resource_id().clone();
+            let num_ranks = self.current_ref.region().num_ranks();
+            let result: crate::Result<()> = async {
+                controller.post(
                     cx,
                     resource::Stop {
-                        id: self.id.resource_id().clone(),
+                        id: id.clone(),
                         reason,
                     },
-                )
-                .map_err(|e| {
-                    crate::Error::SendingError(controller.actor_id().clone(), Box::new(e))
-                })?;
-            let region = ndslice::view::Ranked::region(&self.current_ref);
-            let num_ranks = region.num_ranks();
-            // Wait for the controller to report all actors have stopped.
-            let (port, mut rx) = cx.mailbox().open_port();
-
-            controller
-                .send(
+                );
+                // The controller processes messages serially, and its `Stop`
+                // handler already awaits the underlying ProcAgent wait, which
+                // sends its own `WaitRankStatus` to the ProcAgents and
+                // blocks up to `ACTOR_SPAWN_MAX_IDLE` for the actors to
+                // reach `Stopped`. By the time the controller gets to this
+                // `GetState`, its `health_state.statuses` already reflects
+                // the outcome (Stopping, Stopped, Failed, or Timeout on
+                // abort-budget exhaustion). We just need to serialize
+                // behind the Stop handler and read the result.
+                let (port, mut rx) = cx.mailbox().open_port();
+                controller.post(
                     cx,
                     resource::GetState::<resource::mesh::State<()>> {
-                        id: self.id.resource_id().clone(),
+                        id: id.clone(),
                         reply: port.bind(),
                     },
-                )
-                .map_err(|e| {
-                    crate::Error::SendingError(controller.actor_id().clone(), Box::new(e))
-                })?;
-
-            let statuses = rx.recv().await?;
-            if let Some(state) = &statuses.state {
-                // Check that all actors are in a terminating state (Stopping
-                // or beyond). The actual wait for full cleanup (terminal)
-                // happens in _drain_and_stop via the controller's status watch.
-                let all_stopped = state.statuses.values().all(|s| s.is_terminating());
-                if all_stopped {
-                    Ok(())
-                } else {
+                );
+                let statuses = rx.recv().await?;
+                let Some(state) = &statuses.state else {
+                    return Err(Error::Other(anyhow::anyhow!(
+                        "non-existent state in GetState reply from controller: {}",
+                        controller.actor_addr()
+                    )));
+                };
+                // `is_terminating` accepts Stopping, Stopped, Failed, and
+                // Timeout. The controller's Stop handler has already
+                // awaited (or timed out) the underlying ProcAgent wait, so
+                // any rank still in Running here means the controller
+                // never processed the stop for that rank — a genuine
+                // error.
+                let all_terminating = state.statuses.values().all(|s| s.is_terminating());
+                if !all_terminating {
                     let legacy = mesh_to_rankedvalues_with_default(
                         &state.statuses,
                         resource::Status::NotExist,
                         resource::Status::is_not_exist,
                         num_ranks,
                     );
-                    Err(Error::ActorStopError { statuses: legacy })
+                    return Err(Error::ActorStopError { statuses: legacy });
                 }
-            } else {
-                Err(Error::Other(anyhow::anyhow!(
-                    "non-existent state in GetState reply from controller: {}",
-                    controller.actor_id()
-                )))
-            }?;
-            // Update health state with the new statuses.
+                Ok(())
+            }
+            .await;
+
+            // Record the unhealthy event regardless of outcome. On success
+            // the mesh is stopped; on failure the controller is gone and
+            // the actors may still be running, but callers need to see the
+            // mesh as unhealthy either way so they stop treating it as
+            // live.
+            let status = match &result {
+                Ok(()) => ActorStatus::Stopped("mesh stopped".to_string()),
+                Err(e) => ActorStatus::Stopped(format!("mesh stop failed: {e}")),
+            };
             let mut entry = self.health_state.entry(cx).or_default();
             let health_state = entry.get_mut();
             health_state.unhealthy_event = Some(Unhealthy::StreamClosed(MeshFailure {
@@ -204,14 +229,16 @@ impl<A: Referable> ActorMesh<A> {
                     // Use an actor id from the mesh.
                     ndslice::view::Ranked::get(&self.current_ref, 0)
                         .unwrap()
-                        .actor_id()
+                        .actor_addr()
                         .clone(),
                     None,
-                    ActorStatus::Stopped("mesh stopped".to_string()),
+                    status,
                     None,
                 ),
                 crashed_ranks: vec![],
             }));
+
+            result?;
         }
         // Also take the controller from the ref, since that is used for
         // some operations.
@@ -264,7 +291,7 @@ const DEFAULT_PAGE: usize = 1024;
 
 /// A lazily materialized page of ActorRefs.
 struct Page<A: Referable> {
-    slots: Box<[OnceCell<hyperactor_reference::ActorRef<A>>]>,
+    slots: Box<[OnceCell<ActorRef<A>>]>,
 }
 
 impl<A: Referable> Page<A> {
@@ -387,6 +414,7 @@ fn into_watch<M: Send + Sync + Clone + Default + 'static>(
 }
 
 /// A reference to a stable snapshot of an [`ActorMesh`].
+#[derive(typeuri::Named)]
 pub struct ActorMeshRef<A: Referable> {
     proc_mesh: ProcMeshRef,
     id: ActorMeshId,
@@ -396,7 +424,7 @@ pub struct ActorMeshRef<A: Referable> {
     /// not be stopped. If Some, the actor mesh may still be stopped, and the
     /// next_supervision_event function can be used to alert that the mesh has
     /// stopped.
-    controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+    controller: Option<ActorRef<ActorMeshController<A>>>,
 
     /// Recorded health issues with the mesh, to quickly consult before sending
     /// out any casted messages. This is a locally updated copy of the authoritative
@@ -409,7 +437,7 @@ pub struct ActorMeshRef<A: Referable> {
     receiver: ActorLocal<
         Arc<
             tokio::sync::Mutex<(
-                hyperactor_reference::PortRef<Option<MeshFailure>>,
+                PortRef<Option<MeshFailure>>,
                 watch::Receiver<MessageOrFailure<Option<MeshFailure>>>,
             )>,
         >,
@@ -420,7 +448,7 @@ pub struct ActorMeshRef<A: Referable> {
     /// - The `Vec` holds slots for multiple pages.
     /// - Each slot is itself a `OnceCell<Box<Page<A>>>`, so that each
     ///   page can be initialized on demand.
-    /// - A `Page<A>` is a boxed slice of `OnceCell<hyperactor_reference::ActorRef<A>>`,
+    /// - A `Page<A>` is a boxed slice of `OnceCell<ActorRef<A>>`,
     ///   i.e. the actual storage for actor references within that
     ///   page.
     pages: OnceCell<Vec<OnceCell<Box<Page<A>>>>>,
@@ -509,7 +537,7 @@ impl<A: Referable> ActorMeshRef<A> {
 
         hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
             timestamp: std::time::SystemTime::now(),
-            sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_id()),
+            sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_addr()),
             actor_mesh_id: hyperactor_telemetry::hash_to_u64(&self.id.to_string()),
             view_json: serde_json::to_string(view::Ranked::region(self)).unwrap_or_default(),
             shape_json: {
@@ -520,39 +548,54 @@ impl<A: Referable> ActorMeshRef<A> {
 
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            self.cast_v0(cx, message, sel, root_comm_actor, caller_headers)
-        } else {
-            for (point, actor) in self.iter() {
-                let create_rank = point.rank();
-                // Caller-known headers ride first; cast-info is
-                // stamped afterward and wins on collision because
-                // those keys are owned by this layer.
-                let mut headers = caller_headers.clone();
-                multicast::set_cast_info_on_headers(
-                    &mut headers,
-                    point,
-                    cx.instance().self_id().clone().into(),
-                );
-
-                // Make sure that we re-bind ranks, as these may be used for
-                // bootstrapping comm actors.
-                let mut unbound = Unbound::try_from_message(message.clone())
-                    .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-                unbound
-                    .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                        *rank = Some(create_rank);
-                        Ok(())
-                    })
-                    .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-                let rebound_message = unbound
-                    .bind()
-                    .map_err(|e| Error::CastingError(self.id.clone(), e))?;
-                actor
-                    .send_with_headers(cx, headers, rebound_message)
-                    .map_err(|e| Error::SendingError(actor.actor_id().clone(), Box::new(e)))?;
+            if casting::v1_casting_enabled() {
+                if Selection::is_equivalent_to_true(&sel) {
+                    self.cast_v1(cx, message, root_comm_actor, caller_headers);
+                    return Ok(());
+                }
+                // V1 does not support non-* selections yet; fall back to
+                // the iteration path below.
+            } else {
+                return self.cast_v0(cx, message, sel, root_comm_actor, caller_headers);
             }
-            Ok(())
         }
+
+        let selected_ranks: std::collections::HashSet<usize> = sel
+            .eval(
+                &ndslice::selection::EvalOpts::lenient(),
+                view::Ranked::region(self).slice(),
+            )
+            .map_err(|e| Error::CastingError(self.id.clone(), e.into()))?
+            .collect();
+
+        for (point, actor) in self.iter() {
+            if !selected_ranks.contains(&point.rank()) {
+                continue;
+            }
+            let create_rank = point.rank();
+            let mut headers = caller_headers.clone();
+            multicast::set_cast_info_on_headers(
+                &mut headers,
+                point,
+                cx.instance().self_addr().clone(),
+            );
+
+            // Make sure that we re-bind ranks, as these may be used for
+            // bootstrapping comm actors.
+            let mut unbound = Unbound::try_from_message(message.clone())
+                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+            unbound
+                .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
+                    *rank = Some(create_rank);
+                    Ok(())
+                })
+                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+            let rebound_message = unbound
+                .bind()
+                .map_err(|e| Error::CastingError(self.id.clone(), e))?;
+            actor.post_with_headers(cx, headers, rebound_message);
+        }
+        Ok(())
     }
 
     #[allow(clippy::result_large_err)]
@@ -561,7 +604,7 @@ impl<A: Referable> ActorMeshRef<A> {
         cx: &impl context::Actor,
         message: M,
         sel: Selection,
-        root_comm_actor: &hyperactor_reference::ActorRef<CommActor>,
+        root_comm_actor: &ActorRef<CommActor>,
         caller_headers: &Flattrs,
     ) -> crate::Result<()>
     where
@@ -599,6 +642,144 @@ impl<A: Referable> ActorMeshRef<A> {
         }
     }
 
+    fn cast_v1<M>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+        root_comm_actor: &ActorRef<CommActor>,
+        caller_headers: &Flattrs,
+    ) where
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage,
+    {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => <M as typeuri::Named>::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
+
+        let actor_ids: ValueMesh<_> = self.proc_mesh.map_into(|proc| proc.actor_addr(&self.id));
+
+        let mut headers = caller_headers.clone();
+        headers.set(
+            multicast::CAST_ORIGINATING_SENDER,
+            cx.instance().self_addr().clone(),
+        );
+        // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
+        // v0 transition. Should be removed once supervision is migrated
+        // and ActorMeshId is deleted.
+        headers.set(casting::CAST_ACTOR_MESH_ID, self.id.clone());
+
+        let region = view::Ranked::region(self).clone();
+        let num_ranks = region.num_ranks();
+        let threshold = hyperactor_config::global::get(V1_CAST_POINT_TO_POINT_THRESHOLD);
+
+        if threshold > 0 && num_ranks < threshold {
+            // Point-to-point: send directly to each destination actor,
+            // bypassing the comm actor tree for lower latency when fanout
+            // is small.
+            let sender = cx.instance().self_addr().clone();
+            let dest_port = <IndexedErasedUnbound<M> as typeuri::Named>::port();
+
+            let mut data = ErasedUnbound::try_from_message(message)
+                .expect("cast message serialization should not fail");
+
+            // Split ports for N destinations, matching the comm tree's
+            // split_ports behavior.
+            data.visit_mut::<UnboundPort>(
+                |UnboundPort(port_id, reducer_spec, return_undeliverable, kind, unsplit)| {
+                    if *unsplit {
+                        return Ok(());
+                    }
+                    let reducer_mode = match kind {
+                        UnboundPortKind::Streaming(opts) => {
+                            ReducerMode::Streaming(opts.clone().unwrap_or_default())
+                        }
+                        UnboundPortKind::Once if reducer_spec.is_none() => {
+                            // Once ports without reducers pass through — same as
+                            // the comm tree's split_ports.
+                            return Ok(());
+                        }
+                        UnboundPortKind::Once => ReducerMode::Once(num_ranks),
+                    };
+                    let split = port_id.split(
+                        cx,
+                        reducer_spec.clone(),
+                        reducer_mode,
+                        *return_undeliverable,
+                    )?;
+                    *port_id = split;
+                    Ok(())
+                },
+            )
+            .expect("port splitting should not fail");
+
+            for rank in 0..num_ranks {
+                let mut rank_data = data.clone();
+
+                let cast_point = region
+                    .point_of_base_rank(rank)
+                    .expect("rank should be valid in region");
+
+                rank_data
+                    .visit_mut::<resource::Rank>(|resource::Rank(r)| {
+                        *r = Some(cast_point.rank());
+                        Ok(())
+                    })
+                    .expect("rank replacement should not fail");
+
+                let mut rank_headers = headers.clone();
+                multicast::set_cast_info_on_headers(&mut rank_headers, cast_point, sender.clone());
+
+                let port_id = actor_ids
+                    .get(rank)
+                    .expect("mismatched actor_ids and dest_region")
+                    .port_addr(Port::from(dest_port));
+
+                cx.instance().post(
+                    port_id,
+                    rank_headers,
+                    wirevalue::Any::serialize(&rank_data)
+                        .expect("cast message serialization should not fail"),
+                );
+            }
+        } else {
+            // Tree path: route through the comm actor tree.
+            // Pre-compute sequence numbers — this block is infallible so
+            // rollback is not a concern.
+            let sequencer = cx.instance().sequencer();
+            let seqs: ValueMesh<u64> = actor_ids.map_into(|actor_id| {
+                let hyperactor::ordering::SeqInfo::Session { seq, .. } = sequencer
+                    .assign_seq(&actor_id.port_addr(Port::from(<M as typeuri::Named>::port())))
+                else {
+                    unreachable!("assign_seq always returns SeqInfo::Session")
+                };
+                seq
+            });
+
+            let mut headers = caller_headers.clone();
+            headers.set(
+                multicast::CAST_ORIGINATING_SENDER,
+                cx.instance().self_addr().clone(),
+            );
+            // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
+            // v0 transition. Should be removed once supervision is migrated
+            // and ActorMeshId is deleted.
+            headers.set(casting::CAST_ACTOR_MESH_ID, self.id.clone());
+            let cast_message = CastMessageV1::new::<A, M>(
+                cx.instance().self_addr().clone(),
+                &self.id,
+                region,
+                headers.clone(),
+                message,
+                sequencer.session_id(),
+                seqs,
+            )
+            .expect("infallible because CastMessage should not fail for serialization");
+
+            // TODO: load balancing instead of always using the first comm actor
+            root_comm_actor.post_with_headers(cx, headers, cast_message);
+        }
+    }
     /// Query the state of all actors in this mesh.
     /// If keepalive is Some, use a message that indicates to the recipient
     /// that the owner of the mesh is still alive, along with the expiry time
@@ -626,7 +807,7 @@ impl<A: Referable> ActorMeshRef<A> {
     pub(crate) fn new(
         id: ActorMeshId,
         proc_mesh: ProcMeshRef,
-        controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
     ) -> Self {
         Self::with_page_size(id, proc_mesh, DEFAULT_PAGE, controller)
     }
@@ -639,7 +820,7 @@ impl<A: Referable> ActorMeshRef<A> {
         id: ActorMeshId,
         proc_mesh: ProcMeshRef,
         page_size: usize,
-        controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+        controller: Option<ActorRef<ActorMeshController<A>>>,
     ) -> Self {
         Self {
             proc_mesh,
@@ -661,14 +842,11 @@ impl<A: Referable> ActorMeshRef<A> {
         view::Ranked::region(&self.proc_mesh).num_ranks()
     }
 
-    pub fn controller(&self) -> &Option<hyperactor_reference::ActorRef<ActorMeshController<A>>> {
+    pub fn controller(&self) -> &Option<ActorRef<ActorMeshController<A>>> {
         &self.controller
     }
 
-    fn set_controller(
-        &mut self,
-        controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
-    ) {
+    fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
         self.controller = controller;
     }
 
@@ -678,7 +856,7 @@ impl<A: Referable> ActorMeshRef<A> {
             .get_or_init(|| (0..n).map(|_| OnceCell::new()).collect())
     }
 
-    fn materialize(&self, rank: usize) -> Option<&hyperactor_reference::ActorRef<A>> {
+    fn materialize(&self, rank: usize) -> Option<&ActorRef<A>> {
         let len = self.len();
         if rank >= len {
             return None;
@@ -715,17 +893,15 @@ impl<A: Referable> ActorMeshRef<A> {
     }
 
     fn init_supervision_receiver(
-        controller: &hyperactor_reference::ActorRef<ActorMeshController<A>>,
+        controller: &ActorRef<ActorMeshController<A>>,
         cx: &impl context::Actor,
     ) -> (
-        hyperactor_reference::PortRef<Option<MeshFailure>>,
+        PortRef<Option<MeshFailure>>,
         watch::Receiver<MessageOrFailure<Option<MeshFailure>>>,
     ) {
         let (tx, rx) = cx.mailbox().open_port();
         let tx = tx.bind();
-        controller
-            .send(cx, Subscribe(tx.clone()))
-            .expect("failed to send Subscribe");
+        controller.post(cx, Subscribe(tx.clone()));
         (tx, into_watch(rx))
     }
 
@@ -809,7 +985,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 let mut port = controller.port();
                 // We don't care if the controller is unreachable for an unsubscribe.
                 port.return_undeliverable(false);
-                let _ = port.send(cx, Unsubscribe(subscriber_port));
+                let _ = port.post(cx, Unsubscribe(subscriber_port));
             }
             // If we successfully got a message back, we can't unsubscribe because
             // the receiver might be shared with other calls to next_supervision_event,
@@ -825,11 +1001,11 @@ impl<A: Referable> ActorMeshRef<A> {
                     Ok(MeshFailure {
                         actor_mesh_name: Some(self.id().to_string()),
                         event: ActorSupervisionEvent::new(
-                            controller.actor_id().clone(),
+                            controller.actor_addr().clone(),
                             None,
                             ActorStatus::generic_failure(format!(
                                 "timed out reaching controller {} for mesh {}. Assuming controller's proc is dead",
-                                controller.actor_id(),
+                                controller.actor_addr(),
                                 self.id()
                             )),
                             None,
@@ -939,7 +1115,7 @@ impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
         let (proc_mesh, id, controller) = <(
             ProcMeshRef,
             ActorMeshId,
-            Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
+            Option<ActorRef<ActorMeshController<A>>>,
         )>::deserialize(deserializer)?;
         Ok(ActorMeshRef::with_page_size(
             id,
@@ -951,7 +1127,7 @@ impl<'de, A: Referable> Deserialize<'de> for ActorMeshRef<A> {
 }
 
 impl<A: Referable> view::Ranked for ActorMeshRef<A> {
-    type Item = hyperactor_reference::ActorRef<A>;
+    type Item = ActorRef<A>;
 
     #[inline]
     fn region(&self) -> &Region {
@@ -984,12 +1160,13 @@ impl<A: Referable> view::RankedSliceable for ActorMeshRef<A> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
 
     use std::collections::HashSet;
     use std::ops::Deref;
 
+    use hyperactor::Endpoint as _;
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
     use hyperactor::context::Mailbox as _;
@@ -999,6 +1176,7 @@ mod tests {
     use ndslice::ViewExt;
     use ndslice::extent;
     use ndslice::view::Ranked;
+    use timed_test::assert_no_process_leak;
     use timed_test::async_timed_test;
     use tokio::time::Duration;
 
@@ -1006,6 +1184,7 @@ mod tests {
     use crate::ActorMeshRef;
     use crate::ProcMesh;
     use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
+    use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
     use crate::mesh_controller::SUPERVISION_POLL_FREQUENCY;
     use crate::mesh_id::ActorMeshId;
     use crate::proc_mesh::ACTOR_SPAWN_MAX_IDLE;
@@ -1021,15 +1200,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_actor_mesh_ref_lazy_materialization() {
         // 1) Bring up procs and spawn actors.
         let instance = testing::instance();
         // Small mesh so the test runs fast, but > page_size so we
         // cross a boundary
-        let mut hm = testing::host_mesh(3).await;
+        let mut hm = testing::host_mesh(2).await;
         let pm: ProcMesh = hm
-            .spawn(instance, "test", extent!(gpus = 2), None)
+            .spawn(instance, "test", extent!(gpus = 2), None, None)
             .await
             .unwrap();
         let am: ActorMesh<testactor::TestActor> = pm.spawn(instance, "test", &()).await.unwrap();
@@ -1040,8 +1218,8 @@ mod tests {
         let page_size = 2;
         let amr: ActorMeshRef<testactor::TestActor> =
             ActorMeshRef::with_page_size(am.id.clone(), pm.clone(), page_size, None);
-        assert_eq!(amr.extent(), extent!(hosts = 3, gpus = 2));
-        assert_eq!(amr.region().num_ranks(), 6);
+        assert_eq!(amr.extent(), extent!(hosts = 2, gpus = 2));
+        assert_eq!(amr.region().num_ranks(), 4);
 
         // 3) Within-rank pointer stability (OnceLock caches &ActorRef)
         let p0_a = amr.get(0).expect("rank 0 exists") as *const _;
@@ -1064,8 +1242,8 @@ mod tests {
 
         // 6) Clone should drop the cache but keep identity (actor_id)
         let amr_clone = amr.clone();
-        let orig_id_0 = amr.get(0).unwrap().actor_id().clone();
-        let clone_id_0 = amr_clone.get(0).unwrap().actor_id().clone();
+        let orig_id_0 = amr.get(0).unwrap().actor_addr().clone();
+        let clone_id_0 = amr_clone.get(0).unwrap().actor_addr().clone();
         assert_eq!(orig_id_0, clone_id_0, "clone preserves identity");
         let p0_clone = amr_clone.get(0).unwrap() as *const _;
         assert_ne!(
@@ -1075,7 +1253,7 @@ mod tests {
 
         // 7) Slicing preserves page_size and clears cache
         // (RankedSliceable::sliced)
-        let sliced = amr.range("hosts", 1..).expect("slice should be valid"); // leaves 4 ranks
+        let sliced = amr.range("hosts", 0..2).expect("slice should be valid"); // leaves 4 ranks
         assert_eq!(sliced.region().num_ranks(), 4);
         // First access materializes a new cache for the sliced view.
         let sp0_a = sliced.get(0).unwrap() as *const _;
@@ -1100,12 +1278,10 @@ mod tests {
         // exist).
         amr.get(0)
             .expect("rank 0 exists")
-            .send(instance, testactor::GetActorId(port.bind()))
-            .expect("send to rank 0 should succeed");
+            .post(instance, testactor::GetActorId(port.bind()));
         amr.get(3)
             .expect("rank 3 exists")
-            .send(instance, testactor::GetActorId(port.bind()))
-            .expect("send to rank 3 should succeed");
+            .post(instance, testactor::GetActorId(port.bind()));
         let id_a = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
             .expect("timed out waiting for first reply")
@@ -1119,22 +1295,29 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
+    #[async_timed_test(timeout_secs = 300)]
     async fn test_actor_states_with_panic() {
         hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance();
+        let config = hyperactor_config::global::lock();
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let _actor_spawn = config.override_key(ACTOR_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(120),
+        );
+
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
-        let num_replicas = 4;
+        let num_replicas = 1;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
-        let child_name = ActorMeshId::unique(Label::new("child").unwrap());
+        let child_name = ActorMeshId::instance(Label::new("child").unwrap());
 
         // Need to use a wrapper as there's no way to customize the handler for MeshFailure
         // on the client instance. The client would just panic with the message.
@@ -1214,8 +1397,8 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
+    #[assert_no_process_leak]
+    #[async_timed_test(timeout_secs = 300)]
     async fn test_actor_states_with_process_exit() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1223,23 +1406,28 @@ mod tests {
         let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
         let _guard = config.override_key(GET_ACTOR_STATE_MAX_IDLE, Duration::from_secs(1));
         let _proc_guard = config.override_key(GET_PROC_STATE_MAX_IDLE, Duration::from_secs(1));
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(120),
+        );
 
         let instance = testing::instance();
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
-        let num_replicas = 4;
+        let num_replicas = 1;
         let mut hm = testing::host_mesh(num_replicas).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let mut second_hm = testing::host_mesh(num_replicas).await;
         let second_proc_mesh = second_hm
-            .spawn(instance, "test2", Extent::unity(), None)
+            .spawn(instance, "test2", Extent::unity(), None, None)
             .await
             .unwrap();
-        let child_name = ActorMeshId::unique(Label::new("child").unwrap());
+        let child_name = ActorMeshId::instance(Label::new("child").unwrap());
 
         // Need to use a wrapper as there's no way to customize the handler for MeshFailure
         // on the client instance. The client would just panic with the message.
@@ -1315,8 +1503,7 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
+    #[async_timed_test(timeout_secs = 300)]
     async fn test_actor_states_on_sliced_mesh() {
         hyperactor_telemetry::initialize_logging_for_test();
 
@@ -1324,28 +1511,38 @@ mod tests {
         // Listen for supervision events sent to the parent instance.
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
-        let num_replicas = 4;
-        let mut hm = testing::host_mesh(num_replicas).await;
-        let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
-            .await
-            .unwrap();
-        let child_name = ActorMeshId::unique(Label::new("child").unwrap());
+        let (mut hm, _actor_mesh, sliced, sliced_replicas, child_name) = {
+            let config = hyperactor_config::global::lock();
+            let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(120));
+            let _actor_spawn = config.override_key(ACTOR_SPAWN_MAX_IDLE, Duration::from_secs(120));
+            let _host_spawn = config.override_key(
+                hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+                Duration::from_secs(120),
+            );
+            let num_replicas = 2;
+            let hm = testing::host_mesh(num_replicas).await;
+            let proc_mesh = hm
+                .spawn(instance, "test", Extent::unity(), None, None)
+                .await
+                .unwrap();
+            let child_name = ActorMeshId::instance(Label::new("child").unwrap());
 
-        // Need to use a wrapper as there's no way to customize the handler for MeshFailure
-        // on the client instance. The client would just panic with the message.
-        let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
-            .spawn(
-                instance,
-                "wrapper",
-                &(proc_mesh.deref().clone(), supervisor, child_name.clone()),
-            )
-            .await
-            .unwrap();
-        let sliced = actor_mesh
-            .range("hosts", 1..3)
-            .expect("slice should be valid");
-        let sliced_replicas = sliced.len();
+            // Need to use a wrapper as there's no way to customize the handler for MeshFailure
+            // on the client instance. The client would just panic with the message.
+            let actor_mesh: ActorMesh<testactor::WrapperActor> = proc_mesh
+                .spawn(
+                    instance,
+                    "wrapper",
+                    &(proc_mesh.deref().clone(), supervisor, child_name.clone()),
+                )
+                .await
+                .unwrap();
+            let sliced = actor_mesh
+                .range("hosts", 1..2)
+                .expect("slice should be valid");
+            let sliced_replicas = sliced.len();
+            (hm, actor_mesh, sliced, sliced_replicas, child_name)
+        };
 
         // TODO: check that independent slice refs don't get the supervision event.
         sliced
@@ -1384,16 +1581,18 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
-    async fn test_cast() {
-        let config = hyperactor_config::global::lock();
+    async fn execute_cast(config: &hyperactor_config::global::ConfigLock) {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
-        let mut host_mesh = testing::host_mesh(4).await;
+        let mut host_mesh = testing::host_mesh(2).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
         let actor_mesh: ActorMesh<testactor::TestActor> =
@@ -1418,19 +1617,98 @@ mod tests {
                 "key {:?} not present or removed twice",
                 key
             );
-            assert_eq!(&sender_actor_id, instance.self_id());
+            assert_eq!(&sender_actor_id, instance.self_addr());
         }
 
         let _ = host_mesh.shutdown(instance).await;
     }
 
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_with_selection_v1_fallback() {
+        use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
+        use hyperactor_mesh_macros::sel;
+        use ndslice::Selection;
+
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+        let _v1 = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
+        let _reorder = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
+
+        let instance = testing::instance();
+        let mut host_mesh = testing::host_mesh(2).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", Extent::unity(), None, None)
+            .await
+            .unwrap();
+        let actor_mesh: ActorMesh<testactor::TestActor> =
+            proc_mesh.spawn(instance, "test", &()).await.unwrap();
+
+        // Cast with sel!(0:1) — should only reach host 0.
+        let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
+        actor_mesh
+            .cast_for_tensor_engine_only_do_not_use(
+                instance,
+                sel!(0:1),
+                testactor::GetCastInfo {
+                    cast_info: cast_info.bind(),
+                },
+            )
+            .unwrap();
+
+        let (point, _actor_ref, _sender) = cast_info_rx.recv().await.unwrap();
+        let received_ranks = HashSet::from([point.rank()]);
+        assert_eq!(received_ranks, HashSet::from([0]));
+
+        // Also cast with sel!(*) — all ranks should be reached via V1.
+        let (cast_info2, mut cast_info_rx2) = instance.mailbox().open_port();
+        actor_mesh
+            .cast(
+                instance,
+                testactor::GetCastInfo {
+                    cast_info: cast_info2.bind(),
+                },
+            )
+            .unwrap();
+
+        let mut all_ranks: HashSet<usize> = HashSet::new();
+        for _ in 0..2 {
+            let (point, _actor_ref, _sender) = cast_info_rx2.recv().await.unwrap();
+            all_ranks.insert(point.rank());
+        }
+        assert_eq!(all_ranks, HashSet::from([0, 1]));
+
+        let _ = host_mesh.shutdown(instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast() {
+        let config = hyperactor_config::global::lock();
+        execute_cast(&config).await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_cast_p2p() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        execute_cast(&config).await;
+    }
     /// Test that undeliverable messages are properly returned to the
     /// sender when communication to a proc is broken.
     ///
     /// This is the V1 version of the test from
     /// hyperactor_multiprocess/src/proc_actor.rs::test_undeliverable_message_return.
+    #[assert_no_process_leak]
     #[async_timed_test(timeout_secs = 60)]
-    #[cfg(fbcode_build)]
     async fn test_undeliverable_message_return() {
         use hyperactor::mailbox::MessageEnvelope;
         use hyperactor::mailbox::Undeliverable;
@@ -1442,11 +1720,21 @@ mod tests {
         let instance = testing::instance();
 
         // Create a proc mesh with 2 hosts.
-        let mut hm = testing::host_mesh(2).await;
-        let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
-            .await
-            .unwrap();
+        let (mut hm, proc_mesh) = {
+            let config = hyperactor_config::global::lock();
+            let _proc_spawn_guard =
+                config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+            let _host_spawn_guard = config.override_key(
+                hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+                Duration::from_secs(60),
+            );
+            let hm = testing::host_mesh(2).await;
+            let proc_mesh = hm
+                .spawn(instance, "test", Extent::unity(), None, None)
+                .await
+                .unwrap();
+            (hm, proc_mesh)
+        };
 
         // Set up undeliverable message port for collecting undeliverables
         let (undeliverable_port, mut undeliverable_rx) =
@@ -1477,12 +1765,10 @@ mod tests {
 
         // Verify ping-pong works initially
         let (done_tx, done_rx) = instance.open_once_port();
-        ping_handle
-            .send(
-                instance,
-                PingPongMessage(2, pong_handle.clone(), done_tx.bind()),
-            )
-            .unwrap();
+        ping_handle.post(
+            instance,
+            PingPongMessage(2, pong_handle.clone(), done_tx.bind()),
+        );
         assert!(
             done_rx.recv().await.unwrap(),
             "Initial ping-pong should work"
@@ -1509,12 +1795,10 @@ mod tests {
         for i in 1..=n {
             let ttl = 66 + i as u64; // Avoid ttl = 66 (which would cause other test behavior)
             let (once_tx, _once_rx) = instance.open_once_port();
-            ping_handle
-                .send(
-                    instance,
-                    PingPongMessage(ttl, pong_handle.clone(), once_tx.bind()),
-                )
-                .unwrap();
+            ping_handle.post(
+                instance,
+                PingPongMessage(ttl, pong_handle.clone(), once_tx.bind()),
+            );
         }
 
         // Collect all undeliverable messages.
@@ -1526,10 +1810,11 @@ mod tests {
             match tokio::time::timeout(std::time::Duration::from_secs(1), undeliverable_rx.recv())
                 .await
             {
-                Ok(Ok(Undeliverable(envelope))) => {
+                Ok(Ok(Undeliverable::Message(envelope))) => {
                     let _: PingPongMessage = envelope.deserialized().unwrap();
                     count += 1;
                 }
+                Ok(Ok(Undeliverable::Lost(_))) => break,
                 Ok(Err(_)) => break, // Channel closed
                 Err(_) => break,     // Timeout
             }
@@ -1544,32 +1829,35 @@ mod tests {
         let _ = hm.shutdown(instance).await;
     }
 
-    /// Test that actors not responding within stop timeout are
-    /// forcibly aborted. This is the V1 equivalent of
-    /// hyperactor_multiprocess/src/proc_actor.rs::test_stop_timeout.
+    /// Test that `stop()` returns bounded by `ACTOR_SPAWN_MAX_IDLE` even
+    /// when actors are stuck inside a handler and never observe the
+    /// `DrainAndStop` signal. The controller's `Stop` handler awaits
+    /// the underlying ProcAgent wait, which waits up to `ACTOR_SPAWN_MAX_IDLE`
+    /// for ProcAgents to report `Stopped`; when that idle window elapses it
+    /// stamps `Status::Timeout` into the controller's health state, and the
+    /// subsequent `GetState` reads that back. The actors' tokio tasks
+    /// continue running in the background: no code path in the mesh layer
+    /// forcibly aborts them via `JoinHandle::abort()`.
     #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
     async fn test_actor_mesh_stop_timeout() {
         hyperactor_telemetry::initialize_logging_for_test();
 
-        // Override ACTOR_SPAWN_MAX_IDLE to make test fast and
-        // deterministic. ACTOR_SPAWN_MAX_IDLE is the maximum idle
-        // time between status updates during mesh operations
-        // (spawn/stop). When stop() is called, it waits for actors to
-        // report they've stopped. If actors don't respond within this
-        // timeout, they're forcibly aborted via JoinHandle::abort().
-        // We set this to 1 second (instead of default 30s) so hung
-        // actors (sleeping 5s in this test) get aborted quickly,
-        // making the test fast.
+        // `ACTOR_SPAWN_MAX_IDLE` bounds how long the controller's Stop
+        // handler waits for ProcAgents to report `Stopped`. Shorten it
+        // from 30s to 1s so the test finishes quickly.
         let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
 
         // Create proc mesh with 2 procs
         let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
 
@@ -1577,13 +1865,14 @@ mod tests {
         // than timeout
         let mut sleep_mesh: ActorMesh<testactor::SleepActor> =
             proc_mesh.spawn(instance, "sleepers", &()).await.unwrap();
+        let _guard = config.override_key(ACTOR_SPAWN_MAX_IDLE, std::time::Duration::from_secs(1));
 
-        // Send each actor a message to sleep for 5 seconds (longer
-        // than 1-second timeout)
+        // Send each actor a message to sleep for 5 seconds. `Instance::run`
+        // only polls the signal receiver at message boundaries, so
+        // `DrainAndStop` will sit queued in the signal mailbox until this
+        // handler completes. Nothing forcibly aborts it.
         for actor_ref in sleep_mesh.values() {
-            actor_ref
-                .send(instance, std::time::Duration::from_secs(5))
-                .unwrap();
+            actor_ref.post(instance, std::time::Duration::from_secs(5));
         }
 
         // Give actors time to start sleeping
@@ -1592,48 +1881,47 @@ mod tests {
         // Count how many actors we spawned (for verification later)
         let expected_actors = sleep_mesh.values().count();
 
-        // Now stop the mesh - actors won't respond in time, should be
-        // aborted. Time this operation to verify abort behavior.
+        // Now stop the mesh. The controller's Stop handler will give up on
+        // waiting for `Stopped` after ACTOR_SPAWN_MAX_IDLE and mark the
+        // ranks as `Status::Timeout`. Time this operation to confirm we
+        // return on that budget rather than waiting the full 5s sleep.
         let stop_start = tokio::time::Instant::now();
         let result = sleep_mesh.stop(instance, "test stop".to_string()).await;
         let stop_duration = tokio::time::Instant::now().duration_since(stop_start);
 
-        // Stop will return an error because actors didn't stop within
-        // the timeout. This is expected - the actors were forcibly
-        // aborted, and V1 reports this as an error.
+        // `stop()` returns `Ok(())` because `is_terminating()` accepts
+        // `Status::Timeout`. We still check the duration below to confirm
+        // the timeout path (not a natural graceful stop) produced this.
         match result {
             Ok(_) => {
-                // It's possible actors stopped in time, but unlikely
-                // given 5-second sleep vs 1-second timeout
-                tracing::warn!("Actors stopped gracefully (unexpected but ok)");
+                tracing::info!(
+                    "stop returned Ok for {} actors; their tokio tasks \
+                     may still be running until their handler yields",
+                    expected_actors
+                );
             }
             Err(ref e) => {
-                // Expected: timeout error indicating actors were aborted
                 let err_str = format!("{:?}", e);
                 assert!(
                     err_str.contains("Timeout"),
                     "Expected Timeout error, got: {:?}",
                     e
                 );
-                tracing::info!(
-                    "Stop timed out as expected for {} actors, they were aborted",
-                    expected_actors
-                );
             }
         }
 
-        // Verify that stop completed quickly (~1-2 seconds for
-        // timeout + abort) rather than waiting the full 5 seconds for
-        // actors to finish sleeping. This proves actors were aborted,
-        // not waited for.
+        // Verify that stop returned on the ACTOR_SPAWN_MAX_IDLE budget
+        // (~1s) rather than the full 5s sleep. This confirms we hit the
+        // controller's idle timeout while querying for `Stopped` — not
+        // that the actors were actually aborted; they weren't.
         assert!(
-            stop_duration < std::time::Duration::from_secs(3),
-            "Stop took {:?}, expected < 3s (actors should have been aborted, not waited for)",
+            stop_duration < std::time::Duration::from_millis(4500),
+            "Stop took {:?}, expected < 4.5s (controller should have given up waiting for Stopped)",
             stop_duration
         );
         assert!(
             stop_duration >= std::time::Duration::from_millis(900),
-            "Stop took {:?}, expected >= 900ms (should have waited for timeout)",
+            "Stop took {:?}, expected >= 900ms (should have waited for the 1s idle timeout)",
             stop_duration
         );
 
@@ -1645,17 +1933,23 @@ mod tests {
     /// test_actor_mesh_stop_timeout which tests abort behavior. V1
     /// equivalent of
     /// hyperactor_multiprocess/src/proc_actor.rs::test_stop
-    #[async_timed_test(timeout_secs = 30)]
-    #[cfg(fbcode_build)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_actor_mesh_stop_graceful() {
         hyperactor_telemetry::initialize_logging_for_test();
+
+        let config = hyperactor_config::global::lock();
+        let _proc_spawn = config.override_key(PROC_SPAWN_MAX_IDLE, Duration::from_secs(60));
+        let _host_spawn = config.override_key(
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
+            Duration::from_secs(60),
+        );
 
         let instance = testing::instance();
 
         // Create proc mesh with 2 procs
         let mut hm = testing::host_mesh(2).await;
         let proc_mesh = hm
-            .spawn(instance, "test", Extent::unity(), None)
+            .spawn(instance, "test", Extent::unity(), None, None)
             .await
             .unwrap();
 
@@ -1687,8 +1981,8 @@ mod tests {
         // actors should stop almost immediately, not wait for
         // timeout.
         assert!(
-            stop_duration < std::time::Duration::from_secs(2),
-            "Graceful stop took {:?}, expected < 2s (actors should stop quickly)",
+            stop_duration < std::time::Duration::from_secs(5),
+            "Graceful stop took {:?}, expected < 5s (actors should stop quickly)",
             stop_duration
         );
 

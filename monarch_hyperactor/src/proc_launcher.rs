@@ -22,9 +22,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::ActorHandle;
+use hyperactor::Endpoint as _;
 use hyperactor::Instance;
 use hyperactor::Mailbox;
-use hyperactor::reference;
 use hyperactor_mesh::proc_launcher::LaunchOptions;
 use hyperactor_mesh::proc_launcher::LaunchResult;
 use hyperactor_mesh::proc_launcher::ProcExitKind;
@@ -543,7 +543,7 @@ use py::import_cloudpickle;
 /// [`ProcLauncher`] methods don't take a context parameter, but
 /// sending actor messages does. This launcher stores an
 /// [`Instance<()>`] ("client-only" actor) to use as the send context.
-/// The instance is created via [`Proc::instance()`] and must remain
+/// The instance is created via [`Proc::client()`] and must remain
 /// valid for the lifetime of the launcher.
 #[derive(Debug)]
 pub struct ActorProcLauncher {
@@ -558,7 +558,7 @@ pub struct ActorProcLauncher {
     /// Client-only actor instance used as the send context for all
     /// messages to `spawner`.
     ///
-    /// Created via `Proc::instance()`. The `()` type indicates this
+    /// Created via `Proc::client()`. The `()` type indicates this
     /// is not a real actor—just a sending context. Must outlive the
     /// launcher.
     instance: Instance<()>,
@@ -567,7 +567,7 @@ pub struct ActorProcLauncher {
     ///
     /// Not used for correctness; used for diagnostics and sanity
     /// checks.
-    active_procs: Arc<Mutex<HashSet<reference::ProcId>>>,
+    active_procs: Arc<Mutex<HashSet<hyperactor::ProcAddr>>>,
 }
 
 impl ActorProcLauncher {
@@ -579,7 +579,7 @@ impl ActorProcLauncher {
     ///   `ProcLauncher` ABC.
     /// * `mailbox` - Mailbox used to create one-shot exit ports.
     /// * `instance` - Send context for `ActorHandle::send` (typically
-    ///   from `Proc::instance()`). Any valid instance granting send
+    ///   from `Proc::client()`). Any valid instance granting send
     ///   capability is sufficient; it need not be
     ///   `Instance<PythonActor>`. Must remain valid for the
     ///   launcher's lifetime.
@@ -621,7 +621,7 @@ impl ProcLauncher for ActorProcLauncher {
     ///   resolves to `ProcExitKind::Failed` with a decode error reason.
     async fn launch(
         &self,
-        proc_id: &reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         opts: LaunchOptions,
     ) -> Result<LaunchResult, ProcLauncherError> {
         let (exit_port, exit_port_rx) = self.mailbox.open_once_port::<PythonMessage>();
@@ -700,14 +700,16 @@ impl ProcLauncher for ActorProcLauncher {
             message: pickled_args.into(),
         };
 
-        self.spawner
-            .send(&self.instance, message)
-            .map_err(|e| ProcLauncherError::Other(format!("send to spawner failed: {e}")))?;
+        self.spawner.post(&self.instance, message);
 
-        self.active_procs.lock().await.insert(proc_id.clone());
+        let mut active_procs: tokio::sync::MutexGuard<'_, HashSet<hyperactor::ProcAddr>> =
+            self.active_procs.lock().await;
+        active_procs.insert(proc_id.clone());
+        drop(active_procs);
 
         let (exit_tx, exit_rx) = oneshot::channel();
-        let active_procs = Arc::clone(&self.active_procs);
+        let active_procs: Arc<Mutex<HashSet<hyperactor::ProcAddr>>> =
+            Arc::clone(&self.active_procs);
         let proc_id_clone = proc_id.clone();
 
         tokio::spawn(async move {
@@ -755,7 +757,7 @@ impl ProcLauncher for ActorProcLauncher {
     /// - send the message to the spawner actor.
     async fn terminate(
         &self,
-        proc_id: &reference::ProcId,
+        proc_id: &hyperactor::ProcAddr,
         timeout: Duration,
     ) -> Result<(), ProcLauncherError> {
         let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
@@ -780,9 +782,8 @@ impl ProcLauncher for ActorProcLauncher {
             message: pickled.into(),
         };
 
-        self.spawner
-            .send(&self.instance, message)
-            .map_err(|e| ProcLauncherError::Terminate(format!("send failed: {e}")))
+        self.spawner.post(&self.instance, message);
+        Ok(())
     }
 
     /// Forcefully kill a proc.
@@ -798,7 +799,7 @@ impl ProcLauncher for ActorProcLauncher {
     /// Returns `ProcLauncherError::Kill` if we fail to:
     /// - import/serialize the request via `cloudpickle`, or
     /// - send the message to the spawner actor.
-    async fn kill(&self, proc_id: &reference::ProcId) -> Result<(), ProcLauncherError> {
+    async fn kill(&self, proc_id: &hyperactor::ProcAddr) -> Result<(), ProcLauncherError> {
         let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
             let cloudpickle =
                 import_cloudpickle(py).map_err(|e| ProcLauncherError::Kill(format!("{e}")))?;
@@ -821,9 +822,8 @@ impl ProcLauncher for ActorProcLauncher {
             message: pickled.into(),
         };
 
-        self.spawner
-            .send(&self.instance, message)
-            .map_err(|e| ProcLauncherError::Kill(format!("send failed: {e}")))
+        self.spawner.post(&self.instance, message);
+        Ok(())
     }
 }
 

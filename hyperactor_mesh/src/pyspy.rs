@@ -13,10 +13,11 @@
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::OncePortRef;
 use hyperactor::RefClient;
-use hyperactor::reference as hyperactor_reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -439,7 +440,7 @@ pub struct PySpyDump {
     pub opts: PySpyOpts,
     /// Reply port for the result.
     #[reply]
-    pub result: hyperactor_reference::OncePortRef<PySpyResult>,
+    pub result: OncePortRef<PySpyResult>,
 }
 wirevalue::register_type!(PySpyDump);
 
@@ -456,7 +457,7 @@ pub struct PySpyProfile {
     pub request: ValidatedProfileRequest,
     /// Reply port for the result.
     #[reply]
-    pub result: hyperactor_reference::OncePortRef<PySpyProfileResult>,
+    pub result: OncePortRef<PySpyProfileResult>,
 }
 wirevalue::register_type!(PySpyProfile);
 
@@ -535,7 +536,7 @@ impl PySpyRunner {
 pub struct RunPySpyDump {
     pub opts: PySpyOpts,
     /// The original caller's reply port, forwarded from PySpyDump.
-    pub reply_port: hyperactor::reference::OncePortRef<PySpyResult>,
+    pub reply_port: hyperactor::OncePortRef<PySpyResult>,
 }
 wirevalue::register_type!(RunPySpyDump);
 
@@ -555,7 +556,7 @@ impl PySpyWorker {
     pub(crate) fn spawn_and_forward(
         cx: &impl hyperactor::context::Actor,
         opts: PySpyOpts,
-        reply_port: hyperactor::reference::OncePortRef<PySpyResult>,
+        reply_port: hyperactor::OncePortRef<PySpyResult>,
     ) -> Result<(), anyhow::Error> {
         let worker = match Self.spawn(cx) {
             Ok(handle) => handle,
@@ -566,17 +567,11 @@ impl PySpyWorker {
                     exit_code: None,
                     stderr: format!("failed to spawn pyspy worker: {}", e),
                 };
-                reply_port.send(cx, fail)?;
+                reply_port.post(cx, fail);
                 return Ok(());
             }
         };
-        // Once reply_port moves into RunPySpyDump, we lose it.
-        // MailboxSenderError does not carry the unsent message, so
-        // on send failure the caller will observe a timeout rather
-        // than an explicit Failed reply.
-        if let Err(e) = worker.send(cx, RunPySpyDump { opts, reply_port }) {
-            tracing::error!("failed to send to pyspy worker: {}", e);
-        }
+        worker.post(cx, RunPySpyDump { opts, reply_port });
         Ok(())
     }
 }
@@ -589,7 +584,7 @@ impl Handler<RunPySpyDump> for PySpyWorker {
         message: RunPySpyDump,
     ) -> Result<(), anyhow::Error> {
         let result = PySpyRunner.dump_self(&message.opts).await;
-        message.reply_port.send(cx, result)?;
+        message.reply_port.post(cx, result);
         cx.stop("pyspy dump complete")?;
         Ok(())
     }
@@ -600,7 +595,7 @@ impl Handler<RunPySpyDump> for PySpyWorker {
 #[derive(Debug, Serialize, Deserialize, Named)]
 pub struct RunPySpyProfile {
     pub request: ValidatedProfileRequest,
-    pub reply_port: hyperactor::reference::OncePortRef<PySpyProfileResult>,
+    pub reply_port: hyperactor::OncePortRef<PySpyProfileResult>,
 }
 wirevalue::register_type!(RunPySpyProfile);
 
@@ -617,7 +612,7 @@ impl PySpyProfileWorker {
     pub(crate) fn spawn_and_forward(
         cx: &impl hyperactor::context::Actor,
         request: ValidatedProfileRequest,
-        reply_port: hyperactor::reference::OncePortRef<PySpyProfileResult>,
+        reply_port: hyperactor::OncePortRef<PySpyProfileResult>,
     ) -> Result<(), anyhow::Error> {
         let worker = match Self.spawn(cx) {
             Ok(handle) => handle,
@@ -625,23 +620,17 @@ impl PySpyProfileWorker {
                 let fail = ProfileExecOutcome::WorkerSpawnFailure {
                     error: e.to_string(),
                 };
-                reply_port.send(cx, PySpyProfileResult::from(fail))?;
+                reply_port.post(cx, PySpyProfileResult::from(fail));
                 return Ok(());
             }
         };
-        // Once reply_port moves into RunPySpyProfile, we lose it.
-        // MailboxSenderError does not carry the unsent message, so
-        // on send failure the caller observes a bridge timeout
-        // rather than a typed error. Same limitation as PySpyWorker.
-        if let Err(e) = worker.send(
+        worker.post(
             cx,
             RunPySpyProfile {
                 request,
                 reply_port,
             },
-        ) {
-            tracing::error!("failed to send to profile worker: {}", e);
-        }
+        );
         Ok(())
     }
 }
@@ -656,7 +645,7 @@ impl Handler<RunPySpyProfile> for PySpyProfileWorker {
         let outcome = PySpyRunner.profile_self(&message.request).await;
         message
             .reply_port
-            .send(cx, PySpyProfileResult::from(outcome))?;
+            .post(cx, PySpyProfileResult::from(outcome));
         cx.stop("pyspy profile complete")?;
         Ok(())
     }
@@ -666,11 +655,11 @@ impl Handler<RunPySpyProfile> for PySpyProfileWorker {
 /// See PS-3 in `introspect` module doc.
 fn resolve_candidates(pyspy_bin_env: Option<String>) -> Vec<(String, String)> {
     let mut candidates = vec![];
-    if let Some(path) = pyspy_bin_env {
-        if !path.is_empty() {
-            let label = format!("PYSPY_BIN={}", path);
-            candidates.push((path, label));
-        }
+    if let Some(path) = pyspy_bin_env
+        && !path.is_empty()
+    {
+        let label = format!("PYSPY_BIN={}", path);
+        candidates.push((path, label));
     }
     candidates.push(("py-spy".to_string(), "py-spy on PATH".to_string()));
     candidates

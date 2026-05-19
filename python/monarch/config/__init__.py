@@ -188,13 +188,20 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
         Client bootstrap:
             client_attach_addr: ZMQ-style address of a remote host's
                 duplex server (e.g. ``"tcp://host:port"``,
-                ``"ipc:///tmp/sock"``). When set, the Python client's
-                singleton proc attaches to that host on first
-                ``context()`` and uses it as a mailbox forwarder, rather
-                than creating a fully-local host mesh. Intended for
-                running the client outside a cluster while procs run
-                inside it. Empty string (the default) disables
-                attach-mode bootstrap.
+                ``"ipc:///tmp/sock"``). When set, on first ``context()``
+                the Python client's gateway is connected to the gateway
+                at that address: the client's outbound traffic is
+                forwarded over the duplex, and the remote gateway
+                registers routes back to the client's local procs so
+                return traffic flows over the same duplex.
+                ``this_host()`` continues to name the current machine;
+                attach controls how the host's procs are reached, not
+                the host's identity. Procs spawned on this host share a
+                single reachability story — they are all reached
+                through the attach host. Intended for running the
+                client outside a cluster while procs run inside it.
+                Empty string (the default) disables attach-mode
+                bootstrap.
 
         **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """

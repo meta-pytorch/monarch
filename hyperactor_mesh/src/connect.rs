@@ -47,6 +47,10 @@ use futures::future;
 use futures::stream::FusedStream;
 use futures::task::Context;
 use futures::task::Poll;
+use hyperactor::ActorAddr;
+use hyperactor::Endpoint as _;
+use hyperactor::OncePortRef;
+use hyperactor::PortRef;
 use hyperactor::context;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
@@ -55,7 +59,6 @@ use hyperactor::mailbox::open_port;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor::reference as hyperactor_reference;
 use pin_project::pin_project;
 use pin_project::pinned_drop;
 use serde::Deserialize;
@@ -85,18 +88,18 @@ struct OwnedReadHalfStream {
 
 /// Wrap a `PortReceiver<IoMsg>` as a `AsyncRead`.
 pub struct OwnedReadHalf {
-    peer: hyperactor_reference::ActorId,
+    peer: ActorAddr,
     inner: StreamReader<OwnedReadHalfStream, Cursor<Vec<u8>>>,
 }
 
 /// Wrap a `PortRef<IoMsg>` as a `AsyncWrite`.
 #[pin_project(PinnedDrop)]
 pub struct OwnedWriteHalf<C: context::Actor> {
-    peer: hyperactor_reference::ActorId,
+    peer: ActorAddr,
     #[pin]
     caps: C,
     #[pin]
-    port: hyperactor_reference::PortRef<Io>,
+    port: PortRef<Io>,
     #[pin]
     shutdown: bool,
 }
@@ -115,13 +118,13 @@ impl<C: context::Actor> ActorConnection<C> {
         (self.reader, self.writer)
     }
 
-    pub fn peer(&self) -> &hyperactor_reference::ActorId {
+    pub fn peer(&self) -> &ActorAddr {
         self.reader.peer()
     }
 }
 
 impl OwnedReadHalf {
-    fn new(peer: hyperactor_reference::ActorId, port: PortReceiver<Io>) -> Self {
+    fn new(peer: ActorAddr, port: PortReceiver<Io>) -> Self {
         Self {
             peer,
             inner: StreamReader::new(OwnedReadHalfStream {
@@ -131,7 +134,7 @@ impl OwnedReadHalf {
         }
     }
 
-    pub fn peer(&self) -> &hyperactor_reference::ActorId {
+    pub fn peer(&self) -> &ActorAddr {
         &self.peer
     }
 
@@ -144,11 +147,7 @@ impl OwnedReadHalf {
 }
 
 impl<C: context::Actor> OwnedWriteHalf<C> {
-    fn new(
-        peer: hyperactor_reference::ActorId,
-        caps: C,
-        port: hyperactor_reference::PortRef<Io>,
-    ) -> Self {
+    fn new(peer: ActorAddr, caps: C, port: PortRef<Io>) -> Self {
         Self {
             peer,
             caps,
@@ -157,7 +156,7 @@ impl<C: context::Actor> OwnedWriteHalf<C> {
         }
     }
 
-    pub fn peer(&self) -> &hyperactor_reference::ActorId {
+    pub fn peer(&self) -> &ActorAddr {
         &self.peer
     }
 
@@ -174,7 +173,7 @@ impl<C: context::Actor> PinnedDrop for OwnedWriteHalf<C> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
         if !*this.shutdown {
-            let _ = this.port.send(&*this.caps, Io::Eof);
+            let _ = this.port.post(&*this.caps, Io::Eof);
         }
     }
 }
@@ -267,10 +266,8 @@ impl<C: context::Actor> AsyncWrite for OwnedWriteHalf<C> {
                 "write after shutdown",
             )));
         }
-        match this.port.send(&*this.caps, Io::Data(buf.into())) {
-            Ok(()) => Poll::Ready(Ok(buf.len())),
-            Err(e) => Poll::Ready(Err(std::io::Error::other(e))),
-        }
+        this.port.post(&*this.caps, Io::Data(buf.into()));
+        Poll::Ready(Ok(buf.len()))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
@@ -282,14 +279,10 @@ impl<C: context::Actor> AsyncWrite for OwnedWriteHalf<C> {
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         // Send EOF on shutdown.
-        match self.port.send(&self.caps, Io::Eof) {
-            Ok(()) => {
-                let mut this = self.project();
-                *this.shutdown = true;
-                Poll::Ready(Ok(()))
-            }
-            Err(e) => Poll::Ready(Err(std::io::Error::other(e))),
-        }
+        self.port.post(&self.caps, Io::Eof);
+        let mut this = self.project();
+        *this.shutdown = true;
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -316,20 +309,17 @@ impl<C: context::Actor> ConnectionCompleter<C> {
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 pub struct Connect {
     /// The ID of the client initiating the connection.
-    id: hyperactor_reference::ActorId,
-    conn: hyperactor_reference::PortRef<Io>,
+    id: ActorAddr,
+    conn: PortRef<Io>,
     /// The port the server can use to complete the connection.
-    return_conn: hyperactor_reference::OncePortRef<Accept>,
+    return_conn: OncePortRef<Accept>,
 }
 wirevalue::register_type!(Connect);
 
 impl Connect {
     /// Allocate a new `Connect` message and return the associated `ConnectionCompleter` that can be used
     /// to finish setting up the connection.
-    pub fn allocate<C: context::Actor>(
-        id: hyperactor_reference::ActorId,
-        caps: C,
-    ) -> (Self, ConnectionCompleter<C>) {
+    pub fn allocate<C: context::Actor>(id: ActorAddr, caps: C) -> (Self, ConnectionCompleter<C>) {
         let (conn_tx, conn_rx) = open_port::<Io>(&caps);
         let (return_tx, return_rx) = open_once_port::<Accept>(&caps);
         (
@@ -352,9 +342,9 @@ impl Connect {
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct Accept {
     /// The ID of the server that accepted the connection.
-    id: hyperactor_reference::ActorId,
+    id: ActorAddr,
     /// The port the client will use to send data over the connection to the server.
-    conn: hyperactor_reference::PortRef<Io>,
+    conn: PortRef<Io>,
 }
 wirevalue::register_type!(Accept);
 
@@ -376,17 +366,17 @@ impl Unbind for Connect {
 /// return `AsyncRead` and `AsyncWrite` streams that can be used to communicate with the other side.
 pub async fn accept<C: context::Actor>(
     caps: C,
-    self_id: hyperactor_reference::ActorId,
+    self_id: ActorAddr,
     message: Connect,
 ) -> Result<ActorConnection<C>> {
     let (tx, rx) = open_port::<Io>(&caps);
-    message.return_conn.send(
+    message.return_conn.post(
         &caps,
         Accept {
             id: self_id,
             conn: tx.bind(),
         },
-    )?;
+    );
     Ok(ActorConnection {
         reader: OwnedReadHalf::new(message.id.clone(), rx),
         writer: OwnedWriteHalf::new(message.id, caps, message.conn),
@@ -419,7 +409,7 @@ mod tests {
             cx: &Context<Self>,
             message: Connect,
         ) -> Result<(), anyhow::Error> {
-            let (mut rd, mut wr) = accept(cx, cx.self_id().clone().into(), message)
+            let (mut rd, mut wr) = accept(cx, cx.self_addr().clone(), message)
                 .await?
                 .into_split();
             tokio::io::copy(&mut rd, &mut wr).await?;
@@ -430,11 +420,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_simple_connection() -> Result<()> {
-        let proc = Proc::local();
-        let (client, _) = proc.instance("client")?;
-        let (connect, completer) = Connect::allocate(client.self_id().clone().into(), client);
+        let proc = Proc::isolated();
+        let (client, _) = proc.client("client")?;
+        let (connect, completer) = Connect::allocate(client.self_addr().clone(), client);
         let actor = proc.spawn("actor", EchoActor {})?;
-        actor.send(&completer.caps, connect)?;
+        actor.post(&completer.caps, connect);
         let (mut rd, mut wr) = completer.complete().await?.into_split();
         let send = [3u8, 4u8, 5u8, 6u8];
         try_join!(
@@ -455,18 +445,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_connection_close_on_drop() -> Result<()> {
-        let proc = Proc::local();
-        let (client, _client_handle) = proc.instance("client")?;
+        let proc = Proc::isolated();
+        let (client, _client_handle) = proc.client("client")?;
 
         let (connect, completer) =
-            Connect::allocate(client.self_id().clone().into(), client.clone_for_py());
-        let (mut rd, _) = accept(
-            client.clone_for_py(),
-            client.self_id().clone().into(),
-            connect,
-        )
-        .await?
-        .into_split();
+            Connect::allocate(client.self_addr().clone(), client.clone_for_py());
+        let (mut rd, _) = accept(client.clone_for_py(), client.self_addr().clone(), connect)
+            .await?
+            .into_split();
         let (_, mut wr) = completer.complete().await?.into_split();
 
         // Write some data
@@ -486,18 +472,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_eof_on_drop_after_shutdown() -> Result<()> {
-        let proc = Proc::local();
-        let (client, _client_handle) = proc.instance("client")?;
+        let proc = Proc::isolated();
+        let (client, _client_handle) = proc.client("client")?;
 
         let (connect, completer) =
-            Connect::allocate(client.self_id().clone().into(), client.clone_for_py());
-        let (mut rd, _) = accept(
-            client.clone_for_py(),
-            client.self_id().clone().into(),
-            connect,
-        )
-        .await?
-        .into_split();
+            Connect::allocate(client.self_addr().clone(), client.clone_for_py());
+        let (mut rd, _) = accept(client.clone_for_py(), client.self_addr().clone(), connect)
+            .await?
+            .into_split();
         let (_, mut wr) = completer.complete().await?.into_split();
 
         // Write some data

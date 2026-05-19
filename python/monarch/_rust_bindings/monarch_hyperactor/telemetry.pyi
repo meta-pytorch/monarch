@@ -8,6 +8,8 @@
 
 import logging
 
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
+
 def forward_to_tracing(record: logging.LogRecord) -> None:
     """
     Log a message with the given metadata using the tracing system.
@@ -63,22 +65,27 @@ def instant_event(message: str) -> None:
     ...
 
 class PySpan:
-    def __init__(self, name: str, actor_id: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        actor_id: ActorAddr | None = None,
+    ) -> None:
         """
         Create a new PySpan.
 
         Args:
         - name (str): The name of the span.
-        - actor_id (str | None, optional): The actor ID associated with the span.
-          If None, Rust will handle actor identification automatically.
+        - actor_id (ActorAddr | None, optional): The actor whose Perfetto track should own the span.
         """
         ...
 
-    def exit(self) -> None:
-        """
-        Exit the span.
-        """
-        ...
+    def __enter__(self) -> PySpan: ...
+    def __exit__(
+        self,
+        exc_type: object | None = None,
+        exc_value: object | None = None,
+        traceback: object | None = None,
+    ) -> bool: ...
 
 class PyCounter:
     def __init__(self, name: str) -> None:

@@ -10,7 +10,15 @@
 
 //! This module contains common testing utilities.
 
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -26,20 +34,160 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
+#[cfg(fbcode_build)]
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+#[cfg(fbcode_build)]
 use crate::Bootstrap;
+#[cfg(fbcode_build)]
 use crate::HostMeshRef;
+#[cfg(fbcode_build)]
 use crate::host_mesh::HostMesh;
+#[cfg(fbcode_build)]
 use crate::host_mesh::HostMeshShutdownGuard;
 use crate::supervision::MeshFailure;
+
+/// Guard that fails the test if it leaves new child processes behind.
+pub struct ChildProcessGuard {
+    baseline: BTreeSet<u32>,
+    observed: Arc<Mutex<BTreeSet<u32>>>,
+    stop_monitor: Arc<AtomicBool>,
+    monitor: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ChildProcessGuard {
+    pub fn new() -> Self {
+        let root_pid = std::process::id();
+        let baseline: BTreeSet<u32> = current_descendant_processes(root_pid)
+            .keys()
+            .copied()
+            .collect();
+        let observed = Arc::new(Mutex::new(BTreeSet::new()));
+        let stop_monitor = Arc::new(AtomicBool::new(false));
+        let monitor_observed = Arc::clone(&observed);
+        let monitor_stop = Arc::clone(&stop_monitor);
+        let monitor_baseline = baseline.clone();
+        let monitor = std::thread::spawn(move || {
+            while !monitor_stop.load(Ordering::Acquire) {
+                record_new_descendants(root_pid, &monitor_baseline, &monitor_observed);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            record_new_descendants(root_pid, &monitor_baseline, &monitor_observed);
+        });
+
+        Self {
+            baseline,
+            observed,
+            stop_monitor,
+            monitor: Some(monitor),
+        }
+    }
+}
+
+impl Drop for ChildProcessGuard {
+    fn drop(&mut self) {
+        self.stop_monitor.store(true, Ordering::Release);
+        if let Some(monitor) = self.monitor.take() {
+            let _ = monitor.join();
+        }
+
+        record_new_descendants(std::process::id(), &self.baseline, &self.observed);
+        let leaked: BTreeMap<_, _> = self
+            .observed
+            .lock()
+            .expect("child process guard monitor should not panic")
+            .iter()
+            .filter_map(|pid| process_name(*pid).map(|name| (*pid, name)))
+            .collect();
+        if leaked.is_empty() {
+            return;
+        }
+
+        let message = format!("test leaked child processes: {:?}", leaked);
+        if std::thread::panicking() {
+            eprintln!("{message}");
+        } else {
+            panic!("{message}");
+        }
+    }
+}
+
+fn record_new_descendants(
+    root_pid: u32,
+    baseline: &BTreeSet<u32>,
+    observed: &Arc<Mutex<BTreeSet<u32>>>,
+) {
+    let descendants = current_descendant_processes(root_pid);
+    let mut observed = observed
+        .lock()
+        .expect("child process guard monitor should not panic");
+    observed.extend(
+        descendants
+            .keys()
+            .copied()
+            .filter(|pid| !baseline.contains(pid)),
+    );
+}
+
+fn current_descendant_processes(root_pid: u32) -> BTreeMap<u32, String> {
+    let mut descendants = BTreeSet::new();
+    let mut pending = current_child_processes(root_pid);
+    while let Some(pid) = pending.pop_first() {
+        if descendants.insert(pid) {
+            pending.extend(current_child_processes(pid));
+        }
+    }
+
+    descendants
+        .into_iter()
+        .filter_map(|pid| process_name(pid).map(|name| (pid, name)))
+        .collect()
+}
+
+fn current_child_processes(pid: u32) -> BTreeSet<u32> {
+    let mut children = BTreeSet::new();
+    let tasks_path = Path::new("/proc").join(pid.to_string()).join("task");
+    let Ok(tasks) = std::fs::read_dir(tasks_path) else {
+        return children;
+    };
+    for task in tasks.flatten() {
+        let path = task.path().join("children");
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        children.extend(
+            contents
+                .split_whitespace()
+                .map(|pid| pid.parse::<u32>().expect("child pid should parse")),
+        );
+    }
+
+    children
+}
+
+fn process_name(pid: u32) -> Option<String> {
+    let proc_dir = Path::new("/proc").join(pid.to_string());
+    let cmdline = std::fs::read(proc_dir.join("cmdline")).ok()?;
+    let cmdline = cmdline
+        .split(|byte| *byte == 0)
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| String::from_utf8_lossy(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !cmdline.is_empty() {
+        return Some(cmdline);
+    }
+    std::fs::read_to_string(proc_dir.join("comm"))
+        .ok()
+        .map(|comm| comm.trim().to_string())
+}
 
 #[derive(Debug)]
 pub struct TestRootClient {
     signal_rx: PortReceiver<Signal>,
-    supervision_rx: PortReceiver<ActorSupervisionEvent>,
+    supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
     work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
 }
 
@@ -63,14 +211,14 @@ impl TestRootClient {
                     work = self.work_rx.recv() => {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut self, instance).await {
-                            for supervision_event in self.supervision_rx.drain() {
+                            while let Ok(supervision_event) = self.supervision_rx.try_recv() {
                                 if let Err(err) = instance.handle_supervision_event(&mut self, supervision_event).await {
                                     break 'messages err;
                                 }
                             }
                             let kind = ActorErrorKind::processing(err);
                             break ActorError {
-                                actor_id: Box::new(instance.self_id().clone()),
+                                actor_id: Box::new(instance.self_addr().clone()),
                                 kind: Box::new(kind),
                             };
                         }
@@ -78,7 +226,7 @@ impl TestRootClient {
                     _ = self.signal_rx.recv() => {
                         // TODO: do we need any signal handling for the root client?
                     }
-                    Ok(supervision_event) = self.supervision_rx.recv() => {
+                    Some(supervision_event) = self.supervision_rx.recv() => {
                         if let Err(err) = instance.handle_supervision_event(&mut self, supervision_event).await {
                             break err;
                         }
@@ -90,7 +238,7 @@ impl TestRootClient {
                 _ => {
                     let status = ActorStatus::generic_failure(err.kind.to_string());
                     ActorSupervisionEvent::new(
-                        instance.self_id().clone(),
+                        instance.self_addr().clone(),
                         Some("testclient".into()),
                         status,
                         None,
@@ -179,7 +327,9 @@ pub async fn host_mesh(n: usize) -> HostMeshShutdownGuard {
         cmd.spawn().unwrap();
     }
 
-    let host_mesh =
-        HostMeshRef::from_hosts(HostMeshId::unique(Label::new("test").unwrap()), host_addrs);
+    let host_mesh = HostMeshRef::from_hosts(
+        HostMeshId::instance(Label::new("test").unwrap()),
+        host_addrs,
+    );
     HostMesh::take(host_mesh).shutdown_guard()
 }

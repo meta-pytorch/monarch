@@ -48,6 +48,7 @@
 
 use std::time::Duration;
 
+use hyperactor::Endpoint as _;
 use hyperactor_mesh::mesh_admin::MeshAdminAgent;
 use monarch_distributed_telemetry::database_scanner::TableStore;
 use monarch_record_batch::RecordBatchBuffer;
@@ -129,7 +130,7 @@ pub async fn register_snapshot_schemas(table_store: &TableStore) -> anyhow::Resu
 pub fn start_periodic_snapshots(
     cx: &impl hyperactor::context::Actor,
     table_store: TableStore,
-    admin_ref: hyperactor::reference::ActorRef<MeshAdminAgent>,
+    admin_ref: hyperactor::ActorRef<MeshAdminAgent>,
     interval: Duration,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -140,7 +141,7 @@ pub fn start_periodic_snapshots(
     let actor = SnapshotCaptureActor::new(table_store, admin_ref, interval);
     let handle = proc.spawn("snapshot_capture", actor)?;
     // PT-3: first capture fires at spawn time.
-    handle.send(cx, CaptureSnapshot)?;
+    handle.post(cx, CaptureSnapshot);
     Ok(())
 }
 

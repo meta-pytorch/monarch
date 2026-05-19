@@ -12,9 +12,9 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::OncePortHandle;
-use hyperactor::reference;
 use pyo3::prelude::*;
 
 #[derive(Debug)]
@@ -30,7 +30,8 @@ pub enum LocalStateBrokerMessage {
 }
 
 #[derive(Debug, Default)]
-#[hyperactor::export(spawn = true)]
+#[hyperactor::export]
+#[hyperactor::spawnable]
 pub struct LocalStateBrokerActor {
     states: HashMap<usize, LocalState>,
     ports: HashMap<usize, OncePortHandle<LocalState>>,
@@ -48,7 +49,7 @@ impl Handler<LocalStateBrokerMessage> for LocalStateBrokerActor {
         match message {
             LocalStateBrokerMessage::Set(id, state) => match self.ports.remove_entry(&id) {
                 Some((_, port)) => {
-                    port.send(cx, state)?;
+                    port.post(cx, state);
                 }
                 None => {
                     self.states.insert(id, state);
@@ -56,7 +57,7 @@ impl Handler<LocalStateBrokerMessage> for LocalStateBrokerActor {
             },
             LocalStateBrokerMessage::Get(id, port) => match self.states.remove_entry(&id) {
                 Some((_, state)) => {
-                    port.send(cx, state)?;
+                    port.post(cx, state);
                 }
                 None => {
                     self.ports.insert(id, port);
@@ -87,9 +88,9 @@ impl BrokerId {
         use std::time::Duration;
 
         let broker_name = format!("{:?}", self);
-        let actor_id = reference::ActorId::new(cx.proc().proc_id().clone().into(), self.0.clone());
-        let actor_ref: reference::ActorRef<LocalStateBrokerActor> =
-            reference::ActorRef::attest(actor_id);
+        let actor_id = cx.proc().proc_addr().actor_addr(&self.0);
+        let actor_ref: hyperactor::ActorRef<LocalStateBrokerActor> =
+            hyperactor::ActorRef::attest(actor_id);
 
         let mut delay_ms = 1;
         loop {

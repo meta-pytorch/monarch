@@ -170,13 +170,7 @@ fn get_thread_info() -> (&'static str, &'static str) {
         };
         #[cfg(not(target_os = "linux"))]
         let thread_id: &'static str = {
-            let tid = std::thread::current().id();
-            // SAFETY: ThreadId is a newtype wrapper around a u64 counter.
-            // This transmute relies on the internal representation of ThreadId,
-            // which is stable in practice but not guaranteed by Rust's API.
-            // On non-Linux platforms this is a best-effort approximation.
-            // See: https://doc.rust-lang.org/std/thread/struct.ThreadId.html
-            let tid_num = unsafe { std::mem::transmute::<std::thread::ThreadId, u64>(tid) };
+            let tid_num = std::thread::current().id().as_u64().get();
             Box::leak(tid_num.to_string().into_boxed_str())
         };
 
@@ -204,6 +198,18 @@ pub struct TraceEventDispatcher {
 
 struct WorkerHandle {
     join_handle: Option<JoinHandle<()>>,
+}
+
+thread_local! {
+    static IN_SEND: Cell<bool> = const { Cell::new(false) };
+}
+
+struct InSendGuard;
+
+impl Drop for InSendGuard {
+    fn drop(&mut self) {
+        IN_SEND.with(|f| f.set(false));
+    }
 }
 
 impl TraceEventDispatcher {
@@ -287,19 +293,35 @@ impl TraceEventDispatcher {
     }
 
     fn send_event(&self, event: TraceEvent) {
-        if let Some(sender) = &self.sender {
-            if let Err(mpsc::TrySendError::Full(_)) = sender.try_send(event) {
-                let dropped = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
+        // Re-entrancy guard. A `Layer` callback may emit `tracing` events
+        // through code it touches—notably std's mpmc channel, which is itself
+        // instrumented—and those events loop back through this subscriber.
+        // Without this guard, the recursion exhausts the stack and SIGSEGVs.
+        if IN_SEND.with(|f| f.replace(true)) {
+            return;
+        }
+        let _reset = InSendGuard;
 
-                if dropped == 1 || dropped.is_multiple_of(1000) {
-                    eprintln!(
-                        "[telemetry]: {}  events and log lines dropped que to full queue (capacity: {})",
-                        dropped, QUEUE_CAPACITY
-                    );
-                    self.send_drop_event(dropped);
-                }
+        if let Some(sender) = &self.sender
+            && let Err(mpsc::TrySendError::Full(_)) = sender.try_send(event)
+        {
+            let dropped = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
+
+            if dropped == 1 || dropped.is_multiple_of(1000) {
+                eprintln!(
+                    "[telemetry]: {}  events and log lines dropped que to full queue (capacity: {})",
+                    dropped, QUEUE_CAPACITY
+                );
+                self.send_drop_event(dropped);
             }
         }
+    }
+
+    pub(crate) fn sender(&self) -> mpsc::SyncSender<TraceEvent> {
+        self.sender
+            .as_ref()
+            .expect("trace event dispatcher sender should exist during initialization")
+            .clone()
     }
 
     fn send_drop_event(&self, total_dropped: u64) {
@@ -454,7 +476,7 @@ where
 
 struct FieldVisitor<'a>(&'a mut TraceFields);
 
-impl<'a> tracing::field::Visit for FieldVisitor<'a> {
+impl tracing::field::Visit for FieldVisitor<'_> {
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         self.0.push((field.name(), FieldValue::Bool(value)));
     }
@@ -514,14 +536,13 @@ fn worker_loop(
                     None => true,
                 },
                 _ => true,
-            } {
-                if let Err(e) = sink.consume(&event) {
-                    eprintln!(
-                        "[telemetry] sink {} failed to consume event: {}",
-                        sink.name(),
-                        e
-                    );
-                }
+            } && let Err(e) = sink.consume(&event)
+            {
+                eprintln!(
+                    "[telemetry] sink {} failed to consume event: {}",
+                    sink.name(),
+                    e
+                );
             }
         }
     }
@@ -586,10 +607,72 @@ fn worker_loop(
 
 impl Drop for WorkerHandle {
     fn drop(&mut self) {
-        if let Some(handle) = self.join_handle.take() {
-            if let Err(e) = handle.join() {
-                eprintln!("[telemetry] worker thread panicked: {:?}", e);
-            }
+        if let Some(handle) = self.join_handle.take()
+            && let Err(e) = handle.join()
+        {
+            eprintln!("[telemetry] worker thread panicked: {:?}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Arc<Mutex<Vec<TraceEvent>>>,
+    }
+
+    impl TraceEventSink for RecordingSink {
+        fn consume(&mut self, event: &TraceEvent) -> Result<(), anyhow::Error> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+
+        fn flush(&mut self) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+    }
+
+    fn span_close(id: u64) -> TraceEvent {
+        TraceEvent::SpanClose {
+            id,
+            timestamp: SystemTime::now(),
+        }
+    }
+
+    #[test]
+    fn send_event_delivers_repeatedly() {
+        let sink = RecordingSink::default();
+        let recorded = Arc::clone(&sink.events);
+        let dispatcher = TraceEventDispatcher::new(vec![Box::new(sink)]);
+
+        dispatcher.send_event(span_close(1));
+        dispatcher.send_event(span_close(2));
+        dispatcher.send_event(span_close(3));
+
+        drop(dispatcher);
+        assert_eq!(recorded.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn send_event_drops_on_reentrance() {
+        let sink = RecordingSink::default();
+        let recorded = Arc::clone(&sink.events);
+        let dispatcher = TraceEventDispatcher::new(vec![Box::new(sink)]);
+
+        // Simulate that this thread is already inside `send_event`. The nested
+        // call must short-circuit; otherwise a `Layer` callback that re-enters
+        // the subscriber would recurse without bound.
+        IN_SEND.with(|f| f.set(true));
+        dispatcher.send_event(span_close(1));
+        IN_SEND.with(|f| f.set(false));
+
+        drop(dispatcher);
+        assert!(recorded.lock().unwrap().is_empty());
     }
 }

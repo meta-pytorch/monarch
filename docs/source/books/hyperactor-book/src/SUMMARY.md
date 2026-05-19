@@ -42,6 +42,7 @@
   - [RemoteHandles](actors/remote_handles.md)
   - [ActorHandle](actors/actor_handle.md)
   - [Actor Lifecycle](actors/actor_lifecycle.md)
+- [Remote Supervision and Rendezvous](remote_supervision.md)
 - [Macros](macros/index.md)
   - [`#[derive(Handler)]`](macros/handler.md)
   - [`#[derive(HandleClient)]`](macros/handle_client.md)

@@ -7,6 +7,7 @@
  */
 
 use futures::future::try_join_all;
+use hyperactor::Gateway;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::id::Label;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
@@ -20,7 +21,6 @@ use pyo3::Bound;
 use pyo3::PyAny;
 use pyo3::PyResult;
 use pyo3::Python;
-use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::pyfunction;
 use pyo3::types::PyAnyMethods;
@@ -36,7 +36,7 @@ use crate::runtime::monarch_with_gil;
 #[pyo3(signature = ())]
 pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
     // SAFETY: this is a correct use of this function.
-    let _ = unsafe {
+    unsafe {
         fbinit::perform_init();
     };
 
@@ -54,7 +54,6 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (address))]
 pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPythonTask> {
     let (addr, listener) = ChannelAddr::from_zmq_url_with_listener(address)?;
 
@@ -105,7 +104,7 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
     });
 
     PyPythonTask::new(async move {
-        let (_agent_handle, shutdown) = host(addr, command, None, true, listener)
+        let (_agent_handle, shutdown) = host(addr, command, None, true, listener, Gateway::new())
             .await
             .map_pyerr()?;
         shutdown.join().await;
@@ -115,9 +114,9 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
 }
 
 #[pyfunction]
-pub fn attach_to_workers<'py>(
+pub fn attach_to_workers(
     instance: &crate::context::PyInstance,
-    workers: Vec<Bound<'py, PyPythonTask>>,
+    workers: Vec<Bound<'_, PyPythonTask>>,
     name: Option<&str>,
 ) -> PyResult<PyPythonTask> {
     let tasks = workers
@@ -125,9 +124,11 @@ pub fn attach_to_workers<'py>(
         .map(|x| x.borrow_mut().take_task())
         .collect::<PyResult<Vec<_>>>()?;
 
-    let name = HostMeshId::unique(
-        Label::new(name.unwrap_or("hosts")).map_err(|e| PyException::new_err(e.to_string()))?,
-    );
+    // `Label::strip` (vs. `Label::new`) sanitizes user-supplied names — lowercases,
+    // drops illegal characters, falls back to "nil" if empty. Callers pass names
+    // derived from experiment / job names that may contain uppercase or punctuation;
+    // rejecting them surfaces as an opaque PyException far from the input site.
+    let name = HostMeshId::instance(Label::strip(name.unwrap_or("hosts")));
     let instance = instance.clone();
     PyPythonTask::new(async move {
         let results = try_join_all(tasks).await?;

@@ -11,13 +11,13 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
 use hyperactor::proc::Proc;
-use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -42,10 +42,10 @@ struct ClearList {
 }
 
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
-struct GetItemCount<C> {
+struct GetItemCount {
     category_filter: String,
     #[reply]
-    reply: reference::OncePortRef<C>,
+    reply: reference::OncePortRef<usize>,
 }
 
 // Define an actor.
@@ -105,8 +105,8 @@ impl ClearListHandler for ShoppingListActor {
 }
 
 #[async_trait]
-#[hyperactor::handle(GetItemCount<usize>)]
-impl GetItemCountHandler<usize> for ShoppingListActor {
+#[hyperactor::handle(GetItemCount)]
+impl GetItemCountHandler for ShoppingListActor {
     async fn get_item_count(
         &mut self,
         _cx: &Context<Self>,
@@ -126,18 +126,18 @@ impl GetItemCountHandler<usize> for ShoppingListActor {
 // Define a behavior `ShoppingApi`. Clients can use
 // `ActorRef<ShoppingApi>` instead of referencing the concrete
 // `ShoppingListActor` directly.
-hyperactor::behavior!(ShoppingApi, ShoppingList, ClearList, GetItemCount<usize>,);
+hyperactor::behavior!(ShoppingApi, ShoppingList, ClearList, GetItemCount,);
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let mut proc = Proc::local();
+    let mut proc = Proc::isolated();
 
     // Spawn our actor, and get a handle for rank 0.
     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =
         proc.spawn("shopping", ShoppingListActor::default())?;
     let shopping_api: reference::ActorRef<ShoppingApi> = shopping_list_actor.bind();
     // We join the system, so that we can send messages to actors.
-    let (client, _) = proc.instance("client").unwrap();
+    let (client, _) = proc.client("client").unwrap();
 
     // todo: consider making this a macro to remove the magic names
 
@@ -201,7 +201,7 @@ async fn main() -> Result<(), anyhow::Error> {
     );
 
     let _ = proc
-        .destroy_and_wait::<()>(Duration::from_secs(1), None, "example cleanup")
+        .destroy_and_wait(Duration::from_secs(1), "example cleanup")
         .await?;
     Ok(())
 }

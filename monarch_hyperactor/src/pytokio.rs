@@ -444,23 +444,20 @@ fn send_result(
     traceback: Option<Py<PyAny>>,
 ) {
     // a SendErr just means that there are no consumers of the value left.
-    match tx.send(Some(result)) {
-        Err(tokio::sync::watch::error::SendError(Some(Err(pyerr)))) => {
-            monarch_with_gil_blocking(|py| {
-                let tb = if let Some(tb) = traceback {
-                    format_traceback(py, &tb).unwrap()
-                } else {
-                    "None (run with `MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK=1` to see a traceback here)\n".into()
-                };
-                tracing::error!(
-                    "PythonTask errored but is not being awaited; this will not crash your program, but indicates that \
-                    something went wrong.\n{}\nTraceback where the task was created (most recent call last):\n{}",
-                    SerializablePyErr::from(py, &pyerr),
-                    tb
-                );
-            });
-        }
-        _ => {}
+    if let Err(tokio::sync::watch::error::SendError(Some(Err(pyerr)))) = tx.send(Some(result)) {
+        monarch_with_gil_blocking(|py| {
+            let tb = if let Some(tb) = traceback {
+                format_traceback(py, &tb).unwrap()
+            } else {
+                "None (run with `MONARCH_HYPERACTOR_ENABLE_UNAWAITED_PYTHON_TASK_TRACEBACK=1` to see a traceback here)\n".into()
+            };
+            tracing::error!(
+                "PythonTask errored but is not being awaited; this will not crash your program, but indicates that \
+                something went wrong.\n{}\nTraceback where the task was created (most recent call last):\n{}",
+                SerializablePyErr::from(py, &pyerr),
+                tb
+            );
+        });
     };
 }
 
@@ -826,7 +823,7 @@ impl PyShared {
     /// Note: `await shared` is only supported inside the
     /// `PythonTask.from_coroutine(...)` world (because it ultimately
     /// awaits a `PythonTask`).
-    fn __await__(&mut self, py: Python<'_>) -> PyResult<PythonTaskAwaitIterator> {
+    fn __await__(&self, py: Python<'_>) -> PyResult<PythonTaskAwaitIterator> {
         let task = self.task()?;
         Ok(PythonTaskAwaitIterator::new(task.into_py_any(py)?))
     }

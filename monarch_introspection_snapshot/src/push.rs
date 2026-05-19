@@ -153,8 +153,8 @@ pub async fn push_snapshot(table_store: &TableStore, data: SnapshotData) -> anyh
 #[cfg(test)]
 mod tests {
     use datafusion::prelude::SessionContext;
+    use hyperactor::ProcAddr;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::reference::ProcId;
     use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
     use hyperactor_mesh::introspect::NodeRef;
 
@@ -167,12 +167,12 @@ mod tests {
     const PROC_NAME: &str = "worker";
     const ACTOR_NAME: &str = "test_actor";
 
-    fn test_proc_id() -> ProcId {
-        ProcId::from_resource_name(ChannelAddr::Local(0), PROC_NAME)
+    fn test_proc_id() -> ProcAddr {
+        hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(ChannelAddr::Local(0), PROC_NAME)
     }
 
     fn test_host_ref() -> NodeRef {
-        NodeRef::Host(test_proc_id().actor_id(HOST_MESH_AGENT_ACTOR_NAME))
+        NodeRef::Host(test_proc_id().actor_addr(HOST_MESH_AGENT_ACTOR_NAME))
     }
 
     fn test_proc_ref() -> NodeRef {
@@ -180,7 +180,7 @@ mod tests {
     }
 
     fn test_actor_ref() -> NodeRef {
-        NodeRef::Actor(test_proc_id().actor_id(ACTOR_NAME))
+        NodeRef::Actor(test_proc_id().actor_addr(ACTOR_NAME))
     }
 
     /// Expected table names in sorted order (PS-1). Alias for the
@@ -242,8 +242,8 @@ mod tests {
         let host_id = test_host_ref().to_string();
         let proc_id = test_proc_ref().to_string();
         let actor_id = test_actor_ref().to_string();
-        let failed_actor_id = NodeRef::Actor(test_proc_id().actor_id("failed_actor")).to_string();
-        let error_id = NodeRef::Actor(test_proc_id().actor_id("missing")).to_string();
+        let failed_actor_id = NodeRef::Actor(test_proc_id().actor_addr("failed_actor")).to_string();
+        let error_id = NodeRef::Actor(test_proc_id().actor_addr("missing")).to_string();
 
         SnapshotData {
             snapshot: SnapshotRow {

@@ -162,11 +162,12 @@ pub fn rle_from_value_runs<T: Clone + PartialEq>(
             (table.len() - 1) as u32
         };
         // Coalesce equal-adjacent ids.
-        if let Some((last_r, last_id)) = out.last_mut() {
-            if last_r.end == range.start && *last_id == id {
-                last_r.end = range.end;
-                return;
-            }
+        if let Some((last_r, last_id)) = out.last_mut()
+            && last_r.end == range.start
+            && *last_id == id
+        {
+            last_r.end = range.end;
+            return;
         }
         out.push((range, id));
     };
@@ -200,11 +201,12 @@ pub fn merge_value_runs<T: Eq + Clone>(
     // Local helper that appends a run butg coalesces equal-adjacent
     // (like RankedValues::append)
     let mut append = |range: Range<usize>, value: T| {
-        if let Some((last_r, last_v)) = out.last_mut() {
-            if last_r.end == range.start && *last_v == value {
-                last_r.end = range.end;
-                return;
-            }
+        if let Some((last_r, last_v)) = out.last_mut()
+            && last_r.end == range.start
+            && *last_v == value
+        {
+            last_r.end = range.end;
+            return;
         }
         out.push((range, value));
     };

@@ -18,7 +18,6 @@ use futures::future;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::Instance;
-use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
@@ -46,7 +45,7 @@ use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
 use crate::pickle::PendingMessage;
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
@@ -378,7 +377,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
                 let _ = monarch_with_gil(|py: Python<'_>| {
                     let exception_str = crate::logging::format_traceback(py, &pyerr);
                     tracing::error!(
-                        actor_id = instance.self_id().to_string(),
+                        actor_id = instance.self_addr().to_string(),
                         "error occurred during cast unresolved: {}",
                         exception_str
                     );
@@ -406,7 +405,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
 
                     let mut state =
                         crate::pickle::pickle(py, pyerr.into_value(py).into_any(), false, false)?;
-                    let _ = port_ref.send(
+                    let _ = port_ref.post(
                         &instance,
                         PythonMessage::new_from_buf(
                             PythonMessageKind::Exception { rank: Some(0) },
@@ -523,6 +522,10 @@ pub(crate) struct PyActorMeshRef {
 #[pyclass(
     name = "PythonActorMeshImpl",
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
+)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "PyO3 #[pyclass] enum; Box wrapping interacts with PyO3 codegen and Python interop — separate diff"
 )]
 pub(crate) enum PythonActorMeshImpl {
     Owned(PyActorMesh),
@@ -719,12 +722,12 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
 
 #[pymethods]
 impl PythonActorMeshImpl {
-    fn get(&self, rank: usize) -> PyResult<Option<PyActorId>> {
+    fn get(&self, rank: usize) -> PyResult<Option<PyActorAddr>> {
         Ok(self
             .mesh_ref()
             .get(rank)
-            .map(|r| reference::ActorRef::into_actor_id(r.clone()))
-            .map(PyActorId::from))
+            .map(|r| hyperactor::ActorRef::into_actor_addr(r.clone()))
+            .map(PyActorAddr::from))
     }
 
     fn __repr__(&self) -> String {
@@ -758,8 +761,8 @@ impl PyActorSupervisionEvent {
     }
 
     #[getter]
-    pub(crate) fn actor_id(&self) -> PyResult<PyActorId> {
-        Ok(PyActorId::from(self.inner.actor_id.clone()))
+    pub(crate) fn actor_id(&self) -> PyResult<PyActorAddr> {
+        Ok(PyActorAddr::from(self.inner.actor_id.clone()))
     }
 
     #[getter]
@@ -839,6 +842,7 @@ mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::Context;
+    use hyperactor::Endpoint as _;
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::Proc;
@@ -865,7 +869,7 @@ mod tests {
     #[derive(Debug)]
     struct TestClient {
         signal_rx: PortReceiver<Signal>,
-        supervision_rx: PortReceiver<ActorSupervisionEvent>,
+        supervision_rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
         work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
     }
 
@@ -896,7 +900,7 @@ mod tests {
                             }
                         }
                         _ = self.signal_rx.recv() => {}
-                        Ok(event) = self.supervision_rx.recv() => {
+                        Some(event) = self.supervision_rx.recv() => {
                             let _ = instance
                                 .handle_supervision_event(&mut self, event)
                                 .await;
@@ -945,7 +949,7 @@ mod tests {
 
         let mut host_mesh = HostMesh::local_in_process().await.unwrap();
         let proc_mesh = host_mesh
-            .spawn(instance, "test", extent!(replicas = 2), None)
+            .spawn(instance, "test", extent!(replicas = 2), None, None)
             .await
             .unwrap();
 
@@ -997,9 +1001,7 @@ mod tests {
 
         // Query the subscriber count from the controller.
         let (port, mut rx) = mailbox::open_port::<usize>(instance);
-        controller
-            .send(instance, GetSubscriberCount(port.bind()))
-            .unwrap();
+        controller.post(instance, GetSubscriberCount(port.bind()));
         let initial_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
@@ -1022,9 +1024,7 @@ mod tests {
         // After 5 calls from the same context, there should be exactly 1
         // subscriber (created lazily on the first call, reused thereafter).
         let (port, mut rx) = mailbox::open_port::<usize>(instance);
-        controller
-            .send(instance, GetSubscriberCount(port.bind()))
-            .unwrap();
+        controller.post(instance, GetSubscriberCount(port.bind()));
         let after_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
@@ -1045,9 +1045,7 @@ mod tests {
         }
 
         let (port, mut rx) = mailbox::open_port::<usize>(instance);
-        controller
-            .send(instance, GetSubscriberCount(port.bind()))
-            .unwrap();
+        controller.post(instance, GetSubscriberCount(port.bind()));
         let final_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")

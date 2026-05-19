@@ -15,15 +15,16 @@ use std::process::ExitCode;
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Parser;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
@@ -59,12 +60,8 @@ enum ChopstickStatus {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        PhilosopherMessage { cast = true },
-    ],
-)]
+#[hyperactor::export(PhilosopherMessage { cast = true })]
+#[hyperactor::spawnable]
 struct PhilosopherActor {
     /// Status of left and right chopsticks
     chopsticks: (ChopstickStatus, ChopstickStatus),
@@ -78,6 +75,10 @@ struct PhilosopherActor {
 
 /// Message from the waiter to a philosopher
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "example actor message with #[binding(include)] PortRef whose Bind/Unbind derive interaction with Box<T> needs verification — separate diff"
+)]
 enum PhilosopherMessage {
     Start(#[binding(include)] reference::PortRef<WaiterMessage>),
     GrantChopstick(usize),
@@ -127,10 +128,10 @@ impl PhilosopherActor {
         self.waiter
             .get()
             .ok_or(anyhow::anyhow!("uninitialized waiter port"))?
-            .send(
+            .post(
                 cx,
                 WaiterMessage::RequestChopsticks((self.rank, left, right)),
-            )?;
+            );
         self.chopsticks = (ChopstickStatus::Requested, ChopstickStatus::Requested);
         Ok(())
     }
@@ -146,7 +147,7 @@ impl PhilosopherActor {
         self.waiter
             .get()
             .ok_or(anyhow::anyhow!("uninitialized waiter port"))?
-            .send(cx, WaiterMessage::ReleaseChopsticks((left, right)))?;
+            .post(cx, WaiterMessage::ReleaseChopsticks((left, right)));
         self.chopsticks = (ChopstickStatus::None, ChopstickStatus::None);
         Ok(())
     }
@@ -314,6 +315,7 @@ async fn main() -> Result<ExitCode> {
             instance,
             "philosophers",
             extent!(replica = group_size),
+            None,
             None,
         )
         .await?;

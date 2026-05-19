@@ -40,7 +40,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortRef,
     UndeliverableMessageEnvelope,
 )
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorAddr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.future import Future
@@ -59,7 +59,8 @@ from monarch.actor import (
     ProcMesh,
 )
 from monarch.config import configure, configured, parametrize_config
-from monarch.tools.config import defaults
+from monarch.tools.config import Config
+from monarch.tools.config.workspace import Workspace
 from scoped_state import scoped_state
 from typing_extensions import assert_type
 
@@ -1125,7 +1126,10 @@ async def test_sync_workspace() -> None:
         pm = host.spawn_procs(per_host={"gpus": 1})
         code_sync_mesh = host
 
-        config = defaults.config("slurm", workspace_src)
+        config = Config(
+            scheduler="slurm",
+            workspace=Workspace(dirs={workspace_src: ""}),
+        )
         await code_sync_mesh.sync_workspace(
             workspace=config.workspace, auto_reload=True
         )
@@ -1262,7 +1266,7 @@ class UndeliverableMessageSender(Actor):
     def send_undeliverable(self) -> None:
         actor_instance = context().actor_instance
         port_id = PortId(
-            actor_id=ActorId(addr="local:0", proc_name="bogus", actor_name="bogus"),
+            actor_id=ActorAddr(addr="local:0", proc_name="bogus", actor_name="bogus"),
             port=1234,
         )
         port_ref = PortRef(port_id)
@@ -1438,6 +1442,37 @@ def test_simple_bootstrap():
         for proc in procs:
             proc.kill()
             proc.wait()
+
+
+@isolate_in_subprocess
+def test_attach_fails_closed_on_unreachable_host():
+    """`attach_to_workers(...)` against an unreachable host raises a
+    Python exception whose message names the failing host. See HM-* in
+    `host_mesh.rs` for the underlying contract."""
+    # Tighten the per-host config-push timeout so the test doesn't
+    # wait the 10 s default.
+    with configured(mesh_attach_config_timeout="500ms"):
+        with TemporaryDirectory() as d:
+            unreachable = f"ipc://{d}/never_bound"
+
+            hosts = attach_to_workers(ca="trust_all_connections", workers=[unreachable])
+
+            with pytest.raises(Exception) as excinfo:
+                hosts.initialized.get()
+
+            msg = str(excinfo.value)
+
+            assert "attach failed: config push failed during attach" in msg, (
+                f"expected attach-time config-push failure shape, got: {msg}"
+            )
+
+            # `ipc://...` normalizes to `unix:...` in
+            # `ChannelAddr::Display`; match on the stable path
+            # component so the assertion isn't tied to scheme spelling.
+            expected_path = f"{d}/never_bound"
+            assert expected_path in msg, (
+                f"unreachable host path must appear in error, got: {msg}"
+            )
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -1780,6 +1815,25 @@ def test_context_propagated_through_python_task_spawn_blocking():
     a = p.spawn("test_pytokio_actor", TestPytokioActor)
     a.context_propagated_through_spawn_blocking.call().get()
     p.stop().get()
+
+
+@pytest.mark.timeout(15)
+def test_future_get_inside_async_loop_warns():
+    """Calling Future.get() from inside an active asyncio loop is deprecated:
+    it blocks the surrounding loop. Verify a DeprecationWarning fires while
+    the call still completes for backward compatibility; this will become a
+    RuntimeError in monarch v0.6.
+    """
+
+    async def runner() -> int:
+        async def inner() -> int:
+            return 1
+
+        f: Future[int] = Future(coro=inner())
+        with pytest.warns(DeprecationWarning, match="event loop"):
+            return f.get()
+
+    assert asyncio.run(runner()) == 1
 
 
 class ActorWithCleanup(Actor):
