@@ -54,9 +54,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::ActorAddr;
-use crate::ActorHandle;
+use crate::Client;
 use crate::EndpointLocation;
-use crate::Instance;
 // for macros
 use crate::Message;
 use crate::Proc;
@@ -226,10 +225,8 @@ pub(crate) fn return_undeliverable(
 ) {
     if envelope.return_undeliverable() {
         // A global client for returning undeliverable messages.
-        static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-        let client = &CLIENT
-            .get_or_init(|| Proc::global().client("global_return_client").unwrap())
-            .0;
+        static CLIENT: OnceLock<Client> = OnceLock::new();
+        let client = CLIENT.get_or_init(|| Proc::global().client("global_return_client"));
         let envelope_copy = envelope.clone();
         if return_handle
             .try_send(client, Undeliverable::message(envelope))

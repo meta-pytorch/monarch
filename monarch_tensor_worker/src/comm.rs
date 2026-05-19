@@ -437,7 +437,7 @@ mod tests {
     async fn all_reduce() {
         test_setup().unwrap();
         let proc = Proc::isolated();
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let unique_id = UniqueId::new_nccl().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
@@ -504,7 +504,7 @@ mod tests {
     async fn group_send_recv() {
         test_setup().unwrap();
         let proc = Proc::isolated();
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let unique_id = UniqueId::new_nccl().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
@@ -579,7 +579,7 @@ mod tests {
     async fn reduce() -> Result<()> {
         test_setup()?;
         let proc = Proc::isolated();
-        let (client, _handle) = proc.client("client")?;
+        let client = proc.client("client");
 
         let unique_id = UniqueId::new_nccl()?;
         let device0 = CudaDevice::new(DeviceIndex(0));
