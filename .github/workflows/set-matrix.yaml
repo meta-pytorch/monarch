@@ -49,19 +49,18 @@ jobs:
           ROCM_71_PY310='{"name": "rocm7.1", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.1", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
           ROCM_72_PY310='{"name": "rocm7.2", "python-version": "3.10", "docker-image": "pytorch/manylinux2_28-builder:rocm7.2", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
 
-          # Build matrix logic:
+          # Build matrix:
           # - ROCm tag: ROCm only (CUDA already built in PR run)
           # - Push/schedule: CUDA + ROCm
-          # - PR with ciflow/rocm label: CUDA only (ROCm will be built by tag run)
-          # - PR without label: CUDA + ROCm (catch build failures early)
+          # - PR (with or without ciflow/rocm label): CUDA only
+          #   ROCm builds are skipped on PRs so CUDA tests don't wait for them;
+          #   ROCm build failures are caught on push to main.
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
             BUILD_MATRIX="[$ROCM_71_PY310, $ROCM_72_PY310]"
           elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
             BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312, $ROCM_71_PY310, $ROCM_72_PY310]"
-          elif [[ "$HAS_ROCM_LABEL" == "true" ]]; then
-            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312]"
           else
-            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312, $ROCM_71_PY310, $ROCM_72_PY310]"
+            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312]"
           fi
 
           # Test matrix: ROCm tested only on push/schedule/tag
