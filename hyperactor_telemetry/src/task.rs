@@ -36,6 +36,12 @@ macro_rules! spawn {
 
 #[cfg(test)]
 mod tests {
+    // #[traced_test] holds a tracing::Entered guard across await points; suppress the false positive.
+    #![expect(
+        clippy::await_holding_invalid_type,
+        reason = "tracing_test::traced_test macro expansion holds tracing::span::Entered across awaits; can't be fixed in our code"
+    )]
+
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;

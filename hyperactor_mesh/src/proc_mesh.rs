@@ -629,7 +629,7 @@ impl ProcMeshRef {
         C::A: Handler<MeshFailure>,
     {
         // Spawning from a string is never a system actor.
-        let id = ActorMeshId::unique(Label::strip(name));
+        let id = ActorMeshId::instance(Label::strip(name));
         self.spawn_with_name(cx, id, params, None, false).await
     }
 
@@ -1096,6 +1096,7 @@ fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
 mod tests {
     #[cfg(fbcode_build)]
     use std::ops::Deref;
+    #[cfg(fbcode_build)]
     use std::time::Duration;
 
     #[cfg(fbcode_build)]
@@ -1104,8 +1105,11 @@ mod tests {
     use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
     #[cfg(fbcode_build)]
     use ndslice::ViewExt as _;
+    #[cfg(fbcode_build)]
     use ndslice::extent;
+    #[cfg(fbcode_build)]
     use timed_test::assert_no_process_leak;
+    #[cfg(fbcode_build)]
     use timed_test::async_timed_test;
     #[cfg(fbcode_build)]
     use uuid::Uuid;
@@ -1114,10 +1118,15 @@ mod tests {
     use crate::ActorMesh;
     #[cfg(fbcode_build)]
     use crate::comm::ENABLE_NATIVE_V1_CASTING;
+    #[cfg(fbcode_build)]
     use crate::host_mesh::PROC_SPAWN_MAX_IDLE;
+    #[cfg(fbcode_build)]
     use crate::resource::RankedValues;
+    #[cfg(fbcode_build)]
     use crate::resource::Status;
+    #[cfg(fbcode_build)]
     use crate::testactor;
+    #[cfg(fbcode_build)]
     use crate::testing;
 
     #[cfg(fbcode_build)]
@@ -1192,7 +1201,7 @@ mod tests {
 
         let (instance, _) = cx
             .proc()
-            .instance(&format!("random_casts_{}", Uuid::now_v7()))
+            .client(&format!("random_casts_{}", Uuid::now_v7()))
             .unwrap();
         let n = 1;
         for _ in 0..n {
