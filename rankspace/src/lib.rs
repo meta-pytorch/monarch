@@ -8,31 +8,228 @@
 
 //! Affine and sparse coordinate spaces over ranks.
 //!
-//! A rank space is a small geometry object. It names a rectangular coordinate
-//! extent, embeds that extent into a flat base-rank coordinate system, and can
-//! hide base ranks that are not defined. The crate keeps that geometry separate
-//! from any values indexed by it.
+//! A rank space is a small geometry object. It names a rectangular local
+//! coordinate system, embeds that system into a flat base-rank coordinate
+//! system, and can hide base ranks that are not defined.
 //!
-//! The core model has these layers:
+//! Intuitively, a [`Rank`] is an index into an underlying flat array.
+//! `rankspace` does not own that array. It models the geometry that tells us
+//! which array index a local coordinate refers to:
 //!
-//! - [`Rank`] is a flat coordinate in the base rank space. Masks, set
-//!   operations, and storage adapters all use this same coordinate system.
-//! - [`Dim`] and [`Extent`] describe the local coordinate shape. They give names
-//!   and sizes to dimensions, but they do not assign ranks.
-//! - [`RankRect`] is a dense affine rectangular embedding:
-//!   `coord -> offset + dot(coord, strides)`. Operations such as restriction and
-//!   fixing dimensions create smaller affine rectangles without changing the
-//!   meaning of the base ranks.
-//! - [`RankMask`] is a set of ranks in base-rank coordinates. A mask can be
-//!   empty, explicit, rectangular, or a union of masks. Masks are not relative to
-//!   a view or subspace; projection into local coordinates is a view concern.
-//! - [`RankSpace`] is the visible space: a base [`RankRect`] minus base-rank
-//!   occlusions. It answers membership, coordinate-to-rank, rank-to-coordinate,
-//!   and compact visible-index queries.
+//! ```text
+//! local coordinate [host = 1, gpu = 2]
+//!        |
+//!        v
+//! rank = 6
+//!        |
+//!        v
+//! data[6]
+//! ```
+//!
+//! This separation lets the same rank space act as pure geometry, as a set of
+//! defined ranks, or as an indexing scheme for external storage through
+//! [`view`].
+//!
+//! The core abstraction is an affine embedding:
+//!
+//! ```text
+//! rank = offset + coord[0] * stride[0] + ... + coord[n - 1] * stride[n - 1]
+//! ```
+//!
+//! This representation is compact. A large rectangular region is stored as one
+//! [`Extent`], one [`Rank`] offset, and one stride per dimension. We do not need
+//! to materialize every rank in the region:
+//!
+//! ```text
+//! explicit ranks for [host: 2, gpu: 4]:
+//!   [0, 1, 2, 3, 4, 5, 6, 7]
+//!
+//! affine representation:
+//!   extent  = [host: 2, gpu: 4]
+//!   offset  = 0
+//!   strides = [4, 1]
+//! ```
+//!
+//! It also makes common coordinate transforms cheap. Slicing, fixing a
+//! dimension index, and re-indexing can usually be expressed by changing the
+//! offset, extent, and strides while preserving the underlying base-rank
+//! identity:
+//!
+//! ```text
+//! operation                     metadata change
+//! ---------                     ---------------
+//! select gpu = 1.. step 2       offset += 1 * stride[gpu]
+//!                               size[gpu] = 2
+//!                               stride[gpu] *= 2
+//!
+//! fix host = 1                  offset += 1 * stride[host]
+//!                               remove host from extent
+//!                               remove stride[host]
+//!
+//! re-index a subspace           keep base ranks; change the local extent
+//!                               and strides that project into them
+//! ```
+//!
+//! [`Dim`] and [`Extent`] describe only the local coordinate shape. They name
+//! dimensions and give their sizes, but they do not assign ranks:
+//!
+//! ```text
+//! extent = [host: 2, gpu: 4]
+//!
+//! local coordinates:
+//!           gpu
+//!         0  1  2  3
+//! host 0  .  .  .  .
+//!      1  .  .  .  .
+//! ```
+//!
+//! [`RankRect`] adds the affine embedding. A dense row-major rectangle with
+//! `offset = 0` and `strides = [4, 1]` maps the same local coordinates to base
+//! ranks:
+//!
+//! ```text
+//! extent  = [host: 2, gpu: 4]
+//! offset  = 0
+//! strides = [4, 1]
+//!
+//!           gpu
+//!         0  1  2  3
+//! host 0  0  1  2  3
+//!      1  4  5  6  7
+//! ```
+//!
+//! Subspace operations preserve the meaning of base ranks. For example,
+//! selecting every other `gpu` element starting at `1` produces a smaller
+//! local coordinate system that still points into the original base ranks:
+//!
+//! ```text
+//! base ranks:
+//!           gpu
+//!         0  1  2  3
+//! host 0  0  1  2  3
+//!      1  4  5  6  7
+//!
+//! select gpu = 1.. step 2
+//!
+//! extent  = [host: 2, gpu: 2]
+//! offset  = 1
+//! strides = [4, 2]
+//!
+//!           local gpu
+//!             0  1
+//! host 0      1  3
+//!      1      5  7
+//! ```
+//!
+//! Projection and embedding let you separate a reusable local pattern from the
+//! concrete base ranks where that pattern happens to appear. [`RankRect::project`]
+//! captures a rectangle as parent-local row-major indices. [`RankRect::embed`]
+//! interprets such a captured pattern in a parent rectangle:
+//!
+//! ```text
+//! project: concrete base ranks -> parent-local pattern
+//! embed:   parent-local pattern -> concrete base ranks
+//! ```
+//!
+//! This is useful for operations such as tiling. Suppose one parent maps local
+//! indices to base ranks with `offset = 10` and `strides = [8, 2]`:
+//!
+//! ```text
+//! parent A coordinates -> parent A base ranks
+//!
+//!           gpu
+//!         0   1   2   3
+//! host 0  10  12  14  16
+//!      1  18  20  22  24
+//! ```
+//!
+//! The right half of that rectangle is the concrete tile `{14, 16, 22, 24}`:
+//!
+//! ```text
+//! tile in parent A base ranks
+//!
+//!           local gpu
+//!           0   1
+//! host 0    14  16
+//!      1    22  24
+//! ```
+//!
+//! Projecting the tile through parent A captures the shape as parent-local
+//! indices `{2, 3, 6, 7}`:
+//!
+//! ```text
+//! captured tile pattern
+//!
+//!           local gpu
+//!           0  1
+//! host 0    2  3
+//!      1    6  7
+//! ```
+//!
+//! That captured pattern can then be embedded into another compatible parent.
+//! If parent B has `offset = 100` and `strides = [40, 5]`, the same tile
+//! pattern resolves to different base ranks:
+//!
+//! ```text
+//! parent B coordinates -> parent B base ranks
+//!
+//!           gpu
+//!         0    1    2    3
+//! host 0  100  105  110  115
+//!      1  140  145  150  155
+//!
+//! captured tile pattern embedded in parent B
+//!
+//!           local gpu
+//!           0    1
+//! host 0    110  115
+//!      1    150  155
+//! ```
+//!
+//! The captured pattern is more than an extent: it includes offset and strides
+//! in parent-local index space. This lets it represent affine slices, strided
+//! tiles, and fixed-dimension subspaces. If a target parent cannot realize that
+//! affine local-index pattern, embedding returns an error.
+//!
+//! [`RankMask`] is a set of ranks in base-rank coordinates. Masks are not
+//! relative to a particular subspace or view. This keeps set operations about
+//! ranks, while projection into local coordinates remains a view concern:
+//!
+//! ```text
+//! mask = {5}
+//!
+//! base ranks:
+//!           gpu
+//!         0  1  2  3
+//! host 0  0  1  2  3
+//!      1  4  x  6  7
+//! ```
+//!
+//! [`RankSpace`] is a visible space: a base [`RankRect`] minus base-rank
+//! occlusions. A rank can be a valid array index but not a visible point in a
+//! particular sparse space:
+//!
+//! ```text
+//! base array indices:
+//!   0 1 2 3 4 5 6 7
+//!
+//! visible ranks after masking rank 5:
+//!   0 1 2 3 4   6 7
+//! ```
+//!
+//! Visible ranks retain their base-rank identity, but they also have a compact
+//! visible order:
+//!
+//! ```text
+//! compact index: 0 1 2 3 4 5 6
+//! visible rank:  0 1 2 3 4 6 7
+//! ```
 //!
 //! Value containers are intentionally layered on top in [`view`]. The core
 //! module computes ranks and visible membership; the `view` module decides how
-//! those ranks address user data.
+//! those ranks address user data. A [`view::BaseView`] stores values by base
+//! rank (`rank -> data[rank]`), while a [`view::CompactView`] stores values by
+//! compact visible order (`rank -> visible_index -> data[visible_index]`).
 
 pub mod view;
 
