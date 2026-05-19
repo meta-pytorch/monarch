@@ -17,7 +17,7 @@ use pyo3::prelude::*;
 use crate::actor::PythonActor;
 use crate::actor::root_client_actor;
 use crate::mailbox::PyMailbox;
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 use crate::runtime;
 use crate::shape::PyPoint;
 
@@ -78,8 +78,8 @@ impl PyInstance {
     }
 
     #[getter]
-    pub fn actor_id(&self) -> PyActorId {
-        let actor_id: hyperactor::reference::ActorId = self.inner.self_id().clone().into();
+    pub fn actor_id(&self) -> PyActorAddr {
+        let actor_id: hyperactor::ActorAddr = self.inner.self_addr().clone();
         actor_id.into()
     }
 
@@ -91,7 +91,7 @@ impl PyInstance {
 
     #[pyo3(signature = (reason = None))]
     fn stop(&self, reason: Option<&str>) -> PyResult<()> {
-        tracing::info!(actor_id = %self.inner.self_id(), "stopping PyInstance");
+        tracing::info!(actor_id = %self.inner.self_addr(), "stopping PyInstance");
         let reason = reason.unwrap_or("(no reason provided)");
         self.inner
             .stop(reason)
@@ -104,10 +104,10 @@ impl PyInstance {
     #[pyo3(signature = (reason = None))]
     fn stop_and_wait(&self, reason: Option<&str>) -> PyResult<crate::pytokio::PyPythonTask> {
         let reason = reason.unwrap_or("shutdown").to_string();
-        let actor_id = self.inner.self_id().clone();
+        let actor_id = self.inner.self_addr().clone();
         let proc = self.inner.proc().clone();
         crate::pytokio::PyPythonTask::new(async move {
-            let status_rx = proc.stop_actor(&actor_id, reason);
+            let status_rx = proc.stop_actor(actor_id.id(), reason);
             if let Some(mut rx) = status_rx {
                 let _ = rx.wait_for(|s| s.is_terminal()).await;
             }

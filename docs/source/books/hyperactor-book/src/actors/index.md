@@ -2,14 +2,14 @@
 
 Hyperactor programs are structured around actors: isolated state machines that process messages asynchronously.
 
-Each actor runs in isolation, and maintains private internal state. Actors interact with the outside world through typed message ports and follow strict lifecycle semantics managed by the runtime.
+Each actor runs in isolation, and maintains private internal state. Actors interact with the outside world through typed handler ports and follow strict lifecycle semantics managed by the runtime.
 
 This chapter introduces the actor system in hyperactor. We'll cover:
 
 - The [`Actor`](./actor.md) trait and its lifecycle hooks
 - The [`Handler`](./handler.md) trait for defining message-handling behavior
 - The [`RemoteSpawn`](./remote_spawn.md) trait for enabling remote spawning
-- The [remote actor registry](./remote.md) for registering remotable-spawnable actors via `remote!` and spawning them by global type name
+- The [remote actor registry](./remote.md) for registering remotable-spawnable actors via `#[spawnable]` or `register_spawnable!(...)` and spawning them by global type name
 - The [`Referable`](./referable.md) marker trait for remotely referencable types
 - The [`Binds`](./binds.md) trait for wiring exported ports to reference types
 - The [`RemoteHandles`](./remote_handles.md) trait for associating message types with a reference

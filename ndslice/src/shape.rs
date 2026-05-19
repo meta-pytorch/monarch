@@ -260,7 +260,7 @@ pub struct SelectIterator<'a> {
     iter: DimSliceIterator,
 }
 
-impl<'a> Iterator for SelectIterator<'a> {
+impl Iterator for SelectIterator<'_> {
     type Item = Shape;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -485,7 +485,7 @@ impl From<usize> for Range {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
 
     use super::*;
 

@@ -18,7 +18,6 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
-use hyperactor::reference;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -46,27 +45,27 @@ impl PyProc {
     #[pyo3(signature = ())]
     fn new() -> PyResult<Self> {
         Ok(Self {
-            inner: Proc::local(),
+            inner: Proc::isolated(),
         })
     }
 
     #[getter]
     fn addr(&self) -> String {
-        self.inner.proc_id().addr().to_string()
+        self.inner.proc_addr().addr().to_string()
     }
 
     #[getter]
     fn name(&self) -> String {
         self.inner
-            .proc_id()
+            .proc_addr()
             .label()
-            .map(|l| l.as_str().to_string())
-            .unwrap_or_else(|| self.inner.proc_id().id().to_string())
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
+            .unwrap_or_else(|| self.inner.proc_addr().id().to_string())
     }
 
     #[getter]
     fn id(&self) -> String {
-        self.inner.proc_id().to_string()
+        self.inner.proc_addr().to_string()
     }
 
     fn destroy<'py>(
@@ -77,7 +76,7 @@ impl PyProc {
         let mut inner = self.inner.clone();
         let (_stopped, aborted) = signal_safe_block_on(py, async move {
             inner
-                .destroy_and_wait::<()>(Duration::from_secs(timeout_in_secs), None, "destroy")
+                .destroy_and_wait(Duration::from_secs(timeout_in_secs), "destroy")
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })??;
@@ -138,28 +137,28 @@ impl PyProc {
 
 #[pyclass(
     frozen,
-    name = "ActorId",
+    name = "ActorAddr",
     module = "monarch._rust_bindings.monarch_hyperactor.proc"
 )]
 #[derive(Clone)]
-pub struct PyActorId {
-    pub(super) inner: reference::ActorId,
+pub struct PyActorAddr {
+    pub(super) inner: hyperactor::ActorAddr,
 }
 
-impl From<reference::ActorId> for PyActorId {
-    fn from(actor_id: reference::ActorId) -> Self {
+impl From<hyperactor::ActorAddr> for PyActorAddr {
+    fn from(actor_id: hyperactor::ActorAddr) -> Self {
         Self { inner: actor_id }
     }
 }
 
-impl From<PyActorId> for reference::ActorId {
-    fn from(val: PyActorId) -> Self {
+impl From<PyActorAddr> for hyperactor::ActorAddr {
+    fn from(val: PyActorAddr) -> Self {
         val.inner
     }
 }
 
 #[pymethods]
-impl PyActorId {
+impl PyActorAddr {
     #[new]
     #[pyo3(signature = (*, addr, proc_name, actor_name))]
     fn new(addr: &str, proc_name: &str, actor_name: &str) -> PyResult<Self> {
@@ -167,10 +166,7 @@ impl PyActorId {
             PyValueError::new_err(format!("Failed to parse channel address '{}': {}", addr, e))
         })?;
         Ok(Self {
-            inner: reference::ActorId::new(
-                reference::ProcId::from_resource_name(addr, proc_name),
-                actor_name,
-            ),
+            inner: hyperactor::ProcAddr::singleton(addr, proc_name).actor_addr(actor_name),
         })
     }
 
@@ -188,34 +184,39 @@ impl PyActorId {
 
     #[getter]
     fn addr(&self) -> String {
-        self.inner.proc_id().addr().to_string()
+        self.inner.proc_addr().addr().to_string()
     }
 
     #[getter]
     fn proc_name(&self) -> String {
         self.inner
-            .proc_id()
+            .proc_addr()
             .label()
-            .map(|l| l.as_str().to_string())
-            .unwrap_or_else(|| self.inner.proc_id().id().to_string())
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
+            .unwrap_or_else(|| self.inner.proc_addr().id().to_string())
     }
 
     #[getter]
     fn actor_name(&self) -> String {
         self.inner
             .label()
-            .map(|l| l.as_str().to_string())
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
             .unwrap_or_else(|| self.inner.uid().to_string())
     }
 
     #[getter]
     fn label(&self) -> Option<String> {
-        self.inner.label().map(|l| l.as_str().to_string())
+        self.inner
+            .label()
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
     }
 
     #[getter]
     fn proc_label(&self) -> Option<String> {
-        self.inner.proc_id().label().map(|l| l.as_str().to_string())
+        self.inner
+            .proc_addr()
+            .label()
+            .map(|l: &hyperactor::id::Label| l.as_str().to_string())
     }
 
     #[getter]
@@ -230,7 +231,7 @@ impl PyActorId {
 
     #[getter]
     fn proc_id(&self) -> String {
-        self.inner.proc_id().to_string()
+        self.inner.proc_addr().to_string()
     }
 
     #[getter]
@@ -249,7 +250,7 @@ impl PyActorId {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        if let Ok(other) = other.extract::<PyActorId>() {
+        if let Ok(other) = other.extract::<PyActorAddr>() {
             Ok(self.inner == other.inner)
         } else {
             Ok(false)
@@ -261,13 +262,13 @@ impl PyActorId {
     }
 }
 
-impl From<&PyActorId> for reference::ActorId {
-    fn from(actor_id: &PyActorId) -> Self {
+impl From<&PyActorAddr> for hyperactor::ActorAddr {
+    fn from(actor_id: &PyActorAddr) -> Self {
         actor_id.inner.clone()
     }
 }
 
-impl std::fmt::Debug for PyActorId {
+impl std::fmt::Debug for PyActorAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.inner.fmt(f)
     }
@@ -289,7 +290,7 @@ enum InstanceStatus {
 #[derive(Debug)]
 pub struct PySerialized {
     inner: wirevalue::Any,
-    /// The message port (type) of the message.
+    /// The handler port for this message type.
     port: u64,
 }
 
@@ -313,7 +314,7 @@ impl PySerialized {
         })
     }
 
-    /// The message port (type) of the message.
+    /// The handler port for this message type.
     pub fn port(&self) -> u64 {
         self.port
     }
@@ -327,18 +328,18 @@ pub struct InstanceWrapper<M: RemoteMessage> {
     message_receiver: PortReceiver<M>,
     signal_receiver: PortReceiver<Signal>,
     status: InstanceStatus,
-    actor_id: reference::ActorId,
+    actor_id: hyperactor::ActorAddr,
 }
 
 impl<M: RemoteMessage> InstanceWrapper<M> {
     pub fn new(proc: &PyProc, actor_name: &str) -> Result<Self> {
-        let instance = proc.inner.instance(actor_name)?.0;
-        // TEMPORARY: remove after using fixed message ports.
-        let (_message_port, message_receiver) = instance.bind_actor_port::<M>();
+        let instance = proc.inner.client(actor_name)?.0;
+        // TEMPORARY: remove after using fixed handler ports.
+        let (_handler_port, message_receiver) = instance.bind_handler_port::<M>();
 
-        let (_signal_port, signal_receiver) = instance.bind_actor_port::<Signal>();
+        let (_signal_port, signal_receiver) = instance.bind_handler_port::<Signal>();
 
-        let actor_id = instance.self_id().clone().into();
+        let actor_id = instance.self_addr().clone();
 
         Ok(Self {
             instance,
@@ -351,16 +352,17 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 
     /// Send a message to any actor. It is the responsibility of the caller to ensure the right
     /// payload accepted by the target actor has been serialized and provided to this function.
-    pub fn send(&self, actor_id: &PyActorId, message: &PySerialized) -> PyResult<()> {
+    pub fn send(&self, actor_id: &PyActorAddr, message: &PySerialized) -> PyResult<()> {
         hyperactor::internal_macro_support::tracing::debug!(
             name = "py_send_message",
-            actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_id()),
+            actor_id =
+                hyperactor::internal_macro_support::tracing::field::display(self.actor_addr()),
             receiver_actor_id = tracing::field::display(&actor_id.inner),
             ?message,
         );
         actor_id
             .inner
-            .port_id(message.port())
+            .port_addr(message.port().into())
             .send(&self.instance, message.inner.clone());
         Ok(())
     }
@@ -393,7 +395,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 
     /// Get the next message from the queue. It will wait until a message is received
     /// or the timeout is reached in which case it will return None.
-    #[hyperactor::instrument(level = "trace", fields(actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_id())))]
+    #[hyperactor::instrument(level = "trace", fields(actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_addr())))]
     pub async fn next_message(&mut self, timeout_msec: Option<u64>) -> Result<Option<M>> {
         hyperactor::declare_static_timer!(
             PY_NEXT_MESSAGE_TIMER,
@@ -401,7 +403,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             hyperactor_telemetry::TimeUnit::Nanos
         );
         let _ = PY_NEXT_MESSAGE_TIMER
-            .start(hyperactor::kv_pairs!("actor_id" => self.actor_id().to_string(), "mode" => match timeout_msec{
+            .start(hyperactor::kv_pairs!("actor_id" => self.actor_addr().to_string(), "mode" => match timeout_msec{
                 None => "blocking",
                 Some(0) => "polling",
                 Some(_) => "blocking_with_timeout",
@@ -431,16 +433,16 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         }
         .map_err(|err| err.into())
         .inspect_err(|err| {
-            hyperactor::metrics::ACTOR_MESSAGE_RECEIVE_ERRORS.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_id().to_string()));
-            tracing::error!(err=?err, actor_id=%self.actor_id(), "unable to receive next py message");
+            hyperactor::metrics::ACTOR_MESSAGE_RECEIVE_ERRORS.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_addr().to_string()));
+            tracing::error!(err=?err, actor_id=%self.actor_addr(), "unable to receive next py message");
         })
         .inspect(|_|{
-            hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_id().to_string()));
+            hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!("actor_id" => self.actor_addr().to_string()));
         })
     }
 
     /// Put the actor in stopped mode and return any messages that were received.
-    #[hyperactor::instrument(fields(actor_id=hyperactor::internal_macro_support::tracing::field::display(self.actor_id())))]
+    #[hyperactor::instrument(fields(actor_id=hyperactor::internal_macro_support::tracing::field::display(self.actor_addr())))]
     pub fn drain_and_stop(&mut self) -> Result<Vec<M>> {
         self.ensure_detached_and_alive()?;
         let messages: Vec<M> = self.message_receiver.drain().into_iter().collect();
@@ -453,14 +455,14 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         &self.instance
     }
 
-    pub fn actor_id(&self) -> &reference::ActorId {
+    pub fn actor_addr(&self) -> &hyperactor::ActorAddr {
         &self.actor_id
     }
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyProc>()?;
-    hyperactor_mod.add_class::<PyActorId>()?;
+    hyperactor_mod.add_class::<PyActorAddr>()?;
     hyperactor_mod.add_class::<PySerialized>()?;
     Ok(())
 }

@@ -18,7 +18,7 @@ from pathlib import Path  # noqa: E402
 
 import cloudpickle  # noqa: E402
 from monarch.actor import Actor, endpoint, this_host  # noqa: E402
-from monarch.config import configure  # noqa: E402
+from monarch.config import ChannelTransport, configure  # noqa: E402
 from monarch.job import SlurmJob  # noqa: E402
 from monarch.remotemount import remotemount  # noqa: E402
 
@@ -52,7 +52,7 @@ def _get_mast_host_mesh(
     from monarch.job.meta import MASTJob
 
     t1 = time.time()
-    enable_transport("metatls-hostname")
+    enable_transport("metatls")
     t2 = time.time()
 
     if locality_constraints is None:
@@ -75,6 +75,7 @@ def _get_mast_host_mesh(
             "HOOKS_DISABLED": "1",
             "RUST_LOG": "info",
         },
+        default_transport=ChannelTransport.MetaTlsWithIpV6,
     )
     t3 = time.time()
     job.add_mesh("workers", num_hosts, host_type=host_type)

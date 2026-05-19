@@ -38,12 +38,14 @@ pub(crate) mod net;
 // Public TLS API for HTTP services (mesh admin, TUI, etc.). The
 // implementation lives in `net` but we re-export here to keep `net`'s
 // internal types out of the public API surface.
+pub use net::ServerError;
 pub use net::try_tls_acceptor;
 pub use net::try_tls_connector;
 pub use net::try_tls_pem_bundle;
 
 /// Duplex channel API: a single connection carries messages in both directions.
 pub mod duplex {
+    pub use super::net::duplex::DuplexClient;
     pub use super::net::duplex::DuplexRx;
     pub use super::net::duplex::DuplexServer;
     pub use super::net::duplex::DuplexTx;
@@ -213,16 +215,16 @@ impl<M: RemoteMessage> MpscTx<M> {
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
     fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
-        if let Err(mpsc::error::SendError(message)) = self.tx.send(message) {
-            if let Some(return_channel) = return_channel {
-                return_channel
-                    .send(SendError {
-                        error: ChannelError::Closed,
-                        message,
-                        reason: None,
-                    })
-                    .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
-            }
+        if let Err(mpsc::error::SendError(message)) = self.tx.send(message)
+            && let Some(return_channel) = return_channel
+        {
+            return_channel
+                .send(SendError {
+                    error: ChannelError::Closed,
+                    message,
+                    reason: None,
+                })
+                .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
         }
     }
 
@@ -1211,10 +1213,10 @@ fn serve_inner<M: RemoteMessage>(
             let (port, rx) = local::serve::<M>();
             Ok((ChannelAddr::Local(port), ChannelRxKind::Local(rx)))
         }
-        ChannelAddr::Local(a) => Err(ChannelError::InvalidAddress(format!(
-            "invalid local addr: {}",
-            a
-        ))),
+        ChannelAddr::Local(a) => Ok((
+            ChannelAddr::Local(a),
+            ChannelRxKind::Local(local::bind::<M>(a)?),
+        )),
         ChannelAddr::Alias { dial_to, bind_to } => {
             let (bound_addr, rx) = serve_inner::<M>(*bind_to, listener)?;
             let alias_addr = ChannelAddr::Alias {
@@ -1238,9 +1240,25 @@ pub fn serve_local<M: RemoteMessage>() -> (ChannelAddr, ChannelRx<M>) {
     )
 }
 
+/// Reserve a local channel address that can be served later.
+///
+/// Local channels are backed by an in-process port registry, so reserving a
+/// concrete address is a synchronous allocation that does not require a Tokio
+/// runtime or an OS listener. Gateways use this to have a stable advertised
+/// local location immediately, including when the process-wide gateway is
+/// initialized from a [`std::sync::OnceLock`]. Serving is a separate step that
+/// binds the reserved port to a receiver.
+///
+/// Network transports do not have an equivalent reservation API here: their
+/// concrete addresses come from binding sockets and starting the corresponding
+/// channel server.
+pub fn reserve_local_addr() -> ChannelAddr {
+    ChannelAddr::Local(local::reserve())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
     use std::collections::HashSet;
     use std::net::IpAddr;
     use std::net::Ipv4Addr;
@@ -1406,6 +1424,23 @@ mod tests {
             ChannelAddr::from_zmq_url("tls://[::1]:443").unwrap(),
             ChannelAddr::Tls(TlsAddr::new("::1", 443))
         );
+    }
+
+    #[tokio::test]
+    async fn test_reserved_local_addr_can_be_served() {
+        let addr = reserve_local_addr();
+        assert!(dial::<u64>(addr.clone()).is_err());
+
+        let (bound_addr, mut rx) = serve::<u64>(addr.clone()).unwrap();
+        assert_eq!(bound_addr, addr);
+
+        let tx = dial::<u64>(addr.clone()).unwrap();
+        tx.post(123);
+        assert_eq!(rx.recv().await.unwrap(), 123);
+        drop(rx);
+
+        let (rebound_addr, _rx) = serve::<u64>(addr.clone()).unwrap();
+        assert_eq!(rebound_addr, addr);
     }
 
     #[test]

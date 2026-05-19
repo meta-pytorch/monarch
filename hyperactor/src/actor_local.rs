@@ -339,7 +339,7 @@ mod weak_map {
         }
     }
 
-    impl<'a, T: Send + 'static> OccupiedEntry<'a, T> {
+    impl<T: Send + 'static> OccupiedEntry<'_, T> {
         /// Gets a reference to the value in the entry.
         pub fn get(&self) -> &T {
             &self
@@ -821,7 +821,7 @@ pub struct OccupiedEntry<'a, T: Send + 'static>(
     PhantomData<fn() -> T>,
 );
 
-impl<'a, T: Send + 'static> OccupiedEntry<'a, T> {
+impl<T: Send + 'static> OccupiedEntry<'_, T> {
     /// Gets a reference to the value in the entry.
     pub fn get(&self) -> &T {
         self.0

@@ -10,7 +10,6 @@ use std::str::FromStr;
 use std::time::Duration;
 use std::time::SystemTime;
 
-use hyperactor::reference as hyperactor_reference;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeProperties;
 use hyperactor_mesh::introspect::NodeRef;
@@ -27,7 +26,7 @@ use serde_json::Value;
 /// Uses `NodeProperties` to format a concise label for the tree view:
 /// roots show host counts, hosts show proc counts, procs show actor
 /// counts, and actors are rendered as `name[pid]` when the identity
-/// parses as an `ActorId`.
+/// parses as an `ActorAddr`.
 pub(crate) fn derive_label(payload: &NodePayload) -> String {
     match &payload.properties {
         NodeProperties::Root { num_hosts, .. } => format!("Mesh Root ({} hosts)", num_hosts),
@@ -46,7 +45,7 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
             failed_actor_count,
             ..
         } => {
-            let short = hyperactor_reference::ProcId::from_str(proc_name)
+            let short = hyperactor::ProcAddr::from_str(proc_name)
                 .map(|pid| {
                     pid.label()
                         .map(|l| l.as_str().to_string())
@@ -246,7 +245,6 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
 mod tests {
     use std::time::SystemTime;
 
-    use hyperactor::reference as hyperactor_reference;
     use hyperactor_mesh::introspect::NodePayload;
     use hyperactor_mesh::introspect::NodeProperties;
     use serde_json::Value;
@@ -254,17 +252,17 @@ mod tests {
     use super::*;
 
     fn mock_actor_ref(name: &str) -> NodeRef {
-        let proc_id = hyperactor_reference::ProcId::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
             "world",
         );
-        NodeRef::Actor(proc_id.actor_id(name))
+        NodeRef::Actor(proc_id.actor_addr(name))
     }
 
     fn mock_proc_ref(name: &str) -> NodeRef {
-        let proc_id = hyperactor_reference::ProcId::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
@@ -274,13 +272,13 @@ mod tests {
     }
 
     fn mock_host_ref(name: &str) -> NodeRef {
-        let proc_id = hyperactor_reference::ProcId::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
             "world",
         );
-        NodeRef::Host(proc_id.actor_id(name))
+        NodeRef::Host(proc_id.actor_addr(name))
     }
 
     fn proc_payload(proc_name: &str, props: NodeProperties) -> NodePayload {
@@ -570,13 +568,13 @@ mod tests {
 
     #[test]
     fn derive_label_actor_standard_actor_id() {
-        let proc_id = hyperactor_reference::ProcId::from_resource_name(
+        let proc_id = hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(
             "unix:@test"
                 .parse::<hyperactor::channel::ChannelAddr>()
                 .unwrap(),
             "myworld",
         );
-        let actor_id = proc_id.actor_id("worker");
+        let actor_id = proc_id.actor_addr("worker");
         let payload = NodePayload {
             identity: NodeRef::Actor(actor_id),
             properties: NodeProperties::Actor {

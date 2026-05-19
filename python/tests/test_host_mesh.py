@@ -21,7 +21,7 @@ from unittest.mock import patch
 import cloudpickle
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
+from monarch._rust_bindings.monarch_hyperactor.shape import Point, Shape, Slice
 from monarch._src.actor.actor_mesh import _client_context, Actor, context
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.host_mesh import HostMesh, this_host
@@ -154,15 +154,16 @@ def test_shutdown_host_mesh() -> None:
 async def test_host_mesh_context_manager() -> None:
     """Tests that the HostMesh can be used as a context manager and that it runs
     shutdown on exit"""
-    async with ProcessJob({"hosts": 2}).state(cached_path=None).hosts as hm:
-        pm = hm.spawn_procs(per_host={"gpus": 2})
-        am = pm.spawn("actor", RankActor)
-        await am.get_rank.choose()
-    # Ensure that other operations fail after shutdown.
-    with pytest.raises(RuntimeError, match="HostMesh has already been shut down"):
-        hm.spawn_procs(per_host={"gpus": 2})
-    with pytest.raises(RuntimeError, match="HostMesh has already been shut down"):
-        await hm.shutdown()
+    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
+        async with state.hosts as hm:
+            pm = hm.spawn_procs(per_host={"gpus": 2})
+            am = pm.spawn("actor", RankActor)
+            await am.get_rank.choose()
+        # Ensure that other operations fail after shutdown.
+        with pytest.raises(RuntimeError, match="HostMesh has already been shut down"):
+            hm.spawn_procs(per_host={"gpus": 2})
+        with pytest.raises(RuntimeError, match="HostMesh has already been shut down"):
+            await hm.shutdown()
 
 
 @pytest.mark.timeout(60)
@@ -194,31 +195,32 @@ def test_stop_and_reconnect() -> None:
         job = ProcessJob({"hosts": 2})
 
         # First connection: spawn actors, verify they work.
-        hm = job.state(cached_path=None).hosts
-        pm = hm.spawn_procs(per_host={"gpus": 1})
-        am = pm.spawn("actor", RankActor)
-        pids = am.get_pid.call().get()
-        assert len(pids) == 2
-        pids = [pid for _, pid in pids.items()]
+        with scoped_state(job, cached_path=None) as state:
+            hm = state.hosts
+            pm = hm.spawn_procs(per_host={"gpus": 1})
+            am = pm.spawn("actor", RankActor)
+            pids = am.get_pid.call().get()
+            assert len(pids) == 2
+            pids = [pid for _, pid in pids.items()]
 
-        # Stop: terminate user procs but keep workers alive.
-        hm.stop().get()
-        # Ensure that the procs are actually dead.
-        assert all(not is_process_running(pid) for pid in pids)
+            # Stop: terminate user procs but keep workers alive.
+            hm.stop().get()
+            # Ensure that the procs are actually dead.
+            assert all(not is_process_running(pid) for pid in pids)
 
-        # Sleep past the message delivery timeout to ensure that no errors
-        # surface from undeliverable messages to dead procs/actors.
-        time.sleep(7)
+            # Sleep past the message delivery timeout to ensure that no errors
+            # surface from undeliverable messages to dead procs/actors.
+            time.sleep(7)
 
-        # Second connection: reconnect to the same workers via state().
-        hm2 = job.state(cached_path=None).hosts
-        pm2 = hm2.spawn_procs(per_host={"gpus": 1})
-        am2 = pm2.spawn("actor", RankActor)
-        ranks2 = am2.get_rank.call().get()
-        assert len(ranks2) == 2
+            # Second connection: reconnect to the same workers via state().
+            hm2 = job.state(cached_path=None).hosts
+            pm2 = hm2.spawn_procs(per_host={"gpus": 1})
+            am2 = pm2.spawn("actor", RankActor)
+            ranks2 = am2.get_rank.call().get()
+            assert len(ranks2) == 2
 
-        # Shutdown: fully tear down and exit workers.
-        hm2.shutdown().get()
+            # Shutdown: fully tear down and exit workers.
+            hm2.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -234,33 +236,34 @@ def test_stop_only_drains_own_mesh_procs() -> None:
     job = ProcessJob({"hosts": 2})
 
     # First mesh: simulate the main process.
-    state1 = job.state(cached_path=None)
-    hm1 = state1.hosts
-    pm1 = hm1.spawn_procs(per_host={"gpus": 1}, name="proc1")
-    am1 = pm1.spawn("actor", RankActor)
-    pids1 = list(am1.get_pid.call().get().values())
-    assert len(pids1) == 2
+    with scoped_state(job, cached_path=None) as state1:
+        hm1 = state1.hosts
+        pm1 = hm1.spawn_procs(per_host={"gpus": 1}, name="proc1")
+        am1 = pm1.spawn("actor", RankActor)
+        pids1 = list(am1.get_pid.call().get().values())
+        assert len(pids1) == 2
 
-    # Second mesh: simulate the mount process reconnecting. This creates
-    # a new HostMesh with a different name via a second state() call.
-    state2 = job.state(cached_path=None)
-    hm2 = state2.hosts
-    pm2 = hm2.spawn_procs(per_host={"gpus": 1}, name="proc2")
-    am2 = pm2.spawn("actor", RankActor)
-    pids2 = list(am2.get_pid.call().get().values())
-    assert len(pids2) == 2
+        # Second mesh: simulate the mount process reconnecting. This
+        # creates a new HostMesh with a different name via a second
+        # state() call on the same job.
+        state2 = job.state(cached_path=None)
+        hm2 = state2.hosts
+        pm2 = hm2.spawn_procs(per_host={"gpus": 1}, name="proc2")
+        am2 = pm2.spawn("actor", RankActor)
+        pids2 = list(am2.get_pid.call().get().values())
+        assert len(pids2) == 2
 
-    # Stop the first mesh — should only drain its own procs.
-    hm1.stop().get()
+        # Stop the first mesh — should only drain its own procs.
+        hm1.stop().get()
 
-    # Procs from mesh1 should be stopped.
-    assert all(not is_process_running(pid) for pid in pids1)
+        # Procs from mesh1 should be stopped.
+        assert all(not is_process_running(pid) for pid in pids1)
 
-    # Procs from mesh2 should still be alive.
-    assert all(is_process_running(pid) for pid in pids2)
+        # Procs from mesh2 should still be alive.
+        assert all(is_process_running(pid) for pid in pids2)
 
-    # Clean up mesh2.
-    hm2.shutdown().get()
+        # Clean up mesh2.
+        hm2.shutdown().get()
 
 
 class PidActor(Actor):
@@ -399,6 +402,9 @@ def test_spawn_procs_with_numactl_bind() -> None:
 
 @pytest.mark.timeout(120)
 def test_spawn_procs_with_taskset_bind() -> None:
+    if not hasattr(os, "sched_getaffinity"):
+        # pyre-fixme[29]: skip is a function
+        pytest.skip("os.sched_getaffinity not available on this platform")
     available = sorted(os.sched_getaffinity(0))
     if len(available) < 2:
         # pyre-fixme[29]: skip is a function
@@ -464,6 +470,52 @@ def _make_python_wrapper() -> str:
         )
     os.chmod(wrapper_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
     return wrapper_path
+
+
+class CudaVisibleDevicesActor(Actor):
+    @endpoint
+    def get_cuda_visible_devices(self) -> str:
+        return os.environ.get("CUDA_VISIBLE_DEVICES", "")
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_spawn_procs_with_bootstrap_command() -> None:
+    from monarch._src.actor.host_mesh import default_bootstrap_cmd
+
+    hm = this_host()
+
+    # Use with_env to customize the bootstrap command
+    base = default_bootstrap_cmd()
+    cmd = base.with_env({"CUDA_VISIBLE_DEVICES": "3"})
+
+    pm = hm.spawn_procs(per_host={"gpus": 1}, bootstrap_command=cmd)
+    am = pm.spawn("cuda_marker", CudaVisibleDevicesActor)
+    assert am.get_cuda_visible_devices.call_one().get() == "3"
+
+    # A second spawn without bootstrap_command must not inherit the previous
+    # spawn's env, confirming that with_env is non-mutating on the HostMesh.
+    pm_no_env = hm.spawn_procs(per_host={"gpus": 1})
+    am_no_env = pm_no_env.spawn("cuda_marker_default", CudaVisibleDevicesActor)
+    assert am_no_env.get_cuda_visible_devices.call_one().get() != "3"
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_spawn_procs_with_bootstrap_command_callable() -> None:
+    from monarch._rust_bindings.monarch_hyperactor.host_mesh import BootstrapCommand
+    from monarch._src.actor.host_mesh import default_bootstrap_cmd
+
+    hm = this_host()
+
+    def per_rank_bootstrap(point: Point) -> BootstrapCommand:
+        base = default_bootstrap_cmd()
+        return base.with_env({"CUDA_VISIBLE_DEVICES": str(point["gpus"])})
+
+    pm = hm.spawn_procs(per_host={"gpus": 2}, bootstrap_command=per_rank_bootstrap)
+    am = pm.spawn("cuda_per_rank", CudaVisibleDevicesActor)
+    observed = sorted(am.get_cuda_visible_devices.call().get().values())
+    assert observed == ["0", "1"]
 
 
 @pytest.mark.timeout(60)

@@ -49,7 +49,6 @@
 //!   when `HostMeshAgent::handle(GetLocalProc)` is first called.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -60,47 +59,41 @@ use async_trait::async_trait;
 use futures::Future;
 use futures::StreamExt;
 use futures::stream;
-use serde::Deserialize;
-use serde::Serialize;
-use tokio::process::Child;
-use tokio::process::Command;
-use tokio::sync::Mutex;
-use tokio::sync::watch;
-use tokio::task::JoinSet;
-
-use crate as hyperactor;
-use crate::Actor;
-use crate::ActorHandle;
-use crate::Proc;
-use crate::actor::Binds;
-use crate::actor::Referable;
-use crate::channel;
-use crate::channel::ChannelAddr;
-use crate::channel::ChannelError;
-use crate::channel::ChannelRx;
-use crate::channel::ChannelTransport;
-use crate::channel::Rx;
-use crate::channel::Tx;
-use crate::channel::net::ServerError;
-use crate::context;
-use crate::mailbox::BoxableMailboxSender as _;
-use crate::mailbox::BoxedMailboxSender;
-use crate::mailbox::DialMailboxRouter;
-use crate::mailbox::IntoBoxedMailboxSender as _;
-use crate::mailbox::MailboxClient;
-use crate::mailbox::MailboxRouter;
-use crate::mailbox::MailboxServer;
-use crate::mailbox::MailboxServerError;
-use crate::mailbox::MailboxServerHandle;
-use crate::mailbox::MessageEnvelope;
-use crate::mailbox::Undeliverable;
-use crate::ref_;
-use crate::reference;
-
-/// Name of the system service proc on a host — hosts the admin actor
-/// layer (HostMeshAgent, MeshAdminAgent, bridge).
-pub const SERVICE_PROC_NAME: &str = "service";
-
+use hyperactor::Actor;
+use hyperactor::ActorAddr;
+use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
+use hyperactor::AttachRequest;
+use hyperactor::BootstrapAssignment;
+use hyperactor::Gateway;
+use hyperactor::Host2Client;
+use hyperactor::Location;
+use hyperactor::PortHandle;
+use hyperactor::Proc;
+use hyperactor::ProcAddr;
+use hyperactor::actor::Binds;
+use hyperactor::actor::Referable;
+use hyperactor::channel;
+use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelError;
+use hyperactor::channel::ChannelRx;
+use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::Rx;
+use hyperactor::channel::ServerError;
+use hyperactor::channel::Tx;
+use hyperactor::context;
+use hyperactor::gateway::AttachGuard;
+use hyperactor::mailbox::BoxedMailboxSender;
+use hyperactor::mailbox::DialMailboxRouter;
+use hyperactor::mailbox::IntoBoxedMailboxSender as _;
+use hyperactor::mailbox::MailboxClient;
+use hyperactor::mailbox::MailboxSender;
+use hyperactor::mailbox::MailboxServer;
+use hyperactor::mailbox::MailboxServerError;
+use hyperactor::mailbox::MailboxServerHandle;
+use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::Undeliverable;
+use hyperactor::proc::LEGACY_LOCAL_PROC_NAME;
 /// Name of the local client proc on a host.
 ///
 /// See LP-1 (lazy activation) in module doc.
@@ -109,45 +102,19 @@ pub const SERVICE_PROC_NAME: &str = "service";
 /// `GetLocalProc` is never sent, so the local proc remains empty
 /// throughout the program's lifetime. Code that inspects the local
 /// proc's actors must not assume they exist.
-pub const LOCAL_PROC_NAME: &str = "local";
-
-/// Identity assignment sent by the host as the first message on a duplex
-/// connection during proc bootstrap. The child reads this to learn its
-/// [`reference::ProcId`].
-#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct BootstrapAssignment {
-    /// The assigned proc identity.
-    pub proc_id: reference::ProcId,
-}
-wirevalue::register_type!(BootstrapAssignment);
-
-/// Sentinel message sent by an attach client as its first
-/// [`MessageEnvelope`]. The host's accept loop tries to deserialize
-/// the first message as this type to distinguish attach requests
-/// from regular inbound [`MessageEnvelope`] connections (e.g. a
-/// [`Proc::direct`](Proc::direct) dialing the host's frontend).
+pub use hyperactor::proc::LEGACY_LOCAL_PROC_NAME as LOCAL_PROC_NAME;
+use hyperactor::proc::LEGACY_SERVICE_PROC_NAME;
+/// Name of the system service proc on a host.
 ///
-/// TODO: an alternative design, suggested during review, would be
-/// to surface the attach/simplex distinction at the link layer
-/// (e.g. via a dedicated frame tag or channel mode) so the host
-/// does not have to peek at an application-level payload. That
-/// requires framing-layer changes and is tracked as a follow-up.
-#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct AttachRequest;
-wirevalue::register_type!(AttachRequest);
+/// Hosts the admin actor layer: HostMeshAgent, MeshAdminAgent, and bridge.
+pub use hyperactor::proc::LEGACY_SERVICE_PROC_NAME as SERVICE_PROC_NAME;
+use tokio::process::Child;
+use tokio::process::Command;
+use tokio::sync::Mutex;
+use tokio::sync::watch;
+use tokio::task::JoinSet;
 
-/// Wire protocol for the host -> client direction on a duplex attach
-/// connection. The host sends [`Bootstrap`](Host2Client::Bootstrap)
-/// in response to an [`AttachRequest`], followed by
-/// [`Envelope`](Host2Client::Envelope) for all subsequent traffic.
-#[derive(Debug, Serialize, Deserialize, typeuri::Named)]
-pub enum Host2Client {
-    /// First message: identity assignment from the host.
-    Bootstrap(BootstrapAssignment),
-    /// Subsequent messages: routed envelopes.
-    Envelope(MessageEnvelope),
-}
-wirevalue::register_type!(Host2Client);
+use crate::mesh_id::ResourceId;
 
 /// [`MailboxSender`] adapter that wraps outbound [`MessageEnvelope`]s
 /// in [`Host2Client::Envelope`] before posting to a
@@ -157,39 +124,13 @@ wirevalue::register_type!(Host2Client);
 struct AttachSender(channel::duplex::DuplexTx<Host2Client>);
 
 #[async_trait]
-impl crate::mailbox::MailboxSender for AttachSender {
+impl MailboxSender for AttachSender {
     fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
-        _return_handle: crate::mailbox::PortHandle<crate::mailbox::Undeliverable<MessageEnvelope>>,
+        _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         self.0.post(Host2Client::Envelope(envelope));
-    }
-}
-
-/// [`Rx<MessageEnvelope>`](channel::Rx) adapter that unwraps
-/// [`Host2Client::Envelope`] from a
-/// [`DuplexRx<Host2Client>`](channel::duplex::DuplexRx). Used on the
-/// client side to receive messages from the host.
-pub struct AttachRx(pub channel::duplex::DuplexRx<Host2Client>);
-
-#[async_trait]
-impl channel::Rx<MessageEnvelope> for AttachRx {
-    async fn recv(&mut self) -> Result<MessageEnvelope, ChannelError> {
-        match self.0.recv().await? {
-            Host2Client::Envelope(e) => Ok(e),
-            Host2Client::Bootstrap(_) => Err(ChannelError::Other(anyhow::anyhow!(
-                "unexpected bootstrap message after handshake"
-            ))),
-        }
-    }
-
-    fn addr(&self) -> ChannelAddr {
-        self.0.addr()
-    }
-
-    async fn join(self) {
-        self.0.join().await
     }
 }
 
@@ -214,15 +155,15 @@ pub enum HostError {
 
     /// Failures occuring while spawning a subprocess.
     #[error("proc '{0}' (command: {1}) failed to spawn process: {2}")]
-    ProcessSpawnFailure(ref_::ProcRef, String, #[source] std::io::Error),
+    ProcessSpawnFailure(ProcAddr, String, #[source] std::io::Error),
 
     /// Failures occuring while configuring a subprocess.
     #[error("proc '{0}' failed to configure process: {1}")]
-    ProcessConfigurationFailure(ref_::ProcRef, #[source] anyhow::Error),
+    ProcessConfigurationFailure(ProcAddr, #[source] anyhow::Error),
 
     /// Failures occuring while spawning a management actor in a proc.
     #[error("failed to spawn agent on proc '{0}': {1}")]
-    AgentSpawnFailure(ref_::ProcRef, #[source] anyhow::Error),
+    AgentSpawnFailure(ProcAddr, #[source] anyhow::Error),
 
     /// An input parameter was missing.
     #[error("parameter '{0}' missing: {1}")]
@@ -236,15 +177,20 @@ pub enum HostError {
 /// A host, managing the lifecycle of several procs, and their backend
 /// routing, as described in this module's documentation.
 pub struct Host<M> {
-    procs: HashSet<String>,
+    /// Spawned child procs, keyed by name. The stored [`AttachGuard`]
+    /// keeps the gateway entry for the child alive; dropping it
+    /// detaches the child from the gateway (used by
+    /// [`Host::terminate_children`] to free slots).
+    procs: HashMap<String, AttachGuard>,
     frontend_addr: ChannelAddr,
     backend_addr: ChannelAddr,
-    /// Routes messages to known procs (local, attached) by prefix.
-    router: MailboxRouter,
-    /// Address-based routing for dialed connections (child procs,
-    /// remote hosts); used as the fallback when the prefix router
-    /// has no match.
-    dial_router: DialMailboxRouter,
+    /// Routes incoming traffic addressed to this host. In-process
+    /// procs (system, local) are attached via [`Gateway::attach`] with
+    /// `&Proc`; remote procs anchored to this host (attached clients,
+    /// spawned children) are attached via [`Gateway::attach`] with
+    /// `(ProcId, BoxedMailboxSender)`. Unknown destinations fall
+    /// through to the gateway's forwarder (a `DialMailboxRouter`).
+    gateway: Gateway,
     manager: M,
     service_proc: Proc,
     local_proc: Proc,
@@ -279,7 +225,7 @@ impl<M: ProcManager> Host<M> {
     /// Unknown destinations are forwarded to the default sender.
     /// When `listener` is `Some`, it is used as the frontend listening socket
     /// instead of binding a new one.
-    #[crate::instrument(fields(addr=addr.to_string()))]
+    #[hyperactor::instrument(fields(addr=addr.to_string()))]
     pub async fn new_with_default(
         manager: M,
         addr: ChannelAddr,
@@ -297,42 +243,56 @@ impl<M: ProcManager> Host<M> {
             let (frontend_addr, frontend_rx) = channel::serve_with_listener(addr, listener)?;
             (frontend_addr, Frontend::Simplex(frontend_rx))
         };
-        // We set up a cascade of routers: first, the outer router supports
-        // sending to the the system proc, while the dial router manages dialed
-        // connections.
+        // Outbound dialing to remote hosts and unknown destinations.
+        // Used as the gateway's forwarder fallback when a destination
+        // is not an attached proc.
         let dial_router = match default_sender {
             Some(d) => DialMailboxRouter::new_with_default(d),
             None => DialMailboxRouter::new(),
         };
-        let router = MailboxRouter::new();
 
         // Establish a backend channel on the preferred transport.
         let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
 
-        // Set up a system proc. This is often used to manage the host itself.
-        // These use with_name (not unique) because their uniqueness is
-        // guaranteed by the ChannelAddr component, and the Name type's
-        // '-' delimiter must not collide with a hash suffix.
-        let service_proc_id =
-            reference::ProcId::from_resource_name(frontend_addr.clone(), SERVICE_PROC_NAME);
-        let local_proc_id =
-            reference::ProcId::from_resource_name(frontend_addr.clone(), LOCAL_PROC_NAME);
-        let combined = router.fallback(dial_router.boxed());
-        let service_proc = Proc::configured(service_proc_id.clone(), combined.clone());
-        let local_proc = Proc::configured(local_proc_id.clone(), combined);
+        // The host's gateway is the single routing structure for
+        // incoming traffic. In-process procs attach via `attach(&proc)`;
+        // remote procs anchored to this host (attached clients and
+        // spawned children) attach via `attach((proc_id, sender))`.
+        // Anything not registered falls through to `dial_router`.
+        let gateway = Gateway::configured(
+            Location::from(frontend_addr.clone()),
+            dial_router.into_boxed(),
+        );
 
-        // Register the local procs' muxers so the router delivers to
-        // them without dialing. We bind the muxer (not the Proc) to
-        // avoid a flush cycle: Proc.forwarder → MailboxRouter → Proc →
-        // Proc.forwarder → …
-        router.bind(
-            ref_::Reference::from(service_proc_id.proc_ref().clone()),
-            service_proc.muxer().clone(),
-        );
-        router.bind(
-            ref_::Reference::from(local_proc_id.proc_ref().clone()),
-            local_proc.muxer().clone(),
-        );
+        // Set up the system proc and the local client proc. The
+        // legacy pseudo-singleton ids carry the frontend address, so
+        // their advertised location matches the host gateway's default
+        // location and other hosts can reach them by name. Building
+        // through `Proc::builder().shared_gateway(..)` makes the
+        // gateway attachment correct-by-construction — no separate
+        // `gateway.attach(&proc)` call is needed because the builder
+        // routes through it internally, and the resulting `Proc` owns
+        // the detach guard so dropping it removes the gateway entry.
+        let service_proc = Proc::builder()
+            .proc_id(
+                ProcAddr::singleton(frontend_addr.clone(), LEGACY_SERVICE_PROC_NAME)
+                    .id()
+                    .clone(),
+            )
+            .shared_gateway(gateway.clone())
+            .build()
+            .expect("legacy service proc builder is valid");
+        let local_proc = Proc::builder()
+            .proc_id(
+                ProcAddr::singleton(frontend_addr.clone(), LEGACY_LOCAL_PROC_NAME)
+                    .id()
+                    .clone(),
+            )
+            .shared_gateway(gateway.clone())
+            .build()
+            .expect("legacy local proc builder is valid");
+        let service_proc_id = service_proc.proc_addr().clone();
+        let local_proc_id = local_proc.proc_addr().clone();
 
         tracing::info!(
             frontend_addr = frontend_addr.to_string(),
@@ -343,19 +303,22 @@ impl<M: ProcManager> Host<M> {
         );
 
         let host = Host {
-            procs: HashSet::new(),
+            procs: HashMap::new(),
             frontend_addr,
             backend_addr,
-            router,
-            dial_router,
+            gateway,
             manager,
             service_proc,
             local_proc,
             frontend: Some(frontend),
         };
 
-        // Serve the same router on the backend address.
-        let _backend_handle = host.forwarder().serve(backend_rx);
+        // Serve the gateway on the backend address. We don't ever need
+        // to join this handle because the server is used only to receive
+        // messages from procs spawned by this host -- if the host is shutting down,
+        // then all its procs should have shut down first, and we don't have to worry
+        // about any unacked messages.
+        let _backend_handle = host.gateway.clone().serve(backend_rx);
 
         Ok(host)
     }
@@ -371,15 +334,11 @@ impl<M: ProcManager> Host<M> {
     /// resolves.
     pub fn serve(&mut self) -> Result<MailboxServerHandle, HostError> {
         let frontend = self.frontend.take().ok_or(HostError::AlreadyServing)?;
-        let forwarder = self.forwarder();
         Ok(match frontend {
-            Frontend::Duplex(server) => spawn_duplex_accept_loop(
-                server,
-                self.frontend_addr.clone(),
-                self.router.clone(),
-                forwarder,
-            ),
-            Frontend::Simplex(rx) => forwarder.serve(rx),
+            Frontend::Duplex(server) => {
+                spawn_duplex_accept_loop(server, self.frontend_addr.clone(), self.gateway.clone())
+            }
+            Frontend::Simplex(rx) => self.gateway.clone().serve(rx),
         })
     }
 
@@ -415,19 +374,20 @@ impl<M: ProcManager> Host<M> {
         &mut self,
         name: String,
         config: M::Config,
-    ) -> Result<(ref_::ProcRef, reference::ActorRef<ManagerAgent<M>>), HostError> {
-        if self.procs.contains(&name) {
+    ) -> Result<(ProcAddr, ActorRef<ManagerAgent<M>>), HostError> {
+        if self.procs.contains_key(&name) {
             return Err(HostError::ProcExists(name));
         }
 
-        let proc_id = ref_::ProcRef::from_resource_name(self.frontend_addr.clone(), &name);
+        let proc_id = ResourceId::proc_addr_from_name(self.frontend_addr.clone(), &name);
         let handle = self
             .manager
             .spawn(proc_id.clone(), self.backend_addr.clone(), config)
             .await?;
 
         // Await readiness (config-driven; 0s disables timeout).
-        let to: Duration = hyperactor_config::global::get(crate::config::HOST_SPAWN_READY_TIMEOUT);
+        let to: Duration =
+            hyperactor_config::global::get(hyperactor::config::HOST_SPAWN_READY_TIMEOUT);
         let ready = if to == Duration::from_secs(0) {
             ReadyProc::ensure(&handle).await
         } else {
@@ -440,18 +400,26 @@ impl<M: ProcManager> Host<M> {
             HostError::ProcessConfigurationFailure(proc_id.clone(), anyhow::anyhow!("{e:?}"))
         })?;
 
-        self.dial_router
-            .bind(ref_::Reference::from(proc_id.clone()), ready.addr().clone());
-        self.procs.insert(name.clone());
+        let child_sender = MailboxClient::dial(ready.addr().clone()).map_err(|e| {
+            HostError::ProcessConfigurationFailure(
+                proc_id.clone(),
+                anyhow::anyhow!("failed to dial spawned proc at {}: {}", ready.addr(), e),
+            )
+        })?;
+        let guard = self
+            .gateway
+            .attach((proc_id.id().clone(), child_sender.into_boxed()));
+        self.procs.insert(name.clone(), guard);
 
         Ok((proc_id, ready.agent_ref().clone()))
     }
 
-    /// A [`MailboxSender`] that first consults the prefix router (for
-    /// local and attached procs) and then falls back to the
-    /// address-based dial router (for child procs and remote hosts).
-    fn forwarder(&self) -> BoxedMailboxSender {
-        self.router.fallback(self.dial_router.boxed())
+    /// The host's [`Gateway`]. All incoming traffic addressed to this
+    /// host's procs is routed through the gateway; remote procs anchored
+    /// to this host (attached clients, spawned children) are attached
+    /// via [`Gateway::attach`] with `(ProcId, BoxedMailboxSender)`.
+    pub fn gateway(&self) -> &Gateway {
+        &self.gateway
     }
 }
 
@@ -462,12 +430,11 @@ impl<M: ProcManager> Host<M> {
 fn spawn_duplex_accept_loop(
     server: channel::duplex::DuplexServer<MessageEnvelope, Host2Client>,
     frontend_addr: ChannelAddr,
-    router: MailboxRouter,
-    forwarder: BoxedMailboxSender,
+    gateway: Gateway,
 ) -> MailboxServerHandle {
     let (stopped_tx, stopped_rx) = watch::channel(false);
     let join_handle = tokio::spawn(async move {
-        duplex_accept_loop(server, frontend_addr, router, forwarder, stopped_rx).await;
+        duplex_accept_loop(server, frontend_addr, gateway, stopped_rx).await;
         Ok::<(), MailboxServerError>(())
     });
     MailboxServerHandle::from_parts(join_handle, stopped_tx)
@@ -546,8 +513,7 @@ impl<R: channel::Rx<MessageEnvelope> + Send> channel::Rx<MessageEnvelope> for Pr
 async fn duplex_accept_loop(
     mut duplex_server: channel::duplex::DuplexServer<MessageEnvelope, Host2Client>,
     frontend_addr: ChannelAddr,
-    router: MailboxRouter,
-    forwarder: BoxedMailboxSender,
+    gateway: Gateway,
     stopped_rx: watch::Receiver<bool>,
 ) {
     let mut tasks = JoinSet::new();
@@ -585,7 +551,7 @@ async fn duplex_accept_loop(
             // `remote` label so procs attached to different host
             // generations sharing a frontend address (e.g., after
             // restart on the same ip:port) cannot collide.
-            let proc_id = reference::ProcId::unique(frontend_addr.clone(), "remote");
+            let proc_id = ProcAddr::instance(frontend_addr.clone(), "remote");
 
             let assignment = BootstrapAssignment {
                 proc_id: proc_id.clone(),
@@ -596,13 +562,10 @@ async fn duplex_accept_loop(
             );
             duplex_tx.post(Host2Client::Bootstrap(assignment));
 
-            router.bind(
-                ref_::Reference::from(proc_id.proc_ref().clone()),
-                AttachSender(duplex_tx),
-            );
+            let attach_guard =
+                gateway.attach((proc_id.id().clone(), AttachSender(duplex_tx).into_boxed()));
 
-            let mut handle = forwarder.clone().serve(duplex_rx);
-            let cleanup_router = router.clone();
+            let mut handle = gateway.clone().serve(duplex_rx);
             let conn_stop = stopped_rx.clone();
             tasks.spawn(async move {
                 tokio::select! {
@@ -612,7 +575,9 @@ async fn duplex_accept_loop(
                         let _ = handle.await;
                     }
                 }
-                cleanup_router.unbind(&ref_::Reference::from(proc_id.proc_ref().clone()));
+                // Drop the guard now (rather than at end-of-scope) so
+                // the route is removed before we log the closure.
+                drop(attach_guard);
                 tracing::info!(
                     proc_id = proc_id.to_string(),
                     "attach connection closed, removed route"
@@ -625,7 +590,7 @@ async fn duplex_accept_loop(
             // the session's outbound channel, which causes the
             // session task to exit and the inbound receiver to
             // close after a single message.
-            let fwd = forwarder.clone();
+            let gw = gateway.clone();
             let conn_stop = stopped_rx.clone();
             tasks.spawn(async move {
                 let _keep_alive = duplex_tx;
@@ -633,7 +598,7 @@ async fn duplex_accept_loop(
                     first: Some(first_msg),
                     inner: duplex_rx,
                 };
-                let mut handle = fwd.serve(rx);
+                let mut handle = gw.serve(rx);
                 tokio::select! {
                     _ = &mut handle => {}
                     () = wait_for_stop(conn_stop) => {
@@ -646,6 +611,14 @@ async fn duplex_accept_loop(
     }
 
     while tasks.join_next().await.is_some() {}
+
+    // Drain the duplex server's listener task so every in-flight
+    // dispatch (one per session) finishes its terminal cleanup —
+    // final ack flush + `Closed` emit — before the host exits.
+    // Without this, simply dropping `duplex_server` would detach the
+    // listener and skip the flush, surfacing as undeliverable
+    // message errors on the peer's send-side after `process::exit`.
+    duplex_server.join().await;
 }
 
 /// Error returned by [`ProcHandle::ready`].
@@ -798,10 +771,10 @@ pub trait SingleTerminate: Send + Sync {
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
-        proc: &ref_::ProcRef,
+        proc: &ProcAddr,
         timeout: std::time::Duration,
         reason: &str,
-    ) -> Result<(Vec<ref_::ActorRef>, Vec<ref_::ActorRef>), anyhow::Error>;
+    ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error>;
 }
 
 /// Trait for managers that can terminate many child **units** in
@@ -873,12 +846,9 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
             .manager
             .terminate_all(cx, timeout, max_in_flight, reason)
             .await;
-        // Unbind procs from the router so if new procs are made with the same
-        // names, they can use the same slot.
-        for name in self.procs.drain() {
-            let proc_ref = ref_::ProcRef::from_resource_name(self.frontend_addr.clone(), &name);
-            self.dial_router.unbind(&ref_::Reference::from(proc_ref));
-        }
+        // Detach procs from the gateway by dropping their attach
+        // guards, freeing the name slots for any future respawns.
+        self.procs.clear();
         summary
     }
 }
@@ -888,10 +858,10 @@ impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
-        proc: &ref_::ProcRef,
+        proc: &ProcAddr,
         timeout: Duration,
         reason: &str,
-    ) -> Result<(Vec<ref_::ActorRef>, Vec<ref_::ActorRef>), anyhow::Error> {
+    ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error> {
         self.manager.terminate_proc(cx, proc, timeout, reason).await
     }
 }
@@ -906,7 +876,7 @@ impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
 pub struct ReadyProc<'a, H: ProcHandle> {
     handle: &'a H,
     addr: ChannelAddr,
-    agent_ref: reference::ActorRef<H::Agent>,
+    agent_ref: ActorRef<H::Agent>,
 }
 
 impl<'a, H: ProcHandle> ReadyProc<'a, H> {
@@ -930,9 +900,9 @@ impl<'a, H: ProcHandle> ReadyProc<'a, H> {
         })
     }
 
-    /// The proc's logical identity.
-    pub fn proc_id(&self) -> &ref_::ProcRef {
-        self.handle.proc_id()
+    /// The proc's logical address.
+    pub fn proc_addr(&self) -> &ProcAddr {
+        self.handle.proc_addr()
     }
 
     /// The proc's address (guaranteed available after ready).
@@ -941,7 +911,7 @@ impl<'a, H: ProcHandle> ReadyProc<'a, H> {
     }
 
     /// The agent actor reference (guaranteed available after ready).
-    pub fn agent_ref(&self) -> &reference::ActorRef<H::Agent> {
+    pub fn agent_ref(&self) -> &ActorRef<H::Agent> {
         &self.agent_ref
     }
 }
@@ -997,8 +967,8 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     /// [`ProcHandle::wait`] and carried by [`ReadyError::Terminal`].
     type TerminalStatus: std::fmt::Debug + Clone + Send + Sync + 'static;
 
-    /// The proc's logical identity on this host.
-    fn proc_id(&self) -> &ref_::ProcRef;
+    /// The proc's logical address on this host.
+    fn proc_addr(&self) -> &ProcAddr;
 
     /// The proc's address (the one callers bind into the host
     /// router). May return `None` before `ready()` completes.
@@ -1014,7 +984,7 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     ///
     /// **Prefer [`ready_proc()`]** for type-safe access that
     /// guarantees availability at compile time.
-    fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>>;
+    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>>;
 
     /// Resolves when the proc becomes Ready. Multi-waiter,
     /// non-consuming.
@@ -1079,7 +1049,7 @@ pub trait ProcManager {
     /// ref is returned.
     async fn spawn(
         &self,
-        proc_id: ref_::ProcRef,
+        proc_id: ProcAddr,
         forwarder_addr: ChannelAddr,
         config: Self::Config,
     ) -> Result<Self::Handle, HostError>;
@@ -1116,16 +1086,16 @@ pub enum LocalProcStatus {
 /// The proc runs inside this same OS process; there is **no** child
 /// process to signal. Lifecycle is purely proc-level:
 /// - `terminate(timeout)`: delegates to
-///   `Proc::destroy_and_wait(timeout, None)`, which drains and, at the
+///   `Proc::destroy_and_wait(timeout)`, which drains and, at the
 ///   deadline, aborts remaining actors.
 /// - `kill()`: uses a zero deadline to emulate a forced stop via
-///   `destroy_and_wait(Duration::ZERO, None)`.
+///   `destroy_and_wait(Duration::ZERO)`.
 /// - `wait()`: trivial (no external lifecycle to observe).
 ///
 ///   No OS signals are sent or required.
 pub struct LocalProcManager<S> {
-    procs: Arc<Mutex<HashMap<ref_::ProcRef, Proc>>>,
-    stopping: Arc<Mutex<HashMap<ref_::ProcRef, tokio::sync::watch::Sender<LocalProcStatus>>>>,
+    procs: Arc<Mutex<HashMap<ProcAddr, Proc>>>,
+    stopping: Arc<Mutex<HashMap<ProcAddr, tokio::sync::watch::Sender<LocalProcStatus>>>>,
     spawn: S,
 }
 
@@ -1146,7 +1116,7 @@ impl<S> LocalProcManager<S> {
     /// Status transitions through `Stopping` -> `Stopped` and is
     /// observable via [`local_proc_status`] and [`watch`]. Idempotent:
     /// no-ops if the proc is already stopping or stopped.
-    pub async fn request_stop(&self, proc: &ref_::ProcRef, timeout: Duration, reason: &str) {
+    pub async fn request_stop(&self, proc: &ProcAddr, timeout: Duration, reason: &str) {
         {
             let guard = self.stopping.lock().await;
             if guard.contains_key(proc) {
@@ -1162,17 +1132,14 @@ impl<S> LocalProcManager<S> {
             }
         };
 
-        let proc_ref: ref_::ProcRef = proc_handle.proc_id().clone();
+        let proc_ref: ProcAddr = proc_handle.proc_addr().clone();
         let (tx, _) = tokio::sync::watch::channel(LocalProcStatus::Stopping);
         self.stopping.lock().await.insert(proc_ref.clone(), tx);
 
         let stopping = Arc::clone(&self.stopping);
         let reason = reason.to_string();
         tokio::spawn(async move {
-            if let Err(e) = proc_handle
-                .destroy_and_wait::<()>(timeout, None, &reason)
-                .await
-            {
+            if let Err(e) = proc_handle.destroy_and_wait(timeout, &reason).await {
                 tracing::warn!(error = %e, "request_stop(local): destroy_and_wait failed");
             }
             if let Some(tx) = stopping.lock().await.get(&proc_ref) {
@@ -1185,7 +1152,7 @@ impl<S> LocalProcManager<S> {
     /// [`request_stop`].
     ///
     /// Returns `None` if the proc was never stopped through this path.
-    pub async fn local_proc_status(&self, proc: &ref_::ProcRef) -> Option<LocalProcStatus> {
+    pub async fn local_proc_status(&self, proc: &ProcAddr) -> Option<LocalProcStatus> {
         self.stopping.lock().await.get(proc).map(|tx| *tx.borrow())
     }
 
@@ -1195,7 +1162,7 @@ impl<S> LocalProcManager<S> {
     /// Returns `None` if the proc was never stopped through this path.
     pub async fn watch(
         &self,
-        proc: &ref_::ProcRef,
+        proc: &ProcAddr,
     ) -> Option<tokio::sync::watch::Receiver<LocalProcStatus>> {
         self.stopping
             .lock()
@@ -1228,7 +1195,7 @@ where
 
         let results = stream::iter(procs.into_iter().map(|mut p| async move {
             // For local manager, graceful proc-level stop.
-            match p.destroy_and_wait::<()>(timeout, None, reason).await {
+            match p.destroy_and_wait(timeout, reason).await {
                 Ok(_) => true,
                 Err(e) => {
                     tracing::warn!(error=%e, "terminate_all(local): destroy_and_wait failed");
@@ -1258,17 +1225,17 @@ where
     async fn terminate_proc(
         &self,
         _cx: &impl context::Actor,
-        proc: &ref_::ProcRef,
+        proc: &ProcAddr,
         timeout: std::time::Duration,
         reason: &str,
-    ) -> Result<(Vec<ref_::ActorRef>, Vec<ref_::ActorRef>), anyhow::Error> {
+    ) -> Result<(Vec<ActorAddr>, Vec<ActorAddr>), anyhow::Error> {
         // Snapshot procs so we don't hold the lock across awaits.
         let procs: Option<Proc> = {
             let mut guard = self.procs.lock().await;
             guard.remove(proc)
         };
         if let Some(mut p) = procs {
-            p.destroy_and_wait::<()>(timeout, None, reason).await
+            p.destroy_and_wait(timeout, reason).await
         } else {
             Err(anyhow::anyhow!("proc {} doesn't exist", proc))
         }
@@ -1282,7 +1249,7 @@ where
 /// - its [`ProcId`] (logical identity on the host),
 /// - the proc's [`ChannelAddr`] (the address callers bind into the
 ///   host router), and
-/// - the [`ActorRef`] to the agent actor hosted in the proc.
+/// - the [`ActorAddr`] to the agent actor hosted in the proc.
 ///
 /// Unlike external handles, `LocalHandle` does **not** manage an OS
 /// child process. It provides a uniform surface (`proc_id()`,
@@ -1293,10 +1260,10 @@ where
 /// **Type parameter:** `A` is constrained by the `ProcHandle::Agent`
 /// bound (`Actor + Referable`).
 pub struct LocalHandle<A: Actor + Referable> {
-    proc_id: ref_::ProcRef,
+    proc_id: ProcAddr,
     addr: ChannelAddr,
-    agent_ref: reference::ActorRef<A>,
-    procs: Arc<Mutex<HashMap<ref_::ProcRef, Proc>>>,
+    agent_ref: ActorRef<A>,
+    procs: Arc<Mutex<HashMap<ProcAddr, Proc>>>,
 }
 
 // Manual `Clone` to avoid requiring `A: Clone`.
@@ -1318,7 +1285,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
     type Agent = A;
     type TerminalStatus = ();
 
-    fn proc_id(&self) -> &ref_::ProcRef {
+    fn proc_addr(&self) -> &ProcAddr {
         &self.proc_id
     }
 
@@ -1326,7 +1293,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         Some(self.addr.clone())
     }
 
-    fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>> {
+    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
         Some(self.agent_ref.clone())
     }
 
@@ -1350,7 +1317,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
     ) -> Result<(), TerminateError<Self::TerminalStatus>> {
         let mut proc = {
             let guard = self.procs.lock().await;
-            match guard.get(self.proc_id()) {
+            match guard.get(self.proc_addr()) {
                 Some(p) => p.clone(),
                 None => {
                     // The proc was already removed; treat as already
@@ -1363,7 +1330,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         // Graceful stop of the *proc* (actors) with a deadline. This
         // will drain and then abort remaining actors at expiry.
         let _ = proc
-            .destroy_and_wait::<()>(timeout, None, reason)
+            .destroy_and_wait(timeout, reason)
             .await
             .map_err(TerminateError::Io)?;
 
@@ -1375,14 +1342,14 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         // immediately abort remaining actors and return.
         let mut proc = {
             let guard = self.procs.lock().await;
-            match guard.get(self.proc_id()) {
+            match guard.get(self.proc_addr()) {
                 Some(p) => p.clone(),
                 None => return Err(TerminateError::AlreadyTerminated(())),
             }
         };
 
         let _ = proc
-            .destroy_and_wait::<()>(Duration::from_millis(0), None, "kill")
+            .destroy_and_wait(Duration::from_millis(0), "kill")
             .await
             .map_err(TerminateError::Io)?;
 
@@ -1397,7 +1364,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
 ///   - `Actor`: the agent actually runs inside the proc.
 ///   - `Referable`: callers hold `ActorRef<A>` to the agent; this
 ///     bound is required for typed remote refs.
-///   - `Binds<A>`: lets the runtime wire the agent's message ports.
+///   - `Binds<A>`: lets the runtime wire the agent's handler ports.
 /// - `F: Future<Output = anyhow::Result<ActorHandle<A>>> + Send`:
 ///   the spawn closure returns a Send future (we `tokio::spawn` it).
 /// - `S: Fn(Proc) -> F + Sync`: the factory can be called from
@@ -1417,10 +1384,10 @@ where
         ChannelTransport::Local
     }
 
-    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
+    #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
-        proc_id: ref_::ProcRef,
+        proc_id: ProcAddr,
         forwarder_addr: ChannelAddr,
         _config: (),
     ) -> Result<Self::Handle, HostError> {
@@ -1473,7 +1440,7 @@ where
 /// protocol.
 pub struct ProcessProcManager<A> {
     program: std::path::PathBuf,
-    children: Arc<Mutex<HashMap<ref_::ProcRef, Child>>>,
+    children: Arc<Mutex<HashMap<ProcAddr, Child>>>,
     _phantom: PhantomData<A>,
 }
 
@@ -1524,9 +1491,9 @@ impl<A> Drop for ProcessProcManager<A> {
 /// typed remote reference).
 #[derive(Debug)]
 pub struct ProcessHandle<A: Actor + Referable> {
-    proc_id: ref_::ProcRef,
+    proc_id: ProcAddr,
     addr: ChannelAddr,
-    agent_ref: reference::ActorRef<A>,
+    agent_ref: ActorRef<A>,
 }
 
 // Manual `Clone` to avoid requiring `A: Clone`.
@@ -1547,7 +1514,7 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
     type Agent = A;
     type TerminalStatus = ();
 
-    fn proc_id(&self) -> &ref_::ProcRef {
+    fn proc_addr(&self) -> &ProcAddr {
         &self.proc_id
     }
 
@@ -1555,7 +1522,7 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
         Some(self.addr.clone())
     }
 
-    fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>> {
+    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
         Some(self.agent_ref.clone())
     }
 
@@ -1598,10 +1565,10 @@ where
         ChannelTransport::Unix
     }
 
-    #[crate::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
+    #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=forwarder_addr.to_string()))]
     async fn spawn(
         &self,
-        proc_id: ref_::ProcRef,
+        proc_id: ProcAddr,
         forwarder_addr: ChannelAddr,
         _config: (),
     ) -> Result<Self::Handle, HostError> {
@@ -1670,7 +1637,7 @@ where
         S: FnOnce(Proc) -> F,
         F: Future<Output = Result<ActorHandle<A>, anyhow::Error>>,
     {
-        let proc_id: ref_::ProcRef = Self::parse_env("HYPERACTOR_HOST_PROC_ID")?;
+        let proc_id: ProcAddr = Self::parse_env("HYPERACTOR_HOST_PROC_ID")?;
         let backend_addr: ChannelAddr = Self::parse_env("HYPERACTOR_HOST_BACKEND_ADDR")?;
         let callback_addr: ChannelAddr = Self::parse_env("HYPERACTOR_HOST_CALLBACK_ADDR")?;
         spawn_proc(proc_id, backend_addr, callback_addr, spawn).await
@@ -1692,9 +1659,9 @@ where
 /// forwarding messages to the provided `backend_addr`,
 /// and returning the proc's address and agent actor on
 /// the provided `callback_addr`.
-#[crate::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string(), callback_addr=callback_addr.to_string()))]
+#[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string(), callback_addr=callback_addr.to_string()))]
 pub async fn spawn_proc<A, S, F>(
-    proc_id: ref_::ProcRef,
+    proc_id: ProcAddr,
     backend_addr: ChannelAddr,
     callback_addr: ChannelAddr,
     spawn: S,
@@ -1720,8 +1687,9 @@ where
     // and call back.
     let (proc_addr, proc_rx) = channel::serve(ChannelAddr::any(backend_transport))?;
     proc.clone().serve(proc_rx);
-    channel::dial(callback_addr)?
-        .send((proc_addr, agent_handle.bind::<A>()))
+    let agent_ref: ActorRef<A> = agent_handle.bind::<A>();
+    channel::dial::<(ChannelAddr, ActorRef<A>)>(callback_addr)?
+        .send((proc_addr, agent_ref))
         .await
         .map_err(ChannelError::from)?;
 
@@ -1732,29 +1700,28 @@ where
 /// as it is needed by an external binary.
 pub mod testing {
     use async_trait::async_trait;
-
-    use crate as hyperactor;
-    use crate::Actor;
-    use crate::Context;
-    use crate::Handler;
-    use crate::reference;
-
+    use hyperactor::Actor;
+    use hyperactor::ActorAddr;
+    use hyperactor::Context;
+    use hyperactor::Endpoint as _;
+    use hyperactor::Handler;
+    use hyperactor::OncePortRef;
     /// Just a simple actor, available in both the bootstrap binary as well as
     /// hyperactor tests.
     #[derive(Debug, Default)]
-    #[hyperactor::export(handlers = [reference::OncePortRef<reference::ActorId>])]
+    #[hyperactor::export(handlers = [OncePortRef<ActorAddr>])]
     pub struct EchoActor;
 
     impl Actor for EchoActor {}
 
     #[async_trait]
-    impl Handler<reference::OncePortRef<reference::ActorId>> for EchoActor {
+    impl Handler<OncePortRef<ActorAddr>> for EchoActor {
         async fn handle(
             &mut self,
             cx: &Context<Self>,
-            reply: reference::OncePortRef<reference::ActorId>,
+            reply: OncePortRef<ActorAddr>,
         ) -> Result<(), anyhow::Error> {
-            reply.send(cx, reference::ActorId::from(cx.self_id().clone()))?;
+            reply.post(cx, cx.self_addr().clone());
             Ok(())
         }
     }
@@ -1766,18 +1733,29 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
+    use hyperactor::Actor;
+    use hyperactor::Addr;
+    use hyperactor::Context;
+    use hyperactor::Endpoint as _;
+    use hyperactor::Handler;
+    use hyperactor::Instance;
+    use hyperactor::OncePortRef;
+    use hyperactor::PortRef;
+    use hyperactor::channel::ChannelTransport;
+    use hyperactor::channel::Tx;
+    use hyperactor::channel::TxStatus;
+    use hyperactor::context::Mailbox;
+    use hyperactor::mailbox::Undeliverable;
+    use hyperactor::port::Port;
     use tokio::sync::mpsc;
 
     use super::testing::EchoActor;
     use super::*;
-    use crate::channel::ChannelTransport;
-    use crate::context::Mailbox;
-    use crate::mailbox::Undeliverable;
 
     /// A PortRef<String> targeting a nonexistent actor. When the
     /// collector receives this, it sends a message to the dest; the
     /// resulting Undeliverable is captured.
-    type SendTo = reference::PortRef<String>;
+    type SendTo = PortRef<String>;
 
     /// Test actor that sends a message to a provided destination and
     /// collects the resulting Undeliverable.
@@ -1788,10 +1766,10 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::Actor for UndeliverableCollector {
+    impl Actor for UndeliverableCollector {
         async fn handle_undeliverable_message(
             &mut self,
-            _cx: &crate::Instance<Self>,
+            _cx: &Instance<Self>,
             message: Undeliverable<MessageEnvelope>,
         ) -> Result<(), anyhow::Error> {
             let _ = self.tx.send(message);
@@ -1800,13 +1778,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::Handler<SendTo> for UndeliverableCollector {
-        async fn handle(
-            &mut self,
-            cx: &crate::Context<Self>,
-            dest: SendTo,
-        ) -> Result<(), anyhow::Error> {
-            dest.send(cx, "into-the-void".to_string())?;
+    impl Handler<SendTo> for UndeliverableCollector {
+        async fn handle(&mut self, cx: &Context<Self>, dest: SendTo) -> Result<(), anyhow::Error> {
+            dest.post(cx, "into-the-void".to_string());
             Ok(())
         }
     }
@@ -1823,7 +1797,7 @@ mod tests {
         let (proc_id1, _ref) = host.spawn("proc1".to_string(), ()).await.unwrap();
         assert_eq!(
             proc_id1,
-            ref_::ProcRef::from_resource_name(host.addr().clone(), "proc1")
+            ResourceId::proc_addr_from_name(host.addr().clone(), "proc1")
         );
         assert!(procs.lock().await.contains_key(&proc_id1));
 
@@ -1834,21 +1808,20 @@ mod tests {
         let proc2 = procs.lock().await.get(&proc_id2).unwrap().clone();
 
         // Make sure they can talk to each other:
-        let (instance1, _handle) = proc1.instance("client").unwrap();
-        let (instance2, _handle) = proc2.instance("client").unwrap();
+        let (instance1, _handle) = proc1.client("client").unwrap();
+        let (instance2, _handle) = proc2.client("client").unwrap();
 
         let (port, mut rx) = instance1.mailbox().open_port();
 
-        port.bind().send(&instance2, "hello".to_string()).unwrap();
+        port.bind().post(&instance2, "hello".to_string());
         assert_eq!(rx.recv().await.unwrap(), "hello".to_string());
 
         // Make sure that the system proc is also wired in correctly.
-        let (system_actor, _handle) = host.system_proc().instance("test").unwrap();
+        let (system_actor, _handle) = host.system_proc().client("test").unwrap();
 
         // system->proc
         port.bind()
-            .send(&system_actor, "hello from the system proc".to_string())
-            .unwrap();
+            .post(&system_actor, "hello from the system proc".to_string());
         assert_eq!(
             rx.recv().await.unwrap(),
             "hello from the system proc".to_string()
@@ -1857,8 +1830,7 @@ mod tests {
         // system->system
         let (port, mut rx) = system_actor.mailbox().open_port();
         port.bind()
-            .send(&system_actor, "hello from the system".to_string())
-            .unwrap();
+            .post(&system_actor, "hello from the system".to_string());
         assert_eq!(
             rx.recv().await.unwrap(),
             "hello from the system".to_string()
@@ -1866,8 +1838,7 @@ mod tests {
 
         // proc->system
         port.bind()
-            .send(&instance1, "hello from the instance1".to_string())
-            .unwrap();
+            .post(&instance1, "hello from the instance1".to_string());
         assert_eq!(
             rx.recv().await.unwrap(),
             "hello from the instance1".to_string()
@@ -1882,7 +1853,7 @@ mod tests {
 
         // EchoActor is "host_agent" used to test connectivity.
         let process_manager = ProcessProcManager::<EchoActor>::new(
-            buck_resources::get("monarch/hyperactor/bootstrap").unwrap(),
+            buck_resources::get("monarch/hyperactor_mesh/host_bootstrap").unwrap(),
         );
         let mut host = Host::new(process_manager, ChannelAddr::any(ChannelTransport::Unix))
             .await
@@ -1896,8 +1867,8 @@ mod tests {
         assert!(matches!(host.addr().transport(), ChannelTransport::Unix));
         let (proc1, echo1) = host.spawn("proc1".to_string(), ()).await.unwrap();
         let (proc2, echo2) = host.spawn("proc2".to_string(), ()).await.unwrap();
-        assert_eq!(*echo1.actor_id().proc_id(), proc1);
-        assert_eq!(*echo2.actor_id().proc_id(), proc2);
+        assert_eq!(echo1.actor_addr().proc_addr(), proc1);
+        assert_eq!(echo2.actor_addr().proc_addr(), proc2);
 
         // (2) Duplicate name rejection.
         let dup = host.spawn("proc1".to_string(), ()).await;
@@ -1914,14 +1885,14 @@ mod tests {
             "test".to_string(),
         )
         .unwrap();
-        let (client_inst, _h) = client.instance("test").unwrap();
+        let (client_inst, _h) = client.client("test").unwrap();
         let (port, rx) = client_inst.mailbox().open_once_port();
-        echo1.send(&client_inst, port.bind()).unwrap();
+        echo1.post(&client_inst, port.bind());
         let id = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(id, *echo1.actor_id());
+        assert_eq!(id, *echo1.actor_addr());
 
         // (4) Child <-> external client request -> reply:
         // Request: client proc (standalone via `Proc::direct`) ->
@@ -1931,12 +1902,12 @@ mod tests {
         // This exercises cross-proc routing between a child and an
         // external client under the same host.
         let (port2, rx2) = client_inst.mailbox().open_once_port();
-        echo2.send(&client_inst, port2.bind()).unwrap();
+        echo2.post(&client_inst, port2.bind());
         let id2 = tokio::time::timeout(Duration::from_secs(5), rx2.recv())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(id2, *echo2.actor_id());
+        assert_eq!(id2, *echo2.actor_addr());
 
         // (5) System -> child request -> cross-proc reply:
         // Request: system proc -> host router (frontend) -> echo1
@@ -1946,25 +1917,25 @@ mod tests {
         //        client port.
         // Because `client_inst` runs in its own proc, the reply
         // traverses the host (not local delivery within proc1).
-        let (sys_inst, _h) = host.system_proc().instance("sys-client").unwrap();
+        let (sys_inst, _h) = host.system_proc().client("sys-client").unwrap();
         let (port3, rx3) = client_inst.mailbox().open_once_port();
         // Send from system -> child via a message that ultimately
         // replies to client's port
-        echo1.send(&sys_inst, port3.bind()).unwrap();
+        echo1.post(&sys_inst, port3.bind());
         let id3 = tokio::time::timeout(Duration::from_secs(5), rx3.recv())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(id3, *echo1.actor_id());
+        assert_eq!(id3, *echo1.actor_addr());
     }
 
     #[tokio::test]
     async fn local_ready_and_wait_are_immediate() {
         // Build a LocalHandle directly.
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_ref = ref_::ProcRef::from_resource_name(addr.clone(), "p");
-        let actor_ref = proc_ref.actor_ref("host_agent");
-        let agent_ref = reference::ActorRef::<()>::attest(actor_ref.into());
+        let proc_ref = ResourceId::proc_addr_from_name(addr.clone(), "p");
+        let actor_ref = proc_ref.actor_addr("host_agent");
+        let agent_ref = ActorRef::<()>::attest(actor_ref);
         let h = LocalHandle::<()> {
             proc_id: proc_ref,
             addr,
@@ -1995,9 +1966,9 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct TestHandle {
-        id: ref_::ProcRef,
+        id: ProcAddr,
         addr: ChannelAddr,
-        agent: reference::ActorRef<()>,
+        agent: ActorRef<()>,
         mode: ReadyMode,
         omit_addr: bool,
         omit_agent: bool,
@@ -2008,7 +1979,7 @@ mod tests {
         type Agent = ();
         type TerminalStatus = ();
 
-        fn proc_id(&self) -> &ref_::ProcRef {
+        fn proc_addr(&self) -> &ProcAddr {
             &self.id
         }
 
@@ -2020,7 +1991,7 @@ mod tests {
             }
         }
 
-        fn agent_ref(&self) -> Option<reference::ActorRef<Self::Agent>> {
+        fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
             if self.omit_agent {
                 None
             } else {
@@ -2090,11 +2061,11 @@ mod tests {
 
         async fn spawn(
             &self,
-            proc_id: ref_::ProcRef,
+            proc_id: ProcAddr,
             forwarder_addr: ChannelAddr,
             _config: (),
         ) -> Result<Self::Handle, HostError> {
-            let agent = reference::ActorRef::<()>::attest(proc_id.actor_ref("host_agent").into());
+            let agent = ActorRef::<()>::attest(proc_id.actor_addr("host_agent"));
             Ok(TestHandle {
                 id: proc_id,
                 addr: forwarder_addr,
@@ -2110,7 +2081,7 @@ mod tests {
     async fn host_spawn_times_out_when_configured() {
         let cfg = hyperactor_config::global::lock();
         let _g = cfg.override_key(
-            crate::config::HOST_SPAWN_READY_TIMEOUT,
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_millis(10),
         );
 
@@ -2129,7 +2100,7 @@ mod tests {
     async fn host_spawn_timeout_zero_disables_and_succeeds() {
         let cfg = hyperactor_config::global::lock();
         let _g = cfg.override_key(
-            crate::config::HOST_SPAWN_READY_TIMEOUT,
+            hyperactor::config::HOST_SPAWN_READY_TIMEOUT,
             Duration::from_secs(0),
         );
 
@@ -2141,8 +2112,8 @@ mod tests {
         .unwrap();
 
         let (pid, agent) = host.spawn("ok".into(), ()).await.expect("must succeed");
-        assert_eq!(*agent.actor_id().proc_id(), pid);
-        assert!(host.procs.contains("ok"));
+        assert_eq!(agent.actor_addr().proc_addr(), pid);
+        assert!(host.procs.contains_key("ok"));
     }
 
     #[tokio::test]
@@ -2219,19 +2190,17 @@ mod tests {
         host.serve().unwrap();
 
         let remote_proc = Proc::attach_to_host(host.addr().clone()).await.unwrap();
-        assert_eq!(remote_proc.proc_id().addr(), host.addr());
+        assert_eq!(remote_proc.proc_addr().addr(), host.addr());
 
         // (1) Host -> remote: open a port on the remote proc, send from
         //     the system instance.
-        let (system_inst, _h) = host.system_proc().instance("test-sender").unwrap();
-        let (remote_inst, _rh) = remote_proc.instance("remote-client").unwrap();
+        let (system_inst, _h) = host.system_proc().client("test-sender").unwrap();
+        let (remote_inst, _rh) = remote_proc.client("remote-client").unwrap();
 
         let (remote_port, mut remote_rx) = remote_inst.mailbox().open_port();
         let remote_port = remote_port.bind();
 
-        remote_port
-            .send(&system_inst, "hello-to-remote".to_string())
-            .unwrap();
+        remote_port.post(&system_inst, "hello-to-remote".to_string());
 
         let arrived: String = tokio::time::timeout(Duration::from_secs(5), remote_rx.recv())
             .await
@@ -2244,9 +2213,7 @@ mod tests {
         let (host_port, mut host_rx) = system_inst.mailbox().open_port();
         let host_port = host_port.bind();
 
-        host_port
-            .send(&remote_inst, "hello-from-remote".to_string())
-            .unwrap();
+        host_port.post(&remote_inst, "hello-from-remote".to_string());
 
         let arrived: String = tokio::time::timeout(Duration::from_secs(5), host_rx.recv())
             .await
@@ -2284,22 +2251,28 @@ mod tests {
 
         // Tell the collector to send to a nonexistent actor on the
         // host's service proc.
-        let bogus_actor = host.system_proc().proc_id().actor_ref("no-such-actor");
-        let bogus_port = bogus_actor.port_ref(crate::port::Port::from(0u64));
-        let bogus_dest = reference::PortRef::<String>::attest(reference::PortId::from(bogus_port));
+        let bogus_actor = host.system_proc().proc_addr().actor_addr("no-such-actor");
+        let bogus_port = bogus_actor.port_addr(Port::from(0u64));
+        let bogus_dest = PortRef::<String>::attest(bogus_port);
 
-        let (trigger_inst, _h) = remote_proc.instance("trigger").unwrap();
+        let (trigger_inst, _h) = remote_proc.client("trigger").unwrap();
         collector_ref
             .port::<SendTo>()
-            .send(&trigger_inst, bogus_dest)
-            .unwrap();
+            .post(&trigger_inst, bogus_dest);
 
         let undeliverable = tokio::time::timeout(Duration::from_secs(5), undlv_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
             .expect("channel closed");
 
-        assert_eq!(undeliverable.0.dest().actor_id(), bogus_actor.id());
+        assert_eq!(
+            undeliverable
+                .into_message()
+                .expect("expected returned envelope")
+                .dest()
+                .actor_id(),
+            bogus_actor.id()
+        );
     }
 
     #[tokio::test]
@@ -2332,22 +2305,28 @@ mod tests {
 
         // Tell the collector to send to a nonexistent actor on the
         // attached remote proc.
-        let bogus_actor = remote_proc.proc_id().actor_ref("ghost-actor");
-        let bogus_port = bogus_actor.port_ref(crate::port::Port::from(0u64));
-        let bogus_dest = reference::PortRef::<String>::attest(reference::PortId::from(bogus_port));
+        let bogus_actor = remote_proc.proc_addr().actor_addr("ghost-actor");
+        let bogus_port = bogus_actor.port_addr(Port::from(0u64));
+        let bogus_dest = PortRef::<String>::attest(bogus_port);
 
-        let (trigger_inst, _h) = host.system_proc().instance("trigger").unwrap();
+        let (trigger_inst, _h) = host.system_proc().client("trigger").unwrap();
         collector_ref
             .port::<SendTo>()
-            .send(&trigger_inst, bogus_dest)
-            .unwrap();
+            .post(&trigger_inst, bogus_dest);
 
         let undeliverable = tokio::time::timeout(Duration::from_secs(5), undlv_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
             .expect("channel closed");
 
-        assert_eq!(undeliverable.0.dest().actor_id(), bogus_actor.id());
+        assert_eq!(
+            undeliverable
+                .into_message()
+                .expect("expected returned envelope")
+                .dest()
+                .actor_id(),
+            bogus_actor.id()
+        );
     }
 
     #[tokio::test]
@@ -2373,14 +2352,12 @@ mod tests {
 
         let remote_proc = Proc::attach_to_host(host.addr().clone()).await.unwrap();
 
-        let (system_inst, _h) = host.system_proc().instance("teardown-sender").unwrap();
-        let (remote_inst, _rh) = remote_proc.instance("teardown-client").unwrap();
+        let (system_inst, _h) = host.system_proc().client("teardown-sender").unwrap();
+        let (remote_inst, _rh) = remote_proc.client("teardown-client").unwrap();
 
         let (remote_port, mut remote_rx) = remote_inst.mailbox().open_port();
         let remote_port = remote_port.bind();
-        remote_port
-            .send(&system_inst, "pre-stop".to_string())
-            .unwrap();
+        remote_port.post(&system_inst, "pre-stop".to_string());
         let arrived: String = tokio::time::timeout(Duration::from_secs(5), remote_rx.recv())
             .await
             .expect("timed out waiting for message on remote rx")
@@ -2409,9 +2386,6 @@ mod tests {
     /// well under `MESSAGE_DELIVERY_TIMEOUT`.
     #[tokio::test]
     async fn test_simplex_peer_sees_clean_close_on_host_shutdown() {
-        use crate::channel::Tx;
-        use crate::channel::TxStatus;
-
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
             proc.spawn::<EchoActor>("host_agent", EchoActor)
         });
@@ -2434,23 +2408,21 @@ mod tests {
 
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            ref_::Reference::from(host.system_proc().proc_id().clone()),
+            Addr::from(host.system_proc().proc_addr().clone()),
             host.addr().clone(),
         );
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-        let client_proc_id = reference::ProcId::from_resource_name(client_listen_addr, "client");
+        let client_proc_id = ResourceId::proc_addr_from_name(client_listen_addr, "client");
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
-        let (client_inst, _h) = client_proc.instance("requester").unwrap();
-        let (reply_port, reply_handle) =
-            client_inst.mailbox().open_once_port::<reference::ActorId>();
+        let (client_inst, _h) = client_proc.client("requester").unwrap();
+        let (reply_port, reply_handle) = client_inst.mailbox().open_once_port::<ActorAddr>();
         let reply_port = reply_port.bind();
         echo_ref
-            .port::<reference::OncePortRef<reference::ActorId>>()
-            .send(&client_inst, reply_port)
-            .unwrap();
+            .port::<OncePortRef<ActorAddr>>()
+            .post(&client_inst, reply_port);
         let _ = tokio::time::timeout(Duration::from_secs(5), reply_handle.recv())
             .await
             .expect("baseline round-trip timed out")
@@ -2459,14 +2431,13 @@ mod tests {
         // Snapshot the client's outbound NetTx status before shutdown.
         let host_tx = channel::dial::<MessageEnvelope>(host.addr().clone()).unwrap();
         // Push one message so the lazy-connect kicks in.
-        let dummy_dest = reference::PortId::from(
-            host.system_proc()
-                .proc_id()
-                .actor_ref("noop")
-                .port_ref(crate::port::Port::from(0u64)),
-        );
+        let dummy_dest = host
+            .system_proc()
+            .proc_addr()
+            .actor_addr("noop")
+            .port_addr(Port::from(0u64));
         let envelope = MessageEnvelope::serialize(
-            client_inst.self_id().clone(),
+            client_inst.self_addr().clone(),
             dummy_dest,
             &"warmup".to_string(),
             Default::default(),
@@ -2533,8 +2504,8 @@ mod tests {
             .unwrap();
         let echo_ref = echo_handle.bind::<EchoActor>();
         let host_addr = host.addr().clone();
-        let echo_actor_id = echo_ref.actor_id().clone();
-        let system_proc_id = host.system_proc().proc_id().clone();
+        let echo_actor_id = echo_ref.actor_addr().clone();
+        let system_proc_id = host.system_proc().proc_addr().clone();
 
         // Spawn N clients, each sending M requests.
         const N_CLIENTS: usize = 4;
@@ -2547,33 +2518,30 @@ mod tests {
             let system_proc_id = system_proc_id.clone();
             client_tasks.push(tokio::spawn(async move {
                 let dial_router = DialMailboxRouter::new();
-                dial_router.bind(ref_::Reference::from(system_proc_id.clone()), host_addr);
+                dial_router.bind(Addr::from(system_proc_id.clone()), host_addr);
                 let client_addr = ChannelAddr::any(ChannelTransport::Unix);
                 let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-                let client_proc_id = reference::ProcId::from_resource_name(
-                    client_listen_addr,
-                    format!("client-{}", ci),
-                );
+                let client_proc_id =
+                    ResourceId::proc_addr_from_name(client_listen_addr, format!("client-{}", ci));
                 let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
                 let _client_handle = client_proc.clone().serve(client_rx);
 
-                let echo_ref = reference::ActorRef::<EchoActor>::attest(echo_actor_id);
+                let echo_ref = ActorRef::<EchoActor>::attest(echo_actor_id);
 
                 for ri in 0..M_REQUESTS {
-                    let (client_inst, _h) = client_proc.instance(&format!("req-{}", ri)).unwrap();
+                    let (client_inst, _h) = client_proc.client(&format!("req-{}", ri)).unwrap();
                     let (reply_port, reply_handle) =
-                        client_inst.mailbox().open_once_port::<reference::ActorId>();
+                        client_inst.mailbox().open_once_port::<ActorAddr>();
                     let reply_port = reply_port.bind();
                     echo_ref
-                        .port::<reference::OncePortRef<reference::ActorId>>()
-                        .send(&client_inst, reply_port)
-                        .unwrap();
+                        .port::<OncePortRef<ActorAddr>>()
+                        .post(&client_inst, reply_port);
                     let received =
                         tokio::time::timeout(Duration::from_secs(10), reply_handle.recv())
                             .await
                             .expect("timeout waiting for reply")
                             .expect("recv failed");
-                    assert_eq!(received, *echo_ref.actor_id());
+                    assert_eq!(received, *echo_ref.actor_addr());
                 }
             }));
         }
@@ -2624,32 +2592,29 @@ mod tests {
         let client_addr = ChannelAddr::any(ChannelTransport::Unix);
         let dial_router = DialMailboxRouter::new();
         dial_router.bind(
-            ref_::Reference::from(host.system_proc().proc_id().clone()),
+            Addr::from(host.system_proc().proc_addr().clone()),
             host.addr().clone(),
         );
         let (client_listen_addr, client_rx) = channel::serve(client_addr).unwrap();
-        let client_proc_id =
-            reference::ProcId::from_resource_name(client_listen_addr, "external-client");
+        let client_proc_id = ResourceId::proc_addr_from_name(client_listen_addr, "external-client");
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
-        let (client_inst, _client_h) = client_proc.instance("requester").unwrap();
+        let (client_inst, _client_h) = client_proc.client("requester").unwrap();
 
         // Send a request to the echo actor on the host. The reply
         // travels back through the host's dial router → simplex dial
         // → client's frontend.
-        let (reply_port, reply_handle) =
-            client_inst.mailbox().open_once_port::<reference::ActorId>();
+        let (reply_port, reply_handle) = client_inst.mailbox().open_once_port::<ActorAddr>();
         let reply_port = reply_port.bind();
         echo_ref
-            .port::<reference::OncePortRef<reference::ActorId>>()
-            .send(&client_inst, reply_port)
-            .unwrap();
+            .port::<OncePortRef<ActorAddr>>()
+            .post(&client_inst, reply_port);
 
         let received = tokio::time::timeout(Duration::from_secs(10), reply_handle.recv())
             .await
             .expect("timed out waiting for reply")
             .expect("recv failed");
-        assert_eq!(received, *echo_ref.actor_id());
+        assert_eq!(received, *echo_ref.actor_addr());
     }
 }

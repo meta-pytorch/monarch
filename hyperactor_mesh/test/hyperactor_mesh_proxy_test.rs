@@ -14,13 +14,14 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Parser;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
 use hyperactor::context::Mailbox;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMesh;
@@ -56,12 +57,8 @@ struct Args {
 // -- TestActor
 
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        Echo,
-    ],
-)]
+#[hyperactor::export(Echo)]
+#[hyperactor::spawnable]
 pub struct TestActor;
 
 impl Actor for TestActor {}
@@ -82,19 +79,15 @@ pub struct Echo(pub String, pub reference::PortRef<String>);
 impl Handler<Echo> for TestActor {
     async fn handle(&mut self, cx: &Context<Self>, message: Echo) -> Result<(), anyhow::Error> {
         let Echo(message, reply_port) = message;
-        reply_port.send(cx, message)?;
+        reply_port.post(cx, message);
         Ok(())
     }
 }
 
 // -- ProxyActor
 
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        Echo,
-    ],
-)]
+#[hyperactor::export(Echo)]
+#[hyperactor::spawnable]
 pub struct ProxyActor {
     exe_path: String,
     host_mesh: Option<HostMesh>,
@@ -134,7 +127,7 @@ impl Actor for ProxyActor {
         let host_mesh = HostMesh::process(extent! { hosts = 1 }, command).await?;
         let proc_mesh = Arc::new(
             host_mesh
-                .spawn(this, "proxy", extent! { replica = 1 }, None)
+                .spawn(this, "proxy", extent! { replica = 1 }, None, None)
                 .await?,
         );
         self.actor_mesh = Some(proc_mesh.spawn(this, "echo", &()).await?);
@@ -167,8 +160,8 @@ impl Handler<Echo> for ProxyActor {
         let actor = self.actor_mesh.as_ref().unwrap().get(0).unwrap();
 
         let (tx, mut rx) = cx.open_port();
-        actor.send(cx, Echo(message.0, tx.bind()))?;
-        message.1.send(cx, rx.recv().await.unwrap())?;
+        actor.post(cx, Echo(message.0, tx.bind()));
+        message.1.post(cx, rx.recv().await.unwrap());
 
         Ok(())
     }
@@ -198,14 +191,14 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
 
     let mut host_mesh = HostMesh::process(extent! { hosts = 1 }, command).await?;
     let proc_mesh = host_mesh
-        .spawn(instance, "client", extent! { replica = 1 }, None)
+        .spawn(instance, "client", extent! { replica = 1 }, None, None)
         .await?;
     let actor_mesh: ActorMesh<ProxyActor> = proc_mesh
         .spawn(instance, "proxy", &exe_path.to_str().unwrap().to_string())
         .await?;
     let proxy_actor = actor_mesh.get(0).unwrap();
     let (tx, mut rx) = instance.mailbox().open_port::<String>();
-    proxy_actor.send(instance, Echo("hello!".to_owned(), tx.bind()))?;
+    proxy_actor.post(instance, Echo("hello!".to_owned(), tx.bind()));
 
     let msg = rx.recv().await?;
     println!("{}", msg);

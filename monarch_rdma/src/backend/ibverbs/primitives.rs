@@ -28,11 +28,14 @@
 //! - `IbvWc`: Wrapper around ibverbs work completion structure, used to track the status of RDMA operations.
 use std::ffi::CStr;
 use std::fmt;
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
+
+use super::domain::IbvDomain;
 
 #[derive(
     Default,
@@ -169,6 +172,10 @@ pub struct IbvConfig {
     pub hw_init_delay_ms: u64,
     /// `qp_type` - The type of queue pair to create (Auto, Standard, or Mlx5dv).
     pub qp_type: IbvQpType,
+    /// Test-only override for `register_segments`'s `max_sge`. `<= 0`
+    /// (default) uses `ibv_query_device`; small positive values force
+    /// `RDMAXCEL_MKEY_REG_LIMIT` to exercise the dmabuf fallback.
+    pub max_sge_override: i32,
 }
 wirevalue::register_type!(IbvConfig);
 
@@ -198,6 +205,7 @@ impl Default for IbvConfig {
             use_gpu_direct: false, // nv_peermem enabled for cuda
             hw_init_delay_ms: 2,
             qp_type: IbvQpType::Auto,
+            max_sge_override: 0,
         };
         if crate::efa::is_efa_device() {
             crate::efa::apply_efa_defaults(&mut config);
@@ -738,6 +746,84 @@ fn ibverbs_supported_impl() -> bool {
     }
 }
 
+/// Refcounted owner of an ibverbs memory region. The intended
+/// sharing pattern is `Arc<IbvMemoryRegion>` cloned into every
+/// [`IbvMemoryRegionView`] backed by the region; the FFI resource
+/// is released by [`Drop`] when the last clone goes away.
+///
+/// `Direct` carries an `Arc<IbvDomain>` so the PD the MR was
+/// registered against outlives the `ibv_dereg_mr` call. The struct
+/// field order is significant: the `mr` pointer is dereg'd in
+/// `Drop` before the `_domain` field is released, so the PD is
+/// still alive when libibverbs walks back to it. The eventual
+/// `ibv_dealloc_pd` only fires when every other `Arc<IbvDomain>`
+/// (e.g. the manager's `device_domains` entry) is also gone.
+#[derive(Debug)]
+pub(super) enum IbvMemoryRegion {
+    /// A standalone `ibv_mr*` registered via `ibv_reg_mr` /
+    /// `ibv_reg_dmabuf_mr`.
+    Direct {
+        mr: *mut rdmaxcel_sys::ibv_mr,
+        /// PD the MR was registered against, kept alive past
+        /// `ibv_dereg_mr` via this clone. Never read directly.
+        _domain: Arc<IbvDomain>,
+    },
+    /// Singleton owner shared by every segment-backed view from the
+    /// mlx5dv segment scanner. `Drop` calls
+    /// `rdmaxcel_sys::deregister_segments`.
+    Segments,
+}
+
+// SAFETY: `IbvMemoryRegion::Direct`'s `*mut ibv_mr` is treated as
+// thread-safe by libibverbs for deregistration; `Segments` holds no
+// data. The intended sharing pattern is `Arc<IbvMemoryRegion>`.
+unsafe impl Send for IbvMemoryRegion {}
+unsafe impl Sync for IbvMemoryRegion {}
+
+impl Drop for IbvMemoryRegion {
+    fn drop(&mut self) {
+        match self {
+            IbvMemoryRegion::Direct { mr, .. } => {
+                if mr.is_null() {
+                    return;
+                }
+                // SAFETY: `*mr` was returned by `ibv_reg_mr` /
+                // `ibv_reg_dmabuf_mr` at construction (see
+                // `register_mr_impl`) and is non-null per the
+                // null-check above. The intended sharing pattern
+                // is `Arc<IbvMemoryRegion>`, so `Drop` runs exactly
+                // once when the last clone goes away, meaning
+                // `ibv_dereg_mr` is called exactly once on this
+                // pointer. The PD the MR was registered against is
+                // kept alive by the sibling `_domain` `Arc<IbvDomain>`
+                // until after this dereg returns.
+                let result = unsafe { rdmaxcel_sys::ibv_dereg_mr(*mr) };
+                if result != 0 {
+                    tracing::error!(
+                        "failed to deregister MR at {:p}: error code {}",
+                        *mr,
+                        result
+                    );
+                }
+            }
+            IbvMemoryRegion::Segments => {
+                // SAFETY: `IbvMemoryRegion::Segments` is the
+                // singleton owner of the mlx5dv scanner's globally
+                // registered segments. `register_mr_impl` lazily
+                // wraps it in `Arc::new(...)` at most once per
+                // manager (stored in `IbvManagerActor::segments_mr`)
+                // and clones it into every segment-backed view, so
+                // `deregister_segments` runs exactly once when the
+                // last reference is dropped.
+                let result = unsafe { rdmaxcel_sys::deregister_segments() };
+                if result != 0 {
+                    tracing::error!("failed to deregister CUDA segments: error code {}", result);
+                }
+            }
+        }
+    }
+}
+
 /// Represents a view of a memory region that can be registered with an RDMA device.
 ///
 /// This is a 'view' of a registered Memory Region, allowing multiple views into a single
@@ -752,17 +838,7 @@ fn ibverbs_supported_impl() -> bool {
 /// # Safety
 /// The caller must ensure the memory remains valid and is not freed, moved, or
 /// overwritten while RDMA operations are in progress.
-
-#[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    std::hash::Hash,
-    Serialize,
-    Deserialize,
-    Clone,
-    Copy
-)]
+#[derive(Debug, Clone)]
 pub struct IbvMemoryRegionView {
     // id should be unique with a given rdmam manager
     pub id: usize,
@@ -775,34 +851,25 @@ pub struct IbvMemoryRegionView {
     pub size: usize,
     pub lkey: u32,
     pub rkey: u32,
+    /// Name of the RDMA device the view's protection domain is on.
+    pub device_name: String,
+    /// Keeps the underlying FFI MR (and, transitively, the PD it
+    /// was registered against) alive for the lifetime of any clone
+    /// of this view; the last drop triggers deregistration. Never
+    /// read directly.
+    pub(super) _mr: Arc<IbvMemoryRegion>,
 }
 
-// SAFETY: IbvMemoryRegionView can be safely sent between threads because it only
-// contains address and size information without any thread-local state. However,
-// this DOES NOT provide any protection against data races in the underlying memory.
-// If one thread initiates an RDMA operation while another thread modifies the same
-// memory region, undefined behavior will occur. The caller is responsible for proper
-// synchronization of access to the underlying memory.
-unsafe impl Send for IbvMemoryRegionView {}
-
-// SAFETY: IbvMemoryRegionView is safe for concurrent access by multiple threads
-// as it only provides a view into memory without modifying its own state. However,
-// it provides NO PROTECTION against concurrent access to the underlying memory region.
-// The caller must ensure proper synchronization when:
-// 1. Initiating RDMA operations while local code reads/writes the same memory
-// 2. Performing multiple overlapping RDMA operations on the same memory region
-// 3. Freeing or reallocating memory that has in-flight RDMA operations
-unsafe impl Sync for IbvMemoryRegionView {}
-
 impl IbvMemoryRegionView {
-    /// Creates a new `IbvMemoryRegionView` with the given address and size.
-    pub fn new(
+    pub(super) fn new(
         id: usize,
         virtual_addr: usize,
         rdma_addr: usize,
         size: usize,
         lkey: u32,
         rkey: u32,
+        device_name: String,
+        mr: Arc<IbvMemoryRegion>,
     ) -> Self {
         Self {
             id,
@@ -811,7 +878,23 @@ impl IbvMemoryRegionView {
             size,
             lkey,
             rkey,
+            device_name,
+            _mr: mr,
         }
+    }
+}
+
+/// Compact identifier for log messages and per-op errors. Carries
+/// the MR-identifying fields all in one place so callers that
+/// embed an `IbvMemoryRegionView` in their error format get a
+/// consistent shape.
+impl fmt::Display for IbvMemoryRegionView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "lkey={}, rkey={}, virtual_addr=0x{:x}, rdma_addr=0x{:x}, size={}",
+            self.lkey, self.rkey, self.virtual_addr, self.rdma_addr, self.size,
+        )
     }
 }
 

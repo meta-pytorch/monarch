@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -31,12 +32,8 @@ pub struct BenchMessage {
 }
 
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        BenchMessage { cast = true },
-    ],
-)]
+#[hyperactor::export(BenchMessage { cast = true })]
+#[hyperactor::spawnable]
 pub struct BenchActor {
     processing_time: Duration,
 }
@@ -60,9 +57,9 @@ impl Handler<BenchMessage> for BenchActor {
         ctx: &Context<Self>,
         msg: BenchMessage,
     ) -> Result<(), anyhow::Error> {
-        tokio::time::sleep(self.processing_time.clone()).await;
+        tokio::time::sleep(self.processing_time).await;
 
-        let _ = msg.reply.send(ctx, msg.step);
+        let _ = msg.reply.post(ctx, msg.step);
         Ok(())
     }
 }

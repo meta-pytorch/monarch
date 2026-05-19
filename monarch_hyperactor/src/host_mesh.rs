@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use hyperactor::ActorHandle;
+use hyperactor::Endpoint as _;
 use hyperactor::Instance;
 use hyperactor::Proc;
 use hyperactor::id::Label;
@@ -23,6 +24,7 @@ use hyperactor_mesh::bootstrap::host;
 use hyperactor_mesh::host_mesh;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::host_mesh::HostMeshRef;
+use hyperactor_mesh::host_mesh::PerRankBootstrapFn;
 use hyperactor_mesh::host_mesh::host_agent::GetLocalProcClient;
 use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::host_mesh::host_agent::ShutdownHost;
@@ -49,6 +51,7 @@ use crate::proc_mesh::PyProcMesh;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::monarch_with_gil;
 use crate::shape::PyExtent;
+use crate::shape::PyPoint;
 use crate::shape::PyRegion;
 
 #[pyclass(
@@ -90,6 +93,20 @@ impl PyBootstrapCommand {
             self.program, self.args, self.env
         )
     }
+
+    /// Return a copy of this command with `env` merged on top of its
+    /// environment. Keys in `env` override any conflicting keys in the
+    /// existing environment.
+    fn with_env(&self, env: HashMap<String, String>) -> Self {
+        let mut new_env = self.env.clone();
+        new_env.extend(env);
+        Self {
+            program: self.program.clone(),
+            arg0: self.arg0.clone(),
+            args: self.args.clone(),
+            env: new_env,
+        }
+    }
 }
 
 impl PyBootstrapCommand {
@@ -101,20 +118,15 @@ impl PyBootstrapCommand {
             env: self.env.clone(),
         }
     }
-
-    pub fn default<'py>(py: Python<'py>) -> PyResult<Bound<'py, Self>> {
-        py.import("monarch._src.actor.host_mesh")?
-            .getattr("_bootstrap_cmd")?
-            .call0()?
-            .downcast::<PyBootstrapCommand>()
-            .cloned()
-            .map_err(to_py_error)
-    }
 }
 
 #[pyclass(
     name = "HostMesh",
     module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"
+)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "PyO3 #[pyclass] enum; Box wrapping interacts with PyO3 codegen and Python interop — separate diff"
 )]
 pub(crate) enum PyHostMesh {
     Owned(PyHostMeshImpl),
@@ -140,21 +152,51 @@ impl PyHostMesh {
 
 #[pymethods]
 impl PyHostMesh {
-    #[pyo3(signature = (instance, name, per_host, proc_bind = None))]
+    #[pyo3(signature = (instance, name, per_host, proc_bind = None, per_rank_bootstrap = None))]
     fn spawn_nonblocking(
         &self,
+        _py: Python<'_>,
         instance: &PyInstance,
         name: String,
         per_host: &PyExtent,
         proc_bind: Option<Vec<HashMap<String, String>>>,
+        per_rank_bootstrap: Option<Py<PyAny>>,
     ) -> PyResult<PyPythonTask> {
         let host_mesh = self.mesh_ref()?.clone();
+        let per_rank_bootstrap: Option<Box<PerRankBootstrapFn>> = per_rank_bootstrap
+            .map(|callable| -> PyResult<Box<PerRankBootstrapFn>> {
+                Ok(Box::new(move |point| {
+                    Python::attach(|py| {
+                        let result =
+                            callable
+                                .bind(py)
+                                .call1((PyPoint::from(point),))
+                                .map_err(|e| {
+                                    anyhow::anyhow!("per-rank bootstrap callable raised: {}", e)
+                                })?;
+                        let cmd: PyBootstrapCommand = result.extract().map_err(|e| {
+                            anyhow::anyhow!(
+                                "per-rank bootstrap callable did not return BootstrapCommand: {}",
+                                e
+                            )
+                        })?;
+                        Ok(cmd.to_rust())
+                    })
+                }))
+            })
+            .transpose()?;
         let instance = instance.clone();
         let per_host = per_host.clone().into();
         let proc_bind = proc_bind.map(|v| v.into_iter().map(ProcBind::from).collect());
         let mesh_impl = async move {
             let proc_mesh = host_mesh
-                .spawn(instance.deref(), &name, per_host, proc_bind)
+                .spawn(
+                    instance.deref(),
+                    &name,
+                    per_host,
+                    proc_bind,
+                    per_rank_bootstrap,
+                )
                 .await
                 .map_err(to_py_error)?;
             Ok(PyProcMesh::new_owned(proc_mesh))
@@ -333,9 +375,9 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         hyperactor_mesh::global_context::register_client_host(host_mesh.clone());
 
         // We require a temporary instance to make a call to the host/proc agent.
-        let temp_proc = Proc::local();
+        let temp_proc = Proc::isolated();
         let (temp_instance, _) = temp_proc
-            .instance("temp")
+            .client("temp")
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
         let local_proc_agent: hyperactor::ActorHandle<hyperactor_mesh::proc_agent::ProcAgent> =
@@ -347,7 +389,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         let proc_mesh = ProcMeshRef::new_singleton(
             ProcMeshId::singleton(Label::new("local").unwrap()),
             ProcRef::new(
-                local_proc_agent.actor_id().proc_ref().into(),
+                local_proc_agent.actor_addr().proc_addr(),
                 0,
                 local_proc_agent.bind(),
             ),
@@ -385,7 +427,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 parent_view_json: None,
             });
 
-            let host_agent_id = host_mesh_agent.actor_id();
+            let host_agent_id = host_mesh_agent.actor_addr();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
                 id: hyperactor_telemetry::hash_to_u64(host_agent_id),
                 timestamp: now,
@@ -413,7 +455,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 parent_view_json: None,
             });
 
-            let proc_agent_id = local_proc_agent.actor_id();
+            let proc_agent_id = local_proc_agent.actor_addr();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
                 id: hyperactor_telemetry::hash_to_u64(proc_agent_id),
                 timestamp: now,
@@ -437,11 +479,11 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             });
 
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: hyperactor_telemetry::hash_to_u64(instance.self_id()),
+                id: hyperactor_telemetry::hash_to_u64(instance.self_addr()),
                 timestamp: now,
                 mesh_id: client_mesh_id,
                 rank: 0,
-                full_name: instance.self_id().to_string(),
+                full_name: instance.self_addr().to_string(),
                 display_name: Some("<root>".to_string()),
             });
         }
@@ -472,14 +514,14 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
 
     PyPythonTask::new(async move {
         // Create a temporary instance to send the shutdown message
-        let temp_proc = hyperactor::Proc::local();
+        let temp_proc = hyperactor::Proc::isolated();
         let (instance, _) = temp_proc
-            .instance("shutdown_requester")
+            .client("shutdown_requester")
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
         tracing::info!(
             "sending shutdown_host request to agent {}",
-            agent.actor_id()
+            agent.actor_addr()
         );
         // Use same defaults as HostMesh::shutdown():
         // - MESH_TERMINATE_TIMEOUT = 10 seconds
@@ -490,23 +532,21 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
         // We don't need the ack, and this temporary proc doesn't have a mailbox
         // receiver set up anyways. Just ignore the message.
         port.return_undeliverable(false);
-        agent
-            .send(
-                &instance,
-                ShutdownHost {
-                    timeout: Duration::from_secs(10),
-                    max_in_flight: 16,
-                    ack: port,
-                },
-            )
-            .map_err(|e| PyException::new_err(e.to_string()))?;
+        agent.post(
+            &instance,
+            ShutdownHost {
+                timeout: Duration::from_secs(10),
+                max_in_flight: 16,
+                ack: port,
+            },
+        );
 
         // Join the host's mailbox server to flush receive-side acks
         // before the process exits.
-        if let Some(lock) = HOST_SHUTDOWN_HANDLE.get() {
-            if let Some(handle) = lock.lock().await.take() {
-                handle.join().await;
-            }
+        if let Some(lock) = HOST_SHUTDOWN_HANDLE.get()
+            && let Some(handle) = lock.lock().await.take()
+        {
+            handle.join().await;
         }
 
         Ok(())
@@ -522,14 +562,10 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
     module = "monarch._rust_bindings.monarch_hyperactor.host_mesh"
 )]
 #[derive(Clone)]
-pub struct PyMeshAdminRef(
-    hyperactor::reference::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent>,
-);
+pub struct PyMeshAdminRef(hyperactor::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent>);
 
 impl PyMeshAdminRef {
-    pub fn actor_ref(
-        &self,
-    ) -> hyperactor::reference::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent> {
+    pub fn actor_ref(&self) -> hyperactor::ActorRef<hyperactor_mesh::mesh_admin::MeshAdminAgent> {
         self.0.clone()
     }
 }

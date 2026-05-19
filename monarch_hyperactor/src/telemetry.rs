@@ -8,11 +8,17 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use hyperactor_telemetry::end_user_span;
+use hyperactor_telemetry::sinks::perfetto::USER_TELEMETRY_PREFIX;
 use hyperactor_telemetry::sqlite::SqliteTracing;
+use hyperactor_telemetry::start_user_span;
+use hyperactor_telemetry::trace_dispatcher::FieldValue;
 use opentelemetry::global;
 use opentelemetry::metrics;
 use pyo3::prelude::*;
 use pyo3::types::PyTraceback;
+
+use crate::proc::PyActorAddr;
 
 /// Get the current span ID from the active span
 #[pyfunction]
@@ -237,35 +243,51 @@ impl PyUpDownCounter {
 }
 
 #[pyclass(
-    unsendable,
     subclass,
     module = "monarch._rust_bindings.monarch_hyperactor.telemetry"
 )]
 struct PySpan {
-    span: tracing::span::EnteredSpan,
+    id: Option<u64>,
 }
 
 #[pymethods]
 impl PySpan {
     #[new]
-    fn new(name: &str, actor_id: Option<&str>) -> Self {
-        let span = if let Some(actor_id) = actor_id {
-            tracing::span!(
-                tracing::Level::INFO,
-                "python.span",
-                name = name,
-                actor_id = actor_id
-            )
-        } else {
-            tracing::span!(tracing::Level::INFO, "python.span", name = name)
-        };
-        let entered_span = span.entered();
+    #[pyo3(signature = (name, actor_id = None))]
+    fn new(name: &str, actor_id: Option<&PyActorAddr>) -> Self {
+        let mut fields = vec![("name", FieldValue::Str(name.to_string()))];
+        if let Some(actor_id) = actor_id {
+            fields.push(("actor_id", FieldValue::Str(actor_id.inner.to_string())));
+        }
+        let id = start_user_span("python_user_span", USER_TELEMETRY_PREFIX, fields);
 
-        Self { span: entered_span }
+        Self {
+            id: (id != 0).then_some(id),
+        }
     }
 
-    fn exit(&mut self) {
-        self.span = tracing::span::Span::none().entered();
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &mut self,
+        _exc_type: Option<Py<PyAny>>,
+        _exc_value: Option<Py<PyAny>>,
+        _traceback: Option<Py<PyAny>>,
+    ) -> PyResult<bool> {
+        if let Some(id) = self.id.take() {
+            end_user_span(id);
+        }
+        Ok(false)
+    }
+}
+
+impl Drop for PySpan {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            end_user_span(id);
+        }
     }
 }
 

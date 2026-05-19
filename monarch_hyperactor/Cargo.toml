@@ -33,7 +33,7 @@ hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 inventory = "0.3.24"
 lazy_errors = "0.10.1"
 lazy_static = "1.5"
-libc = "0.2.183"
+libc = "0.2.186"
 monarch_conda = { version = "0.0.0", path = "../monarch_conda" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
@@ -63,4 +63,4 @@ default = []
 packaged_rsync = []
 
 [lints]
-rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
+workspace = true

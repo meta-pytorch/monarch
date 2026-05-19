@@ -607,10 +607,10 @@ impl<M: RemoteMessage> Unacked<M> {
             message.seq
         );
 
-        if let Some(AckedSeq(largest, _)) = self.largest_acked {
-            if message.seq <= largest {
-                return;
-            }
+        if let Some(AckedSeq(largest, _)) = self.largest_acked
+            && message.seq <= largest
+        {
+            return;
         }
 
         self.deque.push_back(message);
@@ -859,6 +859,9 @@ pub(super) async fn multi_stream_recv_connected<
     deliver_tx: &mpsc::Sender<M>,
 ) -> Result<(), RecvLoopError> {
     let mut pending_ack: Option<Completion<W, Bytes>> = None;
+    // Tracked alongside `pending_ack` so we can `commit` on
+    // successful write.
+    let mut pending_ack_val: Option<u64> = None;
 
     loop {
         // Consolidated watermark access: decide whether to emit an ack
@@ -877,6 +880,7 @@ pub(super) async fn multi_stream_recv_connected<
             let ack = serialize_response(NetRxResponse::Ack(ack_val))
                 .map_err(|e| RecvLoopError::Io(e.into()))?;
             pending_ack = Some(stream.write(ack));
+            pending_ack_val = Some(ack_val);
         }
 
         tokio::select! {
@@ -886,7 +890,12 @@ pub(super) async fn multi_stream_recv_connected<
             result = async { pending_ack.as_mut().unwrap().drive().await },
                 if pending_ack.is_some() => {
                 match result {
-                    Ok(()) => pending_ack = None,
+                    Ok(()) => {
+                        if let Some(val) = pending_ack_val.take() {
+                            ack_watermark.lock().await.commit(val);
+                        }
+                        pending_ack = None;
+                    }
                     Err(e) => return Err(RecvLoopError::Io(e.into())),
                 }
             }
@@ -996,9 +1005,14 @@ pub(super) struct AckWatermark {
     /// Last ack value [`poll`](Self::poll) handed out, or `None` if no
     /// ack has been emitted yet.
     last_reported: Option<u64>,
+    /// Highest ack value the caller confirmed via
+    /// [`commit`](Self::commit) was written to the wire. Gates
+    /// [`highest_uncommitted`](Self::highest_uncommitted) so a poll
+    /// whose write failed gets retried on cleanup.
+    last_committed: Option<u64>,
     /// Messages recorded since the last emission.
     msgs_since_report: u64,
-    /// When the last emission was committed.
+    /// When the last emission was claimed.
     last_report_time: Instant,
 }
 
@@ -1010,6 +1024,7 @@ impl AckWatermark {
             ack_msg_interval,
             ack_time_interval,
             last_reported: None,
+            last_committed: None,
             msgs_since_report: 0,
             last_report_time: Instant::now(),
         }
@@ -1065,6 +1080,41 @@ impl AckWatermark {
         self.msgs_since_report = 0;
         self.last_report_time = Instant::now();
         Some(watermark)
+    }
+
+    /// Record that an ack covering up to `seq` has been written to
+    /// the wire. Monotonic; idempotent on same-value calls.
+    /// Advances [`highest_uncommitted`](Self::highest_uncommitted)'s
+    /// gate so cleanup paths skip work already on the wire.
+    pub fn commit(&mut self, seq: u64) {
+        if self.last_committed.is_none_or(|c| seq > c) {
+            self.last_committed = Some(seq);
+        }
+    }
+
+    /// The highest seq observed but not yet committed, or `None` if
+    /// nothing observed since the last commit. Pure read: every
+    /// concurrent caller sees the same value, so each multi-stream
+    /// stream emits a covering ack on its own wire. Gates on
+    /// `last_committed` (not `last_reported`) so a value handed out
+    /// by a `poll` whose write failed is still surfaced. The value
+    /// is `max(max(received), highest_contiguous)`, which can exceed
+    /// the contiguous frontier when there are gaps — at terminal
+    /// cleanup the session is tearing down anyway, so acking past
+    /// gaps is acceptable.
+    pub fn highest_uncommitted(&self) -> Option<u64> {
+        let max_seen = self
+            .received
+            .iter()
+            .next_back()
+            .copied()
+            .into_iter()
+            .chain(self.highest_contiguous)
+            .max()?;
+        if self.last_committed.is_some_and(|c| max_seen <= c) {
+            return None;
+        }
+        Some(max_seen)
     }
 
     /// Duration until [`poll`](Self::poll) should next be invoked to
@@ -1168,6 +1218,89 @@ mod ack_watermark_tests {
         assert_eq!(t.poll(), None);
         t.record(1);
         assert_eq!(t.poll(), Some(1));
+    }
+
+    #[test]
+    fn highest_uncommitted_emits_below_policy_threshold() {
+        // High threshold so `poll` returns None; cleanup surfaces
+        // the watermark anyway since nothing was committed.
+        let mut t = AckWatermark::new(1000, Duration::from_secs(3600));
+        t.record(0);
+        t.record(1);
+        assert_eq!(t.poll(), None);
+        assert_eq!(t.highest_uncommitted(), Some(1));
+    }
+
+    #[test]
+    fn highest_uncommitted_returns_none_when_nothing_recorded() {
+        let t = watermark();
+        assert_eq!(t.highest_uncommitted(), None);
+    }
+
+    #[test]
+    fn highest_uncommitted_surfaces_out_of_order_frames() {
+        // No contiguous run yet, but seq 5 was received. At cleanup
+        // we still surface it so the wire emits a covering ack.
+        let mut t = watermark();
+        t.record(5);
+        assert_eq!(t.highest_uncommitted(), Some(5));
+    }
+
+    #[test]
+    fn highest_uncommitted_returns_none_when_already_committed() {
+        let mut t = watermark();
+        t.record(0);
+        t.record(1);
+        t.commit(1);
+        assert_eq!(t.highest_uncommitted(), None);
+    }
+
+    #[test]
+    fn highest_uncommitted_surfaces_uncommitted_after_failed_poll() {
+        // `poll` advances `last_reported` but not `last_committed`.
+        // If the caller's write failed (no `commit`), cleanup must
+        // still surface the watermark.
+        let mut t = AckWatermark::new(1, Duration::from_secs(3600));
+        t.record(0);
+        assert_eq!(t.poll(), Some(0));
+        // No commit happened.
+        assert_eq!(t.highest_uncommitted(), Some(0));
+    }
+
+    #[test]
+    fn highest_uncommitted_returns_value_to_every_caller() {
+        // Pure read: concurrent cleanups all see the same value, so
+        // every stream emits a covering ack on its own wire.
+        let mut t = watermark();
+        t.record(0);
+        t.record(1);
+        assert_eq!(t.highest_uncommitted(), Some(1));
+        assert_eq!(t.highest_uncommitted(), Some(1));
+    }
+
+    #[test]
+    fn highest_uncommitted_surfaces_when_received_has_uncommitted_seqs() {
+        // `last_committed` covers the contiguous frontier, but a new
+        // out-of-order seq has arrived since the commit. Surface its
+        // value so the wire emits a covering ack on cleanup.
+        let mut t = watermark();
+        t.record(0);
+        t.commit(0);
+        t.record(5);
+        assert_eq!(t.highest_uncommitted(), Some(5));
+    }
+
+    #[test]
+    fn commit_is_idempotent_and_monotonic() {
+        let mut t = watermark();
+        t.record(0);
+        t.record(1);
+        t.commit(1);
+        // Older values do not regress `last_committed`.
+        t.commit(0);
+        // Same-value commits are no-ops.
+        t.commit(1);
+        assert_eq!(t.highest_uncommitted(), None);
     }
 }
 
@@ -1328,7 +1461,7 @@ impl<L: Link> Session<L, Disconnected> {
         >,
     > {
         Box::pin(async move {
-            let Session { link, state: _ } = self;
+            let Session { mut link, state: _ } = self;
             match link.next().await {
                 Ok(stream) => {
                     let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
@@ -1359,7 +1492,7 @@ impl<L: Link> Session<L, Disconnected> {
         >,
     > {
         Box::pin(async move {
-            let Session { link, state: _ } = self;
+            let Session { mut link, state: _ } = self;
             let sleep = tokio::time::sleep_until(deadline);
             tokio::pin!(sleep);
             let mut consecutive_failures: u32 = 0;

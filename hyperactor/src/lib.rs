@@ -62,10 +62,13 @@
 pub mod accum;
 pub mod actor;
 pub mod actor_local;
+pub mod addr;
 pub mod channel;
 pub mod config;
 pub mod context;
-pub mod host;
+pub mod endpoint;
+/// Gateway management for proc connectivity.
+pub mod gateway;
 pub mod id;
 mod init;
 pub mod introspect;
@@ -74,10 +77,10 @@ pub mod message;
 pub mod metrics;
 pub mod ordering;
 pub mod panic_handler;
+mod parse;
 pub mod port;
 pub mod proc;
 pub mod ref_;
-pub mod reference;
 pub mod remote;
 mod signal_handler;
 mod stdio_redirect;
@@ -107,11 +110,22 @@ pub mod internal_macro_support {
 
 pub use actor::Actor;
 pub use actor::ActorHandle;
+pub use actor::AnyActorHandle;
 pub use actor::Handler;
 pub use actor::HandlerInfo;
 pub use actor::RemoteHandles;
 pub use actor::RemoteSpawn;
 pub use actor_local::ActorLocal;
+pub use addr::ActorAddr;
+pub use addr::Addr;
+pub use addr::AddrParseError;
+pub use addr::Location;
+pub use addr::PortAddr;
+pub use addr::ProcAddr;
+pub use endpoint::Endpoint;
+pub use endpoint::EndpointLocation;
+pub use endpoint::RemoteEndpoint;
+pub use gateway::Gateway;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]
@@ -135,6 +149,8 @@ pub use hyperactor_macros::instrument_infallible;
 pub use hyperactor_macros::observe_async;
 pub use hyperactor_macros::observe_result;
 #[doc(inline)]
+pub use hyperactor_macros::spawnable;
+#[doc(inline)]
 pub use hyperactor_macros::uid;
 pub use hyperactor_telemetry::declare_static_counter;
 pub use hyperactor_telemetry::declare_static_gauge;
@@ -142,7 +158,11 @@ pub use hyperactor_telemetry::declare_static_histogram;
 pub use hyperactor_telemetry::declare_static_timer;
 pub use hyperactor_telemetry::key_value;
 pub use hyperactor_telemetry::kv_pairs;
+pub use id::ActorId;
+pub use id::Id;
 pub use id::Label;
+pub use id::PortId;
+pub use id::ProcId;
 pub use id::Uid;
 #[doc(inline)]
 pub use init::initialize;
@@ -156,15 +176,23 @@ pub use mailbox::Message;
 pub use mailbox::OncePortHandle;
 pub use mailbox::PortHandle;
 pub use mailbox::RemoteMessage;
+pub use proc::AttachRequest;
+pub use proc::AttachRx;
+pub use proc::BootstrapAssignment;
 pub use proc::Context;
+pub use proc::Host2Client;
 pub use proc::Instance;
 pub use proc::InstanceCell;
 pub use proc::Proc;
 pub use proc::WeakProc;
-// Re-exported because `hyperactor_macros::RefClient` generates code referencing `hyperactor::ActorRef`.
-#[doc(hidden)]
-pub use reference::ActorRef;
+pub use ref_::ActorRef;
+pub use ref_::OncePortRef;
+pub use ref_::PortRef;
+pub use ref_::UnboundPort;
+pub use ref_::UnboundPortKind;
 pub use remote::Accepts;
+/// Rank or position index used by distributed mesh helpers.
+pub type Index = usize;
 #[doc(inline)]
 pub use signal_handler::SignalCleanupGuard;
 #[doc(inline)]
@@ -192,4 +220,10 @@ mod private {
     impl<A: crate::Actor> Sealed for &crate::proc::Context<'_, A> {}
     impl Sealed for crate::mailbox::Mailbox {}
     impl Sealed for &crate::mailbox::Mailbox {}
+    impl<A: crate::Actor> Sealed for &crate::actor::ActorHandle<A> {}
+    impl<M: crate::Message> Sealed for &crate::mailbox::PortHandle<M> {}
+    impl<M: crate::Message> Sealed for crate::mailbox::OncePortHandle<M> {}
+    impl<A: crate::actor::Referable> Sealed for &crate::ref_::ActorRef<A> {}
+    impl<M: crate::RemoteMessage> Sealed for &crate::ref_::PortRef<M> {}
+    impl<M: crate::RemoteMessage> Sealed for crate::ref_::OncePortRef<M> {}
 }

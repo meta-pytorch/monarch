@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use hyperactor::ActorAddr;
 use hyperactor::Instance;
 use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
@@ -18,7 +19,6 @@ use hyperactor::accum::ReducerFactory;
 use hyperactor::accum::ReducerSpec;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor::ref_::ActorRef;
 use hyperactor_mesh::sel;
 use hyperactor_mesh::value_mesh::ValueOverlay;
 use hyperactor_mesh::value_mesh::rle;
@@ -82,7 +82,7 @@ py_global!(
 );
 py_global!(make_future, "monarch._src.actor.future", "Future");
 
-fn unpickle_from_part<'py>(py: Python<'py>, part: Part) -> PyResult<Bound<'py, PyAny>> {
+fn unpickle_from_part(py: Python<'_>, part: Part) -> PyResult<Bound<'_, PyAny>> {
     unpickle(
         py,
         FrozenBuffer {
@@ -100,6 +100,17 @@ pub(crate) enum EndpointAdverb {
     CallOne,
     Choose,
     Stream,
+}
+
+impl EndpointAdverb {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Call => "call",
+            Self::CallOne => "call_one",
+            Self::Choose => "choose",
+            Self::Stream => "stream",
+        }
+    }
 }
 
 /// RAII guard for recording endpoint call telemetry.
@@ -160,7 +171,6 @@ impl Drop for RecordEndpointGuard {
             "method" => self.method_name.clone(),
             "actor_count" => actor_count_str
         );
-        tracing::info!(message = "response received", method = self.method_name);
 
         let duration_us = self.start.elapsed().as_micros();
 
@@ -200,33 +210,67 @@ impl Drop for RecordEndpointGuard {
 
 /// Send-safe RAII guard for an OTEL-style endpoint span.
 ///
-/// `tracing::Span::enter()` returns a `!Send` `Entered<'_>` guard that cannot
-/// cross `.await` points. We need the span to open on the Python thread (at
-/// call site) and close on whatever tokio thread delivers the response. To
-/// achieve that, we drive the `Layer::on_enter`/`on_exit` callbacks directly
-/// through the global dispatcher instead of holding an `Entered` guard.
-///
-/// The perfetto sink remembers which track a span entered on and replays the
-/// matching exit on that same track, so slices render on the originating
-/// (Python) thread regardless of where `Drop` fires.
+/// We only need endpoint spans for telemetry slices, not for `tracing` context
+/// propagation. So this guard emits synthetic trace events directly into the
+/// unified telemetry dispatcher instead of holding a real `tracing::Span`
+/// across `.await` points.
 pub(crate) struct SpanGuard {
-    span: tracing::Span,
+    id: u64,
 }
 
 impl SpanGuard {
-    fn enter(span: tracing::Span) -> Self {
-        if let Some(id) = span.id() {
-            tracing::dispatcher::get_default(|d| d.enter(&id));
+    fn actor_endpoint(name: &'static str, actor_id: &ActorAddr, mesh: &str, method: &str) -> Self {
+        Self {
+            id: hyperactor_telemetry::start_user_span(
+                name,
+                hyperactor_telemetry::sinks::perfetto::ENDPOINT_TELEMETRY_TARGET,
+                [
+                    (
+                        "actor_id",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(
+                            actor_id.to_string(),
+                        ),
+                    ),
+                    (
+                        "mesh",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(mesh.to_string()),
+                    ),
+                    (
+                        "method",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(method.to_string()),
+                    ),
+                ],
+            ),
         }
-        Self { span }
+    }
+
+    fn remote(name: &'static str, actor_id: &ActorAddr, call_name: &str) -> Self {
+        Self {
+            id: hyperactor_telemetry::start_user_span(
+                name,
+                hyperactor_telemetry::sinks::perfetto::ENDPOINT_TELEMETRY_TARGET,
+                [
+                    (
+                        "actor_id",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(
+                            actor_id.to_string(),
+                        ),
+                    ),
+                    (
+                        "call_name",
+                        hyperactor_telemetry::trace_dispatcher::FieldValue::Str(
+                            call_name.to_string(),
+                        ),
+                    ),
+                ],
+            ),
+        }
     }
 }
 
 impl Drop for SpanGuard {
     fn drop(&mut self) {
-        if let Some(id) = self.span.id() {
-            tracing::dispatcher::get_default(|d| d.exit(&id));
-        }
+        hyperactor_telemetry::end_user_span(self.id);
     }
 }
 
@@ -246,7 +290,7 @@ async fn collect_value(
     qualified_endpoint_name: &Option<String>,
 ) -> PyResult<(Part, Option<usize>)> {
     enum RaceResult {
-        Message(PythonMessage),
+        Message(Box<PythonMessage>),
         SupervisionError(PyErr),
         RecvError(String),
     }
@@ -260,7 +304,7 @@ async fn collect_value(
                         Some(err) => RaceResult::SupervisionError(err),
                         None => {
                             match rx.recv().await {
-                                Ok(msg) => RaceResult::Message(msg),
+                                Ok(msg) => RaceResult::Message(Box::new(msg)),
                                 Err(e) => RaceResult::RecvError(e.to_string()),
                             }
                         }
@@ -268,33 +312,32 @@ async fn collect_value(
                 }
                 msg = rx.recv() => {
                     match msg {
-                        Ok(m) => RaceResult::Message(m),
+                        Ok(m) => RaceResult::Message(Box::new(m)),
                         Err(e) => RaceResult::RecvError(e.to_string()),
                     }
                 }
             }
         }
         _ => match rx.recv().await {
-            Ok(msg) => RaceResult::Message(msg),
+            Ok(msg) => RaceResult::Message(Box::new(msg)),
             Err(e) => RaceResult::RecvError(e.to_string()),
         },
     };
 
     match race_result {
-        RaceResult::Message(PythonMessage {
-            kind: PythonMessageKind::Result { rank, .. },
-            message,
-            ..
-        }) => Ok((message, rank)),
-        RaceResult::Message(PythonMessage {
-            kind: PythonMessageKind::Exception { .. },
-            message,
-            ..
-        }) => Python::attach(|py| Err(PyErr::from_value(unpickle_from_part(py, message)?))),
-        RaceResult::Message(msg) => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unexpected message kind {:?}",
-            msg.kind
-        ))),
+        RaceResult::Message(boxed) => {
+            let PythonMessage { kind, message, .. } = *boxed;
+            match kind {
+                PythonMessageKind::Result { rank, .. } => Ok((message, rank)),
+                PythonMessageKind::Exception { .. } => {
+                    Python::attach(|py| Err(PyErr::from_value(unpickle_from_part(py, message)?)))
+                }
+                other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unexpected message kind {:?}",
+                    other
+                ))),
+            }
+        }
         RaceResult::RecvError(e) => Err(pyo3::exceptions::PyEOFError::new_err(format!(
             "Port closed: {}",
             e
@@ -325,7 +368,7 @@ async fn collect_valuemesh(
     );
 
     enum RaceResult {
-        Collected(PythonMessage),
+        Collected(Box<PythonMessage>),
         SupervisionError(PyErr),
         RecvError(String),
     }
@@ -344,20 +387,21 @@ async fn collect_valuemesh(
                 }
                 batch = rx.recv() => {
                     match batch {
-                        Ok(b) => RaceResult::Collected(b),
+                        Ok(b) => RaceResult::Collected(Box::new(b)),
                         Err(e) => RaceResult::RecvError(e.to_string()),
                     }
                 }
             }
         }
         None => match rx.recv().await {
-            Ok(batch) => RaceResult::Collected(batch),
+            Ok(batch) => RaceResult::Collected(Box::new(batch)),
             Err(e) => RaceResult::RecvError(e.to_string()),
         },
     };
 
     match race_result {
-        RaceResult::Collected(msg) => {
+        RaceResult::Collected(boxed) => {
+            let msg = *boxed;
             let overlay = msg.into_overlay().map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
                     "failed to extract overlay from collected responses: {e}"
@@ -590,7 +634,7 @@ pub(crate) trait Endpoint {
     /// for Remote) and route the slice to an actor-specific track. The adverb is the span name,
     /// so no formatting happens at the call site and the sink formats only when
     /// it renders the slice.
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard;
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard;
 
     fn get_current_instance(&self, py: Python<'_>) -> PyResult<Instance<PythonActor>> {
         let context = get_context(py).call0()?;
@@ -624,7 +668,7 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::Call, instance.self_id());
+        let span_guard = self.enter_endpoint_span(EndpointAdverb::Call, instance.self_addr());
 
         let extent = self.get_extent(py)?;
         let method_name = self.get_method_name().to_string();
@@ -670,7 +714,7 @@ pub(crate) trait Endpoint {
         kwargs: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_id());
+        let span_guard = self.enter_endpoint_span(EndpointAdverb::Choose, instance.self_addr());
         let (port_ref, receiver) = self.open_response_port(&instance);
 
         let caller_headers = self.build_operation_context_headers(EndpointAdverb::Choose);
@@ -714,7 +758,7 @@ pub(crate) trait Endpoint {
         }
 
         let instance = self.get_current_instance(py)?;
-        let span_guard = self.enter_endpoint_span(EndpointAdverb::CallOne, instance.self_id());
+        let span_guard = self.enter_endpoint_span(EndpointAdverb::CallOne, instance.self_addr());
         let (port_ref, receiver) = self.open_response_port(&instance);
 
         let caller_headers = self.build_operation_context_headers(EndpointAdverb::CallOne);
@@ -908,40 +952,10 @@ impl Endpoint for ActorEndpoint {
         Some(format!("{}.{}()", self.mesh_name, self.method.name()))
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard {
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard {
         let mesh = self.mesh_name.as_str();
         let method = self.method.name();
-        let span = match adverb {
-            EndpointAdverb::Call => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::CallOne => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call_one",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Choose => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "choose",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Stream => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "stream",
-                mesh = mesh,
-                method = method,
-                actor_id = %actor_id,
-            ),
-        };
-        SpanGuard::enter(span)
+        SpanGuard::actor_endpoint(adverb.as_str(), actor_id, mesh, method)
     }
 }
 
@@ -1203,7 +1217,7 @@ impl Endpoint for Remote {
         None // Remote endpoints don't have qualified names
     }
 
-    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorRef) -> SpanGuard {
+    fn enter_endpoint_span(&self, adverb: EndpointAdverb, actor_id: &ActorAddr) -> SpanGuard {
         let call_name = Python::attach(|py| {
             self.inner
                 .call_method0(py, "_call_name")
@@ -1211,33 +1225,7 @@ impl Endpoint for Remote {
                 .and_then(|v| v.extract::<String>(py).ok())
         });
         let call_name = call_name.as_deref().unwrap_or("");
-        let span = match adverb {
-            EndpointAdverb::Call => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::CallOne => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "call_one",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Choose => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "choose",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-            EndpointAdverb::Stream => tracing::info_span!(
-                target: "monarch_hyperactor::telemetry::endpoint",
-                "stream",
-                call_name = call_name,
-                actor_id = %actor_id,
-            ),
-        };
-        SpanGuard::enter(span)
+        SpanGuard::remote(adverb.as_str(), actor_id, call_name)
     }
 }
 
@@ -1480,6 +1468,7 @@ impl Accumulator for PythonResponseMessageAccumulator {
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::ActorAddr;
     use hyperactor::mailbox::headers::OPERATION_ADVERB;
     use hyperactor::mailbox::headers::OPERATION_ENDPOINT;
 
@@ -1516,7 +1505,7 @@ mod tests {
         fn get_qualified_name(&self) -> Option<String> {
             self.qualified_name.clone()
         }
-        fn enter_endpoint_span(&self, _adverb: EndpointAdverb, _actor_id: &ActorRef) -> SpanGuard {
+        fn enter_endpoint_span(&self, _adverb: EndpointAdverb, _actor_id: &ActorAddr) -> SpanGuard {
             unreachable!()
         }
     }

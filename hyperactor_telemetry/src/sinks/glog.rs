@@ -210,9 +210,17 @@ impl GlogSink {
                     write!(&mut self.line_buffer, "event")?;
                 }
 
+                let max_key_len = fields
+                    .iter()
+                    .filter(|(k, _)| *k != "message" && *k != crate::SUBJECT_KEY)
+                    .map(|(k, _)| k.len())
+                    .max()
+                    .unwrap_or(0);
+
                 for (k, v) in fields.iter() {
                     if *k != "message" && *k != crate::SUBJECT_KEY {
-                        write!(&mut self.line_buffer, ", {}:", k)?;
+                        let pad = max_key_len - k.len() + 1;
+                        write!(&mut self.line_buffer, "\n    {k}:{:pad$}", "")?;
                         match v {
                             FieldValue::Bool(b) => write!(&mut self.line_buffer, "{}", b)?,
                             FieldValue::I64(i) => write!(&mut self.line_buffer, "{}", i)?,

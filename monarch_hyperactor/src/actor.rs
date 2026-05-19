@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
@@ -29,6 +30,7 @@ use hyperactor::actor::Signal;
 use hyperactor::context::Actor as ContextActor;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::IndexedErasedUnbound;
@@ -75,7 +77,7 @@ use crate::metrics::ENDPOINT_ACTOR_ERROR;
 use crate::metrics::ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_ACTOR_PANIC;
 use crate::pickle::pickle_to_part;
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 use crate::pympsc;
 use crate::pytokio::PythonTask;
 use crate::runtime::get_proc_runtime;
@@ -373,7 +375,7 @@ impl PythonMessage {
             } => {
                 let broker = BrokerId::new(local_state_broker).resolve(cx).await;
                 let (send, recv) = cx.open_once_port();
-                broker.send(cx, LocalStateBrokerMessage::Get(id, send))?;
+                broker.post(cx, LocalStateBrokerMessage::Get(id, send));
                 let state = recv.recv().await?;
                 let mut state_it = state.state.into_iter();
                 monarch_with_gil(|py| {
@@ -491,7 +493,7 @@ impl Bind for PythonMessage {
 impl PythonMessage {
     #[new]
     #[pyo3(signature = (kind, message))]
-    pub fn new<'py>(kind: PythonMessageKind, message: PyRef<'py, FrozenBuffer>) -> PyResult<Self> {
+    pub fn new(kind: PythonMessageKind, message: PyRef<'_, FrozenBuffer>) -> PyResult<Self> {
         Ok(PythonMessage::new_from_buf(kind, message.inner.clone()))
     }
 
@@ -517,14 +519,12 @@ pub(super) struct PythonActorHandle {
 impl PythonActorHandle {
     // TODO: do the pickling in rust
     fn send(&self, instance: &PyInstance, message: &PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(instance.deref(), message.clone())
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        self.inner.post(instance.deref(), message.clone());
         Ok(())
     }
 
-    fn bind(&self) -> PyActorId {
-        self.inner.bind::<PythonActor>().into_actor_id().into()
+    fn bind(&self) -> PyActorAddr {
+        self.inner.bind::<PythonActor>().into_actor_addr().into()
     }
 }
 
@@ -545,12 +545,12 @@ pub enum PythonActorDispatchMode {
 /// An actor for which message handlers are implemented in Python.
 #[derive(Debug)]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         PythonMessage { cast = true },
         MeshFailure { cast = true },
     ],
 )]
+#[hyperactor::spawnable]
 pub struct PythonActor {
     /// The Python object that we delegate message handling to.
     actor: Py<PyAny>,
@@ -710,8 +710,7 @@ impl PythonActor {
         // (matching GlobalClientActor::fresh_instance).
         instance.set_system();
 
-        // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
-        // are bound.
+        // Bind to ensure the Undeliverable<MessageEnvelope> port is bound.
         let _client_ref = handle.bind::<PythonActor>();
 
         get_tokio_runtime().spawn(async move {
@@ -745,7 +744,7 @@ impl PythonActor {
 
                             let kind = ActorErrorKind::processing(err);
                             let err = ActorError {
-                                actor_id: Box::new(instance.self_id().clone()),
+                                actor_id: Box::new(instance.self_addr().clone()),
                                 kind: Box::new(kind),
                             };
 
@@ -763,7 +762,7 @@ impl PythonActor {
                             // exiting the loop.
                             // Else, continue handling messages.
                             if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
-                                for supervision_event in supervision_rx.drain() {
+                                while let Ok(supervision_event) = supervision_rx.try_recv() {
                                     if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
                                         break 'messages Some(err);
                                     }
@@ -774,20 +773,21 @@ impl PythonActor {
                     }
                     signal = signal_rx.recv() => {
                         let signal = signal.map_err(ActorError::from);
-                        tracing::info!(actor_id = %instance.self_id(), "client received signal {signal:?}");
+                        tracing::info!(actor_id = %instance.self_addr(), "client received signal {signal:?}");
                         match signal {
                             Ok(signal@(Signal::Stop(_) | Signal::DrainAndStop(_))) => {
                                 need_drain = matches!(signal, Signal::DrainAndStop(_));
                                 break None;
                             },
+                            Ok(Signal::ExitRequested(_)) => break None,
                             Ok(Signal::ChildStopped(_)) => {},
-                            Ok(Signal::Abort(reason)) => {
-                                break Some(ActorError { actor_id: Box::new(instance.self_id().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
+                            Ok(Signal::Kill(reason)) => {
+                                break Some(ActorError { actor_id: Box::new(instance.self_addr().clone()), kind: Box::new(ActorErrorKind::Aborted(reason)) })
                             },
                             Err(err) => break Some(err),
                         }
                     }
-                    Ok(supervision_event) = supervision_rx.recv() => {
+                    Some(supervision_event) = supervision_rx.recv() => {
                         if let Err(err) = instance.handle_supervision_event(&mut actor, supervision_event).await {
                             break Some(err);
                         }
@@ -799,14 +799,14 @@ impl PythonActor {
                 while let Ok(work) = work_rx.try_recv() {
                     if let Err(e) = work.handle(&mut actor, instance).await {
                         err = Some(ActorError {
-                            actor_id: Box::new(instance.self_id().clone()),
+                            actor_id: Box::new(instance.self_addr().clone()),
                             kind: Box::new(ActorErrorKind::processing(e)),
                         });
                         break;
                     }
                     n += 1;
                 }
-                tracing::debug!(actor_id = %instance.self_id(), "client drained {} messages before stopping", n);
+                tracing::debug!(actor_id = %instance.self_addr(), "client drained {} messages before stopping", n);
             }
             if let Some(err) = err {
                 let event = actor_error_to_event(instance, &actor, err);
@@ -814,7 +814,7 @@ impl PythonActor {
                 // just records it in v1. We want to crash instead, as nothing will
                 // monitor the client ProcAgent for now.
                 tracing::error!(
-                    actor_id = %instance.self_id(),
+                    actor_id = %instance.self_addr(),
                     "could not propagate supervision event {} because it reached the global client: signaling KeyboardInterrupt to main thread",
                     event,
                 );
@@ -843,7 +843,7 @@ impl PythonActor {
                     }
                 });
             } else {
-                tracing::info!(actor_id = %instance.self_id(), "client stopped");
+                tracing::info!(actor_id = %instance.self_addr(), "client stopped");
                 instance.change_status(hyperactor::actor::ActorStatus::Stopped("client stopped".into()));
             }
         });
@@ -862,7 +862,7 @@ fn actor_error_to_event(
         _ => {
             let status = ActorStatus::generic_failure(err.kind.to_string());
             ActorSupervisionEvent::new(
-                instance.self_id().clone(),
+                instance.self_addr().clone(),
                 actor.display_name(),
                 status,
                 None,
@@ -897,7 +897,7 @@ impl Actor for PythonActor {
             // Create an error port that converts PythonMessage to an abort signal.
             // This allows Python to send errors that trigger actor supervision.
             let error_port: hyperactor::PortHandle<PythonMessage> =
-                this.port::<Signal>().contramap(|msg: PythonMessage| {
+                this.signal_port().contramap(|msg: PythonMessage| {
                     monarch_with_gil_blocking(|py| {
                         let err = match msg.kind {
                             PythonMessageKind::Exception { .. } => {
@@ -917,7 +917,7 @@ impl Actor for PythonActor {
                                 SerializablePyErr::from(py, &py_err)
                             }
                         };
-                        Signal::Abort(err.to_string())
+                        Signal::Kill(err.to_string())
                     })
                 });
 
@@ -1026,23 +1026,32 @@ impl Actor for PythonActor {
         ins: &Instance<Self>,
         mut envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        if envelope.0.sender() != ins.self_id() {
+        if envelope
+            .as_message()
+            .is_some_and(|envelope| envelope.sender() != ins.self_addr())
+        {
             // This can happen if the sender is comm. Update the envelope.
             envelope = update_undeliverable_envelope_for_casting(envelope);
         }
+        let envelope = match envelope {
+            Undeliverable::Message(envelope) => envelope,
+            Undeliverable::Lost(lost) => {
+                return Err(UndeliverableMessageError::Lost { lost }.into());
+            }
+        };
         assert_eq!(
-            envelope.0.sender(),
-            ins.self_id(),
+            envelope.sender(),
+            ins.self_addr(),
             "undeliverable message was returned to the wrong actor. \
-            Return address = {}, src actor = {}, dest actor port = {}, message type = {}, envelope headers = {}",
-            envelope.0.sender(),
-            ins.self_id(),
-            envelope.0.dest(),
-            envelope.0.data().typename().unwrap_or("unknown"),
-            envelope.0.headers()
+            Return address = {}, src actor = {}, dest handler port = {}, message type = {}, envelope headers = {}",
+            envelope.sender(),
+            ins.self_addr(),
+            envelope.dest(),
+            envelope.data().typename().unwrap_or("unknown"),
+            envelope.headers()
         );
 
-        let cx = Context::new(ins, envelope.0.headers().clone());
+        let cx = Context::new(ins, envelope.headers().clone());
 
         let (envelope, handled) = monarch_with_gil(|py| {
             let py_cx = match &self.instance {
@@ -1062,7 +1071,7 @@ impl Actor for PythonActor {
             }
             .into_bound_py_any(py)?;
             let py_envelope = PythonUndeliverableMessageEnvelope {
-                inner: Some(envelope),
+                inner: Some(Undeliverable::Message(envelope)),
             }
             .into_bound_py_any(py)?;
             let handled = self
@@ -1311,10 +1320,10 @@ impl PythonActor {
 
         // Spawn a child actor to await the Python handler method.
         tokio::spawn(handle_async_endpoint_panic(
-            cx.port(),
+            cx.signal_port(),
             PythonTask::new(future)?,
             receiver,
-            cx.self_id().to_string(),
+            cx.self_addr().to_string(),
             endpoint,
         ));
         Ok(())
@@ -1426,7 +1435,7 @@ impl Handler<MeshFailure> for PythonActor {
                         actor_name = message.actor_mesh_name,
                         event = %message.event,
                         "__supervise__ on {} handled a supervision event, not reporting any further",
-                        cx.self_id(),
+                        cx.self_addr(),
                     );
                     Ok(())
                 } else {
@@ -1446,7 +1455,7 @@ impl Handler<MeshFailure> for PythonActor {
                                 .unwrap_or_else(|| message.event.actor_id.log_name()),
                             "SupervisionError::Unhandled",
                         ),
-                        (cx.self_id().log_name(), "UnhandledSupervisionEvent"),
+                        (cx.self_addr().log_name(), "UnhandledSupervisionEvent"),
                     ] {
                         tracing::info!(
                             name = "ActorMeshStatus",
@@ -1454,12 +1463,12 @@ impl Handler<MeshFailure> for PythonActor {
                             actor_name,
                             event = %message.event,
                             "__supervise__ on {} did not handle a supervision event, reporting to the next next owner",
-                            cx.self_id(),
+                            cx.self_addr(),
                         );
                     }
                     let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
                         ActorSupervisionEvent::new(
-                            cx.self_id().clone(),
+                            cx.self_addr().clone(),
                             display_name.clone(),
                             ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(
                                 Box::new(message.event.clone()),
@@ -1492,7 +1501,7 @@ impl Handler<MeshFailure> for PythonActor {
                             .unwrap_or_else(|| message.event.actor_id.log_name()),
                         "SupervisionError::__supervise__::exception",
                     ),
-                    (cx.self_id().log_name(), "UnhandledSupervisionEvent"),
+                    (cx.self_addr().log_name(), "UnhandledSupervisionEvent"),
                 ] {
                     tracing::info!(
                         name = "ActorMeshStatus",
@@ -1500,12 +1509,12 @@ impl Handler<MeshFailure> for PythonActor {
                         actor_name,
                         event = %message.event,
                         "__supervise__ on {} threw an exception",
-                        cx.self_id(),
+                        cx.self_addr(),
                     );
                 }
                 let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(
                     ActorSupervisionEvent::new(
-                        cx.self_id().clone(),
+                        cx.self_addr().clone(),
                         display_name,
                         ActorStatus::Failed(ActorErrorKind::ErrorDuringHandlingSupervision(
                             err.to_string(),
@@ -1577,15 +1586,9 @@ async fn handle_async_endpoint_panic(
         ENDPOINT_ACTOR_ERROR.add(1, attributes);
         static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
         let client = &CLIENT
-            .get_or_init(|| {
-                get_proc_runtime()
-                    .instance("async_endpoint_handler")
-                    .unwrap()
-            })
+            .get_or_init(|| get_proc_runtime().client("async_endpoint_handler").unwrap())
             .0;
-        panic_sender
-            .send(&client, Signal::Abort(panic.to_string()))
-            .expect("Unable to send panic message");
+        panic_sender.post(&client, Signal::Kill(panic.to_string()));
     }
 
     // Record latency in microseconds
@@ -1618,13 +1621,13 @@ where
 impl LocalPort {
     fn send(&mut self, obj: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
-        port.send(self.instance.deref(), Ok(obj))
-            .map_err(to_py_error)
+        port.post(self.instance.deref(), Ok(obj));
+        Ok(())
     }
     fn exception(&mut self, e: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
-        port.send(self.instance.deref(), Err(e))
-            .map_err(to_py_error)
+        port.post(self.instance.deref(), Err(e));
+        Ok(())
     }
 }
 
@@ -1721,7 +1724,7 @@ impl Port {
         );
 
         self.port_ref
-            .send_with_headers(&self.instance, self.reply_headers.clone(), message)
+            .post_with_headers(&self.instance, self.reply_headers.clone(), message)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
@@ -1732,7 +1735,7 @@ impl Port {
         );
 
         self.port_ref
-            .send_with_headers(&self.instance, self.reply_headers.clone(), message)
+            .post_with_headers(&self.instance, self.reply_headers.clone(), message)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 }
@@ -1771,12 +1774,12 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
 #[cfg(test)]
 mod tests {
+    use hyperactor as reference;
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
     use hyperactor::id::Label;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
-    use hyperactor::reference;
     use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::host_mesh::host_agent::ProcState;
@@ -1794,7 +1797,7 @@ mod tests {
             typehash: 123,
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
         };
-        let port_ref = reference::PortRef::<PythonMessage>::attest_reducible(
+        let port_ref = hyperactor::PortRef::<PythonMessage>::attest_reducible(
             test_port_id("world_0", "client", 123),
             Some(reducer_spec),
             StreamingReducerOpts::default(),
@@ -1850,7 +1853,7 @@ mod tests {
     fn to_py_error_preserves_proc_creation_message() {
         // State<ProcState> w/ `state.is_none()`
         let state: resource::State<ProcState> = resource::State {
-            id: ResourceId::unique(Label::new("my-proc").unwrap()),
+            id: ResourceId::instance(Label::new("my-proc").unwrap()),
             status: Status::Failed("boom".into()),
             state: None,
             generation: 0,
@@ -1858,10 +1861,8 @@ mod tests {
         };
 
         // A ProcCreationError
-        let mesh_agent: hyperactor::reference::ActorRef<hyperactor_mesh::host_mesh::HostAgent> =
-            hyperactor::reference::ActorRef::attest(
-                test_port_id("hello_0", "actor", 0).actor_id().clone(),
-            );
+        let mesh_agent: hyperactor::ActorRef<hyperactor_mesh::host_mesh::HostAgent> =
+            hyperactor::ActorRef::attest(test_port_id("hello_0", "actor", 0).actor_addr());
         let expected_prefix = format!(
             "error creating proc (host rank 0) on host mesh agent {}",
             mesh_agent

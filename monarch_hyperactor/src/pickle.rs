@@ -599,10 +599,10 @@ pub fn pickle(
     Ok(PicklingState { inner: Some(inner) })
 }
 
-pub(crate) fn unpickle<'py>(
-    py: Python<'py>,
+pub(crate) fn unpickle(
+    py: Python<'_>,
     buffer: crate::buffers::FrozenBuffer,
-) -> PyResult<Bound<'py, PyAny>> {
+) -> PyResult<Bound<'_, PyAny>> {
     _unpickle(py).call1((buffer.into_py_any(py)?,))
 }
 

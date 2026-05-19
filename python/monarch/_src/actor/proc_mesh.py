@@ -41,7 +41,6 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyPr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Region, Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
-from monarch._rust_bindings.monarch_hyperactor.telemetry import forward_to_tracing
 from monarch._src.actor.actor_mesh import (
     _Actor,
     _create_endpoint_message,
@@ -63,6 +62,7 @@ from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.logging import LoggingManager
 from monarch._src.actor.shape import MeshTrait
+from monarch._src.actor.telemetry import log_with_tracing
 from monarch.tools.config.environment import CondaEnvironment
 from monarch.tools.config.workspace import Workspace
 from monarch.tools.utils import conda as conda_utils
@@ -101,38 +101,6 @@ _COMMON_CUDA_ENV_VARS: Tuple[str, ...] = (
 
 T = TypeVar("T")
 TActor = TypeVar("TActor", bound=Actor)
-
-
-def log_with_tracing(
-    level: int,
-    msg: object,
-    *args: object,
-    stack_info: bool = False,
-    stacklevel: int = 1,
-    extra: Dict[str, object] | None = None,
-    logger: logging.Logger | None = None,
-) -> None:
-    logger = logger or logging.getLogger(__name__)
-
-    fn, lno, func, sinfo = logger.findCaller(
-        stack_info=stack_info,
-        stacklevel=stacklevel + 1,
-    )
-
-    record = logger.makeRecord(
-        logger.name,
-        level,
-        fn,
-        lno,
-        msg,
-        args,
-        None,
-        func,
-        extra=extra,
-        sinfo=sinfo,
-    )
-    logger.handle(record)
-    forward_to_tracing(record)
 
 
 def _cuda_env_snapshot() -> Dict[str, Optional[str]]:
@@ -663,9 +631,9 @@ class ProcMesh(MeshTrait):
 
         Args:
             stream_to_client (bool): If True, logs from the remote processes will be streamed to the client.
-            Defaults to True.
+            Defaults to False.
             aggregate_window_sec (Optional[int]): If not None, logs from the remote processes will be aggregated
-            and sent to the client every aggregate_window_sec seconds. Defaults to 3 seconds, meaning no aggregation.
+            and sent to the client every aggregate_window_sec seconds. Defaults to None, meaning no aggregation.
             Error will be thrown if aggregate_window_sec is set and stream_to_client is False.
             level (int): The logging level of the logger. Defaults to logging.INFO.
 

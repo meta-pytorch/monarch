@@ -15,7 +15,7 @@
 //! ## Responsibilities
 //!
 //! - Assigns a unique `remote_buf_id` to each registered local memory handle
-//!   and stores the `Arc<dyn RdmaLocalMemory>` for later retrieval.
+//!   and stores the `Arc<KeepaliveLocalMemory>` for later retrieval.
 //! - Produces [`RdmaRemoteBuffer`] tokens that can be sent to remote peers so
 //!   they can address this buffer over RDMA.
 //! - Delegates MR registration, QP management, and data movement to the
@@ -29,28 +29,29 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
+use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
-use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::OnceCell;
 use typeuri::Named;
 
 use crate::backend::RdmaRemoteBackendContext;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
+use crate::backend::ibverbs::manager_actor::IbvManagerLocalMessageClient;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
-use crate::local_memory::RdmaLocalMemory;
+use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_components::RdmaRemoteBuffer;
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes
@@ -65,14 +66,14 @@ pub fn get_rdmaxcel_error_message(error_code: i32) -> String {
 
 /// Local-only messages for the [`RdmaManagerActor`].
 ///
-/// These messages carry `Arc<dyn RdmaLocalMemory>` and are therefore
+/// These messages carry `Arc<KeepaliveLocalMemory>` and are therefore
 /// not serializable -- they can only be sent within the same process.
 #[derive(Handler, HandleClient, Debug)]
 pub enum RdmaManagerMessage {
     /// Register a local memory handle and return a [`RdmaRemoteBuffer`] that
     /// remote peers can use to address this buffer over RDMA.
     RequestBuffer {
-        local: Arc<dyn RdmaLocalMemory>,
+        local: Arc<KeepaliveLocalMemory>,
         #[reply]
         reply: OncePortHandle<RdmaRemoteBuffer>,
     },
@@ -81,7 +82,7 @@ pub enum RdmaManagerMessage {
     RequestLocalMemory {
         remote_buf_id: usize,
         #[reply]
-        reply: OncePortHandle<Option<Arc<dyn RdmaLocalMemory>>>,
+        reply: OncePortHandle<Option<Arc<KeepaliveLocalMemory>>>,
     },
 }
 
@@ -100,7 +101,7 @@ wirevalue::register_type!(ReleaseBuffer);
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct GetIbvActorRef {
     #[reply]
-    pub reply: reference::OncePortRef<Option<reference::ActorRef<IbvManagerActor>>>,
+    pub reply: OncePortRef<Option<ActorRef<IbvManagerActor>>>,
 }
 wirevalue::register_type!(GetIbvActorRef);
 
@@ -109,7 +110,7 @@ wirevalue::register_type!(GetIbvActorRef);
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct GetTcpActorRef {
     #[reply]
-    pub reply: reference::OncePortRef<reference::ActorRef<TcpManagerActor>>,
+    pub reply: OncePortRef<ActorRef<TcpManagerActor>>,
 }
 wirevalue::register_type!(GetTcpActorRef);
 
@@ -144,16 +145,16 @@ impl<A: Actor> RdmaBackendActor<A> {
 
 #[derive(Debug)]
 #[hyperactor::export(
-    spawn = true,
     handlers = [
         GetIbvActorRef,
         GetTcpActorRef,
         ReleaseBuffer,
     ],
 )]
+#[hyperactor::spawnable]
 pub struct RdmaManagerActor {
     next_remote_buf_id: usize,
-    buffers: HashMap<usize, Arc<dyn RdmaLocalMemory>>,
+    buffers: HashMap<usize, Arc<KeepaliveLocalMemory>>,
     ibverbs: Option<RdmaBackendActor<IbvManagerActor>>,
     tcp: RdmaBackendActor<TcpManagerActor>,
 }
@@ -162,9 +163,13 @@ impl RdmaManagerActor {
     /// Construct an [`ActorHandle`] for the [`RdmaManagerActor`] co-located
     /// with the caller.
     pub fn local_handle(client: &impl context::Actor) -> ActorHandle<Self> {
-        let proc_id = client.mailbox().actor_id().proc_ref().into();
-        let actor_ref =
-            reference::ActorRef::attest(reference::ActorId::new(proc_id, "rdma_manager"));
+        let actor_ref = ActorRef::attest(
+            client
+                .mailbox()
+                .actor_addr()
+                .proc_addr()
+                .actor_addr("rdma_manager"),
+        );
         actor_ref
             .downcast_handle(client)
             .expect("RdmaManagerActor is not in the local process")
@@ -245,7 +250,7 @@ impl GetIbvActorRefHandler for RdmaManagerActor {
     async fn get_ibv_actor_ref(
         &mut self,
         _cx: &Context<Self>,
-    ) -> Result<Option<reference::ActorRef<IbvManagerActor>>, anyhow::Error> {
+    ) -> Result<Option<ActorRef<IbvManagerActor>>, anyhow::Error> {
         Ok(self.ibverbs.as_ref().map(|ibv| ibv.handle().bind()))
     }
 }
@@ -256,7 +261,7 @@ impl GetTcpActorRefHandler for RdmaManagerActor {
     async fn get_tcp_actor_ref(
         &mut self,
         _cx: &Context<Self>,
-    ) -> Result<reference::ActorRef<TcpManagerActor>, anyhow::Error> {
+    ) -> Result<ActorRef<TcpManagerActor>, anyhow::Error> {
         Ok(self.tcp.handle().bind())
     }
 }
@@ -279,22 +284,27 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     async fn request_buffer(
         &mut self,
         cx: &Context<Self>,
-        local: Arc<dyn RdmaLocalMemory>,
+        local: Arc<KeepaliveLocalMemory>,
     ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
         let remote_buf_id = self.next_remote_buf_id;
         self.next_remote_buf_id += 1;
         let size = local.size();
 
-        self.buffers.insert(remote_buf_id, local);
-
         let mut backends = Vec::new();
 
         if let Some(ibv) = &self.ibverbs {
+            let ibv_buffer = ibv
+                .handle()
+                .register_remote_buffer(cx, remote_buf_id, local.clone())
+                .await?
+                .map_err(|e| anyhow::anyhow!(e))?;
             backends.push(RdmaRemoteBackendContext::Ibverbs(
                 ibv.handle().bind(),
-                Arc::new(OnceCell::new()),
+                ibv_buffer,
             ));
         }
+
+        self.buffers.insert(remote_buf_id, local);
 
         backends.push(RdmaRemoteBackendContext::Tcp(self.tcp.handle().bind()));
 
@@ -310,7 +320,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         &mut self,
         _cx: &Context<Self>,
         remote_buf_id: usize,
-    ) -> Result<Option<Arc<dyn RdmaLocalMemory>>, anyhow::Error> {
+    ) -> Result<Option<Arc<KeepaliveLocalMemory>>, anyhow::Error> {
         Ok(self.buffers.get(&remote_buf_id).cloned())
     }
 }
