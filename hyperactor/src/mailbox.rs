@@ -27,7 +27,7 @@
 //! let mbox = Mailbox::new(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
 //!
-//! port.send(&client, 123);
+//! port.post(&client, 123);
 //! assert_eq!(receiver.recv().await.unwrap(), 123u64);
 //! # })
 //! ```
@@ -48,7 +48,7 @@
 //!
 //! let (port, receiver) = mbox.open_once_port::<u64>();
 //!
-//! port.send(&client, 123u64);
+//! port.post(&client, 123u64);
 //! assert_eq!(receiver.recv().await.unwrap(), 123u64);
 //! # })
 //! ```
