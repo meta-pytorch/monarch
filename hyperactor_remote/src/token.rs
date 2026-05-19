@@ -44,6 +44,7 @@ use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -228,7 +229,7 @@ impl<C: TokenPeer, J: TokenPeer> Token<C, J> {
         joiner: J,
         result: PortRef<JoinResult<C>>,
     ) -> anyhow::Result<()> {
-        self.rendezvous.send(cx, Join { joiner, result })?;
+        (&self.rendezvous).post(cx, Join { joiner, result });
         Ok(())
     }
 
@@ -341,40 +342,28 @@ impl<C: TokenPeer, J: TokenPeer> Actor for Rendezvous<C, J> {}
 impl<C: TokenPeer + Clone, J: TokenPeer> Handler<Join<C, J>> for Rendezvous<C, J> {
     async fn handle(&mut self, cx: &Context<Self>, message: Join<C, J>) -> anyhow::Result<()> {
         if self.options.policy == Policy::Once && self.joined {
-            message.result.send(
+            message.result.post(
                 cx,
                 JoinResult::Rejected {
                     reason: "token already joined".to_string(),
                 },
-            )?;
+            );
             return Ok(());
         }
 
-        if self
-            .creator_joined
-            .send(
-                cx,
-                Joined {
-                    peer: message.joiner,
-                },
-            )
-            .is_err()
-        {
-            message.result.send(
-                cx,
-                JoinResult::Rejected {
-                    reason: "token creator unavailable".to_string(),
-                },
-            )?;
-            return Ok(());
-        }
+        (&self.creator_joined).post(
+            cx,
+            Joined {
+                peer: message.joiner,
+            },
+        );
 
-        message.result.send(
+        message.result.post(
             cx,
             JoinResult::Joined {
                 peer: self.creator.clone(),
             },
-        )?;
+        );
         self.joined = true;
         Ok(())
     }
@@ -525,7 +514,7 @@ mod tests {
                 self.creator_joined.bind(),
                 Options::default(),
             )?;
-            self.token_out.send(this, token)?;
+            self.token_out.post(this, token);
             Ok(())
         }
     }

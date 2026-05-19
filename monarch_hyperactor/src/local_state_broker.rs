@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::OncePortHandle;
 use pyo3::prelude::*;
@@ -48,7 +49,7 @@ impl Handler<LocalStateBrokerMessage> for LocalStateBrokerActor {
         match message {
             LocalStateBrokerMessage::Set(id, state) => match self.ports.remove_entry(&id) {
                 Some((_, port)) => {
-                    port.send(cx, state)?;
+                    port.post(cx, state);
                 }
                 None => {
                     self.states.insert(id, state);
@@ -56,7 +57,7 @@ impl Handler<LocalStateBrokerMessage> for LocalStateBrokerActor {
             },
             LocalStateBrokerMessage::Get(id, port) => match self.states.remove_entry(&id) {
                 Some((_, state)) => {
-                    port.send(cx, state)?;
+                    port.post(cx, state);
                 }
                 None => {
                     self.ports.insert(id, port);
