@@ -49,7 +49,6 @@
 //!   when `HostMeshAgent::handle(GetLocalProc)` is first called.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -64,10 +63,11 @@ use hyperactor::Actor;
 use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
-use hyperactor::Addr;
 use hyperactor::AttachRequest;
 use hyperactor::BootstrapAssignment;
+use hyperactor::Gateway;
 use hyperactor::Host2Client;
+use hyperactor::Location;
 use hyperactor::PortHandle;
 use hyperactor::Proc;
 use hyperactor::ProcAddr;
@@ -82,18 +82,18 @@ use hyperactor::channel::Rx;
 use hyperactor::channel::ServerError;
 use hyperactor::channel::Tx;
 use hyperactor::context;
-use hyperactor::mailbox::BoxableMailboxSender;
+use hyperactor::gateway::AttachGuard;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::IntoBoxedMailboxSender as _;
 use hyperactor::mailbox::MailboxClient;
-use hyperactor::mailbox::MailboxRouter;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerError;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::proc::LEGACY_LOCAL_PROC_NAME;
 /// Name of the local client proc on a host.
 ///
 /// See LP-1 (lazy activation) in module doc.
@@ -103,6 +103,7 @@ use hyperactor::mailbox::Undeliverable;
 /// throughout the program's lifetime. Code that inspects the local
 /// proc's actors must not assume they exist.
 pub use hyperactor::proc::LEGACY_LOCAL_PROC_NAME as LOCAL_PROC_NAME;
+use hyperactor::proc::LEGACY_SERVICE_PROC_NAME;
 /// Name of the system service proc on a host.
 ///
 /// Hosts the admin actor layer: HostMeshAgent, MeshAdminAgent, and bridge.
@@ -176,15 +177,20 @@ pub enum HostError {
 /// A host, managing the lifecycle of several procs, and their backend
 /// routing, as described in this module's documentation.
 pub struct Host<M> {
-    procs: HashSet<String>,
+    /// Spawned child procs, keyed by name. The stored [`AttachGuard`]
+    /// keeps the gateway entry for the child alive; dropping it
+    /// detaches the child from the gateway (used by
+    /// [`Host::terminate_children`] to free slots).
+    procs: HashMap<String, AttachGuard>,
     frontend_addr: ChannelAddr,
     backend_addr: ChannelAddr,
-    /// Routes messages to known procs (local, attached) by prefix.
-    router: MailboxRouter,
-    /// Addr-based routing for dialed connections (child procs,
-    /// remote hosts); used as the fallback when the prefix router
-    /// has no match.
-    dial_router: DialMailboxRouter,
+    /// Routes incoming traffic addressed to this host. In-process
+    /// procs (system, local) are attached via [`Gateway::attach`] with
+    /// `&Proc`; remote procs anchored to this host (attached clients,
+    /// spawned children) are attached via [`Gateway::attach`] with
+    /// `(ProcId, BoxedMailboxSender)`. Unknown destinations fall
+    /// through to the gateway's forwarder (a `DialMailboxRouter`).
+    gateway: Gateway,
     manager: M,
     service_proc: Proc,
     local_proc: Proc,
@@ -237,41 +243,56 @@ impl<M: ProcManager> Host<M> {
             let (frontend_addr, frontend_rx) = channel::serve_with_listener(addr, listener)?;
             (frontend_addr, Frontend::Simplex(frontend_rx))
         };
-        // We set up a cascade of routers: first, the outer router supports
-        // sending to the the system proc, while the dial router manages dialed
-        // connections.
+        // Outbound dialing to remote hosts and unknown destinations.
+        // Used as the gateway's forwarder fallback when a destination
+        // is not an attached proc.
         let dial_router = match default_sender {
             Some(d) => DialMailboxRouter::new_with_default(d),
             None => DialMailboxRouter::new(),
         };
-        let router = MailboxRouter::new();
 
         // Establish a backend channel on the preferred transport.
         let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
 
-        // Set up a system proc. This is often used to manage the host itself.
-        // These use with_name (not unique) because their uniqueness is
-        // guaranteed by the ChannelAddr component, and the Name type's
-        // '-' delimiter must not collide with a hash suffix.
-        let combined = router.fallback(dial_router.boxed());
-        let service_proc =
-            Proc::legacy_service_pseudo_singleton(frontend_addr.clone(), combined.clone());
-        let local_proc = Proc::legacy_local_pseudo_singleton(frontend_addr.clone(), combined);
+        // The host's gateway is the single routing structure for
+        // incoming traffic. In-process procs attach via `attach(&proc)`;
+        // remote procs anchored to this host (attached clients and
+        // spawned children) attach via `attach((proc_id, sender))`.
+        // Anything not registered falls through to `dial_router`.
+        let gateway = Gateway::configured(
+            Location::from(frontend_addr.clone()),
+            dial_router.into_boxed(),
+        );
+
+        // Set up the system proc and the local client proc. The
+        // legacy pseudo-singleton ids carry the frontend address, so
+        // their advertised location matches the host gateway's default
+        // location and other hosts can reach them by name. Building
+        // through `Proc::builder().shared_gateway(..)` makes the
+        // gateway attachment correct-by-construction — no separate
+        // `gateway.attach(&proc)` call is needed because the builder
+        // routes through it internally, and the resulting `Proc` owns
+        // the detach guard so dropping it removes the gateway entry.
+        let service_proc = Proc::builder()
+            .proc_id(
+                ProcAddr::singleton(frontend_addr.clone(), LEGACY_SERVICE_PROC_NAME)
+                    .id()
+                    .clone(),
+            )
+            .shared_gateway(gateway.clone())
+            .build()
+            .expect("legacy service proc builder is valid");
+        let local_proc = Proc::builder()
+            .proc_id(
+                ProcAddr::singleton(frontend_addr.clone(), LEGACY_LOCAL_PROC_NAME)
+                    .id()
+                    .clone(),
+            )
+            .shared_gateway(gateway.clone())
+            .build()
+            .expect("legacy local proc builder is valid");
         let service_proc_id = service_proc.proc_addr().clone();
         let local_proc_id = local_proc.proc_addr().clone();
-
-        // Register the local procs' muxers so the router delivers to
-        // them without dialing. We bind the muxer (not the Proc) to
-        // avoid a flush cycle: Proc.forwarder → MailboxRouter → Proc →
-        // Proc.forwarder → …
-        router.bind(
-            Addr::from(service_proc_id.clone()),
-            service_proc.muxer().clone(),
-        );
-        router.bind(
-            Addr::from(local_proc_id.clone()),
-            local_proc.muxer().clone(),
-        );
 
         tracing::info!(
             frontend_addr = frontend_addr.to_string(),
@@ -282,23 +303,22 @@ impl<M: ProcManager> Host<M> {
         );
 
         let host = Host {
-            procs: HashSet::new(),
+            procs: HashMap::new(),
             frontend_addr,
             backend_addr,
-            router,
-            dial_router,
+            gateway,
             manager,
             service_proc,
             local_proc,
             frontend: Some(frontend),
         };
 
-        // Serve the same router on the backend address. We don't ever need
+        // Serve the gateway on the backend address. We don't ever need
         // to join this handle because the server is used only to receive
         // messages from procs spawned by this host -- if the host is shutting down,
         // then all its procs should have shut down first, and we don't have to worry
         // about any unacked messages.
-        let _backend_handle = host.forwarder().serve(backend_rx);
+        let _backend_handle = host.gateway.clone().serve(backend_rx);
 
         Ok(host)
     }
@@ -314,15 +334,11 @@ impl<M: ProcManager> Host<M> {
     /// resolves.
     pub fn serve(&mut self) -> Result<MailboxServerHandle, HostError> {
         let frontend = self.frontend.take().ok_or(HostError::AlreadyServing)?;
-        let forwarder = self.forwarder();
         Ok(match frontend {
-            Frontend::Duplex(server) => spawn_duplex_accept_loop(
-                server,
-                self.frontend_addr.clone(),
-                self.router.clone(),
-                forwarder,
-            ),
-            Frontend::Simplex(rx) => forwarder.serve(rx),
+            Frontend::Duplex(server) => {
+                spawn_duplex_accept_loop(server, self.frontend_addr.clone(), self.gateway.clone())
+            }
+            Frontend::Simplex(rx) => self.gateway.clone().serve(rx),
         })
     }
 
@@ -359,7 +375,7 @@ impl<M: ProcManager> Host<M> {
         name: String,
         config: M::Config,
     ) -> Result<(ProcAddr, ActorRef<ManagerAgent<M>>), HostError> {
-        if self.procs.contains(&name) {
+        if self.procs.contains_key(&name) {
             return Err(HostError::ProcExists(name));
         }
 
@@ -384,18 +400,26 @@ impl<M: ProcManager> Host<M> {
             HostError::ProcessConfigurationFailure(proc_id.clone(), anyhow::anyhow!("{e:?}"))
         })?;
 
-        self.dial_router
-            .bind(Addr::from(proc_id.clone()), ready.addr().clone());
-        self.procs.insert(name.clone());
+        let child_sender = MailboxClient::dial(ready.addr().clone()).map_err(|e| {
+            HostError::ProcessConfigurationFailure(
+                proc_id.clone(),
+                anyhow::anyhow!("failed to dial spawned proc at {}: {}", ready.addr(), e),
+            )
+        })?;
+        let guard = self
+            .gateway
+            .attach((proc_id.id().clone(), child_sender.into_boxed()));
+        self.procs.insert(name.clone(), guard);
 
         Ok((proc_id, ready.agent_ref().clone()))
     }
 
-    /// A [`MailboxSender`] that first consults the prefix router (for
-    /// local and attached procs) and then falls back to the
-    /// address-based dial router (for child procs and remote hosts).
-    fn forwarder(&self) -> BoxedMailboxSender {
-        self.router.fallback(self.dial_router.boxed())
+    /// The host's [`Gateway`]. All incoming traffic addressed to this
+    /// host's procs is routed through the gateway; remote procs anchored
+    /// to this host (attached clients, spawned children) are attached
+    /// via [`Gateway::attach`] with `(ProcId, BoxedMailboxSender)`.
+    pub fn gateway(&self) -> &Gateway {
+        &self.gateway
     }
 }
 
@@ -406,12 +430,11 @@ impl<M: ProcManager> Host<M> {
 fn spawn_duplex_accept_loop(
     server: channel::duplex::DuplexServer<MessageEnvelope, Host2Client>,
     frontend_addr: ChannelAddr,
-    router: MailboxRouter,
-    forwarder: BoxedMailboxSender,
+    gateway: Gateway,
 ) -> MailboxServerHandle {
     let (stopped_tx, stopped_rx) = watch::channel(false);
     let join_handle = tokio::spawn(async move {
-        duplex_accept_loop(server, frontend_addr, router, forwarder, stopped_rx).await;
+        duplex_accept_loop(server, frontend_addr, gateway, stopped_rx).await;
         Ok::<(), MailboxServerError>(())
     });
     MailboxServerHandle::from_parts(join_handle, stopped_tx)
@@ -490,8 +513,7 @@ impl<R: channel::Rx<MessageEnvelope> + Send> channel::Rx<MessageEnvelope> for Pr
 async fn duplex_accept_loop(
     mut duplex_server: channel::duplex::DuplexServer<MessageEnvelope, Host2Client>,
     frontend_addr: ChannelAddr,
-    router: MailboxRouter,
-    forwarder: BoxedMailboxSender,
+    gateway: Gateway,
     stopped_rx: watch::Receiver<bool>,
 ) {
     let mut tasks = JoinSet::new();
@@ -540,10 +562,10 @@ async fn duplex_accept_loop(
             );
             duplex_tx.post(Host2Client::Bootstrap(assignment));
 
-            router.bind(Addr::from(proc_id.clone()), AttachSender(duplex_tx));
+            let attach_guard =
+                gateway.attach((proc_id.id().clone(), AttachSender(duplex_tx).into_boxed()));
 
-            let mut handle = forwarder.clone().serve(duplex_rx);
-            let cleanup_router = router.clone();
+            let mut handle = gateway.clone().serve(duplex_rx);
             let conn_stop = stopped_rx.clone();
             tasks.spawn(async move {
                 tokio::select! {
@@ -553,7 +575,9 @@ async fn duplex_accept_loop(
                         let _ = handle.await;
                     }
                 }
-                cleanup_router.unbind(&Addr::from(proc_id.clone()));
+                // Drop the guard now (rather than at end-of-scope) so
+                // the route is removed before we log the closure.
+                drop(attach_guard);
                 tracing::info!(
                     proc_id = proc_id.to_string(),
                     "attach connection closed, removed route"
@@ -566,7 +590,7 @@ async fn duplex_accept_loop(
             // the session's outbound channel, which causes the
             // session task to exit and the inbound receiver to
             // close after a single message.
-            let fwd = forwarder.clone();
+            let gw = gateway.clone();
             let conn_stop = stopped_rx.clone();
             tasks.spawn(async move {
                 let _keep_alive = duplex_tx;
@@ -574,7 +598,7 @@ async fn duplex_accept_loop(
                     first: Some(first_msg),
                     inner: duplex_rx,
                 };
-                let mut handle = fwd.serve(rx);
+                let mut handle = gw.serve(rx);
                 tokio::select! {
                     _ = &mut handle => {}
                     () = wait_for_stop(conn_stop) => {
@@ -822,12 +846,9 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
             .manager
             .terminate_all(cx, timeout, max_in_flight, reason)
             .await;
-        // Unbind procs from the router so if new procs are made with the same
-        // names, they can use the same slot.
-        for name in self.procs.drain() {
-            let proc_ref = ResourceId::proc_addr_from_name(self.frontend_addr.clone(), &name);
-            self.dial_router.unbind(&Addr::from(proc_ref));
-        }
+        // Detach procs from the gateway by dropping their attach
+        // guards, freeing the name slots for any future respawns.
+        self.procs.clear();
         summary
     }
 }
@@ -1713,6 +1734,7 @@ mod tests {
 
     use async_trait::async_trait;
     use hyperactor::Actor;
+    use hyperactor::Addr;
     use hyperactor::Context;
     use hyperactor::Endpoint as _;
     use hyperactor::Handler;
@@ -2091,7 +2113,7 @@ mod tests {
 
         let (pid, agent) = host.spawn("ok".into(), ()).await.expect("must succeed");
         assert_eq!(agent.actor_addr().proc_addr(), pid);
-        assert!(host.procs.contains("ok"));
+        assert!(host.procs.contains_key("ok"));
     }
 
     #[tokio::test]

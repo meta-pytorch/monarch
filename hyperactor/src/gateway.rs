@@ -69,6 +69,81 @@ pub struct Gateway {
     inner: Arc<GatewayState>,
 }
 
+/// A proc attached to a [`Gateway`]. An entry is either:
+///
+/// * `Local`: in-process, identified by a [`WeakProc`] so the gateway
+///   does not extend the proc's lifetime.
+/// * `Remote`: out-of-process (or otherwise not addressable through a
+///   local [`Proc`] handle), reached via a caller-supplied
+///   [`BoxedMailboxSender`].
+///
+/// Use [`Gateway::attach`] with anything that converts into a `ProcEntry`.
+/// Local procs convert via [`From<&Proc>`]; remote attachments
+/// convert via [`From<(ProcId, BoxedMailboxSender)>`] (or are
+/// constructed directly with [`ProcEntry::Remote`]).
+#[derive(Clone)]
+pub enum ProcEntry {
+    /// An in-process proc, held as a weak handle.
+    Local(ProcId, WeakProc),
+    /// A proc reachable through a caller-supplied sender.
+    Remote(ProcId, BoxedMailboxSender),
+}
+
+impl ProcEntry {
+    /// The id of the proc represented by this entry.
+    pub fn proc_id(&self) -> &ProcId {
+        match self {
+            ProcEntry::Local(id, _) | ProcEntry::Remote(id, _) => id,
+        }
+    }
+}
+
+impl From<&Proc> for ProcEntry {
+    fn from(proc: &Proc) -> Self {
+        ProcEntry::Local(proc.proc_id().clone(), proc.downgrade())
+    }
+}
+
+impl From<(ProcId, BoxedMailboxSender)> for ProcEntry {
+    fn from((proc_id, sender): (ProcId, BoxedMailboxSender)) -> Self {
+        ProcEntry::Remote(proc_id, sender)
+    }
+}
+
+/// Handle returned by [`Gateway::attach`] that detaches the proc from
+/// the gateway when dropped. Drop is a no-op if the gateway has already
+/// been dropped, or if the entry has been replaced under the same proc
+/// id since this guard was issued (so we never evict another caller's
+/// attachment).
+pub struct AttachGuard {
+    gateway: Weak<GatewayState>,
+    proc_id: ProcId,
+}
+
+impl fmt::Debug for AttachGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AttachGuard")
+            .field("proc_id", &self.proc_id)
+            .finish()
+    }
+}
+
+impl AttachGuard {
+    /// The id of the proc whose attachment this guard owns.
+    pub fn proc_id(&self) -> &ProcId {
+        &self.proc_id
+    }
+}
+
+impl Drop for AttachGuard {
+    fn drop(&mut self) {
+        let Some(state) = self.gateway.upgrade() else {
+            return;
+        };
+        state.procs.write().unwrap().remove(&self.proc_id);
+    }
+}
+
 struct GatewayState {
     /// The location to use when no server is active.
     fallback_location: Location,
@@ -81,7 +156,9 @@ struct GatewayState {
     forwarder: BoxedMailboxSender,
 
     /// Procs attached to this gateway, keyed by runtime identity.
-    procs: RwLock<HashMap<ProcId, WeakProc>>,
+    /// See [`ProcEntry`] for the distinction between local and remote
+    /// attachments.
+    procs: RwLock<HashMap<ProcId, ProcEntry>>,
 
     /// Locations currently served by this gateway. The last location
     /// is the default advertised location.
@@ -111,7 +188,10 @@ impl Gateway {
         GLOBAL_GATEWAY.get_or_init(Self::new)
     }
 
-    pub(crate) fn configured(default_location: Location, forwarder: BoxedMailboxSender) -> Self {
+    /// Create a gateway with an explicit default advertised location
+    /// and outbound forwarder. Inbound traffic for procs not registered
+    /// via [`Gateway::attach`] is handed off to `forwarder`.
+    pub fn configured(default_location: Location, forwarder: BoxedMailboxSender) -> Self {
         Self {
             inner: Arc::new(GatewayState {
                 fallback_location: default_location.clone(),
@@ -142,17 +222,49 @@ impl Gateway {
         &self.inner.forwarder
     }
 
-    pub(crate) fn attach(&self, proc: &Proc) {
-        let proc_id = proc.proc_id().clone();
-        if let Some(existing) = self
+    /// Attach a proc to this gateway.
+    ///
+    /// Accepts anything that converts into a [`ProcEntry`]:
+    ///
+    /// * `&Proc` — attaches an in-process proc by weak handle. The
+    ///   gateway will deliver messages addressed to the proc's id
+    ///   directly to `proc.muxer()` when
+    ///   [`Proc::is_local_delivery_target`] holds.
+    /// * `(ProcId, BoxedMailboxSender)` — attaches a remote proc. The
+    ///   gateway routes envelopes whose destination matches `proc_id`
+    ///   through the supplied sender instead of the gateway's
+    ///   forwarder.
+    ///
+    /// Panics if a live entry with the same id is already attached. A
+    /// dead local entry whose [`WeakProc`] has been dropped is replaced
+    /// silently.
+    ///
+    /// Returns an [`AttachGuard`] that detaches the proc when dropped.
+    /// Callers must keep the guard alive for as long as the registration
+    /// should remain in place; for in-process procs, the guard is held
+    /// inside the [`Proc`] itself so the proc's lifetime drives detach.
+    #[must_use = "the returned AttachGuard detaches the proc when dropped"]
+    pub fn attach(&self, entry: impl Into<ProcEntry>) -> AttachGuard {
+        let entry = entry.into();
+        let proc_id = entry.proc_id().clone();
+        let existing = self
             .inner
             .procs
             .write()
             .unwrap()
-            .insert(proc_id.clone(), proc.downgrade())
-            && existing.upgrade().is_some()
-        {
-            panic!("gateway already has a live proc with id {}", proc_id)
+            .insert(proc_id.clone(), entry);
+        match existing {
+            // No prior entry, or the prior entry was a dead local handle
+            // whose slot is now ours.
+            None => {}
+            Some(ProcEntry::Local(_, weak)) if weak.upgrade().is_none() => {}
+            Some(ProcEntry::Local(_, _)) | Some(ProcEntry::Remote(_, _)) => {
+                panic!("gateway already has a proc with id {}", proc_id)
+            }
+        }
+        AttachGuard {
+            gateway: Arc::downgrade(&self.inner),
+            proc_id,
         }
     }
 
@@ -242,17 +354,25 @@ impl Gateway {
     /// guarantees that each flushed sender observes its usual sender-level
     /// flush semantics at the time it is flushed.
     pub(crate) async fn flush(&self) -> Result<(), anyhow::Error> {
-        let procs = self
-            .inner
-            .procs
-            .read()
-            .unwrap()
-            .values()
-            .filter_map(WeakProc::upgrade)
-            .collect::<Vec<_>>();
-        for proc in procs {
-            proc.muxer().flush().await?;
-        }
+        let (local_procs, remote_senders) = {
+            let procs = self.inner.procs.read().unwrap();
+            let mut local = Vec::with_capacity(procs.len());
+            let mut remote = Vec::with_capacity(procs.len());
+            for entry in procs.values() {
+                match entry {
+                    ProcEntry::Local(_, weak) => {
+                        if let Some(proc) = weak.upgrade() {
+                            local.push(proc);
+                        }
+                    }
+                    ProcEntry::Remote(_, sender) => remote.push(sender.clone()),
+                }
+            }
+            (local, remote)
+        };
+        let proc_flushes = local_procs.iter().map(|proc| proc.muxer().flush());
+        let remote_flushes = remote_senders.iter().map(|sender| sender.flush());
+        futures::future::try_join_all(proc_flushes.chain(remote_flushes)).await?;
         self.inner.forwarder.flush().await
     }
 }
@@ -355,33 +475,41 @@ impl crate::mailbox::MailboxSender for Gateway {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         let dest_proc = envelope.dest().actor_addr().proc_addr();
-        let weak_proc = self
+        let entry = self
             .inner
             .procs
             .read()
             .unwrap()
             .get(dest_proc.id())
             .cloned();
-        let proc = weak_proc.as_ref().and_then(WeakProc::upgrade);
-
-        if weak_proc.is_some() && proc.is_none() {
-            let mut procs = self.inner.procs.write().unwrap();
-            if procs
-                .get(dest_proc.id())
-                .and_then(WeakProc::upgrade)
-                .is_none()
-            {
-                procs.remove(dest_proc.id());
+        match entry {
+            Some(ProcEntry::Local(_, weak)) => match weak.upgrade() {
+                Some(proc) if proc.is_local_delivery_target(&dest_proc) => {
+                    proc.muxer().post(envelope, return_handle);
+                    return;
+                }
+                Some(_) => {
+                    // Proc is alive but not a local-delivery target for
+                    // this destination; fall through to the forwarder.
+                }
+                None => {
+                    // Dead local entry. Best-effort cleanup; double-check
+                    // under the write lock so we do not evict a slot that
+                    // another thread has just re-attached.
+                    let mut procs = self.inner.procs.write().unwrap();
+                    if let Some(ProcEntry::Local(_, weak)) = procs.get(dest_proc.id())
+                        && weak.upgrade().is_none()
+                    {
+                        procs.remove(dest_proc.id());
+                    }
+                }
+            },
+            Some(ProcEntry::Remote(_, sender)) => {
+                sender.post(envelope, return_handle);
+                return;
             }
+            None => {}
         }
-
-        if let Some(proc) = proc
-            && proc.is_local_delivery_target(&dest_proc)
-        {
-            proc.muxer().post(envelope, return_handle);
-            return;
-        }
-
         self.inner.forwarder.post(envelope, return_handle)
     }
 
@@ -562,87 +690,12 @@ mod tests {
         );
     }
 
-    /// `Gateway::post_unchecked` removes stale `WeakProc` entries
-    /// lazily on the post path. Dropping a proc leaves a dead
-    /// `WeakProc` in the gateway's `procs` map; the next post to that
-    /// proc's id falls through to the forwarder and removes the stale
-    /// entry.
-    #[tokio::test]
-    async fn test_gateway_post_removes_stale_weak_procs() {
-        #[derive(Clone)]
-        struct CountingSender(Arc<AtomicUsize>);
-
-        #[async_trait]
-        impl MailboxSender for CountingSender {
-            fn post_unchecked(
-                &self,
-                _envelope: MessageEnvelope,
-                _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
-            ) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        let forwarded = Arc::new(AtomicUsize::new(0));
-        let gateway = Gateway::configured(
-            channel::reserve_local_addr().into(),
-            BoxedMailboxSender::new(CountingSender(forwarded.clone())),
-        );
-
-        let proc = Proc::builder()
-            .proc_id(ProcId::instance(Label::strip("alpha")))
-            .shared_gateway(gateway.clone())
-            .build()
-            .unwrap();
-        let proc_id = proc.proc_id().clone();
-        let dest = proc
-            .proc_addr()
-            .actor_addr("worker")
-            .port_addr(Port::from(0u64));
-
-        // Sanity: proc is attached.
-        assert_eq!(gateway.inner.procs.read().unwrap().len(), 1);
-
-        drop(proc);
-
-        // The entry is still present, but it is now a *stale* WeakProc:
-        // upgrade must fail.
-        {
-            let procs = gateway.inner.procs.read().unwrap();
-            assert_eq!(procs.len(), 1);
-            assert!(
-                procs.get(&proc_id).and_then(WeakProc::upgrade).is_none(),
-                "expected dropped proc to remain only as a stale WeakProc entry",
-            );
-        }
-
-        gateway.post(
-            MessageEnvelope::serialize(
-                test_actor_id("test", "sender"),
-                dest,
-                &42u64,
-                Flattrs::new(),
-            )
-            .unwrap(),
-            monitored_return_handle(),
-        );
-
-        // Envelope fell through to the forwarder; stale entry
-        // removed.
-        assert_eq!(forwarded.load(Ordering::SeqCst), 1);
-        {
-            let procs = gateway.inner.procs.read().unwrap();
-            assert_eq!(procs.len(), 0);
-            assert!(procs.get(&proc_id).is_none());
-        }
-    }
-
     /// `Gateway::attach` panics when a second proc with the same
     /// `ProcId` is built against the same gateway while the first is
     /// still alive. The check is in `Gateway::attach`, invoked from
     /// `Proc::builder().build()` via `Proc::from_parts_unchecked`.
     #[test]
-    #[should_panic(expected = "gateway already has a live proc")]
+    #[should_panic(expected = "gateway already has a proc with id")]
     fn test_gateway_attach_panics_on_duplicate_live_proc() {
         let gateway = Gateway::isolated();
         let proc_id = ProcId::instance(Label::strip("alpha"));
@@ -792,11 +845,12 @@ mod tests {
         );
     }
 
-    /// `Gateway::attach` silently replaces a stale `WeakProc` entry
-    /// (one whose strong reference has dropped). No panic; the new
-    /// proc takes over routing for that `ProcId`.
+    /// Dropping the `Proc` drops its `AttachGuard`, which eagerly
+    /// removes the entry from the gateway's `procs` map. A subsequent
+    /// attach with the same `ProcId` is therefore a fresh insert — no
+    /// panic, no stale entry to replace.
     #[tokio::test]
-    async fn test_gateway_attach_silently_replaces_dead_entry() {
+    async fn test_gateway_attach_after_proc_drop() {
         let gateway = Gateway::isolated();
         let proc_id = ProcId::instance(Label::strip("alpha"));
 
@@ -807,19 +861,11 @@ mod tests {
             .unwrap();
         drop(first);
 
-        // The entry is still present but stale (upgrade fails).
-        {
-            let procs = gateway.inner.procs.read().unwrap();
-            assert_eq!(procs.len(), 1);
-            assert!(
-                procs.get(&proc_id).and_then(WeakProc::upgrade).is_none(),
-                "expected first proc to remain only as a stale WeakProc entry",
-            );
-        }
+        // AttachGuard::drop removed the entry from the map.
+        assert_eq!(gateway.inner.procs.read().unwrap().len(), 0);
 
-        // Attach a second proc with the same id. The dead WeakProc
-        // entry is silently replaced; no panic; map still has exactly
-        // one entry.
+        // The slot is free, so attaching a new proc with the same id
+        // is a fresh insert — no panic.
         let second = Proc::builder()
             .proc_id(proc_id.clone())
             .shared_gateway(gateway.clone())
