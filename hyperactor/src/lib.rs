@@ -219,7 +219,7 @@ pub fn spawn<A: Actor>(name: &str, actor: A) -> Result<ActorHandle<A>, anyhow::E
 }
 
 /// Create a client actor on the current proc.
-pub fn client(name: &str) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
+pub fn client(name: &str) -> Client {
     Proc::current().client(name)
 }
 

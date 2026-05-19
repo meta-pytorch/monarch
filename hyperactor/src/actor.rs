@@ -34,6 +34,8 @@ use typeuri::Named;
 use crate as hyperactor; // for macros
 use crate::ActorAddr;
 use crate::ActorRef;
+#[cfg(test)]
+use crate::Client;
 use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
@@ -1021,7 +1023,7 @@ mod tests {
     #[tokio::test]
     async fn test_server_basic() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo", actor).unwrap();
@@ -1035,7 +1037,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_pong() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (undeliverable_msg_tx, _) = client.open_port();
 
         let ping_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
@@ -1058,7 +1060,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_pong_on_handler_error() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (undeliverable_msg_tx, _) = client.open_port();
 
         // Need to set a supervison coordinator for this Proc because there will
@@ -1121,7 +1123,7 @@ mod tests {
         let proc = Proc::isolated();
         let actor = InitActor(false);
         let handle = proc.spawn::<InitActor>("init", actor).unwrap();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let (port, receiver) = client.open_once_port();
         handle.send(&client, port).unwrap();
@@ -1137,8 +1139,7 @@ mod tests {
         proc: Proc,
         values: MultiValues,
         handle: ActorHandle<MultiActor>,
-        client: Instance<()>,
-        _client_handle: ActorHandle<()>,
+        client: Client,
     }
 
     impl MultiValuesTest {
@@ -1147,13 +1148,12 @@ mod tests {
             let values: MultiValues = Arc::new(Mutex::new((0, "".to_string())));
             let actor = MultiActor(values.clone());
             let handle = proc.spawn::<MultiActor>("myactor", actor).unwrap();
-            let (client, client_handle) = proc.client("client").unwrap();
+            let client = proc.client("client");
             Self {
                 proc,
                 values,
                 handle,
                 client,
-                _client_handle: client_handle,
             }
         }
 
@@ -1322,7 +1322,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_sequencing_actor_handle_basic() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
@@ -1374,7 +1374,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_sequencing_mixed_handler_and_non_handler_ports() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         // Port for receiving seq info from actor handler
         let (actor_tx, mut actor_rx) = client.open_port();
@@ -1456,8 +1456,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_sequencing_multiple_clients() {
         let proc = Proc::isolated();
-        let (client1, _) = proc.client("client1").unwrap();
-        let (client2, _) = proc.client("client2").unwrap();
+        let client1 = proc.client("client1");
+        let client2 = proc.client("client2");
 
         // Port for receiving seq info from actor handler
         let (tx, mut rx) = client1.open_port();
@@ -1568,7 +1568,7 @@ mod tests {
         let _guard = config.override_key(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
 
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
@@ -1656,7 +1656,7 @@ mod tests {
 
     async fn assert_out_of_order_delivery(expected: Vec<(String, u64)>, relay_orders: Vec<usize>) {
         let local_proc: Proc = Proc::isolated();
-        let (client, _) = local_proc.client("local").unwrap();
+        let client = local_proc.client("local");
         let (tx, mut rx) = client.open_port();
 
         let handle = local_proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
@@ -1666,7 +1666,7 @@ mod tests {
             test_proc_id("remote_0"),
             DelayedMailboxSender::new(local_proc.clone(), relay_orders).boxed(),
         );
-        let (remote_client, _) = remote_proc.client("remote").unwrap();
+        let remote_client = remote_proc.client("remote");
         // Send the messages out in the order of their expected sequence numbers.
         let mut messages = expected.clone();
         messages.sort_by_key(|v| v.1);
@@ -1767,7 +1767,7 @@ mod tests {
     #[tokio::test]
     async fn test_introspect_query_default_payload() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_introspect", actor).unwrap();
@@ -1912,7 +1912,7 @@ mod tests {
     #[tokio::test]
     async fn test_ia1_ia4_running_actor_attrs() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("ia_test", actor).unwrap();
@@ -1941,7 +1941,7 @@ mod tests {
     #[tokio::test]
     async fn test_introspect_query_child_not_found() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
@@ -1986,7 +1986,7 @@ mod tests {
         impl Actor for CustomIntrospectActor {}
 
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let handle = proc
             .spawn("custom_introspect", CustomIntrospectActor)
             .unwrap();
@@ -2023,7 +2023,7 @@ mod tests {
     #[tokio::test]
     async fn test_introspect_query_supervision_child() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         // Spawn parent.
         let (tx_parent, _rx_parent) = client.open_port::<u64>();
@@ -2101,7 +2101,7 @@ mod tests {
     #[tokio::test]
     async fn test_introspect_fresh_actor_status() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_fresh", actor).unwrap();
@@ -2139,7 +2139,7 @@ mod tests {
     #[tokio::test]
     async fn test_introspect_after_user_message() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_after_msg", actor).unwrap();
@@ -2175,7 +2175,7 @@ mod tests {
     #[tokio::test]
     async fn test_introspect_consecutive_queries() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_consec", actor).unwrap();
@@ -2238,7 +2238,7 @@ mod tests {
         }
 
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_attrs", actor).unwrap();
@@ -2275,7 +2275,7 @@ mod tests {
     #[tokio::test]
     async fn test_query_child_handler_round_trip() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
@@ -2354,7 +2354,7 @@ mod tests {
         }
 
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let handle = proc.spawn("wedged", WedgedActor).unwrap();
 
         // Wait for idle before sending the wedging message.
@@ -2399,7 +2399,7 @@ mod tests {
     #[tokio::test]
     async fn test_introspect_no_perturbation() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_no_perturb", actor).unwrap();
@@ -2501,9 +2501,9 @@ mod tests {
     #[tokio::test]
     async fn test_instance_does_not_respond_to_query() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
-        let (_mailbox, mailbox_handle) = proc.client("mailbox").unwrap();
-        let mailbox_id: crate::ActorAddr = mailbox_handle.actor_addr().clone();
+        let client = proc.client("client");
+        let mailbox = proc.client("mailbox");
+        let mailbox_id: crate::ActorAddr = mailbox.self_addr().clone();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
         PortRef::<IntrospectMessage>::attest_handler_port(&mailbox_id)
