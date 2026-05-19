@@ -1524,7 +1524,7 @@ impl Handler<ConfigDump> for HostAgent {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use std::assert_matches;
 
@@ -1541,7 +1541,6 @@ mod tests {
     use crate::resource::WaitRankStatusClient;
 
     #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_basic() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
@@ -1563,9 +1562,9 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
-        let id = ResourceId::unique(Label::new("proc1").unwrap());
+        let id = ResourceId::instance(Label::new("proc1").unwrap());
 
         // First, create the proc, then query its state:
 
@@ -1603,7 +1602,6 @@ mod tests {
 
     /// WaitRankStatus on a running proc replies immediately with Running.
     #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_wait_rank_status_already_running() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
@@ -1624,9 +1622,9 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
-        let id = ResourceId::unique(Label::new("proc1").unwrap());
+        let id = ResourceId::instance(Label::new("proc1").unwrap());
         host_agent
             .create_or_update(
                 &client,
@@ -1654,7 +1652,6 @@ mod tests {
     /// WaitRankStatus for Stopped, then stop the proc — reply should
     /// arrive only after the proc actually stops.
     #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_wait_rank_status_stop() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
@@ -1675,9 +1672,9 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
-        let id = ResourceId::unique(Label::new("proc1").unwrap());
+        let id = ResourceId::instance(Label::new("proc1").unwrap());
         host_agent
             .create_or_update(
                 &client,
@@ -1711,7 +1708,6 @@ mod tests {
     /// WaitRankStatus sent before the proc is created — the waiter is
     /// stashed and replied to once CreateOrUpdate runs.
     #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_wait_rank_status_before_proc_exists() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
@@ -1732,9 +1728,9 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
-        let id = ResourceId::unique(Label::new("proc1").unwrap());
+        let id = ResourceId::instance(Label::new("proc1").unwrap());
 
         // Wait for Running on a proc that doesn't exist yet.
         let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
@@ -1760,7 +1756,6 @@ mod tests {
     /// DrainHost with a host_mesh_id filter only stops procs
     /// belonging to that mesh; procs from other meshes are unaffected.
     #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_drain_scoped_to_host_mesh_id() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
@@ -1781,12 +1776,12 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
-        let mesh_a = HostMeshId::unique(Label::new("mesh-a").unwrap());
-        let mesh_b = HostMeshId::unique(Label::new("mesh-b").unwrap());
-        let proc_a_id = ResourceId::unique(Label::new("proc-a").unwrap());
-        let proc_b_id = ResourceId::unique(Label::new("proc-b").unwrap());
+        let mesh_a = HostMeshId::instance(Label::new("mesh-a").unwrap());
+        let mesh_b = HostMeshId::instance(Label::new("mesh-b").unwrap());
+        let proc_a_id = ResourceId::instance(Label::new("proc-a").unwrap());
+        let proc_b_id = ResourceId::instance(Label::new("proc-b").unwrap());
 
         // Create proc_a belonging to mesh_a.
         let spec_a = ProcSpec {
@@ -1864,7 +1859,6 @@ mod tests {
     /// DrainHost with host_mesh_id=None drains all procs regardless
     /// of their mesh affiliation (backwards compatibility).
     #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_drain_none_drains_all() {
         let host = Host::new(
             BootstrapProcManager::new(BootstrapCommand::test()).unwrap(),
@@ -1885,12 +1879,12 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
-        let mesh_a = HostMeshId::unique(Label::new("mesh-a").unwrap());
-        let mesh_b = HostMeshId::unique(Label::new("mesh-b").unwrap());
-        let proc_a_id = ResourceId::unique(Label::new("proc-a").unwrap());
-        let proc_b_id = ResourceId::unique(Label::new("proc-b").unwrap());
+        let mesh_a = HostMeshId::instance(Label::new("mesh-a").unwrap());
+        let mesh_b = HostMeshId::instance(Label::new("mesh-b").unwrap());
+        let proc_a_id = ResourceId::instance(Label::new("proc-a").unwrap());
+        let proc_b_id = ResourceId::instance(Label::new("proc-b").unwrap());
 
         let spec_a = ProcSpec {
             host_mesh_id: Some(mesh_a),
@@ -1939,7 +1933,6 @@ mod tests {
     // defaulted queue stats to zero because it predated Proc-level
     // queue accessors.
     #[tokio::test]
-    #[cfg(fbcode_build)]
     async fn test_service_proc_query_child_has_queue_stats() {
         use hyperactor::actor::ActorStatus;
         use hyperactor::introspect::IntrospectMessage;
@@ -1972,11 +1965,11 @@ mod tests {
 
         let client_proc =
             Proc::direct(ChannelTransport::Unix.any(), "qd_client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.instance("client").unwrap();
+        let (client, _client_handle) = client_proc.client("client").unwrap();
 
         // Spawn a proc so the host_agent processes at least one
         // CreateOrUpdate message, which goes through the work queue.
-        let name = ResourceId::unique(Label::new("qd_test_proc").unwrap());
+        let name = ResourceId::instance(Label::new("qd_test_proc").unwrap());
         host_agent
             .create_or_update(
                 &client,
