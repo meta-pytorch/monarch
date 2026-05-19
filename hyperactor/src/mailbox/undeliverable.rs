@@ -18,44 +18,120 @@
 //! - **UE-2 (core diagnostics preserved).** The rendered text keeps
 //!   `sender`, `dest`, `message type`, `data_len`, and `error`.
 //!
-//! - **UE-3 (operation context names the top line).** When the
-//!   envelope carries operation-context headers, the top line names
-//!   that operation instead of falling back to the neutral
-//!   `"undeliverable message error"` prefix.
+//! - **UE-3 (top-line shape).** The top line names the operation when
+//!   the envelope carries `OPERATION_ENDPOINT`. Otherwise it names the
+//!   actual failing hop, derived from the variant of
+//!   `UndeliverableMessageError`:
+//!   - `DeliveryFailure` → `"undeliverable message to {dest}"`,
+//!     mirroring the abandonment-log surface in `mailbox.rs`.
+//!   - `ReturnFailure` → `"undeliverable return to original sender
+//!     {sender}"`. Sender/dest in this variant refer to the *original*
+//!     envelope, so headlining `dest` would misstate the failing hop;
+//!     the return-to-sender hop is the one that actually failed.
 //!
-//! - **UE-4 (neutral wording).** Top-line wording remains neutral
-//!   (`"undeliverable message for ..."`); presence of operation
-//!   context does not classify the envelope as request or reply.
+//!   Both shapes only relocate UE-2 stable rendered fields into the
+//!   headline; no unbounded surface is introduced.
+//!
+//! - **UE-4 (neutral wording).** Top-line wording is neutral re.
+//!   request/reply classification. The three shapes — `"undeliverable
+//!   message for {operation} ({adverb})"`, `"undeliverable message to
+//!   {dest}"`, and `"undeliverable return to original sender
+//!   {sender}"` — describe a bounce without claiming send-kind.
+//!
+//! - **UE-5 (message-type fallback).** When wirevalue type resolution
+//!   is unavailable (`envelope.data().typename()` returns `None`), the
+//!   `message type:` field falls back to the stamped
+//!   `RUST_MESSAGE_TYPE` header (planted at every send by the
+//!   `PortHandle`/`PortRef` paths in `mailbox.rs` / `ref_.rs`) before
+//!   rendering the literal `"unknown"`. `"unknown"` is reserved for
+//!   envelopes lacking both.
 
 use std::sync::OnceLock;
 
+use enum_as_inner::EnumAsInner;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::ActorAddr;
 use crate::ActorHandle;
+use crate::EndpointLocation;
 use crate::Instance;
 // for macros
 use crate::Message;
 use crate::Proc;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::MailboxSender;
+use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
 use crate::mailbox::UndeliverableMailboxSender;
 use crate::mailbox::headers::OPERATION_ADVERB;
 use crate::mailbox::headers::OPERATION_ENDPOINT;
+use crate::mailbox::headers::RUST_MESSAGE_TYPE;
 
-/// An undeliverable `M`-typed message (in practice `M` is
-/// [MessageEnvelope]).
+/// Metadata for a message that could not be delivered and could not be
+/// returned.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, typeuri::Named)]
-pub struct Undeliverable<M: Message>(pub M);
+pub struct LostMessage {
+    /// The actor that attempted the send.
+    pub sender: ActorAddr,
+    /// The destination that rejected the message.
+    pub dest: EndpointLocation,
+    /// The message type, if known.
+    pub message_type: Option<String>,
+    /// The delivery failure.
+    pub error: String,
+}
+
+impl LostMessage {
+    /// Construct lost-message metadata from a local send error.
+    pub(crate) fn from_send_error<M: Message>(
+        sender: ActorAddr,
+        dest: EndpointLocation,
+        error: &MailboxSenderError,
+    ) -> Self {
+        Self {
+            sender,
+            dest,
+            message_type: Some(std::any::type_name::<M>().to_string()),
+            error: error.to_string(),
+        }
+    }
+}
+
+/// An undeliverable `M`-typed message.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "returned messages stay inline so callers can recover the original payload without extra allocation"
+)]
+#[derive(
+    Debug,
+    EnumAsInner,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    typeuri::Named
+)]
+pub enum Undeliverable<M: Message> {
+    /// The message was returned intact.
+    Message(M),
+    /// The message was lost before it could be returned.
+    Lost(LostMessage),
+}
 
 impl<M: Message> Undeliverable<M> {
-    /// Return the inner M-typed message.
-    pub fn into_inner(self) -> M {
-        self.0
+    /// Construct an undeliverable message that preserves the original payload.
+    pub fn message(message: M) -> Self {
+        Self::Message(message)
+    }
+
+    /// Construct an undeliverable message that carries only lost-message
+    /// metadata.
+    pub fn lost(message: LostMessage) -> Self {
+        Self::Lost(message)
     }
 }
 
@@ -64,8 +140,8 @@ pub(crate) fn new_undeliverable_port() -> (
     PortHandle<Undeliverable<MessageEnvelope>>,
     PortReceiver<Undeliverable<MessageEnvelope>>,
 ) {
-    let proc = Proc::local();
-    crate::mailbox::Mailbox::new_detached(proc.proc_id().actor_ref("undeliverable"))
+    let proc = Proc::isolated();
+    crate::mailbox::Mailbox::new(proc.proc_addr().actor_addr("undeliverable"))
         .open_port::<Undeliverable<MessageEnvelope>>()
 }
 
@@ -85,11 +161,25 @@ pub fn monitored_return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
         // dropped and the task will never return.
         let (h, _) = new_undeliverable_port();
         crate::init::get_runtime().spawn(async move {
-            while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-                envelope.set_error(DeliveryError::BrokenLink(
-                    "message returned to undeliverable port".to_string(),
-                ));
-                super::UndeliverableMailboxSender.post(envelope, /*unused */ h.clone());
+            while let Ok(undeliverable) = rx.recv().await {
+                match undeliverable {
+                    Undeliverable::Message(mut envelope) => {
+                        envelope.set_error(DeliveryError::BrokenLink(
+                            "message returned to undeliverable port".to_string(),
+                        ));
+                        super::UndeliverableMailboxSender
+                            .post(envelope, /*unused */ h.clone());
+                    }
+                    Undeliverable::Lost(lost) => {
+                        tracing::error!(
+                            sender = %lost.sender,
+                            dest = %lost.dest,
+                            message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                            error = %lost.error,
+                            "lost message returned to undeliverable port"
+                        );
+                    }
+                }
             }
         });
         return_handle
@@ -106,11 +196,24 @@ pub fn custom_monitored_return_handle(caller: &str) -> PortHandle<Undeliverable<
     let caller = caller.to_owned();
     let (return_handle, mut rx) = new_undeliverable_port();
     tokio::task::spawn(async move {
-        while let Ok(Undeliverable(mut envelope)) = rx.recv().await {
-            envelope.set_error(DeliveryError::BrokenLink(
-                "message returned to undeliverable port".to_string(),
-            ));
-            tracing::error!("{caller} took back an undeliverable message: {}", envelope);
+        while let Ok(undeliverable) = rx.recv().await {
+            match undeliverable {
+                Undeliverable::Message(mut envelope) => {
+                    envelope.set_error(DeliveryError::BrokenLink(
+                        "message returned to undeliverable port".to_string(),
+                    ));
+                    tracing::error!("{caller} took back an undeliverable message: {}", envelope);
+                }
+                Undeliverable::Lost(lost) => {
+                    tracing::error!(
+                        sender = %lost.sender,
+                        dest = %lost.dest,
+                        message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                        error = %lost.error,
+                        "{caller} took back a lost message"
+                    );
+                }
+            }
         }
     });
     return_handle
@@ -125,10 +228,13 @@ pub(crate) fn return_undeliverable(
         // A global client for returning undeliverable messages.
         static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
         let client = &CLIENT
-            .get_or_init(|| Proc::runtime().instance("global_return_client").unwrap())
+            .get_or_init(|| Proc::runtime().client("global_return_client").unwrap())
             .0;
         let envelope_copy = envelope.clone();
-        if (return_handle.send(client, Undeliverable(envelope))).is_err() {
+        if return_handle
+            .try_send(client, Undeliverable::message(envelope))
+            .is_err()
+        {
             UndeliverableMailboxSender.post(envelope_copy, /*unused*/ return_handle)
         }
     }
@@ -149,13 +255,30 @@ pub enum UndeliverableMessageError {
         /// The undelivered message.
         envelope: MessageEnvelope,
     },
+
+    /// A message was lost before it could be returned.
+    Lost {
+        /// The lost-message metadata.
+        lost: LostMessage,
+    },
 }
 
 /// Compute the top-line prefix for a bounced envelope (UE-3, UE-4).
 ///
-/// When `OPERATION_ENDPOINT` is present, name the operation;
-/// otherwise fall back to a neutral prefix.
-fn undeliverable_prefix(envelope: &MessageEnvelope) -> String {
+/// When `OPERATION_ENDPOINT` is present, name the operation. Otherwise
+/// name the actual failing hop, which differs between the two variants:
+/// `DeliveryFailure` failed at `sender → dest`, while `ReturnFailure`
+/// failed at the return hop `system → original sender` (sender/dest
+/// in that variant still describe the original envelope, not the
+/// failing return).
+fn undeliverable_prefix(error: &UndeliverableMessageError) -> String {
+    let envelope = match error {
+        UndeliverableMessageError::DeliveryFailure { envelope }
+        | UndeliverableMessageError::ReturnFailure { envelope } => envelope,
+        UndeliverableMessageError::Lost { lost } => {
+            return format!("lost message to {}", lost.dest);
+        }
+    };
     if let Some(endpoint) = envelope.headers().get(OPERATION_ENDPOINT) {
         let adverb = envelope
             .headers()
@@ -163,7 +286,18 @@ fn undeliverable_prefix(envelope: &MessageEnvelope) -> String {
             .unwrap_or_else(|| "?".to_string());
         return format!("undeliverable message for {} ({})", endpoint, adverb);
     }
-    "undeliverable message error".to_string()
+    match error {
+        UndeliverableMessageError::DeliveryFailure { .. } => {
+            format!("undeliverable message to {}", envelope.dest())
+        }
+        UndeliverableMessageError::ReturnFailure { .. } => {
+            format!(
+                "undeliverable return to original sender {}",
+                envelope.sender()
+            )
+        }
+        UndeliverableMessageError::Lost { lost } => format!("lost message to {}", lost.dest),
+    }
 }
 
 impl std::fmt::Display for UndeliverableMessageError {
@@ -187,17 +321,38 @@ impl std::fmt::Display for UndeliverableMessageError {
                 "original sender",
                 "original dest",
             ),
+            UndeliverableMessageError::Lost { lost } => {
+                writeln!(f, "{}:", undeliverable_prefix(self))?;
+                writeln!(
+                    f,
+                    "\tdescription: message was lost before it could be returned"
+                )?;
+                writeln!(f, "\tsender: {}", lost.sender)?;
+                writeln!(f, "\tdest: {}", lost.dest)?;
+                writeln!(
+                    f,
+                    "\tmessage type: {}",
+                    lost.message_type.as_deref().unwrap_or("unknown")
+                )?;
+                writeln!(f, "\terror: {}", lost.error)?;
+                return Ok(());
+            }
         };
 
-        writeln!(f, "{}:", undeliverable_prefix(envelope))?;
+        writeln!(f, "{}:", undeliverable_prefix(self))?;
         writeln!(f, "\tdescription: {}", description)?;
         writeln!(f, "\t{}: {}", sender_label, envelope.sender())?;
         writeln!(f, "\t{}: {}", dest_label, envelope.dest())?;
-        writeln!(
-            f,
-            "\tmessage type: {}",
-            envelope.data().typename().unwrap_or("unknown")
-        )?;
+        // UE-5: prefer the wirevalue-resolved typename; fall back to
+        // the static `RUST_MESSAGE_TYPE` stamped at send time before
+        // resorting to the literal "unknown".
+        let message_type = envelope
+            .data()
+            .typename()
+            .map(|s| s.to_string())
+            .or_else(|| envelope.headers().get(RUST_MESSAGE_TYPE))
+            .unwrap_or_else(|| "unknown".to_string());
+        writeln!(f, "\tmessage type: {}", message_type)?;
         writeln!(f, "\tdata_len: {}", envelope.data().len())?;
         writeln!(
             f,
@@ -332,19 +487,116 @@ mod tests {
         );
     }
 
-    /// UE-3 / UE-4: envelope with no operation context falls back to
-    /// the neutral prefix.
+    /// UE-3: `DeliveryFailure` with no operation context falls back to
+    /// naming the destination (the actual failing hop), mirroring the
+    /// abandonment-log surface in `mailbox.rs`.
     #[test]
-    fn test_ue3_no_context_neutral_prefix() {
+    fn test_ue3_delivery_failure_no_context_names_destination() {
         let envelope = make_envelope("payload", Flattrs::new());
+        let dest_str = envelope.dest().to_string();
+        let rendered = format!(
+            "{}",
+            UndeliverableMessageError::DeliveryFailure { envelope }
+        );
+
+        let expected_prefix = format!("undeliverable message to {}", dest_str);
+        assert!(
+            rendered.starts_with(&expected_prefix),
+            "UE-3: delivery failure no context → destination prefix `{expected_prefix}`, got:\n{rendered}"
+        );
+        // The retired neutral wording must not return.
+        assert!(
+            !rendered.contains("undeliverable message error"),
+            "UE-3: neutral fallback must not be re-introduced, got:\n{rendered}"
+        );
+    }
+
+    /// UE-3: `ReturnFailure` with no operation context names the
+    /// original sender, because in this variant `sender`/`dest` refer
+    /// to the original envelope and the actual failing hop is
+    /// `system → original sender`. Headlining `dest` here would
+    /// misstate the failure.
+    #[test]
+    fn test_ue3_return_failure_no_context_names_original_sender() {
+        let envelope = make_envelope("payload", Flattrs::new());
+        let sender_str = envelope.sender().to_string();
+        let dest_str = envelope.dest().to_string();
+        let rendered = format!("{}", UndeliverableMessageError::ReturnFailure { envelope });
+
+        let expected_prefix = format!("undeliverable return to original sender {}", sender_str);
+        assert!(
+            rendered.starts_with(&expected_prefix),
+            "UE-3: return failure no context → original-sender prefix `{expected_prefix}`, got:\n{rendered}"
+        );
+        // Must not headline the original destination — the failing hop
+        // is the return to the original sender, not the original
+        // delivery.
+        assert!(
+            !rendered.starts_with(&format!("undeliverable message to {}", dest_str)),
+            "UE-3: return failure must not headline the original destination, got:\n{rendered}"
+        );
+        // The retired neutral wording must not return.
+        assert!(
+            !rendered.contains("undeliverable message error"),
+            "UE-3: neutral fallback must not be re-introduced, got:\n{rendered}"
+        );
+    }
+
+    /// UE-5: when wirevalue type resolution is unavailable
+    /// (`typename()` is `None`), the formatter falls back to the
+    /// static `RUST_MESSAGE_TYPE` stamped at send time.
+    #[test]
+    fn test_ue5_message_type_falls_back_to_rust_message_type() {
+        // `Any::new_broken()` carries `BROKEN_TYPEHASH` (0), which is
+        // not in the wirevalue type registry, so `typename()` is None.
+        // Mirrors the `test_broken_any` pattern in wirevalue itself.
+        let sender = test_actor_id("ue_proc", "ue_sender");
+        let dest = test_port_id("ue_dest_proc", "ue_dest", 42);
+        let mut headers = Flattrs::new();
+        headers.set(RUST_MESSAGE_TYPE, "my::Foo".to_string());
+        let envelope = MessageEnvelope::new(sender, dest, wirevalue::Any::new_broken(), headers);
+        assert!(
+            envelope.data().typename().is_none(),
+            "test fixture invariant: broken Any must have no typename()"
+        );
+
         let rendered = format!(
             "{}",
             UndeliverableMessageError::DeliveryFailure { envelope }
         );
 
         assert!(
-            rendered.starts_with("undeliverable message error:"),
-            "UE-3: no context → neutral prefix, got:\n{rendered}"
+            rendered.contains("\tmessage type: my::Foo\n"),
+            "UE-5: must surface RUST_MESSAGE_TYPE when typename() is absent, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("\tmessage type: unknown"),
+            "UE-5: must not render \"unknown\" when RUST_MESSAGE_TYPE is present, got:\n{rendered}"
+        );
+    }
+
+    /// UE-5 (negative): when both `typename()` and `RUST_MESSAGE_TYPE`
+    /// are absent, the formatter falls all the way through to the
+    /// literal `"unknown"`.
+    #[test]
+    fn test_ue5_unknown_when_typename_and_rust_message_type_both_absent() {
+        let sender = test_actor_id("ue_proc", "ue_sender");
+        let dest = test_port_id("ue_dest_proc", "ue_dest", 42);
+        let envelope =
+            MessageEnvelope::new(sender, dest, wirevalue::Any::new_broken(), Flattrs::new());
+        assert!(
+            envelope.data().typename().is_none(),
+            "test fixture invariant: broken Any must have no typename()"
+        );
+
+        let rendered = format!(
+            "{}",
+            UndeliverableMessageError::DeliveryFailure { envelope }
+        );
+
+        assert!(
+            rendered.contains("\tmessage type: unknown\n"),
+            "UE-5: with no typename and no RUST_MESSAGE_TYPE, must render \"unknown\", got:\n{rendered}"
         );
     }
 }

@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use hyperactor::reference;
+use hyperactor as reference;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyProc;
 use monarch_hyperactor::proc::PySerialized;
@@ -90,10 +90,10 @@ impl PdbActor {
         })
     }
 
-    fn send<'py>(&self, py: Python<'py>, action: DebuggerAction) -> PyResult<()> {
+    fn send(&self, py: Python<'_>, action: DebuggerAction) -> PyResult<()> {
         let controller_actor_ref = self.controller_actor_ref.clone();
         let instance = self.instance.clone();
-        let actor_id = instance.blocking_lock().actor_id().clone();
+        let actor_id = instance.blocking_lock().actor_addr().clone();
         signal_safe_block_on(py, async move {
             let (instance, handle) = instance
                 .lock()
@@ -151,10 +151,10 @@ pub fn register_python_bindings(debugger: &Bound<'_, PyModule>) -> PyResult<()> 
 
 #[cfg(test)]
 mod tests {
+    use hyperactor as reference;
     use hyperactor::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::proc::Proc;
-    use hyperactor::reference;
     use monarch_hyperactor::runtime::monarch_with_gil_blocking;
     use monarch_messages::controller::ControllerMessage;
     use typeuri::Named;
@@ -206,7 +206,7 @@ mod tests {
     fn test_pdb_actor() {
         Python::initialize();
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (_, controller_ref, controller_rx) = proc
             .attach_actor::<ControllerActor, ControllerMessage>("controller")
             .unwrap();
@@ -220,10 +220,10 @@ mod tests {
         let worker = proc.attach("worker").unwrap();
         PROC.with(|cell| cell.set(proc.clone()).ok());
         CONTROLLER_ACTOR_REF.with(|cell| cell.set(controller_ref.clone()).ok());
-        ROOT_ACTOR_ID.with(|cell| cell.set(worker.actor_id().clone()).ok());
+        ROOT_ACTOR_ID.with(|cell| cell.set(worker.actor_addr().clone()).ok());
 
         let mut actor = PdbActor::new().unwrap();
-        let debugger_actor_id = actor.instance.blocking_lock().actor_id().clone();
+        let debugger_actor_id = actor.instance.blocking_lock().actor_addr().clone();
 
         monarch_with_gil_blocking(|py| actor.send(py, DebuggerAction::Paused()).unwrap());
 

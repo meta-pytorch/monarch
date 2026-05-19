@@ -37,6 +37,7 @@ use syn::ItemImpl;
 use syn::Lit;
 use syn::Token;
 use syn::Type;
+use syn::WherePredicate;
 use syn::bracketed;
 use syn::parse::Parse;
 use syn::parse::ParseStream;
@@ -560,12 +561,8 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///
 /// // Define an actor.
 /// #[derive(Debug)]
-/// #[hyperactor::export(
-///     spawn = true,
-///     handlers = [
-///         ShoppingList,
-///     ],
-/// )]
+/// #[hyperactor::export(ShoppingList)]
+/// #[hyperactor::spawnable]
 /// struct ShoppingListActor(HashSet<String>);
 ///
 /// #[async_trait]
@@ -619,7 +616,7 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), anyhow::Error> {
-///     let mut proc = Proc::local();
+///     let mut proc = Proc::isolated();
 ///
 ///     // Spawn our actor, and get a handle for rank 0.
 ///     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =
@@ -660,7 +657,7 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///     );
 ///
 ///     let _ = proc
-///         .destroy_and_wait::<()>(Duration::from_secs(1), None)
+///         .destroy_and_wait(Duration::from_secs(1), "example cleanup")
 ///         .await?;
 ///     Ok(())
 /// }
@@ -718,7 +715,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                 let log_message = quote! {
                         hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
-                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_id().to_string(),
+                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_addr().to_string(),
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
@@ -759,7 +756,9 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                         // TODO: should we propagate this error (to supervision), or send it back as an "RPC error"?
                         // This would require Result<Result<..., in order to handle RPC errors.
                         #construct_result_future
-                        #reply_port_arg.send(cx, #result_ident).map_err(hyperactor::internal_macro_support::anyhow::Error::from)
+                        use hyperactor::Endpoint as _;
+                        #reply_port_arg.post(cx, #result_ident);
+                        Ok(())
                     }
                 });
             }
@@ -780,7 +779,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                 let log_message = quote! {
                         hyperactor::metrics::ACTOR_MESSAGES_RECEIVED.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
-                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_id().to_string(),
+                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_addr().to_string(),
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
@@ -898,7 +897,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
     // The client implementation methods.
     let mut impl_methods = Vec::new();
 
-    let send_message = quote! { self.send(cx, message)? };
+    let send_message = quote! { hyperactor::Endpoint::post(self, cx, message); };
     let global_log_level = parse_log_level(&input.attrs).ok().unwrap_or(None);
 
     for message in &messages {
@@ -934,7 +933,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                 let log_message = quote! {
                         hyperactor::metrics::ACTOR_MESSAGES_SENT.add(1, hyperactor::kv_pairs!(
                             "rpc" => "call",
-                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_id().to_string(),
+                            "actor_id" => hyperactor::context::Mailbox::mailbox(cx).actor_addr().to_string(),
                             "message_type" => stringify!(#enum_name),
                             "variant" => stringify!(#variant_name_snake),
                         ));
@@ -1030,7 +1029,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                 let log_message = quote! {
                     hyperactor::metrics::ACTOR_MESSAGES_SENT.add(1, hyperactor::kv_pairs!(
                         "rpc" => "oneway",
-                        "actor_id" => self.actor_id().to_string(),
+                        "actor_id" => self.actor_addr().to_string(),
                         "message_type" => stringify!(#enum_name),
                         "variant" => stringify!(#variant_name_snake),
                     ));
@@ -1288,15 +1287,104 @@ impl HandlerSpec {
     }
 }
 
+fn named_impl(data_type_name: &Ident, generics: &syn::Generics) -> proc_macro2::TokenStream {
+    let generics_with_bounds = generics_with_named_bounds(generics);
+    let type_params: Vec<_> = generics.type_params().collect();
+    let has_generics = !type_params.is_empty();
+
+    let (impl_generics_with_bounds, _, _) = generics_with_bounds.split_for_impl();
+    let (_, ty_generics, where_clause) = generics.split_for_impl();
+
+    let (typename_impl, typehash_impl) = if has_generics {
+        let placeholders = vec!["{}"; type_params.len()].join(", ");
+        let placeholders_format_string = format!("<{}>", placeholders);
+        let format_string = quote! {
+            concat!(
+                std::module_path!(),
+                "::",
+                stringify!(#data_type_name),
+                #placeholders_format_string
+            )
+        };
+        let type_param_idents: Vec<_> = type_params.iter().map(|param| &param.ident).collect();
+        (
+            quote! {
+                typeuri::intern_typename!(Self, #format_string, #(#type_param_idents),*)
+            },
+            quote! {
+                typeuri::cityhasher::hash(Self::typename())
+            },
+        )
+    } else {
+        (
+            quote! {
+                concat!(std::module_path!(), "::", stringify!(#data_type_name))
+            },
+            quote! {
+                static TYPEHASH: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+                    typeuri::cityhasher::hash(<#data_type_name as typeuri::Named>::typename())
+                });
+                *TYPEHASH
+            },
+        )
+    };
+
+    quote! {
+        impl #impl_generics_with_bounds typeuri::Named for #data_type_name #ty_generics #where_clause {
+            fn typename() -> &'static str {
+                #typename_impl
+            }
+
+            fn typehash() -> u64 {
+                #typehash_impl
+            }
+        }
+    }
+}
+
+fn generics_with_named_bounds(generics: &syn::Generics) -> syn::Generics {
+    let mut generics = generics.clone();
+    for param in generics.type_params_mut() {
+        param.bounds.push(syn::parse_quote!(typeuri::Named));
+    }
+    generics
+}
+
+fn generics_with_predicates(
+    generics: &syn::Generics,
+    predicates: impl IntoIterator<Item = WherePredicate>,
+) -> syn::Generics {
+    let mut generics = generics.clone();
+    generics.make_where_clause().predicates.extend(predicates);
+    generics
+}
+
 /// Attribute Struct for [`fn export`] macro.
 struct ExportAttr {
-    spawn: bool,
     handlers: Vec<HandlerSpec>,
 }
 
 impl Parse for ExportAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut spawn = false;
+        if input.is_empty() {
+            return Ok(Self {
+                handlers: Vec::new(),
+            });
+        }
+
+        let compatibility_form = {
+            let fork = input.fork();
+            fork.parse::<Ident>().is_ok() && fork.parse::<Token![=]>().is_ok()
+        };
+
+        if !compatibility_form {
+            let handlers = input
+                .parse_terminated(HandlerSpec::parse, Token![,])?
+                .into_iter()
+                .collect();
+            return Ok(Self { handlers });
+        }
+
         let mut handlers: Vec<HandlerSpec> = vec![];
 
         while !input.is_empty() {
@@ -1305,17 +1393,10 @@ impl Parse for ExportAttr {
 
             if key == "spawn" {
                 let expr: Expr = input.parse()?;
-                if let Expr::Lit(ExprLit {
-                    lit: Lit::Bool(b), ..
-                }) = expr
-                {
-                    spawn = b.value;
-                } else {
-                    return Err(syn::Error::new_spanned(
-                        expr,
-                        "expected boolean for `spawn`",
-                    ));
-                }
+                return Err(syn::Error::new_spanned(
+                    expr,
+                    "`spawn = true` is no longer supported; use `#[spawnable]` on concrete actor declarations or `hyperactor::register_spawnable!(ConcreteType)` for generic instantiations",
+                ));
             } else if key == "handlers" {
                 let content;
                 bracketed!(content in input);
@@ -1324,7 +1405,7 @@ impl Parse for ExportAttr {
             } else {
                 return Err(syn::Error::new_spanned(
                     key,
-                    "unexpected key in `#[export(...)]`. Only supports `spawn` and `handlers`",
+                    "unexpected key in `#[export(...)]`. Use direct handler lists, or the compatibility key `handlers`",
                 ));
             }
 
@@ -1332,7 +1413,7 @@ impl Parse for ExportAttr {
             let _ = input.parse::<Token![,]>();
         }
 
-        Ok(ExportAttr { spawn, handlers })
+        Ok(ExportAttr { handlers })
     }
 }
 
@@ -1341,89 +1422,140 @@ impl Parse for ExportAttr {
 /// the actor ([`hyperaxtor::ActorRef`]). Only messages that implement
 /// [`hyperactor::RemoteMessage`] may be exported.
 ///
-/// Additionally, an exported actor may be remotely spawned,
-/// indicated by `spawn = true`. Such actors must also ensure that
-/// their parameter type implements [`hyperactor::RemoteMessage`].
-///
 /// # Example
 ///
-/// In the following example, `MyActor` can be spawned remotely. It also has
-/// exports handlers for two message types, `MyMessage` and `MyOtherMessage`.
-/// Consequently, `ActorRef`s of the actor's type may dispatch messages of these
-/// types.
+/// In the following example, `MyActor` exports handlers for two message types,
+/// `MyMessage` and `MyOtherMessage`. Consequently, `ActorRef`s of the actor's
+/// type may dispatch messages of these types.
 ///
 /// ```ignore
-/// #[export(
-///     spawn = true,
-///     handlers = [
-///         MyMessage,
-///         MyOtherMessage,
-///     ],
-/// )]
+/// #[export(MyMessage, MyOtherMessage)]
 /// struct MyActor {}
 /// ```
 #[proc_macro_attribute]
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input: DeriveInput = parse_macro_input!(item as DeriveInput);
     let data_type_name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let (_, ty_generics, _) = input.generics.split_for_impl();
+    let named_generics = generics_with_named_bounds(&input.generics);
+    let (named_impl_generics, named_ty_generics, named_where_clause) =
+        named_generics.split_for_impl();
 
-    let ExportAttr { spawn, handlers } = parse_macro_input!(attr as ExportAttr);
-    let tys = HandlerSpec::add_indexed(handlers);
+    let ExportAttr { handlers } = parse_macro_input!(attr as ExportAttr);
 
     let mut handles = Vec::new();
     let mut bindings = Vec::new();
-    let mut type_registrations = Vec::new();
+    let mut bind_predicates = Vec::new();
+    let actor_ty: Type = syn::parse_quote!(#data_type_name #ty_generics);
 
-    for ty in &tys {
+    for HandlerSpec { ty, cast } in &handlers {
+        let message_generics = generics_with_predicates(
+            &named_generics,
+            [syn::parse_quote!(#ty: hyperactor::RemoteMessage)],
+        );
+        let (message_impl_generics, message_ty_generics, message_where_clause) =
+            message_generics.split_for_impl();
         handles.push(quote! {
-            impl #impl_generics hyperactor::actor::RemoteHandles<#ty> for #data_type_name #ty_generics #where_clause {}
-            impl #impl_generics hyperactor::remote::Accepts<#ty> for #data_type_name #ty_generics #where_clause {}
+            impl #message_impl_generics hyperactor::actor::RemoteHandles<#ty>
+                for #data_type_name #message_ty_generics #message_where_clause {}
+            impl #message_impl_generics hyperactor::remote::Accepts<#ty>
+                for #data_type_name #message_ty_generics #message_where_clause {}
         });
         bindings.push(quote! {
             ports.bind::<#ty>();
         });
-        type_registrations.push(quote! {
-            wirevalue::register_type!(#ty);
-        });
+        bind_predicates.push(syn::parse_quote!(#ty: hyperactor::RemoteMessage));
+        bind_predicates.push(syn::parse_quote!(#actor_ty: hyperactor::Handler<#ty>));
+
+        if *cast {
+            let indexed_ty: Type =
+                syn::parse_quote!(hyperactor::message::IndexedErasedUnbound<#ty>);
+            let indexed_generics = generics_with_predicates(
+                &named_generics,
+                [
+                    syn::parse_quote!(#ty: hyperactor::message::Castable),
+                    syn::parse_quote!(#indexed_ty: hyperactor::RemoteMessage),
+                ],
+            );
+            let (indexed_impl_generics, indexed_ty_generics, indexed_where_clause) =
+                indexed_generics.split_for_impl();
+            handles.push(quote! {
+                impl #indexed_impl_generics hyperactor::actor::RemoteHandles<#indexed_ty>
+                    for #data_type_name #indexed_ty_generics #indexed_where_clause {}
+                impl #indexed_impl_generics hyperactor::remote::Accepts<#indexed_ty>
+                    for #data_type_name #indexed_ty_generics #indexed_where_clause {}
+            });
+            bindings.push(quote! {
+                ports.bind::<#indexed_ty>();
+            });
+            bind_predicates.push(syn::parse_quote!(#ty: hyperactor::message::Castable));
+            bind_predicates.push(syn::parse_quote!(#indexed_ty: hyperactor::RemoteMessage));
+        }
     }
 
-    let mut expanded = quote! {
+    let bind_generics = generics_with_predicates(&named_generics, bind_predicates);
+    let (bind_impl_generics, bind_ty_generics, bind_where_clause) = bind_generics.split_for_impl();
+    let named_impl = named_impl(data_type_name, &input.generics);
+
+    let expanded = quote! {
         #input
 
-        impl #impl_generics hyperactor::actor::Referable for #data_type_name #ty_generics #where_clause {}
+        impl #named_impl_generics hyperactor::actor::Referable for #data_type_name #named_ty_generics #named_where_clause {}
 
         #(#handles)*
 
-        #(#type_registrations)*
-
-        // Always export the `Signal` type.
-        impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name #ty_generics #where_clause {}
-        impl #impl_generics hyperactor::remote::Accepts<hyperactor::actor::Signal> for #data_type_name #ty_generics #where_clause {}
-
         // Always export the `IntrospectMessage` type.
-        impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::introspect::IntrospectMessage> for #data_type_name #ty_generics #where_clause {}
-        impl #impl_generics hyperactor::remote::Accepts<hyperactor::introspect::IntrospectMessage> for #data_type_name #ty_generics #where_clause {}
+        impl #named_impl_generics hyperactor::actor::RemoteHandles<hyperactor::introspect::IntrospectMessage> for #data_type_name #named_ty_generics #named_where_clause {}
+        impl #named_impl_generics hyperactor::remote::Accepts<hyperactor::introspect::IntrospectMessage> for #data_type_name #named_ty_generics #named_where_clause {}
 
-        impl #impl_generics hyperactor::actor::Binds<#data_type_name #ty_generics> for #data_type_name #ty_generics #where_clause {
-            fn bind(ports: &hyperactor::proc::Ports<Self>) {
+        impl #bind_impl_generics hyperactor::actor::Binds<#data_type_name #bind_ty_generics> for #data_type_name #bind_ty_generics #bind_where_clause {
+            fn bind(ports: &hyperactor::proc::HandlerPorts<Self>) {
                 #(#bindings)*
             }
         }
 
-        // TODO: just use Named derive directly here.
-        impl #impl_generics typeuri::Named for #data_type_name #ty_generics #where_clause {
-            fn typename() -> &'static str { concat!(std::module_path!(), "::", stringify!(#data_type_name #ty_generics)) }
-        }
+        #named_impl
     };
 
-    if spawn {
-        expanded.extend(quote! {
-            hyperactor::remote!(#data_type_name);
-        });
+    TokenStream::from(expanded)
+}
+
+/// Marks a concrete actor declaration as remotely spawnable.
+///
+/// When combined with `#[export(...)]`, place `#[spawnable]` below `#[export]`.
+#[proc_macro_attribute]
+pub fn spawnable(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new(Span::call_site(), "`#[spawnable]` does not take arguments")
+            .to_compile_error()
+            .into();
     }
 
-    TokenStream::from(expanded)
+    let input: DeriveInput = parse_macro_input!(item as DeriveInput);
+    if !matches!(input.data, Data::Struct(_)) {
+        return syn::Error::new(
+            input.span(),
+            "`#[spawnable]` only supports struct actor declarations",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    if !input.generics.params.is_empty() {
+        return syn::Error::new(
+            input.generics.span(),
+            "generic actor families cannot use `#[spawnable]`; use `hyperactor::register_spawnable!(ConcreteType)` instead",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let data_type_name = &input.ident;
+    quote! {
+        #input
+        hyperactor::register_spawnable!(#data_type_name);
+    }
+    .into()
 }
 
 /// Represents the full input to [`fn behavior`].
@@ -1575,7 +1707,7 @@ pub fn behavior(input: TokenStream) -> TokenStream {
             A: hyperactor::Actor #(+ hyperactor::Handler<#tys>)*,
             #where_clause
         {
-            fn bind(ports: &hyperactor::proc::Ports<A>) {
+            fn bind(ports: &hyperactor::proc::HandlerPorts<A>) {
                 #(
                     ports.bind::<#tys>();
                 )*
@@ -2223,7 +2355,7 @@ pub fn uid(input: TokenStream) -> TokenStream {
     // Instance: bare hex
     match validate_hex_uid(&combined) {
         Ok(uid_val) => TokenStream::from(quote! {
-            hyperactor::id::Uid::Instance(#uid_val)
+            hyperactor::id::Uid::Instance(#uid_val, None)
         }),
         Err(e) => {
             let msg = format!("invalid uid: {e}");

@@ -77,3 +77,11 @@ jobs:
           set -eux
           source scripts/common-setup-macos.sh
           run_test_groups
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-cpu-python-macos-${{ github.sha }}
+          path: test-results/*.xml
+          if-no-files-found: ignore

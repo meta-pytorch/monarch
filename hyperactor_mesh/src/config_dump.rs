@@ -33,6 +33,6 @@ wirevalue::register_type!(ConfigDumpResult);
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
 pub struct ConfigDump {
     #[reply]
-    pub result: hyperactor::reference::OncePortRef<ConfigDumpResult>,
+    pub result: hyperactor::OncePortRef<ConfigDumpResult>,
 }
 wirevalue::register_type!(ConfigDump);

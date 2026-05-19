@@ -21,9 +21,11 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -32,7 +34,6 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
-use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMeshRef;
@@ -103,9 +104,9 @@ impl _Controller {
         let proc_mesh = py_proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
 
         // Build rank map from proc ids to ranks.
-        let rank_map: HashMap<reference::ProcId, usize> = proc_mesh
+        let rank_map: HashMap<reference::ProcAddr, usize> = proc_mesh
             .iter()
-            .map(|(point, proc)| (proc.proc_id().clone(), point.rank()))
+            .map(|(point, proc)| (proc.proc_addr().clone(), point.rank()))
             .collect();
 
         let region = Ranked::region(&proc_mesh);
@@ -156,7 +157,7 @@ impl _Controller {
         accumulate: bool,
     ) -> PyResult<()> {
         let response_port: Option<PortInfo> = response_port.map(|(port, ranks)| PortInfo {
-            port: reference::PortRef::attest(port.into()),
+            port: reference::PortRef::attest(reference::PortAddr::from(port)),
             ranks: ranks.into(),
             accumulate,
         });
@@ -173,32 +174,32 @@ impl _Controller {
             tracebacks,
             response_port,
         };
-        self.controller_handle
-            .blocking_lock()
-            .send(instance.deref(), msg)
-            .map_err(to_py_error)
+        hyperactor::Endpoint::post(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            msg,
+        );
+        Ok(())
     }
 
     fn _drop_refs(&mut self, instance: &PyInstance, refs: Vec<Ref>) -> PyResult<()> {
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::DropRefs { refs },
-            )
-            .map_err(to_py_error)
+        hyperactor::Endpoint::post(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::DropRefs { refs },
+        );
+        Ok(())
     }
 
     fn _sync_at_exit(&mut self, instance: &PyInstance, port: PyPortId) -> PyResult<()> {
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::SyncAtExit {
-                    port: reference::PortRef::attest(port.into()),
-                },
-            )
-            .map_err(to_py_error)
+        hyperactor::Endpoint::post(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::SyncAtExit {
+                port: reference::PortRef::attest(reference::PortAddr::from(port)),
+            },
+        );
+        Ok(())
     }
 
     fn _send<'py>(
@@ -214,27 +215,24 @@ impl _Controller {
             slices.iter().map(|x| x.into()).collect::<Vec<Slice>>()
         };
         let message: WorkerMessage = convert(message)?;
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::Send { slices, message },
-            )
-            .map_err(to_py_error)
+        hyperactor::Endpoint::post(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::Send { slices, message },
+        );
+        Ok(())
     }
 
     fn _drain_and_stop(&mut self, py: Python<'_>, instance: &PyInstance) -> PyResult<()> {
         let (stop_worker_port, stop_worker_receiver) = instance.open_once_port();
 
-        self.controller_handle
-            .blocking_lock()
-            .send(
-                instance.deref(),
-                ClientToControllerMessage::StopWorkers {
-                    response_port: stop_worker_port,
-                },
-            )
-            .map_err(to_py_error)?;
+        hyperactor::Endpoint::post(
+            &*self.controller_handle.blocking_lock(),
+            instance.deref(),
+            ClientToControllerMessage::StopWorkers {
+                response_port: stop_worker_port,
+            },
+        );
         signal_safe_block_on(py, async move { stop_worker_receiver.recv().await })?
             .map_err(to_py_error)?
             .map_err(PyRuntimeError::new_err)?;
@@ -372,10 +370,10 @@ impl Invocation {
                                     .expect("complete runs should not overlap");
                             }
                         }
-                        port.send(sender, overlay.into())?;
+                        port.post(sender, overlay.into());
                     } else {
                         for result in results {
-                            port.send(sender, result)?;
+                            port.post(sender, result);
                         }
                     }
                 }
@@ -425,13 +423,13 @@ impl Invocation {
                                             )
                                             .expect("exception runs should not overlap");
                                     }
-                                    port.send(sender, overlay.into())?;
+                                    port.post(sender, overlay.into());
                                 } else {
                                     for rank in ranks.iter() {
-                                        port.send(
+                                        port.post(
                                             sender,
                                             exception.as_ref().clone().into_rank(rank),
-                                        )?;
+                                        );
                                     }
                                 }
                             }
@@ -659,21 +657,21 @@ impl History {
                 invocation.complete(sender)?;
             }
         }
-        if let Some(port) = &self.exit_port {
-            if self.min_incomplete_seq >= self.seq_lower_bound {
-                let result = match &self.unreported_exception {
-                    Some(exception) => exception.as_ref().clone(),
-                    None => {
-                        // the byte string is just a Python None
-                        PythonMessage::new_from_buf(
-                            PythonMessageKind::Result { rank: None },
-                            b"\x80\x04N.".to_vec(),
-                        )
-                    }
-                };
-                port.send(sender, result)?;
-                self.exit_port = None;
-            }
+        if let Some(port) = &self.exit_port
+            && self.min_incomplete_seq >= self.seq_lower_bound
+        {
+            let result = match &self.unreported_exception {
+                Some(exception) => exception.as_ref().clone(),
+                None => {
+                    // the byte string is just a Python None
+                    PythonMessage::new_from_buf(
+                        PythonMessageKind::Result { rank: None },
+                        b"\x80\x04N.".to_vec(),
+                    )
+                }
+            };
+            port.post(sender, result);
+            self.exit_port = None;
         }
         Ok(())
     }
@@ -731,13 +729,13 @@ struct MeshControllerActor {
     id: usize,
     debugger_active: Option<reference::ActorRef<DebuggerActor>>,
     debugger_paused: VecDeque<reference::ActorRef<DebuggerActor>>,
-    rank_map: HashMap<reference::ProcId, usize>,
+    rank_map: HashMap<reference::ProcAddr, usize>,
 }
 
 struct MeshControllerActorParams {
     proc_mesh_ref: ProcMeshRef,
     id: usize,
-    rank_map: HashMap<reference::ProcId, usize>,
+    rank_map: HashMap<reference::ProcAddr, usize>,
 }
 
 impl MeshControllerActor {
@@ -776,7 +774,7 @@ impl MeshControllerActor {
     async fn handle_debug(
         &mut self,
         this: &Context<'_, Self>,
-        debugger_actor_id: reference::ActorId,
+        debugger_actor_id: reference::ActorAddr,
         action: DebuggerAction,
     ) -> anyhow::Result<()> {
         if matches!(action, DebuggerAction::Paused()) {
@@ -787,7 +785,7 @@ impl MeshControllerActor {
                 .debugger_active
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("no active debugger"))?;
-            if debugger_actor_id != *debugger_actor.actor_id() {
+            if debugger_actor_id != *debugger_actor.actor_addr() {
                 anyhow::bail!("debugger action for wrong actor");
             }
             match action {
@@ -804,14 +802,14 @@ impl MeshControllerActor {
                         let bytes: Vec<u8> =
                             read.call1((requested_size,)).unwrap().extract().unwrap();
 
-                        debugger_actor.send(
+                        debugger_actor.post(
                             this,
                             DebuggerMessage::Action {
                                 action: DebuggerAction::Write { bytes },
                             },
-                        )
+                        );
                     })
-                    .await?;
+                    .await;
                 }
                 DebuggerAction::Write { bytes } => {
                     monarch_hyperactor::runtime::monarch_with_gil(
@@ -833,16 +831,13 @@ impl MeshControllerActor {
             }
         }
         if self.debugger_active.is_none() {
-            self.debugger_active = self.debugger_paused.pop_front().and_then(|pdb_actor| {
-                pdb_actor
-                    .send(
-                        this,
-                        DebuggerMessage::Action {
-                            action: DebuggerAction::Attach(),
-                        },
-                    )
-                    .map(|_| pdb_actor)
-                    .ok()
+            self.debugger_active = self.debugger_paused.pop_front().inspect(|pdb_actor| {
+                pdb_actor.post(
+                    this,
+                    DebuggerMessage::Action {
+                        action: DebuggerAction::Attach(),
+                    },
+                );
             });
         }
         Ok(())
@@ -889,10 +884,10 @@ impl Debug for MeshControllerActor {
 }
 
 impl MeshControllerActor {
-    fn rank_of_worker(&self, actor_id: &reference::ActorId) -> usize {
+    fn rank_of_worker(&self, actor_id: &reference::ActorAddr) -> usize {
         *self
             .rank_map
-            .get(&actor_id.proc_id())
+            .get(&actor_id.proc_addr())
             .expect("rank map should contain worker")
     }
 }
@@ -988,9 +983,9 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
                     .stop(this, "client requested stop".to_string())
                     .await;
                 if worker_stop_result.is_ok() && broker_stop_result.is_ok() {
-                    response_port.send(this, Ok(()))?;
+                    response_port.post(this, Ok(()));
                 } else {
-                    response_port.send(this, Err(format!("stopping mesh workers failed: tensor worker result: {:?}, broker result: {:?}", worker_stop_result, broker_stop_result)))?;
+                    response_port.post(this, Err(format!("stopping mesh workers failed: tensor worker result: {:?}, broker result: {:?}", worker_stop_result, broker_stop_result)));
                 }
             }
         }
@@ -1004,7 +999,7 @@ impl Handler<MeshFailure> for MeshControllerActor {
         // If an actor spawned by this one fails, we can't handle it. We fail
         // ourselves with a chained error and bubble up to the next owner.
         let err = ActorErrorKind::UnhandledSupervisionEvent(Box::new(ActorSupervisionEvent::new(
-            this.self_id().clone(),
+            this.self_addr().clone(),
             None,
             ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(Box::new(
                 message.event.clone(),

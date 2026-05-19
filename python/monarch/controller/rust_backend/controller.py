@@ -22,7 +22,7 @@ from monarch._rust_bindings.monarch_extension.client import (  # @manual=//monar
     ClientActor,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
-    ActorId,
+    ActorAddr,
     Proc,
 )
 from monarch._rust_bindings.monarch_messages.debugger import DebuggerAction
@@ -42,7 +42,7 @@ class RustController:
         self,
         proc: Proc,
         client_actor: ClientActor,
-        controller_id: ActorId,
+        controller_id: ActorAddr,
         worker_world_name: str,
     ) -> None:
         self._controller_actor = controller_id
@@ -58,7 +58,7 @@ class RustController:
         self._non_debugger_pending_messages: deque[
             Optional[client.LogMessage | client.WorkerResponse]
         ] = deque()
-        self._pending_debugger_sessions: deque[ActorId] = deque()
+        self._pending_debugger_sessions: deque[ActorAddr] = deque()
 
     def send(
         self,

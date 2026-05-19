@@ -402,7 +402,7 @@ impl CommMessageHandler for NcclCommActor {
 
 #[cfg(all(test, fbcode_build))]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
     use std::collections::HashMap;
 
     use anyhow::Result;
@@ -436,8 +436,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn all_reduce() {
         test_setup().unwrap();
-        let proc = Proc::local();
-        let (client, _handle) = proc.instance("client").unwrap();
+        let proc = Proc::isolated();
+        let (client, _handle) = proc.client("client").unwrap();
 
         let unique_id = UniqueId::new_nccl().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
@@ -503,8 +503,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn group_send_recv() {
         test_setup().unwrap();
-        let proc = Proc::local();
-        let (client, _handle) = proc.instance("client").unwrap();
+        let proc = Proc::isolated();
+        let (client, _handle) = proc.client("client").unwrap();
 
         let unique_id = UniqueId::new_nccl().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
@@ -578,8 +578,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 60)]
     async fn reduce() -> Result<()> {
         test_setup()?;
-        let proc = Proc::local();
-        let (client, _handle) = proc.instance("client")?;
+        let proc = Proc::isolated();
+        let (client, _handle) = proc.client("client")?;
 
         let unique_id = UniqueId::new_nccl()?;
         let device0 = CudaDevice::new(DeviceIndex(0));
@@ -650,7 +650,7 @@ mod tests {
     async fn worker_reduce() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let world_size = 4;
@@ -838,7 +838,7 @@ mod tests {
     async fn send_tensor() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let handle1 = proc
@@ -1023,7 +1023,7 @@ mod tests {
     async fn send_tensor_local() -> Result<()> {
         test_setup()?;
 
-        let proc = Proc::local();
+        let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
         let handle = proc

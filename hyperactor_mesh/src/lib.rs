@@ -9,6 +9,7 @@
 //! This crate provides hyperactor's mesh abstractions.
 
 #![feature(assert_matches)]
+#![feature(associated_type_defaults)]
 #![feature(exit_status_error)]
 #![feature(impl_trait_in_bindings)]
 #![feature(get_disjoint_mut_helpers)]
@@ -29,6 +30,7 @@ pub mod config;
 pub mod config_dump;
 pub mod connect;
 pub mod global_context;
+pub mod host;
 pub mod host_mesh;
 pub mod introspect;
 pub mod logging;
@@ -74,9 +76,10 @@ pub use global_context::context;
 pub use global_context::this_host;
 pub use global_context::this_proc;
 pub use host_mesh::HostMeshRef;
-use hyperactor::host::HostError;
+use hyperactor::ActorAddr;
+use hyperactor::ActorRef;
+use hyperactor::ProcAddr;
 use hyperactor::mailbox::MailboxSenderError;
-use hyperactor::reference as hyperactor_reference;
 pub use hyperactor_mesh_macros::sel;
 pub use mesh::Mesh;
 // Re-exported for internal test binaries that don't have ndslice as a direct dependency
@@ -86,6 +89,7 @@ pub use proc_mesh::ProcMesh;
 pub use proc_mesh::ProcMeshRef;
 pub use value_mesh::ValueMesh;
 
+use crate::host::HostError;
 use crate::host_mesh::HostAgent;
 use crate::host_mesh::HostMeshRefParseError;
 use crate::host_mesh::host_agent::ProcState;
@@ -142,7 +146,7 @@ pub enum Error {
     UnroutableMesh(),
 
     #[error("error while calling actor {0}: {1}")]
-    CallError(hyperactor_reference::ActorId, anyhow::Error),
+    CallError(ActorAddr, anyhow::Error),
 
     #[error("actor not registered for type {0}")]
     ActorTypeNotRegistered(String),
@@ -152,13 +156,19 @@ pub enum Error {
     GspawnError(mesh_id::ActorMeshId, String),
 
     #[error("error while sending message to actor {0}: {1}")]
-    SendingError(hyperactor_reference::ActorId, Box<MailboxSenderError>),
+    SendingError(ActorAddr, Box<MailboxSenderError>),
 
     #[error("error while casting message to {0}: {1}")]
     CastingError(mesh_id::ActorMeshId, anyhow::Error),
 
     #[error("error configuring host mesh agent {0}: {1}")]
-    HostMeshAgentConfigurationError(hyperactor_reference::ActorId, String),
+    HostMeshAgentConfigurationError(ActorAddr, String),
+
+    /// HM-2 / HM-3 / HM-4: structured per-host failure from
+    /// `HostMeshRef::push_config()`. See the HM-* invariant block in
+    /// `host_mesh.rs` for the contract this surfaces.
+    #[error(transparent)]
+    ConfigPushFailed(#[from] crate::host_mesh::ConfigPushError),
 
     #[error(
         "error creating proc (host rank {host_rank}) on host mesh agent {mesh_agent}, state: {state}"
@@ -166,7 +176,7 @@ pub enum Error {
     ProcCreationError {
         state: Box<resource::State<ProcState>>,
         host_rank: usize,
-        mesh_agent: hyperactor_reference::ActorRef<HostAgent>,
+        mesh_agent: ActorRef<HostAgent>,
     },
 
     #[error(
@@ -187,6 +197,12 @@ pub enum Error {
     )]
     ActorStopError { statuses: RankedValues<Status> },
 
+    #[error(
+        "error stopping proc mesh: statuses: {}",
+        RankedValues::invert(statuses)
+    )]
+    ProcMeshStopError { statuses: RankedValues<Status> },
+
     #[error("error spawning actor: {0}")]
     SingletonActorSpawnError(anyhow::Error),
 
@@ -194,7 +210,7 @@ pub enum Error {
     ControllerActorSpawnError(mesh_id::ResourceId, anyhow::Error),
 
     #[error("proc {0} must be direct-addressable")]
-    RankedProc(hyperactor_reference::ProcId),
+    RankedProc(ProcAddr),
 
     #[error("{0}")]
     Supervision(Box<MeshFailure>),
@@ -313,7 +329,7 @@ mod tests {
         assert!(structurally_equal(&actual, &expected));
     }
 
-    #[cfg(FALSE)]
+    #[cfg(false)]
     #[test]
     fn shouldnt_compile() {
         let _ = sel!(foobar);

@@ -14,6 +14,7 @@ use std::fmt::Debug;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
@@ -22,7 +23,6 @@ use hyperactor::RefClient;
 use hyperactor::handle;
 use hyperactor::instrument;
 use hyperactor::instrument_infallible;
-use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -182,8 +182,8 @@ mod tests {
     // Verify it compiles
     #[async_timed_test(timeout_secs = 30)]
     async fn test_client_macros() {
-        let proc = Proc::local();
-        let (client, _) = proc.instance("client").unwrap();
+        let proc = Proc::isolated();
+        let (client, _) = proc.client("client").unwrap();
         let actor_handle = proc.spawn("foo", TestVariantFormsActor {}).unwrap();
 
         assert_eq!(actor_handle.call_struct(&client, 10).await.unwrap(), 10,);
@@ -202,6 +202,6 @@ mod tests {
     #[test]
     fn test_uid_macro_instance() {
         let id = uid!(d5d54d7201103869);
-        assert_eq!(id, Uid::Instance(0xd5d54d7201103869));
+        assert_eq!(id, Uid::Instance(0xd5d54d7201103869, None));
     }
 }

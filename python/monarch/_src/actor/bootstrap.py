@@ -43,7 +43,6 @@ def run_worker_loop_forever(
     private_key: PrivateKey = None,
     ca: CA,
     address: str,
-    bind_address: Optional[str] = None,
 ) -> None:
     """
     Start a monarch server at "address" capable of letting this machine participate in
@@ -56,17 +55,19 @@ def run_worker_loop_forever(
         ipc://some_unique_string - unix sockets
         inproc://3423 - connection only accessible within the process
 
+    To bind to one interface but advertise a different one, append the bind
+    address after ``@``:
+
+        tcp://worker-fqdn:4444@tcp://0.0.0.0:4444
+
+    The server binds to ``tcp://0.0.0.0:4444`` so any local interface can
+    accept connections (e.g. ``localhost`` for ``kubectl port-forward``)
+    while peers still address the worker by its routable FQDN. Without the
+    ``@``-suffix, bind address equals advertised address.
 
     The server will accept a connection to a new root client and enable it to
     use this machine as a host. If the client disconnects or cannot be contacted, this server
     kills all the current work and waits for a new connection.
-
-    bind_address is an optional zmq-style address for the interface to bind to.
-    When set, the server binds to this address but advertises ``address`` for
-    routing. This is useful in Kubernetes where the worker should bind to all
-    interfaces (``tcp://0.0.0.0:<port>``) so that ``kubectl port-forward`` can
-    reach it via localhost, while other pods still connect via the FQDN in
-    ``address``.
 
     private_key is a tls private key file loaded as bytes used to establish secure connections.
     Things connecting to this machine must trust this private_key in the certificate authority file.
@@ -86,9 +87,6 @@ def run_worker_loop_forever(
         raise NotImplementedError(
             "implementation does not get the host name right if it was specified as a wild card. We have to fix this"
         )
-
-    if bind_address is not None:
-        address = f"{address}@{bind_address}"
 
     _run_worker_loop_forever(address).block_on()
 

@@ -8,10 +8,10 @@
 
 use std::sync::Arc;
 
-use hyperactor::reference;
+use hyperactor as reference;
 use monarch_hyperactor::ndslice::PySlice;
 use monarch_hyperactor::proc::InstanceWrapper;
-use monarch_hyperactor::proc::PyActorId;
+use monarch_hyperactor::proc::PyActorAddr;
 use monarch_hyperactor::proc::PyProc;
 use monarch_hyperactor::proc::PySerialized;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
@@ -116,7 +116,7 @@ impl PyError {
         seq: Seq,
         caused_by_seq: Seq,
         backtrace: String,
-        actor_id: &PyActorId,
+        actor_id: &PyActorAddr,
     ) -> PyResult<(Self, PyException)> {
         Ok((
             Self,
@@ -138,7 +138,7 @@ impl PyError {
         py: Python<'_>,
         seq: Seq,
         caused_by_seq: Seq,
-        actor_id: &PyActorId,
+        actor_id: &PyActorAddr,
         backtrace: String,
     ) -> PyResult<Py<PyAny>> {
         let initializer = PyClassInitializer::from(PyException {
@@ -166,7 +166,7 @@ impl PyError {
     }
 
     #[getter]
-    fn actor_id(self_: PyRef<Self>) -> PyActorId {
+    fn actor_id(self_: PyRef<Self>) -> PyActorAddr {
         self_
             .as_ref()
             .inner
@@ -264,7 +264,7 @@ impl PyFailure {
     fn new(
         backtrace: String,
         address: String,
-        actor_id: &PyActorId,
+        actor_id: &PyActorAddr,
     ) -> PyResult<(Self, PyException)> {
         Ok((
             Self,
@@ -281,7 +281,7 @@ impl PyFailure {
     #[staticmethod]
     fn new_for_unit_test(
         py: Python<'_>,
-        actor_id: &PyActorId,
+        actor_id: &PyActorAddr,
         backtrace: String,
     ) -> PyResult<Py<PyAny>> {
         let initializer = PyClassInitializer::from(PyException {
@@ -296,7 +296,7 @@ impl PyFailure {
     }
 
     #[getter]
-    fn actor_id(self_: PyRef<Self>) -> PyActorId {
+    fn actor_id(self_: PyRef<Self>) -> PyActorAddr {
         self_
             .as_ref()
             .inner
@@ -325,7 +325,7 @@ impl PyFailure {
     module = "monarch._rust_bindings.monarch_extension.client"
 )]
 pub struct DebuggerMessage {
-    debugger_actor_id: PyActorId,
+    debugger_actor_id: PyActorAddr,
     action: DebuggerAction,
 }
 
@@ -333,7 +333,7 @@ pub struct DebuggerMessage {
 impl DebuggerMessage {
     #[new]
     #[pyo3(signature = (*, debugger_actor_id, action))]
-    pub fn new(debugger_actor_id: PyActorId, action: DebuggerAction) -> PyResult<Self> {
+    pub fn new(debugger_actor_id: PyActorAddr, action: DebuggerAction) -> PyResult<Self> {
         Ok(Self {
             debugger_actor_id,
             action,
@@ -356,7 +356,7 @@ impl ClientActor {
     }
 
     #[staticmethod]
-    fn new_with_parent(_proc: &PyProc, _parent: &PyActorId) -> PyResult<Self> {
+    fn new_with_parent(_proc: &PyProc, _parent: &PyActorAddr) -> PyResult<Self> {
         // XXX:
         unimplemented!("this is not a valid thing to do!");
         // Ok(Self {
@@ -369,13 +369,13 @@ impl ClientActor {
 
     /// Send a message to any actor that can receive the corresponding serialized
     /// message.
-    fn send(&self, actor_id: &PyActorId, message: &PySerialized) -> PyResult<()> {
+    fn send(&self, actor_id: &PyActorAddr, message: &PySerialized) -> PyResult<()> {
         self.instance.blocking_lock().send(actor_id, message)
     }
 
     fn send_obj(
         &self,
-        controller: &PyActorId,
+        controller: &PyActorAddr,
         ranks: PyRanks,
         message: Bound<'_, PyAny>,
     ) -> PyResult<()> {
@@ -401,23 +401,25 @@ impl ClientActor {
     }
 
     /// Attach the client to a controller actor. This will block until the controller responds.
-    fn attach(&mut self, py: Python, controller_id: PyActorId) -> PyResult<()> {
+    fn attach(&mut self, py: Python, controller_id: PyActorAddr) -> PyResult<()> {
         let instance_wrapper = self.instance.blocking_lock();
-        let actor_id = instance_wrapper.actor_id().clone();
+        let actor_id = instance_wrapper.actor_addr().clone();
         let (instance, _handler) = instance_wrapper
             .instance()
             .child()
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
 
         signal_safe_block_on(py, async move {
-            reference::ActorRef::<ControllerActor>::attest((&controller_id).into())
-                .attach(&instance, reference::ActorRef::attest(actor_id))
-                .await
-                .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+            reference::ActorRef::<ControllerActor>::attest(reference::ActorAddr::from(
+                &controller_id,
+            ))
+            .attach(&instance, reference::ActorRef::attest(actor_id))
+            .await
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
         })?
     }
 
-    fn drop_refs(&self, py: Python, controller_id: PyActorId, refs: Vec<Ref>) -> PyResult<()> {
+    fn drop_refs(&self, py: Python, controller_id: PyActorAddr, refs: Vec<Ref>) -> PyResult<()> {
         let instance_wrapper = self.instance.blocking_lock();
         let (instance, _handler) = instance_wrapper
             .instance()
@@ -425,10 +427,12 @@ impl ClientActor {
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
 
         signal_safe_block_on(py, async move {
-            reference::ActorRef::<ControllerActor>::attest((&controller_id).into())
-                .drop_refs(&instance, refs)
-                .await
-                .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+            reference::ActorRef::<ControllerActor>::attest(reference::ActorAddr::from(
+                &controller_id,
+            ))
+            .drop_refs(&instance, refs)
+            .await
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
         })?
     }
 
@@ -436,9 +440,9 @@ impl ClientActor {
     /// or the timeout is reached in which case it will return None
     /// If the actor has been stopped, this returns an error.
     #[pyo3(signature = (*, timeout_msec = None))]
-    fn get_next_message<'py>(
+    fn get_next_message(
         &mut self,
-        py: Python<'py>,
+        py: Python<'_>,
         timeout_msec: Option<u64>,
     ) -> PyResult<Py<PyAny>> {
         let instance = self.instance.clone();
@@ -498,9 +502,9 @@ impl ClientActor {
         PyList::new(py, messages)
     }
 
-    fn actor_id(&self) -> PyResult<PyActorId> {
+    fn actor_id(&self) -> PyResult<PyActorAddr> {
         let instance = self.instance.blocking_lock();
-        Ok(PyActorId::from(instance.actor_id().clone()))
+        Ok(PyActorAddr::from(instance.actor_addr().clone()))
     }
 }
 

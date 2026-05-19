@@ -15,12 +15,13 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Unbind;
-use hyperactor::reference;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::comm::multicast::CastInfo;
@@ -34,12 +35,8 @@ use serde::Serialize;
 use typeuri::Named;
 
 #[derive(Default, Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [
-        TestMessage { cast = true },
-    ],
-)]
+#[hyperactor::export(TestMessage { cast = true })]
+#[hyperactor::spawnable]
 struct TestActor {}
 
 impl Actor for TestActor {}
@@ -57,7 +54,7 @@ impl Handler<TestMessage> for TestActor {
         message: TestMessage,
     ) -> Result<(), anyhow::Error> {
         match message {
-            TestMessage::Ping(reply) => reply.send(cx, cx.cast_point())?,
+            TestMessage::Ping(reply) => reply.post(cx, cx.cast_point()),
         }
         Ok(())
     }
@@ -75,7 +72,7 @@ async fn main() {
     let instance = cx.actor_instance;
 
     let proc_mesh = host_mesh
-        .spawn(instance, "test", extent!(procs = 2), None)
+        .spawn(instance, "test", extent!(procs = 2), None, None)
         .await
         .unwrap();
 

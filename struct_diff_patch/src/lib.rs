@@ -339,6 +339,9 @@ impl_tuple_diff_patch!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
 
 #[cfg(test)]
 mod tests {
+    // The Diff derive macro emits a unit expression; suppress the false positive.
+    #![allow(clippy::unused_unit)]
+
     use super::*;
     use crate as struct_diff_patch; // for macros
 
@@ -456,8 +459,8 @@ mod tests {
         assert_eq!(tuple_value, DerivedTuple("baz".into(), false));
 
         let mut unit = DerivedUnit;
-        let unit_patch = unit.diff(&DerivedUnit);
-        unit_patch.apply(&mut unit).unwrap();
+        unit.diff(&DerivedUnit);
+        ().apply(&mut unit).unwrap();
     }
 
     #[test]

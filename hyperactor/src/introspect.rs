@@ -38,7 +38,7 @@
 //! - **S3.** Sender routing is unchanged -- senders target the same
 //!   `PortId` (`IntrospectMessage::port()`) across processes.
 //! - **S4.** `IntrospectMessage` never produces a `WorkCell` --
-//!   pre-registration via `open_message_port` gives the introspect
+//!   pre-registration via `bind_handler_port` gives the introspect
 //!   port its own channel, independent of the actor's work queue.
 //! - **S5.** Replies never use `PanickingMailboxSender` -- the
 //!   introspect task replies via `Mailbox::serialize_and_send_once`.
@@ -51,7 +51,7 @@
 //!   publish `Root` or `Error` payloads (only `Host` and `Proc`
 //!   variants).
 //! - **S9.** Port binding is single source of truth -- the introspect
-//!   port is bound exactly once via `bind_actor_port()` in
+//!   port is bound exactly once via `bind_handler_port()` in
 //!   `Instance::new()`.
 //! - **S10.** Introspect receiver lifecycle -- created in
 //!   `Instance::new()`, spawned in `start()`, dropped in
@@ -131,10 +131,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::ActorAddr;
+use crate::Addr;
+use crate::AddrParseError;
 use crate::InstanceCell;
-use crate::ref_;
-use crate::reference;
-
+use crate::OncePortRef;
+use crate::ProcAddr;
 /// Typed reference to an introspectable entity.
 ///
 /// This is the generic hyperactor layer — it knows about procs and
@@ -145,11 +147,22 @@ use crate::reference;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
 pub enum IntrospectRef {
     /// A proc reference.
-    Proc(reference::ProcId),
+    Proc(ProcAddr),
     /// An actor reference.
-    Actor(reference::ActorId),
+    Actor(ActorAddr),
 }
 hyperactor_config::impl_attrvalue!(IntrospectRef);
+
+/// Error returned when parsing an [`IntrospectRef`].
+#[derive(Debug, thiserror::Error)]
+pub enum IntrospectRefParseError {
+    /// The address text could not be parsed.
+    #[error(transparent)]
+    Addr(#[from] AddrParseError),
+    /// Port references are not introspectable.
+    #[error("port references are not valid introspection references")]
+    PortNotAllowed,
+}
 
 impl fmt::Display for IntrospectRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -161,28 +174,26 @@ impl fmt::Display for IntrospectRef {
 }
 
 impl FromStr for IntrospectRef {
-    type Err = reference::ReferenceParsingError;
+    type Err = IntrospectRefParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let r: reference::Reference = s.parse()?;
+        let r: Addr = s.parse()?;
         match r {
-            reference::Reference::Proc(id) => Ok(Self::Proc(id)),
-            reference::Reference::Actor(id) => Ok(Self::Actor(id)),
-            reference::Reference::Port(_) => Err(reference::ReferenceParsingError::WrongType(
-                "port references are not valid introspection references".to_string(),
-            )),
+            Addr::Proc(id) => Ok(Self::Proc(id)),
+            Addr::Actor(id) => Ok(Self::Actor(id)),
+            Addr::Port(_) => Err(IntrospectRefParseError::PortNotAllowed),
         }
     }
 }
 
-impl From<reference::ProcId> for IntrospectRef {
-    fn from(id: reference::ProcId) -> Self {
+impl From<ProcAddr> for IntrospectRef {
+    fn from(id: ProcAddr) -> Self {
         Self::Proc(id)
     }
 }
 
-impl From<reference::ActorId> for IntrospectRef {
-    fn from(id: reference::ActorId) -> Self {
+impl From<ActorAddr> for IntrospectRef {
+    fn from(id: ActorAddr) -> Self {
         Self::Actor(id)
     }
 }
@@ -331,7 +342,7 @@ declare_attrs! {
         name: "failure_root_cause_actor".into(),
         desc: "Actor that caused the failure (root cause)".into(),
     })
-    pub attr FAILURE_ROOT_CAUSE_ACTOR: reference::ActorId;
+    pub attr FAILURE_ROOT_CAUSE_ACTOR: ActorAddr;
 
     /// Name of root cause actor.
     @meta(INTROSPECT = IntrospectAttr {
@@ -405,7 +416,7 @@ pub struct FailureAttrs {
     /// Error message describing the failure.
     pub error_message: String,
     /// Actor that caused the failure (root cause).
-    pub root_cause_actor: reference::ActorId,
+    pub root_cause_actor: ActorAddr,
     /// Display name of the root-cause actor, if available.
     pub root_cause_name: Option<String>,
     /// When the failure occurred.
@@ -576,12 +587,12 @@ impl ActorAttrsView {
 /// The mesh layer constructs the API-facing `NodePayload` (with
 /// `properties`) from this via `derive_properties`.
 ///
-/// This is the internal wire type — it travels over actor ports
+/// This is the internal wire type — it travels over handler ports
 /// via `IntrospectMessage`. The presentation-layer `NodePayload`
 /// (with `NodeProperties`) lives in `hyperactor_mesh::introspect`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct IntrospectResult {
-    /// Reference identifying this node.
+    /// Addr identifying this node.
     pub identity: IntrospectRef,
     /// JSON-serialized `Attrs` bag containing introspection attributes.
     pub attrs: String,
@@ -630,14 +641,14 @@ pub enum IntrospectMessage {
         /// View context - Entity or Actor.
         view: IntrospectView,
         /// Reply port receiving the actor's self-description.
-        reply: reference::OncePortRef<IntrospectResult>,
+        reply: OncePortRef<IntrospectResult>,
     },
     /// "Describe one of your children."
     QueryChild {
-        /// Reference identifying the child to describe.
-        child_ref: reference::Reference,
+        /// Addr identifying the child to describe.
+        child_ref: Addr,
         /// Reply port receiving the child's description.
-        reply: reference::OncePortRef<IntrospectResult>,
+        reply: OncePortRef<IntrospectResult>,
     },
 }
 wirevalue::register_type!(IntrospectMessage);
@@ -684,7 +695,7 @@ pub fn format_timestamp(time: SystemTime) -> String {
 /// Failure fields extracted from a supervision event.
 struct FailureSnapshot {
     error_message: String,
-    root_cause_actor: reference::ActorId,
+    root_cause_actor: ActorAddr,
     root_cause_name: Option<String>,
     occurred_at: SystemTime,
     is_propagated: bool,
@@ -757,14 +768,14 @@ fn build_actor_attrs(cell: &crate::InstanceCell, snap: &ActorSnapshot) -> String
 /// the cell. Used by the introspect task (which runs outside
 /// the actor's message loop) and by `Instance::introspect_payload`.
 pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
-    let actor_id = cell.actor_id();
+    let actor_id = cell.actor_addr();
     let status = cell.status().borrow().clone();
     let last_handler = cell.last_message_handler();
 
     let children: Vec<IntrospectRef> = cell
         .child_actor_ids()
         .into_iter()
-        .map(|a| IntrospectRef::Actor(a.into()))
+        .map(IntrospectRef::Actor)
         .collect();
 
     let events = cell.recording().tail();
@@ -788,7 +799,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 
     let supervisor = cell
         .parent()
-        .map(|p| IntrospectRef::Actor(p.actor_id().clone().into()));
+        .map(|p| IntrospectRef::Actor(p.actor_addr().clone()));
 
     // FI-3: failure_info is computed from the same status value as
     // actor_status, ensuring they agree on whether the actor failed.
@@ -818,7 +829,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     let attrs = build_actor_attrs(cell, &snap);
 
     IntrospectResult {
-        identity: IntrospectRef::Actor(actor_id.clone().into()),
+        identity: IntrospectRef::Actor(actor_id.clone()),
         attrs,
         children,
         parent: supervisor,
@@ -828,7 +839,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 
 /// Introspect task: runs on a dedicated tokio task per actor,
 /// handling [`IntrospectMessage`] by reading [`InstanceCell`]
-/// directly and replying via the actor's [`Mailbox`].
+/// directly and replying through the owning [`Proc`](crate::Proc).
 ///
 /// The actor's message loop never sees these messages.
 ///
@@ -837,7 +848,6 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
 /// Exercises S1, S2, S4, S5, S6, S11 (see module doc).
 pub(crate) async fn serve_introspect(
     cell: InstanceCell,
-    mailbox: crate::mailbox::Mailbox,
     mut receiver: crate::mailbox::PortReceiver<IntrospectMessage>,
 ) {
     use crate::actor::ActorStatus;
@@ -867,9 +877,16 @@ pub(crate) async fn serve_introspect(
                     }
                 }
             }
-            _ = status.wait_for(ActorStatus::is_terminal) => {
-                // Snapshot for post-mortem introspection before
-                // dropping our InstanceCell reference.
+            status_ref = status.wait_for(ActorStatus::is_terminal) => {
+                // Explicitly drop the Ref before calling live_actor_payload.
+                // wait_for returns a Ref that holds a read lock on the watch
+                // channel's RwLock<ActorStatus>. tokio select! uses a match
+                // internally, so the scrutinee (and its read lock) stays alive
+                // through the arm body. live_actor_payload also calls borrow(),
+                // and parking_lot's write-preferring RwLock blocks new readers
+                // once a writer is queued — causing a deadlock if InstanceState
+                // ::drop tries to write between wait_for and live_actor_payload.
+                drop(status_ref);
                 let snapshot = live_actor_payload(&cell);
                 cell.store_terminated_snapshot(snapshot);
                 break;
@@ -886,12 +903,12 @@ pub(crate) async fn serve_introspect(
                             let children: Vec<IntrospectRef> =
                                 published.get(CHILDREN).cloned().unwrap_or_default();
                             IntrospectResult {
-                                identity: IntrospectRef::Actor(cell.actor_id().clone().into()),
+                                identity: IntrospectRef::Actor(cell.actor_addr().clone()),
                                 attrs: attrs_json,
                                 children,
                                 parent: cell
                                     .parent()
-                                    .map(|p| IntrospectRef::Actor(p.actor_id().clone().into())),
+                                    .map(|p| IntrospectRef::Actor(p.actor_addr().clone())),
                                 as_of: SystemTime::now(),
                             }
                         }
@@ -899,14 +916,14 @@ pub(crate) async fn serve_introspect(
                     },
                     IntrospectView::Actor => live_actor_payload(&cell),
                 };
-                mailbox.serialize_and_send_once(
+                cell.proc().serialize_and_send_once(
                     reply,
                     payload,
                     crate::mailbox::monitored_return_handle(),
                 )
             }
             IntrospectMessage::QueryChild { child_ref, reply } => {
-                let child_ref_: ref_::Reference = child_ref.clone().into();
+                let child_ref_: Addr = child_ref.clone();
                 let payload = cell.query_child(&child_ref_).unwrap_or_else(|| {
                     let mut error_attrs = hyperactor_config::Attrs::new();
                     error_attrs.set(ERROR_CODE, "not_found".to_string());
@@ -916,11 +933,9 @@ pub(crate) async fn serve_introspect(
                     );
                     // Use the queried child_ref as identity for the error node.
                     let identity = match &child_ref {
-                        reference::Reference::Proc(id) => IntrospectRef::Proc(id.clone()),
-                        reference::Reference::Actor(id) => IntrospectRef::Actor(id.clone()),
-                        reference::Reference::Port(id) => {
-                            IntrospectRef::Actor(id.actor_id().clone())
-                        }
+                        Addr::Proc(id) => IntrospectRef::Proc(id.clone()),
+                        Addr::Actor(id) => IntrospectRef::Actor(id.clone()),
+                        Addr::Port(id) => IntrospectRef::Actor(id.actor_addr()),
                     };
                     IntrospectResult {
                         identity,
@@ -931,7 +946,7 @@ pub(crate) async fn serve_introspect(
                         as_of: SystemTime::now(),
                     }
                 });
-                mailbox.serialize_and_send_once(
+                cell.proc().serialize_and_send_once(
                     reply,
                     payload,
                     crate::mailbox::monitored_return_handle(),
@@ -943,7 +958,7 @@ pub(crate) async fn serve_introspect(
         }
     }
     tracing::debug!(
-        actor_id = %cell.actor_id(),
+        actor_id = %cell.actor_addr(),
         "introspect task exiting"
     );
 }
@@ -951,10 +966,11 @@ pub(crate) async fn serve_introspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ActorAddr;
+    use crate::ProcAddr;
     use crate::actor::ActorErrorKind;
     use crate::actor::ActorStatus;
     use crate::channel::ChannelAddr;
-    use crate::reference::ProcId;
     use crate::supervision::ActorSupervisionEvent;
 
     /// Exercises IK-1 (see module doc).
@@ -1056,8 +1072,8 @@ mod tests {
         attrs
     }
 
-    fn test_actor_id(proc_name: &str, actor_name: &str) -> crate::reference::ActorId {
-        ProcId::from_resource_name(ChannelAddr::Local(0), proc_name).actor_id(actor_name)
+    fn test_actor_id(proc_name: &str, actor_name: &str) -> ActorAddr {
+        ProcAddr::singleton(ChannelAddr::Local(0), proc_name).actor_addr(actor_name)
     }
 
     fn failed_actor_attrs() -> Attrs {
@@ -1193,9 +1209,9 @@ mod tests {
     /// integration coverage.
     #[test]
     fn test_fi7_fi8_propagated_stopped_child() {
-        let proc_id = ProcId::from_resource_name(ChannelAddr::Local(0), "test_proc");
-        let child_id = proc_id.actor_id("proc_agent");
-        let parent_id = proc_id.actor_id("mesh_actor");
+        let proc_id = ProcAddr::singleton(ChannelAddr::Local(0), "test_proc");
+        let child_id = proc_id.actor_addr("proc_agent");
+        let parent_id = proc_id.actor_addr("mesh_actor");
 
         let child_event = ActorSupervisionEvent::new(
             child_id.clone(),

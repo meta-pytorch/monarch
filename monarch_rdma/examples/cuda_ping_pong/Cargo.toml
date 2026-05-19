@@ -37,4 +37,3 @@ tokio = { version = "1.52.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 typeuri = { version = "0.0.0", path = "../../../typeuri" }
-wirevalue = { version = "0.0.0", path = "../../../wirevalue" }

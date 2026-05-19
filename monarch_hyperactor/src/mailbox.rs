@@ -12,9 +12,11 @@ use std::hash::Hasher;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use hyperactor::Endpoint as _;
 use hyperactor::Mailbox;
 use hyperactor::OncePortHandle;
 use hyperactor::PortHandle;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
 use hyperactor::accum::ReducerFactory;
@@ -28,7 +30,6 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use monarch_types::PickledPyObject;
 use monarch_types::py_global;
@@ -46,7 +47,7 @@ use typeuri::Named;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
-use crate::proc::PyActorId;
+use crate::proc::PyActorAddr;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::runtime::monarch_with_gil;
@@ -115,8 +116,8 @@ impl PyMailbox {
         PyTuple::new(py, vec![handle.into_any(), receiver.into_any()])
     }
 
-    pub(super) fn post(&self, dest: &PyActorId, message: &PythonMessage) -> PyResult<()> {
-        let port_id = dest.inner.port_id(PythonMessage::port());
+    pub(super) fn post(&self, dest: &PyActorAddr, message: &PythonMessage) -> PyResult<()> {
+        let port_id = dest.inner.port_addr(PythonMessage::port().into());
         let message = wirevalue::Any::serialize(message).map_err(|err| {
             PyRuntimeError::new_err(format!(
                 "failed to serialize message ({:?}) to Any: {}",
@@ -124,7 +125,7 @@ impl PyMailbox {
             ))
         })?;
         let envelope = MessageEnvelope::new(
-            self.inner.actor_id().clone(),
+            self.inner.actor_addr().clone(),
             port_id,
             message,
             Flattrs::new(),
@@ -138,9 +139,9 @@ impl PyMailbox {
     }
 
     #[getter]
-    pub(super) fn actor_id(&self) -> PyActorId {
-        PyActorId {
-            inner: self.inner.actor_id().clone().into(),
+    pub(super) fn actor_id(&self) -> PyActorAddr {
+        PyActorAddr {
+            inner: self.inner.actor_addr().clone(),
         }
     }
 
@@ -156,16 +157,16 @@ impl PyMailbox {
 )]
 #[derive(Clone)]
 pub struct PyPortId {
-    inner: reference::PortId,
+    inner: hyperactor::PortAddr,
 }
 
-impl From<reference::PortId> for PyPortId {
-    fn from(port_id: reference::PortId) -> Self {
+impl From<hyperactor::PortAddr> for PyPortId {
+    fn from(port_id: hyperactor::PortAddr) -> Self {
         Self { inner: port_id }
     }
 }
 
-impl From<PyPortId> for reference::PortId {
+impl From<PyPortId> for hyperactor::PortAddr {
     fn from(port_id: PyPortId) -> Self {
         port_id.inner
     }
@@ -181,9 +182,9 @@ impl From<Mailbox> for PyMailbox {
 impl PyPortId {
     #[new]
     #[pyo3(signature = (*, actor_id, port))]
-    fn new(actor_id: &PyActorId, port: u64) -> Self {
+    fn new(actor_id: &PyActorAddr, port: u64) -> Self {
         Self {
-            inner: reference::PortId::new(actor_id.inner.clone(), port),
+            inner: actor_id.inner.port_addr(port.into()),
         }
     }
 
@@ -197,9 +198,9 @@ impl PyPortId {
     }
 
     #[getter]
-    fn actor_id(&self) -> PyActorId {
-        PyActorId {
-            inner: self.inner.actor_id().clone(),
+    fn actor_id(&self) -> PyActorAddr {
+        PyActorAddr {
+            inner: self.inner.actor_addr(),
         }
     }
 
@@ -255,9 +256,7 @@ impl PythonPortHandle {
 #[pymethods]
 impl PythonPortHandle {
     fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(instance.deref(), message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        self.inner.post(instance.deref(), message);
         Ok(())
     }
 
@@ -274,7 +273,7 @@ impl PythonPortHandle {
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
 pub struct PythonPortRef {
-    pub(crate) inner: reference::PortRef<PythonMessage>,
+    pub(crate) inner: hyperactor::PortRef<PythonMessage>,
 }
 
 #[pymethods]
@@ -282,20 +281,16 @@ impl PythonPortRef {
     #[new]
     fn new(port: PyPortId) -> Self {
         Self {
-            inner: reference::PortRef::attest(port.into()),
+            inner: hyperactor::PortRef::attest(port.inner),
         }
     }
-    fn __reduce__<'py>(
-        slf: Bound<'py, PythonPortRef>,
-    ) -> PyResult<(Bound<'py, PyType>, (PyPortId,))> {
-        let id: PyPortId = (*slf.borrow()).inner.port_id().clone().into();
+    fn __reduce__(slf: Bound<'_, PythonPortRef>) -> PyResult<(Bound<'_, PyType>, (PyPortId,))> {
+        let id: PyPortId = (*slf.borrow()).inner.port_addr().clone().into();
         Ok((slf.get_type(), (id,)))
     }
 
     fn send(&self, instance: &PyInstance, message: PythonMessage) -> PyResult<()> {
-        self.inner
-            .send(instance.deref(), message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        self.inner.post(instance.deref(), message);
         Ok(())
     }
 
@@ -305,7 +300,7 @@ impl PythonPortRef {
 
     #[getter]
     fn port_id(&self) -> PyResult<PyPortId> {
-        Ok(self.inner.port_id().clone().into())
+        Ok(self.inner.port_addr().clone().into())
     }
 
     #[getter]
@@ -319,8 +314,8 @@ impl PythonPortRef {
     }
 }
 
-impl From<reference::PortRef<PythonMessage>> for PythonPortRef {
-    fn from(port_ref: reference::PortRef<PythonMessage>) -> Self {
+impl From<hyperactor::PortRef<PythonMessage>> for PythonPortRef {
+    fn from(port_ref: hyperactor::PortRef<PythonMessage>) -> Self {
         Self { inner: port_ref }
     }
 }
@@ -390,31 +385,42 @@ impl PythonUndeliverableMessageEnvelope {
 #[pymethods]
 impl PythonUndeliverableMessageEnvelope {
     fn __repr__(&self) -> PyResult<String> {
+        let inner = self.inner()?;
+        let Some(envelope) = inner.as_message() else {
+            return Ok("UndeliverableMessageEnvelope(lost)".to_string());
+        };
         Ok(format!(
             "UndeliverableMessageEnvelope(sender={}, dest={}, error={})",
-            self.inner()?.0.sender(),
-            self.inner()?.0.dest(),
+            envelope.sender(),
+            envelope.dest(),
             self.error_msg()?
         ))
     }
 
-    fn sender(&self) -> PyResult<PyActorId> {
-        Ok(PyActorId {
-            inner: self.inner()?.0.sender().clone().into(),
+    fn sender(&self) -> PyResult<PyActorAddr> {
+        let envelope = self.inner()?.as_message().ok_or_else(|| {
+            PyErr::new::<PyRuntimeError, _>("lost undeliverable messages do not have an envelope")
+        })?;
+        Ok(PyActorAddr {
+            inner: envelope.sender().clone(),
         })
     }
 
     fn dest(&self) -> PyResult<PyPortId> {
-        let port_id: hyperactor::reference::PortId = self.inner()?.0.dest().clone().into();
+        let envelope = self.inner()?.as_message().ok_or_else(|| {
+            PyErr::new::<PyRuntimeError, _>("lost undeliverable messages do not have an envelope")
+        })?;
+        let port_id: hyperactor::PortAddr = envelope.dest().clone();
         Ok(port_id.into())
     }
 
     fn error_msg(&self) -> PyResult<String> {
-        Ok(self
-            .inner()?
-            .0
-            .error_msg()
-            .unwrap_or_else(|| "None".to_string()))
+        match self.inner()? {
+            Undeliverable::Message(envelope) => {
+                Ok(envelope.error_msg().unwrap_or_else(|| "None".to_string()))
+            }
+            Undeliverable::Lost(lost) => Ok(lost.error.clone()),
+        }
     }
 }
 
@@ -433,8 +439,7 @@ impl PythonOncePortHandle {
         let Some(port) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePort is already used"));
         };
-        port.send(instance.deref(), message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        port.post(instance.deref(), message);
         Ok(())
     }
 
@@ -454,7 +459,7 @@ impl PythonOncePortHandle {
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
 pub struct PythonOncePortRef {
-    pub(crate) inner: Option<reference::OncePortRef<PythonMessage>>,
+    pub(crate) inner: Option<hyperactor::OncePortRef<PythonMessage>>,
 }
 
 #[pymethods]
@@ -462,16 +467,16 @@ impl PythonOncePortRef {
     #[new]
     fn new(port: Option<PyPortId>) -> Self {
         Self {
-            inner: port.map(|port| reference::PortRef::attest(port.inner).into_once()),
+            inner: port.map(|port| hyperactor::PortRef::attest(port.inner).into_once()),
         }
     }
-    fn __reduce__<'py>(
-        slf: Bound<'py, PythonOncePortRef>,
-    ) -> PyResult<(Bound<'py, PyType>, (Option<PyPortId>,))> {
+    fn __reduce__(
+        slf: Bound<'_, PythonOncePortRef>,
+    ) -> PyResult<(Bound<'_, PyType>, (Option<PyPortId>,))> {
         let id: Option<PyPortId> = (*slf.borrow())
             .inner
             .as_ref()
-            .map(|x| x.port_id().clone().into());
+            .map(|x: &hyperactor::OncePortRef<PythonMessage>| x.port_addr().clone().into());
         Ok((slf.get_type(), (id,)))
     }
 
@@ -479,21 +484,21 @@ impl PythonOncePortRef {
         let Some(port_ref) = self.inner.take() else {
             return Err(PyErr::new::<PyValueError, _>("OncePortRef is already used"));
         };
-        port_ref
-            .send(instance.deref(), message)
-            .map_err(|err| PyErr::new::<PyEOFError, _>(format!("Port closed: {}", err)))?;
+        let port_ref: hyperactor::OncePortRef<PythonMessage> = port_ref;
+        port_ref.post(instance.deref(), message);
         Ok(())
     }
 
     fn __repr__(&self) -> String {
-        self.inner
-            .as_ref()
-            .map_or("OncePortRef is already used".to_string(), |r| r.to_string())
+        self.inner.as_ref().map_or(
+            "OncePortRef is already used".to_string(),
+            |r: &hyperactor::OncePortRef<PythonMessage>| r.to_string(),
+        )
     }
 
     #[getter]
     fn port_id(&self) -> PyResult<PyPortId> {
-        Ok(self.inner.as_ref().unwrap().port_id().clone().into())
+        Ok(self.inner.as_ref().unwrap().port_addr().clone().into())
     }
 
     #[getter]
@@ -509,8 +514,8 @@ impl PythonOncePortRef {
     }
 }
 
-impl From<reference::OncePortRef<PythonMessage>> for PythonOncePortRef {
-    fn from(port_ref: reference::OncePortRef<PythonMessage>) -> Self {
+impl From<hyperactor::OncePortRef<PythonMessage>> for PythonOncePortRef {
+    fn from(port_ref: hyperactor::OncePortRef<PythonMessage>) -> Self {
         Self {
             inner: Some(port_ref),
         }
@@ -587,10 +592,9 @@ impl EitherPortRef {
     pub fn get_return_undeliverable(&self) -> bool {
         match self {
             EitherPortRef::Unbounded(port_ref) => port_ref.inner.get_return_undeliverable(),
-            EitherPortRef::Once(once_port_ref) => once_port_ref
-                .inner
-                .as_ref()
-                .is_some_and(|r| r.get_return_undeliverable()),
+            EitherPortRef::Once(once_port_ref) => once_port_ref.inner.as_ref().is_some_and(
+                |r: &hyperactor::OncePortRef<PythonMessage>| r.get_return_undeliverable(),
+            ),
         }
     }
 
@@ -607,31 +611,31 @@ impl EitherPortRef {
         }
     }
 
-    /// Send a message through this port reference.
+    /// Post a message through this port reference.
     /// The message is first resolved for any pending pickle state before sending.
-    pub fn send(
+    pub fn post(
         &mut self,
         cx: &impl hyperactor::context::Actor,
         message: crate::actor::PythonMessage,
     ) -> anyhow::Result<()> {
         match self {
-            EitherPortRef::Unbounded(port_ref) => port_ref.inner.send(cx, message)?,
+            EitherPortRef::Unbounded(port_ref) => port_ref.inner.post(cx, message),
             EitherPortRef::Once(once_port_ref) => {
                 let port = once_port_ref
                     .inner
                     .take()
                     .ok_or_else(|| anyhow::anyhow!("OncePortRef already used"))?;
-                port.send(cx, message)?;
+                port.post(cx, message);
             }
         }
         Ok(())
     }
 
-    /// Send a message through this port reference with
+    /// Post a message through this port reference with
     /// caller-supplied envelope headers. Delegates to the underlying
-    /// `PortRef::send_with_headers` /
-    /// `OncePortRef::send_with_headers`.
-    pub fn send_with_headers(
+    /// `PortRef::post_with_headers` /
+    /// `OncePortRef::post_with_headers`.
+    pub fn post_with_headers(
         &mut self,
         cx: &impl hyperactor::context::Actor,
         headers: hyperactor_config::Flattrs,
@@ -639,14 +643,14 @@ impl EitherPortRef {
     ) -> anyhow::Result<()> {
         match self {
             EitherPortRef::Unbounded(port_ref) => {
-                port_ref.inner.send_with_headers(cx, headers, message)?
+                port_ref.inner.post_with_headers(cx, headers, message)
             }
             EitherPortRef::Once(once_port_ref) => {
                 let port = once_port_ref
                     .inner
                     .take()
                     .ok_or_else(|| anyhow::anyhow!("OncePortRef already used"))?;
-                port.send_with_headers(cx, headers, message)?;
+                port.post_with_headers(cx, headers, message);
             }
         }
         Ok(())
@@ -687,7 +691,7 @@ struct PythonAccumulator {
 }
 
 impl PythonAccumulator {
-    fn new<'py>(py: Python<'py>, accumulator: Py<PyAny>) -> PyResult<Self> {
+    fn new(py: Python<'_>, accumulator: Py<PyAny>) -> PyResult<Self> {
         let py_reducer = accumulator.getattr(py, "reducer")?;
         let reducer: Option<wirevalue::Any> = if py_reducer.is_none(py) {
             None
