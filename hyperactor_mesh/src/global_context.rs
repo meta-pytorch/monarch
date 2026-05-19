@@ -285,7 +285,7 @@ impl Actor for GlobalClientActor {
                 );
                 match get_global_supervision_sink() {
                     Some(sink) => {
-                        sink.send(cx, event);
+                        sink.post(cx, event);
                     }
                     None => {
                         tracing::warn!(
@@ -312,7 +312,7 @@ impl Actor for GlobalClientActor {
 
         match get_global_supervision_sink() {
             Some(sink) => {
-                sink.send(cx, event);
+                sink.post(cx, event);
             }
             None => {
                 tracing::warn!(
@@ -569,7 +569,7 @@ mod tests {
         let client_actor_id: hyperactor::ActorAddr = client.self_addr().clone();
         let undeliverable_port =
             PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&client_actor_id);
-        undeliverable_port.send(client, Undeliverable::Message(env));
+        undeliverable_port.post(client, Undeliverable::Message(env));
     }
 
     /// Verifies that creating a `ProcMesh` installs the

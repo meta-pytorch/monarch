@@ -543,7 +543,7 @@ mod tests {
 
         let (local_port, local_receiver) = client.open_once_port();
 
-        ping_handle.send(
+        ping_handle.post(
             &client,
             PingPongMessage(10, pong_handle.bind(), local_port.bind()),
         );

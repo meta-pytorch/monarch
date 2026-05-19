@@ -349,7 +349,7 @@ async fn push_config_to_host(
     // exact bypass HM-3 prohibits.
     request_port.return_undeliverable(false);
 
-    request_port.send(cx, msg);
+    request_port.post(cx, msg);
 
     match tokio::time::timeout(per_host_timeout, reply_receiver.recv()).await {
         Ok(Ok(())) => Ok(()),
@@ -1362,7 +1362,7 @@ impl HostMeshRef {
                     // If this proc dies or some other issue renders the reply undeliverable,
                     // the reply does not need to be returned to the sender.
                     reply_tx.return_undeliverable(false);
-                    mesh_agent.send(
+                    mesh_agent.post(
                         cx,
                         resource::GetState {
                             id: proc_name.clone(),
@@ -1503,7 +1503,7 @@ impl HostMeshRef {
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
             let host = HostRef(addr);
-            host.mesh_agent().send(
+            host.mesh_agent().post(
                 cx,
                 resource::Stop {
                     id: proc_resource_id.clone(),
@@ -1629,7 +1629,7 @@ impl HostMeshRef {
             if let Some(expires_after) = keepalive {
                 let mut keepalive_port = host.mesh_agent().port();
                 keepalive_port.return_undeliverable(false);
-                keepalive_port.send(
+                keepalive_port.post(
                     cx,
                     resource::KeepaliveGetState {
                         expires_after,
@@ -1637,7 +1637,7 @@ impl HostMeshRef {
                     },
                 );
             } else {
-                send_port.send(cx, get_state);
+                send_port.post(cx, get_state);
             }
         }
 

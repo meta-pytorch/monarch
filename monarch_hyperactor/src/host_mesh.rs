@@ -532,7 +532,7 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
         // We don't need the ack, and this temporary proc doesn't have a mailbox
         // receiver set up anyways. Just ignore the message.
         port.return_undeliverable(false);
-        agent.send(
+        agent.post(
             &instance,
             ShutdownHost {
                 timeout: Duration::from_secs(10),

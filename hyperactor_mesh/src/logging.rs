@@ -1361,7 +1361,7 @@ impl LogMessageHandler for LogClientActor {
                     self.flush_internal();
                     let reply = self.current_flush_port.take().unwrap();
                     self.current_flush_port = None;
-                    reply.send(cx, ());
+                    reply.post(cx, ());
                 }
             }
         }
@@ -1408,7 +1408,7 @@ impl LogClientMessageHandler for LogClientActor {
         );
         self.current_flush_port = Some(reply.clone());
         self.current_unflushed_procs = expected_procs_flushed;
-        version.send(cx, self.current_flush_version);
+        version.post(cx, self.current_flush_version);
         Ok(())
     }
 }

@@ -980,7 +980,7 @@ impl StreamActor {
         let message = LocalStateBrokerMessage::Set(x as usize, state);
 
         let broker = BrokerId::new(params.broker_id).resolve(cx).await;
-        broker.send(cx, message);
+        broker.post(cx, message);
         let result = recv
             .recv()
             .await
@@ -1067,7 +1067,7 @@ impl StreamMessageHandler for StreamActor {
         };
 
         let event = self.cuda_stream().map(|stream| stream.record_event(None));
-        first_use_sender.send(cx, (event, result));
+        first_use_sender.post(cx, (event, result));
         Ok(())
     }
 
@@ -1145,7 +1145,7 @@ impl StreamMessageHandler for StreamActor {
             Err(e) => Err(e),
         };
 
-        last_use_sender.send(cx, (event, tensor));
+        last_use_sender.post(cx, (event, tensor));
         Ok(())
     }
 

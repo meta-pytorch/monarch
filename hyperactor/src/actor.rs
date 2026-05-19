@@ -908,11 +908,11 @@ where
         EndpointLocation::Actor(self.actor_addr().clone())
     }
 
-    fn send<C>(self, cx: &C, message: M)
+    fn post<C>(self, cx: &C, message: M)
     where
         C: context::Actor,
     {
-        Endpoint::send(&self.ports.get(), cx, message)
+        Endpoint::post(&self.ports.get(), cx, message)
     }
 }
 
@@ -1035,7 +1035,7 @@ mod tests {
     impl Handler<u64> for EchoActor {
         async fn handle(&mut self, cx: &Context<Self>, message: u64) -> Result<(), anyhow::Error> {
             let Self(port) = self;
-            port.send(cx, message);
+            port.post(cx, message);
             Ok(())
         }
     }
@@ -1047,7 +1047,7 @@ mod tests {
         let (tx, mut rx) = client.open_port();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo", actor).unwrap();
-        handle.send(&client, 123u64);
+        handle.post(&client, 123u64);
         handle.drain_and_stop("test").unwrap();
         handle.await;
 
@@ -1067,7 +1067,7 @@ mod tests {
 
         let (local_port, local_receiver) = client.open_once_port();
 
-        ping_handle.send(
+        ping_handle.post(
             &client,
             PingPongMessage(10, pong_handle.bind(), local_port.bind()),
         );
@@ -1096,7 +1096,7 @@ mod tests {
 
         let (local_port, local_receiver) = client.open_once_port();
 
-        ping_handle.send(
+        ping_handle.post(
             &client,
             PingPongMessage(
                 error_ttl + 1, // will encounter an error at TTL=66
@@ -1129,7 +1129,7 @@ mod tests {
             cx: &Context<Self>,
             port: OncePortHandle<bool>,
         ) -> Result<(), anyhow::Error> {
-            port.send(cx, self.0);
+            port.post(cx, self.0);
             Ok(())
         }
     }
@@ -1142,7 +1142,7 @@ mod tests {
         let (client, _) = proc.client("client").unwrap();
 
         let (port, receiver) = client.open_once_port();
-        handle.send(&client, port);
+        handle.post(&client, port);
         assert!(receiver.recv().await.unwrap());
 
         handle.drain_and_stop("test").unwrap();
@@ -1180,12 +1180,12 @@ mod tests {
             M: RemoteMessage,
             MultiActor: Handler<M>,
         {
-            self.handle.send(&self.client, message)
+            self.handle.post(&self.client, message)
         }
 
         async fn sync(&self) {
             let (port, done) = self.client.open_once_port::<bool>();
-            self.handle.send(&self.client, port);
+            self.handle.post(&self.client, port);
             assert!(done.recv().await.unwrap());
         }
 
@@ -1230,7 +1230,7 @@ mod tests {
             cx: &Context<Self>,
             message: OncePortHandle<bool>,
         ) -> Result<(), anyhow::Error> {
-            message.send(cx, true);
+            message.post(cx, true);
             Ok(())
         }
     }
@@ -1246,11 +1246,11 @@ mod tests {
 
         let myref: ActorRef<MultiActor> = test.handle.bind();
 
-        myref.port().send(&test.client, 321u64);
+        myref.port().post(&test.client, 321u64);
         test.sync().await;
         assert_eq!(test.get_values(), (321u64, "foo".to_string()));
 
-        myref.port().send(&test.client, "bar".to_string());
+        myref.port().post(&test.client, "bar".to_string());
         test.sync().await;
         assert_eq!(test.get_values(), (321u64, "bar".to_string()));
     }
@@ -1265,8 +1265,8 @@ mod tests {
         hyperactor::behavior!(MyActorBehavior, u64, String);
 
         let myref: ActorRef<MyActorBehavior> = test.handle.bind();
-        myref.port().send(&test.client, "biz".to_string());
-        myref.port().send(&test.client, 999u64);
+        myref.port().post(&test.client, "biz".to_string());
+        myref.port().post(&test.client, 999u64);
 
         test.sync().await;
         assert_eq!(test.get_values(), (999u64, "biz".to_string()));
@@ -1310,7 +1310,7 @@ mod tests {
         ) -> Result<(), anyhow::Error> {
             let Self(port) = self;
             let seq_info = cx.headers().get(SEQ_INFO).unwrap();
-            port.send(cx, (message, seq_info.clone()));
+            port.post(cx, (message, seq_info.clone()));
             Ok(())
         }
     }
@@ -1331,7 +1331,7 @@ mod tests {
         ) -> Result<(), anyhow::Error> {
             let (handle, mut receiver) = cx.open_port::<String>();
             let callback_ref = handle.bind();
-            message.0.send(cx, callback_ref);
+            message.0.post(cx, callback_ref);
             let msg = receiver.recv().await.unwrap();
             self.handle(cx, msg).await
         }
@@ -1346,7 +1346,7 @@ mod tests {
         let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
 
         // Verify that unbound handle can send message.
-        actor_handle.send(&client, "unbound".to_string());
+        actor_handle.post(&client, "unbound".to_string());
         assert_eq!(
             rx.recv().await.unwrap(),
             ("unbound".to_string(), SeqInfo::Direct)
@@ -1358,7 +1358,7 @@ mod tests {
         let mut expected_seq = 0;
         // Interleave messages sent through the handle and the reference.
         for m in 0..10 {
-            actor_handle.send(&client, format!("{m}"));
+            actor_handle.post(&client, format!("{m}"));
             expected_seq += 1;
             assert_eq!(
                 rx.recv().await.unwrap(),
@@ -1372,7 +1372,7 @@ mod tests {
             );
 
             for n in 0..2 {
-                actor_ref.port().send(&client, format!("{m}-{n}"));
+                actor_ref.port().post(&client, format!("{m}-{n}"));
                 expected_seq += 1;
                 assert_eq!(
                     rx.recv().await.unwrap(),
@@ -1425,42 +1425,42 @@ mod tests {
         let session_id = client.sequencer().session_id();
 
         // Send to handler ports via ActorHandle - seq 1
-        actor_handle.send(&client, "msg1".to_string());
+        actor_handle.post(&client, "msg1".to_string());
         assert_eq!(
             actor_rx.recv().await.unwrap().1,
             SeqInfo::Session { session_id, seq: 1 }
         );
 
         // Send to handler ports via ActorRef - seq 2 (shared with ActorHandle)
-        actor_ref.port().send(&client, "msg2".to_string());
+        actor_ref.port().post(&client, "msg2".to_string());
         assert_eq!(
             actor_rx.recv().await.unwrap().1,
             SeqInfo::Session { session_id, seq: 2 }
         );
 
         // Send to non-handler port - has its own sequence starting at 1
-        non_handler_port_handle.send(&client, ());
+        non_handler_port_handle.post(&client, ());
         assert_eq!(
             non_handler_rx.recv().await.unwrap(),
             Some(SeqInfo::Session { session_id, seq: 1 })
         );
 
         // Send more to handler ports via ActorHandle - seq continues at 3
-        actor_handle.send(&client, "msg3".to_string());
+        actor_handle.post(&client, "msg3".to_string());
         assert_eq!(
             actor_rx.recv().await.unwrap().1,
             SeqInfo::Session { session_id, seq: 3 }
         );
 
         // Send more to non-handler port - its sequence continues at 2
-        non_handler_port_handle.send(&client, ());
+        non_handler_port_handle.post(&client, ());
         assert_eq!(
             non_handler_rx.recv().await.unwrap(),
             Some(SeqInfo::Session { session_id, seq: 2 })
         );
 
         // Send via ActorRef again - seq 4
-        actor_ref.port().send(&client, "msg4".to_string());
+        actor_ref.port().post(&client, "msg4".to_string());
         assert_eq!(
             actor_rx.recv().await.unwrap().1,
             SeqInfo::Session { session_id, seq: 4 }
@@ -1489,7 +1489,7 @@ mod tests {
         assert_ne!(session_id_1, session_id_2);
 
         // Send from client1 via ActorHandle - seq 1 for session_id_1
-        actor_handle.send(&client1, "c1_msg1".to_string());
+        actor_handle.post(&client1, "c1_msg1".to_string());
         assert_eq!(
             rx.recv().await.unwrap().1,
             SeqInfo::Session {
@@ -1499,7 +1499,7 @@ mod tests {
         );
 
         // Send from client2 via ActorHandle - seq 1 for session_id_2 (independent)
-        actor_handle.send(&client2, "c2_msg1".to_string());
+        actor_handle.post(&client2, "c2_msg1".to_string());
         assert_eq!(
             rx.recv().await.unwrap().1,
             SeqInfo::Session {
@@ -1509,7 +1509,7 @@ mod tests {
         );
 
         // Send from client1 via ActorRef - seq 2 for session_id_1
-        actor_ref.port().send(&client1, "c1_msg2".to_string());
+        actor_ref.port().post(&client1, "c1_msg2".to_string());
         assert_eq!(
             rx.recv().await.unwrap().1,
             SeqInfo::Session {
@@ -1519,7 +1519,7 @@ mod tests {
         );
 
         // Send from client2 via ActorRef - seq 2 for session_id_2
-        actor_ref.port().send(&client2, "c2_msg2".to_string());
+        actor_ref.port().post(&client2, "c2_msg2".to_string());
         assert_eq!(
             rx.recv().await.unwrap().1,
             SeqInfo::Session {
@@ -1529,7 +1529,7 @@ mod tests {
         );
 
         // Interleave more messages to further verify independence
-        actor_handle.send(&client1, "c1_msg3".to_string());
+        actor_handle.post(&client1, "c1_msg3".to_string());
         assert_eq!(
             rx.recv().await.unwrap().1,
             SeqInfo::Session {
@@ -1538,7 +1538,7 @@ mod tests {
             }
         );
 
-        actor_ref.port().send(&client2, "c2_msg3".to_string());
+        actor_ref.port().post(&client2, "c2_msg3".to_string());
         assert_eq!(
             rx.recv().await.unwrap().1,
             SeqInfo::Session {
@@ -1585,11 +1585,11 @@ mod tests {
 
         let (callback_tx, mut callback_rx) = client.open_port();
         // Client sends the 1st message
-        actor_ref.send(&client, Callback(callback_tx.bind()));
+        actor_ref.post(&client, Callback(callback_tx.bind()));
         let msg_port_ref = callback_rx.recv().await.unwrap();
         // client sends the 2nd message. At this time, GetSeqActor is still
         // processing the 1st message, and waiting for the 2nd message.
-        msg_port_ref.send(&client, "finally".to_string());
+        msg_port_ref.post(&client, "finally".to_string());
 
         let session_id = client.sequencer().session_id();
         // passing this assert means GetSeqActor processed the 2nd message.
@@ -1678,7 +1678,7 @@ mod tests {
         let mut messages = expected.clone();
         messages.sort_by_key(|v| v.1);
         for (message, _seq) in messages {
-            actor_ref.send(&remote_client, message);
+            actor_ref.post(&remote_client, message);
         }
         let session_id = remote_client.sequencer().session_id();
         for expect in expected {
@@ -1780,7 +1780,7 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_introspect", actor).unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -1953,7 +1953,7 @@ mod tests {
 
         let child_ref = crate::Addr::Actor(test_proc_id("nonexistent").actor_addr("child"));
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(handle.actor_addr()).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(handle.actor_addr()).post(
             &client,
             IntrospectMessage::QueryChild {
                 child_ref,
@@ -2001,7 +2001,7 @@ mod tests {
             .unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2040,7 +2040,7 @@ mod tests {
 
         // Query the child — supervisor should be the parent.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&child_handle.actor_addr().clone()).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&child_handle.actor_addr().clone()).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2068,7 +2068,7 @@ mod tests {
         // Query the parent — children should include the child.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
         PortRef::<IntrospectMessage>::attest_handler_port(&parent_handle.actor_addr().clone())
-            .send(
+            .post(
                 &client,
                 IntrospectMessage::Query {
                     view: IntrospectView::Actor,
@@ -2112,7 +2112,7 @@ mod tests {
             .unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2141,11 +2141,11 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_after_msg", actor).unwrap();
 
         // Send a user message and wait for it to be processed.
-        handle.send(&client, 42u64);
+        handle.post(&client, 42u64);
         let _ = rx.recv().await.unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2182,7 +2182,7 @@ mod tests {
 
         // First introspect query.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2193,7 +2193,7 @@ mod tests {
 
         // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2355,14 +2355,14 @@ mod tests {
             .unwrap();
 
         // Send a u64 to wedge the actor in its handler.
-        handle.send(&client, 1u64);
+        handle.post(&client, 1u64);
 
         // Wait for the handler to start blocking.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Send introspect query via the dedicated introspect port.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2400,12 +2400,12 @@ mod tests {
             .unwrap();
 
         // Send a user message and wait for it to be processed.
-        handle.send(&client, 42u64);
+        handle.post(&client, 42u64);
         let _ = rx.recv().await.unwrap();
 
         // First introspect query.
         let (reply_port1, reply_rx1) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2416,7 +2416,7 @@ mod tests {
 
         // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<IntrospectResult>();
-        crate::PortRef::<IntrospectMessage>::attest_handler_port(handle.actor_addr()).send(
+        crate::PortRef::<IntrospectMessage>::attest_handler_port(handle.actor_addr()).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2451,7 +2451,7 @@ mod tests {
         let actor_id: crate::ActorAddr = handle.actor_addr().clone();
 
         let (reply_port, reply_rx) = bridge.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&actor_id).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&actor_id).post(
             &bridge,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,
@@ -2488,7 +2488,7 @@ mod tests {
         let mailbox_id: crate::ActorAddr = mailbox_handle.actor_addr().clone();
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
-        PortRef::<IntrospectMessage>::attest_handler_port(&mailbox_id).send(
+        PortRef::<IntrospectMessage>::attest_handler_port(&mailbox_id).post(
             &client,
             IntrospectMessage::Query {
                 view: IntrospectView::Actor,

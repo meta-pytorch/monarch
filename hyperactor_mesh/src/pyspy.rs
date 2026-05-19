@@ -567,11 +567,11 @@ impl PySpyWorker {
                     exit_code: None,
                     stderr: format!("failed to spawn pyspy worker: {}", e),
                 };
-                reply_port.send(cx, fail);
+                reply_port.post(cx, fail);
                 return Ok(());
             }
         };
-        worker.send(cx, RunPySpyDump { opts, reply_port });
+        worker.post(cx, RunPySpyDump { opts, reply_port });
         Ok(())
     }
 }
@@ -584,7 +584,7 @@ impl Handler<RunPySpyDump> for PySpyWorker {
         message: RunPySpyDump,
     ) -> Result<(), anyhow::Error> {
         let result = PySpyRunner.dump_self(&message.opts).await;
-        message.reply_port.send(cx, result);
+        message.reply_port.post(cx, result);
         cx.stop("pyspy dump complete")?;
         Ok(())
     }
@@ -620,11 +620,11 @@ impl PySpyProfileWorker {
                 let fail = ProfileExecOutcome::WorkerSpawnFailure {
                     error: e.to_string(),
                 };
-                reply_port.send(cx, PySpyProfileResult::from(fail));
+                reply_port.post(cx, PySpyProfileResult::from(fail));
                 return Ok(());
             }
         };
-        worker.send(
+        worker.post(
             cx,
             RunPySpyProfile {
                 request,
@@ -645,7 +645,7 @@ impl Handler<RunPySpyProfile> for PySpyProfileWorker {
         let outcome = PySpyRunner.profile_self(&message.request).await;
         message
             .reply_port
-            .send(cx, PySpyProfileResult::from(outcome));
+            .post(cx, PySpyProfileResult::from(outcome));
         cx.stop("pyspy profile complete")?;
         Ok(())
     }

@@ -75,24 +75,24 @@ impl fmt::Display for EndpointLocation {
 ///
 /// This trait abstracts over local actor handles, local port handles, remote
 /// actor refs, remote port refs, and one-shot ports. It is sealed so that
-/// Hyperactor owns the send semantics for each endpoint kind.
+/// Hyperactor owns the post semantics for each endpoint kind.
 pub trait Endpoint<M>: crate::private::Sealed {
     /// The logical location of this endpoint.
     fn endpoint_location(&self) -> EndpointLocation;
 
-    /// Send `message` to this endpoint from `cx`.
-    fn send<C>(self, cx: &C, message: M)
+    /// Post `message` to this endpoint from `cx`.
+    fn post<C>(self, cx: &C, message: M)
     where
         C: context::Actor;
 }
 
 /// A typed endpoint that can receive `M` with message headers.
 ///
-/// `RemoteEndpoint` is implemented only for endpoints whose send path preserves
+/// `RemoteEndpoint` is implemented only for endpoints whose post path preserves
 /// headers.
 pub trait RemoteEndpoint<M>: Endpoint<M> {
-    /// Send `message` and `headers` to this endpoint from `cx`.
-    fn send_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
+    /// Post `message` and `headers` to this endpoint from `cx`.
+    fn post_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
     where
         C: context::Actor;
 }
@@ -129,7 +129,7 @@ mod tests {
     #[async_trait]
     impl Handler<u64> for EchoActor {
         async fn handle(&mut self, cx: &Context<Self>, message: u64) -> anyhow::Result<()> {
-            Endpoint::send(&self.tx, cx, message);
+            Endpoint::post(&self.tx, cx, message);
             Ok(())
         }
     }
@@ -154,7 +154,7 @@ mod tests {
             .spawn("echo", EchoActor { tx: tx.bind() })
             .expect("spawn should succeed");
 
-        Endpoint::send(&handle, &client, 123u64);
+        Endpoint::post(&handle, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -165,7 +165,7 @@ mod tests {
         let (client, _) = proc.client("client").unwrap();
         let (tx, mut rx) = client.open_port();
 
-        Endpoint::send(&tx, &client, 123u64);
+        Endpoint::post(&tx, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -176,7 +176,7 @@ mod tests {
         let (client, _) = proc.client("client").unwrap();
         let (tx, rx) = client.open_once_port();
 
-        Endpoint::send(tx, &client, 123u64);
+        Endpoint::post(tx, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -188,7 +188,7 @@ mod tests {
             .attach_actor::<TestBehavior, u64>("remote_actor")
             .expect("attach actor should succeed");
 
-        Endpoint::send(&actor_ref, &client, 123u64);
+        Endpoint::post(&actor_ref, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -200,7 +200,7 @@ mod tests {
         let (tx, mut rx) = client.open_port();
         let port_ref = tx.bind();
 
-        Endpoint::send(&port_ref, &client, 123u64);
+        Endpoint::post(&port_ref, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -212,7 +212,7 @@ mod tests {
         let (tx, rx) = client.open_once_port();
         let port_ref = tx.bind();
 
-        Endpoint::send(port_ref, &client, 123u64);
+        Endpoint::post(port_ref, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -239,7 +239,7 @@ mod tests {
         let mut headers = Flattrs::new();
         headers.set(ENDPOINT_TEST_HEADER, 456u64);
 
-        RemoteEndpoint::send_with_headers(&port_ref, &client, headers, 123u64);
+        RemoteEndpoint::post_with_headers(&port_ref, &client, headers, 123u64);
 
         assert_eq!(
             observed_rx.recv().await.expect("message should arrive"),

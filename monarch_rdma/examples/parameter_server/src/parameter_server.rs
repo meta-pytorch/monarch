@@ -232,7 +232,7 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
                 grad_buffer_handle
             }
         };
-        reply.send(cx, (weights_handle.clone(), grad_buffer_handle.clone()));
+        reply.post(cx, (weights_handle.clone(), grad_buffer_handle.clone()));
         Ok(())
     }
 }
@@ -252,7 +252,7 @@ impl Handler<PsUpdate> for ParameterServerActor {
             grad.fill(0);
         }
         tracing::info!("[parameter server actor] updated");
-        reply.send(cx, true);
+        reply.post(cx, true);
         Ok(())
     }
 }
@@ -353,7 +353,7 @@ impl Handler<WorkerInit> for WorkerActor {
         tracing::info!("[worker_actor_{}] initializing", rank);
 
         let (handle, receiver) = cx.mailbox().open_once_port();
-        ps_ref.send(cx, PsGetBuffers(rank, handle.bind()));
+        ps_ref.post(cx, PsGetBuffers(rank, handle.bind()));
         let (ps_weights_handle, ps_grad_handle) = receiver.recv().await?;
         self.ps_weights_handle = Some(ps_weights_handle);
         self.ps_grad_handle = Some(ps_grad_handle);
@@ -402,7 +402,7 @@ impl Handler<WorkerStep> for WorkerActor {
 
         self.local_gradients.fill(0);
 
-        reply.send(cx, true);
+        reply.post(cx, true);
         Ok(())
     }
 }
@@ -435,7 +435,7 @@ impl Handler<WorkerUpdate> for WorkerActor {
         ps_weights_handle
             .read_into_local(cx, local_memory, 5)
             .await?;
-        reply.send(cx, true);
+        reply.post(cx, true);
         Ok(())
     }
 }
@@ -595,7 +595,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         }
 
         let (handle, recv) = instance.mailbox().open_once_port::<bool>();
-        ps_actor.send(instance, PsUpdate(handle.bind()));
+        ps_actor.post(instance, PsUpdate(handle.bind()));
 
         let finished = recv.recv().await.unwrap();
         if !finished {
@@ -615,7 +615,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         if !results.iter().any(|&result| result) {
             panic!("worker update step did not complete properly.");
         }
-        ps_actor.send(instance, Log {});
+        ps_actor.post(instance, Log {});
     }
     Ok(())
 }

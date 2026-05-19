@@ -700,7 +700,7 @@ impl ProcLauncher for ActorProcLauncher {
             message: pickled_args.into(),
         };
 
-        self.spawner.send(&self.instance, message);
+        self.spawner.post(&self.instance, message);
 
         let mut active_procs: tokio::sync::MutexGuard<'_, HashSet<hyperactor::ProcAddr>> =
             self.active_procs.lock().await;
@@ -782,7 +782,7 @@ impl ProcLauncher for ActorProcLauncher {
             message: pickled.into(),
         };
 
-        self.spawner.send(&self.instance, message);
+        self.spawner.post(&self.instance, message);
         Ok(())
     }
 
@@ -822,7 +822,7 @@ impl ProcLauncher for ActorProcLauncher {
             message: pickled.into(),
         };
 
-        self.spawner.send(&self.instance, message);
+        self.spawner.post(&self.instance, message);
         Ok(())
     }
 }

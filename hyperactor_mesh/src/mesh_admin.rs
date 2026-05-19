@@ -403,7 +403,7 @@ async fn query_introspect(
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
     let mut reply_ref = reply_handle.bind();
     reply_ref.return_undeliverable(false);
-    introspect_port.send(
+    introspect_port.post(
         cx,
         IntrospectMessage::Query {
             view,
@@ -428,7 +428,7 @@ async fn query_child_introspect(
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
     let mut reply_ref = reply_handle.bind();
     reply_ref.return_undeliverable(false);
-    introspect_port.send(
+    introspect_port.post(
         cx,
         IntrospectMessage::QueryChild {
             child_ref,
@@ -1095,7 +1095,7 @@ impl Handler<MeshAdminMessage> for MeshAdminAgent {
                 let resp = MeshAdminAddrResponse {
                     addr: self.admin_host.clone(),
                 };
-                reply.send(cx, resp);
+                reply.post(cx, resp);
             }
         }
         Ok(())
@@ -1128,7 +1128,7 @@ impl Handler<ResolveReferenceMessage> for MeshAdminAgent {
                         .await
                         .map_err(|e| format!("{:#}", e)),
                 );
-                reply.send(cx, response);
+                reply.post(cx, response);
             }
         }
         Ok(())
@@ -2091,7 +2091,7 @@ async fn probe_actor(
 ) -> Result<bool, ApiError> {
     let port = hyperactor::PortRef::<IntrospectMessage>::attest_handler_port(agent_id);
     let (handle, rx) = open_once_port::<IntrospectResult>(cx);
-    port.send(
+    port.post(
         cx,
         IntrospectMessage::Query {
             view: IntrospectView::Entity,
@@ -2153,8 +2153,8 @@ impl ResolvedProcHandler {
             result: reply_ref,
         };
         match self {
-            Self::Host(r) => r.send(cx, msg),
-            Self::Proc(r) => r.send(cx, msg),
+            Self::Host(r) => r.post(cx, msg),
+            Self::Proc(r) => r.post(cx, msg),
         };
         tokio::time::timeout(timeout, reply_rx.recv())
             .await
@@ -2184,8 +2184,8 @@ impl ResolvedProcHandler {
             result: reply_ref,
         };
         match self {
-            Self::Host(r) => r.send(cx, msg),
-            Self::Proc(r) => r.send(cx, msg),
+            Self::Host(r) => r.post(cx, msg),
+            Self::Proc(r) => r.post(cx, msg),
         };
         tokio::time::timeout(timeout, reply_rx.recv())
             .await
@@ -2211,8 +2211,8 @@ impl ResolvedProcHandler {
         reply_ref.return_undeliverable(false);
         let msg = ConfigDump { result: reply_ref };
         match self {
-            Self::Host(r) => r.send(cx, msg),
-            Self::Proc(r) => r.send(cx, msg),
+            Self::Host(r) => r.post(cx, msg),
+            Self::Proc(r) => r.post(cx, msg),
         };
         tokio::time::timeout(timeout, reply_rx.recv())
             .await
@@ -3495,7 +3495,7 @@ mod tests {
 
         // Spawn a user proc via CreateOrUpdate<ProcSpec>.
         let user_proc_name = ResourceId::instance(Label::new("user-proc").unwrap());
-        host_agent_ref.send(
+        host_agent_ref.post(
             &client,
             resource::CreateOrUpdate {
                 id: user_proc_name.clone(),

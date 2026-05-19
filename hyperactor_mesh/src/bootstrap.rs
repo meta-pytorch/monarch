@@ -1205,7 +1205,7 @@ impl BootstrapProcHandle {
         // killing the process.
         let mut agent_port = agent.port();
         agent_port.return_undeliverable(false);
-        agent_port.send(
+        agent_port.post(
             cx,
             resource::StopAll {
                 reason: reason.to_string(),
@@ -1745,7 +1745,7 @@ impl BootstrapProcManager {
         if let Some(agent) = handle.agent_ref() {
             let mut agent_port = agent.port();
             agent_port.return_undeliverable(false);
-            let _ = agent_port.send(
+            let _ = agent_port.post(
                 cx,
                 resource::StopAll {
                     reason: reason.to_string(),

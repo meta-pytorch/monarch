@@ -258,7 +258,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                     // Forward rsync connection port to the RsyncActor, which will do the actual
                     // connection and run the client.
                     let (tx, mut rx) = cx.open_port::<Result<RsyncResult, String>>();
-                    self.get_rsync_actor(cx).await?.send(
+                    self.get_rsync_actor(cx).await?.post(
                         cx,
                         RsyncMessage {
                             connect,
@@ -276,7 +276,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                     // Forward rsync connection port to the RsyncActor, which will do the actual
                     // connection and run the client.
                     let (tx, mut rx) = cx.open_port::<Result<CondaSyncResult, String>>();
-                    self.get_conda_sync_actor(cx).await?.send(
+                    self.get_conda_sync_actor(cx).await?.post(
                         cx,
                         CondaSyncMessage {
                             connect,
@@ -324,7 +324,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             anyhow::Ok(())
         }
         .await;
-        result.send(
+        result.post(
             cx,
             res.map_err(|e| {
                 format!(
@@ -355,12 +355,12 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             let (tx, mut rx) = cx.open_port::<Result<(), String>>();
             self.get_auto_reload_actor(cx)
                 .await?
-                .send(cx, AutoReloadMessage { result: tx.bind() });
+                .post(cx, AutoReloadMessage { result: tx.bind() });
             rx.recv().await?.map_err(anyhow::Error::msg)?;
             anyhow::Ok(())
         }
         .await;
-        result.send(
+        result.post(
             cx,
             res.map_err(|e| {
                 format!(

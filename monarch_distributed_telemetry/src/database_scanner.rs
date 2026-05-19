@@ -763,7 +763,7 @@ impl DatabaseScanner {
                         let msg = QueryResponse {
                             data: Part::from(data),
                         };
-                        dest_ref.send(instance, msg);
+                        dest_ref.post(instance, msg);
                         count += 1;
                     }
                 }

@@ -145,7 +145,7 @@ where
         let (reply, rx) = cx
             .mailbox()
             .open_once_port::<Result<IbvMemoryRegionView, String>>();
-        self.manager.send(cx, RegisterMr { addr, size, reply });
+        self.manager.post(cx, RegisterMr { addr, size, reply });
         let mrv = rx
             .recv()
             .await
@@ -181,7 +181,7 @@ where
     ) -> Result<OwnedMutexGuard<Qp>, String> {
         if !self.peer_qps.contains_key(qp_key) {
             let (reply, rx) = cx.mailbox().open_once_port::<Result<Qp, String>>();
-            self.manager.send(
+            self.manager.post(
                 cx,
                 RequestQueuePair {
                     qp_key: qp_key.clone(),
@@ -322,7 +322,7 @@ where
             reply,
         } = msg;
         let results = self.process_batch(cx, ops, timeout).await;
-        reply.send(cx, results);
+        reply.post(cx, results);
         Ok(())
     }
 }
@@ -397,7 +397,7 @@ mod tests {
                     _domain: null_domain(),
                 }),
             );
-            msg.reply.send(cx, Ok(mrv));
+            msg.reply.post(cx, Ok(mrv));
             Ok(())
         }
     }
@@ -418,7 +418,7 @@ mod tests {
                 .unwrap()
                 .request_qp_calls
                 .push(msg.qp_key.clone());
-            msg.reply.send(cx, Ok(MockQp));
+            msg.reply.post(cx, Ok(MockQp));
             Ok(())
         }
     }
@@ -510,7 +510,7 @@ mod tests {
         ops: Vec<IbvOp<MockManagerActor>>,
     ) -> Vec<Result<(), String>> {
         let (reply, rx) = harness.client.mailbox().open_once_port();
-        harness.processor.send(
+        harness.processor.post(
             &harness.client,
             SubmitOps {
                 ops,

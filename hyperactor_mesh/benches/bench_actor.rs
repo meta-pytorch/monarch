@@ -59,7 +59,7 @@ impl Handler<BenchMessage> for BenchActor {
     ) -> Result<(), anyhow::Error> {
         tokio::time::sleep(self.processing_time).await;
 
-        let _ = msg.reply.send(ctx, msg.step);
+        let _ = msg.reply.post(ctx, msg.step);
         Ok(())
     }
 }

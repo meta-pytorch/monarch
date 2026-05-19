@@ -173,7 +173,7 @@ impl<C: context::Actor> PinnedDrop for OwnedWriteHalf<C> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
         if !*this.shutdown {
-            let _ = this.port.send(&*this.caps, Io::Eof);
+            let _ = this.port.post(&*this.caps, Io::Eof);
         }
     }
 }
@@ -266,7 +266,7 @@ impl<C: context::Actor> AsyncWrite for OwnedWriteHalf<C> {
                 "write after shutdown",
             )));
         }
-        this.port.send(&*this.caps, Io::Data(buf.into()));
+        this.port.post(&*this.caps, Io::Data(buf.into()));
         Poll::Ready(Ok(buf.len()))
     }
 
@@ -279,7 +279,7 @@ impl<C: context::Actor> AsyncWrite for OwnedWriteHalf<C> {
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         // Send EOF on shutdown.
-        self.port.send(&self.caps, Io::Eof);
+        self.port.post(&self.caps, Io::Eof);
         let mut this = self.project();
         *this.shutdown = true;
         Poll::Ready(Ok(()))
@@ -370,7 +370,7 @@ pub async fn accept<C: context::Actor>(
     message: Connect,
 ) -> Result<ActorConnection<C>> {
     let (tx, rx) = open_port::<Io>(&caps);
-    message.return_conn.send(
+    message.return_conn.post(
         &caps,
         Accept {
             id: self_id,
@@ -424,7 +424,7 @@ mod tests {
         let (client, _) = proc.client("client")?;
         let (connect, completer) = Connect::allocate(client.self_addr().clone(), client);
         let actor = proc.spawn("actor", EchoActor {})?;
-        actor.send(&completer.caps, connect);
+        actor.post(&completer.caps, connect);
         let (mut rd, mut wr) = completer.complete().await?.into_split();
         let send = [3u8, 4u8, 5u8, 6u8];
         try_join!(

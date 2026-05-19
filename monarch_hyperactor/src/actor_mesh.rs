@@ -405,7 +405,7 @@ impl ActorMeshProtocol for AsyncActorMesh {
 
                     let mut state =
                         crate::pickle::pickle(py, pyerr.into_value(py).into_any(), false, false)?;
-                    let _ = port_ref.send(
+                    let _ = port_ref.post(
                         &instance,
                         PythonMessage::new_from_buf(
                             PythonMessageKind::Exception { rank: Some(0) },
@@ -1001,7 +1001,7 @@ mod tests {
 
         // Query the subscriber count from the controller.
         let (port, mut rx) = mailbox::open_port::<usize>(instance);
-        controller.send(instance, GetSubscriberCount(port.bind()));
+        controller.post(instance, GetSubscriberCount(port.bind()));
         let initial_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
@@ -1024,7 +1024,7 @@ mod tests {
         // After 5 calls from the same context, there should be exactly 1
         // subscriber (created lazily on the first call, reused thereafter).
         let (port, mut rx) = mailbox::open_port::<usize>(instance);
-        controller.send(instance, GetSubscriberCount(port.bind()));
+        controller.post(instance, GetSubscriberCount(port.bind()));
         let after_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
@@ -1045,7 +1045,7 @@ mod tests {
         }
 
         let (port, mut rx) = mailbox::open_port::<usize>(instance);
-        controller.send(instance, GetSubscriberCount(port.bind()));
+        controller.post(instance, GetSubscriberCount(port.bind()));
         let final_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
