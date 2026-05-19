@@ -3882,6 +3882,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_current_proc_uses_stable_global_proc_outside_actor_context() {
+        let first = Proc::current();
+        let second = Proc::current();
+
+        assert_eq!(first.proc_id(), second.proc_id());
+        assert_eq!(
+            Gateway::current().proc_addr(first.proc_id()),
+            first.proc_addr()
+        );
+    }
+
     #[async_trait]
     #[crate::handle(TestActorMessage)]
     impl TestActorMessageHandler for TestActor {
@@ -3945,6 +3957,76 @@ mod tests {
             reply.send(handle).unwrap();
             Ok(())
         }
+    }
+
+    #[derive(Debug)]
+    struct CurrentProcActor;
+
+    impl Actor for CurrentProcActor {}
+
+    #[derive(Handler, Debug)]
+    enum CurrentProcMessage {
+        Check(oneshot::Sender<CurrentProcSnapshot>),
+    }
+
+    #[derive(Debug)]
+    struct CurrentProcSnapshot {
+        current_proc_id: ProcId,
+        current_gateway_proc_addr: ProcAddr,
+        spawned_handle: ActorHandle<TestActor>,
+        client_proc_id: ProcId,
+    }
+
+    #[async_trait]
+    #[crate::handle(CurrentProcMessage)]
+    impl CurrentProcMessageHandler for CurrentProcActor {
+        async fn check(
+            &mut self,
+            _cx: &crate::Context<Self>,
+            reply: oneshot::Sender<CurrentProcSnapshot>,
+        ) -> Result<(), anyhow::Error> {
+            let current = Proc::current();
+            let spawned_handle = crate::spawn("current_spawned", TestActor)?;
+            let (_client_instance, client_handle) = crate::client("current_client")?;
+            reply
+                .send(CurrentProcSnapshot {
+                    current_proc_id: current.proc_id().clone(),
+                    current_gateway_proc_addr: Gateway::current().proc_addr(current.proc_id()),
+                    spawned_handle,
+                    client_proc_id: client_handle.actor_addr().proc_id().clone(),
+                })
+                .unwrap();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_current_proc_tracks_actor_context() {
+        let proc = Proc::isolated();
+        let (client, _) = proc.client("client").unwrap();
+        let actor = proc
+            .spawn::<CurrentProcActor>("current", CurrentProcActor)
+            .unwrap();
+        let (tx, rx) = oneshot::channel();
+
+        actor.send(&client, CurrentProcMessage::Check(tx)).unwrap();
+        let snapshot = rx.await.unwrap();
+
+        assert_eq!(&snapshot.current_proc_id, proc.proc_id());
+        assert_eq!(snapshot.current_gateway_proc_addr, proc.proc_addr());
+        assert_eq!(
+            snapshot.spawned_handle.actor_addr().proc_id(),
+            proc.proc_id()
+        );
+        assert_eq!(&snapshot.client_proc_id, proc.proc_id());
+
+        snapshot
+            .spawned_handle
+            .drain_and_stop("test complete")
+            .unwrap();
+        snapshot.spawned_handle.await;
+        actor.drain_and_stop("test complete").unwrap();
+        actor.await;
     }
 
     #[tokio::test]
