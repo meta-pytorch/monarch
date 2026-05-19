@@ -16,7 +16,7 @@ async fn bootstrap_canonical_simple() {
  .unwrap();
 
  // 2) Create an actor instance we'll use to send and receive messages.
- let (instance, _handle) = proc.instance("client").unwrap();
+ let (instance, _handle) = proc.client("client").unwrap();
 
  // 3) Configure a ProcessAllocator with the bootstrap binary.
  let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(

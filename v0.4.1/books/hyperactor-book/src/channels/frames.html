@@ -1,0 +1,1757 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Frames" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-book/src/channels/frames.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="Frames define the wire format for channel messages: a single-stream, length-prefixed protocol that carries a serialized, multipart message per frame. Each frame is: where the 8-byte prefix declares..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="Frames define the wire format for channel messages: a single-stream, length-prefixed protocol that carries a serialized, multipart message per frame. Each frame is: where the 8-byte prefix declares..." />
+
+    <title>Frames &#8212; Monarch v0.4.1 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/channels/frames';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/channels/frames.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="Frames - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.4.1">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', 'v0.4.1');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link and all its ancestor TOC items
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+
+        // Walk up the DOM to activate parent TOC entries (e.g. h2 parent of h3)
+        let ancestor = matchingLink.parentElement.parentElement;
+        while (ancestor && ancestor !== tocNav) {
+          if (ancestor.classList.contains('toc-entry')) {
+            ancestor.classList.add('active');
+            const parentLink = ancestor.querySelector(':scope > a.nav-link');
+            if (parentLink) {
+              parentLink.classList.add('active');
+            }
+          }
+          ancestor = ancestor.parentElement;
+        }
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
+      
+    
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
+                Mesh Admin TUI
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../monarch-dashboard.html">
+                Monarch Dashboard
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
+  </ul>
+</nav>
+</div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../admin-tui.html">
+            Mesh Admin TUI
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../monarch-dashboard.html">
+            Monarch Dashboard
+          </a>
+        
+      </li>
+    
+
+    
+    
+  </ul>
+</nav>
+</div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+<div id="rtd-footer-container"></div>
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Frames</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="searchbox"></div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="Frames">
+      <meta itemprop="position" content="1">
+    </div>
+  </div>
+
+  
+  
+
+  
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="frames">
+<h1>Frames<a class="headerlink" href="#frames" title="Link to this heading">#</a></h1>
+<p>Frames define the wire format for channel messages: a single-stream, length-prefixed protocol that carries a serialized, multipart message per frame. Each frame is:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>[length: u64 big-endian][payload bytes …]
+</pre></div>
+</div>
+<p>where the 8-byte prefix declares exactly how many payload bytes follow.</p>
+<p>This section describes:</p>
+<ul class="simple">
+<li><p>The <strong>frame format</strong> (u64 length + payload) used by channels</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">FrameReader</span></code></strong>: a cancel-safe reader that yields whole frames as <code class="docutils literal notranslate"><span class="pre">Bytes</span></code></p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code></strong>: a cancel-safe writer that emits a frame from any <code class="docutils literal notranslate"><span class="pre">Buf</span></code>, using vectored I/O</p></li>
+<li><p><strong>Safety and limits</strong>: <code class="docutils literal notranslate"><span class="pre">EOF</span></code> behavior and a configurable max frame size</p></li>
+</ul>
+<p><strong>Multipart by default</strong>. Channel messages are serialized as <code class="docutils literal notranslate"><span class="pre">serde_multipart::Message</span></code>. On the send path, we frame the message’s bytes (body + parts) and write them without coalescing: <code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code> accepts a multipart <code class="docutils literal notranslate"><span class="pre">Buf</span></code> (via <code class="docutils literal notranslate"><span class="pre">Message::framed()</span></code>), then uses <code class="docutils literal notranslate"><span class="pre">write_vectored</span></code> to hand the kernel multiple <code class="docutils literal notranslate"><span class="pre">IoSlice</span></code>s at once. On the receive path, <code class="docutils literal notranslate"><span class="pre">FrameReader</span></code> reads the length, then reads exactly that many bytes and returns a contiguous <code class="docutils literal notranslate"><span class="pre">Bytes</span></code> payload; higher layers split that payload back into body/parts.</p>
+<p>Key properties:</p>
+<ul class="simple">
+<li><p><strong>Zero-copy friendly (user space)</strong>: large <code class="docutils literal notranslate"><span class="pre">Bytes</span></code> parts are never copied for framing; vectored writes avoid gather buffers.</p></li>
+<li><p><strong>Cancellation-safe</strong>: both read and write can be used in <code class="docutils literal notranslate"><span class="pre">tokio::select!</span></code> without risking dropped or partial frames. Progress is preserved across cancellations.</p></li>
+<li><p><strong>Bounded</strong>: frames exceeding <code class="docutils literal notranslate"><span class="pre">max_frame_length</span></code> are rejected early.</p></li>
+<li><p>Clear <code class="docutils literal notranslate"><span class="pre">EOF</span></code> semantics: <code class="docutils literal notranslate"><span class="pre">Ok(None)</span></code> only when <code class="docutils literal notranslate"><span class="pre">EOF</span></code> happens on a frame boundary; mid-frame <code class="docutils literal notranslate"><span class="pre">EOF</span></code> is <code class="docutils literal notranslate"><span class="pre">UnexpectedEof</span></code>.</p></li>
+</ul>
+<p>That’s the overview. Next we’ll spell out the exact format and walk through <code class="docutils literal notranslate"><span class="pre">FrameReader</span></code> and <code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code> in detail.</p>
+<section id="frame-format">
+<h2>Frame format<a class="headerlink" href="#frame-format" title="Link to this heading">#</a></h2>
+<p>Frames carry a single serialized <strong>multipart</strong> message per frame.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>[length: u64 big-endian][payload bytes …]
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><strong>Length prefix (8 bytes)</strong>: total number of bytes in the payload that follows.</p></li>
+<li><p><strong>Payload</strong>: the bytes of a <code class="docutils literal notranslate"><span class="pre">serde_multipart::Message::framed()</span></code> value. This is logically multipart (body + parts), but appears on the wire as a single contiguous length-sized region.</p></li>
+</ul>
+<section id="invariants">
+<h3>Invariants<a class="headerlink" href="#invariants" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>The length is the exact payload size (<code class="docutils literal notranslate"><span class="pre">payload.len()</span> <span class="pre">==</span> <span class="pre">length</span></code>).</p></li>
+<li><p>Zero-length frames are valid.</p></li>
+<li><p>Receivers <strong>must</strong> reject frames whose length exceeds a configured maximum.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">EOF</span></code> semantics:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">EOF</span></code> on a frame boundary =&gt; end of stream (no error).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">EOF</span></code> mid-prefix or mid-payload =&gt; <code class="docutils literal notranslate"><span class="pre">UnexpectedEof</span></code> (error).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="why-multipart-matters-even-on-one-stream">
+<h3>Why multipart matters (even on one stream)<a class="headerlink" href="#why-multipart-matters-even-on-one-stream" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">Message::framed()</span></code> implements <code class="docutils literal notranslate"><span class="pre">Buf</span></code> with vectored slices (<code class="docutils literal notranslate"><span class="pre">chunks_vectored</span></code>). <code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code> uses <code class="docutils literal notranslate"><span class="pre">write_vectored</span></code> to hand the OS multiple <code class="docutils literal notranslate"><span class="pre">IoSlice</span></code>s (prefix, body, parts) without coalescing in user-space. This preserves zero-copy characteristics for large parts while still producing a single length-delimited frame on the wire.</p>
+</section>
+</section>
+<section id="framereader">
+<h2><code class="docutils literal notranslate"><span class="pre">FrameReader</span></code><a class="headerlink" href="#framereader" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">FrameReader&lt;R:</span> <span class="pre">AsyncRead</span> <span class="pre">+</span> <span class="pre">Unpin&gt;</span></code> yields whole frames as <code class="docutils literal notranslate"><span class="pre">Bytes</span></code> and is cancellation-safe (safe to use in <code class="docutils literal notranslate"><span class="pre">tokio::select!</span></code> without losing frames).</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="sd">/// A FrameReader reads frames from an underlying [`AsyncRead`].</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">FrameReader</span><span class="o">&lt;</span><span class="n">R</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">reader</span><span class="p">:</span><span class="w"> </span><span class="nc">R</span><span class="p">,</span>
+<span class="w">    </span><span class="n">max_frame_length</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="p">,</span>
+<span class="w">    </span><span class="n">state</span><span class="p">:</span><span class="w"> </span><span class="nc">FrameReaderState</span><span class="p">,</span>
+<span class="p">}</span>
+
+<span class="k">enum</span><span class="w"> </span><span class="nc">FrameReaderState</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="sd">/// Accumulating 8-byte length prefix.</span>
+<span class="w">    </span><span class="n">ReadLen</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">buf</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="kt">u8</span><span class="p">;</span><span class="w"> </span><span class="mi">8</span><span class="p">],</span><span class="w"> </span><span class="n">off</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="w"> </span><span class="p">},</span>
+<span class="w">    </span><span class="sd">/// Accumulating body of exactly `len` bytes.</span>
+<span class="w">    </span><span class="n">ReadBody</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">buf</span><span class="p">:</span><span class="w"> </span><span class="nb">Vec</span><span class="o">&lt;</span><span class="kt">u8</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">len</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="w"> </span><span class="p">},</span><span class="w"> </span><span class="c1">// buf.len() &lt;= len</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">new(reader,</span> <span class="pre">max_frame_length)</span></code> initializes <code class="docutils literal notranslate"><span class="pre">state</span> <span class="pre">=</span> <span class="pre">ReadLen</span> <span class="pre">{</span> <span class="pre">buf:</span> <span class="pre">[0;8],</span> <span class="pre">off:</span> <span class="pre">0</span> <span class="pre">}</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">next()</span></code> drives a small state machine:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">ReadLen</span></code>: fill 8 bytes; on <code class="docutils literal notranslate"><span class="pre">EOF</span></code> with <code class="docutils literal notranslate"><span class="pre">off</span> <span class="pre">==</span> <span class="pre">0</span></code> → <code class="docutils literal notranslate"><span class="pre">Ok(None)</span></code>; with <code class="docutils literal notranslate"><span class="pre">off</span> <span class="pre">&gt;</span> <span class="pre">0</span></code> → <code class="docutils literal notranslate"><span class="pre">UnexpectedEof</span></code>.</p></li>
+<li><p>Parse <code class="docutils literal notranslate"><span class="pre">u64</span></code> length (big-endian); <code class="docutils literal notranslate"><span class="pre">if</span> <span class="pre">len</span> <span class="pre">&gt;</span> <span class="pre">max_frame_length</span></code> → <code class="docutils literal notranslate"><span class="pre">InvalidData</span></code> (fatal).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ReadBody</span></code>: read exactly <code class="docutils literal notranslate"><span class="pre">len</span></code> bytes; <code class="docutils literal notranslate"><span class="pre">EOF</span></code> mid-body → <code class="docutils literal notranslate"><span class="pre">UnexpectedEof</span></code>.</p></li>
+<li><p>On completion, <code class="docutils literal notranslate"><span class="pre">take(buf).into()</span></code> returns a <code class="docutils literal notranslate"><span class="pre">Bytes</span></code> payload and state resets to <code class="docutils literal notranslate"><span class="pre">ReadLen</span></code>.</p></li>
+</ul>
+</li>
+</ul>
+<p><strong>Cancellation-safe</strong>: If polled inside <code class="docutils literal notranslate"><span class="pre">tokio::select!</span></code> and cancelled at any <code class="docutils literal notranslate"><span class="pre">Pending</span></code>, progress is not lost and no partial frame is surfaced; the next <code class="docutils literal notranslate"><span class="pre">next()</span></code> call resumes from state.</p>
+</section>
+<section id="framewrite">
+<h2><code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code><a class="headerlink" href="#framewrite" title="Link to this heading">#</a></h2>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="sd">/// A Writer for message frames. `FrameWrite` requires the user to</span>
+<span class="sd">/// drive the underlying state machines through (possibly) successive</span>
+<span class="sd">/// calls to `send`, retaining cancellation safety. The `FrameWrite`</span>
+<span class="sd">/// owns the underlying writer until the frame has been written to</span>
+<span class="sd">/// completion.</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">FrameWrite</span><span class="o">&lt;</span><span class="n">W</span><span class="p">,</span><span class="w"> </span><span class="n">B</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">writer</span><span class="p">:</span><span class="w"> </span><span class="nc">W</span><span class="p">,</span>
+<span class="w">    </span><span class="n">len_buf</span><span class="p">:</span><span class="w"> </span><span class="nc">Bytes</span><span class="p">,</span>
+<span class="w">    </span><span class="n">body</span><span class="p">:</span><span class="w"> </span><span class="nc">B</span><span class="p">,</span>
+<span class="p">}</span>
+
+<span class="k">impl</span><span class="o">&lt;</span><span class="n">W</span><span class="p">:</span><span class="w"> </span><span class="nc">AsyncWrite</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Unpin</span><span class="p">,</span><span class="w"> </span><span class="n">B</span><span class="p">:</span><span class="w"> </span><span class="nc">Buf</span><span class="o">&gt;</span><span class="w"> </span><span class="n">FrameWrite</span><span class="o">&lt;</span><span class="n">W</span><span class="p">,</span><span class="w"> </span><span class="n">B</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="sd">/// Create a new frame writer, writing `body` to `writer`.</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">new</span><span class="p">(</span><span class="n">writer</span><span class="p">:</span><span class="w"> </span><span class="nc">W</span><span class="p">,</span><span class="w"> </span><span class="n">body</span><span class="p">:</span><span class="w"> </span><span class="nc">B</span><span class="p">,</span><span class="w"> </span><span class="n">max_len</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="bp">Self</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="n">W</span><span class="p">,</span><span class="w"> </span><span class="n">io</span><span class="p">::</span><span class="n">Error</span><span class="p">)</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* builds 8-byte BE prefix */</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="sd">/// Drive the underlying state machine. The frame is written when this</span>
+<span class="w">    </span><span class="sd">/// returns `Ok(())`.</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">send</span><span class="p">(</span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">io</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* length → body → flush */</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="sd">/// Return ownership of the underlying writer (call after success).</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">complete</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">W</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* … */</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="sd">/// Convenience: write a single frame and return the writer.</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">write_frame</span><span class="p">(</span><span class="n">writer</span><span class="p">:</span><span class="w"> </span><span class="nc">W</span><span class="p">,</span><span class="w"> </span><span class="n">buf</span><span class="p">:</span><span class="w"> </span><span class="nc">B</span><span class="p">,</span><span class="w"> </span><span class="n">max</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">W</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="n">W</span><span class="p">,</span><span class="w"> </span><span class="n">io</span><span class="p">::</span><span class="n">Error</span><span class="p">)</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* … */</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<section id="what-it-does">
+<h3>What it does<a class="headerlink" href="#what-it-does" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Length-prefix first. <code class="docutils literal notranslate"><span class="pre">new()</span></code> precomputes an 8-byte big-endian prefix with <code class="docutils literal notranslate"><span class="pre">body.remaining()</span></code> and freezes it (<code class="docutils literal notranslate"><span class="pre">BytesMut::put_u64(..).freeze()</span></code>). Returns an error if <code class="docutils literal notranslate"><span class="pre">body.remaining()</span></code> exceeds <code class="docutils literal notranslate"><span class="pre">max_len</span></code>.</p></li>
+<li><p>Then the body. <code class="docutils literal notranslate"><span class="pre">send()</span></code> writes the prefix, then the body:</p>
+<ul>
+<li><p>Uses <strong>vectored I/O</strong> when possible: builds up to 4 <code class="docutils literal notranslate"><span class="pre">IoSlice</span></code>s from <code class="docutils literal notranslate"><span class="pre">B:</span> <span class="pre">Buf</span></code> via <code class="docutils literal notranslate"><span class="pre">chunks_vectored</span></code>, then calls <code class="docutils literal notranslate"><span class="pre">write_vectored</span></code>.</p></li>
+<li><p>Falls back to scalar writes if the underlying writer isn’t vectored.</p></li>
+<li><p>Flush at the end. Not all transports auto-flush (e.g., rustls); <code class="docutils literal notranslate"><span class="pre">send()</span></code> calls <code class="docutils literal notranslate"><span class="pre">flush()</span></code> before returning <code class="docutils literal notranslate"><span class="pre">Ok(())</span></code>.</p></li>
+<li><p>Hand back the writer. <code class="docutils literal notranslate"><span class="pre">complete(self)</span></code> returns the inner <code class="docutils literal notranslate"><span class="pre">AsyncWrite</span></code> so you can reuse it.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="cancellation-safety">
+<h3>Cancellation safety<a class="headerlink" href="#cancellation-safety" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">send()</span></code> is designed to be used inside <code class="docutils literal notranslate"><span class="pre">tokio::select!</span></code> and safely cancelled:</p>
+<ul class="simple">
+<li><p>If cancelled while writing the length prefix, no body bytes are written yet; a subsequent <code class="docutils literal notranslate"><span class="pre">send()</span></code> call resumes and finishes the prefix before writing body bytes.</p></li>
+<li><p>If cancelled during the body, progress is preserved. On each poll, <code class="docutils literal notranslate"><span class="pre">write_vectored</span></code> (per Tokio docs) guarantees that if a different <code class="docutils literal notranslate"><span class="pre">select!</span></code> branch wins, no data was written in that poll. Short writes are handled by advancing the <code class="docutils literal notranslate"><span class="pre">Buf</span></code> (monotonic progress).</p></li>
+<li><p>Because the reader consumes exactly one <code class="docutils literal notranslate"><span class="pre">[len][payload]</span></code> pair, the receiver either sees a complete frame or nothing—not a “split” frame.</p></li>
+</ul>
+</section>
+</section>
+<section id="atomicity-frame-granularity">
+<h2>Atomicity (frame granularity)<a class="headerlink" href="#atomicity-frame-granularity" title="Link to this heading">#</a></h2>
+<p>Guarantee: A receiver observes either the entire frame body exactly once, or it observes nothing for that frame.
+This flows from:</p>
+<ul class="simple">
+<li><p>length-prefix protocol + <code class="docutils literal notranslate"><span class="pre">FrameReader</span></code>’s “read exactly len bytes” contract, and</p></li>
+<li><p>writer’s monotonic progress (no user-space reordering) + vectored writes.</p></li>
+</ul>
+</section>
+<section id="errors-state">
+<h2>Errors &amp; state<a class="headerlink" href="#errors-state" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">send()</span></code> returns an <code class="docutils literal notranslate"><span class="pre">io::Result&lt;()&gt;</span></code>. Any error means the underlying stream is in an unknown state; higher layers typically reconnect.</p></li>
+<li><p>Call <code class="docutils literal notranslate"><span class="pre">complete()</span></code> only after a successful <code class="docutils literal notranslate"><span class="pre">send()</span></code>. Calling it early yields an undefined stream state (by design).</p></li>
+</ul>
+</section>
+<section id="multipart-friendly">
+<h2>Multipart friendly<a class="headerlink" href="#multipart-friendly" title="Link to this heading">#</a></h2>
+<p>Pass a multipart buffer to <code class="docutils literal notranslate"><span class="pre">new()</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">serde_multipart</span><span class="p">::</span><span class="n">Message</span><span class="p">;</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">msg</span><span class="p">:</span><span class="w"> </span><span class="nc">Message</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="c1">// serialized typed message</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">body</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">msg</span><span class="p">.</span><span class="n">framed</span><span class="p">();</span><span class="w"> </span><span class="c1">// impl Buf with chunks_vectored()</span>
+<span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">fw</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FrameWrite</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">writer</span><span class="p">,</span><span class="w"> </span><span class="n">body</span><span class="p">,</span><span class="w"> </span><span class="n">max_len</span><span class="p">).</span><span class="n">map_err</span><span class="p">(</span><span class="o">|</span><span class="p">(</span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="o">|</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="n">fw</span><span class="p">.</span><span class="n">send</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span><span class="w"> </span><span class="c1">// writes [len][body][part0]...[partN] via writev</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">writer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">fw</span><span class="p">.</span><span class="n">complete</span><span class="p">();</span><span class="w"> </span><span class="c1">// reuse for the next frame</span>
+</pre></div>
+</div>
+</section>
+<section id="oneshot-convenience">
+<h2>Oneshot convenience<a class="headerlink" href="#oneshot-convenience" title="Link to this heading">#</a></h2>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// Send exactly one frame, then get the writer back.</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">writer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FrameWrite</span><span class="p">::</span><span class="n">write_frame</span><span class="p">(</span><span class="n">writer</span><span class="p">,</span><span class="w"> </span><span class="n">msg</span><span class="p">.</span><span class="n">framed</span><span class="p">(),</span><span class="w"> </span><span class="n">max_len</span><span class="p">).</span><span class="k">await</span><span class="p">.</span><span class="n">map_err</span><span class="p">(</span><span class="o">|</span><span class="p">(</span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="o">|</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
+<section id="tl-dr">
+<h2>TL;DR<a class="headerlink" href="#tl-dr" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Send</strong>:
+<code class="docutils literal notranslate"><span class="pre">serde_multipart::serialize_bincode(M)</span> <span class="pre">-&gt;</span> <span class="pre">Message</span> <span class="pre">→</span> <span class="pre">Message::framed()</span> <span class="pre">-&gt;</span> <span class="pre">impl</span> <span class="pre">Buf</span></code></p></li>
+<li><p><strong>Recv</strong>:</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">FrameReader::next()</span> <span class="pre">-&gt;</span> <span class="pre">Bytes</span> <span class="pre">→</span> <span class="pre">Message::from_framed(Bytes)</span> <span class="pre">-&gt;</span> <span class="pre">Message</span> <span class="pre">→</span> <span class="pre">serde_multipart::deserialize_bincode::&lt;M&gt;(Message)</span> <span class="pre">-&gt;</span> <span class="pre">M</span></code></p></li>
+</ul>
+<p>See <a class="reference internal" href="../appendix/lifecycle.html"><span class="std std-doc">Typed Message Lifecycle</span></a> for the full end-to-end walkthrough, including serialization, framing, cancel-safe I/O, and deserialization.</p>
+</section>
+</section>
+
+
+                </article>
+              
+</div>
+
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#frame-format">Frame format</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#invariants">Invariants</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#why-multipart-matters-even-on-one-stream">Why multipart matters (even on one stream)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#framereader"><code class="docutils literal notranslate"><span class="pre">FrameReader</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#framewrite"><code class="docutils literal notranslate"><span class="pre">FrameWrite</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-it-does">What it does</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cancellation-safety">Cancellation safety</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#atomicity-frame-granularity">Atomicity (frame granularity)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#errors-state">Errors &amp; state</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multipart-friendly">Multipart friendly</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#oneshot-convenience">Oneshot convenience</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tl-dr">TL;DR</a></li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-book/src/channels/frames.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-book/src/channels/frames.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper" data-nosnippet>
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
+    <button class="close-button" aria-label="Close cookie banner"></button>
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Frames",
+       "headline": "Frames",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
+       "url": "/books/hyperactor-book/src/channels/frames.html",
+       "articleBody": "Frames# Frames define the wire format for channel messages: a single-stream, length-prefixed protocol that carries a serialized, multipart message per frame. Each frame is: [length: u64 big-endian][payload bytes \u2026] where the 8-byte prefix declares exactly how many payload bytes follow. This section describes: The frame format (u64 length + payload) used by channels FrameReader: a cancel-safe reader that yields whole frames as Bytes FrameWrite: a cancel-safe writer that emits a frame from any Buf, using vectored I/O Safety and limits: EOF behavior and a configurable max frame size Multipart by default. Channel messages are serialized as serde_multipart::Message. On the send path, we frame the message\u2019s bytes (body + parts) and write them without coalescing: FrameWrite accepts a multipart Buf (via Message::framed()), then uses write_vectored to hand the kernel multiple IoSlices at once. On the receive path, FrameReader reads the length, then reads exactly that many bytes and returns a contiguous Bytes payload; higher layers split that payload back into body/parts. Key properties: Zero-copy friendly (user space): large Bytes parts are never copied for framing; vectored writes avoid gather buffers. Cancellation-safe: both read and write can be used in tokio::select! without risking dropped or partial frames. Progress is preserved across cancellations. Bounded: frames exceeding max_frame_length are rejected early. Clear EOF semantics: Ok(None) only when EOF happens on a frame boundary; mid-frame EOF is UnexpectedEof. That\u2019s the overview. Next we\u2019ll spell out the exact format and walk through FrameReader and FrameWrite in detail. Frame format# Frames carry a single serialized multipart message per frame. [length: u64 big-endian][payload bytes \u2026] Length prefix (8 bytes): total number of bytes in the payload that follows. Payload: the bytes of a serde_multipart::Message::framed() value. This is logically multipart (body + parts), but appears on the wire as a single contiguous length-sized region. Invariants# The length is the exact payload size (payload.len() == length). Zero-length frames are valid. Receivers must reject frames whose length exceeds a configured maximum. EOF semantics: EOF on a frame boundary =\u003e end of stream (no error). EOF mid-prefix or mid-payload =\u003e UnexpectedEof (error). Why multipart matters (even on one stream)# Message::framed() implements Buf with vectored slices (chunks_vectored). FrameWrite uses write_vectored to hand the OS multiple IoSlices (prefix, body, parts) without coalescing in user-space. This preserves zero-copy characteristics for large parts while still producing a single length-delimited frame on the wire. FrameReader# FrameReader\u003cR: AsyncRead + Unpin\u003e yields whole frames as Bytes and is cancellation-safe (safe to use in tokio::select! without losing frames). /// A FrameReader reads frames from an underlying [`AsyncRead`]. pub struct FrameReader\u003cR\u003e { reader: R, max_frame_length: usize, state: FrameReaderState, } enum FrameReaderState { /// Accumulating 8-byte length prefix. ReadLen { buf: [u8; 8], off: usize }, /// Accumulating body of exactly `len` bytes. ReadBody { buf: Vec\u003cu8\u003e, len: usize }, // buf.len() \u003c= len } new(reader, max_frame_length) initializes state = ReadLen { buf: [0;8], off: 0 }. next() drives a small state machine: ReadLen: fill 8 bytes; on EOF with off == 0 \u2192 Ok(None); with off \u003e 0 \u2192 UnexpectedEof. Parse u64 length (big-endian); if len \u003e max_frame_length \u2192 InvalidData (fatal). ReadBody: read exactly len bytes; EOF mid-body \u2192 UnexpectedEof. On completion, take(buf).into() returns a Bytes payload and state resets to ReadLen. Cancellation-safe: If polled inside tokio::select! and cancelled at any Pending, progress is not lost and no partial frame is surfaced; the next next() call resumes from state. FrameWrite# /// A Writer for message frames. `FrameWrite` requires the user to /// drive the underlying state machines through (possibly) successive /// calls to `send`, retaining cancellation safety. The `FrameWrite` /// owns the underlying writer until the frame has been written to /// completion. pub struct FrameWrite\u003cW, B\u003e { writer: W, len_buf: Bytes, body: B, } impl\u003cW: AsyncWrite + Unpin, B: Buf\u003e FrameWrite\u003cW, B\u003e { /// Create a new frame writer, writing `body` to `writer`. pub fn new(writer: W, body: B, max_len: usize) -\u003e Result\u003cSelf, (W, io::Error)\u003e { /* builds 8-byte BE prefix */ } /// Drive the underlying state machine. The frame is written when this /// returns `Ok(())`. pub async fn send(\u0026mut self) -\u003e io::Result\u003c()\u003e { /* length \u2192 body \u2192 flush */ } /// Return ownership of the underlying writer (call after success). pub fn complete(self) -\u003e W { /* \u2026 */ } /// Convenience: write a single frame and return the writer. pub async fn write_frame(writer: W, buf: B, max: usize) -\u003e Result\u003cW, (W, io::Error)\u003e { /* \u2026 */ } } What it does# Length-prefix first. new() precomputes an 8-byte big-endian prefix with body.remaining() and freezes it (BytesMut::put_u64(..).freeze()). Returns an error if body.remaining() exceeds max_len. Then the body. send() writes the prefix, then the body: Uses vectored I/O when possible: builds up to 4 IoSlices from B: Buf via chunks_vectored, then calls write_vectored. Falls back to scalar writes if the underlying writer isn\u2019t vectored. Flush at the end. Not all transports auto-flush (e.g., rustls); send() calls flush() before returning Ok(()). Hand back the writer. complete(self) returns the inner AsyncWrite so you can reuse it. Cancellation safety# send() is designed to be used inside tokio::select! and safely cancelled: If cancelled while writing the length prefix, no body bytes are written yet; a subsequent send() call resumes and finishes the prefix before writing body bytes. If cancelled during the body, progress is preserved. On each poll, write_vectored (per Tokio docs) guarantees that if a different select! branch wins, no data was written in that poll. Short writes are handled by advancing the Buf (monotonic progress). Because the reader consumes exactly one [len][payload] pair, the receiver either sees a complete frame or nothing\u2014not a \u201csplit\u201d frame. Atomicity (frame granularity)# Guarantee: A receiver observes either the entire frame body exactly once, or it observes nothing for that frame. This flows from: length-prefix protocol + FrameReader\u2019s \u201cread exactly len bytes\u201d contract, and writer\u2019s monotonic progress (no user-space reordering) + vectored writes. Errors \u0026 state# send() returns an io::Result\u003c()\u003e. Any error means the underlying stream is in an unknown state; higher layers typically reconnect. Call complete() only after a successful send(). Calling it early yields an undefined stream state (by design). Multipart friendly# Pass a multipart buffer to new(): use serde_multipart::Message; let msg: Message = // serialized typed message let body = msg.framed(); // impl Buf with chunks_vectored() let mut fw = FrameWrite::new(writer, body, max_len).map_err(|(_, e)| e)?; fw.send().await?; // writes [len][body][part0]...[partN] via writev let writer = fw.complete(); // reuse for the next frame Oneshot convenience# // Send exactly one frame, then get the writer back. let writer = FrameWrite::write_frame(writer, msg.framed(), max_len).await.map_err(|(_, e)| e)?; TL;DR# Send: serde_multipart::serialize_bincode(M) -\u003e Message \u2192 Message::framed() -\u003e impl Buf Recv: FrameReader::next() -\u003e Bytes \u2192 Message::from_framed(Bytes) -\u003e Message \u2192 serde_multipart::deserialize_bincode::\u003cM\u003e(Message) -\u003e M See Typed Message Lifecycle for the full end-to-end walkthrough, including serialization, framing, cancel-safe I/O, and deserialization.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-book/src/channels/frames.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

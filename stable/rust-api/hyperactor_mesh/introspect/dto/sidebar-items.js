@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["NodePropertiesDto"],"struct":["FailureInfoDto","NodePayloadDto"]};
+window.SIDEBAR_ITEMS = {"enum":["NodePropertiesDto"],"struct":["FailureInfoDto","NodePayloadDto","ProcDebugStatsDto","ProcessMemoryStatsDto"]};

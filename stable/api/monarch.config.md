@@ -57,7 +57,7 @@ All duration parameters accept humantime strings like `"30s"`, `"5m"`,
 
 Parameters:
 
-- **configuration** (*Logging*) - 
+- **configuration** (*RDMA*) - 
 default_transport: Default channel transport for actor communication.
 
 Can be a ChannelTransport enum or explicit address string.
@@ -76,7 +76,6 @@ split_max_buffer_size: Maximum buffer size for message splitting (bytes).
 split_max_buffer_age: Maximum age for split message buffers (humantime).
 stop_actor_timeout: Timeout for stopping actors (humantime).
 cleanup_timeout: Timeout for cleanup operations (humantime).
-remote_allocator_heartbeat_interval: Heartbeat interval for remote allocator (humantime).
 default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart).
 channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime).
 message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0).
@@ -111,6 +110,19 @@ mesh_attach_config_timeout: Timeout for the config-push barrier
 
 during `attach_to_workers()` (humantime, default `"10s"`).
 Best-effort: if exceeded, a warning is logged and attach continues.
+- **configuration** - 
+rdma_allow_tcp_fallback: Allow TCP fallback when ibverbs RDMA
+
+is unavailable. When True, RDMA operations use a TCP-based
+backend instead of failing.
+
+rdma_disable_ibverbs: Force-disable ibverbs even when available,
+
+causing all RDMA operations to use the TCP fallback backend.
+
+rdma_max_chunk_size_mb: Maximum chunk size in megabytes for RDMA
+
+transfers.
 - ****kwargs** (*ConfigureKwargsType*) - Reserved for future configuration keys exposed by Rust bindings.
 
 monarch.config.configured(***overrides*)[[source]](../_modules/monarch/config.html#configured)
@@ -518,7 +530,7 @@ A value of `0.01` means 1% of messages are sampled. Use `1.0` for
 Enable reordering buffer in dest actor.
 
 - **Type**: `bool`
-- **Default**: `False`
+- **Default**: `True`
 - **Environment**: `HYPERACTOR_ENABLE_DEST_ACTOR_REORDERING_BUFFER`
 
 ## Message Encoding
@@ -638,16 +650,6 @@ When attaching to pre-existing workers (simple bootstrap), the client
 pushes its propagatable config to each host agent and waits for
 confirmation. If the barrier does not complete within this duration,
 a warning is logged and attach continues without blocking.
-
-## Remote Allocation
-
-`remote_allocator_heartbeat_interval`
-
-Heartbeat interval for remote allocator.
-
-- **Type**: `str` (duration format)
-- **Default**: `"5m"`
-- **Environment**: `HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL`
 
 ## Validation and Error Handling
 

@@ -1,0 +1,47 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Converts normalized value-bearing runs into a deduplicated table and a run list, coalescing adjacent runs that carry the same value."><title>rle_from_value_runs in hyperactor_mesh::value_mesh::rle - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="sidebar-items.js"></script><script defer src="../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc fn"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">rle_from_value_runs</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../hyperactor_mesh/index.html">hyperactor_<wbr>mesh</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">rle_<wbr>from_<wbr>value_<wbr>runs</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#input" title="Input">Input</a></li><li><a href="#behavior" title="Behavior">Behavior</a></li><li><a href="#output-invariants" title="Output invariants">Output invariants</a></li><li><a href="#preconditions" title="Preconditions">Preconditions</a></li><li><a href="#example" title="Example">Example</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="index.html">In hyperactor_<wbr>mesh::<wbr>value_<wbr>mesh::<wbr>rle</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">hyperactor_mesh</a>::<wbr><a href="../index.html">value_mesh</a>::<wbr><a href="index.html">rle</a></div><h1>Function <span class="fn">rle_<wbr>from_<wbr>value_<wbr>runs</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/hyperactor_mesh/value_mesh/rle.rs.html#145-178">Source</a> </span></div><pre class="rust item-decl"><code>pub fn rle_from_value_runs&lt;T: <a class="trait" href="https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html" title="trait core::clone::Clone">Clone</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/cmp/trait.PartialEq.html" title="trait core::cmp::PartialEq">PartialEq</a>&gt;(
+    runs: <a class="struct" href="https://doc.rust-lang.org/nightly/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;(<a class="struct" href="https://doc.rust-lang.org/nightly/core/ops/range/struct.Range.html" title="struct core::ops::range::Range">Range</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>&gt;, T)&gt;,
+) -&gt; (<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;T&gt;, <a class="struct" href="https://doc.rust-lang.org/nightly/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;(<a class="struct" href="https://doc.rust-lang.org/nightly/core/ops/range/struct.Range.html" title="struct core::ops::range::Range">Range</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>&gt;, <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.u32.html">u32</a>)&gt;)</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Converts <strong>normalized</strong> value-bearing runs into a deduplicated
+table and a run list, coalescing adjacent runs that carry the same
+value.</p>
+<h2 id="input"><a class="doc-anchor" href="#input">§</a>Input</h2>
+<ul>
+<li><code>runs</code>: a vector of <code>(start..end, value)</code> pairs that is already
+<strong>normalized</strong>:
+<ul>
+<li>sorted by <code>(start, end)</code> in ascending order,</li>
+<li>non-empty (<code>start &lt; end</code>),</li>
+<li><strong>non-overlapping</strong> (touching is allowed).</li>
+</ul>
+</li>
+</ul>
+<h2 id="behavior"><a class="doc-anchor" href="#behavior">§</a>Behavior</h2>
+<ul>
+<li>Builds <code>table</code> by <strong>global</strong> deduplication of values in
+first-appearance order. The same logical value appearing in
+disjoint places will share a single entry in <code>table</code>.</li>
+<li>Produces <code>out</code> as a list of <code>(start..end, id)</code>, where <code>id</code>
+indexes into <code>table</code>.</li>
+<li>If two consecutive input runs are <strong>touching</strong> (<code>prev.end == next.start</code>) and their values are <code>==</code>, they are <strong>coalesced</strong>
+into a single output run referencing the same <code>id</code>.</li>
+</ul>
+<h2 id="output-invariants"><a class="doc-anchor" href="#output-invariants">§</a>Output invariants</h2>
+<ul>
+<li><code>out</code> is sorted by <code>start</code> and <strong>non-overlapping</strong>; touching
+runs have different <code>id</code>s.</li>
+<li>Each <code>(r, id)</code> in <code>out</code> satisfies <code>id &lt; table.len()</code>.</li>
+<li><code>table</code> preserves <strong>first-appearance order</strong> of distinct values
+across the entire input.</li>
+<li>The union of ranges in <code>out</code> equals the union of ranges in the
+input <code>runs</code>.</li>
+</ul>
+<h2 id="preconditions"><a class="doc-anchor" href="#preconditions">§</a>Preconditions</h2>
+<p>This function assumes the input <code>runs</code> is normalized as described
+above; it does <strong>not</strong> revalidate or resort the input. Supplying
+unsorted or overlapping ranges results in unspecified behavior.</p>
+<h2 id="example"><a class="doc-anchor" href="#example">§</a>Example</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="comment">// Input runs (already sorted &amp; non-overlapping):
+// [(0..2, A), (2..5, A), (5..6, B), (8..10, A)]
+// After coalescing equal-adjacent:
+// [(0..5, A), (5..6, B), (8..10, A)]
+// table  = [A, B]
+// out    = [(0..5, 0), (5..6, 1), (8..10, 0)]</span></code></pre></div></div></details></section></div></main></body></html>

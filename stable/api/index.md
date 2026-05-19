@@ -67,7 +67,6 @@ The [monarch.spmd](monarch.spmd.html) package provides primitives for running to
 - [Mesh Configuration](monarch.config.html#mesh-configuration)
 - [Mesh Admin](monarch.config.html#mesh-admin)
 - [Mesh Attach](monarch.config.html#mesh-attach)
-- [Remote Allocation](monarch.config.html#remote-allocation)
 - [Validation and Error Handling](monarch.config.html#validation-and-error-handling)
 - [Examples](monarch.config.html#examples)
 

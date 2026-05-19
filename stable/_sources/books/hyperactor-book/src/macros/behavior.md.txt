@@ -48,10 +48,10 @@ The behavior can include any type of message:
 After spawning the real actor, re-type its id as the behavior:
 
 ```rust
-let mut proc = Proc::local();
+let mut proc = Proc::isolated();
 let shopping_list_actor: ActorHandle<ShoppingListActor> =
     proc.spawn("shopping", ()).await?;
-let (client, _) = proc.instance("client").unwrap();
+let (client, _) = proc.client("client").unwrap();
 
 // Re-type the reference as ActorRef<ShoppingApi>.
 // We use `attest` here for demonstration, because we know this id
@@ -97,7 +97,7 @@ where
       + Handler<ClearList>
       + Handler<GetItemCount<usize>>,
 {
-    fn bind(ports: &hyperactor::proc::Ports<A>) {
+    fn bind(ports: &hyperactor::proc::HandlerPorts<A>) {
         ports.bind::<ShoppingList>();
         ports.bind::<ClearList>();
         ports.bind::<GetItemCount<usize>>();

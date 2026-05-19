@@ -1,0 +1,1958 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Mesh introspection & mesh-admin" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-mesh-book/src/meshes/mesh-introspection-and-admin.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="This chapter is the “page me back in” overview of how mesh introspection works and how the mesh admin TUI sits on top of it. The short version is: the mesh exposes a reference-walking API,, every s..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="This chapter is the “page me back in” overview of how mesh introspection works and how the mesh admin TUI sits on top of it. The short version is: the mesh exposes a reference-walking API,, every s..." />
+
+    <title>Mesh introspection &amp; mesh-admin &#8212; Monarch v0.4.1 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/mesh-introspection-and-admin';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/mesh-introspection-and-admin.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="Mesh introspection & mesh-admin - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.4.1">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', 'v0.4.1');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link and all its ancestor TOC items
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+
+        // Walk up the DOM to activate parent TOC entries (e.g. h2 parent of h3)
+        let ancestor = matchingLink.parentElement.parentElement;
+        while (ancestor && ancestor !== tocNav) {
+          if (ancestor.classList.contains('toc-entry')) {
+            ancestor.classList.add('active');
+            const parentLink = ancestor.querySelector(':scope > a.nav-link');
+            if (parentLink) {
+              parentLink.classList.add('active');
+            }
+          }
+          ancestor = ancestor.parentElement;
+        }
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
+      
+    
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
+                Mesh Admin TUI
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../monarch-dashboard.html">
+                Monarch Dashboard
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
+  </ul>
+</nav>
+</div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../admin-tui.html">
+            Mesh Admin TUI
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../monarch-dashboard.html">
+            Monarch Dashboard
+          </a>
+        
+      </li>
+    
+
+    
+    
+  </ul>
+</nav>
+</div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+<div id="rtd-footer-container"></div>
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Mesh...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="searchbox"></div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="Mesh introspection &amp; mesh-admin">
+      <meta itemprop="position" content="1">
+    </div>
+  </div>
+
+  
+  
+
+  
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="mesh-introspection-mesh-admin">
+<h1>Mesh introspection &amp; mesh-admin<a class="headerlink" href="#mesh-introspection-mesh-admin" title="Link to this heading">#</a></h1>
+<p>This chapter is the “page me back in” overview of how mesh introspection works and how the mesh admin TUI sits on top of it.</p>
+<p>The short version is:</p>
+<ul class="simple">
+<li><p>the mesh exposes a <strong>reference-walking</strong> API,</p></li>
+<li><p>every successful lookup returns a uniform <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code> is the mesh-wide resolver and HTTP bridge,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> and <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> provide the proc-level and host-level facts,</p></li>
+<li><p>ordinary actors provide their own actor-level introspection through the blanket <code class="docutils literal notranslate"><span class="pre">IntrospectMessage</span></code> handler,</p></li>
+<li><p>and the TUI is “just” a lazy client of <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/{reference}</span></code> plus a couple of proc-oriented side endpoints.</p></li>
+</ul>
+<p>If you remember only one idea, remember this one:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>root
+  -&gt; host refs
+    -&gt; proc refs
+      -&gt; actor refs
+</pre></div>
+</div>
+<p>The TUI does not have privileged topology knowledge. It starts at <code class="docutils literal notranslate"><span class="pre">root</span></code>, follows <code class="docutils literal notranslate"><span class="pre">children</span></code>, and asks the server to resolve whatever opaque reference string it was given next.</p>
+<section id="the-data-model-nodepayload">
+<h2>The data model: <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code><a class="headerlink" href="#the-data-model-nodepayload" title="Link to this heading">#</a></h2>
+<p>The entire mesh-admin surface is built around one response type:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">NodePayload</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">identity</span><span class="p">:</span><span class="w"> </span><span class="nb">String</span><span class="p">,</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">properties</span><span class="p">:</span><span class="w"> </span><span class="nc">NodeProperties</span><span class="p">,</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">children</span><span class="p">:</span><span class="w"> </span><span class="nb">Vec</span><span class="o">&lt;</span><span class="nb">String</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">parent</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="nb">String</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">as_of</span><span class="p">:</span><span class="w"> </span><span class="nb">String</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This is the key simplification. Clients do not get separate “host response”, “proc response”, and “actor response” endpoints with different shapes. Instead they always ask for “resolve this reference” and receive:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">identity</span></code>: the canonical reference string for this node,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">properties</span></code>: one of <code class="docutils literal notranslate"><span class="pre">Root</span></code>, <code class="docutils literal notranslate"><span class="pre">Host</span></code>, <code class="docutils literal notranslate"><span class="pre">Proc</span></code>, <code class="docutils literal notranslate"><span class="pre">Actor</span></code>, or <code class="docutils literal notranslate"><span class="pre">Error</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">children</span></code>: the next reference strings the client can walk,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">parent</span></code>: a navigation hint for upward movement,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">as_of</span></code>: when the data was captured.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">NodeProperties</span></code> is the typed payload:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Root</span></code> is synthetic and records high-level mesh metadata,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Host</span></code> describes a <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> and its proc children,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Proc</span></code> describes a proc node and its actor children,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Actor</span></code> describes an individual actor instance,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Error</span></code> is the sentinel shape used when resolution/decode fails in a controlled way.</p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">introspect</span></code> module is the translation layer. Internally the runtime produces <code class="docutils literal notranslate"><span class="pre">IntrospectResult</span> <span class="pre">{</span> <span class="pre">attrs,</span> <span class="pre">children,</span> <span class="pre">...</span> <span class="pre">}</span></code>; <code class="docutils literal notranslate"><span class="pre">derive_properties</span></code> decodes attrs into <code class="docutils literal notranslate"><span class="pre">NodeProperties</span></code>; <code class="docutils literal notranslate"><span class="pre">to_node_payload</span></code> wraps that into the API shape.</p>
+<p>So the stack is:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>published attrs / IntrospectResult
+    -&gt; derive_properties(...)
+    -&gt; NodeProperties
+    -&gt; NodePayload
+</pre></div>
+</div>
+</section>
+<section id="the-mental-model-what-is-actually-introspectable">
+<h2>The mental model: what is actually introspectable?<a class="headerlink" href="#the-mental-model-what-is-actually-introspectable" title="Link to this heading">#</a></h2>
+<p>The runtime rule is not “everything that exists is visible.” The rule is “everything the routing layer can actually reach via actor messaging is visible.”</p>
+<p>That is why the module docs talk about <strong>routable</strong>, <strong>introspectable</strong>, and <strong>opaque</strong> nodes:</p>
+<ul class="simple">
+<li><p>if an actor can receive <code class="docutils literal notranslate"><span class="pre">IntrospectMessage</span></code>, it is introspectable,</p></li>
+<li><p>if a proc has at least one such actor, the admin layer can synthesize a proc node for it,</p></li>
+<li><p>infrastructure pieces with no routable mailbox sender are intentionally opaque and do not appear as first-class nodes.</p></li>
+</ul>
+<p>This explains two important design choices:</p>
+<ol class="arabic simple">
+<li><p>procs are mostly <strong>synthetic nodes</strong> assembled from agent knowledge rather than directly introspected runtime objects;</p></li>
+<li><p>the admin tree is a <strong>navigation projection</strong> of what the routing layer can actually observe, not a dump of every implementation detail in the process.</p></li>
+</ol>
+</section>
+<section id="who-provides-what">
+<h2>Who provides what<a class="headerlink" href="#who-provides-what" title="Link to this heading">#</a></h2>
+<p>There are three layers involved in a normal lookup.</p>
+<section id="meshadminagent-mesh-wide-resolver-and-http-bridge-target">
+<h3>1. <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code>: mesh-wide resolver and HTTP bridge target<a class="headerlink" href="#meshadminagent-mesh-wide-resolver-and-http-bridge-target" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code> owns:</p>
+<ul class="simple">
+<li><p>the map of host address -&gt; <code class="docutils literal notranslate"><span class="pre">ActorRef&lt;HostAgent&gt;</span></code>,</p></li>
+<li><p>the reverse map of <code class="docutils literal notranslate"><span class="pre">HostAgent</span> <span class="pre">ActorId</span></code> -&gt; host address,</p></li>
+<li><p>the synthetic root node,</p></li>
+<li><p>the <code class="docutils literal notranslate"><span class="pre">ResolveReferenceMessage</span></code> handler,</p></li>
+<li><p>the background Axum server started from <code class="docutils literal notranslate"><span class="pre">init</span></code>.</p></li>
+</ul>
+<p>It does <strong>not</strong> directly know every actor in the mesh. Instead it is the orchestrator that decides which downstream actor to ask next.</p>
+<p>The core resolver is:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>resolve_reference(reference_string)
+  &quot;root&quot;                   -&gt; build_root_payload()
+  &quot;host:&lt;actor_id&gt;&quot;        -&gt; resolve_host_node(...)
+  ProcId                   -&gt; resolve_proc_node(...)
+  ActorId                  -&gt; resolve_actor_node(...)
+</pre></div>
+</div>
+<p>So <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code> is the place where opaque references become typed navigation.</p>
+</section>
+<section id="hostagent-host-nodes-and-system-local-proc-resolution">
+<h3>2. <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code>: host nodes and system/local proc resolution<a class="headerlink" href="#hostagent-host-nodes-and-system-local-proc-resolution" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> publishes host attrs such as:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">node_type</span> <span class="pre">=</span> <span class="pre">&quot;host&quot;</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">addr</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">num_procs</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">children</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">system_children</span></code></p></li>
+</ul>
+<p>More importantly, in <code class="docutils literal notranslate"><span class="pre">init</span></code> it registers a <code class="docutils literal notranslate"><span class="pre">QueryChild</span></code> callback for proc references that are <strong>not</strong> independently represented by a user <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> path, notably:</p>
+<ul class="simple">
+<li><p>the service proc,</p></li>
+<li><p>the local proc.</p></li>
+</ul>
+<p>That callback synthesizes a proc-level <code class="docutils literal notranslate"><span class="pre">IntrospectResult</span></code> for those system procs by enumerating actors in the proc and marking which are system actors.</p>
+<p>So if <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code> asks a <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> “tell me about this proc child”, the host can answer directly for system/local procs.</p>
+</section>
+<section id="procagent-user-proc-nodes-terminated-snapshots-proc-local-services">
+<h3>3. <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code>: user proc nodes, terminated snapshots, proc-local services<a class="headerlink" href="#procagent-user-proc-nodes-terminated-snapshots-proc-local-services" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> does the corresponding job for user procs.</p>
+<p>It publishes proc attrs such as:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">node_type</span> <span class="pre">=</span> <span class="pre">&quot;proc&quot;</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">proc_name</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">num_actors</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">system_children</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">stopped_children</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">stopped_retention_cap</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">is_poisoned</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">failed_actor_count</span></code></p></li>
+</ul>
+<p>In <code class="docutils literal notranslate"><span class="pre">init</span></code> it also registers a <code class="docutils literal notranslate"><span class="pre">QueryChild</span></code> callback with two especially important behaviors:</p>
+<ol class="arabic simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">QueryChild(Reference::Proc(proc_id))</span></code> builds a <strong>fresh proc node from live proc state</strong>, not from stale published snapshots. This is why a directly spawned actor can appear in the next admin query without waiting for a separate republish path.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">QueryChild(Reference::Actor(actor_id))</span></code> can return a <strong>terminated snapshot</strong> for dead actors, which lets the admin UI continue to resolve recently stopped actors by reference.</p></li>
+</ol>
+<p><code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> is also where the proc-oriented side services live today:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">PySpyDump</span></code> is handled by delegating to a one-shot <code class="docutils literal notranslate"><span class="pre">PySpyWorker</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ConfigDump</span></code> returns current CONFIG-marked settings for the proc.</p></li>
+</ul>
+</section>
+</section>
+<section id="how-a-normal-tree-walk-works">
+<h2>How a normal tree walk works<a class="headerlink" href="#how-a-normal-tree-walk-works" title="Link to this heading">#</a></h2>
+<p>The runtime walk that underlies the TUI looks like this.</p>
+<section id="step-1-root">
+<h3>Step 1: root<a class="headerlink" href="#step-1-root" title="Link to this heading">#</a></h3>
+<p>The client asks for <code class="docutils literal notranslate"><span class="pre">root</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent::build_root_payload()</span></code> returns a synthetic node whose children are host references:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>root
+  children = [&quot;host:&lt;host_agent_actor_id_0&gt;&quot;, &quot;host:&lt;host_agent_actor_id_1&gt;&quot;, ...]
+</pre></div>
+</div>
+<p>The root is not a real actor or proc. It is purely a navigation anchor.</p>
+</section>
+<section id="step-2-host">
+<h3>Step 2: host<a class="headerlink" href="#step-2-host" title="Link to this heading">#</a></h3>
+<p>The client picks a host child and resolves it.</p>
+<p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent::resolve_host_node()</span></code> sends <code class="docutils literal notranslate"><span class="pre">IntrospectMessage::Query(Entity)</span></code> directly to that <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> and converts the returned attrs/children into <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code>.</p>
+<p>At that point the client sees:</p>
+<ul class="simple">
+<li><p>host metadata,</p></li>
+<li><p>system and user proc references under that host.</p></li>
+</ul>
+</section>
+<section id="step-3-proc">
+<h3>Step 3: proc<a class="headerlink" href="#step-3-proc" title="Link to this heading">#</a></h3>
+<p>The client picks a proc child and resolves it.</p>
+<p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent::resolve_proc_node()</span></code> does a two-stage attempt:</p>
+<ol class="arabic simple">
+<li><p>ask the owning <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> via <code class="docutils literal notranslate"><span class="pre">QueryChild(Reference::Proc(proc_id))</span></code>,</p></li>
+<li><p>if that comes back as an error payload, fall back to the proc’s <code class="docutils literal notranslate"><span class="pre">proc_agent[0]</span></code>.</p></li>
+</ol>
+<p>Why the two stages?</p>
+<ul class="simple">
+<li><p>service/local/system procs are host-managed and answered by <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code>,</p></li>
+<li><p>user procs are answered by <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code>,</p></li>
+<li><p>the client does not need to know the difference.</p></li>
+</ul>
+<p>That is a recurring theme in this subsystem: the server hides topology quirks behind a single reference API.</p>
+</section>
+<section id="step-4-actor">
+<h3>Step 4: actor<a class="headerlink" href="#step-4-actor" title="Link to this heading">#</a></h3>
+<p>The client picks an actor child and resolves it.</p>
+<p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent::resolve_actor_node()</span></code> usually sends <code class="docutils literal notranslate"><span class="pre">IntrospectMessage::Query(Actor)</span></code> directly to that actor’s introspection port.</p>
+<p>There are some important special cases:</p>
+<ul class="simple">
+<li><p>if the actor being resolved is the admin actor itself, the agent snapshots itself directly to avoid self-deadlock;</p></li>
+<li><p>before querying a live user actor, it checks for a terminated snapshot via the proc agent, so recently dead actors remain queryable;</p></li>
+<li><p>if the actor lives on a standalone proc, parent handling is adjusted accordingly.</p></li>
+</ul>
+<p>The end result is still a plain <code class="docutils literal notranslate"><span class="pre">NodePayload::Actor</span></code>, so the client sees a normal actor node.</p>
+</section>
+</section>
+<section id="why-querychild-matters-so-much">
+<h2>Why <code class="docutils literal notranslate"><span class="pre">QueryChild</span></code> matters so much<a class="headerlink" href="#why-querychild-matters-so-much" title="Link to this heading">#</a></h2>
+<p>The reference API would be awkward without <code class="docutils literal notranslate"><span class="pre">QueryChild</span></code>.</p>
+<p>The admin layer needs answers to questions like:</p>
+<ul class="simple">
+<li><p>“tell me about proc <code class="docutils literal notranslate"><span class="pre">P</span></code> under host <code class="docutils literal notranslate"><span class="pre">H</span></code>”,</p></li>
+<li><p>“tell me about recently terminated actor <code class="docutils literal notranslate"><span class="pre">A</span></code> on proc <code class="docutils literal notranslate"><span class="pre">P</span></code>”,</p></li>
+<li><p>“enumerate the children of this system proc even though it is not a user proc with its own agent path”.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">QueryChild</span></code> is the escape hatch that lets a parent-ish actor answer these structural questions even when the child is synthetic, recently terminated, or otherwise not a normal live actor lookup.</p>
+<p>That is why both <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> and <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> install <code class="docutils literal notranslate"><span class="pre">set_query_child_handler(...)</span></code> callbacks during <code class="docutils literal notranslate"><span class="pre">init</span></code>.</p>
+<p>Without those handlers, the admin layer could still introspect live actors directly, but proc-level navigation would be much poorer and much more special-cased.</p>
+</section>
+<section id="the-http-layer-is-deliberately-thin">
+<h2>The HTTP layer is deliberately thin<a class="headerlink" href="#the-http-layer-is-deliberately-thin" title="Link to this heading">#</a></h2>
+<p>The mesh admin HTTP server is not where the topology logic lives.</p>
+<p><code class="docutils literal notranslate"><span class="pre">MeshAdminAgent::init()</span></code>:</p>
+<ul class="simple">
+<li><p>binds its ports,</p></li>
+<li><p>binds a TCP listener,</p></li>
+<li><p>configures TLS/mTLS,</p></li>
+<li><p>creates a dedicated bridge <code class="docutils literal notranslate"><span class="pre">Instance&lt;()&gt;</span></code> mailbox,</p></li>
+<li><p>starts an Axum server in the background.</p></li>
+</ul>
+<p>The important detail is the <strong>bridge instance</strong>. The HTTP handlers do not share <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code>’s own actor mailbox. Instead they use a dedicated introspectable client mailbox so they can:</p>
+<ul class="simple">
+<li><p>open reply ports,</p></li>
+<li><p>send <code class="docutils literal notranslate"><span class="pre">ResolveReferenceMessage</span></code>, <code class="docutils literal notranslate"><span class="pre">PySpyDump</span></code>, and <code class="docutils literal notranslate"><span class="pre">ConfigDump</span></code>,</p></li>
+<li><p>await responses on Tokio tasks without hijacking the admin actor’s own message loop.</p></li>
+</ul>
+<p>So the HTTP server is really an actor-message bridge:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>HTTP request
+  -&gt; Axum handler
+  -&gt; actor message / oneshot reply port
+  -&gt; MeshAdminAgent / HostAgent / ProcAgent / target actor
+  -&gt; response
+</pre></div>
+</div>
+<p>The core routes today are:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/schema</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/schema/error</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/openapi.json</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/tree</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/config/{proc_reference}</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/pyspy/{proc_reference}</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/{reference}</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/SKILL.md</span></code></p></li>
+</ul>
+<p>The navigation route the TUI cares about is <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/{reference}</span></code>.</p>
+</section>
+<section id="the-tui-is-a-lazy-reference-walker">
+<h2>The TUI is a lazy reference walker<a class="headerlink" href="#the-tui-is-a-lazy-reference-walker" title="Link to this heading">#</a></h2>
+<p>The admin TUI is intentionally not a “push the whole mesh over HTTP” client. It is a <strong>lazy tree walker</strong>.</p>
+<p>Its core fetch path is in <code class="docutils literal notranslate"><span class="pre">fetch.rs</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">fetch_node_raw(client,</span> <span class="pre">base_url,</span> <span class="pre">reference)</span></code> issues <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/{urlencode(reference)}</span></code>,</p></li>
+<li><p>results are cached as <code class="docutils literal notranslate"><span class="pre">FetchState&lt;NodePayload&gt;</span></code>,</p></li>
+<li><p>cache updates go through <code class="docutils literal notranslate"><span class="pre">fetch_with_join</span></code>,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">build_tree_node(...)</span></code> recursively builds the visible tree from cached payloads and follow-up fetches.</p></li>
+</ul>
+<p>Two details matter when reading the TUI after time away:</p>
+<section id="it-is-reference-driven-not-type-driven">
+<h3>1. It is reference-driven, not type-driven<a class="headerlink" href="#it-is-reference-driven-not-type-driven" title="Link to this heading">#</a></h3>
+<p>The TUI does not infer topology from local heuristics. It trusts:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">identity</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">parent</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">children</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">properties</span></code></p></li>
+</ul>
+<p>That is why the navigation identity invariants in <code class="docutils literal notranslate"><span class="pre">mesh_admin.rs</span></code> matter so much: if <code class="docutils literal notranslate"><span class="pre">identity</span></code> and <code class="docutils literal notranslate"><span class="pre">parent</span></code> are wrong, the TUI cannot keep its tree coherent.</p>
+</section>
+<section id="it-is-lazy">
+<h3>2. It is lazy<a class="headerlink" href="#it-is-lazy" title="Link to this heading">#</a></h3>
+<p>Proc and actor children are fetched when the user expands into them, not preloaded wholesale.</p>
+<p>That is why the TUI code talks so much about:</p>
+<ul class="simple">
+<li><p>explicit tree recursion,</p></li>
+<li><p>placeholders,</p></li>
+<li><p>refresh generations,</p></li>
+<li><p>join semantics,</p></li>
+<li><p>cycle safety.</p></li>
+</ul>
+<p>The TUI is not a mirror of server state. It is a cached, incrementally refreshed projection of the reference graph.</p>
+</section>
+</section>
+<section id="proc-oriented-side-endpoints">
+<h2>Proc-oriented side endpoints<a class="headerlink" href="#proc-oriented-side-endpoints" title="Link to this heading">#</a></h2>
+<p>The TUI also uses two proc-oriented endpoints:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/pyspy/{proc_reference}</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/config/{proc_reference}</span></code></p></li>
+</ul>
+<p>These are intentionally <strong>not</strong> general reference-resolution endpoints. They require a proc reference because the server needs to decide whether to route the request to:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> for the service proc,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code> for non-service procs.</p></li>
+</ul>
+<p>For py-spy, the flow is:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>HTTP /v1/pyspy/{proc}
+  -&gt; choose HostAgent or ProcAgent by proc name
+  -&gt; probe reachability
+  -&gt; send PySpyDump
+  -&gt; ProcAgent/HostAgent delegates to PySpyWorker
+  -&gt; return structured PySpyResult
+</pre></div>
+</div>
+<p>For config dump, the flow is analogous but simpler: send <code class="docutils literal notranslate"><span class="pre">ConfigDump</span></code> and await <code class="docutils literal notranslate"><span class="pre">ConfigDumpResult</span></code>.</p>
+<p>These side endpoints are separate because they are operations on a proc, not tree navigation over <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code>.</p>
+</section>
+<section id="why-this-design-is-nice-to-work-with">
+<h2>Why this design is nice to work with<a class="headerlink" href="#why-this-design-is-nice-to-work-with" title="Link to this heading">#</a></h2>
+<p>Three properties make this subsystem easier to reason about than it first appears.</p>
+<section id="uniform-api-shape">
+<h3>1. Uniform API shape<a class="headerlink" href="#uniform-api-shape" title="Link to this heading">#</a></h3>
+<p>Everything navigational becomes “resolve a reference to <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code>”. The client never has to switch protocols as it moves from host to proc to actor.</p>
+</section>
+<section id="topology-knowledge-stays-server-side">
+<h3>2. Topology knowledge stays server-side<a class="headerlink" href="#topology-knowledge-stays-server-side" title="Link to this heading">#</a></h3>
+<p>The client does not need to know:</p>
+<ul class="simple">
+<li><p>which procs are system procs,</p></li>
+<li><p>which proc is answered by <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> versus <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code>,</p></li>
+<li><p>how terminated actor snapshots are recovered,</p></li>
+<li><p>how parent/identity normalization is done.</p></li>
+</ul>
+<p>That logic sits in <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code>, <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code>, and <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code>.</p>
+</section>
+<section id="it-reuses-the-actor-system-instead-of-bypassing-it">
+<h3>3. It reuses the actor system instead of bypassing it<a class="headerlink" href="#it-reuses-the-actor-system-instead-of-bypassing-it" title="Link to this heading">#</a></h3>
+<p>The HTTP surface is not a side database or a separate control plane. It is a projection built by sending actor messages through the same routing model the mesh already uses.</p>
+<p>That is why the docs keep emphasizing “if you can send it a message, you can introspect it.”</p>
+</section>
+</section>
+<section id="practical-reading-order-in-the-code">
+<h2>Practical reading order in the code<a class="headerlink" href="#practical-reading-order-in-the-code" title="Link to this heading">#</a></h2>
+<p>When you need to page this back in after a few days, read in this order:</p>
+<ol class="arabic simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/introspect.rs</span></code>
+This gives you the attrs keys, <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code>, <code class="docutils literal notranslate"><span class="pre">NodeProperties</span></code>, and the decode rules.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/mesh_admin.rs</span></code>
+This gives you the reference resolver, the router, and the HTTP bridge.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/host_mesh/host_agent.rs</span></code>
+This shows how host nodes and system/local proc nodes are synthesized.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/proc_agent.rs</span></code>
+This shows how user proc nodes, terminated snapshots, py-spy, and config dump work.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">hyperactor_mesh_admin_tui/src/fetch.rs</span></code> and <code class="docutils literal notranslate"><span class="pre">.../src/lib.rs</span></code>
+This shows how the TUI lazily walks the reference graph and turns responses into a visible tree.</p></li>
+</ol>
+<p>That sequence maps cleanly onto the runtime layering:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>attrs -&gt; NodePayload -&gt; resolve reference -&gt; HTTP bridge -&gt; TUI walker
+</pre></div>
+</div>
+</section>
+<section id="a-compact-end-to-end-call-flow">
+<h2>A compact end-to-end call flow<a class="headerlink" href="#a-compact-end-to-end-call-flow" title="Link to this heading">#</a></h2>
+<p>This is the full “what happens when I expand a node in the TUI?” summary:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>TUI
+  -&gt; GET /v1/{reference}
+  -&gt; resolve_reference_bridge
+  -&gt; MeshAdminAgent::resolve_reference
+      root       -&gt; build_root_payload
+      host ref   -&gt; HostAgent introspect query
+      proc ref   -&gt; HostAgent QueryChild, else ProcAgent QueryChild
+      actor ref  -&gt; direct actor introspect query, maybe via terminated snapshot
+  -&gt; IntrospectResult / attrs
+  -&gt; derive_properties -&gt; NodeProperties
+  -&gt; NodePayload
+  -&gt; TUI cache / tree builder
+  -&gt; visible row in the tree
+</pre></div>
+</div>
+<p>That is the subsystem in one page.</p>
+</section>
+</section>
+
+
+                </article>
+              
+</div>
+
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-data-model-nodepayload">The data model: <code class="docutils literal notranslate"><span class="pre">NodePayload</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-mental-model-what-is-actually-introspectable">The mental model: what is actually introspectable?</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#who-provides-what">Who provides what</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#meshadminagent-mesh-wide-resolver-and-http-bridge-target">1. <code class="docutils literal notranslate"><span class="pre">MeshAdminAgent</span></code>: mesh-wide resolver and HTTP bridge target</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hostagent-host-nodes-and-system-local-proc-resolution">2. <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code>: host nodes and system/local proc resolution</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#procagent-user-proc-nodes-terminated-snapshots-proc-local-services">3. <code class="docutils literal notranslate"><span class="pre">ProcAgent</span></code>: user proc nodes, terminated snapshots, proc-local services</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-a-normal-tree-walk-works">How a normal tree walk works</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#step-1-root">Step 1: root</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#step-2-host">Step 2: host</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#step-3-proc">Step 3: proc</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#step-4-actor">Step 4: actor</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-querychild-matters-so-much">Why <code class="docutils literal notranslate"><span class="pre">QueryChild</span></code> matters so much</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-http-layer-is-deliberately-thin">The HTTP layer is deliberately thin</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-tui-is-a-lazy-reference-walker">The TUI is a lazy reference walker</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#it-is-reference-driven-not-type-driven">1. It is reference-driven, not type-driven</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#it-is-lazy">2. It is lazy</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#proc-oriented-side-endpoints">Proc-oriented side endpoints</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-this-design-is-nice-to-work-with">Why this design is nice to work with</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#uniform-api-shape">1. Uniform API shape</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#topology-knowledge-stays-server-side">2. Topology knowledge stays server-side</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#it-reuses-the-actor-system-instead-of-bypassing-it">3. It reuses the actor system instead of bypassing it</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#practical-reading-order-in-the-code">Practical reading order in the code</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#a-compact-end-to-end-call-flow">A compact end-to-end call flow</a></li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-mesh-book/src/meshes/mesh-introspection-and-admin.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-mesh-book/src/meshes/mesh-introspection-and-admin.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper" data-nosnippet>
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
+    <button class="close-button" aria-label="Close cookie banner"></button>
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Mesh introspection \u0026 mesh-admin",
+       "headline": "Mesh introspection \u0026 mesh-admin",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
+       "url": "/books/hyperactor-mesh-book/src/meshes/mesh-introspection-and-admin.html",
+       "articleBody": "Mesh introspection \u0026 mesh-admin# This chapter is the \u201cpage me back in\u201d overview of how mesh introspection works and how the mesh admin TUI sits on top of it. The short version is: the mesh exposes a reference-walking API, every successful lookup returns a uniform NodePayload, MeshAdminAgent is the mesh-wide resolver and HTTP bridge, HostAgent and ProcAgent provide the proc-level and host-level facts, ordinary actors provide their own actor-level introspection through the blanket IntrospectMessage handler, and the TUI is \u201cjust\u201d a lazy client of GET /v1/{reference} plus a couple of proc-oriented side endpoints. If you remember only one idea, remember this one: root -\u003e host refs -\u003e proc refs -\u003e actor refs The TUI does not have privileged topology knowledge. It starts at root, follows children, and asks the server to resolve whatever opaque reference string it was given next. The data model: NodePayload# The entire mesh-admin surface is built around one response type: pub struct NodePayload { pub identity: String, pub properties: NodeProperties, pub children: Vec\u003cString\u003e, pub parent: Option\u003cString\u003e, pub as_of: String, } This is the key simplification. Clients do not get separate \u201chost response\u201d, \u201cproc response\u201d, and \u201cactor response\u201d endpoints with different shapes. Instead they always ask for \u201cresolve this reference\u201d and receive: identity: the canonical reference string for this node, properties: one of Root, Host, Proc, Actor, or Error, children: the next reference strings the client can walk, parent: a navigation hint for upward movement, as_of: when the data was captured. NodeProperties is the typed payload: Root is synthetic and records high-level mesh metadata, Host describes a HostAgent and its proc children, Proc describes a proc node and its actor children, Actor describes an individual actor instance, Error is the sentinel shape used when resolution/decode fails in a controlled way. The introspect module is the translation layer. Internally the runtime produces IntrospectResult { attrs, children, ... }; derive_properties decodes attrs into NodeProperties; to_node_payload wraps that into the API shape. So the stack is: published attrs / IntrospectResult -\u003e derive_properties(...) -\u003e NodeProperties -\u003e NodePayload The mental model: what is actually introspectable?# The runtime rule is not \u201ceverything that exists is visible.\u201d The rule is \u201ceverything the routing layer can actually reach via actor messaging is visible.\u201d That is why the module docs talk about routable, introspectable, and opaque nodes: if an actor can receive IntrospectMessage, it is introspectable, if a proc has at least one such actor, the admin layer can synthesize a proc node for it, infrastructure pieces with no routable mailbox sender are intentionally opaque and do not appear as first-class nodes. This explains two important design choices: procs are mostly synthetic nodes assembled from agent knowledge rather than directly introspected runtime objects; the admin tree is a navigation projection of what the routing layer can actually observe, not a dump of every implementation detail in the process. Who provides what# There are three layers involved in a normal lookup. 1. MeshAdminAgent: mesh-wide resolver and HTTP bridge target# MeshAdminAgent owns: the map of host address -\u003e ActorRef\u003cHostAgent\u003e, the reverse map of HostAgent ActorId -\u003e host address, the synthetic root node, the ResolveReferenceMessage handler, the background Axum server started from init. It does not directly know every actor in the mesh. Instead it is the orchestrator that decides which downstream actor to ask next. The core resolver is: resolve_reference(reference_string) \"root\" -\u003e build_root_payload() \"host:\u003cactor_id\u003e\" -\u003e resolve_host_node(...) ProcId -\u003e resolve_proc_node(...) ActorId -\u003e resolve_actor_node(...) So MeshAdminAgent is the place where opaque references become typed navigation. 2. HostAgent: host nodes and system/local proc resolution# HostAgent publishes host attrs such as: node_type = \"host\" addr num_procs children system_children More importantly, in init it registers a QueryChild callback for proc references that are not independently represented by a user ProcAgent path, notably: the service proc, the local proc. That callback synthesizes a proc-level IntrospectResult for those system procs by enumerating actors in the proc and marking which are system actors. So if MeshAdminAgent asks a HostAgent \u201ctell me about this proc child\u201d, the host can answer directly for system/local procs. 3. ProcAgent: user proc nodes, terminated snapshots, proc-local services# ProcAgent does the corresponding job for user procs. It publishes proc attrs such as: node_type = \"proc\" proc_name num_actors system_children stopped_children stopped_retention_cap is_poisoned failed_actor_count In init it also registers a QueryChild callback with two especially important behaviors: QueryChild(Reference::Proc(proc_id)) builds a fresh proc node from live proc state, not from stale published snapshots. This is why a directly spawned actor can appear in the next admin query without waiting for a separate republish path. QueryChild(Reference::Actor(actor_id)) can return a terminated snapshot for dead actors, which lets the admin UI continue to resolve recently stopped actors by reference. ProcAgent is also where the proc-oriented side services live today: PySpyDump is handled by delegating to a one-shot PySpyWorker, ConfigDump returns current CONFIG-marked settings for the proc. How a normal tree walk works# The runtime walk that underlies the TUI looks like this. Step 1: root# The client asks for root. MeshAdminAgent::build_root_payload() returns a synthetic node whose children are host references: root children = [\"host:\u003chost_agent_actor_id_0\u003e\", \"host:\u003chost_agent_actor_id_1\u003e\", ...] The root is not a real actor or proc. It is purely a navigation anchor. Step 2: host# The client picks a host child and resolves it. MeshAdminAgent::resolve_host_node() sends IntrospectMessage::Query(Entity) directly to that HostAgent and converts the returned attrs/children into NodePayload. At that point the client sees: host metadata, system and user proc references under that host. Step 3: proc# The client picks a proc child and resolves it. MeshAdminAgent::resolve_proc_node() does a two-stage attempt: ask the owning HostAgent via QueryChild(Reference::Proc(proc_id)), if that comes back as an error payload, fall back to the proc\u2019s proc_agent[0]. Why the two stages? service/local/system procs are host-managed and answered by HostAgent, user procs are answered by ProcAgent, the client does not need to know the difference. That is a recurring theme in this subsystem: the server hides topology quirks behind a single reference API. Step 4: actor# The client picks an actor child and resolves it. MeshAdminAgent::resolve_actor_node() usually sends IntrospectMessage::Query(Actor) directly to that actor\u2019s introspection port. There are some important special cases: if the actor being resolved is the admin actor itself, the agent snapshots itself directly to avoid self-deadlock; before querying a live user actor, it checks for a terminated snapshot via the proc agent, so recently dead actors remain queryable; if the actor lives on a standalone proc, parent handling is adjusted accordingly. The end result is still a plain NodePayload::Actor, so the client sees a normal actor node. Why QueryChild matters so much# The reference API would be awkward without QueryChild. The admin layer needs answers to questions like: \u201ctell me about proc P under host H\u201d, \u201ctell me about recently terminated actor A on proc P\u201d, \u201cenumerate the children of this system proc even though it is not a user proc with its own agent path\u201d. QueryChild is the escape hatch that lets a parent-ish actor answer these structural questions even when the child is synthetic, recently terminated, or otherwise not a normal live actor lookup. That is why both HostAgent and ProcAgent install set_query_child_handler(...) callbacks during init. Without those handlers, the admin layer could still introspect live actors directly, but proc-level navigation would be much poorer and much more special-cased. The HTTP layer is deliberately thin# The mesh admin HTTP server is not where the topology logic lives. MeshAdminAgent::init(): binds its ports, binds a TCP listener, configures TLS/mTLS, creates a dedicated bridge Instance\u003c()\u003e mailbox, starts an Axum server in the background. The important detail is the bridge instance. The HTTP handlers do not share MeshAdminAgent\u2019s own actor mailbox. Instead they use a dedicated introspectable client mailbox so they can: open reply ports, send ResolveReferenceMessage, PySpyDump, and ConfigDump, await responses on Tokio tasks without hijacking the admin actor\u2019s own message loop. So the HTTP server is really an actor-message bridge: HTTP request -\u003e Axum handler -\u003e actor message / oneshot reply port -\u003e MeshAdminAgent / HostAgent / ProcAgent / target actor -\u003e response The core routes today are: GET /v1/schema GET /v1/schema/error GET /v1/openapi.json GET /v1/tree GET /v1/config/{proc_reference} GET /v1/pyspy/{proc_reference} GET /v1/{reference} GET /SKILL.md The navigation route the TUI cares about is GET /v1/{reference}. The TUI is a lazy reference walker# The admin TUI is intentionally not a \u201cpush the whole mesh over HTTP\u201d client. It is a lazy tree walker. Its core fetch path is in fetch.rs: fetch_node_raw(client, base_url, reference) issues GET /v1/{urlencode(reference)}, results are cached as FetchState\u003cNodePayload\u003e, cache updates go through fetch_with_join, build_tree_node(...) recursively builds the visible tree from cached payloads and follow-up fetches. Two details matter when reading the TUI after time away: 1. It is reference-driven, not type-driven# The TUI does not infer topology from local heuristics. It trusts: identity parent children properties That is why the navigation identity invariants in mesh_admin.rs matter so much: if identity and parent are wrong, the TUI cannot keep its tree coherent. 2. It is lazy# Proc and actor children are fetched when the user expands into them, not preloaded wholesale. That is why the TUI code talks so much about: explicit tree recursion, placeholders, refresh generations, join semantics, cycle safety. The TUI is not a mirror of server state. It is a cached, incrementally refreshed projection of the reference graph. Proc-oriented side endpoints# The TUI also uses two proc-oriented endpoints: GET /v1/pyspy/{proc_reference} GET /v1/config/{proc_reference} These are intentionally not general reference-resolution endpoints. They require a proc reference because the server needs to decide whether to route the request to: HostAgent for the service proc, ProcAgent for non-service procs. For py-spy, the flow is: HTTP /v1/pyspy/{proc} -\u003e choose HostAgent or ProcAgent by proc name -\u003e probe reachability -\u003e send PySpyDump -\u003e ProcAgent/HostAgent delegates to PySpyWorker -\u003e return structured PySpyResult For config dump, the flow is analogous but simpler: send ConfigDump and await ConfigDumpResult. These side endpoints are separate because they are operations on a proc, not tree navigation over NodePayload. Why this design is nice to work with# Three properties make this subsystem easier to reason about than it first appears. 1. Uniform API shape# Everything navigational becomes \u201cresolve a reference to NodePayload\u201d. The client never has to switch protocols as it moves from host to proc to actor. 2. Topology knowledge stays server-side# The client does not need to know: which procs are system procs, which proc is answered by HostAgent versus ProcAgent, how terminated actor snapshots are recovered, how parent/identity normalization is done. That logic sits in MeshAdminAgent, HostAgent, and ProcAgent. 3. It reuses the actor system instead of bypassing it# The HTTP surface is not a side database or a separate control plane. It is a projection built by sending actor messages through the same routing model the mesh already uses. That is why the docs keep emphasizing \u201cif you can send it a message, you can introspect it.\u201d Practical reading order in the code# When you need to page this back in after a few days, read in this order: hyperactor_mesh/src/introspect.rs This gives you the attrs keys, NodePayload, NodeProperties, and the decode rules. hyperactor_mesh/src/mesh_admin.rs This gives you the reference resolver, the router, and the HTTP bridge. hyperactor_mesh/src/host_mesh/host_agent.rs This shows how host nodes and system/local proc nodes are synthesized. hyperactor_mesh/src/proc_agent.rs This shows how user proc nodes, terminated snapshots, py-spy, and config dump work. hyperactor_mesh_admin_tui/src/fetch.rs and .../src/lib.rs This shows how the TUI lazily walks the reference graph and turns responses into a visible tree. That sequence maps cleanly onto the runtime layering: attrs -\u003e NodePayload -\u003e resolve reference -\u003e HTTP bridge -\u003e TUI walker A compact end-to-end call flow# This is the full \u201cwhat happens when I expand a node in the TUI?\u201d summary: TUI -\u003e GET /v1/{reference} -\u003e resolve_reference_bridge -\u003e MeshAdminAgent::resolve_reference root -\u003e build_root_payload host ref -\u003e HostAgent introspect query proc ref -\u003e HostAgent QueryChild, else ProcAgent QueryChild actor ref -\u003e direct actor introspect query, maybe via terminated snapshot -\u003e IntrospectResult / attrs -\u003e derive_properties -\u003e NodeProperties -\u003e NodePayload -\u003e TUI cache / tree builder -\u003e visible row in the tree That is the subsystem in one page.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-mesh-book/src/meshes/mesh-introspection-and-admin.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

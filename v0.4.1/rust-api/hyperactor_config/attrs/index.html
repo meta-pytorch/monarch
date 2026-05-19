@@ -1,0 +1,73 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Attribute dictionary for type-safe, heterogeneous key-value storage with serde support."><title>hyperactor_config::attrs - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_config" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module attrs</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor_config/index.html">hyperactor_<wbr>config</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module attrs</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#basic-usage" title="Basic Usage">Basic Usage</a></li><li><a href="#serialization" title="Serialization">Serialization</a><ul><li><a href="#meta-attributes" title="Meta attributes">Meta attributes</a></li></ul></li></ul><h3><a href="#macros">Module Items</a></h3><ul class="block"><li><a href="#macros" title="Macros">Macros</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#traits" title="Traits">Traits</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate hyperactor_<wbr>config</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor_config</a></div><h1>Module <span>attrs</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor_config/attrs.rs.html#9-1452">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Attribute dictionary for type-safe, heterogeneous key-value storage with serde support.</p>
+<p>This module provides <code>Attrs</code>, a type-safe dictionary that can store heterogeneous values
+and serialize/deserialize them using serde. All stored values must implement
+<code>AttrValue</code> to ensure the entire dictionary can be serialized.</p>
+<p>Keys are automatically registered at compile time using the <code>declare_attrs!</code> macro and the
+inventory crate, eliminating the need for manual registry management.</p>
+<h2 id="basic-usage"><a class="doc-anchor" href="#basic-usage">§</a>Basic Usage</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>std::time::Duration;
+
+<span class="kw">use </span>hyperactor_config::attrs::Attrs;
+<span class="kw">use </span>hyperactor_config::attrs::declare_attrs;
+
+<span class="comment">// Declare keys with their associated types
+</span><span class="macro">declare_attrs!</span> {
+   <span class="doccomment">/// Request timeout
+   </span>attr TIMEOUT: Duration;
+
+  <span class="doccomment">/// Maximum retry count
+  </span>attr MAX_RETRIES: u32 = <span class="number">3</span>;  <span class="comment">// with default value
+</span>}
+
+<span class="kw">let </span><span class="kw-2">mut </span>attrs = Attrs::new();
+attrs.set(TIMEOUT, Duration::from_secs(<span class="number">30</span>));
+
+<span class="macro">assert_eq!</span>(attrs.get(TIMEOUT), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>Duration::from_secs(<span class="number">30</span>)));
+<span class="macro">assert_eq!</span>(attrs.get(MAX_RETRIES), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">3</span>));</code></pre></div><h2 id="serialization"><a class="doc-anchor" href="#serialization">§</a>Serialization</h2>
+<p><code>Attrs</code> can be serialized to and deserialized automatically:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>std::time::Duration;
+
+<span class="kw">use </span>hyperactor_config::attrs::Attrs;
+<span class="kw">use </span>hyperactor_config::attrs::declare_attrs;
+
+<span class="macro">declare_attrs!</span> {
+  <span class="doccomment">/// Request timeout
+  </span><span class="kw">pub </span>attr TIMEOUT: Duration;
+}
+
+<span class="kw">let </span><span class="kw-2">mut </span>attrs = Attrs::new();
+attrs.set(TIMEOUT, Duration::from_secs(<span class="number">30</span>));
+
+<span class="comment">// Serialize to JSON
+</span><span class="kw">let </span>json = serde_json::to_string(<span class="kw-2">&amp;</span>attrs).unwrap();
+
+<span class="comment">// Deserialize from JSON (no manual registry needed!)
+</span><span class="kw">let </span>deserialized: Attrs = serde_json::from_str(<span class="kw-2">&amp;</span>json).unwrap();
+
+<span class="macro">assert_eq!</span>(deserialized.get(TIMEOUT), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>Duration::from_secs(<span class="number">30</span>)));</code></pre></div><h3 id="meta-attributes"><a class="doc-anchor" href="#meta-attributes">§</a>Meta attributes</h3>
+<p>An attribute can be assigned a set of attribute values,
+associated with the attribute key. These are specified by
+@-annotations in the <code>declare_attrs!</code> macro:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>std::time::Duration;
+
+<span class="kw">use </span>hyperactor_config::attrs::Attrs;
+<span class="kw">use </span>hyperactor_config::attrs::declare_attrs;
+
+<span class="macro">declare_attrs!</span> {
+  <span class="doccomment">/// Is experimental?
+  </span><span class="kw">pub </span>attr EXPERIMENTAL: bool;
+
+  <span class="doccomment">/// Request timeout
+  </span>@meta(EXPERIMENTAL = <span class="bool-val">true</span>)
+  <span class="kw">pub </span>attr TIMEOUT: Duration;
+}
+
+<span class="macro">assert!</span>(TIMEOUT.attrs().get(EXPERIMENTAL).unwrap());</code></pre></div>
+<p>Meta attributes can be used to provide more generic functionality
+on top of the basic attributes. For example, a library can use
+meta-attributes to specify the behavior of an attribute.</p>
+</div></details><h2 id="macros" class="section-header">Macros<a href="#macros" class="anchor">§</a></h2><dl class="item-table"><dt><a class="macro" href="macro.declare_attrs.html" title="macro hyperactor_config::attrs::declare_attrs">declare_<wbr>attrs</a></dt><dd>Declares attribute keys using a lazy_static! style syntax.</dd></dl><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Attrs.html" title="struct hyperactor_config::attrs::Attrs">Attrs</a></dt><dd>A heterogeneous, strongly-typed attribute dictionary with serialization support.</dd><dt><a class="struct" href="struct.Key.html" title="struct hyperactor_config::attrs::Key">Key</a></dt><dd>A typed key for the attribute dictionary.</dd></dl><h2 id="traits" class="section-header">Traits<a href="#traits" class="anchor">§</a></h2><dl class="item-table"><dt><a class="trait" href="trait.AttrValue.html" title="trait hyperactor_config::attrs::AttrValue">Attr<wbr>Value</a></dt><dd>This trait must be implemented by all attribute values. In addition to enforcing
+the supertrait <code>Named + Sized + Serialize + DeserializeOwned + Send + Sync + Clone</code>,
+<code>AttrValue</code> requires that the type be representable in “display” format.</dd><dt><a class="trait" href="trait.ErasedKey.html" title="trait hyperactor_config::attrs::ErasedKey">Erased<wbr>Key</a></dt><dd>A trait for type-erased keys.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.fnv1a_hash.html" title="fn hyperactor_config::attrs::fnv1a_hash">fnv1a_<wbr>hash</a></dt><dd>Compute FNV-1a hash of a byte slice (const-compatible).</dd><dt><a class="fn" href="fn.lookup_key_info.html" title="fn hyperactor_config::attrs::lookup_key_info">lookup_<wbr>key_<wbr>info</a></dt><dd>Look up a key info by its hash using the global registry.</dd></dl></section></div></main></body></html>

@@ -25,7 +25,7 @@ To anchor that discussion, here is the essential shape of the agent:
 ```
 pub struct ProcAgent {
  proc: Proc, // local actor runtime
- remote: Remote, // registry of SpawnableActor entries (built from RemoteSpawn + remote!(...))
+ remote: Remote, // registry of SpawnableActor entries (built from RemoteSpawn + spawnable registration)
  state: State, // v0/v1 bootstrapping mode
  actor_states: HashMap<Name, ActorInstanceState>, // per-actor spawn results & metadata
  record_supervision_events: bool,
@@ -34,7 +34,7 @@ pub struct ProcAgent {
 ```
 
 - **`proc: Proc`** The proc-local runtime into which new actors will be installed
-- **`remote: Remote`** A snapshot of the process-local registry of `SpawnableActor` entries (populated from `RemoteSpawn` impls via `remote!(A)`). This is the bridge between *global type names* and the actual constructors used by `Remote::gspawn`.
+- **`remote: Remote`** A snapshot of the process-local registry of `SpawnableActor` entries (populated from `RemoteSpawn` impls via `#[spawnable]` or `register_spawnable!(A)`). This is the bridge between *global type names* and the actual constructors used by `Remote::gspawn`.
 - **`actor_states`** The agent's bookkeeping: for each actor name in the mesh, what happened when this proc tried to spawn it.
 
 The sections that follow walk the spawn flow end-to-end. Additional responsibilities (status, supervision, teardown) will be documented after the spawn discussion.
@@ -82,7 +82,7 @@ impl ProcMeshRef {
  A::Params: RemoteMessage,
  {
  let remote = Remote::collect();
- // `RemoteSpawn` + `remote!(A)` ensure that `A` has a
+ // `RemoteSpawn` + spawnable registration ensure that `A` has a
  // `SpawnableActor` entry in this registry, so
  // `name_of::<A>()` can resolve its global type name.
  let actor_type = remote
@@ -124,11 +124,11 @@ let actor_type = remote
 
 This is the point where the *type-level* contract kicks in:
 
-- elsewhere, the user has written `remote!(MyActor)` for each `A: RemoteSpawn`,
+- elsewhere, the user has marked each concrete actor as `#[spawnable]` or called `register_spawnable!(MyActor)`,
 - that registration adds a `SpawnableActor` entry to the `Remote` registry,
 - `Remote::name_of::<A>()` looks up that entry and reads its **global type name**.
 
-If `A` was never registered with `remote!(A)`, this call fails with `ActorTypeNotRegistered`, and the spawn never leaves the caller's process.
+If `A` was never registered with `#[spawnable]` or `register_spawnable!(A)`, this call fails with `ActorTypeNotRegistered`, and the spawn never leaves the caller's process.
 2. **Serialize the spawn parameters**
 
 ```
@@ -258,7 +258,7 @@ This is the core of v1 spawning. The agent:
 
 - unpacks the `ActorSpec` (type name + parameter bytes), and
 - passes those pieces into `remote.gspawn(...)` to construct the local actor.
-- `actor_type: String` - the logical type name registered by `remote!(A)`, computed in `ProcMeshRef::spawn_with_name_inner` via `remote.name_of::<A>()`, and used by `Remote::gspawn` on each proc to find the right constructor.
+- `actor_type: String` - the logical type name registered by `#[spawnable]` or `register_spawnable!(A)`, computed in `ProcMeshRef::spawn_with_name_inner` via `remote.name_of::<A>()`, and used by `Remote::gspawn` on each proc to find the right constructor.
 - `params_data: Data` A raw byte buffer containing serialized `A::Params` (via `bincode::serialize`).
 - `self.remote.gspawn(...)` This method looks up the `SpawnableActor` entry for `actor_type` in the local `Remote` registry then invoks:
 

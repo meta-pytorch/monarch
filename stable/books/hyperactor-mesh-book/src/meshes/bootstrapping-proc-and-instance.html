@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="We begin in a process that can already run hyperactor code and create an instance: This gives us a proc + mailbox we can use to tell the mesh to do things. That’s two separate things happening, so ..." />
 
-    <title>§1 Proc and Instance (start from a Proc you control) &#8212; Monarch v0.4.1 documentation</title>
+    <title>§1 Proc and Instance (start from a Proc you control) &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/bootstrapping-proc-and-instance.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -960,6 +972,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1273,7 +1297,7 @@ document.write(`
 <p>We begin in a process that can already run hyperactor code and create an instance:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">direct</span><span class="p">(</span><span class="n">ChannelTransport</span><span class="p">::</span><span class="n">Unix</span><span class="p">.</span><span class="n">any</span><span class="p">(),</span><span class="w"> </span><span class="s">&quot;root&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">())</span>
 <span class="w">    </span><span class="p">.</span><span class="n">unwrap</span><span class="p">();</span>
-<span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="n">_handle</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">instance</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">).</span><span class="n">unwrap</span><span class="p">();</span>
+<span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="n">_handle</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">client</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">).</span><span class="n">unwrap</span><span class="p">();</span>
 </pre></div>
 </div>
 <p>This gives us a proc + mailbox we can use to tell the mesh to do things. That’s two separate things happening, so let’s spell them out.</p>
@@ -1289,8 +1313,8 @@ It calls <code class="docutils literal notranslate"><span class="pre">channel::s
 <li><p>a receiver for incoming messages.</p></li>
 </ul>
 </li>
-<li><p><strong>Name the proc</strong>
-It builds a <code class="docutils literal notranslate"><span class="pre">ProcId::unique(bound_addr,</span> <span class="pre">name)</span></code>. That’s just how this proc identifies itself to the rest of the world: “I am this channel, and my human-ish name is <code class="docutils literal notranslate"><span class="pre">root</span></code>.”</p></li>
+<li><p><strong>Assign the proc identity and location</strong>
+It builds a <code class="docutils literal notranslate"><span class="pre">ProcAddr::instance(bound_addr,</span> <span class="pre">name)</span></code>. The proc id is a fresh instance uid with <code class="docutils literal notranslate"><span class="pre">name</span></code> as display metadata; the bound channel address is the proc’s advertised location.</p></li>
 <li><p><strong>Create a proc with a dial-able forwarder</strong>
 It does <code class="docutils literal notranslate"><span class="pre">Proc::configured(proc_id,</span> <span class="pre">DialMailboxRouter::new().into_boxed())</span></code>. That “dial mailbox router” is the bit that lets this proc send to other procs later — it knows how to connect out.</p></li>
 <li><p><strong>Hook the incoming channel into the proc</strong>
@@ -1300,17 +1324,17 @@ It calls <code class="docutils literal notranslate"><span class="pre">proc.clone
 <p><strong>Why we start with this:</strong> it’s the simplest shape — “one OS process, one hyperactor proc, reachable on a real address.”</p>
 </section>
 </section>
-<section id="what-proc-instance-client-does">
-<h1>1.2 What <code class="docutils literal notranslate"><span class="pre">proc.instance(&quot;client&quot;)</span></code> does<a class="headerlink" href="#what-proc-instance-client-does" title="Link to this heading">#</a></h1>
+<section id="what-proc-client-client-does">
+<h1>1.2 What <code class="docutils literal notranslate"><span class="pre">proc.client(&quot;client&quot;)</span></code> does<a class="headerlink" href="#what-proc-client-client-does" title="Link to this heading">#</a></h1>
 <p>Once we have a proc (from <code class="docutils literal notranslate"><span class="pre">Proc::direct(...)</span></code> or otherwise), we usually want “a handle into that proc” that we can drive from plain Rust code. That’s what</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="n">handle</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">instance</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="n">handle</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">client</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>gives you.</p>
-<p>Here’s what that actually does, based on the <code class="docutils literal notranslate"><span class="pre">Proc::instance(...)</span></code> implementation.</p>
+<p>Here’s what that actually does, based on the <code class="docutils literal notranslate"><span class="pre">Proc::client(...)</span></code> implementation.</p>
 <ol class="arabic">
 <li><p><strong>Allocates a root actor id on that proc</strong>
-The proc keeps a map of root names. Calling <code class="docutils literal notranslate"><span class="pre">instance(&quot;client&quot;)</span></code> says: “reserve the name <code class="docutils literal notranslate"><span class="pre">client</span></code> on this proc and give me an <code class="docutils literal notranslate"><span class="pre">ActorId</span></code> for it.”
+The proc keeps a map of root names. Calling <code class="docutils literal notranslate"><span class="pre">client(&quot;client&quot;)</span></code> says: “reserve the name <code class="docutils literal notranslate"><span class="pre">client</span></code> on this proc and give me an <code class="docutils literal notranslate"><span class="pre">ActorId</span></code> for it.”
 That becomes something like:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>ActorId( &lt;this-proc-id&gt;, &quot;client&quot;, pid=0 )
 </pre></div>
@@ -1326,7 +1350,7 @@ The runtime creates an <code class="docutils literal notranslate"><span class="p
 <li><p>can create children</p></li>
 <li><p>can be turned into a real running actor later</p></li>
 </ul>
-<p>Because this is <code class="docutils literal notranslate"><span class="pre">proc.instance(...)</span></code> (not <code class="docutils literal notranslate"><span class="pre">proc.spawn(...)</span></code>), it does <strong>not</strong> start an actor loop. The instance is in the “client” shape.</p>
+<p>Because this is <code class="docutils literal notranslate"><span class="pre">proc.client(...)</span></code> (not <code class="docutils literal notranslate"><span class="pre">proc.spawn(...)</span></code>), it does <strong>not</strong> start an actor loop. The instance is in the “client” shape.</p>
 </li>
 <li><p><strong>Returns both the instance and a handle</strong>
 You get:</p>
@@ -1343,12 +1367,12 @@ You get:</p>
 <li><p>send messages to actors in the mesh (once hosts/procs are up)</p></li>
 <li><p>hand out ports that mesh actors can use to talk back to us</p></li>
 </ul>
-<p><code class="docutils literal notranslate"><span class="pre">proc.instance(&quot;…&quot;)</span></code> gives us exactly that: an addressable actor slot on this proc that we control from code.</p>
+<p><code class="docutils literal notranslate"><span class="pre">proc.client(&quot;…&quot;)</span></code> gives us exactly that: an addressable actor slot on this proc that we control from code.</p>
 <p>Important: this instance is created in “client” / detached mode — there’s no actor task running for it - so nothing will automatically read and handle incoming messages. If you open ports on this instance, mesh actors can send to them, but <strong>you</strong> (the calling code) are responsible for receiving/draining those messages.</p>
-<p><code class="docutils literal notranslate"><span class="pre">proc.instance(&quot;client&quot;)</span></code> is the cheapest way to get that: you get an actor-shaped participant inside the proc without having to define a whole actor type up front.</p>
+<p><code class="docutils literal notranslate"><span class="pre">proc.client(&quot;client&quot;)</span></code> is the cheapest way to get that: you get an actor-shaped participant inside the proc without having to define a whole actor type up front.</p>
 <p>So this pattern:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">direct</span><span class="p">(</span><span class="o">..</span><span class="p">.).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-<span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="n">_handle</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">instance</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="n">_handle</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">client</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>means:</p>
@@ -1444,7 +1468,7 @@ You get:</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-proc-direct-actually-does">1.1 What <code class="docutils literal notranslate"><span class="pre">Proc::direct(...)</span></code> actually does</a></li>
 </ul>
 </li>
-<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#what-proc-instance-client-does">1.2 What <code class="docutils literal notranslate"><span class="pre">proc.instance("client")</span></code> does</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#what-proc-client-client-does">1.2 What <code class="docutils literal notranslate"><span class="pre">proc.client("client")</span></code> does</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-we-care-for-bootstrapping">Why we care for bootstrapping</a></li>
 </ul>
 </li>
@@ -1620,7 +1644,7 @@ You get:</p>
        "headline": "\u00a71 Proc and Instance (start from a Proc you control)",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-mesh-book/src/meshes/bootstrapping-proc-and-instance.html",
-       "articleBody": "\u00a71 Proc and Instance (start from a Proc you control)# We begin in a process that can already run hyperactor code and create an instance: let proc = Proc::direct(ChannelTransport::Unix.any(), \"root\".to_string()) .unwrap(); let (instance, _handle) = proc.instance(\"client\").unwrap(); This gives us a proc + mailbox we can use to tell the mesh to do things. That\u2019s two separate things happening, so let\u2019s spell them out. 1.1 What Proc::direct(...) actually does# Proc::direct(...) is the \u201cstand up a proc right here and make it reachable on this channel address\u201d helper. Under the hood it does (cf. Proc::direct in the source): Start listening on a channel It calls channel::serve(addr)?; \u2014 that binds to the transport/address you gave it (Unix, TCP, whatever) and gives you: the actual bound address, and a receiver for incoming messages. Name the proc It builds a ProcId::unique(bound_addr, name). That\u2019s just how this proc identifies itself to the rest of the world: \u201cI am this channel, and my human-ish name is root.\u201d Create a proc with a dial-able forwarder It does Proc::configured(proc_id, DialMailboxRouter::new().into_boxed()). That \u201cdial mailbox router\u201d is the bit that lets this proc send to other procs later \u2014 it knows how to connect out. Hook the incoming channel into the proc It calls proc.clone().serve(rx); so that anything that shows up on that channel gets demuxed into the proc\u2019s mailbox muxer. Result: you now have a proc, running in this process, that can be reached on that channel. That\u2019s the minimum thing you need to start talking meshes. Why we start with this: it\u2019s the simplest shape \u2014 \u201cone OS process, one hyperactor proc, reachable on a real address.\u201d 1.2 What proc.instance(\"client\") does# Once we have a proc (from Proc::direct(...) or otherwise), we usually want \u201ca handle into that proc\u201d that we can drive from plain Rust code. That\u2019s what let (instance, handle) = proc.instance(\"client\")?; gives you. Here\u2019s what that actually does, based on the Proc::instance(...) implementation. Allocates a root actor id on that proc The proc keeps a map of root names. Calling instance(\"client\") says: \u201creserve the name client on this proc and give me an ActorId for it.\u201d That becomes something like: ActorId( \u003cthis-proc-id\u003e, \"client\", pid=0 ) Now you have an addressable actor identity inside the proc, even though no actor task is running yet. Builds an Instance\u003c()\u003e bound to that id The runtime creates an Instance\u003c()\u003e for that actor id. An Instance: has a mailbox bound into the proc\u2019s muxer knows its ActorId can open ports can create children can be turned into a real running actor later Because this is proc.instance(...) (not proc.spawn(...)), it does not start an actor loop. The instance is in the \u201cclient\u201d shape. Returns both the instance and a handle You get: the Instance\u003c()\u003e so you can bind ports / make children / send an ActorHandle\u003c()\u003e in case you want to observe/stop/share it Why we care for bootstrapping# In the bootstrapping flow we\u2019re describing, we often need \u201ca proc-local, controllable actor endpoint\u201d so we can: send messages to actors in the mesh (once hosts/procs are up) hand out ports that mesh actors can use to talk back to us proc.instance(\"\u2026\") gives us exactly that: an addressable actor slot on this proc that we control from code. Important: this instance is created in \u201cclient\u201d / detached mode \u2014 there\u2019s no actor task running for it - so nothing will automatically read and handle incoming messages. If you open ports on this instance, mesh actors can send to them, but you (the calling code) are responsible for receiving/draining those messages. proc.instance(\"client\") is the cheapest way to get that: you get an actor-shaped participant inside the proc without having to define a whole actor type up front. So this pattern: let proc = Proc::direct(...).await?; let (instance, _handle) = proc.instance(\"client\")?; means: stand up a proc that other things can reach, and inside it, create the first addressable participant that our bootstrap code can drive.",
+       "articleBody": "\u00a71 Proc and Instance (start from a Proc you control)# We begin in a process that can already run hyperactor code and create an instance: let proc = Proc::direct(ChannelTransport::Unix.any(), \"root\".to_string()) .unwrap(); let (instance, _handle) = proc.client(\"client\").unwrap(); This gives us a proc + mailbox we can use to tell the mesh to do things. That\u2019s two separate things happening, so let\u2019s spell them out. 1.1 What Proc::direct(...) actually does# Proc::direct(...) is the \u201cstand up a proc right here and make it reachable on this channel address\u201d helper. Under the hood it does (cf. Proc::direct in the source): Start listening on a channel It calls channel::serve(addr)?; \u2014 that binds to the transport/address you gave it (Unix, TCP, whatever) and gives you: the actual bound address, and a receiver for incoming messages. Assign the proc identity and location It builds a ProcAddr::instance(bound_addr, name). The proc id is a fresh instance uid with name as display metadata; the bound channel address is the proc\u2019s advertised location. Create a proc with a dial-able forwarder It does Proc::configured(proc_id, DialMailboxRouter::new().into_boxed()). That \u201cdial mailbox router\u201d is the bit that lets this proc send to other procs later \u2014 it knows how to connect out. Hook the incoming channel into the proc It calls proc.clone().serve(rx); so that anything that shows up on that channel gets demuxed into the proc\u2019s mailbox muxer. Result: you now have a proc, running in this process, that can be reached on that channel. That\u2019s the minimum thing you need to start talking meshes. Why we start with this: it\u2019s the simplest shape \u2014 \u201cone OS process, one hyperactor proc, reachable on a real address.\u201d 1.2 What proc.client(\"client\") does# Once we have a proc (from Proc::direct(...) or otherwise), we usually want \u201ca handle into that proc\u201d that we can drive from plain Rust code. That\u2019s what let (instance, handle) = proc.client(\"client\")?; gives you. Here\u2019s what that actually does, based on the Proc::client(...) implementation. Allocates a root actor id on that proc The proc keeps a map of root names. Calling client(\"client\") says: \u201creserve the name client on this proc and give me an ActorId for it.\u201d That becomes something like: ActorId( \u003cthis-proc-id\u003e, \"client\", pid=0 ) Now you have an addressable actor identity inside the proc, even though no actor task is running yet. Builds an Instance\u003c()\u003e bound to that id The runtime creates an Instance\u003c()\u003e for that actor id. An Instance: has a mailbox bound into the proc\u2019s muxer knows its ActorId can open ports can create children can be turned into a real running actor later Because this is proc.client(...) (not proc.spawn(...)), it does not start an actor loop. The instance is in the \u201cclient\u201d shape. Returns both the instance and a handle You get: the Instance\u003c()\u003e so you can bind ports / make children / send an ActorHandle\u003c()\u003e in case you want to observe/stop/share it Why we care for bootstrapping# In the bootstrapping flow we\u2019re describing, we often need \u201ca proc-local, controllable actor endpoint\u201d so we can: send messages to actors in the mesh (once hosts/procs are up) hand out ports that mesh actors can use to talk back to us proc.client(\"\u2026\") gives us exactly that: an addressable actor slot on this proc that we control from code. Important: this instance is created in \u201cclient\u201d / detached mode \u2014 there\u2019s no actor task running for it - so nothing will automatically read and handle incoming messages. If you open ports on this instance, mesh actors can send to them, but you (the calling code) are responsible for receiving/draining those messages. proc.client(\"client\") is the cheapest way to get that: you get an actor-shaped participant inside the proc without having to define a whole actor type up front. So this pattern: let proc = Proc::direct(...).await?; let (instance, _handle) = proc.client(\"client\")?; means: stand up a proc that other things can reach, and inside it, create the first addressable participant that our bootstrap code can drive.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

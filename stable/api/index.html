@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The actor API for monarch is accessed through the monarch.actor package. The monarch package contains APIs related to computing with distributed tensors. The monarch.job package provides a declarat..." />
 
-    <title>Python API &#8212; Monarch v0.4.1 documentation</title>
+    <title>Python API &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../_static/documentation_options.js?v=e663822d"></script>
     <script src="../_static/doctools.js?v=888ff710"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/api/index.html" />
@@ -84,7 +84,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -198,7 +198,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -593,6 +593,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -956,6 +968,18 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo_actor.html">
                   Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
                 </a>
               </li>
             
@@ -1382,7 +1406,6 @@ The <a class="reference internal" href="monarch.spmd.html"><span class="doc">mon
 <li class="toctree-l2"><a class="reference internal" href="monarch.config.html#mesh-configuration">Mesh Configuration</a></li>
 <li class="toctree-l2"><a class="reference internal" href="monarch.config.html#mesh-admin">Mesh Admin</a></li>
 <li class="toctree-l2"><a class="reference internal" href="monarch.config.html#mesh-attach">Mesh Attach</a></li>
-<li class="toctree-l2"><a class="reference internal" href="monarch.config.html#remote-allocation">Remote Allocation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="monarch.config.html#validation-and-error-handling">Validation and Error Handling</a></li>
 </ul>
 </li>
@@ -1765,7 +1788,7 @@ The <a class="reference internal" href="monarch.spmd.html"><span class="doc">mon
        "headline": "Python API",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/api/index.html",
-       "articleBody": "Python API# Note This documents Monarch\u2019s public APIs - the stable, supported interfaces. The actor API for monarch is accessed through the monarch.actor package. The monarch package contains APIs related to computing with distributed tensors. The monarch.job package provides a declarative interface for managing distributed job resources. The monarch.rdma package provides RDMA support for high-performance networking. The monarch.spmd package provides primitives for running torchrun-style SPMD scripts over Monarch meshes. monarch.actor Creating Actors HostMesh ProcMesh get_or_spawn_controller() this_host() this_proc() Defining Actors Actor endpoint() Messaging Actor Endpoint Future ValueMesh ActorError Accumulator send() Channel Port PortReceiver as_endpoint() Context API current_actor_name() current_rank() current_size() context() Context Point Extent Supervision MeshFailure monarch.config Configuration API configure() configured() get_global_config() get_runtime_config() clear_runtime_config() Configuration Keys Performance and Transport Timeouts Logging Message Handling Message Encoding Mesh Bootstrap Runtime and Buffering Actor Configuration Mesh Configuration Mesh Admin Mesh Attach Remote Allocation Validation and Error Handling Examples Basic Configuration Temporary Configuration (Testing) Nested Overrides Duration Formats Environment Variable Override See Also monarch.job Job Model Job State JobState Job Base Class JobTrait Job Implementations LocalJob ProcessJob SlurmJob KubernetesJob Serialization job_load() job_loads() SPMD Jobs serve() SPMDJob monarch Tensor Stream remote() coalescing() get_active_mesh() no_mesh() to_mesh() slice_mesh() get_active_stream() reduce() reduce_() call_on_shard_and_fetch() fetch_shard() inspect() show() grad_function() grad_generator() timer() world_mesh() function_resolvers() Types Extent Shape Selection NDSlice OpaqueRef Future Distributed Computing RemoteProcessGroup Simulation Simulator set_meta() Builtins monarch.rdma RDMA Buffer RDMABuffer RDMA Actions RDMAAction Utility Functions is_ibverbs_available() is_rdma_available() get_rdma_backend() monarch.spmd Environment Setup SPMD Actor",
+       "articleBody": "Python API# Note This documents Monarch\u2019s public APIs - the stable, supported interfaces. The actor API for monarch is accessed through the monarch.actor package. The monarch package contains APIs related to computing with distributed tensors. The monarch.job package provides a declarative interface for managing distributed job resources. The monarch.rdma package provides RDMA support for high-performance networking. The monarch.spmd package provides primitives for running torchrun-style SPMD scripts over Monarch meshes. monarch.actor Creating Actors HostMesh ProcMesh get_or_spawn_controller() this_host() this_proc() Defining Actors Actor endpoint() Messaging Actor Endpoint Future ValueMesh ActorError Accumulator send() Channel Port PortReceiver as_endpoint() Context API current_actor_name() current_rank() current_size() context() Context Point Extent Supervision MeshFailure monarch.config Configuration API configure() configured() get_global_config() get_runtime_config() clear_runtime_config() Configuration Keys Performance and Transport Timeouts Logging Message Handling Message Encoding Mesh Bootstrap Runtime and Buffering Actor Configuration Mesh Configuration Mesh Admin Mesh Attach Validation and Error Handling Examples Basic Configuration Temporary Configuration (Testing) Nested Overrides Duration Formats Environment Variable Override See Also monarch.job Job Model Job State JobState Job Base Class JobTrait Job Implementations LocalJob ProcessJob SlurmJob KubernetesJob Serialization job_load() job_loads() SPMD Jobs serve() SPMDJob monarch Tensor Stream remote() coalescing() get_active_mesh() no_mesh() to_mesh() slice_mesh() get_active_stream() reduce() reduce_() call_on_shard_and_fetch() fetch_shard() inspect() show() grad_function() grad_generator() timer() world_mesh() function_resolvers() Types Extent Shape Selection NDSlice OpaqueRef Future Distributed Computing RemoteProcessGroup Simulation Simulator set_meta() Builtins monarch.rdma RDMA Buffer RDMABuffer RDMA Actions RDMAAction Utility Functions is_ibverbs_available() is_rdma_available() get_rdma_backend() monarch.spmd Environment Setup SPMD Actor",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

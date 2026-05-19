@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ActorInstance","Context","Instance","InstanceCell","InstanceReceivers","Ports","Proc","WeakInstanceCell","WeakProc","WorkCell"]};
+window.SIDEBAR_ITEMS = {"constant":["LEGACY_LOCAL_PROC_NAME","LEGACY_SERVICE_PROC_NAME"],"enum":["Host2Client"],"struct":["ActorInstance","AttachRequest","AttachRx","BootstrapAssignment","Builder","Context","GlobalGateway","HandlerPorts","Instance","InstanceCell","InstanceReceivers","PrivateGateway","Proc","SharedGateway","WeakInstanceCell","WeakProc","WorkCell"]};

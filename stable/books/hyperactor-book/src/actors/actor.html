@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The Actor trait defines the core behavior of all actors in the hyperactor runtime. Every actor type must implement this trait to participate in the system. It defines how an actor is constructed, i..." />
 
-    <title>The Actor Trait &#8212; Monarch v0.4.1 documentation</title>
+    <title>The Actor Trait &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/actors/actor.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -960,6 +972,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1291,7 +1315,7 @@ document.write(`
 <span class="w">    </span><span class="p">}</span>
 
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">spawn_detached</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ActorHandle</span><span class="o">&lt;</span><span class="bp">Self</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="n">Proc</span><span class="p">::</span><span class="n">local</span><span class="p">().</span><span class="n">spawn</span><span class="p">(</span><span class="s">&quot;anon&quot;</span><span class="p">,</span><span class="w"> </span><span class="bp">self</span><span class="p">)</span>
+<span class="w">        </span><span class="n">Proc</span><span class="p">::</span><span class="n">isolated</span><span class="p">().</span><span class="n">spawn</span><span class="p">(</span><span class="s">&quot;anon&quot;</span><span class="p">,</span><span class="w"> </span><span class="bp">self</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 
 <span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">spawn_server_task</span><span class="o">&lt;</span><span class="n">F</span><span class="o">&gt;</span><span class="p">(</span><span class="n">future</span><span class="p">:</span><span class="w"> </span><span class="nc">F</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">JoinHandle</span><span class="o">&lt;</span><span class="n">F</span><span class="p">::</span><span class="n">Output</span><span class="o">&gt;</span>
@@ -1369,7 +1393,7 @@ document.write(`
 <section id="detached-spawning-spawn-detached">
 <h2>Detached Spawning: <code class="docutils literal notranslate"><span class="pre">spawn_detached</span></code><a class="headerlink" href="#detached-spawning-spawn-detached" title="Link to this heading">#</a></h2>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">fn</span><span class="w"> </span><span class="nf">spawn_detached</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ActorHandle</span><span class="o">&lt;</span><span class="bp">Self</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Proc</span><span class="p">::</span><span class="n">local</span><span class="p">().</span><span class="n">spawn</span><span class="p">(</span><span class="s">&quot;anon&quot;</span><span class="p">,</span><span class="w"> </span><span class="bp">self</span><span class="p">)</span>
+<span class="w">    </span><span class="n">Proc</span><span class="p">::</span><span class="n">isolated</span><span class="p">().</span><span class="n">spawn</span><span class="p">(</span><span class="s">&quot;anon&quot;</span><span class="p">,</span><span class="w"> </span><span class="bp">self</span><span class="p">)</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -1705,7 +1729,7 @@ document.write(`
        "headline": "The Actor Trait",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/actors/actor.html",
-       "articleBody": "The Actor Trait# The Actor trait defines the core behavior of all actors in the hyperactor runtime. Every actor type must implement this trait to participate in the system. It defines how an actor is constructed, initialized, and supervised. #[async_trait] pub trait Actor: Sized + Send + \u0027static { async fn init(\u0026mut self, _this: \u0026Instance\u003cSelf\u003e) -\u003e Result\u003c(), anyhow::Error\u003e { Ok(()) } async fn cleanup( \u0026mut self, _this: \u0026Instance\u003cSelf\u003e, _err: Option\u003c\u0026ActorError\u003e, ) -\u003e Result\u003c(), anyhow::Error\u003e { Ok(()) } fn spawn(self, cx: \u0026impl context::Actor) -\u003e anyhow::Result\u003cActorHandle\u003cSelf\u003e\u003e { cx.instance().spawn(self) } fn spawn_detached(self) -\u003e Result\u003cActorHandle\u003cSelf\u003e, anyhow::Error\u003e { Proc::local().spawn(\"anon\", self) } fn spawn_server_task\u003cF\u003e(future: F) -\u003e JoinHandle\u003cF::Output\u003e where F: Future + Send + \u0027static, F::Output: Send + \u0027static, { tokio::spawn(future) } async fn handle_supervision_event( \u0026mut self, _this: \u0026Instance\u003cSelf\u003e, _event: \u0026ActorSupervisionEvent, ) -\u003e Result\u003cbool, anyhow::Error\u003e { Ok(false) } async fn handle_undeliverable_message( \u0026mut self, cx: \u0026Instance\u003cSelf\u003e, envelope: Undeliverable\u003cMessageEnvelope\u003e, ) -\u003e Result\u003c(), anyhow::Error\u003e { handle_undeliverable_message(cx, envelope) } fn display_name(\u0026self) -\u003e Option\u003cString\u003e { None } } Initialization: init# async fn init(\u0026mut self, _this: \u0026Instance\u003cSelf\u003e) -\u003e Result\u003c(), anyhow::Error\u003e The init method is called after the actor has been constructed and registered with the runtime. It is passed a reference to the actor\u2019s Instance, allowing access to runtime services such as: The actor\u2019s ID and status The mailbox and port system Capabilities for spawning or sending messages The default implementation does nothing and returns Ok(()). If init returns an error, the actor is considered failed and will not proceed to handle any messages. Use init to perform startup logic that depends on the actor being fully integrated into the system. Cleanup: cleanup# async fn cleanup( \u0026mut self, _this: \u0026Instance\u003cSelf\u003e, _err: Option\u003c\u0026ActorError\u003e, ) -\u003e Result\u003c(), anyhow::Error\u003e The cleanup method is called before the actor shuts down. It provides a hook for async cleanup operations. The method receives: A reference to the actor\u2019s Instance An optional ActorError indicating whether the actor is failing If err is not None, it contains the error that caused the actor to fail. Any errors returned by cleanup will be logged and ignored. If err is None, errors returned by cleanup will be propagated as an ActorError. The default implementation does nothing. This method is not called if there is a panic in the actor or if the process is killed. Spawning: spawn# The spawn method provides a default implementation for spawning an actor: fn spawn(self, cx: \u0026impl context::Actor) -\u003e anyhow::Result\u003cActorHandle\u003cSelf\u003e\u003e { cx.instance().spawn(self) } This method takes ownership of self (the actor instance) and spawns it as a child. In practice, context::Actor is implemented for types such as Instance\u003cA\u003e and Context\u003cA\u003e, which represent running actors. As a result, Actor::spawn(...) always constructs a child actor: the new actor receives a child ID and is linked to its parent through the runtime. Detached Spawning: spawn_detached# fn spawn_detached(self) -\u003e Result\u003cActorHandle\u003cSelf\u003e, anyhow::Error\u003e { Proc::local().spawn(\"anon\", self) } This method takes ownership of self and creates a root actor on a fresh, isolated proc. The proc is local-only and cannot forward messages externally. The actor receives a unique root ActorId with no parent. No supervision or linkage is established. The actor is named \"anon\". Background Tasks: spawn_server_task# fn spawn_server_task\u003cF\u003e(future: F) -\u003e JoinHandle\u003cF::Output\u003e where F: Future + Send + \u0027static, F::Output: Send + \u0027static, { tokio::spawn(future) } This method provides a hook point for customizing how the runtime spawns background tasks. By default, it simply calls tokio::spawn(...) to run the given future on the Tokio executor. Supervision Events: handle_supervision_event# async fn handle_supervision_event( \u0026mut self, _this: \u0026Instance\u003cSelf\u003e, _event: \u0026ActorSupervisionEvent, ) -\u003e Result\u003cbool, anyhow::Error\u003e { Ok(false) } This method is invoked when the runtime delivers an ActorSupervisionEvent to the actor \u2014 for example, when a child crashes or exits. By default, it returns Ok(false), which indicates that the event was not handled by the actor. This allows the runtime to fall back on default behavior (e.g., escalation). Actors may override this to implement custom supervision logic. Display Name: display_name# fn display_name(\u0026self) -\u003e Option\u003cString\u003e { None } This method allows an actor to provide a custom display name for use in supervision error messages and logging. By default, it returns None, causing the runtime to use the ActorId for display purposes. Undeliverables: handle_undeliverable_message# async fn handle_undeliverable_message( \u0026mut self, cx: \u0026Instance\u003cSelf\u003e, envelope: Undeliverable\u003cMessageEnvelope\u003e, ) -\u003e Result\u003c(), anyhow::Error\u003e { handle_undeliverable_message(cx, envelope) } This method is called when a message sent by this actor fails to be delivered. The default implementation calls the free function handle_undeliverable_message, which: Asserts that the message was indeed sent by this actor. Returns an error: Err(UndeliverableMessageError::DeliveryFailure(...)) This signals that the actor considers this delivery failure to be a fatal error. You may override this method to suppress the failure or to implement custom fallback behavior.",
+       "articleBody": "The Actor Trait# The Actor trait defines the core behavior of all actors in the hyperactor runtime. Every actor type must implement this trait to participate in the system. It defines how an actor is constructed, initialized, and supervised. #[async_trait] pub trait Actor: Sized + Send + \u0027static { async fn init(\u0026mut self, _this: \u0026Instance\u003cSelf\u003e) -\u003e Result\u003c(), anyhow::Error\u003e { Ok(()) } async fn cleanup( \u0026mut self, _this: \u0026Instance\u003cSelf\u003e, _err: Option\u003c\u0026ActorError\u003e, ) -\u003e Result\u003c(), anyhow::Error\u003e { Ok(()) } fn spawn(self, cx: \u0026impl context::Actor) -\u003e anyhow::Result\u003cActorHandle\u003cSelf\u003e\u003e { cx.instance().spawn(self) } fn spawn_detached(self) -\u003e Result\u003cActorHandle\u003cSelf\u003e, anyhow::Error\u003e { Proc::isolated().spawn(\"anon\", self) } fn spawn_server_task\u003cF\u003e(future: F) -\u003e JoinHandle\u003cF::Output\u003e where F: Future + Send + \u0027static, F::Output: Send + \u0027static, { tokio::spawn(future) } async fn handle_supervision_event( \u0026mut self, _this: \u0026Instance\u003cSelf\u003e, _event: \u0026ActorSupervisionEvent, ) -\u003e Result\u003cbool, anyhow::Error\u003e { Ok(false) } async fn handle_undeliverable_message( \u0026mut self, cx: \u0026Instance\u003cSelf\u003e, envelope: Undeliverable\u003cMessageEnvelope\u003e, ) -\u003e Result\u003c(), anyhow::Error\u003e { handle_undeliverable_message(cx, envelope) } fn display_name(\u0026self) -\u003e Option\u003cString\u003e { None } } Initialization: init# async fn init(\u0026mut self, _this: \u0026Instance\u003cSelf\u003e) -\u003e Result\u003c(), anyhow::Error\u003e The init method is called after the actor has been constructed and registered with the runtime. It is passed a reference to the actor\u2019s Instance, allowing access to runtime services such as: The actor\u2019s ID and status The mailbox and port system Capabilities for spawning or sending messages The default implementation does nothing and returns Ok(()). If init returns an error, the actor is considered failed and will not proceed to handle any messages. Use init to perform startup logic that depends on the actor being fully integrated into the system. Cleanup: cleanup# async fn cleanup( \u0026mut self, _this: \u0026Instance\u003cSelf\u003e, _err: Option\u003c\u0026ActorError\u003e, ) -\u003e Result\u003c(), anyhow::Error\u003e The cleanup method is called before the actor shuts down. It provides a hook for async cleanup operations. The method receives: A reference to the actor\u2019s Instance An optional ActorError indicating whether the actor is failing If err is not None, it contains the error that caused the actor to fail. Any errors returned by cleanup will be logged and ignored. If err is None, errors returned by cleanup will be propagated as an ActorError. The default implementation does nothing. This method is not called if there is a panic in the actor or if the process is killed. Spawning: spawn# The spawn method provides a default implementation for spawning an actor: fn spawn(self, cx: \u0026impl context::Actor) -\u003e anyhow::Result\u003cActorHandle\u003cSelf\u003e\u003e { cx.instance().spawn(self) } This method takes ownership of self (the actor instance) and spawns it as a child. In practice, context::Actor is implemented for types such as Instance\u003cA\u003e and Context\u003cA\u003e, which represent running actors. As a result, Actor::spawn(...) always constructs a child actor: the new actor receives a child ID and is linked to its parent through the runtime. Detached Spawning: spawn_detached# fn spawn_detached(self) -\u003e Result\u003cActorHandle\u003cSelf\u003e, anyhow::Error\u003e { Proc::isolated().spawn(\"anon\", self) } This method takes ownership of self and creates a root actor on a fresh, isolated proc. The proc is local-only and cannot forward messages externally. The actor receives a unique root ActorId with no parent. No supervision or linkage is established. The actor is named \"anon\". Background Tasks: spawn_server_task# fn spawn_server_task\u003cF\u003e(future: F) -\u003e JoinHandle\u003cF::Output\u003e where F: Future + Send + \u0027static, F::Output: Send + \u0027static, { tokio::spawn(future) } This method provides a hook point for customizing how the runtime spawns background tasks. By default, it simply calls tokio::spawn(...) to run the given future on the Tokio executor. Supervision Events: handle_supervision_event# async fn handle_supervision_event( \u0026mut self, _this: \u0026Instance\u003cSelf\u003e, _event: \u0026ActorSupervisionEvent, ) -\u003e Result\u003cbool, anyhow::Error\u003e { Ok(false) } This method is invoked when the runtime delivers an ActorSupervisionEvent to the actor \u2014 for example, when a child crashes or exits. By default, it returns Ok(false), which indicates that the event was not handled by the actor. This allows the runtime to fall back on default behavior (e.g., escalation). Actors may override this to implement custom supervision logic. Display Name: display_name# fn display_name(\u0026self) -\u003e Option\u003cString\u003e { None } This method allows an actor to provide a custom display name for use in supervision error messages and logging. By default, it returns None, causing the runtime to use the ActorId for display purposes. Undeliverables: handle_undeliverable_message# async fn handle_undeliverable_message( \u0026mut self, cx: \u0026Instance\u003cSelf\u003e, envelope: Undeliverable\u003cMessageEnvelope\u003e, ) -\u003e Result\u003c(), anyhow::Error\u003e { handle_undeliverable_message(cx, envelope) } This method is called when a message sent by this actor fails to be delivered. The default implementation calls the free function handle_undeliverable_message, which: Asserts that the message was indeed sent by this actor. Returns an error: Err(UndeliverableMessageError::DeliveryFailure(...)) This signals that the actor considers this delivery failure to be a fatal error. You may override this method to suppress the failure or to implement custom fallback behavior.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

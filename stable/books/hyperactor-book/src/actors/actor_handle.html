@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="An ActorHandle&lt;A&gt; is a reference to a local, running actor of type A. It provides access to the actor’s messaging ports, lifecycle status, and control methods (such as stop signals). Unlike r..." />
 
-    <title>ActorHandle&lt;A&gt; &#8212; Monarch v0.4.1 documentation</title>
+    <title>ActorHandle&lt;A&gt; &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/actors/actor_handle.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -960,6 +972,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1276,14 +1300,14 @@ document.write(`
 <h2>Definition<a class="headerlink" href="#definition" title="Link to this heading">#</a></h2>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">ActorHandle</span><span class="o">&lt;</span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">Actor</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">cell</span><span class="p">:</span><span class="w"> </span><span class="nc">InstanceCell</span><span class="p">,</span>
-<span class="w">    </span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">Ports</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">HandlerPorts</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;&gt;</span><span class="p">,</span>
 <span class="p">}</span>
 </pre></div>
 </div>
 <p>An <code class="docutils literal notranslate"><span class="pre">ActorHandle</span></code> contains:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">cell</span></code> is the actor’s internal runtime state, including identity and lifecycle metadata.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ports</span></code> is a shared dictionary of all typed message ports available to the actor.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ports</span></code> is a shared dictionary of all typed handler ports available to the actor.</p></li>
 </ul>
 <p>This handle is cloneable, sendable across tasks, and allows interaction with the actor via messaging, status observation, and controlled shutdown.</p>
 </section>
@@ -1291,8 +1315,8 @@ document.write(`
 <h2>Methods<a class="headerlink" href="#methods" title="Link to this heading">#</a></h2>
 <section id="new-internal">
 <h3><code class="docutils literal notranslate"><span class="pre">new</span></code> (internal)<a class="headerlink" href="#new-internal" title="Link to this heading">#</a></h3>
-<p>Constructs a new <code class="docutils literal notranslate"><span class="pre">ActorHandle</span></code> from its backing <code class="docutils literal notranslate"><span class="pre">InstanceCell</span></code> and <code class="docutils literal notranslate"><span class="pre">Ports</span></code>. This is called by the runtime when spawning a new actor.</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="p">(</span><span class="k">crate</span><span class="p">)</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">new</span><span class="p">(</span><span class="n">cell</span><span class="p">:</span><span class="w"> </span><span class="nc">InstanceCell</span><span class="p">,</span><span class="w"> </span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">Ports</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span><span class="w"> </span><span class="p">{</span>
+<p>Constructs a new <code class="docutils literal notranslate"><span class="pre">ActorHandle</span></code> from its backing <code class="docutils literal notranslate"><span class="pre">InstanceCell</span></code> and <code class="docutils literal notranslate"><span class="pre">HandlerPorts</span></code>. This is called by the runtime when spawning a new actor.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="p">(</span><span class="k">crate</span><span class="p">)</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">new</span><span class="p">(</span><span class="n">cell</span><span class="p">:</span><span class="w"> </span><span class="nc">InstanceCell</span><span class="p">,</span><span class="w"> </span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">HandlerPorts</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="bp">Self</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">cell</span><span class="p">,</span><span class="w"> </span><span class="n">ports</span><span class="w"> </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -1376,7 +1400,7 @@ document.write(`
 </div>
 <p>This method requires that <code class="docutils literal notranslate"><span class="pre">R</span></code> implements the <code class="docutils literal notranslate"><span class="pre">Binds&lt;A&gt;</span></code> trait. The <code class="docutils literal notranslate"><span class="pre">Binds</span></code> trait specifies how to associate a remote-facing reference type with the concrete ports handled by the actor:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">Binds</span><span class="o">&lt;</span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">Actor</span><span class="o">&gt;</span><span class="p">:</span><span class="w"> </span><span class="nc">Referable</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Ports</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;</span><span class="p">);</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">HandlerPorts</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;</span><span class="p">);</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -1386,8 +1410,8 @@ document.write(`
 <h3>Binding internals<a class="headerlink" href="#binding-internals" title="Link to this heading">#</a></h3>
 <p>Calling <code class="docutils literal notranslate"><span class="pre">bind()</span></code> on the <code class="docutils literal notranslate"><span class="pre">ActorHandle</span></code>:</p>
 <ol class="arabic simple">
-<li><p>Invokes the <code class="docutils literal notranslate"><span class="pre">Binds&lt;A&gt;::bind()</span></code> implementation for <code class="docutils literal notranslate"><span class="pre">R</span></code>, registering the actor’s message handlers into the <code class="docutils literal notranslate"><span class="pre">Ports&lt;A&gt;</span></code> dictionary.</p></li>
-<li><p>Always binds the <code class="docutils literal notranslate"><span class="pre">Signal</span></code> type (used for draining, stopping, and supervision).</p></li>
+<li><p>Invokes the <code class="docutils literal notranslate"><span class="pre">Binds&lt;A&gt;::bind()</span></code> implementation for <code class="docutils literal notranslate"><span class="pre">R</span></code>, registering the actor’s message handlers into the <code class="docutils literal notranslate"><span class="pre">HandlerPorts&lt;A&gt;</span></code> dictionary.</p></li>
+<li><p>Always binds the <code class="docutils literal notranslate"><span class="pre">Undeliverable&lt;MessageEnvelope&gt;</span></code> handler. Runtime control-plane ports such as <code class="docutils literal notranslate"><span class="pre">Signal</span></code> and <code class="docutils literal notranslate"><span class="pre">IntrospectMessage</span></code> are provisioned directly by the instance.</p></li>
 <li><p>Records the bound message types into <code class="docutils literal notranslate"><span class="pre">InstanceState::exported_named_ports</span></code>, enabling routing and diagnostics.</p></li>
 <li><p>Constructs the final <code class="docutils literal notranslate"><span class="pre">ActorRef&lt;R&gt;</span></code> using <code class="docutils literal notranslate"><span class="pre">ActorRef::attest(...)</span></code>, which assumes the type-level correspondence between <code class="docutils literal notranslate"><span class="pre">R</span></code> and the bound ports.</p></li>
 </ol>
@@ -1724,7 +1748,7 @@ document.write(`
        "headline": "ActorHandle\u003cA\u003e",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/actors/actor_handle.html",
-       "articleBody": "ActorHandle\u003cA\u003e# An ActorHandle\u003cA\u003e is a reference to a local, running actor of type A. It provides access to the actor\u2019s messaging ports, lifecycle status, and control methods (such as stop signals). Unlike remote references (e.g. ActorRef\u003cA\u003e), which may refer to actors on other Procs, an ActorHandle only exists within the same Proc and can be sent messages without requiring serialization. Definition# pub struct ActorHandle\u003cA: Actor\u003e { cell: InstanceCell, ports: Arc\u003cPorts\u003cA\u003e\u003e, } An ActorHandle contains: cell is the actor\u2019s internal runtime state, including identity and lifecycle metadata. ports is a shared dictionary of all typed message ports available to the actor. This handle is cloneable, sendable across tasks, and allows interaction with the actor via messaging, status observation, and controlled shutdown. Methods# new (internal)# Constructs a new ActorHandle from its backing InstanceCell and Ports. This is called by the runtime when spawning a new actor. pub(crate) fn new(cell: InstanceCell, ports: Arc\u003cPorts\u003cA\u003e\u003e) -\u003e Self { Self { cell, ports } } cell (internal)# Returns the underlying InstanceCell backing the actor. pub(crate) fn cell(\u0026self) -\u003e \u0026InstanceCell { \u0026self.cell } actor_id# Returns the ActorId of the actor represented by this handle. pub fn actor_id(\u0026self) -\u003e \u0026ActorId { self.cell.actor_id() } drain_and_stop# Signals the actor to drain any pending messages and then stop. This enables a graceful shutdown procedure. A reason string is provided to explain why the actor is being stopped. pub fn drain_and_stop(\u0026self, reason: \u0026str) -\u003e Result\u003c(), ActorError\u003e { self.cell.signal(Signal::DrainAndStop(reason.to_string())) } status# Returns a watch channel that can be used to observe the actor\u2019s lifecycle status (e.g., running, stopped, crashed). pub fn status(\u0026self) -\u003e watch::Receiver\u003cActorStatus\u003e { self.cell.status().clone() } send# Sends a message of type M to the actor. The actor must implement Handler\u003cM\u003e for this to compile. Messages sent via an ActorHandle are always delivered in-process and do not require serialization. pub fn send\u003cM: Message\u003e(\u0026self, message: M) -\u003e Result\u003c(), MailboxSenderError\u003e where A: Handler\u003cM\u003e, { self.ports.get().send(message) } port# Returns a reusable port handle for the given message type. pub fn port\u003cM: Message\u003e(\u0026self) -\u003e PortHandle\u003cM\u003e where A: Handler\u003cM\u003e, { self.ports.get() } bind# Creates a remote reference (ActorRef\u003cR\u003e) by applying a Binds\u003cA\u003e implementation. pub fn bind\u003cR: Binds\u003cA\u003e\u003e(\u0026self) -\u003e ActorRef\u003cR\u003e { self.cell.bind(self.ports.as_ref()) } Binding and ActorRefs# The bind() method on ActorHandle creates an ActorRef\u003cR\u003e for a given remote-facing reference type R. This is the bridge between a local actor instance and its externally visible interface. pub fn bind\u003cR: Binds\u003cA\u003e\u003e(\u0026self) -\u003e ActorRef\u003cR\u003e This method requires that R implements the Binds\u003cA\u003e trait. The Binds trait specifies how to associate a remote-facing reference type with the concrete ports handled by the actor: pub trait Binds\u003cA: Actor\u003e: Referable { fn bind(ports: \u0026Ports\u003cA\u003e); } In practice, A and R are usually the same type; this is the pattern produced by the #[export] macro. But R can also be a trait object or wrapper that abstracts over multiple implementations. Binding internals# Calling bind() on the ActorHandle: Invokes the Binds\u003cA\u003e::bind() implementation for R, registering the actor\u2019s message handlers into the Ports\u003cA\u003e dictionary. Always binds the Signal type (used for draining, stopping, and supervision). Records the bound message types into InstanceState::exported_named_ports, enabling routing and diagnostics. Constructs the final ActorRef\u003cR\u003e using ActorRef::attest(...), which assumes the type-level correspondence between R and the bound ports. The result is a typed, routable reference that can be shared across Procs. IntoFuture for ActorHandle# Overview# An ActorHandle\u003cA\u003e can be awaited directly thanks to its IntoFuture implementation. Awaiting the handle waits for the actor to shut down. Purpose# This allows you to write: let status = actor_handle.await; Instead of: let mut status = actor_handle.status(); status.wait_for(ActorStatus::is_terminal).await; Behavior# When awaited, the handle: Subscribes to the actor\u2019s status channel, Waits for a terminal status (Stopped, Crashed, etc.), Returns the final status, Returns ActorStatus::Unknown if the channel closes unexpectedly. Implementation# impl\u003cA: Actor\u003e IntoFuture for ActorHandle\u003cA\u003e { type Output = ActorStatus; type IntoFuture = BoxFuture\u003c\u0027static, Self::Output\u003e; fn into_future(self) -\u003e Self::IntoFuture { let future = async move { let mut status_receiver = self.cell.status().clone(); let result = status_receiver.wait_for(ActorStatus::is_terminal).await; match result { Err(_) =\u003e ActorStatus::Unknown, Ok(status) =\u003e status.clone(), } }; future.boxed() } } Summary# This feature is primarily ergonomic. It provides a natural way to synchronize with the termination of an actor by simply awaiting its handle.",
+       "articleBody": "ActorHandle\u003cA\u003e# An ActorHandle\u003cA\u003e is a reference to a local, running actor of type A. It provides access to the actor\u2019s messaging ports, lifecycle status, and control methods (such as stop signals). Unlike remote references (e.g. ActorRef\u003cA\u003e), which may refer to actors on other Procs, an ActorHandle only exists within the same Proc and can be sent messages without requiring serialization. Definition# pub struct ActorHandle\u003cA: Actor\u003e { cell: InstanceCell, ports: Arc\u003cHandlerPorts\u003cA\u003e\u003e, } An ActorHandle contains: cell is the actor\u2019s internal runtime state, including identity and lifecycle metadata. ports is a shared dictionary of all typed handler ports available to the actor. This handle is cloneable, sendable across tasks, and allows interaction with the actor via messaging, status observation, and controlled shutdown. Methods# new (internal)# Constructs a new ActorHandle from its backing InstanceCell and HandlerPorts. This is called by the runtime when spawning a new actor. pub(crate) fn new(cell: InstanceCell, ports: Arc\u003cHandlerPorts\u003cA\u003e\u003e) -\u003e Self { Self { cell, ports } } cell (internal)# Returns the underlying InstanceCell backing the actor. pub(crate) fn cell(\u0026self) -\u003e \u0026InstanceCell { \u0026self.cell } actor_id# Returns the ActorId of the actor represented by this handle. pub fn actor_id(\u0026self) -\u003e \u0026ActorId { self.cell.actor_id() } drain_and_stop# Signals the actor to drain any pending messages and then stop. This enables a graceful shutdown procedure. A reason string is provided to explain why the actor is being stopped. pub fn drain_and_stop(\u0026self, reason: \u0026str) -\u003e Result\u003c(), ActorError\u003e { self.cell.signal(Signal::DrainAndStop(reason.to_string())) } status# Returns a watch channel that can be used to observe the actor\u2019s lifecycle status (e.g., running, stopped, crashed). pub fn status(\u0026self) -\u003e watch::Receiver\u003cActorStatus\u003e { self.cell.status().clone() } send# Sends a message of type M to the actor. The actor must implement Handler\u003cM\u003e for this to compile. Messages sent via an ActorHandle are always delivered in-process and do not require serialization. pub fn send\u003cM: Message\u003e(\u0026self, message: M) -\u003e Result\u003c(), MailboxSenderError\u003e where A: Handler\u003cM\u003e, { self.ports.get().send(message) } port# Returns a reusable port handle for the given message type. pub fn port\u003cM: Message\u003e(\u0026self) -\u003e PortHandle\u003cM\u003e where A: Handler\u003cM\u003e, { self.ports.get() } bind# Creates a remote reference (ActorRef\u003cR\u003e) by applying a Binds\u003cA\u003e implementation. pub fn bind\u003cR: Binds\u003cA\u003e\u003e(\u0026self) -\u003e ActorRef\u003cR\u003e { self.cell.bind(self.ports.as_ref()) } Binding and ActorRefs# The bind() method on ActorHandle creates an ActorRef\u003cR\u003e for a given remote-facing reference type R. This is the bridge between a local actor instance and its externally visible interface. pub fn bind\u003cR: Binds\u003cA\u003e\u003e(\u0026self) -\u003e ActorRef\u003cR\u003e This method requires that R implements the Binds\u003cA\u003e trait. The Binds trait specifies how to associate a remote-facing reference type with the concrete ports handled by the actor: pub trait Binds\u003cA: Actor\u003e: Referable { fn bind(ports: \u0026HandlerPorts\u003cA\u003e); } In practice, A and R are usually the same type; this is the pattern produced by the #[export] macro. But R can also be a trait object or wrapper that abstracts over multiple implementations. Binding internals# Calling bind() on the ActorHandle: Invokes the Binds\u003cA\u003e::bind() implementation for R, registering the actor\u2019s message handlers into the HandlerPorts\u003cA\u003e dictionary. Always binds the Undeliverable\u003cMessageEnvelope\u003e handler. Runtime control-plane ports such as Signal and IntrospectMessage are provisioned directly by the instance. Records the bound message types into InstanceState::exported_named_ports, enabling routing and diagnostics. Constructs the final ActorRef\u003cR\u003e using ActorRef::attest(...), which assumes the type-level correspondence between R and the bound ports. The result is a typed, routable reference that can be shared across Procs. IntoFuture for ActorHandle# Overview# An ActorHandle\u003cA\u003e can be awaited directly thanks to its IntoFuture implementation. Awaiting the handle waits for the actor to shut down. Purpose# This allows you to write: let status = actor_handle.await; Instead of: let mut status = actor_handle.status(); status.wait_for(ActorStatus::is_terminal).await; Behavior# When awaited, the handle: Subscribes to the actor\u2019s status channel, Waits for a terminal status (Stopped, Crashed, etc.), Returns the final status, Returns ActorStatus::Unknown if the channel closes unexpectedly. Implementation# impl\u003cA: Actor\u003e IntoFuture for ActorHandle\u003cA\u003e { type Output = ActorStatus; type IntoFuture = BoxFuture\u003c\u0027static, Self::Output\u003e; fn into_future(self) -\u003e Self::IntoFuture { let future = async move { let mut status_receiver = self.cell.status().clone(); let result = status_receiver.wait_for(ActorStatus::is_terminal).await; match result { Err(_) =\u003e ActorStatus::Unknown, Ok(status) =\u003e status.clone(), } }; future.boxed() } } Summary# This feature is primarily ergonomic. It provides a natural way to synchronize with the termination of an actor by simply awaiting its handle.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["PyBootstrapCommand"]};
+window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["PyBootstrapCommand","PyMeshAdminRef"]};

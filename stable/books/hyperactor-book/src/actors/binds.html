@@ -11,12 +11,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="http://pytorch.org/books/hyperactor-book/src/actors/binds.html" />
 <meta property="og:site_name" content="Monarch" />
-<meta property="og:description" content="The Binds trait defines how an actor’s ports are associated with the message types it can receive remotely. Implementing Binds&lt;A&gt; allows the system to determine which messages can be routed t..." />
+<meta property="og:description" content="The Binds trait defines how an actor’s handler ports are associated with the message types it can receive remotely. Implementing Binds&lt;A&gt; allows the system to determine which messages can be ..." />
 <meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
 <meta property="og:image:alt" content="Monarch" />
-<meta name="description" content="The Binds trait defines how an actor’s ports are associated with the message types it can receive remotely. Implementing Binds&lt;A&gt; allows the system to determine which messages can be routed t..." />
+<meta name="description" content="The Binds trait defines how an actor’s handler ports are associated with the message types it can receive remotely. Implementing Binds&lt;A&gt; allows the system to determine which messages can be ..." />
 
-    <title>Binds &#8212; Monarch v0.4.1 documentation</title>
+    <title>Binds &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/actors/binds.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -960,6 +972,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1270,9 +1294,9 @@ document.write(`
                   
   <section id="binds">
 <h1>Binds<a class="headerlink" href="#binds" title="Link to this heading">#</a></h1>
-<p>The <code class="docutils literal notranslate"><span class="pre">Binds</span></code> trait defines how an actor’s ports are associated with the message types it can receive remotely.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">Binds</span></code> trait defines how an actor’s handler ports are associated with the message types it can receive remotely.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">Binds</span><span class="o">&lt;</span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">Actor</span><span class="o">&gt;</span><span class="p">:</span><span class="w"> </span><span class="nc">Referable</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Ports</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;</span><span class="p">);</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">HandlerPorts</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;</span><span class="p">);</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -1281,16 +1305,14 @@ document.write(`
 <h2>Code Generation<a class="headerlink" href="#code-generation" title="Link to this heading">#</a></h2>
 <p>In most cases, you do not implement this trait manually. Instead, the <code class="docutils literal notranslate"><span class="pre">#[export]</span></code> macro generates the appropriate <code class="docutils literal notranslate"><span class="pre">Binds&lt;A&gt;</span></code> implementation by registering the actor’s supported message types.</p>
 <p>For example:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[hyperactor::export(</span>
-<span class="cp">    spawn = true,</span>
-<span class="cp">    handlers = [ShoppingList],</span>
-<span class="cp">)]</span>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[hyperactor::spawnable]</span>
+<span class="cp">#[hyperactor::export(ShoppingList)]</span>
 <span class="k">struct</span><span class="w"> </span><span class="nc">ShoppingListActor</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>Expands to:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Binds</span><span class="o">&lt;</span><span class="n">ShoppingListActor</span><span class="o">&gt;</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">ShoppingListActor</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Ports</span><span class="o">&lt;</span><span class="bp">Self</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">HandlerPorts</span><span class="o">&lt;</span><span class="bp">Self</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="n">ports</span><span class="p">.</span><span class="n">bind</span><span class="p">::</span><span class="o">&lt;</span><span class="n">ShoppingList</span><span class="o">&gt;</span><span class="p">();</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
@@ -1553,7 +1575,7 @@ document.write(`
        "headline": "Binds",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/actors/binds.html",
-       "articleBody": "Binds# The Binds trait defines how an actor\u2019s ports are associated with the message types it can receive remotely. pub trait Binds\u003cA: Actor\u003e: Referable { fn bind(ports: \u0026Ports\u003cA\u003e); } Implementing Binds\u003cA\u003e allows the system to determine which messages can be routed to an actor instance of type A. Code Generation# In most cases, you do not implement this trait manually. Instead, the #[export] macro generates the appropriate Binds\u003cA\u003e implementation by registering the actor\u2019s supported message types. For example: #[hyperactor::export( spawn = true, handlers = [ShoppingList], )] struct ShoppingListActor; Expands to: impl Binds\u003cShoppingListActor\u003e for ShoppingListActor { fn bind(ports: \u0026Ports\u003cSelf\u003e) { ports.bind::\u003cShoppingList\u003e(); } } This ensures that the actor is correctly wired to handle messages of type ShoppingList when used in a remote messaging context.",
+       "articleBody": "Binds# The Binds trait defines how an actor\u2019s handler ports are associated with the message types it can receive remotely. pub trait Binds\u003cA: Actor\u003e: Referable { fn bind(ports: \u0026HandlerPorts\u003cA\u003e); } Implementing Binds\u003cA\u003e allows the system to determine which messages can be routed to an actor instance of type A. Code Generation# In most cases, you do not implement this trait manually. Instead, the #[export] macro generates the appropriate Binds\u003cA\u003e implementation by registering the actor\u2019s supported message types. For example: #[hyperactor::spawnable] #[hyperactor::export(ShoppingList)] struct ShoppingListActor; Expands to: impl Binds\u003cShoppingListActor\u003e for ShoppingListActor { fn bind(ports: \u0026HandlerPorts\u003cSelf\u003e) { ports.bind::\u003cShoppingList\u003e(); } } This ensures that the actor is correctly wired to handle messages of type ShoppingList when used in a remote messaging context.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

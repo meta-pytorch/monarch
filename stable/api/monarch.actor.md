@@ -28,7 +28,7 @@ async with host_mesh:
 If you don't want to shutdown the hosts, you don't need to use it as a
 context manager.
 
-spawn_procs(*per_host=None*, *bootstrap=None*, *name=None*, *proc_bind=None*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.spawn_procs)
+spawn_procs(*per_host=None*, *bootstrap=None*, *name=None*, *proc_bind=None*, *bootstrap_command=None*)[[source]](../_modules/monarch/_src/actor/host_mesh.html#HostMesh.spawn_procs)
 
 Spawn a ProcMesh onto this host mesh.
 
@@ -41,6 +41,11 @@ Parameters:
 Length must equal `math.prod(per_host.values())`.
 Each dict maps binding keys (`cpunodebind`,
 `membind`, `physcpubind`, `cpus`) to values.
+- **bootstrap_command** (*BootstrapCommand**|*[*Callable*](https://docs.python.org/3/library/typing.html#typing.Callable)*[**[**Point**]**,**BootstrapCommand**]**|**None*) - optional BootstrapCommand or callable that
+returns a BootstrapCommand for each coordinate. The callable
+receives a `Point` (combined coordinate across host and
+per_host dimensions). This allows full customization of the
+bootstrap command per coordinate.
 
 *property*region*: Region*
 

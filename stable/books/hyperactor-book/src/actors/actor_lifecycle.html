@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This page documents auxiliary types used in actor startup, shutdown, and supervision logic. ActorStatus: ActorStatus describes the current runtime state of an actor. It is used to monitor progress,..." />
 
-    <title>Actor Lifecycle Types &#8212; Monarch v0.4.1 documentation</title>
+    <title>Actor Lifecycle Types &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/actors/actor_lifecycle.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -960,6 +972,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1281,8 +1305,6 @@ document.write(`
 <span class="w">    </span><span class="n">Client</span><span class="p">,</span>
 <span class="w">    </span><span class="n">Idle</span><span class="p">,</span>
 <span class="w">    </span><span class="n">Processing</span><span class="p">(</span><span class="n">SystemTime</span><span class="p">,</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="p">(</span><span class="nb">String</span><span class="p">,</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="nb">String</span><span class="o">&gt;</span><span class="p">)</span><span class="o">&gt;</span><span class="p">),</span>
-<span class="w">    </span><span class="n">Saving</span><span class="p">(</span><span class="n">SystemTime</span><span class="p">),</span>
-<span class="w">    </span><span class="n">Loading</span><span class="p">(</span><span class="n">SystemTime</span><span class="p">),</span>
 <span class="w">    </span><span class="n">Stopping</span><span class="p">,</span>
 <span class="w">    </span><span class="n">Stopped</span><span class="p">,</span>
 <span class="w">    </span><span class="n">Failed</span><span class="p">(</span><span class="nb">String</span><span class="p">),</span>
@@ -1298,8 +1320,6 @@ document.write(`
 <li><p><code class="docutils literal notranslate"><span class="pre">Client</span></code>: The actor is operating in “client” mode; its ports are being managed manually.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Idle</span></code>: The actor is ready to process messages but is currently idle.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Processing</span></code>: The actor is handling a message. Contains a timestamp and optionally the handler/arm label.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">Saving</span></code>: The actor is saving its state as part of a checkpoint. Includes the time the operation began.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">Loading</span></code>: The actor is loading a previously saved state.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Stopping</span></code>: The actor is in shutdown mode and draining its mailbox.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Stopped</span></code>: The actor has exited and will no longer process messages.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Failed</span></code>: The actor terminated abnormally. Contains an <code class="docutils literal notranslate"><span class="pre">ActorErrorKind</span></code> describing the error.</p></li>
@@ -1331,7 +1351,7 @@ document.write(`
 <li><p><code class="docutils literal notranslate"><span class="pre">Stop(reason)</span></code>: Immediately halts the actor, even if messages remain in its mailbox.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ChildStopped</span></code>: Internal signal sent when a direct child with the given index was stopped.</p></li>
 </ul>
-<p>These signals are routed like any other message, typically sent using <code class="docutils literal notranslate"><span class="pre">ActorHandle::send</span></code> or by the runtime during supervision and recovery procedures.</p>
+<p>These signals are routed like any other message, typically sent using <code class="docutils literal notranslate"><span class="pre">ActorHandle::send</span></code> or by the runtime during supervision procedures.</p>
 </section>
 <section id="actorerror">
 <h2><code class="docutils literal notranslate"><span class="pre">ActorError</span></code><a class="headerlink" href="#actorerror" title="Link to this heading">#</a></h2>
@@ -1342,7 +1362,7 @@ document.write(`
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>This error type is returned in various actor lifecycle operations such as initialization, message handling, checkpointing, and shutdown. It is structured and extensible, allowing the runtime to distinguish between different classes of failure.</p>
+<p>This error type is returned in various actor lifecycle operations such as initialization, message handling, and shutdown. It is structured and extensible, allowing the runtime to distinguish between different classes of failure.</p>
 <section id="associated-methods">
 <h3>Associated Methods<a class="headerlink" href="#associated-methods" title="Link to this heading">#</a></h3>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">ActorError</span><span class="w"> </span><span class="p">{</span>
@@ -1377,7 +1397,6 @@ document.write(`
 <li><p><code class="docutils literal notranslate"><span class="pre">cleanup(err:</span> <span class="pre">anyhow::Error)</span></code>: Error during actor cleanup</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mailbox(err:</span> <span class="pre">MailboxError)</span></code>: A lower-level mailbox error occurred</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mailbox_sender(err:</span> <span class="pre">MailboxSenderError)</span></code>: A lower-level sender error occurred</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">checkpoint(err:</span> <span class="pre">CheckpointError)</span></code>: Error during save/load of actor state</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">message_log(err:</span> <span class="pre">MessageLogError)</span></code>: Failure in the underlying message log</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">indeterminate_state()</span></code>: The actor reached an invalid or unknown internal state</p></li>
 </ul>
@@ -1651,7 +1670,7 @@ document.write(`
        "headline": "Actor Lifecycle Types",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/actors/actor_lifecycle.html",
-       "articleBody": "Actor Lifecycle Types# This page documents auxiliary types used in actor startup, shutdown, and supervision logic. ActorStatus# ActorStatus describes the current runtime state of an actor. It is used to monitor progress, coordinate shutdown, and detect failure conditions. pub enum ActorStatus { Unknown, Created, Initializing, Client, Idle, Processing(SystemTime, Option\u003c(String, Option\u003cString\u003e)\u003e), Saving(SystemTime), Loading(SystemTime), Stopping, Stopped, Failed(String), } States# Unknown: The status is unknown (e.g. not yet initialized). Created: The actor has been constructed but not yet started. Initializing: The actor is running its init lifecycle hook and is not yet receiving messages. Client: The actor is operating in \u201cclient\u201d mode; its ports are being managed manually. Idle: The actor is ready to process messages but is currently idle. Processing: The actor is handling a message. Contains a timestamp and optionally the handler/arm label. Saving: The actor is saving its state as part of a checkpoint. Includes the time the operation began. Loading: The actor is loading a previously saved state. Stopping: The actor is in shutdown mode and draining its mailbox. Stopped: The actor has exited and will no longer process messages. Failed: The actor terminated abnormally. Contains an ActorErrorKind describing the error. Methods# is_terminal(\u0026self) -\u003e bool: Returns true if the actor has either stopped or failed. is_failed(\u0026self) -\u003e bool: Returns true if the actor is in the Failed state. generic_failure(message: impl Into\u003cString\u003e) -\u003e Self: Creates a generic failure status with the provided error message. span_string(\u0026self) -\u003e \u0026\u0027static str: Returns the active handler/arm name if available. Used for tracing. Signal# Signal is used to control actor lifecycle transitions externally. These messages are sent internally by the runtime (or explicitly by users) to initiate operations like shutdown. pub enum Signal { DrainAndStop(String), Stop(String), ChildStopped(Index), } Variants DrainAndStop(reason): Gracefully stops the actor by first draining all queued messages. The reason string describes why the stop was requested. Stop(reason): Immediately halts the actor, even if messages remain in its mailbox. ChildStopped: Internal signal sent when a direct child with the given index was stopped. These signals are routed like any other message, typically sent using ActorHandle::send or by the runtime during supervision and recovery procedures. ActorError# ActorError represents a failure encountered while serving an actor. It includes the actor\u2019s identity and the underlying cause. pub struct ActorError { pub actor_id: Box\u003cActorId\u003e, pub kind: Box\u003cActorErrorKind\u003e, } This error type is returned in various actor lifecycle operations such as initialization, message handling, checkpointing, and shutdown. It is structured and extensible, allowing the runtime to distinguish between different classes of failure. Associated Methods# impl ActorError { /// Constructs a new `ActorError` with the given ID and kind. pub(crate) fn new(actor_id: \u0026ActorId, kind: ActorErrorKind) -\u003e Self } ActorErrorKind# pub enum ActorErrorKind { Generic(String), ErrorDuringHandlingSupervision(String, Box\u003cActorSupervisionEvent\u003e), UnhandledSupervisionEvent(Box\u003cActorSupervisionEvent\u003e), } Variants# Generic: A generic error with a formatted message. ErrorDuringHandlingSupervision: An error that occurred while trying to handle a supervision event. UnhandledSupervisionEvent: The actor did not attempt to handle a supervision event. The ActorErrorKind also provides several constructor methods: processing(err: anyhow::Error): Error while processing a message panic(err: anyhow::Error): A panic occurred during message handling init(err: anyhow::Error): Actor initialization failed cleanup(err: anyhow::Error): Error during actor cleanup mailbox(err: MailboxError): A lower-level mailbox error occurred mailbox_sender(err: MailboxSenderError): A lower-level sender error occurred checkpoint(err: CheckpointError): Error during save/load of actor state message_log(err: MessageLogError): Failure in the underlying message log indeterminate_state(): The actor reached an invalid or unknown internal state",
+       "articleBody": "Actor Lifecycle Types# This page documents auxiliary types used in actor startup, shutdown, and supervision logic. ActorStatus# ActorStatus describes the current runtime state of an actor. It is used to monitor progress, coordinate shutdown, and detect failure conditions. pub enum ActorStatus { Unknown, Created, Initializing, Client, Idle, Processing(SystemTime, Option\u003c(String, Option\u003cString\u003e)\u003e), Stopping, Stopped, Failed(String), } States# Unknown: The status is unknown (e.g. not yet initialized). Created: The actor has been constructed but not yet started. Initializing: The actor is running its init lifecycle hook and is not yet receiving messages. Client: The actor is operating in \u201cclient\u201d mode; its ports are being managed manually. Idle: The actor is ready to process messages but is currently idle. Processing: The actor is handling a message. Contains a timestamp and optionally the handler/arm label. Stopping: The actor is in shutdown mode and draining its mailbox. Stopped: The actor has exited and will no longer process messages. Failed: The actor terminated abnormally. Contains an ActorErrorKind describing the error. Methods# is_terminal(\u0026self) -\u003e bool: Returns true if the actor has either stopped or failed. is_failed(\u0026self) -\u003e bool: Returns true if the actor is in the Failed state. generic_failure(message: impl Into\u003cString\u003e) -\u003e Self: Creates a generic failure status with the provided error message. span_string(\u0026self) -\u003e \u0026\u0027static str: Returns the active handler/arm name if available. Used for tracing. Signal# Signal is used to control actor lifecycle transitions externally. These messages are sent internally by the runtime (or explicitly by users) to initiate operations like shutdown. pub enum Signal { DrainAndStop(String), Stop(String), ChildStopped(Index), } Variants DrainAndStop(reason): Gracefully stops the actor by first draining all queued messages. The reason string describes why the stop was requested. Stop(reason): Immediately halts the actor, even if messages remain in its mailbox. ChildStopped: Internal signal sent when a direct child with the given index was stopped. These signals are routed like any other message, typically sent using ActorHandle::send or by the runtime during supervision procedures. ActorError# ActorError represents a failure encountered while serving an actor. It includes the actor\u2019s identity and the underlying cause. pub struct ActorError { pub actor_id: Box\u003cActorId\u003e, pub kind: Box\u003cActorErrorKind\u003e, } This error type is returned in various actor lifecycle operations such as initialization, message handling, and shutdown. It is structured and extensible, allowing the runtime to distinguish between different classes of failure. Associated Methods# impl ActorError { /// Constructs a new `ActorError` with the given ID and kind. pub(crate) fn new(actor_id: \u0026ActorId, kind: ActorErrorKind) -\u003e Self } ActorErrorKind# pub enum ActorErrorKind { Generic(String), ErrorDuringHandlingSupervision(String, Box\u003cActorSupervisionEvent\u003e), UnhandledSupervisionEvent(Box\u003cActorSupervisionEvent\u003e), } Variants# Generic: A generic error with a formatted message. ErrorDuringHandlingSupervision: An error that occurred while trying to handle a supervision event. UnhandledSupervisionEvent: The actor did not attempt to handle a supervision event. The ActorErrorKind also provides several constructor methods: processing(err: anyhow::Error): Error while processing a message panic(err: anyhow::Error): A panic occurred during message handling init(err: anyhow::Error): Actor initialization failed cleanup(err: anyhow::Error): Error during actor cleanup mailbox(err: MailboxError): A lower-level mailbox error occurred mailbox_sender(err: MailboxSenderError): A lower-level sender error occurred message_log(err: MessageLogError): Failure in the underlying message log indeterminate_state(): The actor reached an invalid or unknown internal state",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

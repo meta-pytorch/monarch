@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_extension/src/client.rs`."><title>client.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="_rust_bindings" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">_rust_bindings/</div>client.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_extension/src/client.rs`."><title>client.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-b7b9f40b.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="_rust_bindings" data-themes="" data-resource-suffix="" data-rustdoc-version="1.95.0-nightly (3a70d0349 2026-02-27)" data-channel="nightly" data-search-js="search-63369b7b.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">_rust_bindings/</div>client.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
 <a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
 <a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
 <a href=#4 id=4 data-nosnippet>4</a> *
@@ -8,10 +8,10 @@
 <a href=#8 id=8 data-nosnippet>8</a>
 <a href=#9 id=9 data-nosnippet>9</a></span><span class="kw">use </span>std::sync::Arc;
 <a href=#10 id=10 data-nosnippet>10</a>
-<a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>hyperactor::reference;
+<a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>hyperactor <span class="kw">as </span>reference;
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>monarch_hyperactor::ndslice::PySlice;
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>monarch_hyperactor::proc::InstanceWrapper;
-<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>monarch_hyperactor::proc::PyActorId;
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>monarch_hyperactor::proc::PyActorAddr;
 <a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>monarch_hyperactor::proc::PyProc;
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>monarch_hyperactor::proc::PySerialized;
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>monarch_hyperactor::runtime::monarch_with_gil_blocking;
@@ -116,7 +116,7 @@
 <a href=#116 id=116 data-nosnippet>116</a>        seq: Seq,
 <a href=#117 id=117 data-nosnippet>117</a>        caused_by_seq: Seq,
 <a href=#118 id=118 data-nosnippet>118</a>        backtrace: String,
-<a href=#119 id=119 data-nosnippet>119</a>        actor_id: <span class="kw-2">&amp;</span>PyActorId,
+<a href=#119 id=119 data-nosnippet>119</a>        actor_id: <span class="kw-2">&amp;</span>PyActorAddr,
 <a href=#120 id=120 data-nosnippet>120</a>    ) -&gt; PyResult&lt;(<span class="self">Self</span>, PyException)&gt; {
 <a href=#121 id=121 data-nosnippet>121</a>        <span class="prelude-val">Ok</span>((
 <a href=#122 id=122 data-nosnippet>122</a>            <span class="self">Self</span>,
@@ -138,7 +138,7 @@
 <a href=#138 id=138 data-nosnippet>138</a>        py: Python&lt;<span class="lifetime">'_</span>&gt;,
 <a href=#139 id=139 data-nosnippet>139</a>        seq: Seq,
 <a href=#140 id=140 data-nosnippet>140</a>        caused_by_seq: Seq,
-<a href=#141 id=141 data-nosnippet>141</a>        actor_id: <span class="kw-2">&amp;</span>PyActorId,
+<a href=#141 id=141 data-nosnippet>141</a>        actor_id: <span class="kw-2">&amp;</span>PyActorAddr,
 <a href=#142 id=142 data-nosnippet>142</a>        backtrace: String,
 <a href=#143 id=143 data-nosnippet>143</a>    ) -&gt; PyResult&lt;Py&lt;PyAny&gt;&gt; {
 <a href=#144 id=144 data-nosnippet>144</a>        <span class="kw">let </span>initializer = PyClassInitializer::from(PyException {
@@ -166,7 +166,7 @@
 <a href=#166 id=166 data-nosnippet>166</a>    }
 <a href=#167 id=167 data-nosnippet>167</a>
 <a href=#168 id=168 data-nosnippet>168</a>    <span class="attr">#[getter]
-<a href=#169 id=169 data-nosnippet>169</a>    </span><span class="kw">fn </span>actor_id(self_: PyRef&lt;<span class="self">Self</span>&gt;) -&gt; PyActorId {
+<a href=#169 id=169 data-nosnippet>169</a>    </span><span class="kw">fn </span>actor_id(self_: PyRef&lt;<span class="self">Self</span>&gt;) -&gt; PyActorAddr {
 <a href=#170 id=170 data-nosnippet>170</a>        self_
 <a href=#171 id=171 data-nosnippet>171</a>            .as_ref()
 <a href=#172 id=172 data-nosnippet>172</a>            .inner
@@ -264,7 +264,7 @@
 <a href=#264 id=264 data-nosnippet>264</a>    </span><span class="kw">fn </span>new(
 <a href=#265 id=265 data-nosnippet>265</a>        backtrace: String,
 <a href=#266 id=266 data-nosnippet>266</a>        address: String,
-<a href=#267 id=267 data-nosnippet>267</a>        actor_id: <span class="kw-2">&amp;</span>PyActorId,
+<a href=#267 id=267 data-nosnippet>267</a>        actor_id: <span class="kw-2">&amp;</span>PyActorAddr,
 <a href=#268 id=268 data-nosnippet>268</a>    ) -&gt; PyResult&lt;(<span class="self">Self</span>, PyException)&gt; {
 <a href=#269 id=269 data-nosnippet>269</a>        <span class="prelude-val">Ok</span>((
 <a href=#270 id=270 data-nosnippet>270</a>            <span class="self">Self</span>,
@@ -281,7 +281,7 @@
 <a href=#281 id=281 data-nosnippet>281</a>    <span class="attr">#[staticmethod]
 <a href=#282 id=282 data-nosnippet>282</a>    </span><span class="kw">fn </span>new_for_unit_test(
 <a href=#283 id=283 data-nosnippet>283</a>        py: Python&lt;<span class="lifetime">'_</span>&gt;,
-<a href=#284 id=284 data-nosnippet>284</a>        actor_id: <span class="kw-2">&amp;</span>PyActorId,
+<a href=#284 id=284 data-nosnippet>284</a>        actor_id: <span class="kw-2">&amp;</span>PyActorAddr,
 <a href=#285 id=285 data-nosnippet>285</a>        backtrace: String,
 <a href=#286 id=286 data-nosnippet>286</a>    ) -&gt; PyResult&lt;Py&lt;PyAny&gt;&gt; {
 <a href=#287 id=287 data-nosnippet>287</a>        <span class="kw">let </span>initializer = PyClassInitializer::from(PyException {
@@ -296,7 +296,7 @@
 <a href=#296 id=296 data-nosnippet>296</a>    }
 <a href=#297 id=297 data-nosnippet>297</a>
 <a href=#298 id=298 data-nosnippet>298</a>    <span class="attr">#[getter]
-<a href=#299 id=299 data-nosnippet>299</a>    </span><span class="kw">fn </span>actor_id(self_: PyRef&lt;<span class="self">Self</span>&gt;) -&gt; PyActorId {
+<a href=#299 id=299 data-nosnippet>299</a>    </span><span class="kw">fn </span>actor_id(self_: PyRef&lt;<span class="self">Self</span>&gt;) -&gt; PyActorAddr {
 <a href=#300 id=300 data-nosnippet>300</a>        self_
 <a href=#301 id=301 data-nosnippet>301</a>            .as_ref()
 <a href=#302 id=302 data-nosnippet>302</a>            .inner
@@ -325,7 +325,7 @@
 <a href=#325 id=325 data-nosnippet>325</a>    module = <span class="string">"monarch._rust_bindings.monarch_extension.client"
 <a href=#326 id=326 data-nosnippet>326</a></span>)]
 <a href=#327 id=327 data-nosnippet>327</a></span><span class="kw">pub struct </span>DebuggerMessage {
-<a href=#328 id=328 data-nosnippet>328</a>    debugger_actor_id: PyActorId,
+<a href=#328 id=328 data-nosnippet>328</a>    debugger_actor_id: PyActorAddr,
 <a href=#329 id=329 data-nosnippet>329</a>    action: DebuggerAction,
 <a href=#330 id=330 data-nosnippet>330</a>}
 <a href=#331 id=331 data-nosnippet>331</a>
@@ -333,7 +333,7 @@
 <a href=#333 id=333 data-nosnippet>333</a></span><span class="kw">impl </span>DebuggerMessage {
 <a href=#334 id=334 data-nosnippet>334</a>    <span class="attr">#[new]
 <a href=#335 id=335 data-nosnippet>335</a>    #[pyo3(signature = (<span class="kw-2">*</span>, debugger_actor_id, action))]
-<a href=#336 id=336 data-nosnippet>336</a>    </span><span class="kw">pub fn </span>new(debugger_actor_id: PyActorId, action: DebuggerAction) -&gt; PyResult&lt;<span class="self">Self</span>&gt; {
+<a href=#336 id=336 data-nosnippet>336</a>    </span><span class="kw">pub fn </span>new(debugger_actor_id: PyActorAddr, action: DebuggerAction) -&gt; PyResult&lt;<span class="self">Self</span>&gt; {
 <a href=#337 id=337 data-nosnippet>337</a>        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
 <a href=#338 id=338 data-nosnippet>338</a>            debugger_actor_id,
 <a href=#339 id=339 data-nosnippet>339</a>            action,
@@ -356,7 +356,7 @@
 <a href=#356 id=356 data-nosnippet>356</a>    }
 <a href=#357 id=357 data-nosnippet>357</a>
 <a href=#358 id=358 data-nosnippet>358</a>    <span class="attr">#[staticmethod]
-<a href=#359 id=359 data-nosnippet>359</a>    </span><span class="kw">fn </span>new_with_parent(_proc: <span class="kw-2">&amp;</span>PyProc, _parent: <span class="kw-2">&amp;</span>PyActorId) -&gt; PyResult&lt;<span class="self">Self</span>&gt; {
+<a href=#359 id=359 data-nosnippet>359</a>    </span><span class="kw">fn </span>new_with_parent(_proc: <span class="kw-2">&amp;</span>PyProc, _parent: <span class="kw-2">&amp;</span>PyActorAddr) -&gt; PyResult&lt;<span class="self">Self</span>&gt; {
 <a href=#360 id=360 data-nosnippet>360</a>        <span class="comment">// XXX:
 <a href=#361 id=361 data-nosnippet>361</a>        </span><span class="macro">unimplemented!</span>(<span class="string">"this is not a valid thing to do!"</span>);
 <a href=#362 id=362 data-nosnippet>362</a>        <span class="comment">// Ok(Self {
@@ -369,13 +369,13 @@
 <a href=#369 id=369 data-nosnippet>369</a>
 <a href=#370 id=370 data-nosnippet>370</a>    <span class="doccomment">/// Send a message to any actor that can receive the corresponding serialized
 <a href=#371 id=371 data-nosnippet>371</a>    /// message.
-<a href=#372 id=372 data-nosnippet>372</a>    </span><span class="kw">fn </span>send(<span class="kw-2">&amp;</span><span class="self">self</span>, actor_id: <span class="kw-2">&amp;</span>PyActorId, message: <span class="kw-2">&amp;</span>PySerialized) -&gt; PyResult&lt;()&gt; {
+<a href=#372 id=372 data-nosnippet>372</a>    </span><span class="kw">fn </span>send(<span class="kw-2">&amp;</span><span class="self">self</span>, actor_id: <span class="kw-2">&amp;</span>PyActorAddr, message: <span class="kw-2">&amp;</span>PySerialized) -&gt; PyResult&lt;()&gt; {
 <a href=#373 id=373 data-nosnippet>373</a>        <span class="self">self</span>.instance.blocking_lock().send(actor_id, message)
 <a href=#374 id=374 data-nosnippet>374</a>    }
 <a href=#375 id=375 data-nosnippet>375</a>
 <a href=#376 id=376 data-nosnippet>376</a>    <span class="kw">fn </span>send_obj(
 <a href=#377 id=377 data-nosnippet>377</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#378 id=378 data-nosnippet>378</a>        controller: <span class="kw-2">&amp;</span>PyActorId,
+<a href=#378 id=378 data-nosnippet>378</a>        controller: <span class="kw-2">&amp;</span>PyActorAddr,
 <a href=#379 id=379 data-nosnippet>379</a>        ranks: PyRanks,
 <a href=#380 id=380 data-nosnippet>380</a>        message: Bound&lt;<span class="lifetime">'_</span>, PyAny&gt;,
 <a href=#381 id=381 data-nosnippet>381</a>    ) -&gt; PyResult&lt;()&gt; {
@@ -401,118 +401,122 @@
 <a href=#401 id=401 data-nosnippet>401</a>    }
 <a href=#402 id=402 data-nosnippet>402</a>
 <a href=#403 id=403 data-nosnippet>403</a>    <span class="doccomment">/// Attach the client to a controller actor. This will block until the controller responds.
-<a href=#404 id=404 data-nosnippet>404</a>    </span><span class="kw">fn </span>attach(<span class="kw-2">&amp;mut </span><span class="self">self</span>, py: Python, controller_id: PyActorId) -&gt; PyResult&lt;()&gt; {
+<a href=#404 id=404 data-nosnippet>404</a>    </span><span class="kw">fn </span>attach(<span class="kw-2">&amp;mut </span><span class="self">self</span>, py: Python, controller_id: PyActorAddr) -&gt; PyResult&lt;()&gt; {
 <a href=#405 id=405 data-nosnippet>405</a>        <span class="kw">let </span>instance_wrapper = <span class="self">self</span>.instance.blocking_lock();
-<a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">let </span>actor_id = instance_wrapper.actor_id().clone();
+<a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">let </span>actor_id = instance_wrapper.actor_addr().clone();
 <a href=#407 id=407 data-nosnippet>407</a>        <span class="kw">let </span>(instance, _handler) = instance_wrapper
 <a href=#408 id=408 data-nosnippet>408</a>            .instance()
 <a href=#409 id=409 data-nosnippet>409</a>            .child()
 <a href=#410 id=410 data-nosnippet>410</a>            .map_err(|err| PyRuntimeError::new_err(err.to_string()))<span class="question-mark">?</span>;
 <a href=#411 id=411 data-nosnippet>411</a>
 <a href=#412 id=412 data-nosnippet>412</a>        signal_safe_block_on(py, <span class="kw">async move </span>{
-<a href=#413 id=413 data-nosnippet>413</a>            reference::ActorRef::&lt;ControllerActor&gt;::attest((<span class="kw-2">&amp;</span>controller_id).into())
-<a href=#414 id=414 data-nosnippet>414</a>                .attach(<span class="kw-2">&amp;</span>instance, reference::ActorRef::attest(actor_id))
-<a href=#415 id=415 data-nosnippet>415</a>                .<span class="kw">await
-<a href=#416 id=416 data-nosnippet>416</a>                </span>.map_err(|err| PyRuntimeError::new_err(err.to_string()))
-<a href=#417 id=417 data-nosnippet>417</a>        })<span class="question-mark">?
-<a href=#418 id=418 data-nosnippet>418</a>    </span>}
-<a href=#419 id=419 data-nosnippet>419</a>
-<a href=#420 id=420 data-nosnippet>420</a>    <span class="kw">fn </span>drop_refs(<span class="kw-2">&amp;</span><span class="self">self</span>, py: Python, controller_id: PyActorId, refs: Vec&lt;Ref&gt;) -&gt; PyResult&lt;()&gt; {
-<a href=#421 id=421 data-nosnippet>421</a>        <span class="kw">let </span>instance_wrapper = <span class="self">self</span>.instance.blocking_lock();
-<a href=#422 id=422 data-nosnippet>422</a>        <span class="kw">let </span>(instance, _handler) = instance_wrapper
-<a href=#423 id=423 data-nosnippet>423</a>            .instance()
-<a href=#424 id=424 data-nosnippet>424</a>            .child()
-<a href=#425 id=425 data-nosnippet>425</a>            .map_err(|err| PyRuntimeError::new_err(err.to_string()))<span class="question-mark">?</span>;
-<a href=#426 id=426 data-nosnippet>426</a>
-<a href=#427 id=427 data-nosnippet>427</a>        signal_safe_block_on(py, <span class="kw">async move </span>{
-<a href=#428 id=428 data-nosnippet>428</a>            reference::ActorRef::&lt;ControllerActor&gt;::attest((<span class="kw-2">&amp;</span>controller_id).into())
-<a href=#429 id=429 data-nosnippet>429</a>                .drop_refs(<span class="kw-2">&amp;</span>instance, refs)
-<a href=#430 id=430 data-nosnippet>430</a>                .<span class="kw">await
-<a href=#431 id=431 data-nosnippet>431</a>                </span>.map_err(|err| PyRuntimeError::new_err(err.to_string()))
-<a href=#432 id=432 data-nosnippet>432</a>        })<span class="question-mark">?
-<a href=#433 id=433 data-nosnippet>433</a>    </span>}
-<a href=#434 id=434 data-nosnippet>434</a>
-<a href=#435 id=435 data-nosnippet>435</a>    <span class="doccomment">/// Get the next message from the queue. It will block until a message is received
-<a href=#436 id=436 data-nosnippet>436</a>    /// or the timeout is reached in which case it will return None
-<a href=#437 id=437 data-nosnippet>437</a>    /// If the actor has been stopped, this returns an error.
-<a href=#438 id=438 data-nosnippet>438</a>    </span><span class="attr">#[pyo3(signature = (<span class="kw-2">*</span>, timeout_msec = <span class="prelude-val">None</span>))]
-<a href=#439 id=439 data-nosnippet>439</a>    </span><span class="kw">fn </span>get_next_message&lt;<span class="lifetime">'py</span>&gt;(
-<a href=#440 id=440 data-nosnippet>440</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
-<a href=#441 id=441 data-nosnippet>441</a>        py: Python&lt;<span class="lifetime">'py</span>&gt;,
-<a href=#442 id=442 data-nosnippet>442</a>        timeout_msec: <span class="prelude-ty">Option</span>&lt;u64&gt;,
-<a href=#443 id=443 data-nosnippet>443</a>    ) -&gt; PyResult&lt;Py&lt;PyAny&gt;&gt; {
-<a href=#444 id=444 data-nosnippet>444</a>        <span class="kw">let </span>instance = <span class="self">self</span>.instance.clone();
-<a href=#445 id=445 data-nosnippet>445</a>        <span class="kw">let </span>result = signal_safe_block_on(py, <span class="kw">async move </span>{
-<a href=#446 id=446 data-nosnippet>446</a>            instance.lock().<span class="kw">await</span>.next_message(timeout_msec).<span class="kw">await
-<a href=#447 id=447 data-nosnippet>447</a>        </span>})<span class="question-mark">?</span>;
-<a href=#448 id=448 data-nosnippet>448</a>
-<a href=#449 id=449 data-nosnippet>449</a>        monarch_with_gil_blocking(|py| <span class="kw">match </span>result {
-<a href=#450 id=450 data-nosnippet>450</a>            <span class="prelude-val">Ok</span>(<span class="prelude-val">Some</span>(ClientMessage::Result { seq, result })) =&gt; {
-<a href=#451 id=451 data-nosnippet>451</a>                WorkerResponse { seq, result }.into_py_any(py)
-<a href=#452 id=452 data-nosnippet>452</a>            }
-<a href=#453 id=453 data-nosnippet>453</a>            <span class="prelude-val">Ok</span>(<span class="prelude-val">Some</span>(ClientMessage::Log { level, message })) =&gt; LogMessage {
-<a href=#454 id=454 data-nosnippet>454</a>                level: PyLogLevel::from(level),
-<a href=#455 id=455 data-nosnippet>455</a>                message,
+<a href=#413 id=413 data-nosnippet>413</a>            reference::ActorRef::&lt;ControllerActor&gt;::attest(reference::ActorAddr::from(
+<a href=#414 id=414 data-nosnippet>414</a>                <span class="kw-2">&amp;</span>controller_id,
+<a href=#415 id=415 data-nosnippet>415</a>            ))
+<a href=#416 id=416 data-nosnippet>416</a>            .attach(<span class="kw-2">&amp;</span>instance, reference::ActorRef::attest(actor_id))
+<a href=#417 id=417 data-nosnippet>417</a>            .<span class="kw">await
+<a href=#418 id=418 data-nosnippet>418</a>            </span>.map_err(|err| PyRuntimeError::new_err(err.to_string()))
+<a href=#419 id=419 data-nosnippet>419</a>        })<span class="question-mark">?
+<a href=#420 id=420 data-nosnippet>420</a>    </span>}
+<a href=#421 id=421 data-nosnippet>421</a>
+<a href=#422 id=422 data-nosnippet>422</a>    <span class="kw">fn </span>drop_refs(<span class="kw-2">&amp;</span><span class="self">self</span>, py: Python, controller_id: PyActorAddr, refs: Vec&lt;Ref&gt;) -&gt; PyResult&lt;()&gt; {
+<a href=#423 id=423 data-nosnippet>423</a>        <span class="kw">let </span>instance_wrapper = <span class="self">self</span>.instance.blocking_lock();
+<a href=#424 id=424 data-nosnippet>424</a>        <span class="kw">let </span>(instance, _handler) = instance_wrapper
+<a href=#425 id=425 data-nosnippet>425</a>            .instance()
+<a href=#426 id=426 data-nosnippet>426</a>            .child()
+<a href=#427 id=427 data-nosnippet>427</a>            .map_err(|err| PyRuntimeError::new_err(err.to_string()))<span class="question-mark">?</span>;
+<a href=#428 id=428 data-nosnippet>428</a>
+<a href=#429 id=429 data-nosnippet>429</a>        signal_safe_block_on(py, <span class="kw">async move </span>{
+<a href=#430 id=430 data-nosnippet>430</a>            reference::ActorRef::&lt;ControllerActor&gt;::attest(reference::ActorAddr::from(
+<a href=#431 id=431 data-nosnippet>431</a>                <span class="kw-2">&amp;</span>controller_id,
+<a href=#432 id=432 data-nosnippet>432</a>            ))
+<a href=#433 id=433 data-nosnippet>433</a>            .drop_refs(<span class="kw-2">&amp;</span>instance, refs)
+<a href=#434 id=434 data-nosnippet>434</a>            .<span class="kw">await
+<a href=#435 id=435 data-nosnippet>435</a>            </span>.map_err(|err| PyRuntimeError::new_err(err.to_string()))
+<a href=#436 id=436 data-nosnippet>436</a>        })<span class="question-mark">?
+<a href=#437 id=437 data-nosnippet>437</a>    </span>}
+<a href=#438 id=438 data-nosnippet>438</a>
+<a href=#439 id=439 data-nosnippet>439</a>    <span class="doccomment">/// Get the next message from the queue. It will block until a message is received
+<a href=#440 id=440 data-nosnippet>440</a>    /// or the timeout is reached in which case it will return None
+<a href=#441 id=441 data-nosnippet>441</a>    /// If the actor has been stopped, this returns an error.
+<a href=#442 id=442 data-nosnippet>442</a>    </span><span class="attr">#[pyo3(signature = (<span class="kw-2">*</span>, timeout_msec = <span class="prelude-val">None</span>))]
+<a href=#443 id=443 data-nosnippet>443</a>    </span><span class="kw">fn </span>get_next_message(
+<a href=#444 id=444 data-nosnippet>444</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#445 id=445 data-nosnippet>445</a>        py: Python&lt;<span class="lifetime">'_</span>&gt;,
+<a href=#446 id=446 data-nosnippet>446</a>        timeout_msec: <span class="prelude-ty">Option</span>&lt;u64&gt;,
+<a href=#447 id=447 data-nosnippet>447</a>    ) -&gt; PyResult&lt;Py&lt;PyAny&gt;&gt; {
+<a href=#448 id=448 data-nosnippet>448</a>        <span class="kw">let </span>instance = <span class="self">self</span>.instance.clone();
+<a href=#449 id=449 data-nosnippet>449</a>        <span class="kw">let </span>result = signal_safe_block_on(py, <span class="kw">async move </span>{
+<a href=#450 id=450 data-nosnippet>450</a>            instance.lock().<span class="kw">await</span>.next_message(timeout_msec).<span class="kw">await
+<a href=#451 id=451 data-nosnippet>451</a>        </span>})<span class="question-mark">?</span>;
+<a href=#452 id=452 data-nosnippet>452</a>
+<a href=#453 id=453 data-nosnippet>453</a>        monarch_with_gil_blocking(|py| <span class="kw">match </span>result {
+<a href=#454 id=454 data-nosnippet>454</a>            <span class="prelude-val">Ok</span>(<span class="prelude-val">Some</span>(ClientMessage::Result { seq, result })) =&gt; {
+<a href=#455 id=455 data-nosnippet>455</a>                WorkerResponse { seq, result }.into_py_any(py)
 <a href=#456 id=456 data-nosnippet>456</a>            }
-<a href=#457 id=457 data-nosnippet>457</a>            .into_py_any(py),
-<a href=#458 id=458 data-nosnippet>458</a>            <span class="prelude-val">Ok</span>(<span class="prelude-val">Some</span>(ClientMessage::DebuggerMessage {
-<a href=#459 id=459 data-nosnippet>459</a>                debugger_actor_id,
-<a href=#460 id=460 data-nosnippet>460</a>                action,
-<a href=#461 id=461 data-nosnippet>461</a>            })) =&gt; DebuggerMessage {
-<a href=#462 id=462 data-nosnippet>462</a>                debugger_actor_id: debugger_actor_id.into(),
-<a href=#463 id=463 data-nosnippet>463</a>                action,
-<a href=#464 id=464 data-nosnippet>464</a>            }
-<a href=#465 id=465 data-nosnippet>465</a>            .into_py_any(py),
-<a href=#466 id=466 data-nosnippet>466</a>            <span class="prelude-val">Ok</span>(<span class="prelude-val">None</span>) =&gt; PyNone::get(py).into_py_any(py),
-<a href=#467 id=467 data-nosnippet>467</a>            <span class="prelude-val">Err</span>(err) =&gt; <span class="prelude-val">Err</span>(PyRuntimeError::new_err(err.to_string())),
-<a href=#468 id=468 data-nosnippet>468</a>        })
-<a href=#469 id=469 data-nosnippet>469</a>    }
-<a href=#470 id=470 data-nosnippet>470</a>
-<a href=#471 id=471 data-nosnippet>471</a>    <span class="doccomment">/// Put `self` into the `Stopped` state and maybe send the system
-<a href=#472 id=472 data-nosnippet>472</a>    /// actor a stop message. Return any outstanding received messages.
-<a href=#473 id=473 data-nosnippet>473</a>    </span><span class="kw">fn </span>drain_and_stop&lt;<span class="lifetime">'py</span>&gt;(<span class="kw-2">&amp;mut </span><span class="self">self</span>, py: Python&lt;<span class="lifetime">'py</span>&gt;) -&gt; PyResult&lt;Bound&lt;<span class="lifetime">'py</span>, PyList&gt;&gt; {
-<a href=#474 id=474 data-nosnippet>474</a>        <span class="kw">let </span><span class="kw-2">mut </span>instance = <span class="self">self</span>.instance.blocking_lock();
-<a href=#475 id=475 data-nosnippet>475</a>        <span class="kw">let </span>messages = instance
-<a href=#476 id=476 data-nosnippet>476</a>            .drain_and_stop()
-<a href=#477 id=477 data-nosnippet>477</a>            .map_err(|err| PyRuntimeError::new_err(err.to_string()))<span class="question-mark">?
-<a href=#478 id=478 data-nosnippet>478</a>            </span>.into_iter()
-<a href=#479 id=479 data-nosnippet>479</a>            .map(|message| <span class="kw">match </span>message {
-<a href=#480 id=480 data-nosnippet>480</a>                ClientMessage::Result { seq, result } =&gt; {
-<a href=#481 id=481 data-nosnippet>481</a>                    WorkerResponse { seq, result }.into_py_any(py)
-<a href=#482 id=482 data-nosnippet>482</a>                }
-<a href=#483 id=483 data-nosnippet>483</a>                ClientMessage::Log { level, message } =&gt; LogMessage {
-<a href=#484 id=484 data-nosnippet>484</a>                    level: PyLogLevel::from(level),
-<a href=#485 id=485 data-nosnippet>485</a>                    message,
+<a href=#457 id=457 data-nosnippet>457</a>            <span class="prelude-val">Ok</span>(<span class="prelude-val">Some</span>(ClientMessage::Log { level, message })) =&gt; LogMessage {
+<a href=#458 id=458 data-nosnippet>458</a>                level: PyLogLevel::from(level),
+<a href=#459 id=459 data-nosnippet>459</a>                message,
+<a href=#460 id=460 data-nosnippet>460</a>            }
+<a href=#461 id=461 data-nosnippet>461</a>            .into_py_any(py),
+<a href=#462 id=462 data-nosnippet>462</a>            <span class="prelude-val">Ok</span>(<span class="prelude-val">Some</span>(ClientMessage::DebuggerMessage {
+<a href=#463 id=463 data-nosnippet>463</a>                debugger_actor_id,
+<a href=#464 id=464 data-nosnippet>464</a>                action,
+<a href=#465 id=465 data-nosnippet>465</a>            })) =&gt; DebuggerMessage {
+<a href=#466 id=466 data-nosnippet>466</a>                debugger_actor_id: debugger_actor_id.into(),
+<a href=#467 id=467 data-nosnippet>467</a>                action,
+<a href=#468 id=468 data-nosnippet>468</a>            }
+<a href=#469 id=469 data-nosnippet>469</a>            .into_py_any(py),
+<a href=#470 id=470 data-nosnippet>470</a>            <span class="prelude-val">Ok</span>(<span class="prelude-val">None</span>) =&gt; PyNone::get(py).into_py_any(py),
+<a href=#471 id=471 data-nosnippet>471</a>            <span class="prelude-val">Err</span>(err) =&gt; <span class="prelude-val">Err</span>(PyRuntimeError::new_err(err.to_string())),
+<a href=#472 id=472 data-nosnippet>472</a>        })
+<a href=#473 id=473 data-nosnippet>473</a>    }
+<a href=#474 id=474 data-nosnippet>474</a>
+<a href=#475 id=475 data-nosnippet>475</a>    <span class="doccomment">/// Put `self` into the `Stopped` state and maybe send the system
+<a href=#476 id=476 data-nosnippet>476</a>    /// actor a stop message. Return any outstanding received messages.
+<a href=#477 id=477 data-nosnippet>477</a>    </span><span class="kw">fn </span>drain_and_stop&lt;<span class="lifetime">'py</span>&gt;(<span class="kw-2">&amp;mut </span><span class="self">self</span>, py: Python&lt;<span class="lifetime">'py</span>&gt;) -&gt; PyResult&lt;Bound&lt;<span class="lifetime">'py</span>, PyList&gt;&gt; {
+<a href=#478 id=478 data-nosnippet>478</a>        <span class="kw">let </span><span class="kw-2">mut </span>instance = <span class="self">self</span>.instance.blocking_lock();
+<a href=#479 id=479 data-nosnippet>479</a>        <span class="kw">let </span>messages = instance
+<a href=#480 id=480 data-nosnippet>480</a>            .drain_and_stop()
+<a href=#481 id=481 data-nosnippet>481</a>            .map_err(|err| PyRuntimeError::new_err(err.to_string()))<span class="question-mark">?
+<a href=#482 id=482 data-nosnippet>482</a>            </span>.into_iter()
+<a href=#483 id=483 data-nosnippet>483</a>            .map(|message| <span class="kw">match </span>message {
+<a href=#484 id=484 data-nosnippet>484</a>                ClientMessage::Result { seq, result } =&gt; {
+<a href=#485 id=485 data-nosnippet>485</a>                    WorkerResponse { seq, result }.into_py_any(py)
 <a href=#486 id=486 data-nosnippet>486</a>                }
-<a href=#487 id=487 data-nosnippet>487</a>                .into_py_any(py),
-<a href=#488 id=488 data-nosnippet>488</a>                ClientMessage::DebuggerMessage {
-<a href=#489 id=489 data-nosnippet>489</a>                    debugger_actor_id,
-<a href=#490 id=490 data-nosnippet>490</a>                    action,
-<a href=#491 id=491 data-nosnippet>491</a>                } =&gt; DebuggerMessage {
-<a href=#492 id=492 data-nosnippet>492</a>                    debugger_actor_id: debugger_actor_id.into(),
-<a href=#493 id=493 data-nosnippet>493</a>                    action,
-<a href=#494 id=494 data-nosnippet>494</a>                }
-<a href=#495 id=495 data-nosnippet>495</a>                .into_py_any(py),
-<a href=#496 id=496 data-nosnippet>496</a>            })
-<a href=#497 id=497 data-nosnippet>497</a>            .collect::&lt;PyResult&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;&gt;()<span class="question-mark">?</span>;
-<a href=#498 id=498 data-nosnippet>498</a>        PyList::new(py, messages)
-<a href=#499 id=499 data-nosnippet>499</a>    }
-<a href=#500 id=500 data-nosnippet>500</a>
-<a href=#501 id=501 data-nosnippet>501</a>    <span class="kw">fn </span>actor_id(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; PyResult&lt;PyActorId&gt; {
-<a href=#502 id=502 data-nosnippet>502</a>        <span class="kw">let </span>instance = <span class="self">self</span>.instance.blocking_lock();
-<a href=#503 id=503 data-nosnippet>503</a>        <span class="prelude-val">Ok</span>(PyActorId::from(instance.actor_id().clone()))
-<a href=#504 id=504 data-nosnippet>504</a>    }
-<a href=#505 id=505 data-nosnippet>505</a>}
-<a href=#506 id=506 data-nosnippet>506</a>
-<a href=#507 id=507 data-nosnippet>507</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>register_python_bindings(client_msgs_mod: <span class="kw-2">&amp;</span>Bound&lt;<span class="lifetime">'_</span>, PyModule&gt;) -&gt; PyResult&lt;()&gt; {
-<a href=#508 id=508 data-nosnippet>508</a>    client_msgs_mod.add_class::&lt;WorkerResponse&gt;()<span class="question-mark">?</span>;
-<a href=#509 id=509 data-nosnippet>509</a>    client_msgs_mod.add_class::&lt;PyException&gt;()<span class="question-mark">?</span>;
-<a href=#510 id=510 data-nosnippet>510</a>    client_msgs_mod.add_class::&lt;PyError&gt;()<span class="question-mark">?</span>;
-<a href=#511 id=511 data-nosnippet>511</a>    client_msgs_mod.add_class::&lt;PyFailure&gt;()<span class="question-mark">?</span>;
-<a href=#512 id=512 data-nosnippet>512</a>    client_msgs_mod.add_class::&lt;ClientActor&gt;()<span class="question-mark">?</span>;
-<a href=#513 id=513 data-nosnippet>513</a>    client_msgs_mod.add_class::&lt;LogMessage&gt;()<span class="question-mark">?</span>;
-<a href=#514 id=514 data-nosnippet>514</a>    client_msgs_mod.add_class::&lt;PyLogLevel&gt;()<span class="question-mark">?</span>;
-<a href=#515 id=515 data-nosnippet>515</a>    client_msgs_mod.add_class::&lt;DebuggerMessage&gt;()<span class="question-mark">?</span>;
-<a href=#516 id=516 data-nosnippet>516</a>    <span class="prelude-val">Ok</span>(())
-<a href=#517 id=517 data-nosnippet>517</a>}
+<a href=#487 id=487 data-nosnippet>487</a>                ClientMessage::Log { level, message } =&gt; LogMessage {
+<a href=#488 id=488 data-nosnippet>488</a>                    level: PyLogLevel::from(level),
+<a href=#489 id=489 data-nosnippet>489</a>                    message,
+<a href=#490 id=490 data-nosnippet>490</a>                }
+<a href=#491 id=491 data-nosnippet>491</a>                .into_py_any(py),
+<a href=#492 id=492 data-nosnippet>492</a>                ClientMessage::DebuggerMessage {
+<a href=#493 id=493 data-nosnippet>493</a>                    debugger_actor_id,
+<a href=#494 id=494 data-nosnippet>494</a>                    action,
+<a href=#495 id=495 data-nosnippet>495</a>                } =&gt; DebuggerMessage {
+<a href=#496 id=496 data-nosnippet>496</a>                    debugger_actor_id: debugger_actor_id.into(),
+<a href=#497 id=497 data-nosnippet>497</a>                    action,
+<a href=#498 id=498 data-nosnippet>498</a>                }
+<a href=#499 id=499 data-nosnippet>499</a>                .into_py_any(py),
+<a href=#500 id=500 data-nosnippet>500</a>            })
+<a href=#501 id=501 data-nosnippet>501</a>            .collect::&lt;PyResult&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;&gt;()<span class="question-mark">?</span>;
+<a href=#502 id=502 data-nosnippet>502</a>        PyList::new(py, messages)
+<a href=#503 id=503 data-nosnippet>503</a>    }
+<a href=#504 id=504 data-nosnippet>504</a>
+<a href=#505 id=505 data-nosnippet>505</a>    <span class="kw">fn </span>actor_id(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; PyResult&lt;PyActorAddr&gt; {
+<a href=#506 id=506 data-nosnippet>506</a>        <span class="kw">let </span>instance = <span class="self">self</span>.instance.blocking_lock();
+<a href=#507 id=507 data-nosnippet>507</a>        <span class="prelude-val">Ok</span>(PyActorAddr::from(instance.actor_addr().clone()))
+<a href=#508 id=508 data-nosnippet>508</a>    }
+<a href=#509 id=509 data-nosnippet>509</a>}
+<a href=#510 id=510 data-nosnippet>510</a>
+<a href=#511 id=511 data-nosnippet>511</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>register_python_bindings(client_msgs_mod: <span class="kw-2">&amp;</span>Bound&lt;<span class="lifetime">'_</span>, PyModule&gt;) -&gt; PyResult&lt;()&gt; {
+<a href=#512 id=512 data-nosnippet>512</a>    client_msgs_mod.add_class::&lt;WorkerResponse&gt;()<span class="question-mark">?</span>;
+<a href=#513 id=513 data-nosnippet>513</a>    client_msgs_mod.add_class::&lt;PyException&gt;()<span class="question-mark">?</span>;
+<a href=#514 id=514 data-nosnippet>514</a>    client_msgs_mod.add_class::&lt;PyError&gt;()<span class="question-mark">?</span>;
+<a href=#515 id=515 data-nosnippet>515</a>    client_msgs_mod.add_class::&lt;PyFailure&gt;()<span class="question-mark">?</span>;
+<a href=#516 id=516 data-nosnippet>516</a>    client_msgs_mod.add_class::&lt;ClientActor&gt;()<span class="question-mark">?</span>;
+<a href=#517 id=517 data-nosnippet>517</a>    client_msgs_mod.add_class::&lt;LogMessage&gt;()<span class="question-mark">?</span>;
+<a href=#518 id=518 data-nosnippet>518</a>    client_msgs_mod.add_class::&lt;PyLogLevel&gt;()<span class="question-mark">?</span>;
+<a href=#519 id=519 data-nosnippet>519</a>    client_msgs_mod.add_class::&lt;DebuggerMessage&gt;()<span class="question-mark">?</span>;
+<a href=#520 id=520 data-nosnippet>520</a>    <span class="prelude-val">Ok</span>(())
+<a href=#521 id=521 data-nosnippet>521</a>}
 </code></pre></div></section></main></body></html>

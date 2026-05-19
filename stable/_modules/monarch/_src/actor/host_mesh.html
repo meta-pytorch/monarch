@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.actor.host_mesh &#8212; Monarch v0.4.1 documentation</title>
+    <title>monarch._src.actor.host_mesh &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -28,7 +28,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -41,7 +41,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -57,7 +57,7 @@ window.addEventListener("load", () => mermaid.run());
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/actor/host_mesh.html" />
@@ -81,7 +81,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +195,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -590,6 +590,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -955,6 +967,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1285,28 +1309,34 @@ document.write(`
 <span class="kn">import</span><span class="w"> </span><span class="nn">subprocess</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">contextlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">asynccontextmanager</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Awaitable</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Literal</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.alloc</span><span class="w"> </span><span class="kn">import</span> <span class="n">AllocConstraints</span><span class="p">,</span> <span class="n">AllocSpec</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.host_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">_spawn_admin</span> <span class="k">as</span> <span class="n">_hy_spawn_admin</span><span class="p">,</span>
     <span class="n">BootstrapCommand</span><span class="p">,</span>
     <span class="n">HostMesh</span> <span class="k">as</span> <span class="n">HyHostMesh</span><span class="p">,</span>
+    <span class="n">PyMeshAdminRef</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.proc_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">ProcMesh</span> <span class="k">as</span> <span class="n">HyProcMesh</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.pytokio</span><span class="w"> </span><span class="kn">import</span> <span class="n">PythonTask</span><span class="p">,</span> <span class="n">Shared</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.shape</span><span class="w"> </span><span class="kn">import</span> <span class="n">Extent</span><span class="p">,</span> <span class="n">Region</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.shape</span><span class="w"> </span><span class="kn">import</span> <span class="n">Extent</span><span class="p">,</span> <span class="n">Point</span><span class="p">,</span> <span class="n">Region</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.actor_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">_Lazy</span><span class="p">,</span> <span class="n">context</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.allocator</span><span class="w"> </span><span class="kn">import</span> <span class="n">AllocateMixin</span><span class="p">,</span> <span class="n">AllocHandle</span><span class="p">,</span> <span class="n">LocalAllocator</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.future</span><span class="w"> </span><span class="kn">import</span> <span class="n">Future</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.proc_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">_get_bootstrap_args</span><span class="p">,</span> <span class="n">ProcMesh</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.shape</span><span class="w"> </span><span class="kn">import</span> <span class="n">MeshTrait</span><span class="p">,</span> <span class="n">NDSlice</span><span class="p">,</span> <span class="n">Shape</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">monarch.tools.config.workspace</span><span class="w"> </span><span class="kn">import</span> <span class="n">Workspace</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">_bootstrap_cmd</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">BootstrapCommand</span><span class="p">:</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">default_bootstrap_cmd</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">BootstrapCommand</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Get the default bootstrap command for the current environment.</span>
+
+<span class="sd">    Returns a BootstrapCommand configured with the current Python executable</span>
+<span class="sd">    and environment. This can be used as a base for customization with</span>
+<span class="sd">    ``with_env()`` or by modifying its attributes directly.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        BootstrapCommand: The default bootstrap command.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="n">cmd</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">bootstrap_env</span> <span class="o">=</span> <span class="n">_get_bootstrap_args</span><span class="p">()</span>
     <span class="k">return</span> <span class="n">BootstrapCommand</span><span class="p">(</span>
         <span class="n">cmd</span><span class="p">,</span>
@@ -1375,47 +1405,6 @@ document.write(`
         <span class="bp">self</span><span class="o">.</span><span class="n">_pending_spawns</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Shared</span><span class="p">[</span><span class="n">HyProcMesh</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_proc_meshes</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="s2">&quot;ProcMesh&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
 
-    <span class="nd">@classmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">_allocate_nonblocking</span><span class="p">(</span>
-        <span class="bp">cls</span><span class="p">,</span>
-        <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
-        <span class="n">extent</span><span class="p">:</span> <span class="n">Extent</span><span class="p">,</span>
-        <span class="n">allocator</span><span class="p">:</span> <span class="n">AllocateMixin</span><span class="p">,</span>
-        <span class="n">alloc_constraints</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">AllocConstraints</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-        <span class="n">bootstrap_cmd</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">BootstrapCommand</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;HostMesh&quot;</span><span class="p">:</span>
-        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
-            <span class="p">(</span>
-                <span class="s2">&quot;DEPRECATION WARNING: this function is deprecated. &quot;</span>
-                <span class="s2">&quot;Use `attach_to_workers` instead, or if applicable, one of the &quot;</span>
-                <span class="s2">&quot;JobTrait classes directly.&quot;</span>
-            <span class="p">),</span>
-            <span class="ne">DeprecationWarning</span><span class="p">,</span>
-            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-        <span class="p">)</span>
-
-        <span class="n">spec</span> <span class="o">=</span> <span class="n">AllocSpec</span><span class="p">(</span><span class="n">alloc_constraints</span> <span class="ow">or</span> <span class="n">AllocConstraints</span><span class="p">(),</span> <span class="o">**</span><span class="n">extent</span><span class="p">)</span>
-        <span class="n">alloc</span><span class="p">:</span> <span class="n">AllocHandle</span> <span class="o">=</span> <span class="n">allocator</span><span class="o">.</span><span class="n">allocate</span><span class="p">(</span><span class="n">spec</span><span class="p">)</span>
-
-        <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">task</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">HyHostMesh</span><span class="p">:</span>
-            <span class="k">return</span> <span class="k">await</span> <span class="n">HyHostMesh</span><span class="o">.</span><span class="n">allocate_nonblocking</span><span class="p">(</span>
-                <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">_as_rust</span><span class="p">(),</span>
-                <span class="k">await</span> <span class="n">alloc</span><span class="o">.</span><span class="n">_hy_alloc</span><span class="p">,</span>
-                <span class="n">name</span><span class="p">,</span>
-                <span class="n">bootstrap_cmd</span><span class="p">,</span>
-            <span class="p">)</span>
-
-        <span class="n">hm</span> <span class="o">=</span> <span class="bp">cls</span><span class="p">(</span>
-            <span class="n">PythonTask</span><span class="o">.</span><span class="n">from_coroutine</span><span class="p">(</span><span class="n">task</span><span class="p">())</span><span class="o">.</span><span class="n">spawn</span><span class="p">(),</span>
-            <span class="n">extent</span><span class="o">.</span><span class="n">region</span><span class="p">,</span>
-            <span class="n">alloc</span><span class="o">.</span><span class="n">stream_logs</span><span class="p">,</span>
-            <span class="nb">isinstance</span><span class="p">(</span><span class="n">allocator</span><span class="p">,</span> <span class="n">LocalAllocator</span><span class="p">),</span>
-            <span class="kc">None</span><span class="p">,</span>
-        <span class="p">)</span>
-
-        <span class="n">hm</span><span class="o">.</span><span class="n">_code_sync_proc_mesh</span> <span class="o">=</span> <span class="n">_Lazy</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="n">hm</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;code_sync&quot;</span><span class="p">))</span>
-        <span class="k">return</span> <span class="n">hm</span>
-
 <div class="viewcode-block" id="HostMesh.spawn_procs">
 <a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.HostMesh.spawn_procs">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">spawn_procs</span><span class="p">(</span>
@@ -1424,6 +1413,9 @@ document.write(`
         <span class="n">bootstrap</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]</span> <span class="o">|</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">Awaitable</span><span class="p">[</span><span class="kc">None</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">proc_bind</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">bootstrap_command</span><span class="p">:</span> <span class="p">(</span>
+            <span class="n">BootstrapCommand</span> <span class="o">|</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Point</span><span class="p">],</span> <span class="n">BootstrapCommand</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span>
+        <span class="p">)</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;ProcMesh&quot;</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Spawn a ProcMesh onto this host mesh.</span>
 
@@ -1435,6 +1427,11 @@ document.write(`
 <span class="sd">                Length must equal ``math.prod(per_host.values())``.</span>
 <span class="sd">                Each dict maps binding keys (``cpunodebind``,</span>
 <span class="sd">                ``membind``, ``physcpubind``, ``cpus``) to values.</span>
+<span class="sd">            bootstrap_command: optional BootstrapCommand or callable that</span>
+<span class="sd">                returns a BootstrapCommand for each coordinate. The callable</span>
+<span class="sd">                receives a ``Point`` (combined coordinate across host and</span>
+<span class="sd">                per_host dimensions). This allows full customization of the</span>
+<span class="sd">                bootstrap command per coordinate.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">per_host</span><span class="p">:</span>
             <span class="n">per_host</span> <span class="o">=</span> <span class="p">{}</span>
@@ -1457,6 +1454,7 @@ document.write(`
             <span class="n">bootstrap</span><span class="p">,</span>
             <span class="kc">True</span><span class="p">,</span>
             <span class="n">proc_bind</span><span class="p">,</span>
+            <span class="n">bootstrap_command</span><span class="p">,</span>
         <span class="p">)</span></div>
 
 
@@ -1467,6 +1465,9 @@ document.write(`
         <span class="n">setup</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]</span> <span class="o">|</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="n">Awaitable</span><span class="p">[</span><span class="kc">None</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">_attach_controller_controller</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
         <span class="n">proc_bind</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">bootstrap_command</span><span class="p">:</span> <span class="p">(</span>
+            <span class="n">BootstrapCommand</span> <span class="o">|</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Point</span><span class="p">],</span> <span class="n">BootstrapCommand</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span>
+        <span class="p">)</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;ProcMesh&quot;</span><span class="p">:</span>
         <span class="k">if</span> <span class="nb">set</span><span class="p">(</span><span class="n">per_host</span><span class="o">.</span><span class="n">labels</span><span class="p">)</span> <span class="o">&amp;</span> <span class="nb">set</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_labels</span><span class="p">):</span>
             <span class="c1"># The rust side will catch this too, but this lets us fail fast</span>
@@ -1478,10 +1479,32 @@ document.write(`
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_inner_host_mesh</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;HostMesh has already been shut down&quot;</span><span class="p">)</span>
 
+        <span class="n">per_rank_bootstrap</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Point</span><span class="p">],</span> <span class="n">BootstrapCommand</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+
+        <span class="k">if</span> <span class="n">bootstrap_command</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">bootstrap_command</span><span class="p">,</span> <span class="n">BootstrapCommand</span><span class="p">):</span>
+                <span class="c1"># Uniform BootstrapCommand - convert to callable</span>
+                <span class="k">def</span><span class="w"> </span><span class="nf">make_uniform_bootstrap</span><span class="p">(</span>
+                    <span class="n">cmd</span><span class="p">:</span> <span class="n">BootstrapCommand</span><span class="p">,</span>
+                <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Point</span><span class="p">],</span> <span class="n">BootstrapCommand</span><span class="p">]:</span>
+                    <span class="k">def</span><span class="w"> </span><span class="nf">bootstrap_callable</span><span class="p">(</span><span class="n">point</span><span class="p">:</span> <span class="n">Point</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">BootstrapCommand</span><span class="p">:</span>
+                        <span class="k">return</span> <span class="n">cmd</span>
+
+                    <span class="k">return</span> <span class="n">bootstrap_callable</span>
+
+                <span class="n">per_rank_bootstrap</span> <span class="o">=</span> <span class="n">make_uniform_bootstrap</span><span class="p">(</span><span class="n">bootstrap_command</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="c1"># Callable that returns BootstrapCommand</span>
+                <span class="n">per_rank_bootstrap</span> <span class="o">=</span> <span class="n">bootstrap_command</span>
+
         <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">task</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">HyProcMesh</span><span class="p">:</span>
             <span class="n">hy_host_mesh</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hy_host_mesh</span>
             <span class="k">return</span> <span class="k">await</span> <span class="n">hy_host_mesh</span><span class="o">.</span><span class="n">spawn_nonblocking</span><span class="p">(</span>
-                <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">_as_rust</span><span class="p">(),</span> <span class="n">name</span><span class="p">,</span> <span class="n">per_host</span><span class="p">,</span> <span class="n">proc_bind</span>
+                <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">_as_rust</span><span class="p">(),</span>
+                <span class="n">name</span><span class="p">,</span>
+                <span class="n">per_host</span><span class="p">,</span>
+                <span class="n">proc_bind</span><span class="p">,</span>
+                <span class="n">per_rank_bootstrap</span><span class="p">,</span>
             <span class="p">)</span>
 
         <span class="n">spawn_shared</span> <span class="o">=</span> <span class="n">PythonTask</span><span class="o">.</span><span class="n">from_coroutine</span><span class="p">(</span><span class="n">task</span><span class="p">())</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
@@ -1760,17 +1783,12 @@ document.write(`
     <span class="n">host_meshes</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="s2">&quot;HostMesh&quot;</span><span class="p">],</span>
     <span class="n">admin_addr</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">telemetry_url</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;Future[str]&quot;</span><span class="p">:</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;Future[tuple[str, PyMeshAdminRef]]&quot;</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Spawn a MeshAdminAgent aggregating topology across one or more HostMeshes.</span>
 
-<span class="sd">    The admin runs on the caller&#39;s local proc and serves the</span>
-<span class="sd">    mesh-admin HTTP API.</span>
-
-<span class="sd">    Use a single-element list for the degenerate single-mesh case::</span>
-
-<span class="sd">        host = this_host()</span>
-<span class="sd">        admin_url = await _spawn_admin([host], admin_addr=&quot;[::]:1729&quot;)</span>
+<span class="sd">    Returns ``(admin_url, admin_ref)`` where ``admin_ref`` is an opaque</span>
+<span class="sd">    capability token for immediate use only.</span>
 
 <span class="sd">    Args:</span>
 <span class="sd">        host_meshes: One or more HostMeshes whose hosts the admin</span>
@@ -1778,12 +1796,9 @@ document.write(`
 <span class="sd">        admin_addr: Optional socket address for the admin HTTP server.</span>
 <span class="sd">            When ``None``, reads ``MESH_ADMIN_ADDR`` from config.</span>
 <span class="sd">        telemetry_url: Optional base URL of the Monarch telemetry dashboard.</span>
-<span class="sd">            When provided, the admin exposes proxy routes (``/v1/query``,</span>
-<span class="sd">            ``/v1/pyspy_dump``) that forward to the dashboard.</span>
 
 <span class="sd">    Returns:</span>
-<span class="sd">        Future[str]: The admin HTTP URL (for example</span>
-<span class="sd">            ``&quot;https://myhost.facebook.com:1729&quot;``).</span>
+<span class="sd">        Future[tuple[str, PyMeshAdminRef]]: (admin_url, admin_ref).</span>
 
 <span class="sd">    Raises:</span>
 <span class="sd">        ValueError: If host_meshes is empty.</span>
@@ -1791,15 +1806,13 @@ document.write(`
     <span class="k">if</span> <span class="ow">not</span> <span class="n">host_meshes</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;_spawn_admin requires at least one HostMesh&quot;</span><span class="p">)</span>
 
-    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">task</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">task</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">PyMeshAdminRef</span><span class="p">]:</span>
         <span class="n">hy_meshes</span> <span class="o">=</span> <span class="p">[</span><span class="k">await</span> <span class="n">m</span><span class="o">.</span><span class="n">_hy_host_mesh</span> <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">host_meshes</span><span class="p">]</span>
-        <span class="n">url</span> <span class="o">=</span> <span class="k">await</span> <span class="n">_hy_spawn_admin</span><span class="p">(</span>
+        <span class="n">admin_url</span><span class="p">,</span> <span class="n">admin_ref</span> <span class="o">=</span> <span class="k">await</span> <span class="n">_hy_spawn_admin</span><span class="p">(</span>
             <span class="n">hy_meshes</span><span class="p">,</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">_as_rust</span><span class="p">(),</span> <span class="n">admin_addr</span><span class="p">,</span> <span class="n">telemetry_url</span>
         <span class="p">)</span>
-        <span class="c1"># Export admin URL so the dashboard can discover system actors</span>
-        <span class="c1"># and build TUI-style DAG hierarchies.</span>
-        <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;MONARCH_ADMIN_URL&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">url</span>
-        <span class="k">return</span> <span class="n">url</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;MONARCH_ADMIN_URL&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">admin_url</span>
+        <span class="k">return</span> <span class="n">admin_url</span><span class="p">,</span> <span class="n">admin_ref</span>
 
     <span class="k">return</span> <span class="n">Future</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">task</span><span class="p">())</span>
 
@@ -2018,7 +2031,7 @@ document.write(`
        "headline": "monarch._src.actor.host_mesh",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/actor/host_mesh.html",
-       "articleBody": "Source code for monarch._src.actor.host_mesh # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import os import subprocess import sys import tempfile import warnings from contextlib import asynccontextmanager from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec from monarch._rust_bindings.monarch_hyperactor.host_mesh import ( _spawn_admin as _hy_spawn_admin, BootstrapCommand, HostMesh as HyHostMesh, ) from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region from monarch._src.actor.actor_mesh import _Lazy, context from monarch._src.actor.allocator import AllocateMixin, AllocHandle, LocalAllocator from monarch._src.actor.future import Future from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh from monarch._src.actor.shape import MeshTrait, NDSlice, Shape from monarch.tools.config.workspace import Workspace def _bootstrap_cmd() -\u003e BootstrapCommand: cmd, args, bootstrap_env = _get_bootstrap_args() return BootstrapCommand( cmd, None, args if args else [], bootstrap_env, ) [docs] def this_host() -\u003e \"HostMesh\": \"\"\" The current machine. This is just shorthand for looking it up via the context \"\"\" return this_proc().host_mesh [docs] def this_proc() -\u003e \"ProcMesh\": \"\"\" The current singleton process that this specific actor is running on \"\"\" return context().actor_instance.proc [docs] class HostMesh(MeshTrait): \"\"\" HostMesh represents a collection of compute hosts that can be used to spawn processes and actors. Can be used as an async context manager, which will shut down the hosts on exit: ``` host_mesh = job.state().hosts async with host_mesh: # spawn proc meshes, actor meshes, etc. # shutdown() is called automatically on exit. ``` If you don\u0027t want to shutdown the hosts, you don\u0027t need to use it as a context manager. \"\"\" def __init__( self, hy_host_mesh: Shared[HyHostMesh], region: Region, stream_logs: bool, is_fake_in_process: bool, code_sync_proc_mesh: Optional[\"_Lazy[ProcMesh]\"], ) -\u003e None: self._inner_host_mesh: Optional[Shared[HyHostMesh]] = hy_host_mesh self._region = region self._stream_logs = stream_logs self._is_fake_in_process = is_fake_in_process self._code_sync_proc_mesh: Optional[\"_Lazy[ProcMesh]\"] = code_sync_proc_mesh self._pending_spawns: list[Shared[HyProcMesh]] = [] self._proc_meshes: list[\"ProcMesh\"] = [] @classmethod def _allocate_nonblocking( cls, name: str, extent: Extent, allocator: AllocateMixin, alloc_constraints: Optional[AllocConstraints] = None, bootstrap_cmd: Optional[BootstrapCommand] = None, ) -\u003e \"HostMesh\": warnings.warn( ( \"DEPRECATION WARNING: this function is deprecated. \" \"Use `attach_to_workers` instead, or if applicable, one of the \" \"JobTrait classes directly.\" ), DeprecationWarning, stacklevel=2, ) spec = AllocSpec(alloc_constraints or AllocConstraints(), **extent) alloc: AllocHandle = allocator.allocate(spec) async def task() -\u003e HyHostMesh: return await HyHostMesh.allocate_nonblocking( context().actor_instance._as_rust(), await alloc._hy_alloc, name, bootstrap_cmd, ) hm = cls( PythonTask.from_coroutine(task()).spawn(), extent.region, alloc.stream_logs, isinstance(allocator, LocalAllocator), None, ) hm._code_sync_proc_mesh = _Lazy(lambda: hm.spawn_procs(name=\"code_sync\")) return hm [docs] def spawn_procs( self, per_host: Dict[str, int] | None = None, bootstrap: Callable[[], None] | Callable[[], Awaitable[None]] | None = None, name: str | None = None, proc_bind: list[dict[str, str]] | None = None, ) -\u003e \"ProcMesh\": \"\"\"Spawn a ProcMesh onto this host mesh. Args: per_host: shape of procs per host, e.g. ``{\"gpus\": 4}``. bootstrap: optional setup callable run on each proc. name: optional name for the proc mesh. proc_bind: optional per-process CPU/NUMA binding config. Length must equal ``math.prod(per_host.values())``. Each dict maps binding keys (``cpunodebind``, ``membind``, ``physcpubind``, ``cpus``) to values. \"\"\" if not per_host: per_host = {} if not name: name = \"anon\" import math procs_per_host = math.prod(per_host.values()) if per_host else 1 if proc_bind is not None and len(proc_bind) != procs_per_host: raise ValueError( f\"proc_bind length ({len(proc_bind)}) must equal \" f\"procs_per_host ({procs_per_host})\" ) return self._spawn_nonblocking( name, Extent(list(per_host.keys()), list(per_host.values())), bootstrap, True, proc_bind, ) def _spawn_nonblocking( self, name: str, per_host: Extent, setup: Callable[[], None] | Callable[[], Awaitable[None]] | None, _attach_controller_controller: bool, proc_bind: list[dict[str, str]] | None = None, ) -\u003e \"ProcMesh\": if set(per_host.labels) \u0026 set(self._labels): # The rust side will catch this too, but this lets us fail fast raise ValueError( f\"per_host labels {per_host.labels} overlap with host labels {self._labels}\" ) # This is checked inside the task as well, but we can pre-emptively raise # earlier. if self._inner_host_mesh is None: raise RuntimeError(\"HostMesh has already been shut down\") async def task() -\u003e HyProcMesh: hy_host_mesh = await self._hy_host_mesh return await hy_host_mesh.spawn_nonblocking( context().actor_instance._as_rust(), name, per_host, proc_bind ) spawn_shared = PythonTask.from_coroutine(task()).spawn() self._pending_spawns.append(spawn_shared) pm = ProcMesh.from_host_mesh( self, spawn_shared, Extent( self._labels + tuple(per_host.labels), self.region.slice().sizes + list(per_host.sizes), ).region, setup, _attach_controller_controller, ) self._proc_meshes.append(pm) return pm @property def _ndslice(self) -\u003e NDSlice: return self.region.slice() @property def _labels(self) -\u003e Tuple[str, ...]: return tuple(self.region.labels) def _new_with_shape(self, shape: Shape) -\u003e \"HostMesh\": if shape.region == self._region: return self sliced_hy_hm: Shared[HyHostMesh] if (hm := self._hy_host_mesh.poll()) is not None: sliced_hy_hm = Shared.from_value(hm.sliced(shape.region)) else: async def task() -\u003e HyHostMesh: return (await self._hy_host_mesh).sliced(shape.region) sliced_hy_hm = PythonTask.from_coroutine(task()).spawn() return HostMesh( sliced_hy_hm, shape.region, self.stream_logs, self.is_fake_in_process, None, ) @property def region(self) -\u003e Region: return self._region @property def stream_logs(self) -\u003e bool: return self._stream_logs @classmethod def _from_initialized_hy_host_mesh( cls, hy_host_mesh: HyHostMesh, region: Region, stream_logs: bool, is_fake_in_process: bool, ) -\u003e \"HostMesh\": return HostMesh( Shared.from_value(hy_host_mesh), region, stream_logs, is_fake_in_process, None, ) @classmethod def _from_rust(cls, hy_host_mesh: HyHostMesh) -\u003e \"HostMesh\": \"\"\" Create a HostMesh from a Rust HyHostMesh. This is used when the host was bootstrapped via bootstrap_host() instead of being allocated through an allocator. \"\"\" return cls._from_initialized_hy_host_mesh( hy_host_mesh, hy_host_mesh.region, stream_logs=False, is_fake_in_process=False, ) [docs] def with_python_executable(self, python_executable: str) -\u003e \"HostMesh\": \"\"\" Return a new HostMesh that will use the given Python executable when spawning procs. Procs spawned from this mesh will also inherit this Python executable when they call ``this_host().spawn_procs(...)``. Args: python_executable: Path to the Python executable to use. Returns: A new HostMesh configured to use the specified Python executable. \"\"\" _, _, bootstrap_env = _get_bootstrap_args() bootstrap_cmd: BootstrapCommand = BootstrapCommand( python_executable, None, [\"-m\", \"monarch._src.actor.bootstrap_main\"], bootstrap_env, ) async def task() -\u003e HyHostMesh: return (await self._hy_host_mesh).with_bootstrap(bootstrap_cmd) return HostMesh( PythonTask.from_coroutine(task()).spawn(), self._region, self._stream_logs, self._is_fake_in_process, None, ) def __reduce_ex__(self, protocol: ...) -\u003e Tuple[Any, Tuple[Any, ...]]: return HostMesh, ( self._hy_host_mesh, self._region, self.stream_logs, self.is_fake_in_process, None, ) @property def is_fake_in_process(self) -\u003e bool: return self._is_fake_in_process def __eq__(self, other: \"HostMesh\") -\u003e bool: # Should we include code sync proc mesh? return ( self._initialized_mesh() == other._initialized_mesh() and self._region == other._region and self.stream_logs == other.stream_logs and self.is_fake_in_process == other.is_fake_in_process ) def _initialized_mesh(self) -\u003e HyHostMesh: return self._hy_host_mesh.poll() or self._hy_host_mesh.block_on() async def _flush_pending_spawns(self) -\u003e None: for shared in self._pending_spawns: try: await shared except Exception: pass self._pending_spawns.clear() for pm in self._proc_meshes: await pm._flush_pending_actor_spawns() try: await pm._logging_manager.flush_async() except Exception: pass [docs] def shutdown(self) -\u003e Future[None]: \"\"\" Shutdown the host mesh and all of its processes. It will throw an exception if this host mesh is a *reference* rather than *owned*, which can happen if this `HostMesh` object was received from a remote actor or if it was produced by slicing. After shutting down, the hosts in this mesh will be unusable, and no new HostMeshes will be able to connect to them. If you want to stop everything on the host but keep them available for new clients, use `stop()` instead. This is run automatically on __aexit__ when used as an async context manager. Returns: Future[None]: A future that completes when the host mesh has been shut down. \"\"\" async def task() -\u003e None: await self._flush_pending_spawns() hy_mesh = await self._hy_host_mesh await hy_mesh.shutdown(context().actor_instance._as_rust()) # Remove the inner host mesh to clean up associated memory. self._inner_host_mesh = None return Future(coro=task()) [docs] def stop(self) -\u003e Future[None]: \"\"\" Stop the host mesh, releasing all resources but keeping worker processes alive for reconnection. A new HostMesh can be created that points to the same hosts. Like `shutdown`, this throws if the host mesh is a reference rather than owned. Returns: Future[None]: A future that completes when the host mesh has been stopped. \"\"\" async def task() -\u003e None: await self._flush_pending_spawns() hy_mesh = await self._hy_host_mesh await hy_mesh.stop(context().actor_instance._as_rust()) return Future(coro=task()) async def __aenter__(self) -\u003e \"HostMesh\": if self._inner_host_mesh is None: raise RuntimeError(\"HostMesh has already been shut down\") return self async def __aexit__( self, exc_type: object, exc_val: object, exc_tb: object ) -\u003e None: # In case there are multiple nested \"async with\" statements, we only # want it to close once. if self._inner_host_mesh is not None: await self.shutdown() [docs] async def sync_workspace( self, workspace: Workspace, conda: bool = False, auto_reload: bool = False, ) -\u003e None: \"\"\" Sync local code changes to the remote hosts. Args: workspace: The workspace to sync. conda: If True, also sync the currently activated conda env. auto_reload: If True, automatically reload the workspace on changes. \"\"\" if self._code_sync_proc_mesh: await self._code_sync_proc_mesh.get()._sync_workspace( workspace, conda, auto_reload ) else: raise RuntimeError( \"cannot call sync_workspace on a sliced host mesh or one that was sent over an actor endpoint\" ) @property def initialized(self) -\u003e Future[Literal[True]]: \"\"\" Future completes with \u0027True\u0027 when the `HostMesh` has initialized. Because `HostMesh` are remote objects, there is no guarantee that the `HostMesh` is still usable after this completes, only that at some point in the past it was usable. \"\"\" hm: Shared[HyHostMesh] = self._hy_host_mesh async def task() -\u003e Literal[True]: await hm return True return Future(coro=task()) @property def _hy_host_mesh(self) -\u003e Shared[HyHostMesh]: if self._inner_host_mesh is None: raise RuntimeError(\"HostMesh has already been shut down\") return self._inner_host_mesh def _spawn_admin( host_meshes: list[\"HostMesh\"], admin_addr: Optional[str] = None, telemetry_url: Optional[str] = None, ) -\u003e \"Future[str]\": \"\"\" Spawn a MeshAdminAgent aggregating topology across one or more HostMeshes. The admin runs on the caller\u0027s local proc and serves the mesh-admin HTTP API. Use a single-element list for the degenerate single-mesh case:: host = this_host() admin_url = await _spawn_admin([host], admin_addr=\"[::]:1729\") Args: host_meshes: One or more HostMeshes whose hosts the admin will aggregate for introspection. Must not be empty. admin_addr: Optional socket address for the admin HTTP server. When ``None``, reads ``MESH_ADMIN_ADDR`` from config. telemetry_url: Optional base URL of the Monarch telemetry dashboard. When provided, the admin exposes proxy routes (``/v1/query``, ``/v1/pyspy_dump``) that forward to the dashboard. Returns: Future[str]: The admin HTTP URL (for example ``\"https://myhost.facebook.com:1729\"``). Raises: ValueError: If host_meshes is empty. \"\"\" if not host_meshes: raise ValueError(\"_spawn_admin requires at least one HostMesh\") async def task() -\u003e str: hy_meshes = [await m._hy_host_mesh for m in host_meshes] url = await _hy_spawn_admin( hy_meshes, context().actor_instance._as_rust(), admin_addr, telemetry_url ) # Export admin URL so the dashboard can discover system actors # and build TUI-style DAG hierarchies. os.environ[\"MONARCH_ADMIN_URL\"] = url return url return Future(coro=task()) def hosts_from_config(name: str) -\u003e HostMesh: \"\"\" Get the host mesh \u0027name\u0027 from the monarch configuration for the project. This config can be modified so that the same code can create meshes from scheduler sources, and different sizes etc. WARNING: This function is a standin so that our getting_started example code works. The real implementation needs an RFC design. \"\"\" num_hosts = 2 tmpdir = tempfile.mkdtemp(prefix=\"monarch_hosts_from_config_\") workers = [] for i in range(num_hosts): addr = f\"ipc://{tmpdir}/{name}_{i}\" env = {**os.environ} cmd = [ sys.executable, \"-c\", \"from monarch.actor import run_worker_loop_forever; \" f\u0027run_worker_loop_forever(address=\"{addr}\", \u0027 \u0027ca=\"trust_all_connections\")\u0027, ] subprocess.Popen(cmd, env=env, start_new_session=True) workers.append(addr) from monarch._src.actor.bootstrap import attach_to_workers return attach_to_workers( name=name, ca=\"trust_all_connections\", workers=workers, )",
+       "articleBody": "Source code for monarch._src.actor.host_mesh # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import os import subprocess import sys import tempfile from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple from monarch._rust_bindings.monarch_hyperactor.host_mesh import ( _spawn_admin as _hy_spawn_admin, BootstrapCommand, HostMesh as HyHostMesh, PyMeshAdminRef, ) from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Point, Region from monarch._src.actor.actor_mesh import _Lazy, context from monarch._src.actor.future import Future from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh from monarch._src.actor.shape import MeshTrait, NDSlice, Shape from monarch.tools.config.workspace import Workspace def default_bootstrap_cmd() -\u003e BootstrapCommand: \"\"\"Get the default bootstrap command for the current environment. Returns a BootstrapCommand configured with the current Python executable and environment. This can be used as a base for customization with ``with_env()`` or by modifying its attributes directly. Returns: BootstrapCommand: The default bootstrap command. \"\"\" cmd, args, bootstrap_env = _get_bootstrap_args() return BootstrapCommand( cmd, None, args if args else [], bootstrap_env, ) [docs] def this_host() -\u003e \"HostMesh\": \"\"\" The current machine. This is just shorthand for looking it up via the context \"\"\" return this_proc().host_mesh [docs] def this_proc() -\u003e \"ProcMesh\": \"\"\" The current singleton process that this specific actor is running on \"\"\" return context().actor_instance.proc [docs] class HostMesh(MeshTrait): \"\"\" HostMesh represents a collection of compute hosts that can be used to spawn processes and actors. Can be used as an async context manager, which will shut down the hosts on exit: ``` host_mesh = job.state().hosts async with host_mesh: # spawn proc meshes, actor meshes, etc. # shutdown() is called automatically on exit. ``` If you don\u0027t want to shutdown the hosts, you don\u0027t need to use it as a context manager. \"\"\" def __init__( self, hy_host_mesh: Shared[HyHostMesh], region: Region, stream_logs: bool, is_fake_in_process: bool, code_sync_proc_mesh: Optional[\"_Lazy[ProcMesh]\"], ) -\u003e None: self._inner_host_mesh: Optional[Shared[HyHostMesh]] = hy_host_mesh self._region = region self._stream_logs = stream_logs self._is_fake_in_process = is_fake_in_process self._code_sync_proc_mesh: Optional[\"_Lazy[ProcMesh]\"] = code_sync_proc_mesh self._pending_spawns: list[Shared[HyProcMesh]] = [] self._proc_meshes: list[\"ProcMesh\"] = [] [docs] def spawn_procs( self, per_host: Dict[str, int] | None = None, bootstrap: Callable[[], None] | Callable[[], Awaitable[None]] | None = None, name: str | None = None, proc_bind: list[dict[str, str]] | None = None, bootstrap_command: ( BootstrapCommand | Callable[[Point], BootstrapCommand] | None ) = None, ) -\u003e \"ProcMesh\": \"\"\"Spawn a ProcMesh onto this host mesh. Args: per_host: shape of procs per host, e.g. ``{\"gpus\": 4}``. bootstrap: optional setup callable run on each proc. name: optional name for the proc mesh. proc_bind: optional per-process CPU/NUMA binding config. Length must equal ``math.prod(per_host.values())``. Each dict maps binding keys (``cpunodebind``, ``membind``, ``physcpubind``, ``cpus``) to values. bootstrap_command: optional BootstrapCommand or callable that returns a BootstrapCommand for each coordinate. The callable receives a ``Point`` (combined coordinate across host and per_host dimensions). This allows full customization of the bootstrap command per coordinate. \"\"\" if not per_host: per_host = {} if not name: name = \"anon\" import math procs_per_host = math.prod(per_host.values()) if per_host else 1 if proc_bind is not None and len(proc_bind) != procs_per_host: raise ValueError( f\"proc_bind length ({len(proc_bind)}) must equal \" f\"procs_per_host ({procs_per_host})\" ) return self._spawn_nonblocking( name, Extent(list(per_host.keys()), list(per_host.values())), bootstrap, True, proc_bind, bootstrap_command, ) def _spawn_nonblocking( self, name: str, per_host: Extent, setup: Callable[[], None] | Callable[[], Awaitable[None]] | None, _attach_controller_controller: bool, proc_bind: list[dict[str, str]] | None = None, bootstrap_command: ( BootstrapCommand | Callable[[Point], BootstrapCommand] | None ) = None, ) -\u003e \"ProcMesh\": if set(per_host.labels) \u0026 set(self._labels): # The rust side will catch this too, but this lets us fail fast raise ValueError( f\"per_host labels {per_host.labels} overlap with host labels {self._labels}\" ) # This is checked inside the task as well, but we can pre-emptively raise # earlier. if self._inner_host_mesh is None: raise RuntimeError(\"HostMesh has already been shut down\") per_rank_bootstrap: Callable[[Point], BootstrapCommand] | None = None if bootstrap_command is not None: if isinstance(bootstrap_command, BootstrapCommand): # Uniform BootstrapCommand - convert to callable def make_uniform_bootstrap( cmd: BootstrapCommand, ) -\u003e Callable[[Point], BootstrapCommand]: def bootstrap_callable(point: Point) -\u003e BootstrapCommand: return cmd return bootstrap_callable per_rank_bootstrap = make_uniform_bootstrap(bootstrap_command) else: # Callable that returns BootstrapCommand per_rank_bootstrap = bootstrap_command async def task() -\u003e HyProcMesh: hy_host_mesh = await self._hy_host_mesh return await hy_host_mesh.spawn_nonblocking( context().actor_instance._as_rust(), name, per_host, proc_bind, per_rank_bootstrap, ) spawn_shared = PythonTask.from_coroutine(task()).spawn() self._pending_spawns.append(spawn_shared) pm = ProcMesh.from_host_mesh( self, spawn_shared, Extent( self._labels + tuple(per_host.labels), self.region.slice().sizes + list(per_host.sizes), ).region, setup, _attach_controller_controller, ) self._proc_meshes.append(pm) return pm @property def _ndslice(self) -\u003e NDSlice: return self.region.slice() @property def _labels(self) -\u003e Tuple[str, ...]: return tuple(self.region.labels) def _new_with_shape(self, shape: Shape) -\u003e \"HostMesh\": if shape.region == self._region: return self sliced_hy_hm: Shared[HyHostMesh] if (hm := self._hy_host_mesh.poll()) is not None: sliced_hy_hm = Shared.from_value(hm.sliced(shape.region)) else: async def task() -\u003e HyHostMesh: return (await self._hy_host_mesh).sliced(shape.region) sliced_hy_hm = PythonTask.from_coroutine(task()).spawn() return HostMesh( sliced_hy_hm, shape.region, self.stream_logs, self.is_fake_in_process, None, ) @property def region(self) -\u003e Region: return self._region @property def stream_logs(self) -\u003e bool: return self._stream_logs @classmethod def _from_initialized_hy_host_mesh( cls, hy_host_mesh: HyHostMesh, region: Region, stream_logs: bool, is_fake_in_process: bool, ) -\u003e \"HostMesh\": return HostMesh( Shared.from_value(hy_host_mesh), region, stream_logs, is_fake_in_process, None, ) @classmethod def _from_rust(cls, hy_host_mesh: HyHostMesh) -\u003e \"HostMesh\": \"\"\" Create a HostMesh from a Rust HyHostMesh. This is used when the host was bootstrapped via bootstrap_host() instead of being allocated through an allocator. \"\"\" return cls._from_initialized_hy_host_mesh( hy_host_mesh, hy_host_mesh.region, stream_logs=False, is_fake_in_process=False, ) [docs] def with_python_executable(self, python_executable: str) -\u003e \"HostMesh\": \"\"\" Return a new HostMesh that will use the given Python executable when spawning procs. Procs spawned from this mesh will also inherit this Python executable when they call ``this_host().spawn_procs(...)``. Args: python_executable: Path to the Python executable to use. Returns: A new HostMesh configured to use the specified Python executable. \"\"\" _, _, bootstrap_env = _get_bootstrap_args() bootstrap_cmd: BootstrapCommand = BootstrapCommand( python_executable, None, [\"-m\", \"monarch._src.actor.bootstrap_main\"], bootstrap_env, ) async def task() -\u003e HyHostMesh: return (await self._hy_host_mesh).with_bootstrap(bootstrap_cmd) return HostMesh( PythonTask.from_coroutine(task()).spawn(), self._region, self._stream_logs, self._is_fake_in_process, None, ) def __reduce_ex__(self, protocol: ...) -\u003e Tuple[Any, Tuple[Any, ...]]: return HostMesh, ( self._hy_host_mesh, self._region, self.stream_logs, self.is_fake_in_process, None, ) @property def is_fake_in_process(self) -\u003e bool: return self._is_fake_in_process def __eq__(self, other: \"HostMesh\") -\u003e bool: # Should we include code sync proc mesh? return ( self._initialized_mesh() == other._initialized_mesh() and self._region == other._region and self.stream_logs == other.stream_logs and self.is_fake_in_process == other.is_fake_in_process ) def _initialized_mesh(self) -\u003e HyHostMesh: return self._hy_host_mesh.poll() or self._hy_host_mesh.block_on() async def _flush_pending_spawns(self) -\u003e None: for shared in self._pending_spawns: try: await shared except Exception: pass self._pending_spawns.clear() for pm in self._proc_meshes: await pm._flush_pending_actor_spawns() try: await pm._logging_manager.flush_async() except Exception: pass [docs] def shutdown(self) -\u003e Future[None]: \"\"\" Shutdown the host mesh and all of its processes. It will throw an exception if this host mesh is a *reference* rather than *owned*, which can happen if this `HostMesh` object was received from a remote actor or if it was produced by slicing. After shutting down, the hosts in this mesh will be unusable, and no new HostMeshes will be able to connect to them. If you want to stop everything on the host but keep them available for new clients, use `stop()` instead. This is run automatically on __aexit__ when used as an async context manager. Returns: Future[None]: A future that completes when the host mesh has been shut down. \"\"\" async def task() -\u003e None: await self._flush_pending_spawns() hy_mesh = await self._hy_host_mesh await hy_mesh.shutdown(context().actor_instance._as_rust()) # Remove the inner host mesh to clean up associated memory. self._inner_host_mesh = None return Future(coro=task()) [docs] def stop(self) -\u003e Future[None]: \"\"\" Stop the host mesh, releasing all resources but keeping worker processes alive for reconnection. A new HostMesh can be created that points to the same hosts. Like `shutdown`, this throws if the host mesh is a reference rather than owned. Returns: Future[None]: A future that completes when the host mesh has been stopped. \"\"\" async def task() -\u003e None: await self._flush_pending_spawns() hy_mesh = await self._hy_host_mesh await hy_mesh.stop(context().actor_instance._as_rust()) return Future(coro=task()) async def __aenter__(self) -\u003e \"HostMesh\": if self._inner_host_mesh is None: raise RuntimeError(\"HostMesh has already been shut down\") return self async def __aexit__( self, exc_type: object, exc_val: object, exc_tb: object ) -\u003e None: # In case there are multiple nested \"async with\" statements, we only # want it to close once. if self._inner_host_mesh is not None: await self.shutdown() [docs] async def sync_workspace( self, workspace: Workspace, conda: bool = False, auto_reload: bool = False, ) -\u003e None: \"\"\" Sync local code changes to the remote hosts. Args: workspace: The workspace to sync. conda: If True, also sync the currently activated conda env. auto_reload: If True, automatically reload the workspace on changes. \"\"\" if self._code_sync_proc_mesh: await self._code_sync_proc_mesh.get()._sync_workspace( workspace, conda, auto_reload ) else: raise RuntimeError( \"cannot call sync_workspace on a sliced host mesh or one that was sent over an actor endpoint\" ) @property def initialized(self) -\u003e Future[Literal[True]]: \"\"\" Future completes with \u0027True\u0027 when the `HostMesh` has initialized. Because `HostMesh` are remote objects, there is no guarantee that the `HostMesh` is still usable after this completes, only that at some point in the past it was usable. \"\"\" hm: Shared[HyHostMesh] = self._hy_host_mesh async def task() -\u003e Literal[True]: await hm return True return Future(coro=task()) @property def _hy_host_mesh(self) -\u003e Shared[HyHostMesh]: if self._inner_host_mesh is None: raise RuntimeError(\"HostMesh has already been shut down\") return self._inner_host_mesh def _spawn_admin( host_meshes: list[\"HostMesh\"], admin_addr: Optional[str] = None, telemetry_url: Optional[str] = None, ) -\u003e \"Future[tuple[str, PyMeshAdminRef]]\": \"\"\" Spawn a MeshAdminAgent aggregating topology across one or more HostMeshes. Returns ``(admin_url, admin_ref)`` where ``admin_ref`` is an opaque capability token for immediate use only. Args: host_meshes: One or more HostMeshes whose hosts the admin will aggregate for introspection. Must not be empty. admin_addr: Optional socket address for the admin HTTP server. When ``None``, reads ``MESH_ADMIN_ADDR`` from config. telemetry_url: Optional base URL of the Monarch telemetry dashboard. Returns: Future[tuple[str, PyMeshAdminRef]]: (admin_url, admin_ref). Raises: ValueError: If host_meshes is empty. \"\"\" if not host_meshes: raise ValueError(\"_spawn_admin requires at least one HostMesh\") async def task() -\u003e tuple[str, PyMeshAdminRef]: hy_meshes = [await m._hy_host_mesh for m in host_meshes] admin_url, admin_ref = await _hy_spawn_admin( hy_meshes, context().actor_instance._as_rust(), admin_addr, telemetry_url ) os.environ[\"MONARCH_ADMIN_URL\"] = admin_url return admin_url, admin_ref return Future(coro=task()) def hosts_from_config(name: str) -\u003e HostMesh: \"\"\" Get the host mesh \u0027name\u0027 from the monarch configuration for the project. This config can be modified so that the same code can create meshes from scheduler sources, and different sizes etc. WARNING: This function is a standin so that our getting_started example code works. The real implementation needs an RFC design. \"\"\" num_hosts = 2 tmpdir = tempfile.mkdtemp(prefix=\"monarch_hosts_from_config_\") workers = [] for i in range(num_hosts): addr = f\"ipc://{tmpdir}/{name}_{i}\" env = {**os.environ} cmd = [ sys.executable, \"-c\", \"from monarch.actor import run_worker_loop_forever; \" f\u0027run_worker_loop_forever(address=\"{addr}\", \u0027 \u0027ca=\"trust_all_connections\")\u0027, ] subprocess.Popen(cmd, env=env, start_new_session=True) workers.append(addr) from monarch._src.actor.bootstrap import attach_to_workers return attach_to_workers( name=name, ca=\"trust_all_connections\", workers=workers, )",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

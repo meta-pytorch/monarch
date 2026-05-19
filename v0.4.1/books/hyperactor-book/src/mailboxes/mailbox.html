@@ -1,0 +1,1951 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Mailbox" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-book/src/mailboxes/mailbox.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="A Mailbox represents an actor’s in-process inbox. It owns and manages all of the actor’s ports, provides APIs to open and bind them, and routes messages based on their destination PortId. A mailbox..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="A Mailbox represents an actor’s in-process inbox. It owns and manages all of the actor’s ports, provides APIs to open and bind them, and routes messages based on their destination PortId. A mailbox..." />
+
+    <title>Mailbox &#8212; Monarch v0.4.1 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/mailboxes/mailbox';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/mailboxes/mailbox.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="Mailbox - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.4.1">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', 'v0.4.1');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link and all its ancestor TOC items
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+
+        // Walk up the DOM to activate parent TOC entries (e.g. h2 parent of h3)
+        let ancestor = matchingLink.parentElement.parentElement;
+        while (ancestor && ancestor !== tocNav) {
+          if (ancestor.classList.contains('toc-entry')) {
+            ancestor.classList.add('active');
+            const parentLink = ancestor.querySelector(':scope > a.nav-link');
+            if (parentLink) {
+              parentLink.classList.add('active');
+            }
+          }
+          ancestor = ancestor.parentElement;
+        }
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
+      
+    
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
+                Mesh Admin TUI
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../monarch-dashboard.html">
+                Monarch Dashboard
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
+  </ul>
+</nav>
+</div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../admin-tui.html">
+            Mesh Admin TUI
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../monarch-dashboard.html">
+            Monarch Dashboard
+          </a>
+        
+      </li>
+    
+
+    
+    
+  </ul>
+</nav>
+</div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+<div id="rtd-footer-container"></div>
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Mailbox</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="searchbox"></div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="Mailbox">
+      <meta itemprop="position" content="1">
+    </div>
+  </div>
+
+  
+  
+
+  
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="mailbox">
+<h1>Mailbox<a class="headerlink" href="#mailbox" title="Link to this heading">#</a></h1>
+<p>A <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code> represents an actor’s in-process inbox. It owns and manages all of the actor’s ports, provides APIs to open and bind them, and routes messages based on their destination <code class="docutils literal notranslate"><span class="pre">PortId</span></code>.</p>
+<p>A mailbox routes local messages directly to its ports. If a message is addressed to a different actor, the mailbox uses its configured forwarder to relay the message. If the message cannot be delivered-for instance, if the destination port is unbound-the mailbox wraps it as undeliverable and returns it via the supplied handle.</p>
+<p>This section covers:</p>
+<ul class="simple">
+<li><p>Opening ports of various kinds</p></li>
+<li><p>Port binding and registration</p></li>
+<li><p>Internal mailbox state and delivery logic</p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">State</span></code> holds all delivery infrastructure: active ports, the actor’s ID, a port allocator, and a forwarding mechanism. Multiple clones of a <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code> share access to the same state:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">Mailbox</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">state</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">State</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">new</span></code> function creates a mailbox with the provided actor ID and forwarder for external destinations:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Mailbox</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">new</span><span class="p">(</span><span class="n">actor_id</span><span class="p">:</span><span class="w"> </span><span class="nc">ActorId</span><span class="p">,</span><span class="w"> </span><span class="n">forwarder</span><span class="p">:</span><span class="w"> </span><span class="nc">BoxedMailboxSender</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="bp">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">state</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">State</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">actor_id</span><span class="p">,</span><span class="w"> </span><span class="n">forwarder</span><span class="p">)),</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">new_detached</span></code> mailboxes are not connected to an external message forwarder and can only deliver to its own ports:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Mailbox</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">new_detached</span><span class="p">(</span><span class="n">actor_id</span><span class="p">:</span><span class="w"> </span><span class="nc">ActorId</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="bp">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">state</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">State</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">actor_id</span><span class="p">,</span><span class="w"> </span><span class="n">BOXED_PANICKING_MAILBOX_SENDER</span><span class="p">.</span><span class="n">clone</span><span class="p">())),</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>A mailbox can open ports, each identified by a unique <code class="docutils literal notranslate"><span class="pre">PortId</span></code> within the owning actor. The most common form is <code class="docutils literal notranslate"><span class="pre">open_port</span></code>, which creates a fresh, unbounded channel for message delivery:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Mailbox</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">open_port</span><span class="o">&lt;</span><span class="n">M</span><span class="p">:</span><span class="w"> </span><span class="nc">Message</span><span class="o">&gt;</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="p">(</span><span class="n">PortHandle</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">PortReceiver</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">port_index</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">allocate_port</span><span class="p">();</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">sender</span><span class="p">,</span><span class="w"> </span><span class="n">receiver</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mpsc</span><span class="p">::</span><span class="n">unbounded_channel</span><span class="p">::</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="p">();</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">port_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">PortId</span><span class="p">(</span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">actor_id</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span><span class="w"> </span><span class="n">port_index</span><span class="p">);</span>
+<span class="w">        </span><span class="p">(</span>
+<span class="w">            </span><span class="n">PortHandle</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="bp">self</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span><span class="w"> </span><span class="n">port_index</span><span class="p">,</span><span class="w"> </span><span class="n">UnboundedPortSender</span><span class="p">::</span><span class="n">Mpsc</span><span class="p">(</span><span class="n">sender</span><span class="p">)),</span>
+<span class="w">            </span><span class="n">PortReceiver</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
+<span class="w">                </span><span class="n">receiver</span><span class="p">,</span>
+<span class="w">                </span><span class="n">port_id</span><span class="p">,</span>
+<span class="w">                </span><span class="cm">/*coalesce=*/</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">                </span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">            </span><span class="p">),</span>
+<span class="w">        </span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This allocates a new port index and sets up a pair of endpoints: a <code class="docutils literal notranslate"><span class="pre">PortHandle&lt;M&gt;</span></code> for sending messages into the port, and a <code class="docutils literal notranslate"><span class="pre">PortReceiver&lt;M&gt;</span></code> for asynchronously consuming them. Internally, these are two ends of an <code class="docutils literal notranslate"><span class="pre">mpsc::unbounded_channel</span></code>, meaning messages are buffered in memory and processed in order without backpressure.</p>
+<p>In contrast to <code class="docutils literal notranslate"><span class="pre">open_port</span></code>, which uses a channel-backed buffer, <code class="docutils literal notranslate"><span class="pre">open_enqueue_port</span></code> constructs a port backed directly by a user-supplied enqueue function:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Mailbox</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="p">(</span><span class="k">crate</span><span class="p">)</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">open_enqueue_port</span><span class="o">&lt;</span><span class="n">M</span><span class="p">:</span><span class="w"> </span><span class="nc">Message</span><span class="o">&gt;</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">        </span><span class="n">enqueue</span><span class="p">:</span><span class="w"> </span><span class="nc">impl</span><span class="w"> </span><span class="nb">Fn</span><span class="p">(</span><span class="n">M</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="n">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">&#39;</span><span class="nb">static</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">PortHandle</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">PortHandle</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">mailbox</span><span class="p">:</span><span class="w"> </span><span class="nc">self</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">            </span><span class="n">port_index</span><span class="p">:</span><span class="w"> </span><span class="nc">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">allocate_port</span><span class="p">(),</span>
+<span class="w">            </span><span class="n">sender</span><span class="p">:</span><span class="w"> </span><span class="nc">UnboundedPortSender</span><span class="p">::</span><span class="n">Func</span><span class="p">(</span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">enqueue</span><span class="p">)),</span>
+<span class="w">            </span><span class="n">bound</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">OnceLock</span><span class="p">::</span><span class="n">new</span><span class="p">()),</span>
+<span class="w">            </span><span class="n">reducer_typehash</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Unlike <code class="docutils literal notranslate"><span class="pre">open_port</span></code>, which yields both sender and receiver ends of an internal channel, <code class="docutils literal notranslate"><span class="pre">open_enqueue_port</span></code> returns only a <code class="docutils literal notranslate"><span class="pre">PortHandle</span></code>. Instead of buffering messages, this port invokes a user-supplied function directly on each message it receives.</p>
+<p>Another variant <code class="docutils literal notranslate"><span class="pre">open_accum_port</span></code>, builds on the same principle as <code class="docutils literal notranslate"><span class="pre">open_enqueue_port</span></code>, but pairs the port with an accumulator that maintains state across messages. We’ll return to this specialized port type later. We’ll also encounter <code class="docutils literal notranslate"><span class="pre">open_once_port</span></code> analogous to <code class="docutils literal notranslate"><span class="pre">open_port</span></code> but sets up a one-shot message channel - useful for rendezvous-style communication - using the associated <code class="docutils literal notranslate"><span class="pre">OncePortHandle</span></code> and <code class="docutils literal notranslate"><span class="pre">OncePort</span></code> types.</p>
+<section id="port-binding">
+<h2>Port Binding<a class="headerlink" href="#port-binding" title="Link to this heading">#</a></h2>
+<p>Binding is only required when a port must be referred to externally-for example, when sending it across the network or including it in a message. Binding a port produces a <code class="docutils literal notranslate"><span class="pre">PortRef</span></code>, which globally names the port and requires that the associated message type implements <code class="docutils literal notranslate"><span class="pre">RemoteMessage</span></code> (i.e., is serializable). All messages sent via a <code class="docutils literal notranslate"><span class="pre">PortRef</span></code> are serialized.</p>
+<p>By contrast, <code class="docutils literal notranslate"><span class="pre">PortHandle</span></code> can be used locally to send any type implementing <code class="docutils literal notranslate"><span class="pre">Message</span></code>, including non-serializable types, and behaves like a typed in-memory queue.</p>
+<p>Once a port is opened with <code class="docutils literal notranslate"><span class="pre">open_port</span></code>, it must be bound before it can receive messages routed through the mailbox. Binding installs the port into the mailbox’s internal routing table and produces a <code class="docutils literal notranslate"><span class="pre">PortRef&lt;M&gt;</span></code>-a lightweight, serializable reference that remote actors can use to send messages to the port.</p>
+<p>Port binding is performed by calling <code class="docutils literal notranslate"><span class="pre">.bind()</span></code> on a <code class="docutils literal notranslate"><span class="pre">PortHandle</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="o">&lt;</span><span class="n">M</span><span class="p">:</span><span class="w"> </span><span class="nc">RemoteMessage</span><span class="o">&gt;</span><span class="w"> </span><span class="n">PortHandle</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">PortRef</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">PortRef</span><span class="p">::</span><span class="n">attest_reducible</span><span class="p">(</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">bound</span>
+<span class="w">                </span><span class="p">.</span><span class="n">get_or_init</span><span class="p">(</span><span class="o">||</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">mailbox</span><span class="p">.</span><span class="n">bind</span><span class="p">(</span><span class="bp">self</span><span class="p">).</span><span class="n">port_id</span><span class="p">().</span><span class="n">clone</span><span class="p">())</span>
+<span class="w">                </span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">reducer_spec</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">reducer_opts</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">        </span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This delegates to <code class="docutils literal notranslate"><span class="pre">Mailbox::bind(&amp;self,</span> <span class="pre">handle)</span></code>, which performs the actual installation into the mailbox’s internal <code class="docutils literal notranslate"><span class="pre">State</span></code>. If the port is already bound, this is a no-op.</p>
+<p>The mailbox checks that the port handle belongs to it, computes the <code class="docutils literal notranslate"><span class="pre">PortId</span></code>, and then inserts the sender into the internal ports map if it hasn’t been bound already:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Mailbox</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind</span><span class="o">&lt;</span><span class="n">M</span><span class="p">:</span><span class="w"> </span><span class="nc">RemoteMessage</span><span class="o">&gt;</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">handle</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">PortHandle</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">PortRef</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="fm">assert_eq!</span><span class="p">(</span>
+<span class="w">            </span><span class="n">handle</span><span class="p">.</span><span class="n">mailbox</span><span class="p">.</span><span class="n">actor_id</span><span class="p">(),</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">actor_id</span><span class="p">(),</span>
+<span class="w">            </span><span class="s">&quot;port does not belong to mailbox&quot;</span>
+<span class="w">        </span><span class="p">);</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">port_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">actor_id</span><span class="p">().</span><span class="n">port_id</span><span class="p">(</span><span class="n">handle</span><span class="p">.</span><span class="n">port_index</span><span class="p">);</span>
+<span class="w">        </span><span class="k">match</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">ports</span><span class="p">.</span><span class="n">entry</span><span class="p">(</span><span class="n">handle</span><span class="p">.</span><span class="n">port_index</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">Entry</span><span class="p">::</span><span class="n">Vacant</span><span class="p">(</span><span class="n">entry</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">entry</span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">UnboundedSender</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
+<span class="w">                    </span><span class="n">handle</span><span class="p">.</span><span class="n">sender</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">                    </span><span class="n">port_id</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">                </span><span class="p">)));</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="n">Entry</span><span class="p">::</span><span class="n">Occupied</span><span class="p">(</span><span class="n">_entry</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{}</span>
+<span class="w">        </span><span class="p">}</span>
+
+<span class="w">        </span><span class="n">PortRef</span><span class="p">::</span><span class="n">attest</span><span class="p">(</span><span class="n">port_id</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The result is a <code class="docutils literal notranslate"><span class="pre">PortRef&lt;M&gt;</span></code> that can be sent across the network to deliver messages to this bound port.</p>
+</section>
+<section id="binding-to-a-specific-index">
+<h2>Binding to a Specific Index<a class="headerlink" href="#binding-to-a-specific-index" title="Link to this heading">#</a></h2>
+<p>There is also a lower-level variant, bind_to, used internally by actor binding mechanisms (e.g., when installing well-known ports at known indices):</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Mailbox</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind_to</span><span class="o">&lt;</span><span class="n">M</span><span class="p">:</span><span class="w"> </span><span class="nc">RemoteMessage</span><span class="o">&gt;</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">handle</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">PortHandle</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">port_index</span><span class="p">:</span><span class="w"> </span><span class="kt">u64</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="fm">assert_eq!</span><span class="p">(</span>
+<span class="w">          </span><span class="n">handle</span><span class="p">.</span><span class="n">mailbox</span><span class="p">.</span><span class="n">actor_id</span><span class="p">(),</span>
+<span class="w">          </span><span class="bp">self</span><span class="p">.</span><span class="n">actor_id</span><span class="p">(),</span>
+<span class="w">          </span><span class="s">&quot;port does not belong to mailbox&quot;</span>
+<span class="w">      </span><span class="p">);</span>
+
+<span class="w">      </span><span class="kd">let</span><span class="w"> </span><span class="n">port_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">actor_id</span><span class="p">().</span><span class="n">port_id</span><span class="p">(</span><span class="n">port_index</span><span class="p">);</span>
+<span class="w">      </span><span class="k">match</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">ports</span><span class="p">.</span><span class="n">entry</span><span class="p">(</span><span class="n">port_index</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">          </span><span class="n">Entry</span><span class="p">::</span><span class="n">Vacant</span><span class="p">(</span><span class="n">entry</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">              </span><span class="n">entry</span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">UnboundedSender</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
+<span class="w">                  </span><span class="n">handle</span><span class="p">.</span><span class="n">sender</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">                  </span><span class="n">port_id</span><span class="p">,</span>
+<span class="w">              </span><span class="p">)));</span>
+<span class="w">          </span><span class="p">}</span>
+<span class="w">          </span><span class="n">Entry</span><span class="p">::</span><span class="n">Occupied</span><span class="p">(</span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="fm">panic!</span><span class="p">(</span><span class="s">&quot;port {} already bound&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">port_id</span><span class="p">),</span>
+<span class="w">      </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="message-delivery-via-mailboxsender">
+<h2>Message Delivery via MailboxSender<a class="headerlink" href="#message-delivery-via-mailboxsender" title="Link to this heading">#</a></h2>
+<p>The mailbox also handles message delivery. It does this by implementing the <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> trait, which defines how messages-wrapped in <code class="docutils literal notranslate"><span class="pre">MessageEnvelope</span></code>-are routed, deserialized, and delivered to bound ports or forwarded to remote destinations.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">Mailbox</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">        </span><span class="n">envelope</span><span class="p">:</span><span class="w"> </span><span class="nc">MessageEnvelope</span><span class="p">,</span>
+<span class="w">        </span><span class="n">return_handle</span><span class="p">:</span><span class="w"> </span><span class="nc">PortHandle</span><span class="o">&lt;</span><span class="n">Undeliverable</span><span class="o">&lt;</span><span class="n">MessageEnvelope</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">dest</span><span class="p">().</span><span class="n">actor_id</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">actor_id</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">forwarder</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">);</span>
+<span class="w">        </span><span class="p">}</span>
+
+<span class="w">        </span><span class="k">match</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">ports</span><span class="p">.</span><span class="n">entry</span><span class="p">(</span><span class="n">envelope</span><span class="p">.</span><span class="n">dest</span><span class="p">().</span><span class="n">index</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">Entry</span><span class="p">::</span><span class="n">Vacant</span><span class="p">(</span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">undeliverable</span><span class="p">(</span>
+<span class="w">                </span><span class="n">DeliveryError</span><span class="p">::</span><span class="n">Unroutable</span><span class="p">(</span><span class="s">&quot;port not bound in mailbox&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">()),</span>
+<span class="w">                </span><span class="n">return_handle</span><span class="p">,</span>
+<span class="w">            </span><span class="p">),</span>
+<span class="w">            </span><span class="n">Entry</span><span class="p">::</span><span class="n">Occupied</span><span class="p">(</span><span class="n">entry</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span><span class="w"> </span><span class="n">data</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">open</span><span class="p">();</span>
+<span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">MessageMetadata</span><span class="w"> </span><span class="p">{</span><span class="n">headers</span><span class="p">,</span><span class="w"> </span><span class="n">sender</span><span class="p">,</span><span class="w"> </span><span class="n">dest</span><span class="p">,</span><span class="w"> </span><span class="n">error</span><span class="p">:</span><span class="w"> </span><span class="nc">metadata_error</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">metadata</span><span class="p">;</span>
+<span class="w">                </span><span class="k">match</span><span class="w"> </span><span class="n">entry</span><span class="p">.</span><span class="n">get</span><span class="p">().</span><span class="n">send_serialized</span><span class="p">(</span><span class="n">headers</span><span class="p">,</span><span class="w"> </span><span class="n">data</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nb">Ok</span><span class="p">(</span><span class="kc">false</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="n">entry</span><span class="p">.</span><span class="n">remove</span><span class="p">();</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                    </span><span class="nb">Ok</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">(),</span>
+<span class="w">                    </span><span class="nb">Err</span><span class="p">(</span><span class="n">SerializedSenderError</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="n">data</span><span class="p">,</span>
+<span class="w">                        </span><span class="n">error</span><span class="p">,</span>
+<span class="w">                        </span><span class="n">headers</span><span class="p">,</span>
+<span class="w">                    </span><span class="p">})</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">MessageEnvelope</span><span class="p">::</span><span class="n">seal</span><span class="p">(</span>
+<span class="w">                        </span><span class="n">MessageMetadata</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">headers</span><span class="p">,</span><span class="w"> </span><span class="n">sender</span><span class="p">,</span><span class="w"> </span><span class="n">dest</span><span class="p">,</span><span class="w"> </span><span class="n">error</span><span class="p">:</span><span class="w"> </span><span class="nc">metadata_error</span><span class="w"> </span><span class="p">},</span>
+<span class="w">                        </span><span class="n">data</span><span class="p">,</span>
+<span class="w">                    </span><span class="p">)</span>
+<span class="w">                    </span><span class="p">.</span><span class="n">undeliverable</span><span class="p">(</span><span class="n">DeliveryError</span><span class="p">::</span><span class="n">Mailbox</span><span class="p">(</span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;{}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">error</span><span class="p">)),</span><span class="w"> </span><span class="n">return_handle</span><span class="p">),</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<section id="breakdown-of-delivery-logic">
+<h3>Breakdown of Delivery Logic<a class="headerlink" href="#breakdown-of-delivery-logic" title="Link to this heading">#</a></h3>
+<p>This implementation of <code class="docutils literal notranslate"><span class="pre">MailboxSender::post</span></code> defines how a mailbox handles message delivery:</p>
+<ol class="arabic simple">
+<li><p>Actor ID routing</p></li>
+</ol>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">dest</span><span class="p">().</span><span class="n">actor_id</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">actor_id</span>
+</pre></div>
+</div>
+<p>If the message is not addressed to this actor, it’s forwarded using the forwarder defined in the mailbox’s state. This allows for transparent routing across process or network boundaries.</p>
+<ol class="arabic simple" start="2">
+<li><p>Port Lookup and Binding Check</p></li>
+</ol>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">match</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">ports</span><span class="p">.</span><span class="n">entry</span><span class="p">(</span><span class="n">envelope</span><span class="p">.</span><span class="n">dest</span><span class="p">().</span><span class="n">index</span><span class="p">())</span>
+</pre></div>
+</div>
+<p>The mailbox uses the destination <code class="docutils literal notranslate"><span class="pre">PortId</span></code> to locate the bound port in its internal routing table. If the port hasn’t been bound, the message is returned to the sender as undeliverable.</p>
+<ol class="arabic simple" start="3">
+<li><p>Deserialization and Delivery Attempt</p></li>
+</ol>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">match</span><span class="w"> </span><span class="n">entry</span><span class="p">.</span><span class="n">get</span><span class="p">().</span><span class="n">send_serialized</span><span class="p">(</span><span class="n">headers</span><span class="p">,</span><span class="w"> </span><span class="n">data</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>If the port is found, the message is unsealed and passed to the corresponding <code class="docutils literal notranslate"><span class="pre">SerializedSender</span></code> (e.g., the <code class="docutils literal notranslate"><span class="pre">UnboundedSender</span></code> inserted during binding). This may succeed or fail:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Ok(true)</span></code>: Message was delivered.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Ok(false)</span></code>: Port is closed; remove it from the routing table.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Err(...)</span></code>: Deserialization failed or other error; wrap the message and return it to the sender as undeliverable.</p></li>
+</ul>
+</section>
+<section id="relationship-to-bound-ports">
+<h3>Relationship to Bound Ports<a class="headerlink" href="#relationship-to-bound-ports" title="Link to this heading">#</a></h3>
+<p>Only ports that have been bound via <code class="docutils literal notranslate"><span class="pre">PortHandle::bind()</span></code> appear in the ports map and are eligible to receive messages via this <code class="docutils literal notranslate"><span class="pre">post</span></code> path. The entry in this map is a type-erased boxed <code class="docutils literal notranslate"><span class="pre">SerializedSender</span></code>, which, when invoked, attempts to deserialize the raw message payload into the expected concrete type and forward it to the associated <code class="docutils literal notranslate"><span class="pre">PortReceiver</span></code> or handler.</p>
+<p>The mailbox’s routing and delivery logic ultimately relies on the internal <code class="docutils literal notranslate"><span class="pre">State</span></code>, which stores port mappings, forwarding configuration, and allocation state.</p>
+</section>
+</section>
+<section id="state">
+<h2>State<a class="headerlink" href="#state" title="Link to this heading">#</a></h2>
+<p>Each <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code> instance wraps an internal <code class="docutils literal notranslate"><span class="pre">State</span></code> struct that contains all shared delivery infrastructure:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">struct</span><span class="w"> </span><span class="nc">State</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">actor_id</span><span class="p">:</span><span class="w"> </span><span class="nc">ActorId</span><span class="p">,</span>
+<span class="w">    </span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="nc">DashMap</span><span class="o">&lt;</span><span class="kt">u64</span><span class="p">,</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">SerializedSender</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">next_port</span><span class="p">:</span><span class="w"> </span><span class="nc">AtomicU64</span><span class="p">,</span>
+<span class="w">    </span><span class="n">forwarder</span><span class="p">:</span><span class="w"> </span><span class="nc">BoxedMailboxSender</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This structure is reference-counted via <code class="docutils literal notranslate"><span class="pre">Arc&lt;State&gt;</span></code> and is cloned across all components that need access to the mailbox’s internal state. Each field plays a central role:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">actor_id</span></code></strong>: Identifies the actor that owns this mailbox. All ports in the mailbox are scoped under this actor ID and used to construct <code class="docutils literal notranslate"><span class="pre">PortId</span></code>s during binding and routing.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ports</span></code></strong>: A concurrent map from port indices (<code class="docutils literal notranslate"><span class="pre">u64</span></code>) to type-erased <code class="docutils literal notranslate"><span class="pre">SerializedSenders</span></code>. Each entry corresponds to a bound port and provides the ability to deserialize and deliver raw messages to the correct <code class="docutils literal notranslate"><span class="pre">PortReceiver</span></code>. Only serializable ports are registered here.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">next_port</span></code></strong>: Tracks the next available user port index. Actor-assigned ports occupy indices 0..1024, and user-allocated ports begin from a constant offset (<code class="docutils literal notranslate"><span class="pre">USER_PORT_OFFSET</span></code>).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">forwarder</span></code></strong>: A boxed <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> used for forwarding messages to other actors. If a message’s destination is not owned by this mailbox, it will be passed to this sender.</p></li>
+</ul>
+<section id="state-internal-structure-of-a-mailbox">
+<h3>State: Internal Structure of a Mailbox<a class="headerlink" href="#state-internal-structure-of-a-mailbox" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">State</span></code> struct holds all the internal data needed for a functioning <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code>. It’s not exposed directly—rather, it’s wrapped in <code class="docutils literal notranslate"><span class="pre">Arc&lt;State&gt;</span></code> and shared between <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code>, <code class="docutils literal notranslate"><span class="pre">PortHandle</span></code>, and <code class="docutils literal notranslate"><span class="pre">PortReceiver</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">State</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">new</span><span class="p">(</span><span class="n">actor_id</span><span class="p">:</span><span class="w"> </span><span class="nc">ActorId</span><span class="p">,</span><span class="w"> </span><span class="n">forwarder</span><span class="p">:</span><span class="w"> </span><span class="nc">BoxedMailboxSender</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="bp">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">actor_id</span><span class="p">,</span>
+<span class="w">            </span><span class="n">ports</span><span class="p">:</span><span class="w"> </span><span class="nc">DashMap</span><span class="p">::</span><span class="n">new</span><span class="p">(),</span>
+<span class="w">            </span><span class="n">next_port</span><span class="p">:</span><span class="w"> </span><span class="nc">AtomicU64</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">USER_PORT_OFFSET</span><span class="p">),</span>
+<span class="w">            </span><span class="n">forwarder</span><span class="p">,</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">allocate_port</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">u64</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="bp">self</span><span class="p">.</span><span class="n">next_port</span><span class="p">.</span><span class="n">fetch_add</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">Ordering</span><span class="p">::</span><span class="n">SeqCst</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><strong>Notes</strong>:</p>
+<ul class="simple">
+<li><p>The <code class="docutils literal notranslate"><span class="pre">actor_id</span></code> allows every <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code> to know which actor it belongs to, which is essential for routing decisions (<code class="docutils literal notranslate"><span class="pre">post</span></code> checks this).</p></li>
+<li><p>The ports field holds the routing table: it maps each port index to a type-erased sink (<code class="docutils literal notranslate"><span class="pre">SerializedSender</span></code>) capable of deserializing and dispatching messages to the right receiver.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">next_port</span></code> enables safe concurrent dynamic port allocation by atomically assigning unique port indices.</p></li>
+<li><p>The forwarder is used to send messages not destined for this actor-e.g., remote delivery.</p></li>
+</ul>
+</section>
+</section>
+<section id="sending-and-receiving-messages">
+<h2>Sending and Receiving Messages<a class="headerlink" href="#sending-and-receiving-messages" title="Link to this heading">#</a></h2>
+<p>There are two distinct pathways by which a message can arrive at a <code class="docutils literal notranslate"><span class="pre">PortReceiver</span></code>. Both ultimately push a message into an <code class="docutils literal notranslate"><span class="pre">mpsc</span></code> channel (or functionally equivalent handler), but they differ in intent and routing mechanism.</p>
+<section id="local-sends-via-porthandle">
+<h3>Local Sends via PortHandle<a class="headerlink" href="#local-sends-via-porthandle" title="Link to this heading">#</a></h3>
+<p>When you call <code class="docutils literal notranslate"><span class="pre">.send(msg)</span></code> on a <code class="docutils literal notranslate"><span class="pre">PortHandle&lt;M&gt;</span></code>, the message bypasses the <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code> entirely and goes directly into the associated channel:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>PortHandle&lt;M&gt;::send(msg)
+→ UnboundedPortSender&lt;M&gt;::send(Attrs::new(), msg)
+→ underlying channel (mpsc::UnboundedSender&lt;M&gt;)
+→ PortReceiver&lt;M&gt;::recv().await
+</pre></div>
+</div>
+</section>
+<section id="routed-sends-via-mailbox">
+<h3>Routed Sends via Mailbox<a class="headerlink" href="#routed-sends-via-mailbox" title="Link to this heading">#</a></h3>
+<p>When a message is wrapped in a <code class="docutils literal notranslate"><span class="pre">MessageEnvelope</span></code> and posted via <code class="docutils literal notranslate"><span class="pre">Mailbox::post</span></code>, routing logic takes over:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Mailbox::post(envelope, return_handle)
+→ lookup State::ports[port_index]
+→ SerializedSender::send_serialized(headers, bytes)
+→ UnboundedSender::send(headers, M) // after deserialization
+→ mpsc channel
+→ PortReceiver&lt;M&gt;::recv().await
+</pre></div>
+</div>
+<p>This is the delivery path for remote messages or any message routed by a <code class="docutils literal notranslate"><span class="pre">PortRef</span></code>. A <code class="docutils literal notranslate"><span class="pre">PortHandle</span></code> must first be <strong>bound</strong> to participate in this.</p>
+</section>
+</section>
+<section id="capabilities">
+<h2>Capabilities<a class="headerlink" href="#capabilities" title="Link to this heading">#</a></h2>
+<p>Capabilities are lightweight traits that control access to mailbox-related operations. They act as permissions: a type that implements a capability trait is allowed to perform the corresponding action, such as sending messages or opening ports.</p>
+<p>These traits are sealed, meaning they can only be implemented inside the crate. This ensures that capability boundaries are enforced and cannot be circumvented by downstream code.</p>
+<section id="overview">
+<h3>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Capability</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CanSend</span></code></p></td>
+<td><p>Allows sending messages to ports</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CanOpenPort</span></code></p></td>
+<td><p>Allows creating new ports for receiving messages</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CanSplitPort</span></code></p></td>
+<td><p>Allows splitting existing ports with reducers</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CanSpawn</span></code></p></td>
+<td><p>Allows spawning new child actors</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Each public trait (e.g., <code class="docutils literal notranslate"><span class="pre">CanSend</span></code>) is implemented for any type that implements the corresponding private <code class="docutils literal notranslate"><span class="pre">sealed::CanSend</span></code> trait. This gives the crate full control over capability delegation and encapsulation.</p>
+</section>
+<section id="example-cansend">
+<h3>Example: CanSend<a class="headerlink" href="#example-cansend" title="Link to this heading">#</a></h3>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">CanSend</span><span class="p">:</span><span class="w"> </span><span class="nc">sealed</span><span class="p">::</span><span class="n">CanSend</span><span class="w"> </span><span class="p">{}</span>
+<span class="k">impl</span><span class="o">&lt;</span><span class="n">T</span><span class="p">:</span><span class="w"> </span><span class="nc">sealed</span><span class="p">::</span><span class="n">CanSend</span><span class="o">&gt;</span><span class="w"> </span><span class="n">CanSend</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">T</span><span class="w"> </span><span class="p">{}</span>
+</pre></div>
+</div>
+<p>The sealed version defines the core method:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">sealed</span><span class="p">::</span><span class="n">CanSend</span><span class="p">:</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">dest</span><span class="p">:</span><span class="w"> </span><span class="nc">PortId</span><span class="p">,</span><span class="w"> </span><span class="n">headers</span><span class="p">:</span><span class="w"> </span><span class="nc">Attrs</span><span class="p">,</span><span class="w"> </span><span class="n">data</span><span class="p">:</span><span class="w"> </span><span class="nc">Serialized</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Only internal types (e.g., <code class="docutils literal notranslate"><span class="pre">Mailbox</span></code>) implement this sealed trait, meaning only trusted components can obtain <code class="docutils literal notranslate"><span class="pre">CanSend</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">cap</span><span class="p">::</span><span class="n">sealed</span><span class="p">::</span><span class="n">CanSend</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">Mailbox</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">dest</span><span class="p">:</span><span class="w"> </span><span class="nc">PortId</span><span class="p">,</span><span class="w"> </span><span class="n">headers</span><span class="p">:</span><span class="w"> </span><span class="nc">Attrs</span><span class="p">,</span><span class="w"> </span><span class="n">data</span><span class="p">:</span><span class="w"> </span><span class="nc">Serialized</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">return_handle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span>
+<span class="w">            </span><span class="p">.</span><span class="n">lookup_sender</span><span class="p">::</span><span class="o">&lt;</span><span class="n">Undeliverable</span><span class="o">&lt;</span><span class="n">MessageEnvelope</span><span class="o">&gt;&gt;</span><span class="p">()</span>
+<span class="w">            </span><span class="p">.</span><span class="n">map_or_else</span><span class="p">(</span>
+<span class="w">                </span><span class="o">||</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="kd">let</span><span class="w"> </span><span class="n">actor_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">actor_id</span><span class="p">();</span>
+<span class="w">                    </span><span class="k">if</span><span class="w"> </span><span class="n">CAN_SEND_WARNED_MAILBOXES</span>
+<span class="w">                        </span><span class="p">.</span><span class="n">get_or_init</span><span class="p">(</span><span class="n">DashSet</span><span class="p">::</span><span class="n">new</span><span class="p">)</span>
+<span class="w">                        </span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="n">actor_id</span><span class="p">.</span><span class="n">clone</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="kd">let</span><span class="w"> </span><span class="n">bt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">backtrace</span><span class="p">::</span><span class="n">Backtrace</span><span class="p">::</span><span class="n">capture</span><span class="p">();</span>
+<span class="w">                        </span><span class="n">tracing</span><span class="p">::</span><span class="n">warn</span><span class="o">!</span><span class="p">(</span>
+<span class="w">                            </span><span class="n">actor_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">?</span><span class="n">actor_id</span><span class="p">,</span>
+<span class="w">                            </span><span class="n">backtrace</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">?</span><span class="n">bt</span><span class="p">,</span>
+<span class="w">                            </span><span class="s">&quot;mailbox attempted to post a message without binding Undeliverable&lt;MessageEnvelope&gt;&quot;</span>
+<span class="w">                        </span><span class="p">);</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                    </span><span class="n">monitored_return_handle</span><span class="p">()</span>
+<span class="w">                </span><span class="p">},</span>
+<span class="w">                </span><span class="o">|</span><span class="n">sender</span><span class="o">|</span><span class="w"> </span><span class="n">PortHandle</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="bp">self</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">state</span><span class="p">.</span><span class="n">allocate_port</span><span class="p">(),</span><span class="w"> </span><span class="n">sender</span><span class="p">),</span>
+<span class="w">            </span><span class="p">);</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">envelope</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">MessageEnvelope</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="bp">self</span><span class="p">.</span><span class="n">actor_id</span><span class="p">().</span><span class="n">clone</span><span class="p">(),</span><span class="w"> </span><span class="n">dest</span><span class="p">,</span><span class="w"> </span><span class="n">data</span><span class="p">,</span><span class="w"> </span><span class="n">headers</span><span class="p">);</span>
+<span class="w">        </span><span class="n">MailboxSender</span><span class="p">::</span><span class="n">post</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This implementation prefers that the mailbox has already bound a port capable of receiving undeliverable messages (of type <code class="docutils literal notranslate"><span class="pre">Undeliverable&lt;MessageEnvelope&gt;</span></code>). This port acts as a return address for failed message deliveries. If the port is not bound, message sending will warn with a backtrace indicating a logic error in system setup and fallback on a <code class="docutils literal notranslate"><span class="pre">monitored_return_handle</span></code> (ideally we’d <code class="docutils literal notranslate"><span class="pre">panic!</span></code> but backwards compatibility prevents this). This ensures that all messages have a well-defined failure path and avoids silent message loss.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+</div>
+
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#port-binding">Port Binding</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#binding-to-a-specific-index">Binding to a Specific Index</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#message-delivery-via-mailboxsender">Message Delivery via MailboxSender</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#breakdown-of-delivery-logic">Breakdown of Delivery Logic</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#relationship-to-bound-ports">Relationship to Bound Ports</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#state">State</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#state-internal-structure-of-a-mailbox">State: Internal Structure of a Mailbox</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sending-and-receiving-messages">Sending and Receiving Messages</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#local-sends-via-porthandle">Local Sends via PortHandle</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#routed-sends-via-mailbox">Routed Sends via Mailbox</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#capabilities">Capabilities</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#example-cansend">Example: CanSend</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-book/src/mailboxes/mailbox.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-book/src/mailboxes/mailbox.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper" data-nosnippet>
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
+    <button class="close-button" aria-label="Close cookie banner"></button>
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Mailbox",
+       "headline": "Mailbox",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
+       "url": "/books/hyperactor-book/src/mailboxes/mailbox.html",
+       "articleBody": "Mailbox# A Mailbox represents an actor\u2019s in-process inbox. It owns and manages all of the actor\u2019s ports, provides APIs to open and bind them, and routes messages based on their destination PortId. A mailbox routes local messages directly to its ports. If a message is addressed to a different actor, the mailbox uses its configured forwarder to relay the message. If the message cannot be delivered-for instance, if the destination port is unbound-the mailbox wraps it as undeliverable and returns it via the supplied handle. This section covers: Opening ports of various kinds Port binding and registration Internal mailbox state and delivery logic The State holds all delivery infrastructure: active ports, the actor\u2019s ID, a port allocator, and a forwarding mechanism. Multiple clones of a Mailbox share access to the same state: pub struct Mailbox { state: Arc\u003cState\u003e, } The new function creates a mailbox with the provided actor ID and forwarder for external destinations: impl Mailbox { pub fn new(actor_id: ActorId, forwarder: BoxedMailboxSender) -\u003e Self { Self { state: Arc::new(State::new(actor_id, forwarder)), } } } new_detached mailboxes are not connected to an external message forwarder and can only deliver to its own ports: impl Mailbox { pub fn new_detached(actor_id: ActorId) -\u003e Self { Self { state: Arc::new(State::new(actor_id, BOXED_PANICKING_MAILBOX_SENDER.clone())), } } A mailbox can open ports, each identified by a unique PortId within the owning actor. The most common form is open_port, which creates a fresh, unbounded channel for message delivery: impl Mailbox { pub fn open_port\u003cM: Message\u003e(\u0026self) -\u003e (PortHandle\u003cM\u003e, PortReceiver\u003cM\u003e) { let port_index = self.state.allocate_port(); let (sender, receiver) = mpsc::unbounded_channel::\u003cM\u003e(); let port_id = PortId(self.state.actor_id.clone(), port_index); ( PortHandle::new(self.clone(), port_index, UnboundedPortSender::Mpsc(sender)), PortReceiver::new( receiver, port_id, /*coalesce=*/ false, self.state.clone(), ), ) } } This allocates a new port index and sets up a pair of endpoints: a PortHandle\u003cM\u003e for sending messages into the port, and a PortReceiver\u003cM\u003e for asynchronously consuming them. Internally, these are two ends of an mpsc::unbounded_channel, meaning messages are buffered in memory and processed in order without backpressure. In contrast to open_port, which uses a channel-backed buffer, open_enqueue_port constructs a port backed directly by a user-supplied enqueue function: impl Mailbox { pub(crate) fn open_enqueue_port\u003cM: Message\u003e( \u0026self, enqueue: impl Fn(M) -\u003e Result\u003c(), anyhow::Error\u003e + Send + Sync + \u0027static, ) -\u003e PortHandle\u003cM\u003e { PortHandle { mailbox: self.clone(), port_index: self.state.allocate_port(), sender: UnboundedPortSender::Func(Arc::new(enqueue)), bound: Arc::new(OnceLock::new()), reducer_typehash: None, } } } Unlike open_port, which yields both sender and receiver ends of an internal channel, open_enqueue_port returns only a PortHandle. Instead of buffering messages, this port invokes a user-supplied function directly on each message it receives. Another variant open_accum_port, builds on the same principle as open_enqueue_port, but pairs the port with an accumulator that maintains state across messages. We\u2019ll return to this specialized port type later. We\u2019ll also encounter open_once_port analogous to open_port but sets up a one-shot message channel - useful for rendezvous-style communication - using the associated OncePortHandle and OncePort types. Port Binding# Binding is only required when a port must be referred to externally-for example, when sending it across the network or including it in a message. Binding a port produces a PortRef, which globally names the port and requires that the associated message type implements RemoteMessage (i.e., is serializable). All messages sent via a PortRef are serialized. By contrast, PortHandle can be used locally to send any type implementing Message, including non-serializable types, and behaves like a typed in-memory queue. Once a port is opened with open_port, it must be bound before it can receive messages routed through the mailbox. Binding installs the port into the mailbox\u2019s internal routing table and produces a PortRef\u003cM\u003e-a lightweight, serializable reference that remote actors can use to send messages to the port. Port binding is performed by calling .bind() on a PortHandle: impl\u003cM: RemoteMessage\u003e PortHandle\u003cM\u003e { pub fn bind(\u0026self) -\u003e PortRef\u003cM\u003e { PortRef::attest_reducible( self.bound .get_or_init(|| self.mailbox.bind(self).port_id().clone()) .clone(), self.reducer_spec.clone(), self.reducer_opts.clone(), ) } } This delegates to Mailbox::bind(\u0026self, handle), which performs the actual installation into the mailbox\u2019s internal State. If the port is already bound, this is a no-op. The mailbox checks that the port handle belongs to it, computes the PortId, and then inserts the sender into the internal ports map if it hasn\u2019t been bound already: impl Mailbox { fn bind\u003cM: RemoteMessage\u003e(\u0026self, handle: \u0026PortHandle\u003cM\u003e) -\u003e PortRef\u003cM\u003e { assert_eq!( handle.mailbox.actor_id(), self.actor_id(), \"port does not belong to mailbox\" ); let port_id = self.actor_id().port_id(handle.port_index); match self.state.ports.entry(handle.port_index) { Entry::Vacant(entry) =\u003e { entry.insert(Box::new(UnboundedSender::new( handle.sender.clone(), port_id.clone(), ))); } Entry::Occupied(_entry) =\u003e {} } PortRef::attest(port_id) } } The result is a PortRef\u003cM\u003e that can be sent across the network to deliver messages to this bound port. Binding to a Specific Index# There is also a lower-level variant, bind_to, used internally by actor binding mechanisms (e.g., when installing well-known ports at known indices): impl Mailbox { fn bind_to\u003cM: RemoteMessage\u003e(\u0026self, handle: \u0026PortHandle\u003cM\u003e, port_index: u64) { assert_eq!( handle.mailbox.actor_id(), self.actor_id(), \"port does not belong to mailbox\" ); let port_id = self.actor_id().port_id(port_index); match self.state.ports.entry(port_index) { Entry::Vacant(entry) =\u003e { entry.insert(Box::new(UnboundedSender::new( handle.sender.clone(), port_id, ))); } Entry::Occupied(_) =\u003e panic!(\"port {} already bound\", port_id), } } } Message Delivery via MailboxSender# The mailbox also handles message delivery. It does this by implementing the MailboxSender trait, which defines how messages-wrapped in MessageEnvelope-are routed, deserialized, and delivered to bound ports or forwarded to remote destinations. impl MailboxSender for Mailbox { fn post( \u0026self, envelope: MessageEnvelope, return_handle: PortHandle\u003cUndeliverable\u003cMessageEnvelope\u003e\u003e, ) { if envelope.dest().actor_id() != \u0026self.state.actor_id { return self.state.forwarder.post(envelope, return_handle); } match self.state.ports.entry(envelope.dest().index()) { Entry::Vacant(_) =\u003e envelope.undeliverable( DeliveryError::Unroutable(\"port not bound in mailbox\".to_string()), return_handle, ), Entry::Occupied(entry) =\u003e { let (metadata, data) = envelope.open(); let MessageMetadata {headers, sender, dest, error: metadata_error } = metadata; match entry.get().send_serialized(headers, data) { Ok(false) =\u003e { entry.remove(); } Ok(true) =\u003e (), Err(SerializedSenderError { data, error, headers, }) =\u003e MessageEnvelope::seal( MessageMetadata { headers, sender, dest, error: metadata_error }, data, ) .undeliverable(DeliveryError::Mailbox(format!(\"{}\", error)), return_handle), } } } } } Breakdown of Delivery Logic# This implementation of MailboxSender::post defines how a mailbox handles message delivery: Actor ID routing if envelope.dest().actor_id() != \u0026self.state.actor_id If the message is not addressed to this actor, it\u2019s forwarded using the forwarder defined in the mailbox\u2019s state. This allows for transparent routing across process or network boundaries. Port Lookup and Binding Check match self.state.ports.entry(envelope.dest().index()) The mailbox uses the destination PortId to locate the bound port in its internal routing table. If the port hasn\u2019t been bound, the message is returned to the sender as undeliverable. Deserialization and Delivery Attempt match entry.get().send_serialized(headers, data) If the port is found, the message is unsealed and passed to the corresponding SerializedSender (e.g., the UnboundedSender inserted during binding). This may succeed or fail: Ok(true): Message was delivered. Ok(false): Port is closed; remove it from the routing table. Err(...): Deserialization failed or other error; wrap the message and return it to the sender as undeliverable. Relationship to Bound Ports# Only ports that have been bound via PortHandle::bind() appear in the ports map and are eligible to receive messages via this post path. The entry in this map is a type-erased boxed SerializedSender, which, when invoked, attempts to deserialize the raw message payload into the expected concrete type and forward it to the associated PortReceiver or handler. The mailbox\u2019s routing and delivery logic ultimately relies on the internal State, which stores port mappings, forwarding configuration, and allocation state. State# Each Mailbox instance wraps an internal State struct that contains all shared delivery infrastructure: struct State { actor_id: ActorId, ports: DashMap\u003cu64, Box\u003cdyn SerializedSender\u003e\u003e, next_port: AtomicU64, forwarder: BoxedMailboxSender, } This structure is reference-counted via Arc\u003cState\u003e and is cloned across all components that need access to the mailbox\u2019s internal state. Each field plays a central role: actor_id: Identifies the actor that owns this mailbox. All ports in the mailbox are scoped under this actor ID and used to construct PortIds during binding and routing. ports: A concurrent map from port indices (u64) to type-erased SerializedSenders. Each entry corresponds to a bound port and provides the ability to deserialize and deliver raw messages to the correct PortReceiver. Only serializable ports are registered here. next_port: Tracks the next available user port index. Actor-assigned ports occupy indices 0..1024, and user-allocated ports begin from a constant offset (USER_PORT_OFFSET). forwarder: A boxed MailboxSender used for forwarding messages to other actors. If a message\u2019s destination is not owned by this mailbox, it will be passed to this sender. State: Internal Structure of a Mailbox# The State struct holds all the internal data needed for a functioning Mailbox. It\u2019s not exposed directly\u2014rather, it\u2019s wrapped in Arc\u003cState\u003e and shared between Mailbox, PortHandle, and PortReceiver: impl State { fn new(actor_id: ActorId, forwarder: BoxedMailboxSender) -\u003e Self { Self { actor_id, ports: DashMap::new(), next_port: AtomicU64::new(USER_PORT_OFFSET), forwarder, } } fn allocate_port(\u0026self) -\u003e u64 { self.next_port.fetch_add(1, Ordering::SeqCst) } } Notes: The actor_id allows every Mailbox to know which actor it belongs to, which is essential for routing decisions (post checks this). The ports field holds the routing table: it maps each port index to a type-erased sink (SerializedSender) capable of deserializing and dispatching messages to the right receiver. next_port enables safe concurrent dynamic port allocation by atomically assigning unique port indices. The forwarder is used to send messages not destined for this actor-e.g., remote delivery. Sending and Receiving Messages# There are two distinct pathways by which a message can arrive at a PortReceiver. Both ultimately push a message into an mpsc channel (or functionally equivalent handler), but they differ in intent and routing mechanism. Local Sends via PortHandle# When you call .send(msg) on a PortHandle\u003cM\u003e, the message bypasses the Mailbox entirely and goes directly into the associated channel: PortHandle\u003cM\u003e::send(msg) \u2192 UnboundedPortSender\u003cM\u003e::send(Attrs::new(), msg) \u2192 underlying channel (mpsc::UnboundedSender\u003cM\u003e) \u2192 PortReceiver\u003cM\u003e::recv().await Routed Sends via Mailbox# When a message is wrapped in a MessageEnvelope and posted via Mailbox::post, routing logic takes over: Mailbox::post(envelope, return_handle) \u2192 lookup State::ports[port_index] \u2192 SerializedSender::send_serialized(headers, bytes) \u2192 UnboundedSender::send(headers, M) // after deserialization \u2192 mpsc channel \u2192 PortReceiver\u003cM\u003e::recv().await This is the delivery path for remote messages or any message routed by a PortRef. A PortHandle must first be bound to participate in this. Capabilities# Capabilities are lightweight traits that control access to mailbox-related operations. They act as permissions: a type that implements a capability trait is allowed to perform the corresponding action, such as sending messages or opening ports. These traits are sealed, meaning they can only be implemented inside the crate. This ensures that capability boundaries are enforced and cannot be circumvented by downstream code. Overview# Capability Description CanSend Allows sending messages to ports CanOpenPort Allows creating new ports for receiving messages CanSplitPort Allows splitting existing ports with reducers CanSpawn Allows spawning new child actors Each public trait (e.g., CanSend) is implemented for any type that implements the corresponding private sealed::CanSend trait. This gives the crate full control over capability delegation and encapsulation. Example: CanSend# pub trait CanSend: sealed::CanSend {} impl\u003cT: sealed::CanSend\u003e CanSend for T {} The sealed version defines the core method: pub trait sealed::CanSend: Send + Sync { fn post(\u0026self, dest: PortId, headers: Attrs, data: Serialized); } Only internal types (e.g., Mailbox) implement this sealed trait, meaning only trusted components can obtain CanSend: impl cap::sealed::CanSend for Mailbox { fn post(\u0026self, dest: PortId, headers: Attrs, data: Serialized) { let return_handle = self .lookup_sender::\u003cUndeliverable\u003cMessageEnvelope\u003e\u003e() .map_or_else( || { let actor_id = self.actor_id(); if CAN_SEND_WARNED_MAILBOXES .get_or_init(DashSet::new) .insert(actor_id.clone()) { let bt = std::backtrace::Backtrace::capture(); tracing::warn!( actor_id = ?actor_id, backtrace = ?bt, \"mailbox attempted to post a message without binding Undeliverable\u003cMessageEnvelope\u003e\" ); } monitored_return_handle() }, |sender| PortHandle::new(self.clone(), self.state.allocate_port(), sender), ); let envelope = MessageEnvelope::new(self.actor_id().clone(), dest, data, headers); MailboxSender::post(self, envelope, return_handle); } } This implementation prefers that the mailbox has already bound a port capable of receiving undeliverable messages (of type Undeliverable\u003cMessageEnvelope\u003e). This port acts as a return address for failed message deliveries. If the port is not bound, message sending will warn with a backtrace indicating a logic error in system setup and fallback on a monitored_return_handle (ideally we\u2019d panic! but backwards compatibility prevents this). This ensures that all messages have a well-defined failure path and avoids silent message loss.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-book/src/mailboxes/mailbox.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

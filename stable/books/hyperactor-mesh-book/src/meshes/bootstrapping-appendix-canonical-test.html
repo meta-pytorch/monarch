@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This is the exact test from the codebase that the walkthrough above is unpacking." />
 
-    <title>Appendix: bootstrap_canonical_simple &#8212; Monarch v0.4.1 documentation</title>
+    <title>Appendix: bootstrap_canonical_simple &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/bootstrapping-appendix-canonical-test.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -960,6 +972,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1284,7 +1308,7 @@ document.write(`
 <span class="w">        </span><span class="p">.</span><span class="n">unwrap</span><span class="p">();</span>
 
 <span class="w">    </span><span class="c1">// 2) Create an actor instance we&#39;ll use to send and receive messages.</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="n">_handle</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">instance</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">).</span><span class="n">unwrap</span><span class="p">();</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="n">_handle</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">client</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">).</span><span class="n">unwrap</span><span class="p">();</span>
 
 <span class="w">    </span><span class="c1">// 3) Configure a ProcessAllocator with the bootstrap binary.</span>
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">allocator</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcessAllocator</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">Command</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="k">crate</span><span class="p">::</span><span class="n">testresource</span><span class="p">::</span><span class="n">get</span><span class="p">(</span>
@@ -1626,7 +1650,7 @@ document.write(`
        "headline": "Appendix: bootstrap_canonical_simple",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-mesh-book/src/meshes/bootstrapping-appendix-canonical-test.html",
-       "articleBody": "Appendix: bootstrap_canonical_simple# This is the exact test from the codebase that the walkthrough above is unpacking. // from hyperactor_mesh/src/bootstrap.rs (tests) #[tokio::test] async fn bootstrap_canonical_simple() { // SAFETY: unit-test scoped unsafe { std::env::set_var(\"HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG\", \"false\"); } // 1) Create a \"root\" direct-addressed proc. let proc = Proc::direct(ChannelTransport::Unix.any(), \"root\".to_string()) .unwrap(); // 2) Create an actor instance we\u0027ll use to send and receive messages. let (instance, _handle) = proc.instance(\"client\").unwrap(); // 3) Configure a ProcessAllocator with the bootstrap binary. let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get( \"monarch/hyperactor_mesh/bootstrap\", ))); // 4) Request a new allocation of procs from the ProcessAllocator. let alloc = allocator .allocate(AllocSpec { extent: extent!(replicas = 1), constraints: Default::default(), proc_name: None, transport: ChannelTransport::Unix, }) .await .unwrap(); // 5) Build a HostMesh with explicit OS-process boundaries (per rank): // // (1) Allocator \u2192 bootstrap proc [OS process #1] // `ProcMesh::allocate(..)` starts one OS process per // rank; each runs our runtime and the trampoline actor. // // (2) Host::serve(..) sets up a Host in the same OS process // (no new process). It binds front/back channels, creates // an in-process service proc (`Proc::configured(..)`), and // stores the `BootstrapProcManager` for later spawns. // // (3) Install HostAgent (still no new OS process). // `host.system_proc().spawn::\u003cHostAgent\u003e(\"host_agent\", // host).await?` creates the HostAgent actor in that // service proc. // // (4) Collect \u0026 assemble. The trampoline returns a // direct-addressed `ActorRef\u003cHostAgent\u003e`; we collect // one per rank and assemble a `HostMesh`. // // Note: When the Host is later asked to start a proc // (`host.spawn(name)`), it calls `ProcManager::spawn` on the // stored `BootstrapProcManager`, which does a // `Command::spawn()` to launch a new OS child process for // that proc. let host_mesh = HostMesh::allocate(\u0026instance, Box::new(alloc), \"test\", None) .await .unwrap(); // 6) Spawn a ProcMesh named \"p0\" on the host mesh: // // (1) Each HostAgent (running inside its host\u0027s service // proc) receives the request. // // (2) The Host calls into its `BootstrapProcManager::spawn`, // which does `Command::spawn()` to launch a brand-new OS // process for the proc. // // (3) Inside that new process, bootstrap runs and a // `ProcAgent` is started to manage it. // // (4) We collect the per-host procs into a `ProcMesh` and // return it. let proc_mesh = host_mesh .spawn(\u0026instance, \"p0\", Extent::unity()) .await .unwrap(); // 7) Spawn an ActorMesh\u003cTestActor\u003e named \"a0\" on the proc mesh: // // (1) For each proc (already running in its own OS process), // the `ProcAgent` receives the request. // // (2) It spawns a `TestActor` inside that existing proc (no // new OS process). // // (3) The per-proc actors are collected into an // `ActorMesh\u003cTestActor\u003e` and returned. let actor_mesh: ActorMesh\u003ctestactor::TestActor\u003e = proc_mesh.spawn(\u0026instance, \"a0\", \u0026()).await.unwrap(); // 8) Open a fresh port on the client instance and send a // GetActorId message to the actor mesh. Each TestActor will // reply with its actor ID to the bound port. Receive one // reply and assert it matches the ID of the (single) actor in // the mesh. let (port, mut rx) = instance.mailbox().open_port(); actor_mesh .cast(\u0026instance, testactor::GetActorId(port.bind())) .unwrap(); let got_id = rx.recv().await.unwrap(); assert_eq!( got_id, actor_mesh.values().next().unwrap().actor_id().clone() ); // 9) Important: shut down, or we\u0027ll leak the OS children the hosts spawned. host_mesh.shutdown(\u0026instance).await.expect(\"host shutdown\"); }",
+       "articleBody": "Appendix: bootstrap_canonical_simple# This is the exact test from the codebase that the walkthrough above is unpacking. // from hyperactor_mesh/src/bootstrap.rs (tests) #[tokio::test] async fn bootstrap_canonical_simple() { // SAFETY: unit-test scoped unsafe { std::env::set_var(\"HYPERACTOR_MESH_BOOTSTRAP_ENABLE_PDEATHSIG\", \"false\"); } // 1) Create a \"root\" direct-addressed proc. let proc = Proc::direct(ChannelTransport::Unix.any(), \"root\".to_string()) .unwrap(); // 2) Create an actor instance we\u0027ll use to send and receive messages. let (instance, _handle) = proc.client(\"client\").unwrap(); // 3) Configure a ProcessAllocator with the bootstrap binary. let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get( \"monarch/hyperactor_mesh/bootstrap\", ))); // 4) Request a new allocation of procs from the ProcessAllocator. let alloc = allocator .allocate(AllocSpec { extent: extent!(replicas = 1), constraints: Default::default(), proc_name: None, transport: ChannelTransport::Unix, }) .await .unwrap(); // 5) Build a HostMesh with explicit OS-process boundaries (per rank): // // (1) Allocator \u2192 bootstrap proc [OS process #1] // `ProcMesh::allocate(..)` starts one OS process per // rank; each runs our runtime and the trampoline actor. // // (2) Host::serve(..) sets up a Host in the same OS process // (no new process). It binds front/back channels, creates // an in-process service proc (`Proc::configured(..)`), and // stores the `BootstrapProcManager` for later spawns. // // (3) Install HostAgent (still no new OS process). // `host.system_proc().spawn::\u003cHostAgent\u003e(\"host_agent\", // host).await?` creates the HostAgent actor in that // service proc. // // (4) Collect \u0026 assemble. The trampoline returns a // direct-addressed `ActorRef\u003cHostAgent\u003e`; we collect // one per rank and assemble a `HostMesh`. // // Note: When the Host is later asked to start a proc // (`host.spawn(name)`), it calls `ProcManager::spawn` on the // stored `BootstrapProcManager`, which does a // `Command::spawn()` to launch a new OS child process for // that proc. let host_mesh = HostMesh::allocate(\u0026instance, Box::new(alloc), \"test\", None) .await .unwrap(); // 6) Spawn a ProcMesh named \"p0\" on the host mesh: // // (1) Each HostAgent (running inside its host\u0027s service // proc) receives the request. // // (2) The Host calls into its `BootstrapProcManager::spawn`, // which does `Command::spawn()` to launch a brand-new OS // process for the proc. // // (3) Inside that new process, bootstrap runs and a // `ProcAgent` is started to manage it. // // (4) We collect the per-host procs into a `ProcMesh` and // return it. let proc_mesh = host_mesh .spawn(\u0026instance, \"p0\", Extent::unity()) .await .unwrap(); // 7) Spawn an ActorMesh\u003cTestActor\u003e named \"a0\" on the proc mesh: // // (1) For each proc (already running in its own OS process), // the `ProcAgent` receives the request. // // (2) It spawns a `TestActor` inside that existing proc (no // new OS process). // // (3) The per-proc actors are collected into an // `ActorMesh\u003cTestActor\u003e` and returned. let actor_mesh: ActorMesh\u003ctestactor::TestActor\u003e = proc_mesh.spawn(\u0026instance, \"a0\", \u0026()).await.unwrap(); // 8) Open a fresh port on the client instance and send a // GetActorId message to the actor mesh. Each TestActor will // reply with its actor ID to the bound port. Receive one // reply and assert it matches the ID of the (single) actor in // the mesh. let (port, mut rx) = instance.mailbox().open_port(); actor_mesh .cast(\u0026instance, testactor::GetActorId(port.bind())) .unwrap(); let got_id = rx.recv().await.unwrap(); assert_eq!( got_id, actor_mesh.values().next().unwrap().actor_id().clone() ); // 9) Important: shut down, or we\u0027ll leak the OS children the hosts spawned. host_mesh.shutdown(\u0026instance).await.expect(\"host shutdown\"); }",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

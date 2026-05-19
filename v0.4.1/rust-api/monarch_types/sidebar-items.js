@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"macro":["py_global","py_module_add_function"],"struct":["PickledPyObject","PyTree","SerializablePyErr"],"trait":["MapPyErr","TryIntoPyObjectUnsafe"]};

@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Hyperactor programs are structured around actors: isolated state machines that process messages asynchronously. Each actor runs in isolation, and maintains private internal state. Actors interact w..." />
 
-    <title>Actors &#8212; Monarch v0.4.1 documentation</title>
+    <title>Actors &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/actors/index.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -958,6 +970,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1288,21 +1312,20 @@ document.write(`
   <section id="actors">
 <h1>Actors<a class="headerlink" href="#actors" title="Link to this heading">#</a></h1>
 <p>Hyperactor programs are structured around actors: isolated state machines that process messages asynchronously.</p>
-<p>Each actor runs in isolation, and maintains private internal state. Actors interact with the outside world through typed message ports and follow strict lifecycle semantics managed by the runtime.</p>
+<p>Each actor runs in isolation, and maintains private internal state. Actors interact with the outside world through typed handler ports and follow strict lifecycle semantics managed by the runtime.</p>
 <p>This chapter introduces the actor system in hyperactor. We’ll cover:</p>
 <ul class="simple">
 <li><p>The <a class="reference internal" href="actor.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">Actor</span></code></span></a> trait and its lifecycle hooks</p></li>
 <li><p>The <a class="reference internal" href="handler.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">Handler</span></code></span></a> trait for defining message-handling behavior</p></li>
 <li><p>The <a class="reference internal" href="remote_spawn.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">RemoteSpawn</span></code></span></a> trait for enabling remote spawning</p></li>
-<li><p>The <a class="reference internal" href="remote.html"><span class="std std-doc">remote actor registry</span></a> for registering remotable-spawnable actors via <code class="docutils literal notranslate"><span class="pre">remote!</span></code> and spawning them by global type name</p></li>
-<li><p>The <a class="reference internal" href="checkpointable.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">Checkpointable</span></code></span></a> trait for supporting actor persistence and recovery</p></li>
+<li><p>The <a class="reference internal" href="remote.html"><span class="std std-doc">remote actor registry</span></a> for registering remotable-spawnable actors via <code class="docutils literal notranslate"><span class="pre">#[spawnable]</span></code> or <code class="docutils literal notranslate"><span class="pre">register_spawnable!(...)</span></code> and spawning them by global type name</p></li>
 <li><p>The <a class="reference internal" href="referable.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">Referable</span></code></span></a> marker trait for remotely referencable types</p></li>
 <li><p>The <a class="reference internal" href="binds.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">Binds</span></code></span></a> trait for wiring exported ports to reference types</p></li>
 <li><p>The <a class="reference internal" href="remote_handles.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">RemoteHandles</span></code></span></a> trait for associating message types with a reference</p></li>
 <li><p>The <a class="reference internal" href="actor_handle.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">ActorHandle</span></code></span></a> type for referencing and communicating with running actors</p></li>
 <li><p><a class="reference internal" href="actor_lifecycle.html"><span class="std std-doc">Actor Lifecycle</span></a>, including <code class="docutils literal notranslate"><span class="pre">Signal</span></code> and <code class="docutils literal notranslate"><span class="pre">ActorStatus</span></code></p></li>
 </ul>
-<p>Actors are instantiated with parameters and bound to mailboxes, enabling reliable message-passing. The runtime builds upon this foundation to support supervision, checkpointing, and remote interaction via typed references.</p>
+<p>Actors are instantiated with parameters and bound to mailboxes, enabling reliable message-passing. The runtime builds upon this foundation to support supervision and remote interaction via typed references.</p>
 </section>
 
 
@@ -1546,7 +1569,7 @@ document.write(`
        "headline": "Actors",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/actors/index.html",
-       "articleBody": "Actors# Hyperactor programs are structured around actors: isolated state machines that process messages asynchronously. Each actor runs in isolation, and maintains private internal state. Actors interact with the outside world through typed message ports and follow strict lifecycle semantics managed by the runtime. This chapter introduces the actor system in hyperactor. We\u2019ll cover: The Actor trait and its lifecycle hooks The Handler trait for defining message-handling behavior The RemoteSpawn trait for enabling remote spawning The remote actor registry for registering remotable-spawnable actors via remote! and spawning them by global type name The Checkpointable trait for supporting actor persistence and recovery The Referable marker trait for remotely referencable types The Binds trait for wiring exported ports to reference types The RemoteHandles trait for associating message types with a reference The ActorHandle type for referencing and communicating with running actors Actor Lifecycle, including Signal and ActorStatus Actors are instantiated with parameters and bound to mailboxes, enabling reliable message-passing. The runtime builds upon this foundation to support supervision, checkpointing, and remote interaction via typed references.",
+       "articleBody": "Actors# Hyperactor programs are structured around actors: isolated state machines that process messages asynchronously. Each actor runs in isolation, and maintains private internal state. Actors interact with the outside world through typed handler ports and follow strict lifecycle semantics managed by the runtime. This chapter introduces the actor system in hyperactor. We\u2019ll cover: The Actor trait and its lifecycle hooks The Handler trait for defining message-handling behavior The RemoteSpawn trait for enabling remote spawning The remote actor registry for registering remotable-spawnable actors via #[spawnable] or register_spawnable!(...) and spawning them by global type name The Referable marker trait for remotely referencable types The Binds trait for wiring exported ports to reference types The RemoteHandles trait for associating message types with a reference The ActorHandle type for referencing and communicating with running actors Actor Lifecycle, including Signal and ActorStatus Actors are instantiated with parameters and bound to mailboxes, enabling reliable message-passing. The runtime builds upon this foundation to support supervision and remote interaction via typed references.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

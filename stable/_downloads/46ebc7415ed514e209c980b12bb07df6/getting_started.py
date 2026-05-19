@@ -292,7 +292,9 @@ if False:
 # Sometimes fine-grained recovery is possible. For instance, if a data loader failed to
 # read a URL, perhaps it would work to just restart it. In these cases, we also offer a
 # different API. If an actor defines a `__supervise__` special method, then it will get
-# called to handle supervision events for meshes owned by the actor.
+# called to handle supervision events for meshes owned by the actor. It may be declared
+# with either `def` or `async def`; an `async def` override runs on the actor's asyncio
+# event loop and can `await` other endpoints or I/O.
 # If an error happens on an ActorMesh that is a reference, such as a slice, or
 # a mesh that is sent to another actor, then the recovery is done on the original
 # creator of that mesh, not the holder of the reference. There is currently
@@ -314,6 +316,13 @@ class SupervisorActor(Actor):
         # Otherwise, the event will be propagated to the creator of this actor.
         # That will be the Actor (or client) which called the spawn() method.
         return True
+
+    # `__supervise__` can also be declared `async def`, e.g. to await
+    # a restart endpoint:
+    #
+    #     async def __supervise__(self, failure: MeshFailure) -> bool:
+    #         await self.restart_failed_mesh(failure)
+    #         return True
 
 
 # %%

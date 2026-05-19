@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="A Host manages a collection of spawned procs and provides bidirectional routing between them. It serves as the entry point for external connections and coordinates message delivery across local and..." />
 
-    <title>Host &#8212; Monarch v0.4.1 documentation</title>
+    <title>Host &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/procs/host.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -956,6 +968,18 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
                   Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
                 </a>
               </li>
             
@@ -1338,13 +1362,13 @@ document.write(`
 
 <span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">router</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DialMailboxRouter</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
 
-<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">service_proc_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcId</span><span class="p">::</span><span class="n">unique</span><span class="p">(</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">service_proc_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcAddr</span><span class="p">::</span><span class="n">instance</span><span class="p">(</span>
 <span class="w">            </span><span class="n">frontend_addr</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
 <span class="w">            </span><span class="s">&quot;service&quot;</span><span class="p">,</span>
 <span class="w">        </span><span class="p">);</span>
 <span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">service_proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">configured</span><span class="p">(</span><span class="n">service_proc_id</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span><span class="w"> </span><span class="n">router</span><span class="p">.</span><span class="n">boxed</span><span class="p">());</span>
 
-<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">local_proc_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcId</span><span class="p">::</span><span class="n">unique</span><span class="p">(</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">local_proc_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcAddr</span><span class="p">::</span><span class="n">instance</span><span class="p">(</span>
 <span class="w">            </span><span class="n">frontend_addr</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
 <span class="w">            </span><span class="s">&quot;local&quot;</span><span class="p">,</span>
 <span class="w">        </span><span class="p">);</span>
@@ -1746,7 +1770,7 @@ backend_rx (from spawned procs)       ──┘                               �
        "headline": "Host",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/procs/host.html",
-       "articleBody": "Host# A Host manages a collection of spawned procs and provides bidirectional routing between them. It serves as the entry point for external connections and coordinates message delivery across local and remote actors. Overview# The Host struct maintains two key channel endpoints: Frontend address: accepts connections from external clients Backend address: receives messages from spawned procs Both endpoints feed into a unified routing layer that can deliver messages to either the service proc (running within the host) or to spawned procs. \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u250c\u2500\u2500\u2500\u25b6 proc *,1 \u2502 \u2502 #1\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 Host \u2502\u25c0\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u25b6 proc *,2 \u2502 *\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518# \u2502 #2\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2514\u2500\u2500\u2500\u25b6 proc *,3 \u2502 #3\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 Where: * is the host\u2019s frontend address (frontend_addr) # is the host\u2019s backend address (backend_addr) #1, #2, #3 are the per-proc backend channels Each proc is direct-addressed via the host - its id is \u201cproc at * named N\u201d Structure# pub struct Host\u003cM\u003e { procs: HashSet\u003cString\u003e, frontend_addr: ChannelAddr, backend_addr: ChannelAddr, router: DialMailboxRouter, manager: M, service_proc: Proc, local_proc: Proc, frontend_rx: Option\u003cChannelRx\u003cMessageEnvelope\u003e\u003e, } Fields: procs: Stores proc names to avoid creating duplicates frontend_addr: The address external clients connect to backend_addr: The address spawned procs use to send messages back to the host router: A DialMailboxRouter for prefix-based routing to spawned procs manager: A ProcManager implementation that handles proc lifecycle service_proc: The host\u2019s local proc for system-level actors local_proc: The host\u2019s local proc for user-level actors frontend_rx: Channel receiver for external connections (consumed during startup) Creating a Host# The Host::new constructor takes a ProcManager and a channel address to serve: impl\u003cM: ProcManager\u003e Host\u003cM\u003e { pub async fn new(manager: M, addr: ChannelAddr) -\u003e Result\u003cSelf, HostError\u003e { let (frontend_addr, frontend_rx) = channel::serve(addr)?; let (backend_addr, backend_rx) = channel::serve( ChannelAddr::any(manager.transport()) )?; let router = DialMailboxRouter::new(); let service_proc_id = ProcId::unique( frontend_addr.clone(), \"service\", ); let service_proc = Proc::configured(service_proc_id.clone(), router.boxed()); let local_proc_id = ProcId::unique( frontend_addr.clone(), \"local\", ); let local_proc = Proc::configured(local_proc_id.clone(), router.boxed()); let host = Host { procs: HashSet::new(), frontend_addr, backend_addr, router, manager, service_proc, local_proc, frontend_rx: Some(frontend_rx), }; let _backend_handle = host.forwarder().serve(backend_rx); Ok(host) } } Understanding channel::serve()# channel::serve() is the universal \u201cbind and listen\u201d operation across different transport types. It: Takes a ChannelAddr (which can be a wildcard like ChannelAddr::any()) Binds a server/listener on that address Returns a tuple of: The actual bound address (resolved from wildcards) A receiver (ChannelRx\u003cMessageEnvelope\u003e) for incoming messages This is why both calls in Host::new capture the returned address: let (frontend_addr, frontend_rx) = channel::serve(addr)?; let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?; The returned address is the actual bound address you can give to others to connect to. For example, when you pass ChannelAddr::Tcp(127.0.0.1:0): Input: \u201cbind to localhost on any available port\u201d Output: (ChannelAddr::Tcp(127.0.0.1:54321), rx) - the OS-assigned port See Channel Addresses and Transmits and Receives for more on channel semantics. The Service Proc and Local Proc# The host creates two procs identified by ProcId: Service Proc: let service_proc_id = ProcId( frontend_addr.clone(), \"service\".to_string() ); let service_proc = Proc::configured(service_proc_id, router.boxed()); Local Proc: let local_proc_id = ProcId( frontend_addr.clone(), \"local\".to_string() ); let local_proc = Proc::configured(local_proc_id, router.boxed()); Both procs: Live within the host process Use ProcId(frontend_addr, name) as their identity Forward outbound messages through the DialMailboxRouter The service proc hosts system-level actors that manage proc lifecycle and coordination The local proc hosts user-level actors See ProcId for details on proc addressing. Routing Architecture# The host implements bidirectional routing using a specialized ProcOrDial router (see ProcOrDial Router). Both the frontend and backend receivers are served by this router: Backend receiver (from spawned procs): let _backend_handle = host.forwarder().serve(backend_rx); Frontend receiver (from external clients): Some(self.forwarder().serve(self.frontend_rx.take()?)) Complete Routing Flow# frontend_rx (external connections) \u2500\u2500\u2510 \u251c\u2500\u2500\u003e serve() \u2500\u2500\u003e ProcOrDial \u2500\u2500\u252c\u2500\u2500\u003e service proc backend_rx (from spawned procs) \u2500\u2500\u2518 \u251c\u2500\u2500\u003e local proc \u2514\u2500\u2500\u003e DialMailboxRouter \u2502 \u2514\u2500\u2500\u003e looks up proc by name \u2514\u2500\u2500\u003e dials backend addr Both receivers feed into the same ProcOrDial router, creating bidirectional routing: Inbound (frontend): External \u2192 ProcOrDial \u2192 service proc or local proc or spawned proc Inbound (backend): Spawned procs \u2192 ProcOrDial \u2192 service proc or local proc or other spawned procs Outbound (from service proc or local proc): service_proc.forwarder / local_proc.forwarder = DialMailboxRouter \u2192 spawned procs See MailboxServer::serve() for how receivers are bridged to routers. Channel Receivers# The ChannelRx\u003cM\u003e receiver returned from channel::serve() implements the Rx\u003cM\u003e trait: trait Rx\u003cM: RemoteMessage\u003e { async fn recv(\u0026mut self) -\u003e Result\u003cM, ChannelError\u003e; fn addr(\u0026self) -\u003e ChannelAddr; } It\u2019s a stream of incoming messages of type M. In the host context, M = MessageEnvelope, so it receives actor messages from the network. How the host uses receivers: Frontend: Serves the user-provided addr \u2192 receives messages from external connections via frontend_rx Backend: Serves a wildcard backend address \u2192 receives messages from spawned procs via backend_rx Both are consumed by calling .serve() on the ProcOrDial forwarder, which bridges the channel receivers to the mailbox routing system. Next Steps# See ProcOrDial Router for the routing implementation See Routers for DialMailboxRouter details See Proc for how procs integrate with routers, including the local proc bypass optimization",
+       "articleBody": "Host# A Host manages a collection of spawned procs and provides bidirectional routing between them. It serves as the entry point for external connections and coordinates message delivery across local and remote actors. Overview# The Host struct maintains two key channel endpoints: Frontend address: accepts connections from external clients Backend address: receives messages from spawned procs Both endpoints feed into a unified routing layer that can deliver messages to either the service proc (running within the host) or to spawned procs. \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u250c\u2500\u2500\u2500\u25b6 proc *,1 \u2502 \u2502 #1\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 Host \u2502\u25c0\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u25b6 proc *,2 \u2502 *\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518# \u2502 #2\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2514\u2500\u2500\u2500\u25b6 proc *,3 \u2502 #3\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 Where: * is the host\u2019s frontend address (frontend_addr) # is the host\u2019s backend address (backend_addr) #1, #2, #3 are the per-proc backend channels Each proc is direct-addressed via the host - its id is \u201cproc at * named N\u201d Structure# pub struct Host\u003cM\u003e { procs: HashSet\u003cString\u003e, frontend_addr: ChannelAddr, backend_addr: ChannelAddr, router: DialMailboxRouter, manager: M, service_proc: Proc, local_proc: Proc, frontend_rx: Option\u003cChannelRx\u003cMessageEnvelope\u003e\u003e, } Fields: procs: Stores proc names to avoid creating duplicates frontend_addr: The address external clients connect to backend_addr: The address spawned procs use to send messages back to the host router: A DialMailboxRouter for prefix-based routing to spawned procs manager: A ProcManager implementation that handles proc lifecycle service_proc: The host\u2019s local proc for system-level actors local_proc: The host\u2019s local proc for user-level actors frontend_rx: Channel receiver for external connections (consumed during startup) Creating a Host# The Host::new constructor takes a ProcManager and a channel address to serve: impl\u003cM: ProcManager\u003e Host\u003cM\u003e { pub async fn new(manager: M, addr: ChannelAddr) -\u003e Result\u003cSelf, HostError\u003e { let (frontend_addr, frontend_rx) = channel::serve(addr)?; let (backend_addr, backend_rx) = channel::serve( ChannelAddr::any(manager.transport()) )?; let router = DialMailboxRouter::new(); let service_proc_id = ProcAddr::instance( frontend_addr.clone(), \"service\", ); let service_proc = Proc::configured(service_proc_id.clone(), router.boxed()); let local_proc_id = ProcAddr::instance( frontend_addr.clone(), \"local\", ); let local_proc = Proc::configured(local_proc_id.clone(), router.boxed()); let host = Host { procs: HashSet::new(), frontend_addr, backend_addr, router, manager, service_proc, local_proc, frontend_rx: Some(frontend_rx), }; let _backend_handle = host.forwarder().serve(backend_rx); Ok(host) } } Understanding channel::serve()# channel::serve() is the universal \u201cbind and listen\u201d operation across different transport types. It: Takes a ChannelAddr (which can be a wildcard like ChannelAddr::any()) Binds a server/listener on that address Returns a tuple of: The actual bound address (resolved from wildcards) A receiver (ChannelRx\u003cMessageEnvelope\u003e) for incoming messages This is why both calls in Host::new capture the returned address: let (frontend_addr, frontend_rx) = channel::serve(addr)?; let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?; The returned address is the actual bound address you can give to others to connect to. For example, when you pass ChannelAddr::Tcp(127.0.0.1:0): Input: \u201cbind to localhost on any available port\u201d Output: (ChannelAddr::Tcp(127.0.0.1:54321), rx) - the OS-assigned port See Channel Addresses and Transmits and Receives for more on channel semantics. The Service Proc and Local Proc# The host creates two procs identified by ProcId: Service Proc: let service_proc_id = ProcId( frontend_addr.clone(), \"service\".to_string() ); let service_proc = Proc::configured(service_proc_id, router.boxed()); Local Proc: let local_proc_id = ProcId( frontend_addr.clone(), \"local\".to_string() ); let local_proc = Proc::configured(local_proc_id, router.boxed()); Both procs: Live within the host process Use ProcId(frontend_addr, name) as their identity Forward outbound messages through the DialMailboxRouter The service proc hosts system-level actors that manage proc lifecycle and coordination The local proc hosts user-level actors See ProcId for details on proc addressing. Routing Architecture# The host implements bidirectional routing using a specialized ProcOrDial router (see ProcOrDial Router). Both the frontend and backend receivers are served by this router: Backend receiver (from spawned procs): let _backend_handle = host.forwarder().serve(backend_rx); Frontend receiver (from external clients): Some(self.forwarder().serve(self.frontend_rx.take()?)) Complete Routing Flow# frontend_rx (external connections) \u2500\u2500\u2510 \u251c\u2500\u2500\u003e serve() \u2500\u2500\u003e ProcOrDial \u2500\u2500\u252c\u2500\u2500\u003e service proc backend_rx (from spawned procs) \u2500\u2500\u2518 \u251c\u2500\u2500\u003e local proc \u2514\u2500\u2500\u003e DialMailboxRouter \u2502 \u2514\u2500\u2500\u003e looks up proc by name \u2514\u2500\u2500\u003e dials backend addr Both receivers feed into the same ProcOrDial router, creating bidirectional routing: Inbound (frontend): External \u2192 ProcOrDial \u2192 service proc or local proc or spawned proc Inbound (backend): Spawned procs \u2192 ProcOrDial \u2192 service proc or local proc or other spawned procs Outbound (from service proc or local proc): service_proc.forwarder / local_proc.forwarder = DialMailboxRouter \u2192 spawned procs See MailboxServer::serve() for how receivers are bridged to routers. Channel Receivers# The ChannelRx\u003cM\u003e receiver returned from channel::serve() implements the Rx\u003cM\u003e trait: trait Rx\u003cM: RemoteMessage\u003e { async fn recv(\u0026mut self) -\u003e Result\u003cM, ChannelError\u003e; fn addr(\u0026self) -\u003e ChannelAddr; } It\u2019s a stream of incoming messages of type M. In the host context, M = MessageEnvelope, so it receives actor messages from the network. How the host uses receivers: Frontend: Serves the user-provided addr \u2192 receives messages from external connections via frontend_rx Backend: Serves a wildcard backend address \u2192 receives messages from spawned procs via backend_rx Both are consumed by calling .serve() on the ProcOrDial forwarder, which bridges the channel receivers to the mailbox routing system. Next Steps# See ProcOrDial Router for the routing implementation See Routers for DialMailboxRouter details See Proc for how procs integrate with routers, including the local proc bypass optimization",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

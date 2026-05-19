@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `hyperactor_mesh/src/value_mesh.rs`."><title>value_mesh.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">hyperactor_mesh/</div>value_mesh.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-4"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `hyperactor_mesh/src/value_mesh.rs`."><title>value_mesh.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-b7b9f40b.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.95.0-nightly (3a70d0349 2026-02-27)" data-channel="nightly" data-search-js="search-63369b7b.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">hyperactor_mesh/</div>value_mesh.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-4"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
 <a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
 <a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
 <a href=#4 id=4 data-nosnippet>4</a> *
@@ -208,7 +208,7 @@
 <a href=#208 id=208 data-nosnippet>208</a>    </span><span class="attr">#[allow(clippy::result_large_err)]
 <a href=#209 id=209 data-nosnippet>209</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>new(region: Region, ranks: Vec&lt;T&gt;) -&gt; <span class="kw">crate</span>::Result&lt;<span class="self">Self</span>&gt; {
 <a href=#210 id=210 data-nosnippet>210</a>        <span class="kw">let </span>(actual, expected) = (ranks.len(), region.num_ranks());
-<a href=#211 id=211 data-nosnippet>211</a>        <span class="kw">if </span><span class="macro">actual !</span>= expected {
+<a href=#211 id=211 data-nosnippet>211</a>        <span class="kw">if </span>actual != expected {
 <a href=#212 id=212 data-nosnippet>212</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="kw">crate</span>::Error::InvalidRankCardinality { expected, actual });
 <a href=#213 id=213 data-nosnippet>213</a>        }
 <a href=#214 id=214 data-nosnippet>214</a>        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
@@ -672,7 +672,7 @@
 <a href=#672 id=672 data-nosnippet>672</a>                        }
 <a href=#673 id=673 data-nosnippet>673</a>
 <a href=#674 id=674 data-nosnippet>674</a>                        <span class="comment">// Fast scan set bits.
-<a href=#675 id=675 data-nosnippet>675</a>                        </span><span class="kw">while </span><span class="macro">word !</span>= <span class="number">0 </span>{
+<a href=#675 id=675 data-nosnippet>675</a>                        </span><span class="kw">while </span>word != <span class="number">0 </span>{
 <a href=#676 id=676 data-nosnippet>676</a>                            <span class="kw">let </span>tz = word.trailing_zeros() <span class="kw">as </span>usize;
 <a href=#677 id=677 data-nosnippet>677</a>                            <span class="kw">let </span>i = w * <span class="number">64 </span>+ tz;
 <a href=#678 id=678 data-nosnippet>678</a>                            <span class="macro">debug_assert!</span>(i &lt; <span class="self">self</span>.n_elems);
@@ -755,7 +755,7 @@
 <a href=#755 id=755 data-nosnippet>755</a>            }
 <a href=#756 id=756 data-nosnippet>756</a>        }
 <a href=#757 id=757 data-nosnippet>757</a>
-<a href=#758 id=758 data-nosnippet>758</a>        <span class="kw">if </span><span class="macro">filled !</span>= n {
+<a href=#758 id=758 data-nosnippet>758</a>        <span class="kw">if </span>filled != n {
 <a href=#759 id=759 data-nosnippet>759</a>            <span class="comment">// Missing ranks: actual = number of distinct ranks seen.
 <a href=#760 id=760 data-nosnippet>760</a>            </span><span class="kw">return </span><span class="prelude-val">Err</span>(<span class="kw">crate</span>::Error::InvalidRankCardinality {
 <a href=#761 id=761 data-nosnippet>761</a>                expected: n,
@@ -1312,7 +1312,7 @@
 <a href=#1312 id=1312 data-nosnippet>1312</a>            buf[rank] = <span class="prelude-val">Some</span>(value); <span class="comment">// Last write wins.
 <a href=#1313 id=1313 data-nosnippet>1313</a>        </span>}
 <a href=#1314 id=1314 data-nosnippet>1314</a>
-<a href=#1315 id=1315 data-nosnippet>1315</a>        <span class="kw">if </span><span class="macro">filled !</span>= n {
+<a href=#1315 id=1315 data-nosnippet>1315</a>        <span class="kw">if </span>filled != n {
 <a href=#1316 id=1316 data-nosnippet>1316</a>            <span class="comment">// Missing ranks: actual = number of distinct ranks seen.
 <a href=#1317 id=1317 data-nosnippet>1317</a>            </span><span class="kw">return </span><span class="prelude-val">Err</span>(<span class="kw">crate</span>::Error::InvalidRankCardinality {
 <a href=#1318 id=1318 data-nosnippet>1318</a>                expected: n,
@@ -1731,341 +1731,347 @@
 <a href=#1731 id=1731 data-nosnippet>1731</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(x = <span class="number">5</span>).into();
 <a href=#1732 id=1732 data-nosnippet>1732</a>        <span class="kw">let </span>dense = ValueMesh::new(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">5</span>]).unwrap();
 <a href=#1733 id=1733 data-nosnippet>1733</a>
-<a href=#1734 id=1734 data-nosnippet>1734</a>        <span class="kw">let </span>encoded = bincode::serialize(<span class="kw-2">&amp;</span>dense).unwrap();
-<a href=#1735 id=1735 data-nosnippet>1735</a>        <span class="kw">let </span>restored: ValueMesh&lt;i32&gt; = bincode::deserialize(<span class="kw-2">&amp;</span>encoded).unwrap();
-<a href=#1736 id=1736 data-nosnippet>1736</a>
-<a href=#1737 id=1737 data-nosnippet>1737</a>        <span class="macro">assert_eq!</span>(dense, restored);
-<a href=#1738 id=1738 data-nosnippet>1738</a>        <span class="comment">// Dense meshes should stay dense on the wire.
-<a href=#1739 id=1739 data-nosnippet>1739</a>        </span><span class="macro">assert!</span>(<span class="macro">matches!</span>(restored.rep, Rep::Dense { .. }));
-<a href=#1740 id=1740 data-nosnippet>1740</a>    }
-<a href=#1741 id=1741 data-nosnippet>1741</a>
-<a href=#1742 id=1742 data-nosnippet>1742</a>    <span class="attr">#[test]
-<a href=#1743 id=1743 data-nosnippet>1743</a>    </span><span class="kw">fn </span>test_compressed_round_trip_json() {
-<a href=#1744 id=1744 data-nosnippet>1744</a>        <span class="comment">// Build a dense mesh, compress it, and verify it stays
-<a href=#1745 id=1745 data-nosnippet>1745</a>        // compressed on the wire.
-<a href=#1746 id=1746 data-nosnippet>1746</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(x = <span class="number">10</span>).into();
-<a href=#1747 id=1747 data-nosnippet>1747</a>        <span class="kw">let </span><span class="kw-2">mut </span>mesh = ValueMesh::new(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>]).unwrap();
-<a href=#1748 id=1748 data-nosnippet>1748</a>        mesh.compress_adjacent_in_place();
-<a href=#1749 id=1749 data-nosnippet>1749</a>
-<a href=#1750 id=1750 data-nosnippet>1750</a>        <span class="kw">let </span>json = serde_json::to_string_pretty(<span class="kw-2">&amp;</span>mesh).unwrap();
-<a href=#1751 id=1751 data-nosnippet>1751</a>        <span class="kw">let </span>restored: ValueMesh&lt;i32&gt; = serde_json::from_str(<span class="kw-2">&amp;</span>json).unwrap();
+<a href=#1734 id=1734 data-nosnippet>1734</a>        <span class="kw">let </span>encoded = bincode::serde::encode_to_vec(<span class="kw-2">&amp;</span>dense, bincode::config::legacy()).unwrap();
+<a href=#1735 id=1735 data-nosnippet>1735</a>        <span class="kw">let </span>restored: ValueMesh&lt;i32&gt; =
+<a href=#1736 id=1736 data-nosnippet>1736</a>            bincode::serde::decode_from_slice(<span class="kw-2">&amp;</span>encoded, bincode::config::legacy())
+<a href=#1737 id=1737 data-nosnippet>1737</a>                .map(|(v, <span class="kw">_</span>)| v)
+<a href=#1738 id=1738 data-nosnippet>1738</a>                .unwrap();
+<a href=#1739 id=1739 data-nosnippet>1739</a>
+<a href=#1740 id=1740 data-nosnippet>1740</a>        <span class="macro">assert_eq!</span>(dense, restored);
+<a href=#1741 id=1741 data-nosnippet>1741</a>        <span class="comment">// Dense meshes should stay dense on the wire.
+<a href=#1742 id=1742 data-nosnippet>1742</a>        </span><span class="macro">assert!</span>(<span class="macro">matches!</span>(restored.rep, Rep::Dense { .. }));
+<a href=#1743 id=1743 data-nosnippet>1743</a>    }
+<a href=#1744 id=1744 data-nosnippet>1744</a>
+<a href=#1745 id=1745 data-nosnippet>1745</a>    <span class="attr">#[test]
+<a href=#1746 id=1746 data-nosnippet>1746</a>    </span><span class="kw">fn </span>test_compressed_round_trip_json() {
+<a href=#1747 id=1747 data-nosnippet>1747</a>        <span class="comment">// Build a dense mesh, compress it, and verify it stays
+<a href=#1748 id=1748 data-nosnippet>1748</a>        // compressed on the wire.
+<a href=#1749 id=1749 data-nosnippet>1749</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(x = <span class="number">10</span>).into();
+<a href=#1750 id=1750 data-nosnippet>1750</a>        <span class="kw">let </span><span class="kw-2">mut </span>mesh = ValueMesh::new(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>]).unwrap();
+<a href=#1751 id=1751 data-nosnippet>1751</a>        mesh.compress_adjacent_in_place();
 <a href=#1752 id=1752 data-nosnippet>1752</a>
-<a href=#1753 id=1753 data-nosnippet>1753</a>        <span class="comment">// Logical equality preserved.
-<a href=#1754 id=1754 data-nosnippet>1754</a>        </span><span class="macro">assert_eq!</span>(mesh, restored);
+<a href=#1753 id=1753 data-nosnippet>1753</a>        <span class="kw">let </span>json = serde_json::to_string_pretty(<span class="kw-2">&amp;</span>mesh).unwrap();
+<a href=#1754 id=1754 data-nosnippet>1754</a>        <span class="kw">let </span>restored: ValueMesh&lt;i32&gt; = serde_json::from_str(<span class="kw-2">&amp;</span>json).unwrap();
 <a href=#1755 id=1755 data-nosnippet>1755</a>
-<a href=#1756 id=1756 data-nosnippet>1756</a>        <span class="comment">// Compressed meshes should stay compressed on the wire.
-<a href=#1757 id=1757 data-nosnippet>1757</a>        </span><span class="kw">let </span>v: serde_json::Value = serde_json::from_str(<span class="kw-2">&amp;</span>json).unwrap();
-<a href=#1758 id=1758 data-nosnippet>1758</a>        <span class="comment">// enum tag is nested: {"rep": {"Compressed": {...}}
-<a href=#1759 id=1759 data-nosnippet>1759</a>        </span><span class="kw">let </span>tag = v.get(<span class="string">"rep"</span>).and_then(|o| o.get(<span class="string">"Compressed"</span>));
-<a href=#1760 id=1760 data-nosnippet>1760</a>        <span class="macro">assert!</span>(tag.is_some(), <span class="string">"json is {}"</span>, json);
-<a href=#1761 id=1761 data-nosnippet>1761</a>    }
-<a href=#1762 id=1762 data-nosnippet>1762</a>
-<a href=#1763 id=1763 data-nosnippet>1763</a>    <span class="attr">#[test]
-<a href=#1764 id=1764 data-nosnippet>1764</a>    </span><span class="kw">fn </span>test_compressed_round_trip_bincode() {
-<a href=#1765 id=1765 data-nosnippet>1765</a>        <span class="comment">// Build a dense mesh, compress it, and verify it stays
-<a href=#1766 id=1766 data-nosnippet>1766</a>        // compressed on the wire.
-<a href=#1767 id=1767 data-nosnippet>1767</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(x = <span class="number">10</span>).into();
-<a href=#1768 id=1768 data-nosnippet>1768</a>        <span class="kw">let </span><span class="kw-2">mut </span>mesh = ValueMesh::new(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>]).unwrap();
-<a href=#1769 id=1769 data-nosnippet>1769</a>        mesh.compress_adjacent_in_place();
-<a href=#1770 id=1770 data-nosnippet>1770</a>
-<a href=#1771 id=1771 data-nosnippet>1771</a>        <span class="kw">let </span>encoded = bincode::serialize(<span class="kw-2">&amp;</span>mesh).unwrap();
-<a href=#1772 id=1772 data-nosnippet>1772</a>        <span class="kw">let </span>restored: ValueMesh&lt;i32&gt; = bincode::deserialize(<span class="kw-2">&amp;</span>encoded).unwrap();
+<a href=#1756 id=1756 data-nosnippet>1756</a>        <span class="comment">// Logical equality preserved.
+<a href=#1757 id=1757 data-nosnippet>1757</a>        </span><span class="macro">assert_eq!</span>(mesh, restored);
+<a href=#1758 id=1758 data-nosnippet>1758</a>
+<a href=#1759 id=1759 data-nosnippet>1759</a>        <span class="comment">// Compressed meshes should stay compressed on the wire.
+<a href=#1760 id=1760 data-nosnippet>1760</a>        </span><span class="kw">let </span>v: serde_json::Value = serde_json::from_str(<span class="kw-2">&amp;</span>json).unwrap();
+<a href=#1761 id=1761 data-nosnippet>1761</a>        <span class="comment">// enum tag is nested: {"rep": {"Compressed": {...}}
+<a href=#1762 id=1762 data-nosnippet>1762</a>        </span><span class="kw">let </span>tag = v.get(<span class="string">"rep"</span>).and_then(|o| o.get(<span class="string">"Compressed"</span>));
+<a href=#1763 id=1763 data-nosnippet>1763</a>        <span class="macro">assert!</span>(tag.is_some(), <span class="string">"json is {}"</span>, json);
+<a href=#1764 id=1764 data-nosnippet>1764</a>    }
+<a href=#1765 id=1765 data-nosnippet>1765</a>
+<a href=#1766 id=1766 data-nosnippet>1766</a>    <span class="attr">#[test]
+<a href=#1767 id=1767 data-nosnippet>1767</a>    </span><span class="kw">fn </span>test_compressed_round_trip_bincode() {
+<a href=#1768 id=1768 data-nosnippet>1768</a>        <span class="comment">// Build a dense mesh, compress it, and verify it stays
+<a href=#1769 id=1769 data-nosnippet>1769</a>        // compressed on the wire.
+<a href=#1770 id=1770 data-nosnippet>1770</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(x = <span class="number">10</span>).into();
+<a href=#1771 id=1771 data-nosnippet>1771</a>        <span class="kw">let </span><span class="kw-2">mut </span>mesh = ValueMesh::new(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>]).unwrap();
+<a href=#1772 id=1772 data-nosnippet>1772</a>        mesh.compress_adjacent_in_place();
 <a href=#1773 id=1773 data-nosnippet>1773</a>
-<a href=#1774 id=1774 data-nosnippet>1774</a>        <span class="comment">// Logical equality preserved.
-<a href=#1775 id=1775 data-nosnippet>1775</a>        </span><span class="macro">assert_eq!</span>(mesh, restored);
-<a href=#1776 id=1776 data-nosnippet>1776</a>        <span class="comment">// Compressed meshes should stay compressed on the wire.
-<a href=#1777 id=1777 data-nosnippet>1777</a>        </span><span class="macro">assert!</span>(<span class="macro">matches!</span>(restored.rep, Rep::Compressed { .. }));
-<a href=#1778 id=1778 data-nosnippet>1778</a>    }
+<a href=#1774 id=1774 data-nosnippet>1774</a>        <span class="kw">let </span>encoded = bincode::serde::encode_to_vec(<span class="kw-2">&amp;</span>mesh, bincode::config::legacy()).unwrap();
+<a href=#1775 id=1775 data-nosnippet>1775</a>        <span class="kw">let </span>restored: ValueMesh&lt;i32&gt; =
+<a href=#1776 id=1776 data-nosnippet>1776</a>            bincode::serde::decode_from_slice(<span class="kw-2">&amp;</span>encoded, bincode::config::legacy())
+<a href=#1777 id=1777 data-nosnippet>1777</a>                .map(|(v, <span class="kw">_</span>)| v)
+<a href=#1778 id=1778 data-nosnippet>1778</a>                .unwrap();
 <a href=#1779 id=1779 data-nosnippet>1779</a>
-<a href=#1780 id=1780 data-nosnippet>1780</a>    <span class="attr">#[test]
-<a href=#1781 id=1781 data-nosnippet>1781</a>    </span><span class="kw">fn </span>test_stable_run_encoding() {
-<a href=#1782 id=1782 data-nosnippet>1782</a>        <span class="kw">let </span>run = Run::new(<span class="number">0</span>, <span class="number">10</span>, <span class="number">42</span>);
-<a href=#1783 id=1783 data-nosnippet>1783</a>        <span class="kw">let </span>json = serde_json::to_string(<span class="kw-2">&amp;</span>run).unwrap();
-<a href=#1784 id=1784 data-nosnippet>1784</a>        <span class="kw">let </span>decoded: Run = serde_json::from_str(<span class="kw-2">&amp;</span>json).unwrap();
+<a href=#1780 id=1780 data-nosnippet>1780</a>        <span class="comment">// Logical equality preserved.
+<a href=#1781 id=1781 data-nosnippet>1781</a>        </span><span class="macro">assert_eq!</span>(mesh, restored);
+<a href=#1782 id=1782 data-nosnippet>1782</a>        <span class="comment">// Compressed meshes should stay compressed on the wire.
+<a href=#1783 id=1783 data-nosnippet>1783</a>        </span><span class="macro">assert!</span>(<span class="macro">matches!</span>(restored.rep, Rep::Compressed { .. }));
+<a href=#1784 id=1784 data-nosnippet>1784</a>    }
 <a href=#1785 id=1785 data-nosnippet>1785</a>
-<a href=#1786 id=1786 data-nosnippet>1786</a>        <span class="macro">assert_eq!</span>(run, decoded);
-<a href=#1787 id=1787 data-nosnippet>1787</a>        <span class="macro">assert_eq!</span>(run.start, <span class="number">0</span>);
-<a href=#1788 id=1788 data-nosnippet>1788</a>        <span class="macro">assert_eq!</span>(run.end, <span class="number">10</span>);
-<a href=#1789 id=1789 data-nosnippet>1789</a>        <span class="macro">assert_eq!</span>(run.id, <span class="number">42</span>);
-<a href=#1790 id=1790 data-nosnippet>1790</a>
-<a href=#1791 id=1791 data-nosnippet>1791</a>        <span class="comment">// Ensure conversion back to Range&lt;usize&gt; works.
-<a href=#1792 id=1792 data-nosnippet>1792</a>        </span><span class="kw">let </span>(range, id): (Range&lt;usize&gt;, u32) = run.try_into().unwrap();
-<a href=#1793 id=1793 data-nosnippet>1793</a>        <span class="macro">assert_eq!</span>(range, <span class="number">0</span>..<span class="number">10</span>);
-<a href=#1794 id=1794 data-nosnippet>1794</a>        <span class="macro">assert_eq!</span>(id, <span class="number">42</span>);
-<a href=#1795 id=1795 data-nosnippet>1795</a>    }
+<a href=#1786 id=1786 data-nosnippet>1786</a>    <span class="attr">#[test]
+<a href=#1787 id=1787 data-nosnippet>1787</a>    </span><span class="kw">fn </span>test_stable_run_encoding() {
+<a href=#1788 id=1788 data-nosnippet>1788</a>        <span class="kw">let </span>run = Run::new(<span class="number">0</span>, <span class="number">10</span>, <span class="number">42</span>);
+<a href=#1789 id=1789 data-nosnippet>1789</a>        <span class="kw">let </span>json = serde_json::to_string(<span class="kw-2">&amp;</span>run).unwrap();
+<a href=#1790 id=1790 data-nosnippet>1790</a>        <span class="kw">let </span>decoded: Run = serde_json::from_str(<span class="kw-2">&amp;</span>json).unwrap();
+<a href=#1791 id=1791 data-nosnippet>1791</a>
+<a href=#1792 id=1792 data-nosnippet>1792</a>        <span class="macro">assert_eq!</span>(run, decoded);
+<a href=#1793 id=1793 data-nosnippet>1793</a>        <span class="macro">assert_eq!</span>(run.start, <span class="number">0</span>);
+<a href=#1794 id=1794 data-nosnippet>1794</a>        <span class="macro">assert_eq!</span>(run.end, <span class="number">10</span>);
+<a href=#1795 id=1795 data-nosnippet>1795</a>        <span class="macro">assert_eq!</span>(run.id, <span class="number">42</span>);
 <a href=#1796 id=1796 data-nosnippet>1796</a>
-<a href=#1797 id=1797 data-nosnippet>1797</a>    <span class="attr">#[test]
-<a href=#1798 id=1798 data-nosnippet>1798</a>    </span><span class="kw">fn </span>from_single_builds_single_run() {
-<a href=#1799 id=1799 data-nosnippet>1799</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">6</span>).into();
-<a href=#1800 id=1800 data-nosnippet>1800</a>        <span class="kw">let </span>vm = ValueMesh::from_single(region.clone(), <span class="number">7</span>);
-<a href=#1801 id=1801 data-nosnippet>1801</a>
-<a href=#1802 id=1802 data-nosnippet>1802</a>        <span class="macro">assert_eq!</span>(vm.region(), <span class="kw-2">&amp;</span>region);
-<a href=#1803 id=1803 data-nosnippet>1803</a>        <span class="macro">assert_eq!</span>(vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="macro">vec!</span>[<span class="number">7</span>, <span class="number">7</span>, <span class="number">7</span>, <span class="number">7</span>, <span class="number">7</span>, <span class="number">7</span>]);
-<a href=#1804 id=1804 data-nosnippet>1804</a>        <span class="macro">assert_eq!</span>(vm.get(<span class="number">0</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">7</span>));
-<a href=#1805 id=1805 data-nosnippet>1805</a>        <span class="macro">assert_eq!</span>(vm.get(<span class="number">5</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">7</span>));
-<a href=#1806 id=1806 data-nosnippet>1806</a>        <span class="macro">assert_eq!</span>(vm.get(<span class="number">6</span>), <span class="prelude-val">None</span>);
-<a href=#1807 id=1807 data-nosnippet>1807</a>    }
-<a href=#1808 id=1808 data-nosnippet>1808</a>
-<a href=#1809 id=1809 data-nosnippet>1809</a>    <span class="attr">#[test]
-<a href=#1810 id=1810 data-nosnippet>1810</a>    </span><span class="kw">fn </span>from_default_builds_with_default_value() {
-<a href=#1811 id=1811 data-nosnippet>1811</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">6</span>).into();
-<a href=#1812 id=1812 data-nosnippet>1812</a>        <span class="kw">let </span>vm = ValueMesh::&lt;i32&gt;::from_default(region.clone());
-<a href=#1813 id=1813 data-nosnippet>1813</a>
-<a href=#1814 id=1814 data-nosnippet>1814</a>        <span class="macro">assert_eq!</span>(vm.region(), <span class="kw-2">&amp;</span>region);
-<a href=#1815 id=1815 data-nosnippet>1815</a>        <span class="comment">// i32::default() == 0
-<a href=#1816 id=1816 data-nosnippet>1816</a>        </span><span class="macro">assert_eq!</span>(vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="macro">vec!</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>]);
-<a href=#1817 id=1817 data-nosnippet>1817</a>        <span class="macro">assert_eq!</span>(vm.get(<span class="number">0</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">0</span>));
-<a href=#1818 id=1818 data-nosnippet>1818</a>        <span class="macro">assert_eq!</span>(vm.get(<span class="number">5</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">0</span>));
-<a href=#1819 id=1819 data-nosnippet>1819</a>    }
-<a href=#1820 id=1820 data-nosnippet>1820</a>
-<a href=#1821 id=1821 data-nosnippet>1821</a>    <span class="attr">#[test]
-<a href=#1822 id=1822 data-nosnippet>1822</a>    </span><span class="kw">fn </span>test_default_vs_single_equivalence() {
-<a href=#1823 id=1823 data-nosnippet>1823</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(x = <span class="number">4</span>).into();
-<a href=#1824 id=1824 data-nosnippet>1824</a>        <span class="kw">let </span>d1 = ValueMesh::&lt;i32&gt;::from_default(region.clone());
-<a href=#1825 id=1825 data-nosnippet>1825</a>        <span class="kw">let </span>d2 = ValueMesh::from_single(region.clone(), <span class="number">0</span>);
-<a href=#1826 id=1826 data-nosnippet>1826</a>        <span class="macro">assert_eq!</span>(d1, d2);
-<a href=#1827 id=1827 data-nosnippet>1827</a>    }
-<a href=#1828 id=1828 data-nosnippet>1828</a>
-<a href=#1829 id=1829 data-nosnippet>1829</a>    <span class="attr">#[test]
-<a href=#1830 id=1830 data-nosnippet>1830</a>    </span><span class="kw">fn </span>build_from_ranges_with_default_basic() {
-<a href=#1831 id=1831 data-nosnippet>1831</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">10</span>).into();
-<a href=#1832 id=1832 data-nosnippet>1832</a>        <span class="kw">let </span>vm = ValueMesh::from_ranges_with_default(
-<a href=#1833 id=1833 data-nosnippet>1833</a>            region.clone(),
-<a href=#1834 id=1834 data-nosnippet>1834</a>            <span class="number">0</span>, <span class="comment">// default
-<a href=#1835 id=1835 data-nosnippet>1835</a>            </span><span class="macro">vec!</span>[(<span class="number">2</span>..<span class="number">4</span>, <span class="number">1</span>), (<span class="number">6</span>..<span class="number">9</span>, <span class="number">2</span>)],
-<a href=#1836 id=1836 data-nosnippet>1836</a>        )
-<a href=#1837 id=1837 data-nosnippet>1837</a>        .unwrap();
-<a href=#1838 id=1838 data-nosnippet>1838</a>
-<a href=#1839 id=1839 data-nosnippet>1839</a>        <span class="macro">assert_eq!</span>(vm.region(), <span class="kw-2">&amp;</span>region);
-<a href=#1840 id=1840 data-nosnippet>1840</a>        <span class="macro">assert_eq!</span>(
-<a href=#1841 id=1841 data-nosnippet>1841</a>            vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(),
-<a href=#1842 id=1842 data-nosnippet>1842</a>            <span class="macro">vec!</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">0</span>]
-<a href=#1843 id=1843 data-nosnippet>1843</a>        );
+<a href=#1797 id=1797 data-nosnippet>1797</a>        <span class="comment">// Ensure conversion back to Range&lt;usize&gt; works.
+<a href=#1798 id=1798 data-nosnippet>1798</a>        </span><span class="kw">let </span>(range, id): (Range&lt;usize&gt;, u32) = run.try_into().unwrap();
+<a href=#1799 id=1799 data-nosnippet>1799</a>        <span class="macro">assert_eq!</span>(range, <span class="number">0</span>..<span class="number">10</span>);
+<a href=#1800 id=1800 data-nosnippet>1800</a>        <span class="macro">assert_eq!</span>(id, <span class="number">42</span>);
+<a href=#1801 id=1801 data-nosnippet>1801</a>    }
+<a href=#1802 id=1802 data-nosnippet>1802</a>
+<a href=#1803 id=1803 data-nosnippet>1803</a>    <span class="attr">#[test]
+<a href=#1804 id=1804 data-nosnippet>1804</a>    </span><span class="kw">fn </span>from_single_builds_single_run() {
+<a href=#1805 id=1805 data-nosnippet>1805</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">6</span>).into();
+<a href=#1806 id=1806 data-nosnippet>1806</a>        <span class="kw">let </span>vm = ValueMesh::from_single(region.clone(), <span class="number">7</span>);
+<a href=#1807 id=1807 data-nosnippet>1807</a>
+<a href=#1808 id=1808 data-nosnippet>1808</a>        <span class="macro">assert_eq!</span>(vm.region(), <span class="kw-2">&amp;</span>region);
+<a href=#1809 id=1809 data-nosnippet>1809</a>        <span class="macro">assert_eq!</span>(vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="macro">vec!</span>[<span class="number">7</span>, <span class="number">7</span>, <span class="number">7</span>, <span class="number">7</span>, <span class="number">7</span>, <span class="number">7</span>]);
+<a href=#1810 id=1810 data-nosnippet>1810</a>        <span class="macro">assert_eq!</span>(vm.get(<span class="number">0</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">7</span>));
+<a href=#1811 id=1811 data-nosnippet>1811</a>        <span class="macro">assert_eq!</span>(vm.get(<span class="number">5</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">7</span>));
+<a href=#1812 id=1812 data-nosnippet>1812</a>        <span class="macro">assert_eq!</span>(vm.get(<span class="number">6</span>), <span class="prelude-val">None</span>);
+<a href=#1813 id=1813 data-nosnippet>1813</a>    }
+<a href=#1814 id=1814 data-nosnippet>1814</a>
+<a href=#1815 id=1815 data-nosnippet>1815</a>    <span class="attr">#[test]
+<a href=#1816 id=1816 data-nosnippet>1816</a>    </span><span class="kw">fn </span>from_default_builds_with_default_value() {
+<a href=#1817 id=1817 data-nosnippet>1817</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">6</span>).into();
+<a href=#1818 id=1818 data-nosnippet>1818</a>        <span class="kw">let </span>vm = ValueMesh::&lt;i32&gt;::from_default(region.clone());
+<a href=#1819 id=1819 data-nosnippet>1819</a>
+<a href=#1820 id=1820 data-nosnippet>1820</a>        <span class="macro">assert_eq!</span>(vm.region(), <span class="kw-2">&amp;</span>region);
+<a href=#1821 id=1821 data-nosnippet>1821</a>        <span class="comment">// i32::default() == 0
+<a href=#1822 id=1822 data-nosnippet>1822</a>        </span><span class="macro">assert_eq!</span>(vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="macro">vec!</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">0</span>]);
+<a href=#1823 id=1823 data-nosnippet>1823</a>        <span class="macro">assert_eq!</span>(vm.get(<span class="number">0</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">0</span>));
+<a href=#1824 id=1824 data-nosnippet>1824</a>        <span class="macro">assert_eq!</span>(vm.get(<span class="number">5</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">0</span>));
+<a href=#1825 id=1825 data-nosnippet>1825</a>    }
+<a href=#1826 id=1826 data-nosnippet>1826</a>
+<a href=#1827 id=1827 data-nosnippet>1827</a>    <span class="attr">#[test]
+<a href=#1828 id=1828 data-nosnippet>1828</a>    </span><span class="kw">fn </span>test_default_vs_single_equivalence() {
+<a href=#1829 id=1829 data-nosnippet>1829</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(x = <span class="number">4</span>).into();
+<a href=#1830 id=1830 data-nosnippet>1830</a>        <span class="kw">let </span>d1 = ValueMesh::&lt;i32&gt;::from_default(region.clone());
+<a href=#1831 id=1831 data-nosnippet>1831</a>        <span class="kw">let </span>d2 = ValueMesh::from_single(region.clone(), <span class="number">0</span>);
+<a href=#1832 id=1832 data-nosnippet>1832</a>        <span class="macro">assert_eq!</span>(d1, d2);
+<a href=#1833 id=1833 data-nosnippet>1833</a>    }
+<a href=#1834 id=1834 data-nosnippet>1834</a>
+<a href=#1835 id=1835 data-nosnippet>1835</a>    <span class="attr">#[test]
+<a href=#1836 id=1836 data-nosnippet>1836</a>    </span><span class="kw">fn </span>build_from_ranges_with_default_basic() {
+<a href=#1837 id=1837 data-nosnippet>1837</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">10</span>).into();
+<a href=#1838 id=1838 data-nosnippet>1838</a>        <span class="kw">let </span>vm = ValueMesh::from_ranges_with_default(
+<a href=#1839 id=1839 data-nosnippet>1839</a>            region.clone(),
+<a href=#1840 id=1840 data-nosnippet>1840</a>            <span class="number">0</span>, <span class="comment">// default
+<a href=#1841 id=1841 data-nosnippet>1841</a>            </span><span class="macro">vec!</span>[(<span class="number">2</span>..<span class="number">4</span>, <span class="number">1</span>), (<span class="number">6</span>..<span class="number">9</span>, <span class="number">2</span>)],
+<a href=#1842 id=1842 data-nosnippet>1842</a>        )
+<a href=#1843 id=1843 data-nosnippet>1843</a>        .unwrap();
 <a href=#1844 id=1844 data-nosnippet>1844</a>
-<a href=#1845 id=1845 data-nosnippet>1845</a>        <span class="comment">// Internal shape: [0..2)-&gt;0, [2..4)-&gt;1, [4..6)-&gt;0, [6..9)-&gt;2,
-<a href=#1846 id=1846 data-nosnippet>1846</a>        // [9..10)-&gt;0
-<a href=#1847 id=1847 data-nosnippet>1847</a>        </span><span class="kw">if let </span>Rep::Compressed { table, runs } = <span class="kw-2">&amp;</span>vm.rep {
-<a href=#1848 id=1848 data-nosnippet>1848</a>            <span class="comment">// Table is small and de-duplicated.
-<a href=#1849 id=1849 data-nosnippet>1849</a>            </span><span class="macro">assert!</span>(table.len() &lt;= <span class="number">3</span>);
-<a href=#1850 id=1850 data-nosnippet>1850</a>            <span class="macro">assert_eq!</span>(runs.len(), <span class="number">5</span>);
-<a href=#1851 id=1851 data-nosnippet>1851</a>        } <span class="kw">else </span>{
-<a href=#1852 id=1852 data-nosnippet>1852</a>            <span class="macro">panic!</span>(<span class="string">"expected compressed"</span>);
-<a href=#1853 id=1853 data-nosnippet>1853</a>        }
-<a href=#1854 id=1854 data-nosnippet>1854</a>    }
-<a href=#1855 id=1855 data-nosnippet>1855</a>
-<a href=#1856 id=1856 data-nosnippet>1856</a>    <span class="attr">#[test]
-<a href=#1857 id=1857 data-nosnippet>1857</a>    </span><span class="kw">fn </span>build_from_ranges_with_default_edge_cases() {
-<a href=#1858 id=1858 data-nosnippet>1858</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">5</span>).into();
-<a href=#1859 id=1859 data-nosnippet>1859</a>
-<a href=#1860 id=1860 data-nosnippet>1860</a>        <span class="comment">// Full override covers entire region.
-<a href=#1861 id=1861 data-nosnippet>1861</a>        </span><span class="kw">let </span>vm = ValueMesh::from_ranges_with_default(region.clone(), <span class="number">9</span>, <span class="macro">vec!</span>[(<span class="number">0</span>..<span class="number">5</span>, <span class="number">3</span>)]).unwrap();
-<a href=#1862 id=1862 data-nosnippet>1862</a>        <span class="macro">assert_eq!</span>(vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="macro">vec!</span>[<span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>]);
-<a href=#1863 id=1863 data-nosnippet>1863</a>
-<a href=#1864 id=1864 data-nosnippet>1864</a>        <span class="comment">// Adjacent overrides and default gaps.
-<a href=#1865 id=1865 data-nosnippet>1865</a>        </span><span class="kw">let </span>vm = ValueMesh::from_ranges_with_default(region.clone(), <span class="number">0</span>, <span class="macro">vec!</span>[(<span class="number">1</span>..<span class="number">2</span>, <span class="number">7</span>), (<span class="number">2</span>..<span class="number">4</span>, <span class="number">7</span>)])
-<a href=#1866 id=1866 data-nosnippet>1866</a>            .unwrap();
-<a href=#1867 id=1867 data-nosnippet>1867</a>        <span class="macro">assert_eq!</span>(vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="macro">vec!</span>[<span class="number">0</span>, <span class="number">7</span>, <span class="number">7</span>, <span class="number">7</span>, <span class="number">0</span>]);
-<a href=#1868 id=1868 data-nosnippet>1868</a>
-<a href=#1869 id=1869 data-nosnippet>1869</a>        <span class="comment">// Empty region.
-<a href=#1870 id=1870 data-nosnippet>1870</a>        </span><span class="kw">let </span>empty_region: Region = <span class="macro">extent!</span>(n = <span class="number">0</span>).into();
-<a href=#1871 id=1871 data-nosnippet>1871</a>        <span class="kw">let </span>vm = ValueMesh::from_ranges_with_default(empty_region.clone(), <span class="number">42</span>, <span class="macro">vec!</span>[]).unwrap();
-<a href=#1872 id=1872 data-nosnippet>1872</a>        <span class="macro">assert_eq!</span>(vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), Vec::&lt;i32&gt;::new());
-<a href=#1873 id=1873 data-nosnippet>1873</a>    }
+<a href=#1845 id=1845 data-nosnippet>1845</a>        <span class="macro">assert_eq!</span>(vm.region(), <span class="kw-2">&amp;</span>region);
+<a href=#1846 id=1846 data-nosnippet>1846</a>        <span class="macro">assert_eq!</span>(
+<a href=#1847 id=1847 data-nosnippet>1847</a>            vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(),
+<a href=#1848 id=1848 data-nosnippet>1848</a>            <span class="macro">vec!</span>[<span class="number">0</span>, <span class="number">0</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">0</span>, <span class="number">0</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">0</span>]
+<a href=#1849 id=1849 data-nosnippet>1849</a>        );
+<a href=#1850 id=1850 data-nosnippet>1850</a>
+<a href=#1851 id=1851 data-nosnippet>1851</a>        <span class="comment">// Internal shape: [0..2)-&gt;0, [2..4)-&gt;1, [4..6)-&gt;0, [6..9)-&gt;2,
+<a href=#1852 id=1852 data-nosnippet>1852</a>        // [9..10)-&gt;0
+<a href=#1853 id=1853 data-nosnippet>1853</a>        </span><span class="kw">if let </span>Rep::Compressed { table, runs } = <span class="kw-2">&amp;</span>vm.rep {
+<a href=#1854 id=1854 data-nosnippet>1854</a>            <span class="comment">// Table is small and de-duplicated.
+<a href=#1855 id=1855 data-nosnippet>1855</a>            </span><span class="macro">assert!</span>(table.len() &lt;= <span class="number">3</span>);
+<a href=#1856 id=1856 data-nosnippet>1856</a>            <span class="macro">assert_eq!</span>(runs.len(), <span class="number">5</span>);
+<a href=#1857 id=1857 data-nosnippet>1857</a>        } <span class="kw">else </span>{
+<a href=#1858 id=1858 data-nosnippet>1858</a>            <span class="macro">panic!</span>(<span class="string">"expected compressed"</span>);
+<a href=#1859 id=1859 data-nosnippet>1859</a>        }
+<a href=#1860 id=1860 data-nosnippet>1860</a>    }
+<a href=#1861 id=1861 data-nosnippet>1861</a>
+<a href=#1862 id=1862 data-nosnippet>1862</a>    <span class="attr">#[test]
+<a href=#1863 id=1863 data-nosnippet>1863</a>    </span><span class="kw">fn </span>build_from_ranges_with_default_edge_cases() {
+<a href=#1864 id=1864 data-nosnippet>1864</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">5</span>).into();
+<a href=#1865 id=1865 data-nosnippet>1865</a>
+<a href=#1866 id=1866 data-nosnippet>1866</a>        <span class="comment">// Full override covers entire region.
+<a href=#1867 id=1867 data-nosnippet>1867</a>        </span><span class="kw">let </span>vm = ValueMesh::from_ranges_with_default(region.clone(), <span class="number">9</span>, <span class="macro">vec!</span>[(<span class="number">0</span>..<span class="number">5</span>, <span class="number">3</span>)]).unwrap();
+<a href=#1868 id=1868 data-nosnippet>1868</a>        <span class="macro">assert_eq!</span>(vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="macro">vec!</span>[<span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>]);
+<a href=#1869 id=1869 data-nosnippet>1869</a>
+<a href=#1870 id=1870 data-nosnippet>1870</a>        <span class="comment">// Adjacent overrides and default gaps.
+<a href=#1871 id=1871 data-nosnippet>1871</a>        </span><span class="kw">let </span>vm = ValueMesh::from_ranges_with_default(region.clone(), <span class="number">0</span>, <span class="macro">vec!</span>[(<span class="number">1</span>..<span class="number">2</span>, <span class="number">7</span>), (<span class="number">2</span>..<span class="number">4</span>, <span class="number">7</span>)])
+<a href=#1872 id=1872 data-nosnippet>1872</a>            .unwrap();
+<a href=#1873 id=1873 data-nosnippet>1873</a>        <span class="macro">assert_eq!</span>(vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="macro">vec!</span>[<span class="number">0</span>, <span class="number">7</span>, <span class="number">7</span>, <span class="number">7</span>, <span class="number">0</span>]);
 <a href=#1874 id=1874 data-nosnippet>1874</a>
-<a href=#1875 id=1875 data-nosnippet>1875</a>    <span class="attr">#[test]
-<a href=#1876 id=1876 data-nosnippet>1876</a>    </span><span class="kw">fn </span>from_dense_builds_and_compresses() {
-<a href=#1877 id=1877 data-nosnippet>1877</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">6</span>).into();
-<a href=#1878 id=1878 data-nosnippet>1878</a>        <span class="kw">let </span>mesh = ValueMesh::from_dense(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>]).unwrap();
-<a href=#1879 id=1879 data-nosnippet>1879</a>
-<a href=#1880 id=1880 data-nosnippet>1880</a>        <span class="macro">assert_eq!</span>(mesh.region(), <span class="kw-2">&amp;</span>region);
-<a href=#1881 id=1881 data-nosnippet>1881</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(mesh.rep, Rep::Compressed { .. }));
-<a href=#1882 id=1882 data-nosnippet>1882</a>        <span class="macro">assert_eq!</span>(mesh.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>]);
-<a href=#1883 id=1883 data-nosnippet>1883</a>
-<a href=#1884 id=1884 data-nosnippet>1884</a>        <span class="comment">// Spot-check indexing.
-<a href=#1885 id=1885 data-nosnippet>1885</a>        </span><span class="macro">assert_eq!</span>(mesh.get(<span class="number">0</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">1</span>));
-<a href=#1886 id=1886 data-nosnippet>1886</a>        <span class="macro">assert_eq!</span>(mesh.get(<span class="number">3</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">2</span>));
-<a href=#1887 id=1887 data-nosnippet>1887</a>        <span class="macro">assert_eq!</span>(mesh.get(<span class="number">5</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">3</span>));
-<a href=#1888 id=1888 data-nosnippet>1888</a>    }
+<a href=#1875 id=1875 data-nosnippet>1875</a>        <span class="comment">// Empty region.
+<a href=#1876 id=1876 data-nosnippet>1876</a>        </span><span class="kw">let </span>empty_region: Region = <span class="macro">extent!</span>(n = <span class="number">0</span>).into();
+<a href=#1877 id=1877 data-nosnippet>1877</a>        <span class="kw">let </span>vm = ValueMesh::from_ranges_with_default(empty_region.clone(), <span class="number">42</span>, <span class="macro">vec!</span>[]).unwrap();
+<a href=#1878 id=1878 data-nosnippet>1878</a>        <span class="macro">assert_eq!</span>(vm.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), Vec::&lt;i32&gt;::new());
+<a href=#1879 id=1879 data-nosnippet>1879</a>    }
+<a href=#1880 id=1880 data-nosnippet>1880</a>
+<a href=#1881 id=1881 data-nosnippet>1881</a>    <span class="attr">#[test]
+<a href=#1882 id=1882 data-nosnippet>1882</a>    </span><span class="kw">fn </span>from_dense_builds_and_compresses() {
+<a href=#1883 id=1883 data-nosnippet>1883</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">6</span>).into();
+<a href=#1884 id=1884 data-nosnippet>1884</a>        <span class="kw">let </span>mesh = ValueMesh::from_dense(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>]).unwrap();
+<a href=#1885 id=1885 data-nosnippet>1885</a>
+<a href=#1886 id=1886 data-nosnippet>1886</a>        <span class="macro">assert_eq!</span>(mesh.region(), <span class="kw-2">&amp;</span>region);
+<a href=#1887 id=1887 data-nosnippet>1887</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(mesh.rep, Rep::Compressed { .. }));
+<a href=#1888 id=1888 data-nosnippet>1888</a>        <span class="macro">assert_eq!</span>(mesh.values().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>]);
 <a href=#1889 id=1889 data-nosnippet>1889</a>
-<a href=#1890 id=1890 data-nosnippet>1890</a>    <span class="attr">#[test]
-<a href=#1891 id=1891 data-nosnippet>1891</a>    </span><span class="kw">fn </span>merge_from_overlay_basic() {
-<a href=#1892 id=1892 data-nosnippet>1892</a>        <span class="comment">// Base mesh with two contiguous runs.
-<a href=#1893 id=1893 data-nosnippet>1893</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">8</span>).into();
-<a href=#1894 id=1894 data-nosnippet>1894</a>        <span class="kw">let </span><span class="kw-2">mut </span>mesh = ValueMesh::from_dense(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>]).unwrap();
+<a href=#1890 id=1890 data-nosnippet>1890</a>        <span class="comment">// Spot-check indexing.
+<a href=#1891 id=1891 data-nosnippet>1891</a>        </span><span class="macro">assert_eq!</span>(mesh.get(<span class="number">0</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">1</span>));
+<a href=#1892 id=1892 data-nosnippet>1892</a>        <span class="macro">assert_eq!</span>(mesh.get(<span class="number">3</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">2</span>));
+<a href=#1893 id=1893 data-nosnippet>1893</a>        <span class="macro">assert_eq!</span>(mesh.get(<span class="number">5</span>), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">3</span>));
+<a href=#1894 id=1894 data-nosnippet>1894</a>    }
 <a href=#1895 id=1895 data-nosnippet>1895</a>
-<a href=#1896 id=1896 data-nosnippet>1896</a>        <span class="comment">// Overlay replaces middle segment [2..6) with 9s.
-<a href=#1897 id=1897 data-nosnippet>1897</a>        </span><span class="kw">let </span>overlay = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">2</span>..<span class="number">6</span>, <span class="number">9</span>)]).unwrap();
-<a href=#1898 id=1898 data-nosnippet>1898</a>
-<a href=#1899 id=1899 data-nosnippet>1899</a>        mesh.merge_from_overlay(overlay).unwrap();
-<a href=#1900 id=1900 data-nosnippet>1900</a>
-<a href=#1901 id=1901 data-nosnippet>1901</a>        <span class="comment">// Materialize back into ranges to inspect.
-<a href=#1902 id=1902 data-nosnippet>1902</a>        </span><span class="kw">let </span>out = mesh.materialized_runs();
-<a href=#1903 id=1903 data-nosnippet>1903</a>
-<a href=#1904 id=1904 data-nosnippet>1904</a>        <span class="comment">// Expected: left prefix (0..2)=1, replaced middle (2..6)=9, tail (6..8)=3.
-<a href=#1905 id=1905 data-nosnippet>1905</a>        </span><span class="macro">assert_eq!</span>(out, <span class="macro">vec!</span>[(<span class="number">0</span>..<span class="number">2</span>, <span class="number">1</span>), (<span class="number">2</span>..<span class="number">6</span>, <span class="number">9</span>), (<span class="number">6</span>..<span class="number">8</span>, <span class="number">3</span>)]);
-<a href=#1906 id=1906 data-nosnippet>1906</a>    }
-<a href=#1907 id=1907 data-nosnippet>1907</a>
-<a href=#1908 id=1908 data-nosnippet>1908</a>    <span class="attr">#[test]
-<a href=#1909 id=1909 data-nosnippet>1909</a>    </span><span class="kw">fn </span>merge_from_overlay_multiple_spans() {
-<a href=#1910 id=1910 data-nosnippet>1910</a>        <span class="comment">// Build mesh with alternating runs.
-<a href=#1911 id=1911 data-nosnippet>1911</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(m = <span class="number">12</span>).into();
-<a href=#1912 id=1912 data-nosnippet>1912</a>        <span class="kw">let </span><span class="kw-2">mut </span>mesh =
-<a href=#1913 id=1913 data-nosnippet>1913</a>            ValueMesh::from_dense(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">4</span>, <span class="number">4</span>])
-<a href=#1914 id=1914 data-nosnippet>1914</a>                .unwrap();
-<a href=#1915 id=1915 data-nosnippet>1915</a>
-<a href=#1916 id=1916 data-nosnippet>1916</a>        <span class="comment">// Overlay has a run that spans across the boundary of two
-<a href=#1917 id=1917 data-nosnippet>1917</a>        // left runs and another disjoint run later.
-<a href=#1918 id=1918 data-nosnippet>1918</a>        </span><span class="kw">let </span>overlay = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">2</span>..<span class="number">6</span>, <span class="number">9</span>), (<span class="number">9</span>..<span class="number">11</span>, <span class="number">8</span>)]).unwrap();
-<a href=#1919 id=1919 data-nosnippet>1919</a>
-<a href=#1920 id=1920 data-nosnippet>1920</a>        mesh.merge_from_overlay(overlay).unwrap();
-<a href=#1921 id=1921 data-nosnippet>1921</a>        <span class="kw">let </span>out = mesh.materialized_runs();
-<a href=#1922 id=1922 data-nosnippet>1922</a>
-<a href=#1923 id=1923 data-nosnippet>1923</a>        <span class="comment">// Expected after merge and re-compression:
-<a href=#1924 id=1924 data-nosnippet>1924</a>        // (0..2,1) untouched
-<a href=#1925 id=1925 data-nosnippet>1925</a>        // (2..6,9) overwrite of part of [1,2] runs
-<a href=#1926 id=1926 data-nosnippet>1926</a>        // (6..9,3) left tail survives
-<a href=#1927 id=1927 data-nosnippet>1927</a>        // (9..11,8) overwrite inside [4] run
-<a href=#1928 id=1928 data-nosnippet>1928</a>        // (11..12,4) leftover tail
-<a href=#1929 id=1929 data-nosnippet>1929</a>        </span><span class="macro">assert_eq!</span>(
-<a href=#1930 id=1930 data-nosnippet>1930</a>            out,
-<a href=#1931 id=1931 data-nosnippet>1931</a>            <span class="macro">vec!</span>[(<span class="number">0</span>..<span class="number">2</span>, <span class="number">1</span>), (<span class="number">2</span>..<span class="number">6</span>, <span class="number">9</span>), (<span class="number">6</span>..<span class="number">9</span>, <span class="number">3</span>), (<span class="number">9</span>..<span class="number">11</span>, <span class="number">8</span>), (<span class="number">11</span>..<span class="number">12</span>, <span class="number">4</span>)]
-<a href=#1932 id=1932 data-nosnippet>1932</a>        );
-<a href=#1933 id=1933 data-nosnippet>1933</a>    }
-<a href=#1934 id=1934 data-nosnippet>1934</a>
-<a href=#1935 id=1935 data-nosnippet>1935</a>    <span class="attr">#[test]
-<a href=#1936 id=1936 data-nosnippet>1936</a>    </span><span class="kw">fn </span>merge_from_overlay_crosses_row_boundary() {
-<a href=#1937 id=1937 data-nosnippet>1937</a>        <span class="comment">// 2 x 5 region -&gt; 10 linear ranks in row-major order.
-<a href=#1938 id=1938 data-nosnippet>1938</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(rows = <span class="number">2</span>, cols = <span class="number">5</span>).into();
-<a href=#1939 id=1939 data-nosnippet>1939</a>
-<a href=#1940 id=1940 data-nosnippet>1940</a>        <span class="comment">// Dense values laid out row-major:
-<a href=#1941 id=1941 data-nosnippet>1941</a>        // row 0: [1, 1, 1, 2, 2]
-<a href=#1942 id=1942 data-nosnippet>1942</a>        // row 1: [3, 3, 4, 4, 4]
-<a href=#1943 id=1943 data-nosnippet>1943</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>mesh =
-<a href=#1944 id=1944 data-nosnippet>1944</a>            ValueMesh::from_dense(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">4</span>, <span class="number">4</span>]).unwrap();
+<a href=#1896 id=1896 data-nosnippet>1896</a>    <span class="attr">#[test]
+<a href=#1897 id=1897 data-nosnippet>1897</a>    </span><span class="kw">fn </span>merge_from_overlay_basic() {
+<a href=#1898 id=1898 data-nosnippet>1898</a>        <span class="comment">// Base mesh with two contiguous runs.
+<a href=#1899 id=1899 data-nosnippet>1899</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(n = <span class="number">8</span>).into();
+<a href=#1900 id=1900 data-nosnippet>1900</a>        <span class="kw">let </span><span class="kw-2">mut </span>mesh = ValueMesh::from_dense(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>]).unwrap();
+<a href=#1901 id=1901 data-nosnippet>1901</a>
+<a href=#1902 id=1902 data-nosnippet>1902</a>        <span class="comment">// Overlay replaces middle segment [2..6) with 9s.
+<a href=#1903 id=1903 data-nosnippet>1903</a>        </span><span class="kw">let </span>overlay = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">2</span>..<span class="number">6</span>, <span class="number">9</span>)]).unwrap();
+<a href=#1904 id=1904 data-nosnippet>1904</a>
+<a href=#1905 id=1905 data-nosnippet>1905</a>        mesh.merge_from_overlay(overlay).unwrap();
+<a href=#1906 id=1906 data-nosnippet>1906</a>
+<a href=#1907 id=1907 data-nosnippet>1907</a>        <span class="comment">// Materialize back into ranges to inspect.
+<a href=#1908 id=1908 data-nosnippet>1908</a>        </span><span class="kw">let </span>out = mesh.materialized_runs();
+<a href=#1909 id=1909 data-nosnippet>1909</a>
+<a href=#1910 id=1910 data-nosnippet>1910</a>        <span class="comment">// Expected: left prefix (0..2)=1, replaced middle (2..6)=9, tail (6..8)=3.
+<a href=#1911 id=1911 data-nosnippet>1911</a>        </span><span class="macro">assert_eq!</span>(out, <span class="macro">vec!</span>[(<span class="number">0</span>..<span class="number">2</span>, <span class="number">1</span>), (<span class="number">2</span>..<span class="number">6</span>, <span class="number">9</span>), (<span class="number">6</span>..<span class="number">8</span>, <span class="number">3</span>)]);
+<a href=#1912 id=1912 data-nosnippet>1912</a>    }
+<a href=#1913 id=1913 data-nosnippet>1913</a>
+<a href=#1914 id=1914 data-nosnippet>1914</a>    <span class="attr">#[test]
+<a href=#1915 id=1915 data-nosnippet>1915</a>    </span><span class="kw">fn </span>merge_from_overlay_multiple_spans() {
+<a href=#1916 id=1916 data-nosnippet>1916</a>        <span class="comment">// Build mesh with alternating runs.
+<a href=#1917 id=1917 data-nosnippet>1917</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(m = <span class="number">12</span>).into();
+<a href=#1918 id=1918 data-nosnippet>1918</a>        <span class="kw">let </span><span class="kw-2">mut </span>mesh =
+<a href=#1919 id=1919 data-nosnippet>1919</a>            ValueMesh::from_dense(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">4</span>, <span class="number">4</span>])
+<a href=#1920 id=1920 data-nosnippet>1920</a>                .unwrap();
+<a href=#1921 id=1921 data-nosnippet>1921</a>
+<a href=#1922 id=1922 data-nosnippet>1922</a>        <span class="comment">// Overlay has a run that spans across the boundary of two
+<a href=#1923 id=1923 data-nosnippet>1923</a>        // left runs and another disjoint run later.
+<a href=#1924 id=1924 data-nosnippet>1924</a>        </span><span class="kw">let </span>overlay = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">2</span>..<span class="number">6</span>, <span class="number">9</span>), (<span class="number">9</span>..<span class="number">11</span>, <span class="number">8</span>)]).unwrap();
+<a href=#1925 id=1925 data-nosnippet>1925</a>
+<a href=#1926 id=1926 data-nosnippet>1926</a>        mesh.merge_from_overlay(overlay).unwrap();
+<a href=#1927 id=1927 data-nosnippet>1927</a>        <span class="kw">let </span>out = mesh.materialized_runs();
+<a href=#1928 id=1928 data-nosnippet>1928</a>
+<a href=#1929 id=1929 data-nosnippet>1929</a>        <span class="comment">// Expected after merge and re-compression:
+<a href=#1930 id=1930 data-nosnippet>1930</a>        // (0..2,1) untouched
+<a href=#1931 id=1931 data-nosnippet>1931</a>        // (2..6,9) overwrite of part of [1,2] runs
+<a href=#1932 id=1932 data-nosnippet>1932</a>        // (6..9,3) left tail survives
+<a href=#1933 id=1933 data-nosnippet>1933</a>        // (9..11,8) overwrite inside [4] run
+<a href=#1934 id=1934 data-nosnippet>1934</a>        // (11..12,4) leftover tail
+<a href=#1935 id=1935 data-nosnippet>1935</a>        </span><span class="macro">assert_eq!</span>(
+<a href=#1936 id=1936 data-nosnippet>1936</a>            out,
+<a href=#1937 id=1937 data-nosnippet>1937</a>            <span class="macro">vec!</span>[(<span class="number">0</span>..<span class="number">2</span>, <span class="number">1</span>), (<span class="number">2</span>..<span class="number">6</span>, <span class="number">9</span>), (<span class="number">6</span>..<span class="number">9</span>, <span class="number">3</span>), (<span class="number">9</span>..<span class="number">11</span>, <span class="number">8</span>), (<span class="number">11</span>..<span class="number">12</span>, <span class="number">4</span>)]
+<a href=#1938 id=1938 data-nosnippet>1938</a>        );
+<a href=#1939 id=1939 data-nosnippet>1939</a>    }
+<a href=#1940 id=1940 data-nosnippet>1940</a>
+<a href=#1941 id=1941 data-nosnippet>1941</a>    <span class="attr">#[test]
+<a href=#1942 id=1942 data-nosnippet>1942</a>    </span><span class="kw">fn </span>merge_from_overlay_crosses_row_boundary() {
+<a href=#1943 id=1943 data-nosnippet>1943</a>        <span class="comment">// 2 x 5 region -&gt; 10 linear ranks in row-major order.
+<a href=#1944 id=1944 data-nosnippet>1944</a>        </span><span class="kw">let </span>region: Region = <span class="macro">extent!</span>(rows = <span class="number">2</span>, cols = <span class="number">5</span>).into();
 <a href=#1945 id=1945 data-nosnippet>1945</a>
-<a href=#1946 id=1946 data-nosnippet>1946</a>        <span class="comment">// Overlay that crosses the row boundary:
-<a href=#1947 id=1947 data-nosnippet>1947</a>        // linear ranks [3..7) -&gt; 9
-<a href=#1948 id=1948 data-nosnippet>1948</a>        //   - tail of row 0: indices 3,4 (the two 2s)
-<a href=#1949 id=1949 data-nosnippet>1949</a>        //   - head of row 1: indices 5,6 (the two 3s)
-<a href=#1950 id=1950 data-nosnippet>1950</a>        </span><span class="kw">let </span>overlay = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">3</span>..<span class="number">7</span>, <span class="number">9</span>)]).unwrap();
+<a href=#1946 id=1946 data-nosnippet>1946</a>        <span class="comment">// Dense values laid out row-major:
+<a href=#1947 id=1947 data-nosnippet>1947</a>        // row 0: [1, 1, 1, 2, 2]
+<a href=#1948 id=1948 data-nosnippet>1948</a>        // row 1: [3, 3, 4, 4, 4]
+<a href=#1949 id=1949 data-nosnippet>1949</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>mesh =
+<a href=#1950 id=1950 data-nosnippet>1950</a>            ValueMesh::from_dense(region.clone(), <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">4</span>, <span class="number">4</span>]).unwrap();
 <a href=#1951 id=1951 data-nosnippet>1951</a>
-<a href=#1952 id=1952 data-nosnippet>1952</a>        mesh.merge_from_overlay(overlay).unwrap();
-<a href=#1953 id=1953 data-nosnippet>1953</a>
-<a href=#1954 id=1954 data-nosnippet>1954</a>        <span class="comment">// After merge, the dense view should be:
-<a href=#1955 id=1955 data-nosnippet>1955</a>        // [1,1,1, 9,9, 9,9, 4,4,4]
-<a href=#1956 id=1956 data-nosnippet>1956</a>        </span><span class="kw">let </span>flat: Vec&lt;<span class="kw">_</span>&gt; = mesh.values().collect();
-<a href=#1957 id=1957 data-nosnippet>1957</a>        <span class="macro">assert_eq!</span>(flat, <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">9</span>, <span class="number">9</span>, <span class="number">9</span>, <span class="number">9</span>, <span class="number">4</span>, <span class="number">4</span>, <span class="number">4</span>]);
-<a href=#1958 id=1958 data-nosnippet>1958</a>
-<a href=#1959 id=1959 data-nosnippet>1959</a>        <span class="comment">// And the materialized runs should reflect that:
-<a href=#1960 id=1960 data-nosnippet>1960</a>        // (0..3,1) | (3..7,9) | (7..10,4)
-<a href=#1961 id=1961 data-nosnippet>1961</a>        </span><span class="kw">let </span>runs = mesh.materialized_runs();
-<a href=#1962 id=1962 data-nosnippet>1962</a>        <span class="macro">assert_eq!</span>(runs, <span class="macro">vec!</span>[(<span class="number">0</span>..<span class="number">3</span>, <span class="number">1</span>), (<span class="number">3</span>..<span class="number">7</span>, <span class="number">9</span>), (<span class="number">7</span>..<span class="number">10</span>, <span class="number">4</span>)]);
-<a href=#1963 id=1963 data-nosnippet>1963</a>    }
+<a href=#1952 id=1952 data-nosnippet>1952</a>        <span class="comment">// Overlay that crosses the row boundary:
+<a href=#1953 id=1953 data-nosnippet>1953</a>        // linear ranks [3..7) -&gt; 9
+<a href=#1954 id=1954 data-nosnippet>1954</a>        //   - tail of row 0: indices 3,4 (the two 2s)
+<a href=#1955 id=1955 data-nosnippet>1955</a>        //   - head of row 1: indices 5,6 (the two 3s)
+<a href=#1956 id=1956 data-nosnippet>1956</a>        </span><span class="kw">let </span>overlay = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">3</span>..<span class="number">7</span>, <span class="number">9</span>)]).unwrap();
+<a href=#1957 id=1957 data-nosnippet>1957</a>
+<a href=#1958 id=1958 data-nosnippet>1958</a>        mesh.merge_from_overlay(overlay).unwrap();
+<a href=#1959 id=1959 data-nosnippet>1959</a>
+<a href=#1960 id=1960 data-nosnippet>1960</a>        <span class="comment">// After merge, the dense view should be:
+<a href=#1961 id=1961 data-nosnippet>1961</a>        // [1,1,1, 9,9, 9,9, 4,4,4]
+<a href=#1962 id=1962 data-nosnippet>1962</a>        </span><span class="kw">let </span>flat: Vec&lt;<span class="kw">_</span>&gt; = mesh.values().collect();
+<a href=#1963 id=1963 data-nosnippet>1963</a>        <span class="macro">assert_eq!</span>(flat, <span class="macro">vec!</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">9</span>, <span class="number">9</span>, <span class="number">9</span>, <span class="number">9</span>, <span class="number">4</span>, <span class="number">4</span>, <span class="number">4</span>]);
 <a href=#1964 id=1964 data-nosnippet>1964</a>
-<a href=#1965 id=1965 data-nosnippet>1965</a>    <span class="attr">#[test]
-<a href=#1966 id=1966 data-nosnippet>1966</a>    </span><span class="kw">fn </span>accumulator_initializes_and_merges_overlays() {
-<a href=#1967 id=1967 data-nosnippet>1967</a>        <span class="doccomment">/// Simple three-variant enum local to tests, avoiding a
-<a href=#1968 id=1968 data-nosnippet>1968</a>        /// cross-module dependency on `crate::resource::Status`.
-<a href=#1969 id=1969 data-nosnippet>1969</a>        </span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
-<a href=#1970 id=1970 data-nosnippet>1970</a>        </span><span class="kw">enum </span>Val {
-<a href=#1971 id=1971 data-nosnippet>1971</a>            Init,
-<a href=#1972 id=1972 data-nosnippet>1972</a>            Running,
-<a href=#1973 id=1973 data-nosnippet>1973</a>            Stopped,
-<a href=#1974 id=1974 data-nosnippet>1974</a>        }
-<a href=#1975 id=1975 data-nosnippet>1975</a>
-<a href=#1976 id=1976 data-nosnippet>1976</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(m = <span class="number">8</span>).into();
-<a href=#1977 id=1977 data-nosnippet>1977</a>        <span class="kw">let </span>template = ValueMesh::from_single(region.clone(), Val::Init);
-<a href=#1978 id=1978 data-nosnippet>1978</a>
-<a href=#1979 id=1979 data-nosnippet>1979</a>        <span class="comment">// State starts empty (default).
-<a href=#1980 id=1980 data-nosnippet>1980</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>state = ValueMesh::&lt;Val&gt;::default();
-<a href=#1981 id=1981 data-nosnippet>1981</a>        <span class="macro">assert_eq!</span>(state.region().num_ranks(), <span class="number">0</span>);
-<a href=#1982 id=1982 data-nosnippet>1982</a>
-<a href=#1983 id=1983 data-nosnippet>1983</a>        <span class="comment">// First accumulate: state should be cloned from template.
-<a href=#1984 id=1984 data-nosnippet>1984</a>        </span><span class="kw">let </span>overlay1 = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">2</span>..<span class="number">5</span>, Val::Running)]).unwrap();
-<a href=#1985 id=1985 data-nosnippet>1985</a>        template.accumulate(<span class="kw-2">&amp;mut </span>state, overlay1).unwrap();
-<a href=#1986 id=1986 data-nosnippet>1986</a>
-<a href=#1987 id=1987 data-nosnippet>1987</a>        <span class="comment">// State now has the full region, with ranks 2..5 set to Running.
-<a href=#1988 id=1988 data-nosnippet>1988</a>        </span><span class="macro">assert_eq!</span>(state.region().num_ranks(), <span class="number">8</span>);
-<a href=#1989 id=1989 data-nosnippet>1989</a>        <span class="kw">let </span>vals: Vec&lt;<span class="kw">_</span>&gt; = state.values().collect();
-<a href=#1990 id=1990 data-nosnippet>1990</a>        <span class="macro">assert_eq!</span>(
-<a href=#1991 id=1991 data-nosnippet>1991</a>            vals,
-<a href=#1992 id=1992 data-nosnippet>1992</a>            <span class="macro">vec!</span>[
-<a href=#1993 id=1993 data-nosnippet>1993</a>                Val::Init,
-<a href=#1994 id=1994 data-nosnippet>1994</a>                Val::Init,
-<a href=#1995 id=1995 data-nosnippet>1995</a>                Val::Running,
-<a href=#1996 id=1996 data-nosnippet>1996</a>                Val::Running,
-<a href=#1997 id=1997 data-nosnippet>1997</a>                Val::Running,
-<a href=#1998 id=1998 data-nosnippet>1998</a>                Val::Init,
+<a href=#1965 id=1965 data-nosnippet>1965</a>        <span class="comment">// And the materialized runs should reflect that:
+<a href=#1966 id=1966 data-nosnippet>1966</a>        // (0..3,1) | (3..7,9) | (7..10,4)
+<a href=#1967 id=1967 data-nosnippet>1967</a>        </span><span class="kw">let </span>runs = mesh.materialized_runs();
+<a href=#1968 id=1968 data-nosnippet>1968</a>        <span class="macro">assert_eq!</span>(runs, <span class="macro">vec!</span>[(<span class="number">0</span>..<span class="number">3</span>, <span class="number">1</span>), (<span class="number">3</span>..<span class="number">7</span>, <span class="number">9</span>), (<span class="number">7</span>..<span class="number">10</span>, <span class="number">4</span>)]);
+<a href=#1969 id=1969 data-nosnippet>1969</a>    }
+<a href=#1970 id=1970 data-nosnippet>1970</a>
+<a href=#1971 id=1971 data-nosnippet>1971</a>    <span class="attr">#[test]
+<a href=#1972 id=1972 data-nosnippet>1972</a>    </span><span class="kw">fn </span>accumulator_initializes_and_merges_overlays() {
+<a href=#1973 id=1973 data-nosnippet>1973</a>        <span class="doccomment">/// Simple three-variant enum local to tests, avoiding a
+<a href=#1974 id=1974 data-nosnippet>1974</a>        /// cross-module dependency on `crate::resource::Status`.
+<a href=#1975 id=1975 data-nosnippet>1975</a>        </span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+<a href=#1976 id=1976 data-nosnippet>1976</a>        </span><span class="kw">enum </span>Val {
+<a href=#1977 id=1977 data-nosnippet>1977</a>            Init,
+<a href=#1978 id=1978 data-nosnippet>1978</a>            Running,
+<a href=#1979 id=1979 data-nosnippet>1979</a>            Stopped,
+<a href=#1980 id=1980 data-nosnippet>1980</a>        }
+<a href=#1981 id=1981 data-nosnippet>1981</a>
+<a href=#1982 id=1982 data-nosnippet>1982</a>        <span class="kw">let </span>region: Region = <span class="macro">extent!</span>(m = <span class="number">8</span>).into();
+<a href=#1983 id=1983 data-nosnippet>1983</a>        <span class="kw">let </span>template = ValueMesh::from_single(region.clone(), Val::Init);
+<a href=#1984 id=1984 data-nosnippet>1984</a>
+<a href=#1985 id=1985 data-nosnippet>1985</a>        <span class="comment">// State starts empty (default).
+<a href=#1986 id=1986 data-nosnippet>1986</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>state = ValueMesh::&lt;Val&gt;::default();
+<a href=#1987 id=1987 data-nosnippet>1987</a>        <span class="macro">assert_eq!</span>(state.region().num_ranks(), <span class="number">0</span>);
+<a href=#1988 id=1988 data-nosnippet>1988</a>
+<a href=#1989 id=1989 data-nosnippet>1989</a>        <span class="comment">// First accumulate: state should be cloned from template.
+<a href=#1990 id=1990 data-nosnippet>1990</a>        </span><span class="kw">let </span>overlay1 = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">2</span>..<span class="number">5</span>, Val::Running)]).unwrap();
+<a href=#1991 id=1991 data-nosnippet>1991</a>        template.accumulate(<span class="kw-2">&amp;mut </span>state, overlay1).unwrap();
+<a href=#1992 id=1992 data-nosnippet>1992</a>
+<a href=#1993 id=1993 data-nosnippet>1993</a>        <span class="comment">// State now has the full region, with ranks 2..5 set to Running.
+<a href=#1994 id=1994 data-nosnippet>1994</a>        </span><span class="macro">assert_eq!</span>(state.region().num_ranks(), <span class="number">8</span>);
+<a href=#1995 id=1995 data-nosnippet>1995</a>        <span class="kw">let </span>vals: Vec&lt;<span class="kw">_</span>&gt; = state.values().collect();
+<a href=#1996 id=1996 data-nosnippet>1996</a>        <span class="macro">assert_eq!</span>(
+<a href=#1997 id=1997 data-nosnippet>1997</a>            vals,
+<a href=#1998 id=1998 data-nosnippet>1998</a>            <span class="macro">vec!</span>[
 <a href=#1999 id=1999 data-nosnippet>1999</a>                Val::Init,
 <a href=#2000 id=2000 data-nosnippet>2000</a>                Val::Init,
-<a href=#2001 id=2001 data-nosnippet>2001</a>            ]
-<a href=#2002 id=2002 data-nosnippet>2002</a>        );
-<a href=#2003 id=2003 data-nosnippet>2003</a>
-<a href=#2004 id=2004 data-nosnippet>2004</a>        <span class="comment">// Second accumulate: overlay a different subrange with Stopped.
-<a href=#2005 id=2005 data-nosnippet>2005</a>        </span><span class="kw">let </span>overlay2 = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">5</span>..<span class="number">7</span>, Val::Stopped)]).unwrap();
-<a href=#2006 id=2006 data-nosnippet>2006</a>        template.accumulate(<span class="kw-2">&amp;mut </span>state, overlay2).unwrap();
-<a href=#2007 id=2007 data-nosnippet>2007</a>
-<a href=#2008 id=2008 data-nosnippet>2008</a>        <span class="kw">let </span>vals: Vec&lt;<span class="kw">_</span>&gt; = state.values().collect();
-<a href=#2009 id=2009 data-nosnippet>2009</a>        <span class="macro">assert_eq!</span>(
-<a href=#2010 id=2010 data-nosnippet>2010</a>            vals,
-<a href=#2011 id=2011 data-nosnippet>2011</a>            <span class="macro">vec!</span>[
-<a href=#2012 id=2012 data-nosnippet>2012</a>                Val::Init,
-<a href=#2013 id=2013 data-nosnippet>2013</a>                Val::Init,
-<a href=#2014 id=2014 data-nosnippet>2014</a>                Val::Running,
-<a href=#2015 id=2015 data-nosnippet>2015</a>                Val::Running,
-<a href=#2016 id=2016 data-nosnippet>2016</a>                Val::Running,
-<a href=#2017 id=2017 data-nosnippet>2017</a>                Val::Stopped,
-<a href=#2018 id=2018 data-nosnippet>2018</a>                Val::Stopped,
+<a href=#2001 id=2001 data-nosnippet>2001</a>                Val::Running,
+<a href=#2002 id=2002 data-nosnippet>2002</a>                Val::Running,
+<a href=#2003 id=2003 data-nosnippet>2003</a>                Val::Running,
+<a href=#2004 id=2004 data-nosnippet>2004</a>                Val::Init,
+<a href=#2005 id=2005 data-nosnippet>2005</a>                Val::Init,
+<a href=#2006 id=2006 data-nosnippet>2006</a>                Val::Init,
+<a href=#2007 id=2007 data-nosnippet>2007</a>            ]
+<a href=#2008 id=2008 data-nosnippet>2008</a>        );
+<a href=#2009 id=2009 data-nosnippet>2009</a>
+<a href=#2010 id=2010 data-nosnippet>2010</a>        <span class="comment">// Second accumulate: overlay a different subrange with Stopped.
+<a href=#2011 id=2011 data-nosnippet>2011</a>        </span><span class="kw">let </span>overlay2 = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">5</span>..<span class="number">7</span>, Val::Stopped)]).unwrap();
+<a href=#2012 id=2012 data-nosnippet>2012</a>        template.accumulate(<span class="kw-2">&amp;mut </span>state, overlay2).unwrap();
+<a href=#2013 id=2013 data-nosnippet>2013</a>
+<a href=#2014 id=2014 data-nosnippet>2014</a>        <span class="kw">let </span>vals: Vec&lt;<span class="kw">_</span>&gt; = state.values().collect();
+<a href=#2015 id=2015 data-nosnippet>2015</a>        <span class="macro">assert_eq!</span>(
+<a href=#2016 id=2016 data-nosnippet>2016</a>            vals,
+<a href=#2017 id=2017 data-nosnippet>2017</a>            <span class="macro">vec!</span>[
+<a href=#2018 id=2018 data-nosnippet>2018</a>                Val::Init,
 <a href=#2019 id=2019 data-nosnippet>2019</a>                Val::Init,
-<a href=#2020 id=2020 data-nosnippet>2020</a>            ]
-<a href=#2021 id=2021 data-nosnippet>2021</a>        );
-<a href=#2022 id=2022 data-nosnippet>2022</a>
-<a href=#2023 id=2023 data-nosnippet>2023</a>        <span class="comment">// reducer_spec should return Some with the correct typehash.
-<a href=#2024 id=2024 data-nosnippet>2024</a>        </span><span class="kw">let </span>spec = template
-<a href=#2025 id=2025 data-nosnippet>2025</a>            .reducer_spec()
-<a href=#2026 id=2026 data-nosnippet>2026</a>            .expect(<span class="string">"reducer_spec should be Some"</span>);
-<a href=#2027 id=2027 data-nosnippet>2027</a>        <span class="macro">assert_eq!</span>(
-<a href=#2028 id=2028 data-nosnippet>2028</a>            spec.typehash,
-<a href=#2029 id=2029 data-nosnippet>2029</a>            &lt;ValueOverlayReducer&lt;Val&gt; <span class="kw">as </span>Named&gt;::typehash()
-<a href=#2030 id=2030 data-nosnippet>2030</a>        );
-<a href=#2031 id=2031 data-nosnippet>2031</a>    }
-<a href=#2032 id=2032 data-nosnippet>2032</a>
-<a href=#2033 id=2033 data-nosnippet>2033</a>    <span class="attr">#[test]
-<a href=#2034 id=2034 data-nosnippet>2034</a>    </span><span class="kw">fn </span>value_overlay_reducer_merges_with_right_wins() {
-<a href=#2035 id=2035 data-nosnippet>2035</a>        <span class="doccomment">/// Simple three-variant enum local to tests, avoiding a
-<a href=#2036 id=2036 data-nosnippet>2036</a>        /// cross-module dependency on `crate::resource::Status`.
-<a href=#2037 id=2037 data-nosnippet>2037</a>        </span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
-<a href=#2038 id=2038 data-nosnippet>2038</a>        </span><span class="kw">enum </span>Val {
-<a href=#2039 id=2039 data-nosnippet>2039</a>            Init,
-<a href=#2040 id=2040 data-nosnippet>2040</a>            Running,
-<a href=#2041 id=2041 data-nosnippet>2041</a>            Stopped,
-<a href=#2042 id=2042 data-nosnippet>2042</a>        }
-<a href=#2043 id=2043 data-nosnippet>2043</a>
-<a href=#2044 id=2044 data-nosnippet>2044</a>        <span class="kw">let </span>reducer = ValueOverlayReducer::&lt;Val&gt;(PhantomData);
-<a href=#2045 id=2045 data-nosnippet>2045</a>
-<a href=#2046 id=2046 data-nosnippet>2046</a>        <span class="comment">// Left overlay: ranks 0..4 = Running, 6..8 = Stopped
-<a href=#2047 id=2047 data-nosnippet>2047</a>        </span><span class="kw">let </span>left =
-<a href=#2048 id=2048 data-nosnippet>2048</a>            ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">0</span>..<span class="number">4</span>, Val::Running), (<span class="number">6</span>..<span class="number">8</span>, Val::Stopped)]).unwrap();
+<a href=#2020 id=2020 data-nosnippet>2020</a>                Val::Running,
+<a href=#2021 id=2021 data-nosnippet>2021</a>                Val::Running,
+<a href=#2022 id=2022 data-nosnippet>2022</a>                Val::Running,
+<a href=#2023 id=2023 data-nosnippet>2023</a>                Val::Stopped,
+<a href=#2024 id=2024 data-nosnippet>2024</a>                Val::Stopped,
+<a href=#2025 id=2025 data-nosnippet>2025</a>                Val::Init,
+<a href=#2026 id=2026 data-nosnippet>2026</a>            ]
+<a href=#2027 id=2027 data-nosnippet>2027</a>        );
+<a href=#2028 id=2028 data-nosnippet>2028</a>
+<a href=#2029 id=2029 data-nosnippet>2029</a>        <span class="comment">// reducer_spec should return Some with the correct typehash.
+<a href=#2030 id=2030 data-nosnippet>2030</a>        </span><span class="kw">let </span>spec = template
+<a href=#2031 id=2031 data-nosnippet>2031</a>            .reducer_spec()
+<a href=#2032 id=2032 data-nosnippet>2032</a>            .expect(<span class="string">"reducer_spec should be Some"</span>);
+<a href=#2033 id=2033 data-nosnippet>2033</a>        <span class="macro">assert_eq!</span>(
+<a href=#2034 id=2034 data-nosnippet>2034</a>            spec.typehash,
+<a href=#2035 id=2035 data-nosnippet>2035</a>            &lt;ValueOverlayReducer&lt;Val&gt; <span class="kw">as </span>Named&gt;::typehash()
+<a href=#2036 id=2036 data-nosnippet>2036</a>        );
+<a href=#2037 id=2037 data-nosnippet>2037</a>    }
+<a href=#2038 id=2038 data-nosnippet>2038</a>
+<a href=#2039 id=2039 data-nosnippet>2039</a>    <span class="attr">#[test]
+<a href=#2040 id=2040 data-nosnippet>2040</a>    </span><span class="kw">fn </span>value_overlay_reducer_merges_with_right_wins() {
+<a href=#2041 id=2041 data-nosnippet>2041</a>        <span class="doccomment">/// Simple three-variant enum local to tests, avoiding a
+<a href=#2042 id=2042 data-nosnippet>2042</a>        /// cross-module dependency on `crate::resource::Status`.
+<a href=#2043 id=2043 data-nosnippet>2043</a>        </span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+<a href=#2044 id=2044 data-nosnippet>2044</a>        </span><span class="kw">enum </span>Val {
+<a href=#2045 id=2045 data-nosnippet>2045</a>            Init,
+<a href=#2046 id=2046 data-nosnippet>2046</a>            Running,
+<a href=#2047 id=2047 data-nosnippet>2047</a>            Stopped,
+<a href=#2048 id=2048 data-nosnippet>2048</a>        }
 <a href=#2049 id=2049 data-nosnippet>2049</a>
-<a href=#2050 id=2050 data-nosnippet>2050</a>        <span class="comment">// Right overlay: ranks 2..6 = Init
-<a href=#2051 id=2051 data-nosnippet>2051</a>        // Overlaps with left on 2..4 (should overwrite Running).
-<a href=#2052 id=2052 data-nosnippet>2052</a>        </span><span class="kw">let </span>right = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">2</span>..<span class="number">6</span>, Val::Init)]).unwrap();
-<a href=#2053 id=2053 data-nosnippet>2053</a>
-<a href=#2054 id=2054 data-nosnippet>2054</a>        <span class="kw">let </span>merged = reducer.reduce(left, right).unwrap();
-<a href=#2055 id=2055 data-nosnippet>2055</a>        <span class="kw">let </span>runs: Vec&lt;<span class="kw">_</span>&gt; = merged.runs().cloned().collect();
-<a href=#2056 id=2056 data-nosnippet>2056</a>
-<a href=#2057 id=2057 data-nosnippet>2057</a>        <span class="comment">// Expected (right wins on overlap):
-<a href=#2058 id=2058 data-nosnippet>2058</a>        // 0..2 Running (from left, no overlap)
-<a href=#2059 id=2059 data-nosnippet>2059</a>        // 2..6 Init (from right, overwrites left 2..4)
-<a href=#2060 id=2060 data-nosnippet>2060</a>        // 6..8 Stopped (from left, no overlap)
-<a href=#2061 id=2061 data-nosnippet>2061</a>        </span><span class="macro">assert_eq!</span>(
-<a href=#2062 id=2062 data-nosnippet>2062</a>            runs,
-<a href=#2063 id=2063 data-nosnippet>2063</a>            <span class="macro">vec!</span>[
-<a href=#2064 id=2064 data-nosnippet>2064</a>                (<span class="number">0</span>..<span class="number">2</span>, Val::Running),
-<a href=#2065 id=2065 data-nosnippet>2065</a>                (<span class="number">2</span>..<span class="number">6</span>, Val::Init),
-<a href=#2066 id=2066 data-nosnippet>2066</a>                (<span class="number">6</span>..<span class="number">8</span>, Val::Stopped),
-<a href=#2067 id=2067 data-nosnippet>2067</a>            ]
-<a href=#2068 id=2068 data-nosnippet>2068</a>        );
-<a href=#2069 id=2069 data-nosnippet>2069</a>    }
-<a href=#2070 id=2070 data-nosnippet>2070</a>}
+<a href=#2050 id=2050 data-nosnippet>2050</a>        <span class="kw">let </span>reducer = ValueOverlayReducer::&lt;Val&gt;(PhantomData);
+<a href=#2051 id=2051 data-nosnippet>2051</a>
+<a href=#2052 id=2052 data-nosnippet>2052</a>        <span class="comment">// Left overlay: ranks 0..4 = Running, 6..8 = Stopped
+<a href=#2053 id=2053 data-nosnippet>2053</a>        </span><span class="kw">let </span>left =
+<a href=#2054 id=2054 data-nosnippet>2054</a>            ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">0</span>..<span class="number">4</span>, Val::Running), (<span class="number">6</span>..<span class="number">8</span>, Val::Stopped)]).unwrap();
+<a href=#2055 id=2055 data-nosnippet>2055</a>
+<a href=#2056 id=2056 data-nosnippet>2056</a>        <span class="comment">// Right overlay: ranks 2..6 = Init
+<a href=#2057 id=2057 data-nosnippet>2057</a>        // Overlaps with left on 2..4 (should overwrite Running).
+<a href=#2058 id=2058 data-nosnippet>2058</a>        </span><span class="kw">let </span>right = ValueOverlay::try_from_runs(<span class="macro">vec!</span>[(<span class="number">2</span>..<span class="number">6</span>, Val::Init)]).unwrap();
+<a href=#2059 id=2059 data-nosnippet>2059</a>
+<a href=#2060 id=2060 data-nosnippet>2060</a>        <span class="kw">let </span>merged = reducer.reduce(left, right).unwrap();
+<a href=#2061 id=2061 data-nosnippet>2061</a>        <span class="kw">let </span>runs: Vec&lt;<span class="kw">_</span>&gt; = merged.runs().cloned().collect();
+<a href=#2062 id=2062 data-nosnippet>2062</a>
+<a href=#2063 id=2063 data-nosnippet>2063</a>        <span class="comment">// Expected (right wins on overlap):
+<a href=#2064 id=2064 data-nosnippet>2064</a>        // 0..2 Running (from left, no overlap)
+<a href=#2065 id=2065 data-nosnippet>2065</a>        // 2..6 Init (from right, overwrites left 2..4)
+<a href=#2066 id=2066 data-nosnippet>2066</a>        // 6..8 Stopped (from left, no overlap)
+<a href=#2067 id=2067 data-nosnippet>2067</a>        </span><span class="macro">assert_eq!</span>(
+<a href=#2068 id=2068 data-nosnippet>2068</a>            runs,
+<a href=#2069 id=2069 data-nosnippet>2069</a>            <span class="macro">vec!</span>[
+<a href=#2070 id=2070 data-nosnippet>2070</a>                (<span class="number">0</span>..<span class="number">2</span>, Val::Running),
+<a href=#2071 id=2071 data-nosnippet>2071</a>                (<span class="number">2</span>..<span class="number">6</span>, Val::Init),
+<a href=#2072 id=2072 data-nosnippet>2072</a>                (<span class="number">6</span>..<span class="number">8</span>, Val::Stopped),
+<a href=#2073 id=2073 data-nosnippet>2073</a>            ]
+<a href=#2074 id=2074 data-nosnippet>2074</a>        );
+<a href=#2075 id=2075 data-nosnippet>2075</a>    }
+<a href=#2076 id=2076 data-nosnippet>2076</a>}
 </code></pre></div></section></main></body></html>
