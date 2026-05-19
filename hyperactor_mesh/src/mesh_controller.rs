@@ -785,12 +785,15 @@ where
         mut envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         envelope = update_undeliverable_envelope_for_casting(envelope);
-        if let Some(true) = envelope.0.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
+        let Some(returned) = envelope.as_message() else {
+            return handle_undeliverable_message(cx, envelope);
+        };
+        if let Some(true) = returned.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
             // Remove from the subscriber list (if it existed) so we don't
             // send to this subscriber again.
             // NOTE: The only part of the port that is used for equality checks is
             // the port id, so create a new one just for the comparison.
-            let dest_port_id = envelope.0.dest().clone();
+            let dest_port_id = returned.dest().clone();
             let port = hyperactor::PortRef::<Option<MeshFailure>>::attest(dest_port_id);
             let did_exist = self.health_state.subscribers.remove(&port);
             if did_exist {
@@ -802,14 +805,14 @@ where
                 );
             }
             Ok(())
-        } else if envelope.0.headers().get(CAST_ACTOR_MESH_ID).is_some() {
+        } else if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
             // A cast message we sent (e.g. StreamState or KeepaliveGetState)
             // was returned by the CommActor because it could not be forwarded.
             // This is expected when the network session is broken. Log and
             // continue — the supervision polling loop will detect the failure.
             tracing::warn!(
                 actor_id = %cx.self_addr(),
-                dest = %envelope.0.dest(),
+                dest = %returned.dest(),
                 "ResourceController: ignoring undeliverable cast message",
             );
             Ok(())

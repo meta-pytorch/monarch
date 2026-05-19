@@ -775,10 +775,14 @@ mod tests {
         // synchronously to our return port.
         weak.post(envelope, return_handle);
 
-        let Undeliverable(envelope) = time::timeout(Duration::from_secs(5), return_rx.recv())
-            .await
-            .expect("return_rx timed out")
-            .expect("return_rx closed");
+        let Undeliverable::Message(envelope) =
+            time::timeout(Duration::from_secs(5), return_rx.recv())
+                .await
+                .expect("return_rx timed out")
+                .expect("return_rx closed")
+        else {
+            panic!("expected returned envelope");
+        };
         assert_eq!(envelope.dest(), &dest);
         assert!(
             envelope

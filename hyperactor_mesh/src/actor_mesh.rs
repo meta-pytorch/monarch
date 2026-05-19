@@ -1830,10 +1830,11 @@ mod tests {
             match tokio::time::timeout(std::time::Duration::from_secs(1), undeliverable_rx.recv())
                 .await
             {
-                Ok(Ok(Undeliverable(envelope))) => {
+                Ok(Ok(Undeliverable::Message(envelope))) => {
                     let _: PingPongMessage = envelope.deserialized().unwrap();
                     count += 1;
                 }
+                Ok(Ok(Undeliverable::Lost(_))) => break,
                 Ok(Err(_)) => break, // Channel closed
                 Err(_) => break,     // Timeout
             }

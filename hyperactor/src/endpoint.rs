@@ -8,10 +8,69 @@
 
 //! Generic send endpoints.
 
-use hyperactor_config::Flattrs;
+use std::fmt;
 
+use hyperactor_config::Flattrs;
+use serde::Deserialize;
+use serde::Serialize;
+
+use crate::ActorAddr;
+use crate::PortAddr;
 use crate::context;
 use crate::mailbox::MailboxSenderError;
+use crate::mailbox::PortLocation;
+
+/// The logical location of an endpoint.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, typeuri::Named)]
+pub enum EndpointLocation {
+    /// An actor endpoint.
+    Actor(ActorAddr),
+    /// A port endpoint.
+    Port(PortAddr),
+    /// A local port handle that has not been bound to a routable port.
+    Local {
+        /// The actor that owns the local endpoint.
+        actor: ActorAddr,
+        /// The local endpoint's message type.
+        message_type: String,
+    },
+}
+
+impl EndpointLocation {
+    /// The actor address associated with this endpoint location.
+    pub fn actor_addr(&self) -> ActorAddr {
+        match self {
+            Self::Actor(actor) => actor.clone(),
+            Self::Port(port) => port.actor_addr(),
+            Self::Local { actor, .. } => actor.clone(),
+        }
+    }
+}
+
+impl From<PortLocation> for EndpointLocation {
+    fn from(location: PortLocation) -> Self {
+        match location {
+            PortLocation::Bound(port) => Self::Port(port),
+            PortLocation::Unbound(actor, message_type) => Self::Local {
+                actor,
+                message_type: message_type.to_string(),
+            },
+        }
+    }
+}
+
+impl fmt::Display for EndpointLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Actor(actor) => write!(f, "{}", actor),
+            Self::Port(port) => write!(f, "{}", port),
+            Self::Local {
+                actor,
+                message_type,
+            } => write!(f, "{}<{}>", actor, message_type),
+        }
+    }
+}
 
 /// A typed endpoint that can receive `M`.
 ///
@@ -19,6 +78,9 @@ use crate::mailbox::MailboxSenderError;
 /// actor refs, remote port refs, and one-shot ports. It is sealed so that
 /// Hyperactor owns the send semantics for each endpoint kind.
 pub trait Endpoint<M>: crate::private::Sealed {
+    /// The logical location of this endpoint.
+    fn endpoint_location(&self) -> EndpointLocation;
+
     /// Send `message` to this endpoint from `cx`.
     fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
     where

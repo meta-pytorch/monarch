@@ -1352,6 +1352,7 @@ impl Proc {
             .iter()
             .filter(|entry| entry.key().uid().is_singleton())
             .filter_map(|entry| entry.value().upgrade())
+            .filter(|cell| !matches!(*cell.status().borrow(), ActorStatus::Client))
             .map(|cell| cell.actor_addr().clone())
             .collect::<Vec<_>>()
         {
@@ -1979,6 +1980,41 @@ impl<A: Actor> Instance<A> {
     /// This instance's actor address.
     pub fn self_addr(&self) -> &ActorAddr {
         self.inner.self_addr()
+    }
+
+    /// Report a message that could not be delivered and could not be returned.
+    pub(crate) fn report_lost_message(&self, lost: crate::mailbox::LostMessage) {
+        static REPORT_LOST_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
+
+        let mailbox = &self.inner.mailbox;
+        let return_handle = mailbox.bound_return_handle().unwrap_or_else(|| {
+            let actor_id = mailbox.actor_addr();
+            if REPORT_LOST_WARNED_MAILBOXES
+                .get_or_init(DashSet::new)
+                .insert(actor_id.clone())
+            {
+                let bt = std::backtrace::Backtrace::force_capture();
+                tracing::warn!(
+                    actor_id = ?actor_id,
+                    backtrace = ?bt,
+                    "actor attempted to report a lost message without binding Undeliverable<MessageEnvelope>"
+                );
+            }
+            crate::mailbox::monitored_return_handle()
+        });
+
+        if let Err(error) =
+            return_handle.try_send(self, crate::mailbox::Undeliverable::lost(lost.clone()))
+        {
+            tracing::error!(
+                sender = %lost.sender,
+                dest = %lost.dest,
+                message_type = lost.message_type.as_deref().unwrap_or("unknown"),
+                error = %lost.error,
+                return_error = %error,
+                "lost message could not be reported"
+            );
+        }
     }
 
     /// Snapshot of this actor's introspection payload.
@@ -4364,7 +4400,9 @@ mod tests {
             return_handle,
         );
 
-        let Undeliverable(envelope) = undeliverable_rx.recv().await.unwrap();
+        let Undeliverable::Message(envelope) = undeliverable_rx.recv().await.unwrap() else {
+            panic!("expected returned message");
+        };
         assert_eq!(envelope.dest(), &remote_dest);
     }
 
@@ -4544,7 +4582,12 @@ mod tests {
         root.await;
 
         for actor in [root_1, root_2, root_2_1] {
-            assert!(actor.send(&client, TestActorMessage::Noop()).is_err());
+            assert!(
+                actor
+                    .port::<TestActorMessage>()
+                    .try_send(&client, TestActorMessage::Noop())
+                    .is_err()
+            );
             assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "parent stopping");
         }
     }
@@ -4634,7 +4677,7 @@ mod tests {
 
         // Drain closes runtime-dispatched handler ingress, so new
         // sends to the actor's handler port are rejected.
-        let err = handle.send(&client, ()).unwrap_err();
+        let err = handle.port::<()>().try_send(&client, ()).unwrap_err();
         assert_matches!(err.kind(), crate::mailbox::MailboxSenderErrorKind::Closed);
 
         release_stop.notify_one();
@@ -5094,7 +5137,9 @@ mod tests {
         actor_handle.await;
 
         // Try to send a message to the stopped actor
-        let result = handle_for_send.send(&client, TestActorMessage::Noop());
+        let result = handle_for_send
+            .port::<TestActorMessage>()
+            .try_send(&client, TestActorMessage::Noop());
 
         assert!(result.is_err(), "send should fail when actor is stopped");
         let err = result.unwrap_err();
@@ -5136,7 +5181,9 @@ mod tests {
         actor_handle.await;
 
         // Try to send a message to the failed actor
-        let result = handle_for_send.send(&client, TestActorMessage::Noop());
+        let result = handle_for_send
+            .port::<TestActorMessage>()
+            .try_send(&client, TestActorMessage::Noop());
 
         assert!(result.is_err(), "send should fail when actor has failed");
         let err = result.unwrap_err();
