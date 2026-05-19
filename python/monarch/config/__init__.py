@@ -87,6 +87,7 @@ if TYPE_CHECKING:
             rdma_allow_tcp_fallback: NotRequired[bool]
             rdma_disable_ibverbs: NotRequired[bool]
             rdma_max_chunk_size_mb: NotRequired[int]
+            client_attach_addr: NotRequired[str]
 
         ConfigureKwargsType = Unpack[ConfigureArgs]
     else:
@@ -183,6 +184,24 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
                 causing all RDMA operations to use the TCP fallback backend.
             rdma_max_chunk_size_mb: Maximum chunk size in megabytes for RDMA
                 transfers.
+
+        Client bootstrap:
+            client_attach_addr: ZMQ-style address of a remote host's
+                duplex server (e.g. ``"tcp://host:port"``,
+                ``"ipc:///tmp/sock"``). When set, on first ``context()``
+                the Python client's gateway is connected to the gateway
+                at that address: the client's outbound traffic is
+                forwarded over the duplex, and the remote gateway
+                registers routes back to the client's local procs so
+                return traffic flows over the same duplex.
+                ``this_host()`` continues to name the current machine;
+                attach controls how the host's procs are reached, not
+                the host's identity. Procs spawned on this host share a
+                single reachability story — they are all reached
+                through the attach host. Intended for running the
+                client outside a cluster while procs run inside it.
+                Empty string (the default) disables attach-mode
+                bootstrap.
 
         **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """

@@ -40,6 +40,7 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
+use hyperactor::Gateway;
 use hyperactor::ProcAddr;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -241,23 +242,37 @@ impl HostShutdownHandle {
     }
 }
 
-/// Bootstrap a host in this process, returning a handle to the mesh agent.
+/// Bootstrap a host in this process using a caller-provided gateway.
 ///
-/// To obtain the local proc, use `GetLocalProc` on the returned host mesh agent,
-/// then use `GetProc` on the returned proc mesh agent.
+/// The caller passes the [`Gateway`] in — typically [`Gateway::new`],
+/// but it may have been pre-configured (e.g., via
+/// [`Gateway::serve_via`] to connect to a remote gateway) before this
+/// call. The host attaches its `system_proc` and `local_proc` to the
+/// gateway during construction; if the gateway already has an active
+/// via duplex, those attaches propagate to the remote automatically.
 ///
-/// - `addr`: the listening address of the host; this is used to bind the frontend address;
-/// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`];
+/// Returns `(host_mesh_agent, shutdown_handle)`:
+///
+/// - `host_mesh_agent` is the [`HostAgent`] actor handle. To obtain the
+///   local proc, use `GetLocalProc` on this agent, then `GetProc` on the
+///   returned proc mesh agent.
+/// - `shutdown_handle` joins the host's accept loop and runs the
+///   drain protocol; see [`HostShutdownHandle`].
+///
+/// - `addr`: the listening address of the host; this is used to bind the frontend address.
+/// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`].
 /// - `config`: optional runtime config overlay.
 /// - `exit_on_shutdown`: if true, [`HostShutdownHandle::join`] will call `process::exit` after draining.
 /// - `listener`: when `Some`, it is used as the frontend listening socket
 ///   instead of binding a new one.
+/// - `gateway`: the gateway this host will multiplex traffic through.
 pub async fn host(
     addr: ChannelAddr,
     command: Option<BootstrapCommand>,
     config: Option<Attrs>,
     exit_on_shutdown: bool,
     listener: Option<std::net::TcpListener>,
+    gateway: Gateway,
 ) -> anyhow::Result<(ActorHandle<HostAgent>, HostShutdownHandle)> {
     if let Some(attrs) = config {
         hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
@@ -272,7 +287,7 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    let host = Host::new_with_default(manager, addr, None, listener).await?;
+    let host = Host::new_with_gateway(manager, addr, listener, gateway).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will call host.serve() inside
@@ -521,8 +536,15 @@ impl Bootstrap {
                 config,
                 exit_on_shutdown,
             } => {
-                let (_agent_handle, shutdown) =
-                    host(addr, command, config, exit_on_shutdown, None).await?;
+                let (_agent_handle, shutdown) = host(
+                    addr,
+                    command,
+                    config,
+                    exit_on_shutdown,
+                    None,
+                    Gateway::new(),
+                )
+                .await?;
                 shutdown.join().await;
                 halt().await
             }
@@ -3135,6 +3157,7 @@ mod tests {
             None,
             false,
             None,
+            Gateway::new(),
         )
         .await
         .unwrap();

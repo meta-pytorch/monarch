@@ -53,6 +53,7 @@ use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
+use crate::mailbox::MailboxClient;
 use crate::mailbox::MailboxSender as _;
 use crate::mailbox::MailboxServer as _;
 use crate::mailbox::MailboxServerHandle;
@@ -60,8 +61,14 @@ use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UnroutableMailboxSender;
+use crate::proc::AttachRequest;
+use crate::proc::AttachRx;
+use crate::proc::Host2Client;
 use crate::proc::Proc;
+use crate::proc::RegisterProc;
 use crate::proc::WeakProc;
+use crate::proc::attach_handshake;
+use crate::proc::build_sigil_envelope;
 
 /// Connectivity boundary for one or more procs.
 #[derive(Clone)]
@@ -141,6 +148,12 @@ impl Drop for AttachGuard {
             return;
         };
         state.procs.write().unwrap().remove(&self.proc_id);
+        // Notify the remote gateway so the matching return route is
+        // dropped. Without this, the remote keeps an AttachSender for
+        // a now-defunct proc id; messages addressed there bounce over
+        // the duplex and fall through the client's forwarder (which
+        // is also the via duplex), forming a loop.
+        Gateway { inner: state }.broadcast_unregister(&self.proc_id);
     }
 }
 
@@ -152,8 +165,11 @@ struct GatewayState {
     /// newly bound refs.
     default_location: RwLock<Location>,
 
-    /// Sender used to forward messages outside of the proc.
-    forwarder: BoxedMailboxSender,
+    /// Sender used to forward messages whose destination is not an
+    /// attached proc. Replaceable via [`Gateway::set_forwarder`] and
+    /// [`Gateway::serve_via`] so the gateway's outbound path can be
+    /// rewired after construction.
+    forwarder: RwLock<BoxedMailboxSender>,
 
     /// Procs attached to this gateway, keyed by runtime identity.
     /// See [`ProcEntry`] for the distinction between local and remote
@@ -163,6 +179,15 @@ struct GatewayState {
     /// Locations currently served by this gateway. The last location
     /// is the default advertised location.
     active_servers: RwLock<Vec<Location>>,
+
+    /// Set by [`Gateway::serve_via`] when a via duplex is connected.
+    /// While true, [`Gateway::attach`] and [`AttachGuard::drop`]
+    /// notify the remote gateway of route changes by posting
+    /// [`RegisterProc`] / [`UnregisterProc`] sigil envelopes through
+    /// the forwarder, which (by `serve_via`) is the same duplex tx,
+    /// so control messages stay FIFO with regular client→host
+    /// envelopes posted via the same forwarder.
+    via_active: AtomicBool,
 }
 
 impl Gateway {
@@ -196,9 +221,10 @@ impl Gateway {
             inner: Arc::new(GatewayState {
                 fallback_location: default_location.clone(),
                 default_location: RwLock::new(default_location),
-                forwarder,
+                forwarder: RwLock::new(forwarder),
                 procs: RwLock::new(HashMap::new()),
                 active_servers: RwLock::new(Vec::new()),
+                via_active: AtomicBool::new(false),
             }),
         }
     }
@@ -218,8 +244,12 @@ impl Gateway {
         ProcAddr::new(proc_id.clone(), self.default_location())
     }
 
-    pub(crate) fn forwarder(&self) -> &BoxedMailboxSender {
-        &self.inner.forwarder
+    /// Replace the gateway's outbound forwarder.
+    ///
+    /// In-flight `post` calls already holding the previous sender are
+    /// unaffected; only subsequent demuxes route to the new sender.
+    pub fn set_forwarder(&self, forwarder: BoxedMailboxSender) {
+        *self.inner.forwarder.write().unwrap() = forwarder;
     }
 
     /// Attach a proc to this gateway.
@@ -262,10 +292,65 @@ impl Gateway {
                 panic!("gateway already has a proc with id {}", proc_id)
             }
         }
+        self.broadcast_register(&proc_id);
         AttachGuard {
             gateway: Arc::downgrade(&self.inner),
             proc_id,
         }
+    }
+
+    /// Notify any active via duplex that a new proc has been
+    /// registered locally, so the remote gateway can install a return
+    /// route to it. Posts through the gateway's forwarder so
+    /// control messages stay FIFO with regular client→host envelopes.
+    /// Best-effort: a failed serialize is logged and dropped.
+    fn broadcast_register(&self, proc_id: &ProcId) {
+        self.broadcast_via_control("RegisterProc", proc_id, |id| RegisterProc {
+            proc_id: id.clone(),
+        });
+    }
+
+    /// Notify any active via duplex that a proc has been unregistered
+    /// locally, so the remote gateway can drop its return route to it.
+    /// See [`Gateway::broadcast_register`] for ordering semantics.
+    fn broadcast_unregister(&self, proc_id: &ProcId) {
+        self.broadcast_via_control("UnregisterProc", proc_id, |id| {
+            crate::proc::UnregisterProc {
+                proc_id: id.clone(),
+            }
+        });
+    }
+
+    fn broadcast_via_control<T, F>(&self, kind: &'static str, proc_id: &ProcId, build: F)
+    where
+        T: serde::Serialize + typeuri::Named,
+        F: FnOnce(&ProcId) -> T,
+    {
+        if !self.inner.via_active.load(Ordering::Acquire) {
+            return;
+        }
+        let envelope = match build_sigil_envelope(&build(proc_id)) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(
+                    proc_id = %proc_id,
+                    kind,
+                    error = %e,
+                    "failed to serialize control envelope; remote gateway will not learn this route change"
+                );
+                return;
+            }
+        };
+        // Use the same path as regular envelopes so the control
+        // message is FIFO with traffic the caller posted before us.
+        let forwarder = {
+            let forwarder = self.inner.forwarder.read().unwrap();
+            if !self.inner.via_active.load(Ordering::Acquire) {
+                return;
+            }
+            forwarder.clone()
+        };
+        forwarder.post(envelope, crate::mailbox::monitored_return_handle());
     }
 
     pub(crate) fn serve_rx(
@@ -295,6 +380,52 @@ impl Gateway {
             location,
             handle,
             stopped: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Connect this gateway to a remote gateway via the host duplex
+    /// attach protocol.
+    ///
+    /// Dials `addr`, sends the currently-attached proc ids in an
+    /// [`AttachRequest`] so the remote gateway registers return
+    /// routes for each, installs the duplex sender as this gateway's
+    /// outbound forwarder, and serves inbound traffic from the duplex
+    /// locally. The returned [`ServeViaHandle`] owns the duplex
+    /// session and the inbound serve handle; dropping it disables
+    /// dynamic via registration, restores the previous forwarder, and
+    /// tears down the duplex.
+    ///
+    /// While the via duplex is active, subsequent [`Gateway::attach`]
+    /// calls on this gateway notify the remote gateway via a
+    /// [`RegisterProc`] sigil envelope so newly-attached procs become
+    /// reachable from the remote without a new handshake.
+    pub async fn serve_via(&self, addr: ChannelAddr) -> anyhow::Result<ServeViaHandle> {
+        if self.inner.via_active.load(Ordering::Acquire) {
+            anyhow::bail!("gateway already has an active serve_via connection");
+        }
+        let proc_ids: Vec<ProcId> = self.inner.procs.read().unwrap().keys().cloned().collect();
+        let handshake = attach_handshake(addr, AttachRequest::Gateway { proc_ids }).await?;
+        let previous_forwarder = {
+            let mut forwarder = self.inner.forwarder.write().unwrap();
+            if self
+                .inner
+                .via_active
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                anyhow::bail!("gateway already has an active serve_via connection");
+            }
+            std::mem::replace(
+                &mut *forwarder,
+                MailboxClient::new(handshake.duplex_tx).into_boxed(),
+            )
+        };
+        let serve_handle = self.serve_rx(AttachRx(handshake.duplex_rx));
+        Ok(ServeViaHandle {
+            _serve_handle: serve_handle,
+            _duplex_client: handshake.duplex_client,
+            gateway: self.clone(),
+            previous_forwarder,
         })
     }
 
@@ -373,7 +504,8 @@ impl Gateway {
         let proc_flushes = local_procs.iter().map(|proc| proc.muxer().flush());
         let remote_flushes = remote_senders.iter().map(|sender| sender.flush());
         futures::future::try_join_all(proc_flushes.chain(remote_flushes)).await?;
-        self.inner.forwarder.flush().await
+        let forwarder = self.inner.forwarder.read().unwrap().clone();
+        forwarder.flush().await
     }
 }
 
@@ -427,6 +559,33 @@ impl Future for GatewayServeHandle {
             }
         }
         result
+    }
+}
+
+/// Owned state for a [`Gateway::serve_via`] connection.
+pub struct ServeViaHandle {
+    // Drop order matters: tear down the inbound serve before the
+    // duplex session that backs it.
+    _serve_handle: MailboxServerHandle,
+    _duplex_client: channel::duplex::DuplexClient<MessageEnvelope, Host2Client>,
+    gateway: Gateway,
+    previous_forwarder: BoxedMailboxSender,
+}
+
+impl fmt::Debug for ServeViaHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServeViaHandle").finish()
+    }
+}
+
+impl Drop for ServeViaHandle {
+    fn drop(&mut self) {
+        let mut forwarder = self.gateway.inner.forwarder.write().unwrap();
+        *forwarder = self.previous_forwarder.clone();
+        self.gateway
+            .inner
+            .via_active
+            .store(false, Ordering::Release);
     }
 }
 
@@ -510,7 +669,8 @@ impl crate::mailbox::MailboxSender for Gateway {
             }
             None => {}
         }
-        self.inner.forwarder.post(envelope, return_handle)
+        let forwarder = self.inner.forwarder.read().unwrap().clone();
+        forwarder.post(envelope, return_handle)
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {

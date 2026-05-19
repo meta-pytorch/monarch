@@ -184,6 +184,8 @@ pub use proc::Host2Client;
 pub use proc::Instance;
 pub use proc::InstanceCell;
 pub use proc::Proc;
+pub use proc::RegisterProc;
+pub use proc::UnregisterProc;
 pub use proc::WeakProc;
 pub use ref_::ActorRef;
 pub use ref_::OncePortRef;

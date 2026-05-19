@@ -208,6 +208,9 @@ pub const LEGACY_LOCAL_PROC_NAME: &str = "local";
 /// local delivery must compare both proc id and location for this id.
 pub const LEGACY_SERVICE_PROC_NAME: &str = "service";
 
+/// Label used for attach-control sigil envelopes.
+pub const ATTACH_SIGIL_LABEL: &str = "attach";
+
 /// Returns current epoch-millis from wall clock. Used by
 /// `ProcQueueStats` for timestamp recording. In tests, override
 /// via `ProcQueueStats::with_clock` to get deterministic behavior.
@@ -374,10 +377,59 @@ wirevalue::register_type!(BootstrapAssignment);
 
 /// Sentinel message sent by an attach client as its first
 /// [`MessageEnvelope`]. Hosts use this to distinguish attach requests
-/// from regular inbound [`MessageEnvelope`] connections.
+/// from regular inbound [`MessageEnvelope`] connections, and to pick
+/// an attach mode:
+///
+/// * [`AttachRequest::Proc`] — proc attach. The host generates a fresh
+///   proc id and returns it via [`BootstrapAssignment`]; the connection
+///   registers that one proc on the host's gateway. Used by
+///   [`Proc::attach_to_host`].
+/// * [`AttachRequest::Gateway`] — gateway attach. The host registers
+///   each listed proc id on its gateway with this duplex as the
+///   outbound sender, so messages addressed to any of those procs flow
+///   back over the duplex. An empty `proc_ids` is valid — it means
+///   "connect the gateways, no initial procs to register"; later
+///   attaches propagate via [`RegisterProc`]. Used by
+///   [`crate::gateway::Gateway::serve_via`].
 #[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct AttachRequest;
+pub enum AttachRequest {
+    /// Legacy proc attach. The host assigns a fresh proc id.
+    Proc,
+    /// Gateway attach. The host registers each `proc_ids` entry as
+    /// reachable through this duplex.
+    Gateway {
+        /// Proc ids the attaching gateway already owns at handshake time.
+        proc_ids: Vec<ProcId>,
+    },
+}
 wirevalue::register_type!(AttachRequest);
+
+/// Control envelope sent by an attached gateway *after* the initial
+/// handshake to unregister a proc that has detached locally. The
+/// server side intercepts this envelope, drops the matching
+/// [`crate::gateway::AttachGuard`], and the route entry is removed
+/// from its gateway.
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub struct UnregisterProc {
+    /// Proc id to unregister on the receiving gateway.
+    pub proc_id: ProcId,
+}
+wirevalue::register_type!(UnregisterProc);
+
+/// Control envelope sent by an attached gateway *after* the initial
+/// handshake to register a newly-attached proc on the remote gateway.
+///
+/// The server side intercepts envelopes carrying this type before they
+/// reach the gateway's demux, calls `gateway.attach((proc_id,
+/// AttachSender))` for the supplied id, and keeps the resulting guard
+/// alive for the duplex session. Senders are placeholders in the
+/// envelope — same convention as [`AttachRequest`].
+#[derive(Debug, Clone, Serialize, Deserialize, typeuri::Named)]
+pub struct RegisterProc {
+    /// Proc id to register on the receiving gateway.
+    pub proc_id: ProcId,
+}
+wirevalue::register_type!(RegisterProc);
 
 /// Wire protocol for the host -> client direction on a duplex attach
 /// connection.
@@ -416,6 +468,76 @@ impl channel::Rx<MessageEnvelope> for AttachRx {
     async fn join(self) {
         self.0.join().await
     }
+}
+
+/// Owned result of a successful [`attach_handshake`]: the assignment
+/// the host made for the attaching peer, the live duplex session, and
+/// both halves so the caller can wire them up.
+pub(crate) struct AttachHandshake {
+    pub(crate) assignment: BootstrapAssignment,
+    pub(crate) duplex_client: channel::duplex::DuplexClient<MessageEnvelope, Host2Client>,
+    pub(crate) duplex_tx: channel::duplex::DuplexTx<MessageEnvelope>,
+    pub(crate) duplex_rx: channel::duplex::DuplexRx<Host2Client>,
+}
+
+/// Serialize a control payload into a placeholder [`MessageEnvelope`]
+/// suitable for posting on a duplex client→host channel.
+///
+/// Sender/dest ids are placeholders the host consumes without routing;
+/// `return_undeliverable` is cleared so an envelope that ever escapes
+/// into the forwarder is dropped rather than bounced to the fake
+/// sender.
+pub(crate) fn build_sigil_envelope<T>(payload: &T) -> anyhow::Result<MessageEnvelope>
+where
+    T: serde::Serialize + typeuri::Named,
+{
+    let signal_actor_id = ActorAddr::root(
+        ProcAddr::singleton(
+            ChannelAddr::any(channel::ChannelTransport::Local),
+            ATTACH_SIGIL_LABEL,
+        ),
+        crate::id::Label::strip(ATTACH_SIGIL_LABEL),
+    );
+    let signal_port = signal_actor_id.port_addr(crate::port::Port::from(0u64));
+    let mut envelope =
+        MessageEnvelope::serialize(signal_actor_id, signal_port, payload, Default::default())?;
+    envelope.set_return_undeliverable(false);
+    Ok(envelope)
+}
+
+/// Dial a host's duplex server and run the attach handshake.
+///
+/// Sends an [`AttachRequest`] sentinel envelope, then waits for the
+/// host to reply with [`Host2Client::Bootstrap`]. The variant of
+/// `request` selects the attach mode — see [`AttachRequest`].
+pub(crate) async fn attach_handshake(
+    addr: ChannelAddr,
+    request: AttachRequest,
+) -> anyhow::Result<AttachHandshake> {
+    use crate::channel::Rx;
+    use crate::channel::Tx;
+
+    let mut duplex_client = channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
+    let duplex_tx = duplex_client.tx();
+    let mut duplex_rx = duplex_client
+        .take_rx()
+        .expect("dial returns a fresh DuplexClient with rx present");
+
+    duplex_tx.post(build_sigil_envelope(&request)?);
+
+    let assignment = match duplex_rx.recv().await? {
+        Host2Client::Bootstrap(a) => a,
+        Host2Client::Envelope(_) => {
+            anyhow::bail!("expected bootstrap assignment as first message")
+        }
+    };
+
+    Ok(AttachHandshake {
+        assignment,
+        duplex_client,
+        duplex_tx,
+        duplex_rx,
+    })
 }
 
 /// A proc instance is the runtime managing a single proc in Hyperactor.
@@ -790,41 +912,12 @@ impl Proc {
     /// proc's muxer. Mirrors [`Proc::direct`] but the identity and
     /// routing are managed by the remote host.
     pub async fn attach_to_host(addr: ChannelAddr) -> Result<Self, anyhow::Error> {
-        use crate::channel::Rx;
-        use crate::channel::Tx;
-        let mut duplex_client = channel::duplex::dial::<MessageEnvelope, Host2Client>(addr)?;
-        let duplex_tx = duplex_client.tx();
-        let mut duplex_rx = duplex_client
-            .take_rx()
-            .expect("dial returns a fresh DuplexClient with rx present");
-        // Send an AttachRequest envelope to signal attach intent.
-        // The host deserializes the first message and enters the
-        // attach protocol when it finds an AttachRequest. The
-        // sender/dest ids are placeholders — on the happy path the
-        // host consumes the envelope without routing it. Clearing
-        // `return_undeliverable` closes the hazard path in case the
-        // envelope ever escapes into the forwarder: it should be
-        // dropped, not bounced to the fake sender.
-        let signal_actor_id = ActorAddr::root(
-            ProcAddr::singleton(ChannelAddr::any(channel::ChannelTransport::Local), "attach"),
-            crate::id::Label::strip("attach"),
-        );
-        let signal_port = signal_actor_id.port_addr(crate::port::Port::from(0u64));
-        let mut envelope = MessageEnvelope::serialize(
-            signal_actor_id,
-            signal_port,
-            &AttachRequest,
-            Default::default(),
-        )?;
-        envelope.set_return_undeliverable(false);
-        duplex_tx.post(envelope);
-        // Wait for the host to assign an identity.
-        let assignment = match duplex_rx.recv().await? {
-            Host2Client::Bootstrap(a) => a,
-            Host2Client::Envelope(_) => {
-                anyhow::bail!("expected bootstrap assignment as first message")
-            }
-        };
+        let AttachHandshake {
+            assignment,
+            duplex_client,
+            duplex_tx,
+            duplex_rx,
+        } = attach_handshake(addr, AttachRequest::Proc).await?;
         let proc = Self::builder()
             .proc_id(assignment.proc_id.id().clone())
             .shared_gateway(Gateway::configured(
@@ -941,12 +1034,6 @@ impl Proc {
     /// The proc's connectivity boundary.
     pub fn gateway(&self) -> Gateway {
         self.state().gateway.clone()
-    }
-
-    /// Shared sender used by the proc to forward messages to remote
-    /// destinations.
-    pub fn forwarder(&self) -> &BoxedMailboxSender {
-        self.state().gateway.forwarder()
     }
 
     /// The proc's mailbox muxer, which routes messages to actors

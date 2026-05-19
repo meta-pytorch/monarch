@@ -406,16 +406,26 @@ def _init_client_context() -> Context:
     """
     Create a client context that bootstraps an actor instance running on a real
     local proc mesh on a real local host mesh.
+
+    When the ``client_attach_addr`` configuration key is set to a
+    non-empty ZMQ-style address, the local client's gateway is
+    connected to the gateway serving that address: outbound traffic
+    forwards over the duplex, and the remote gateway registers routes
+    for every local proc so return traffic flows over the same duplex.
+    ``this_host()`` still names the current machine; attach only
+    controls how the host's procs are addressed, not the host's
+    identity.
     """
     import atexit
 
     from monarch._rust_bindings.monarch_hyperactor.host_mesh import bootstrap_host
     from monarch._src.actor.host_mesh import default_bootstrap_cmd, HostMesh
     from monarch._src.actor.proc_mesh import ProcMesh
+    from monarch.config import get_global_config
 
-    hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap_host(
-        default_bootstrap_cmd()
-    ).block_on()
+    attach_addr = get_global_config().get("client_attach_addr") or None
+    bootstrap = bootstrap_host(default_bootstrap_cmd(), via=attach_addr)
+    hy_host_mesh, hy_proc_mesh, hy_instance = bootstrap.block_on()
 
     ctx = Context._from_instance(cast(Instance, hy_instance))  # type: ignore
     # Set the context here to avoid recursive context creation:

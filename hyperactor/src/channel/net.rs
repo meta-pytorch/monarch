@@ -890,6 +890,10 @@ pub(crate) fn listen_with_prebound(
                 make_channel_addr(&hostname, local_addr.port()),
             ))
         }
+        ChannelAddr::Alias { dial_to, bind_to } => {
+            let (listener, _bound_addr) = listen(*bind_to)?;
+            Ok((listener, *dial_to))
+        }
         other => Err(ServerError::Listen(
             other.clone(),
             std::io::Error::other(format!("unsupported transport: {}", other)),
@@ -900,10 +904,6 @@ pub(crate) fn listen_with_prebound(
 /// Bind a listener for the given channel address. Returns the listener
 /// and the canonical address callers should advertise (which encodes
 /// the transport — e.g. `ChannelAddr::Tls` for TLS).
-#[expect(
-    dead_code,
-    reason = "canonical listen() entry point; callers currently route through listen_with_prebound"
-)]
 pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
     listen_with_prebound(addr, None)
 }

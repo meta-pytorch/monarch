@@ -14,8 +14,10 @@ use std::time::Duration;
 
 use hyperactor::ActorHandle;
 use hyperactor::Endpoint as _;
+use hyperactor::Gateway;
 use hyperactor::Instance;
 use hyperactor::Proc;
+use hyperactor::channel::ChannelAddr;
 use hyperactor::id::Label;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
@@ -331,6 +333,11 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
     tokio::sync::Mutex<Option<hyperactor_mesh::bootstrap::HostShutdownHandle>>,
 > = OnceLock::new();
 
+/// Handle for the via-mode duplex session opened by
+/// [`Gateway::serve_via`]. Process-lifetime: dropping it would tear
+/// down the cluster-inbound serve and outbound duplex mid-run.
+static VIA_SERVE_HANDLE: OnceLock<hyperactor::gateway::ServeViaHandle> = OnceLock::new();
+
 /// Bootstrap the client host and root client actor.
 ///
 /// This creates a proper Host with BootstrapProcManager, spawns the root client
@@ -343,21 +350,56 @@ static HOST_SHUTDOWN_HANDLE: OnceLock<
 ///
 /// The HostMesh is served on the default transport.
 ///
-/// This should be called only once, at process initialization
+/// If ``via`` is set to a ZMQ-style address of a remote host's duplex
+/// server, the local host's gateway is attached to that remote
+/// gateway: outbound traffic to unknown destinations is forwarded over
+/// the duplex, and inbound traffic from the duplex is delivered to
+/// local procs by the gateway's routing. The local host still owns
+/// its own frontend address; ``via`` only adds a forwarding path. The
+/// returned ``PyHostMesh`` / ``PyProcMesh`` / ``PyInstance`` all live
+/// on the local host's procs — there is no separate "attached client
+/// proc" in this design.
+///
+/// This should be called only once, at process initialization.
 #[pyfunction]
-fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPythonTask> {
+#[pyo3(signature = (bootstrap_cmd, via=None))]
+fn bootstrap_host(
+    bootstrap_cmd: Option<PyBootstrapCommand>,
+    via: Option<&str>,
+) -> PyResult<PyPythonTask> {
     let bootstrap_cmd = match bootstrap_cmd {
         Some(cmd) => cmd.to_rust(),
         None => BootstrapCommand::current().map_err(|e| PyException::new_err(e.to_string()))?,
     };
+    let via_addr = via
+        .map(|s| {
+            ChannelAddr::from_zmq_url(s)
+                .map_err(|e| PyValueError::new_err(format!("via address: {}", e)))
+        })
+        .transpose()?;
 
     PyPythonTask::new(async move {
+        // Build the gateway up front so we can `serve_via` it before
+        // the host attaches its system/local procs. With via active
+        // first, the host's `Gateway::attach` calls during
+        // construction will auto-broadcast `RegisterProc` over the
+        // duplex — no separate post-bootstrap registration step.
+        let gateway = Gateway::new();
+        if let Some(addr) = via_addr {
+            let serve_handle = gateway
+                .serve_via(addr)
+                .await
+                .map_err(|e| PyException::new_err(e.to_string()))?;
+            VIA_SERVE_HANDLE.set(serve_handle).ok();
+        }
+
         let (host_mesh_agent, shutdown_handle) = host(
             default_bind_spec().binding_addr(),
             Some(bootstrap_cmd),
             None,
             false,
             None,
+            gateway,
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;

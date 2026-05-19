@@ -84,6 +84,7 @@ def configure(
     rdma_allow_tcp_fallback: bool = ...,
     rdma_disable_ibverbs: bool = ...,
     rdma_max_chunk_size_mb: int = ...,
+    client_attach_addr: str = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -182,6 +183,18 @@ def configure(
             causing all RDMA operations to use the TCP fallback backend.
         rdma_max_chunk_size_mb: Maximum chunk size in MiB for
             TCP-based RDMA transfers (default: 64)
+        client_attach_addr: ZMQ-style address of a remote host's
+            duplex server. When non-empty, the Python client
+            bootstrap path connects the client's local gateway to
+            the gateway at that address: outbound traffic is
+            forwarded over the duplex, and the remote gateway
+            registers routes back to the client's local procs so
+            return traffic flows over the same duplex.
+            ``this_host()`` continues to name the current machine;
+            attach controls how the host's procs are reached, not
+            the host's identity, and every proc on this host is
+            reached through the attach host. Empty string (default)
+            disables attach-mode bootstrap.
         **kwargs: Reserved for future configuration keys
 
     For historical reasons, this API is named ``configure(...)``;
