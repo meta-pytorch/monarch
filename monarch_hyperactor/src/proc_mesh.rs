@@ -114,7 +114,7 @@ impl PyProcMesh {
             })
             .await?;
 
-            let mesh_name = ActorMeshId::unique(Label::strip(&mesh_base_name));
+            let mesh_name = ActorMeshId::instance(Label::strip(&mesh_base_name));
             let actor_mesh = proc_mesh
                 .spawn_with_name(
                     instance.deref(),
