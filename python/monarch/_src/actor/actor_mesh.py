@@ -1292,7 +1292,7 @@ class _Actor:
                         result = the_method(*args, **kwargs)
                     self._maybe_exit_debugger()
 
-            response_port.send(result)
+            await _send_response(response_port, result)
         except Exception as e:
             log_endpoint_exception(e, method_name, ctx.actor_instance.actor_id)
             self._post_mortem_debug(e.__traceback__)
@@ -1687,6 +1687,22 @@ class ActorMesh(MeshTrait, Generic[T]):
         """Retrieves the name stored in the ActorMesh internally."""
         # Not called "name" to avoid clashing with a common endpoint name.
         return Future(coro=self._inner.name())
+
+
+async def _send_response(response_port: "PortProtocol[Any]", result: object) -> None:
+    if isinstance(response_port, DroppingPort):
+        response_port.send(result)
+        return
+
+    state = pickle(
+        result, allow_pending_pickles=True, allow_tensor_engine_references=False
+    )
+    message = PendingMessage(
+        PythonMessageKind.Result(rank=cast(Any, response_port)._rank),
+        state,
+    )
+    resolved = await Future(coro=cast(Any, message).resolve())
+    cast(Any, response_port).send_message(resolved)
 
 
 class ActorError(Exception):

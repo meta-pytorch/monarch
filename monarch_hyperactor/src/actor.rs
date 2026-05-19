@@ -1649,6 +1649,10 @@ impl DroppingPort {
         Ok(())
     }
 
+    fn send_message(&self, _message: PythonMessage) -> PyResult<()> {
+        Ok(())
+    }
+
     fn exception(&self, e: Bound<'_, PyAny>) -> PyResult<()> {
         // Unwrap ActorError to get the inner exception, matching Python behavior.
         let exc = if let Ok(inner) = e.getattr("exception") {
@@ -1725,6 +1729,12 @@ impl Port {
 
         self.port_ref
             .post_with_headers(&self.instance, self.reply_headers.clone(), message)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    fn send_message(&mut self, message: PythonMessage) -> PyResult<()> {
+        self.port_ref
+            .send_with_headers(&self.instance, self.reply_headers.clone(), message)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
