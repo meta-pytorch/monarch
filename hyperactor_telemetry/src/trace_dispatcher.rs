@@ -476,7 +476,7 @@ where
 
 struct FieldVisitor<'a>(&'a mut TraceFields);
 
-impl<'a> tracing::field::Visit for FieldVisitor<'a> {
+impl tracing::field::Visit for FieldVisitor<'_> {
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         self.0.push((field.name(), FieldValue::Bool(value)));
     }

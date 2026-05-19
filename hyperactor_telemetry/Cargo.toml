@@ -44,4 +44,4 @@ quickcheck_macros = "1.2.0"
 tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 
 [lints]
-rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }
+workspace = true
