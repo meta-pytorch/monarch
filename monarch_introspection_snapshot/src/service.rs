@@ -313,7 +313,7 @@ wirevalue::register_type!(CaptureSnapshot);
 /// delegates per-tick execution to [`run_periodic_tick`].
 ///
 /// The spawn site sends the first `CaptureSnapshot` (PT-3). The
-/// handler reschedules after each tick via `self_message_with_delay`.
+/// handler reschedules after each tick via `post_after`.
 /// Stopped by framework lifecycle (`DrainAndStop` on proc teardown).
 #[hyperactor::export(handlers = [CaptureSnapshot])]
 pub struct SnapshotCaptureActor {
@@ -353,11 +353,8 @@ impl Handler<CaptureSnapshot> for SnapshotCaptureActor {
         };
         run_periodic_tick(&self.service, resolve).await;
 
-        // Reschedule. If the actor is stopping, this spawns a
-        // detached task whose eventual port.send() fails harmlessly.
-        if let Err(e) = cx.self_message_with_delay(CaptureSnapshot, self.interval) {
-            tracing::error!("snapshot capture actor failed to reschedule: {:#}", e);
-        }
+        // Reschedule through the actor runtime instead of detached work.
+        cx.post_after(cx, CaptureSnapshot, self.interval);
         Ok(())
     }
 }
