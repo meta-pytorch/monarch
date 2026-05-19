@@ -849,7 +849,10 @@ impl Proc {
         event: ActorSupervisionEvent,
     ) {
         let result = match self.state().supervision_coordinator_port.get() {
-            Some(port) => port.send(cx, event.clone()).map_err(anyhow::Error::from),
+            Some(port) => {
+                port.send(cx, event.clone());
+                Ok(())
+            }
             None => {
                 if !event.is_error() {
                     // Normal lifecycle events (e.g. clean stop) without a coordinator
@@ -2299,14 +2302,9 @@ impl<A: Actor> Instance<A> {
     {
         let client = Self::self_client();
         let port = self.port();
-        let self_id = self.self_addr().clone();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            if let Err(e) = port.send(&client, message) {
-                // TODO: this is a fire-n-forget thread. We need to
-                // handle errors in a better way.
-                tracing::info!("{}: error sending delayed message: {}", self_id, e);
-            }
+            port.send(&client, message);
         });
         Ok(())
     }
@@ -3267,7 +3265,8 @@ impl InstanceCell {
             let client = &CLIENT
                 .get_or_init(|| Proc::runtime().client("global_signal_client").unwrap())
                 .0;
-            signal_port.send(&client, signal).map_err(ActorError::from)
+            signal_port.send(&client, signal);
+            Ok(())
         } else {
             tracing::warn!(
                 "{}: attempted to send signal {} to detached actor",
@@ -3847,7 +3846,7 @@ mod tests {
             parent: &ActorHandle<TestActor>,
         ) -> ActorHandle<TestActor> {
             let (tx, rx) = oneshot::channel();
-            parent.send(cx, TestActorMessage::Spawn(tx)).unwrap();
+            parent.send(cx, TestActorMessage::Spawn(tx));
             rx.await.unwrap()
         }
     }
@@ -3918,7 +3917,7 @@ mod tests {
             message: Box<TestActorMessage>,
         ) -> Result<(), anyhow::Error> {
             // TODO: this needn't be async
-            destination.send(cx, *message)?;
+            destination.send(cx, *message);
             Ok(())
         }
 
@@ -3987,7 +3986,7 @@ mod tests {
         // Send a ping-pong to the actor. Wait for the actor to become idle.
 
         let (tx, rx) = oneshot::channel::<()>();
-        handle.send(&client, TestActorMessage::Reply(tx)).unwrap();
+        handle.send(&client, TestActorMessage::Reply(tx));
         rx.await.unwrap();
 
         state
@@ -3999,9 +3998,7 @@ mod tests {
         let (enter_tx, enter_rx) = oneshot::channel::<()>();
         let (exit_tx, exit_rx) = oneshot::channel::<()>();
 
-        handle
-            .send(&client, TestActorMessage::Wait(enter_tx, exit_rx))
-            .unwrap();
+        handle.send(&client, TestActorMessage::Wait(enter_tx, exit_rx));
         enter_rx.await.unwrap();
         assert_matches!(*state.borrow(), ActorStatus::Processing(instant, _) if instant <= std::time::SystemTime::now());
         exit_tx.send(()).unwrap();
@@ -4024,12 +4021,10 @@ mod tests {
         let second = proc.spawn::<TestActor>("second", TestActor).unwrap();
         let (tx, rx) = oneshot::channel::<()>();
         let reply_message = TestActorMessage::Reply(tx);
-        first
-            .send(
-                &client,
-                TestActorMessage::Forward(second, Box::new(reply_message)),
-            )
-            .unwrap();
+        first.send(
+            &client,
+            TestActorMessage::Forward(second, Box::new(reply_message)),
+        );
         rx.await.unwrap();
     }
 
@@ -4697,12 +4692,10 @@ mod tests {
         let root_2 = TestActor::spawn_child(&client, &root).await;
         let root_2_1 = TestActor::spawn_child(&client, &root_2).await;
 
-        root_2
-            .send(
-                &client,
-                TestActorMessage::Fail(anyhow::anyhow!("some random failure")),
-            )
-            .unwrap();
+        root_2.send(
+            &client,
+            TestActorMessage::Fail(anyhow::anyhow!("some random failure")),
+        );
         let _root_2_actor_id = root_2.actor_addr().clone();
         assert_matches!(
             root_2.await,
@@ -4738,7 +4731,7 @@ mod tests {
                 cx: &crate::Context<Self>,
                 message: OncePortHandle<PortHandle<usize>>,
             ) -> anyhow::Result<()> {
-                message.send(cx, cx.port())?;
+                message.send(cx, cx.port());
                 Ok(())
             }
         }
@@ -4761,9 +4754,9 @@ mod tests {
         let handle = proc.spawn::<TestActor>("test", actor).unwrap();
         let (client, _) = proc.client("client").unwrap();
         let (tx, rx) = client.open_once_port();
-        handle.send(&client, tx).unwrap();
+        handle.send(&client, tx);
         let usize_handle = rx.recv().await.unwrap();
-        usize_handle.send(&client, 123).unwrap();
+        usize_handle.send(&client, 123);
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
@@ -4900,16 +4893,12 @@ mod tests {
 
         // fail `root_1_1_1`, the supervision msg should be propagated to
         // `root_1` because `root_1` has set `true` to `handle_supervision_event`.
-        root_1_1_1
-            .send(&client, "some random failure".to_string())
-            .unwrap();
+        root_1_1_1.send(&client, "some random failure".to_string());
 
         // fail `root_2_1`, the supervision msg should be propagated to
         // ProcSupervisionCoordinator.
         let root_2_1_id = root_2_1.actor_addr().clone();
-        root_2_1
-            .send(&client, "some random failure".to_string())
-            .unwrap();
+        root_2_1.send(&client, "some random failure".to_string());
 
         // Wait for root_1 to handle the supervision event from the
         // root_1_1_1 -> root_1_1 -> root_1 chain. The Notify provides
@@ -4943,7 +4932,7 @@ mod tests {
                 cx: &crate::Context<Self>,
                 (message, port): (String, PortRef<String>),
             ) -> anyhow::Result<()> {
-                port.send(cx, message)?;
+                port.send(cx, message);
                 Ok(())
             }
         }
@@ -4955,9 +4944,7 @@ mod tests {
         let child_actor = TestActor.spawn(&instance).unwrap();
 
         let (port, mut receiver) = instance.open_port();
-        child_actor
-            .send(&instance, ("hello".to_string(), port.bind()))
-            .unwrap();
+        child_actor.send(&instance, ("hello".to_string(), port.bind()));
 
         let message = receiver.recv().await.unwrap();
         assert_eq!(message, "hello");
@@ -5024,7 +5011,7 @@ mod tests {
         impl LoggingActor {
             async fn wait(cx: &impl context::Actor, handle: &ActorHandle<Self>) {
                 let barrier = Arc::new(Barrier::new(2));
-                handle.send(cx, barrier.clone()).unwrap();
+                handle.send(cx, barrier.clone());
                 barrier.wait().await;
             }
         }
@@ -5088,11 +5075,9 @@ mod tests {
             let proc = Proc::isolated();
             let (client, _) = proc.client("client").unwrap();
             let handle = LoggingActor.spawn_detached().unwrap();
-            handle.send(&client, "hello world".to_string()).unwrap();
-            handle
-                .send(&client, "hello world again".to_string())
-                .unwrap();
-            handle.send(&client, 123u64).unwrap();
+            handle.send(&client, "hello world".to_string());
+            handle.send(&client, "hello world again".to_string());
+            handle.send(&client, 123u64);
 
             LoggingActor::wait(&client, &handle).await;
 
@@ -5107,7 +5092,7 @@ mod tests {
 
             let stacks = {
                 let barriers = Arc::new((Barrier::new(2), Barrier::new(2)));
-                handle.send(&client, Arc::clone(&barriers)).unwrap();
+                handle.send(&client, Arc::clone(&barriers));
                 barriers.0.wait().await;
                 let stacks = handle.cell().inner.recording.stacks();
                 barriers.1.wait().await;
@@ -5121,10 +5106,6 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mailbox_closed_with_owner_stopped_reason() {
-        use crate::actor::ActorStatus;
-        use crate::mailbox::MailboxErrorKind;
-        use crate::mailbox::MailboxSenderErrorKind;
-
         let proc = Proc::isolated();
         let (client, _) = proc.client("client").unwrap();
         let actor_handle = proc.spawn("test", TestActor).unwrap();
@@ -5145,21 +5126,16 @@ mod tests {
         let err = result.unwrap_err();
         assert_matches!(
             err.kind(),
-            MailboxSenderErrorKind::Mailbox(mailbox_err)
+            crate::mailbox::MailboxSenderErrorKind::Mailbox(mailbox_err)
                 if matches!(
                     mailbox_err.kind(),
-                    MailboxErrorKind::OwnerTerminated(ActorStatus::Stopped(reason)) if reason == "healthy shutdown"
+                    crate::mailbox::MailboxErrorKind::OwnerTerminated(ActorStatus::Stopped(reason)) if reason == "healthy shutdown"
                 )
         );
     }
 
     #[async_timed_test(timeout_secs = 30)]
     async fn test_mailbox_closed_with_owner_failed_reason() {
-        use crate::actor::ActorErrorKind;
-        use crate::actor::ActorStatus;
-        use crate::mailbox::MailboxErrorKind;
-        use crate::mailbox::MailboxSenderErrorKind;
-
         let proc = Proc::isolated();
         let (client, _) = proc.client("client").unwrap();
         // Need to set a supervison coordinator for this Proc because there will
@@ -5172,12 +5148,10 @@ mod tests {
         let handle_for_send = actor_handle.clone();
 
         // Cause the actor to fail
-        actor_handle
-            .send(
-                &client,
-                TestActorMessage::Fail(anyhow::anyhow!("intentional failure")),
-            )
-            .unwrap();
+        actor_handle.send(
+            &client,
+            TestActorMessage::Fail(anyhow::anyhow!("intentional failure")),
+        );
         actor_handle.await;
 
         // Try to send a message to the failed actor
@@ -5189,10 +5163,10 @@ mod tests {
         let err = result.unwrap_err();
         assert_matches!(
             err.kind(),
-            MailboxSenderErrorKind::Mailbox(mailbox_err)
+            crate::mailbox::MailboxSenderErrorKind::Mailbox(mailbox_err)
                 if matches!(
                     mailbox_err.kind(),
-                    MailboxErrorKind::OwnerTerminated(ActorStatus::Failed(ActorErrorKind::Generic(msg)))
+                    crate::mailbox::MailboxErrorKind::OwnerTerminated(ActorStatus::Failed(ActorErrorKind::Generic(msg)))
                         if msg.contains("intentional failure")
                 )
         );
@@ -5284,9 +5258,7 @@ mod tests {
         let actor_id = handle.actor_addr().clone();
 
         // Trigger a failure.
-        handle
-            .send(&client, TestActorMessage::Fail(anyhow::anyhow!("boom")))
-            .unwrap();
+        handle.send(&client, TestActorMessage::Fail(anyhow::anyhow!("boom")));
         handle.await;
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
@@ -5313,9 +5285,7 @@ mod tests {
         let actor_id = handle.actor_addr().clone();
         let cell = handle.cell().clone();
 
-        handle
-            .send(&client, TestActorMessage::Fail(anyhow::anyhow!("boom")))
-            .unwrap();
+        handle.send(&client, TestActorMessage::Fail(anyhow::anyhow!("boom")));
         handle.await;
 
         let event = cell.supervision_event();
@@ -5424,18 +5394,16 @@ mod tests {
         let parent_cell = parent.cell().clone();
         // Spawn child under parent.
         let (tx, rx) = oneshot::channel();
-        parent.send(&client, TestActorMessage::Spawn(tx)).unwrap();
+        parent.send(&client, TestActorMessage::Spawn(tx));
         let child = rx.await.unwrap();
         let child_id = child.actor_addr().clone();
 
         // Fail the child — parent doesn't handle supervision, so it
         // propagates and terminates too.
-        child
-            .send(
-                &client,
-                TestActorMessage::Fail(anyhow::anyhow!("child boom")),
-            )
-            .unwrap();
+        child.send(
+            &client,
+            TestActorMessage::Fail(anyhow::anyhow!("child boom")),
+        );
         parent.await;
 
         let event = parent_cell.supervision_event();
@@ -5491,9 +5459,7 @@ mod tests {
         let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
         let actor_id = handle.actor_addr().clone();
 
-        handle
-            .send(&client, TestActorMessage::Fail(anyhow::anyhow!("kaboom")))
-            .unwrap();
+        handle.send(&client, TestActorMessage::Fail(anyhow::anyhow!("kaboom")));
         handle.await;
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
@@ -5536,16 +5502,14 @@ mod tests {
         let parent_id = parent.actor_addr().clone();
 
         let (tx, rx) = oneshot::channel();
-        parent.send(&client, TestActorMessage::Spawn(tx)).unwrap();
+        parent.send(&client, TestActorMessage::Spawn(tx));
         let child = rx.await.unwrap();
         let child_id = child.actor_addr().clone();
 
-        child
-            .send(
-                &client,
-                TestActorMessage::Fail(anyhow::anyhow!("child fail")),
-            )
-            .unwrap();
+        child.send(
+            &client,
+            TestActorMessage::Fail(anyhow::anyhow!("child fail")),
+        );
         parent.await;
 
         let snapshot = wait_for_terminated_snapshot(&proc, &parent_id).await;

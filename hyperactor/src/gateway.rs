@@ -543,12 +543,10 @@ mod tests {
 
         let (local_port, local_receiver) = client.open_once_port();
 
-        ping_handle
-            .send(
-                &client,
-                PingPongMessage(10, pong_handle.bind(), local_port.bind()),
-            )
-            .unwrap();
+        ping_handle.send(
+            &client,
+            PingPongMessage(10, pong_handle.bind(), local_port.bind()),
+        );
 
         let received = time::timeout(Duration::from_secs(5), local_receiver.recv())
             .await

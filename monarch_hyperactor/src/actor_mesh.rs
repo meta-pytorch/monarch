@@ -1001,9 +1001,7 @@ mod tests {
 
         // Query the subscriber count from the controller.
         let (port, mut rx) = mailbox::open_port::<usize>(instance);
-        controller
-            .send(instance, GetSubscriberCount(port.bind()))
-            .unwrap();
+        controller.send(instance, GetSubscriberCount(port.bind()));
         let initial_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
@@ -1026,9 +1024,7 @@ mod tests {
         // After 5 calls from the same context, there should be exactly 1
         // subscriber (created lazily on the first call, reused thereafter).
         let (port, mut rx) = mailbox::open_port::<usize>(instance);
-        controller
-            .send(instance, GetSubscriberCount(port.bind()))
-            .unwrap();
+        controller.send(instance, GetSubscriberCount(port.bind()));
         let after_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
@@ -1049,9 +1045,7 @@ mod tests {
         }
 
         let (port, mut rx) = mailbox::open_port::<usize>(instance);
-        controller
-            .send(instance, GetSubscriberCount(port.bind()))
-            .unwrap();
+        controller.send(instance, GetSubscriberCount(port.bind()));
         let final_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")

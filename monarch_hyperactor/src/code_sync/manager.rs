@@ -265,7 +265,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                             result: tx.bind(),
                             workspace,
                         },
-                    )?;
+                    );
                     // Observe any errors.
                     let _ = rx.recv().await?.map_err(anyhow::Error::msg)?;
                 }
@@ -284,7 +284,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                             workspace,
                             path_prefix_replacements,
                         },
-                    )?;
+                    );
                     // Observe any errors.
                     let _ = rx.recv().await?.map_err(anyhow::Error::msg)?;
                 }
@@ -334,7 +334,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                         .unwrap_err()
                 )
             }),
-        )?;
+        );
         Ok(())
     }
 
@@ -355,7 +355,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
             let (tx, mut rx) = cx.open_port::<Result<(), String>>();
             self.get_auto_reload_actor(cx)
                 .await?
-                .send(cx, AutoReloadMessage { result: tx.bind() })?;
+                .send(cx, AutoReloadMessage { result: tx.bind() });
             rx.recv().await?.map_err(anyhow::Error::msg)?;
             anyhow::Ok(())
         }
@@ -370,7 +370,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
                         .unwrap_err()
                 )
             }),
-        )?;
+        );
         Ok(())
     }
 }

@@ -162,7 +162,7 @@ mod tests {
             this: &Instance<Self>,
             event: &ActorSupervisionEvent,
         ) -> anyhow::Result<bool> {
-            self.events.send(this, event.clone())?;
+            self.events.send(this, event.clone());
             Ok(true)
         }
     }

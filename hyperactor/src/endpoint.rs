@@ -17,7 +17,6 @@ use serde::Serialize;
 use crate::ActorAddr;
 use crate::PortAddr;
 use crate::context;
-use crate::mailbox::MailboxSenderError;
 use crate::mailbox::PortLocation;
 
 /// The logical location of an endpoint.
@@ -82,7 +81,7 @@ pub trait Endpoint<M>: crate::private::Sealed {
     fn endpoint_location(&self) -> EndpointLocation;
 
     /// Send `message` to this endpoint from `cx`.
-    fn send<C>(self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    fn send<C>(self, cx: &C, message: M)
     where
         C: context::Actor;
 }
@@ -93,12 +92,7 @@ pub trait Endpoint<M>: crate::private::Sealed {
 /// headers.
 pub trait RemoteEndpoint<M>: Endpoint<M> {
     /// Send `message` and `headers` to this endpoint from `cx`.
-    fn send_with_headers<C>(
-        self,
-        cx: &C,
-        headers: Flattrs,
-        message: M,
-    ) -> Result<(), MailboxSenderError>
+    fn send_with_headers<C>(self, cx: &C, headers: Flattrs, message: M)
     where
         C: context::Actor;
 }
@@ -135,7 +129,7 @@ mod tests {
     #[async_trait]
     impl Handler<u64> for EchoActor {
         async fn handle(&mut self, cx: &Context<Self>, message: u64) -> anyhow::Result<()> {
-            Endpoint::send(&self.tx, cx, message)?;
+            Endpoint::send(&self.tx, cx, message);
             Ok(())
         }
     }
@@ -160,7 +154,7 @@ mod tests {
             .spawn("echo", EchoActor { tx: tx.bind() })
             .expect("spawn should succeed");
 
-        Endpoint::send(&handle, &client, 123u64).expect("send to actor handle should succeed");
+        Endpoint::send(&handle, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -171,7 +165,7 @@ mod tests {
         let (client, _) = proc.client("client").unwrap();
         let (tx, mut rx) = client.open_port();
 
-        Endpoint::send(&tx, &client, 123u64).expect("send to port handle should succeed");
+        Endpoint::send(&tx, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -182,7 +176,7 @@ mod tests {
         let (client, _) = proc.client("client").unwrap();
         let (tx, rx) = client.open_once_port();
 
-        Endpoint::send(tx, &client, 123u64).expect("send to once port handle should succeed");
+        Endpoint::send(tx, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -194,7 +188,7 @@ mod tests {
             .attach_actor::<TestBehavior, u64>("remote_actor")
             .expect("attach actor should succeed");
 
-        Endpoint::send(&actor_ref, &client, 123u64).expect("send to actor ref should succeed");
+        Endpoint::send(&actor_ref, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -206,7 +200,7 @@ mod tests {
         let (tx, mut rx) = client.open_port();
         let port_ref = tx.bind();
 
-        Endpoint::send(&port_ref, &client, 123u64).expect("send to port ref should succeed");
+        Endpoint::send(&port_ref, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -218,7 +212,7 @@ mod tests {
         let (tx, rx) = client.open_once_port();
         let port_ref = tx.bind();
 
-        Endpoint::send(port_ref, &client, 123u64).expect("send to once port ref should succeed");
+        Endpoint::send(port_ref, &client, 123u64);
 
         assert_eq!(rx.recv().await.expect("message should arrive"), 123);
     }
@@ -245,8 +239,7 @@ mod tests {
         let mut headers = Flattrs::new();
         headers.set(ENDPOINT_TEST_HEADER, 456u64);
 
-        RemoteEndpoint::send_with_headers(&port_ref, &client, headers, 123u64)
-            .expect("send with headers should succeed");
+        RemoteEndpoint::send_with_headers(&port_ref, &client, headers, 123u64);
 
         assert_eq!(
             observed_rx.recv().await.expect("message should arrive"),

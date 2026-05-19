@@ -285,13 +285,7 @@ impl Actor for GlobalClientActor {
                 );
                 match get_global_supervision_sink() {
                     Some(sink) => {
-                        if let Err(e) = sink.send(cx, event) {
-                            tracing::warn!(
-                                %e,
-                                actor=%actor_ref,
-                                "failed to forward supervision event from lost message"
-                            );
-                        }
+                        sink.send(cx, event);
                     }
                     None => {
                         tracing::warn!(
@@ -318,13 +312,7 @@ impl Actor for GlobalClientActor {
 
         match get_global_supervision_sink() {
             Some(sink) => {
-                if let Err(e) = sink.send(cx, event) {
-                    tracing::warn!(
-                        %e,
-                        actor=%actor_ref,
-                        "failed to forward supervision event from undeliverable"
-                    );
-                }
+                sink.send(cx, event);
             }
             None => {
                 tracing::warn!(
@@ -581,9 +569,7 @@ mod tests {
         let client_actor_id: hyperactor::ActorAddr = client.self_addr().clone();
         let undeliverable_port =
             PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(&client_actor_id);
-        undeliverable_port
-            .send(client, Undeliverable::Message(env))
-            .expect("inject_undeliverable: send failed");
+        undeliverable_port.send(client, Undeliverable::Message(env));
     }
 
     /// Verifies that creating a `ProcMesh` installs the
