@@ -204,6 +204,23 @@ pub use signal_handler::sigpipe_disposition;
 #[doc(inline)]
 pub use signal_handler::unregister_signal_cleanup;
 
+/// Serve the current gateway on the provided channel address.
+pub fn serve(
+    addr: channel::ChannelAddr,
+) -> Result<gateway::GatewayServeHandle, channel::ChannelError> {
+    Gateway::current().serve(addr)
+}
+
+/// Spawn a root actor on the current proc.
+pub fn spawn<A: Actor>(name: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
+    Proc::current().spawn(name, actor)
+}
+
+/// Create a client actor on the current proc.
+pub fn client(name: &str) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
+    Proc::current().client(name)
+}
+
 mod private {
     /// Public trait in a private module for sealing traits within this crate:
     /// [Sealed trait pattern](https://rust-lang.github.io/api-guidelines/future-proofing.html#sealed-traits-protect-against-downstream-implementations-c-sealed).
