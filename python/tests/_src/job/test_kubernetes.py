@@ -234,6 +234,31 @@ class TestAddMesh(unittest.TestCase):
         job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
         self.assertNotIn("labels", job._meshes["workers"])
 
+    # -- annotations -----------------------------------------------------------
+
+    def test_annotations_stored_when_provisioning(self) -> None:
+        job = self._make_job()
+        annotations = {"team": "infra", "scheduler": "kueue"}
+        job.add_mesh(
+            "workers",
+            num_replicas=1,
+            image_spec=ImageSpec("img"),
+            annotations=annotations,
+        )
+        self.assertEqual(job._meshes["workers"]["annotations"], annotations)
+
+    def test_annotations_forbidden_without_provisioning(self) -> None:
+        job = self._make_job()
+        with self.assertRaises(
+            ValueError, msg="annotations can only be set when provisioning"
+        ):
+            job.add_mesh("workers", num_replicas=1, annotations={"team": "infra"})
+
+    def test_no_annotations_by_default(self) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
+        self.assertNotIn("annotations", job._meshes["workers"])
+
 
 class TestCreate(unittest.TestCase):
     """Tests for KubernetesJob._create guards."""
@@ -334,6 +359,52 @@ class TestCreate(unittest.TestCase):
 
         body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
         self.assertEqual(body["metadata"]["labels"], labels)
+
+    @patch("monarch._src.job.kubernetes.client.ApiClient")
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_create_includes_annotations_in_crd(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+        mock_api_client_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        annotations = {"kueue.x-k8s.io/queue-name": "my-queue", "owner": "team"}
+        job.add_mesh(
+            "workers",
+            num_replicas=1,
+            image_spec=ImageSpec("img"),
+            annotations=annotations,
+        )
+
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+
+        job._create(None)
+
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        self.assertEqual(body["metadata"]["annotations"], annotations)
+
+    @patch("monarch._src.job.kubernetes.client.ApiClient")
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_create_omits_annotations_when_not_set(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+        mock_api_client_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
+
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+
+        job._create(None)
+
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        self.assertNotIn("annotations", body["metadata"])
 
     @patch("monarch._src.job.kubernetes.client.ApiClient")
     @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")

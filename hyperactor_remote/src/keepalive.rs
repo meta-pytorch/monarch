@@ -41,6 +41,7 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
@@ -357,16 +358,16 @@ impl KeepaliveWorker {
     fn send_keepalive(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
         self.generation += 1;
         let generation = self.generation;
-        self.supervisor.send(
+        (&self.supervisor).post(
             this,
             Keepalive {
                 generation,
                 reply: this.port::<KeepaliveAck>().bind().into_once(),
             },
-        )?;
+        );
 
-        this.self_message_with_delay(SendKeepalive { generation }, self.interval)?;
-        this.self_message_with_delay(AckDeadline { generation }, self.timeout)?;
+        this.post_after(this, SendKeepalive { generation }, self.interval);
+        this.post_after(this, AckDeadline { generation }, self.timeout);
         Ok(())
     }
 }
@@ -395,12 +396,12 @@ impl Actor for KeepaliveSupervisor {
 impl Handler<Keepalive> for KeepaliveSupervisor {
     async fn handle(&mut self, cx: &Context<Self>, message: Keepalive) -> anyhow::Result<()> {
         self.generation = self.generation.max(message.generation);
-        message.reply.send(
+        message.reply.post(
             cx,
             KeepaliveAck {
                 generation: message.generation,
             },
-        )?;
+        );
         self.schedule_deadline(cx)
     }
 }
@@ -430,12 +431,13 @@ impl KeepaliveSupervisor {
     }
 
     fn schedule_deadline(&self, this: &Instance<Self>) -> anyhow::Result<()> {
-        this.self_message_with_delay(
+        this.post_after(
+            this,
             Deadline {
                 generation: self.generation,
             },
             self.timeout,
-        )?;
+        );
         Ok(())
     }
 }
@@ -484,7 +486,7 @@ mod tests {
             this: &Instance<Self>,
             event: &ActorSupervisionEvent,
         ) -> anyhow::Result<bool> {
-            self.events.send(this, event.clone())?;
+            self.events.post(this, event.clone());
             Ok(true)
         }
     }
@@ -514,15 +516,13 @@ mod tests {
             .unwrap();
         let (reply, ack_rx) = parent.open_once_port::<KeepaliveAck>();
 
-        supervisor
-            .send(
-                &parent,
-                Keepalive {
-                    generation: 41,
-                    reply: reply.bind(),
-                },
-            )
-            .unwrap();
+        supervisor.post(
+            &parent,
+            Keepalive {
+                generation: 41,
+                reply: reply.bind(),
+            },
+        );
 
         let ack = ack_rx.recv().await.unwrap();
         assert_eq!(ack.generation, 41);
