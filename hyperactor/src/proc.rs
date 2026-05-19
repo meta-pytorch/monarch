@@ -2497,6 +2497,12 @@ impl<A: Actor> Instance<A> {
         self.inner.mailbox.drain();
     }
 
+    pub(crate) fn close_client(&self, reason: &str) {
+        let status = ActorStatus::Stopped(reason.to_string());
+        self.inner.mailbox.close(status.clone());
+        self.change_status(status);
+    }
+
     /// Request immediate actor exit with the provided stop reason.
     pub fn exit(&self, reason: &str) -> Result<(), ActorError> {
         self.inner
