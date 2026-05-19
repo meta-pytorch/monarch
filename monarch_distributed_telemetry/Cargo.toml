@@ -26,3 +26,6 @@ typeuri = { version = "0.0.0", path = "../typeuri" }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }
+
+[lints]
+workspace = true

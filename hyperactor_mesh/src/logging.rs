@@ -21,11 +21,15 @@ use chrono::DateTime;
 use chrono::Local;
 use hostname;
 use hyperactor::Actor;
+use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::OncePortRef;
+use hyperactor::ProcAddr;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::channel;
@@ -36,7 +40,6 @@ use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -285,7 +288,7 @@ pub enum LogMessage {
     Log {
         /// The hostname of the process that generated the log
         hostname: String,
-        /// String representation of the ProcId that generated the log
+        /// String representation of the ProcAddr that generated the log
         proc_id: String,
         /// The target output stream (stdout or stderr)
         output_target: OutputTarget,
@@ -312,6 +315,10 @@ pub enum LogMessage {
     HandleClient,
     RefClient
 )]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "actor message enum with Handler/HandleClient/RefClient derives; boxing fields ripples into client/handler call sites and may require derive-macro changes — separate diff"
+)]
 pub enum LogClientMessage {
     SetAggregate {
         /// The time window in seconds to aggregate logs. If None, aggregation is disabled.
@@ -323,9 +330,9 @@ pub enum LogClientMessage {
         /// Expect these many procs to ack the flush message.
         expected_procs: usize,
         /// Return once we have received the acks from all the procs
-        reply: hyperactor_reference::OncePortRef<()>,
+        reply: OncePortRef<()>,
         /// Return to the caller the current flush version
-        version: hyperactor_reference::OncePortRef<u64>,
+        version: OncePortRef<u64>,
     },
 }
 
@@ -366,10 +373,7 @@ pub struct LocalLogSender {
 }
 
 impl LocalLogSender {
-    fn new(
-        log_channel: ChannelAddr,
-        proc_id: &hyperactor_reference::ProcId,
-    ) -> Result<Self, anyhow::Error> {
+    fn new(log_channel: ChannelAddr, proc_id: &ProcAddr) -> Result<Self, anyhow::Error> {
         let tx = channel::dial::<LogMessage>(log_channel)?;
         let status = tx.status().clone();
 
@@ -851,7 +855,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &ProcAddr,
         local_rank: usize,
     ) -> Self {
         let prefix = match hyperactor_config::global::get(PREFIX_WITH_RANK) {
@@ -880,7 +884,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        proc_id: &hyperactor_reference::ProcId,
+        proc_id: &ProcAddr,
         prefix: Option<String>,
     ) -> Self {
         // Sanity: when there is no file sink, no log forwarding, and
@@ -982,15 +986,13 @@ pub enum LogForwardMessage {
 }
 
 /// A log forwarder that receives the log from its parent process and forward it back to the client
-#[hyperactor::export(
-    spawn = true,
-    handlers = [LogForwardMessage {cast = true}],
-)]
+#[hyperactor::export(LogForwardMessage { cast = true })]
+#[hyperactor::spawnable]
 pub struct LogForwardActor {
     rx: ChannelRx<LogMessage>,
     flush_tx: Arc<Mutex<ChannelTx<LogMessage>>>,
     next_flush_deadline: SystemTime,
-    logging_client_ref: hyperactor_reference::ActorRef<LogClientActor>,
+    logging_client_ref: ActorRef<LogClientActor>,
     stream_to_client: bool,
 }
 
@@ -998,7 +1000,7 @@ pub struct LogForwardActor {
 impl Actor for LogForwardActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
-        this.self_message_with_delay(LogForwardMessage::Forward {}, Duration::from_secs(0))?;
+        this.post_after(this, LogForwardMessage::Forward {}, Duration::from_secs(0));
 
         // Make sure we start the flush loop periodically so the log channel will not deadlock.
         self.flush_tx
@@ -1012,7 +1014,7 @@ impl Actor for LogForwardActor {
 
 #[async_trait]
 impl hyperactor::RemoteSpawn for LogForwardActor {
-    type Params = hyperactor_reference::ActorRef<LogClientActor>;
+    type Params = ActorRef<LogClientActor>;
 
     async fn new(logging_client_ref: Self::Params, _environment: Flattrs) -> Result<Self> {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
@@ -1111,7 +1113,7 @@ impl LogForwardMessageHandler for LogForwardActor {
         }
 
         // This is not ideal as we are using raw tx/rx.
-        ctx.self_message_with_delay(LogForwardMessage::Forward {}, Duration::from_secs(0))?;
+        ctx.post_after(ctx, LogForwardMessage::Forward {}, Duration::from_secs(0));
 
         Ok(())
     }
@@ -1166,10 +1168,8 @@ fn deserialize_message_lines(serialized_message: &wirevalue::Any) -> Result<Vec<
 
 /// A client to receive logs from remote processes
 #[derive(Debug)]
-#[hyperactor::export(
-    spawn = true,
-    handlers = [LogMessage, LogClientMessage],
-)]
+#[hyperactor::export(LogMessage, LogClientMessage)]
+#[hyperactor::spawnable]
 pub struct LogClientActor {
     aggregate_window_sec: Option<u64>,
     aggregators: HashMap<OutputTarget, Aggregator>,
@@ -1178,7 +1178,7 @@ pub struct LogClientActor {
 
     // For flush sync barrier
     current_flush_version: u64,
-    current_flush_port: Option<hyperactor_reference::OncePortRef<()>>,
+    current_flush_port: Option<OncePortRef<()>>,
     current_unflushed_procs: usize,
 }
 
@@ -1302,20 +1302,14 @@ impl LogMessageHandler for LogClientActor {
                     match self.next_flush_deadline {
                         None => {
                             self.next_flush_deadline = Some(new_deadline);
-                            cx.self_message_with_delay(
-                                LogMessage::Flush { sync_version: None },
-                                delay,
-                            )?;
+                            cx.post_after(cx, LogMessage::Flush { sync_version: None }, delay);
                         }
                         Some(deadline) => {
                             // Some early log lines have alrady triggered the flush.
                             if new_deadline < deadline {
                                 // This can happen if the user has adjusted the aggregation window.
                                 self.next_flush_deadline = Some(new_deadline);
-                                cx.self_message_with_delay(
-                                    LogMessage::Flush { sync_version: None },
-                                    delay,
-                                )?;
+                                cx.post_after(cx, LogMessage::Flush { sync_version: None }, delay);
                             }
                         }
                     }
@@ -1361,7 +1355,7 @@ impl LogMessageHandler for LogClientActor {
                     self.flush_internal();
                     let reply = self.current_flush_port.take().unwrap();
                     self.current_flush_port = None;
-                    reply.send(cx, ()).map_err(anyhow::Error::from)?;
+                    reply.post(cx, ());
                 }
             }
         }
@@ -1390,8 +1384,8 @@ impl LogClientMessageHandler for LogClientActor {
         &mut self,
         cx: &Context<Self>,
         expected_procs_flushed: usize,
-        reply: hyperactor_reference::OncePortRef<()>,
-        version: hyperactor_reference::OncePortRef<u64>,
+        reply: OncePortRef<()>,
+        version: OncePortRef<u64>,
     ) -> Result<(), anyhow::Error> {
         if self.current_unflushed_procs > 0 || self.current_flush_port.is_some() {
             tracing::warn!(
@@ -1408,9 +1402,7 @@ impl LogClientMessageHandler for LogClientActor {
         );
         self.current_flush_port = Some(reply.clone());
         self.current_unflushed_procs = expected_procs_flushed;
-        version
-            .send(cx, self.current_flush_version)
-            .map_err(anyhow::Error::from)?;
+        version.post(cx, self.current_flush_version);
         Ok(())
     }
 }
@@ -1462,6 +1454,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
+    use hyperactor::ProcAddr;
     use hyperactor::RemoteSpawn;
     use hyperactor::channel;
     use hyperactor::channel::ChannelAddr;
@@ -1598,9 +1591,9 @@ mod tests {
             BoxedMailboxSender::new(router.clone()),
         );
         proc.clone().serve(client_rx);
-        let proc_ref: hyperactor::ref_::ProcRef = test_proc_id("client_0").into();
+        let proc_ref: ProcAddr = test_proc_id("client_0");
         router.bind(proc_ref, proc_addr.clone());
-        let (client, _handle) = proc.instance("client").unwrap();
+        let (client, _handle) = proc.client("client").unwrap();
 
         // Spin up both the forwarder and the client
         let log_channel = ChannelAddr::any(ChannelTransport::Unix);
@@ -1609,12 +1602,12 @@ mod tests {
             std::env::set_var(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         }
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: hyperactor_reference::ActorRef<LogClientActor> =
+        let log_client: ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
         let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
             .await
             .unwrap();
-        let log_forwarder: hyperactor_reference::ActorRef<LogForwardActor> = proc
+        let log_forwarder: ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
             .bind();
@@ -1992,7 +1985,7 @@ mod tests {
 
         // Test that result is always between 0.0 and 1.0
         let distance = normalized_edit_distance("completely", "different");
-        assert!(distance >= 0.0 && distance <= 1.0);
+        assert!((0.0..=1.0).contains(&distance));
     }
 
     #[tokio::test]

@@ -790,7 +790,7 @@ where
     mapper: F,
 }
 
-impl<'a, T, F> MapSlice<'a, T, F>
+impl<T, F> MapSlice<'_, T, F>
 where
     F: Fn(usize) -> T,
 {
@@ -827,7 +827,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches::assert_matches;
+    use std::assert_matches;
     use std::vec;
 
     use super::*;

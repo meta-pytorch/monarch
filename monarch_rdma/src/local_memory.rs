@@ -8,19 +8,13 @@
 
 //! Local memory abstractions for RDMA operations.
 //!
-//! This module defines the [`RdmaLocalMemory`] trait and its implementations:
-//!
-//! - [`KeepaliveLocalMemory`] – wraps a raw pointer with a keepalive guard
-//!   and dispatches reads/writes to CPU or CUDA paths.
-//! - [`UnsafeLocalMemory`] – raw pointer-based handle where the caller is
-//!   responsible for lifetime management.
+//! [`KeepaliveLocalMemory`] wraps a raw pointer with a [`Keepalive`]
+//! guard and dispatches reads/writes to CPU or CUDA paths.
 
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::sync::RwLock;
-
-use serde::Deserialize;
-use serde::Serialize;
+use std::sync::Condvar;
+use std::sync::Mutex;
 
 /// Returns `true` when `addr` is a CUDA device pointer.
 ///
@@ -131,24 +125,6 @@ pub(crate) unsafe fn set_ctx_for_ptr(addr: usize) -> Result<CudaCtxGuard, anyhow
     })
 }
 
-/// Handle to a contiguous region of local memory.
-///
-/// Implementations must guarantee the underlying allocation is valid for the
-/// lifetime of the implementor.
-pub trait RdmaLocalMemory: Send + Sync + Debug {
-    /// Starting virtual address of the memory region.
-    fn addr(&self) -> usize;
-
-    /// Size of the memory region in bytes.
-    fn size(&self) -> usize;
-
-    /// Copy `dst.len()` bytes from this memory region starting at `offset` into `dst`.
-    fn read_at(&self, offset: usize, dst: &mut [u8]) -> Result<(), anyhow::Error>;
-
-    /// Copy `src.len()` bytes from `src` into this memory region starting at `offset`.
-    fn write_at(&self, offset: usize, src: &[u8]) -> Result<(), anyhow::Error>;
-}
-
 /// Verify that an access at `offset` with `len` bytes fits within `size`.
 fn check_bounds(offset: usize, len: usize, size: usize) -> Result<(), anyhow::Error> {
     anyhow::ensure!(
@@ -226,6 +202,134 @@ unsafe fn write_gpu(addr: usize, offset: usize, src: &[u8]) -> Result<(), anyhow
     Ok(())
 }
 
+/// Three-mode access lock used by [`KeepaliveLocalMemory`] to coordinate
+/// concurrent reads, exclusive writes, and parallel "disjoint" writes
+/// (writers that the caller has promised target disjoint ranges).
+///
+/// - [`AccessLock::read`] returns when no exclusive writer and no
+///   disjoint writer is active. Multiple readers are permitted to hold
+///   the lock at the same time.
+/// - [`AccessLock::disjoint_write`] returns when no reader and no
+///   exclusive writer is active. Multiple disjoint writers are
+///   permitted to hold the lock at the same time.
+/// - [`AccessLock::exclusive`] returns only when no one else holds the
+///   lock.
+///
+/// Read mode and disjoint-write mode are mutually exclusive, which is
+/// what gives readers a torn-free view of memory in the presence of
+/// disjoint parallel writers.
+#[derive(Debug, Default)]
+struct AccessLock {
+    state: Mutex<AccessState>,
+    cond: Condvar,
+}
+
+#[derive(Debug, Default)]
+enum AccessState {
+    #[default]
+    Idle,
+    Reading(usize),
+    DisjointWriting(usize),
+    Exclusive,
+}
+
+impl AccessLock {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn read(&self) -> AccessReadGuard<'_> {
+        let mut state = self.state.lock().expect("AccessLock poisoned");
+        loop {
+            match &mut *state {
+                AccessState::Idle => {
+                    *state = AccessState::Reading(1);
+                    return AccessReadGuard(self);
+                }
+                AccessState::Reading(n) => {
+                    *n += 1;
+                    return AccessReadGuard(self);
+                }
+                AccessState::DisjointWriting(_) | AccessState::Exclusive => {
+                    state = self.cond.wait(state).expect("AccessLock poisoned");
+                }
+            }
+        }
+    }
+
+    fn disjoint_write(&self) -> AccessDisjointWriteGuard<'_> {
+        let mut state = self.state.lock().expect("AccessLock poisoned");
+        loop {
+            match &mut *state {
+                AccessState::Idle => {
+                    *state = AccessState::DisjointWriting(1);
+                    return AccessDisjointWriteGuard(self);
+                }
+                AccessState::DisjointWriting(n) => {
+                    *n += 1;
+                    return AccessDisjointWriteGuard(self);
+                }
+                AccessState::Reading(_) | AccessState::Exclusive => {
+                    state = self.cond.wait(state).expect("AccessLock poisoned");
+                }
+            }
+        }
+    }
+
+    fn exclusive(&self) -> AccessExclusiveGuard<'_> {
+        let mut state = self.state.lock().expect("AccessLock poisoned");
+        loop {
+            if matches!(*state, AccessState::Idle) {
+                *state = AccessState::Exclusive;
+                return AccessExclusiveGuard(self);
+            }
+            state = self.cond.wait(state).expect("AccessLock poisoned");
+        }
+    }
+}
+
+struct AccessReadGuard<'a>(&'a AccessLock);
+impl Drop for AccessReadGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().expect("AccessLock poisoned");
+        match &mut *state {
+            AccessState::Reading(1) => {
+                *state = AccessState::Idle;
+                self.0.cond.notify_all();
+            }
+            AccessState::Reading(n) => *n -= 1,
+            other => unreachable!("AccessReadGuard dropped in non-Reading state: {other:?}"),
+        }
+    }
+}
+
+struct AccessDisjointWriteGuard<'a>(&'a AccessLock);
+impl Drop for AccessDisjointWriteGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().expect("AccessLock poisoned");
+        match &mut *state {
+            AccessState::DisjointWriting(1) => {
+                *state = AccessState::Idle;
+                self.0.cond.notify_all();
+            }
+            AccessState::DisjointWriting(n) => *n -= 1,
+            other => unreachable!(
+                "AccessDisjointWriteGuard dropped in non-DisjointWriting state: {other:?}"
+            ),
+        }
+    }
+}
+
+struct AccessExclusiveGuard<'a>(&'a AccessLock);
+impl Drop for AccessExclusiveGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().expect("AccessLock poisoned");
+        debug_assert!(matches!(*state, AccessState::Exclusive));
+        *state = AccessState::Idle;
+        self.0.cond.notify_all();
+    }
+}
+
 /// Marker trait: the implementor keeps a backing memory allocation alive.
 ///
 /// As long as a value implementing this trait exists, the memory region
@@ -233,11 +337,22 @@ unsafe fn write_gpu(addr: usize, offset: usize, src: &[u8]) -> Result<(), anyhow
 /// remain valid.
 pub trait Keepalive: Send + Sync {}
 
+impl Keepalive for Box<[u8]> {}
+
 /// Local memory handle that keeps its backing allocation alive via an
 /// [`Arc<dyn Keepalive>`].
 ///
 /// Detects at construction time whether the address is a CUDA device
 /// pointer and dispatches `read_at`/`write_at` accordingly.
+///
+/// All three access methods are `unsafe`: the [`Keepalive`] only
+/// guarantees the allocation stays mapped, not that this handle has
+/// unique ownership. The internal [`AccessLock`] coordinates concurrent
+/// callers that share the same clone of this handle (readers run in
+/// parallel, exclusive writers run alone, disjoint writers run in
+/// parallel with one another but exclude readers and exclusive
+/// writers), but callers must additionally rule out concurrent access
+/// through other views of the same allocation.
 ///
 /// The `direct_access_host_bandwidth` and `direct_access_device_bandwidth`
 /// fields indicate the speed of reading the memory via pointer dereference
@@ -254,7 +369,9 @@ pub struct KeepaliveLocalMemory {
     /// `None` if the memory is not device-accessible.
     direct_access_device_bandwidth: Option<u64>,
     _keepalive: Arc<dyn Keepalive>,
-    guard: Arc<RwLock<()>>,
+    /// Coordinates concurrent reads, exclusive writes, and parallel
+    /// disjoint writes against this region.
+    access: Arc<AccessLock>,
 }
 
 impl Debug for KeepaliveLocalMemory {
@@ -291,25 +408,46 @@ impl KeepaliveLocalMemory {
             direct_access_host_bandwidth: host_bw,
             direct_access_device_bandwidth: device_bw,
             _keepalive: keepalive,
-            guard: Arc::new(RwLock::new(())),
+            access: Arc::new(AccessLock::new()),
         }
     }
-}
 
-impl RdmaLocalMemory for KeepaliveLocalMemory {
-    fn addr(&self) -> usize {
+    /// Starting virtual address of the memory region.
+    pub fn addr(&self) -> usize {
         self.addr
     }
 
-    fn size(&self) -> usize {
+    /// Size of the memory region in bytes.
+    pub fn size(&self) -> usize {
         self.size
     }
 
-    fn read_at(&self, offset: usize, dst: &mut [u8]) -> Result<(), anyhow::Error> {
-        let _lock = self.guard.read().expect("lock poisoned");
+    /// Copy `dst.len()` bytes from this memory region starting at `offset`
+    /// into `dst`.
+    ///
+    /// Mutually exclusive with both `write_at` and `write_at_disjoint`
+    /// *across clones of this handle*: the [`AccessLock`] guarantees a
+    /// reader and any writer (exclusive or disjoint) that share the
+    /// same lock never observe each other's partial state. Multiple
+    /// concurrent `read_at` calls on shared clones are permitted and
+    /// run in parallel.
+    ///
+    /// # Safety
+    ///
+    /// The [`Keepalive`] guarantees the allocation stays mapped, but it
+    /// does *not* imply unique ownership: another component may hold its
+    /// own view of the same allocation and read or write it concurrently
+    /// outside this handle's [`AccessLock`]. The caller must ensure that
+    /// no such external access produces a torn read of
+    /// `offset..offset + dst.len()` for the duration of this call.
+    pub unsafe fn read_at(&self, offset: usize, dst: &mut [u8]) -> Result<(), anyhow::Error> {
+        let _guard = self.access.read();
         check_bounds(offset, dst.len(), self.size)?;
-        // SAFETY: The keepalive guard guarantees the allocation is live, and
-        // check_bounds verified the access is in range.
+        // SAFETY: the `_keepalive` field keeps the allocation live, the
+        // read guard above excludes concurrent exclusive and disjoint
+        // writers that share this lock, `check_bounds` verified the access
+        // is in range, and the caller upholds the no-external-writer
+        // obligation documented on this method.
         unsafe {
             if self.direct_access_host_bandwidth.is_some() {
                 read_cpu(self.addr, offset, dst);
@@ -320,11 +458,28 @@ impl RdmaLocalMemory for KeepaliveLocalMemory {
         }
     }
 
-    fn write_at(&self, offset: usize, src: &[u8]) -> Result<(), anyhow::Error> {
-        let _lock = self.guard.write().expect("lock poisoned");
+    /// Copy `src.len()` bytes from `src` into this memory region starting
+    /// at `offset`.
+    ///
+    /// Mutually exclusive with every other read and write against this
+    /// region *across clones of this handle*: the [`AccessLock`] blocks
+    /// concurrent readers and writers that share the same lock. Use
+    /// [`KeepaliveLocalMemory::write_at_disjoint`] when multiple writers
+    /// can be proven to target disjoint byte ranges.
+    ///
+    /// # Safety
+    ///
+    /// See [`KeepaliveLocalMemory::read_at`]. The [`Keepalive`] guarantee
+    /// covers liveness only; the caller must ensure no concurrent
+    /// external reader or writer observes an overlapping byte range.
+    pub unsafe fn write_at(&self, offset: usize, src: &[u8]) -> Result<(), anyhow::Error> {
+        let _guard = self.access.exclusive();
         check_bounds(offset, src.len(), self.size)?;
-        // SAFETY: The keepalive guard guarantees the allocation is live, and
-        // check_bounds verified the access is in range.
+        // SAFETY: the `_keepalive` field keeps the allocation live, the
+        // exclusive guard above excludes every other reader and writer
+        // that shares this lock, `check_bounds` verified the access is
+        // in range, and the caller upholds the no-external-access
+        // obligation documented on this method.
         unsafe {
             if self.direct_access_host_bandwidth.is_some() {
                 write_cpu(self.addr, offset, src);
@@ -334,59 +489,35 @@ impl RdmaLocalMemory for KeepaliveLocalMemory {
             }
         }
     }
-}
 
-/// Raw pointer-based local memory handle that supports both CPU and GPU memory.
-///
-/// Wraps a virtual address and size. The caller is responsible for
-/// ensuring the underlying allocation outlives this handle. Uses
-/// `is_device_ptr` to dispatch reads/writes to the appropriate CPU or CUDA
-/// path, just like [`KeepaliveLocalMemory`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UnsafeLocalMemory {
-    pub addr: usize,
-    pub size: usize,
-}
-
-impl UnsafeLocalMemory {
-    pub fn new(addr: usize, size: usize) -> Self {
-        Self { addr, size }
-    }
-}
-
-impl RdmaLocalMemory for UnsafeLocalMemory {
-    fn addr(&self) -> usize {
-        self.addr
-    }
-
-    fn size(&self) -> usize {
-        self.size
-    }
-
-    fn read_at(&self, offset: usize, dst: &mut [u8]) -> Result<(), anyhow::Error> {
-        check_bounds(offset, dst.len(), self.size)?;
-        // SAFETY: The caller is responsible for ensuring the allocation is
-        // live; check_bounds verified the access is in range.
-        unsafe {
-            if is_device_ptr(self.addr) {
-                read_gpu(self.addr, offset, dst)
-            } else {
-                read_cpu(self.addr, offset, dst);
-                Ok(())
-            }
-        }
-    }
-
-    fn write_at(&self, offset: usize, src: &[u8]) -> Result<(), anyhow::Error> {
+    /// Like [`KeepaliveLocalMemory::write_at`], but allows other
+    /// concurrent `write_at_disjoint` calls (across clones of this
+    /// handle) to proceed in parallel. Still mutually exclusive with
+    /// `read_at` and `write_at` through the [`AccessLock`].
+    ///
+    /// # Safety
+    ///
+    /// In addition to the obligations of
+    /// [`KeepaliveLocalMemory::write_at`] (no external concurrent
+    /// reader or writer of the same byte range), the caller must
+    /// ensure that no other concurrent call to this method targets a
+    /// byte range that overlaps `offset..offset + src.len()`. Disjoint
+    /// byte ranges across concurrent disjoint callers are sound.
+    pub unsafe fn write_at_disjoint(&self, offset: usize, src: &[u8]) -> Result<(), anyhow::Error> {
+        let _guard = self.access.disjoint_write();
         check_bounds(offset, src.len(), self.size)?;
-        // SAFETY: The caller is responsible for ensuring the allocation is
-        // live; check_bounds verified the access is in range.
+        // SAFETY: the `_keepalive` field keeps the allocation live, the
+        // disjoint-write guard above excludes concurrent readers and
+        // exclusive writers that share this lock, `check_bounds`
+        // verified the access is in range, and the caller upholds both
+        // safety obligations documented on this method (no external access,
+        // no overlap with other concurrent disjoint writers).
         unsafe {
-            if is_device_ptr(self.addr) {
-                write_gpu(self.addr, offset, src)
-            } else {
+            if self.direct_access_host_bandwidth.is_some() {
                 write_cpu(self.addr, offset, src);
                 Ok(())
+            } else {
+                write_gpu(self.addr, offset, src)
             }
         }
     }
@@ -398,9 +529,7 @@ mod tests {
 
     // -- KeepaliveLocalMemory (host) --
 
-    impl Keepalive for Vec<u8> {}
-
-    fn host_keepalive_mem(data: Vec<u8>) -> KeepaliveLocalMemory {
+    fn host_keepalive_mem(data: Box<[u8]>) -> KeepaliveLocalMemory {
         let addr = data.as_ptr() as usize;
         let size = data.len();
         KeepaliveLocalMemory::new(addr, size, Arc::new(data))
@@ -408,26 +537,34 @@ mod tests {
 
     #[test]
     fn keepalive_host_read_at() {
-        let mem = host_keepalive_mem(vec![1, 2, 3, 4, 5]);
+        let mem = host_keepalive_mem(Box::from([1, 2, 3, 4, 5]));
         let mut buf = [0u8; 3];
-        mem.read_at(1, &mut buf).unwrap();
+        // SAFETY: `mem` is the sole handle to the allocation, no other
+        // thread or component holds a view of it.
+        unsafe { mem.read_at(1, &mut buf) }.unwrap();
         assert_eq!(buf, [2, 3, 4]);
     }
 
     #[test]
     fn keepalive_host_write_then_read() {
-        let mem = host_keepalive_mem(vec![0; 5]);
-        mem.write_at(1, &[7, 8, 9]).unwrap();
+        let mem = host_keepalive_mem(vec![0; 5].into_boxed_slice());
+        // SAFETY: `mem` is the sole handle to the allocation, no other
+        // thread or component holds a view of it.
+        unsafe { mem.write_at(1, &[7, 8, 9]) }.unwrap();
         let mut buf = [0u8; 5];
-        mem.read_at(0, &mut buf).unwrap();
+        // SAFETY: same as above.
+        unsafe { mem.read_at(0, &mut buf) }.unwrap();
         assert_eq!(buf, [0, 7, 8, 9, 0]);
     }
 
     #[test]
     fn keepalive_host_out_of_bounds() {
-        let mem = host_keepalive_mem(vec![0; 3]);
+        let mem = host_keepalive_mem(vec![0; 3].into_boxed_slice());
         let mut buf = [0u8; 3];
-        assert!(mem.read_at(1, &mut buf).is_err());
-        assert!(mem.write_at(1, &[7, 8, 9]).is_err());
+        // SAFETY: `mem` is the sole handle to the allocation; the
+        // bounds check fires before any pointer dereference.
+        assert!(unsafe { mem.read_at(1, &mut buf) }.is_err());
+        // SAFETY: same as above.
+        assert!(unsafe { mem.write_at(1, &[7, 8, 9]) }.is_err());
     }
 }

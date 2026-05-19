@@ -9,10 +9,13 @@
 //! This module contains utilities used to help messages are delivered in order
 //! for any given sender and receiver actor pair.
 
+use std::any::TypeId;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::ops::DerefMut;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
 use dashmap::DashMap;
@@ -25,7 +28,43 @@ use tokio::sync::mpsc::error::SendError;
 use typeuri::Named;
 use uuid::Uuid;
 
-use crate::ref_;
+use crate::ActorAddr;
+use crate::PortAddr;
+use crate::actor::Signal;
+use crate::introspect::IntrospectMessage;
+
+// Bypass-actor-workq registry: message types whose receivers are delivered via
+// dedicated channels rather than the actor's work queue.
+//
+// Types in this registry share two invariants that the framework must honor:
+//   1. Their actor port is pre-registered via `Ports::open_message_port` in
+//      `Instance::new`; `Ports::get` rejects them via `is_bypass_workq_type_id` so
+//      they can't accidentally be wired to the work queue.
+//   2. Their sender-side sequence numbers must NOT share the per-actor seq
+//      counter (`SeqKey::Actor`), because the work queue never observes them
+//      and would otherwise see seq gaps that buffer subsequent workq messages
+//      indefinitely. `Sequencer::assign_seq` uses `SeqKey::Port` for these.
+//
+// When adding a new bypass-channel actor-port message type, update both lists.
+// A future move to `inventory`-driven registration can collapse them.
+
+static BYPASS_TYPE_IDS: LazyLock<HashSet<TypeId>> =
+    LazyLock::new(|| HashSet::from([TypeId::of::<Signal>(), TypeId::of::<IntrospectMessage>()]));
+
+static BYPASS_ACTOR_PORTS: LazyLock<HashSet<u64>> =
+    LazyLock::new(|| HashSet::from([Signal::port(), IntrospectMessage::port()]));
+
+/// Returns true if `id` is the `TypeId` of a bypass-channel message type
+/// (i.e. one that must not be wired through `Ports::get`).
+pub(crate) fn is_bypass_workq_type_id(id: TypeId) -> bool {
+    BYPASS_TYPE_IDS.contains(&id)
+}
+
+/// Returns true if `port` is the actor-port index of a bypass-channel
+/// message type (i.e. the sequencer must use `SeqKey::Port` for it).
+pub(crate) fn is_bypass_workq_actor_port(port: u64) -> bool {
+    BYPASS_ACTOR_PORTS.contains(&port)
+}
 
 /// A client's re-ordering buffer state.
 struct BufferState<T> {
@@ -175,13 +214,13 @@ impl<T> OrderedSender<T> {
 }
 
 /// Key for sequence assignment.
-/// Actor ports share a sequence per actor; non-actor ports get individual sequences.
+/// Handler ports share a sequence per actor; non-handler ports get individual sequences.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum SeqKey {
-    /// Shared sequence for all actor ports of an actor
-    Actor(ref_::ActorRef),
-    /// Individual sequence for a specific non-actor port
-    Port(ref_::PortRef),
+    /// Shared sequence for all handler ports of an actor
+    Actor(ActorAddr),
+    /// Individual sequence for a specific non-handler port
+    Port(PortAddr),
 }
 
 /// A message's sequencer number infomation.
@@ -253,11 +292,14 @@ impl Sequencer {
     /// Assign the next seq for a port, mutate the sequencer with the new seq,
     /// and return the new seq.
     ///
-    /// - Actor ports: share the same sequence scheme per actor (keyed by ActorId)
-    /// - Non-actor ports: get individual sequence schemes (keyed by PortId)
-    pub fn assign_seq(&self, port_id: &ref_::PortRef) -> SeqInfo {
-        let key = if port_id.is_actor_port() {
-            SeqKey::Actor(port_id.actor_ref().clone())
+    /// - Handler ports: share the same sequence scheme per actor (keyed by ActorAddr)
+    /// - Non-handler ports: get individual sequence schemes (keyed by PortAddr)
+    /// - Bypass-workq actor ports: messages sent to these ports are delivered
+    ///   to their dedicated channels rather than the actor's work queue. As a
+    ///   result, they use the per-port counter instead.
+    pub fn assign_seq(&self, port_id: &PortAddr) -> SeqInfo {
+        let key = if port_id.is_handler_port() && !is_bypass_workq_actor_port(port_id.index()) {
+            SeqKey::Actor(port_id.actor_addr().clone())
         } else {
             SeqKey::Port(port_id.clone())
         };
@@ -285,11 +327,11 @@ mod tests {
     use crate::port::Port;
     use crate::testing::ids::test_actor_id;
 
-    /// Test message type 1 for actor port sequencing tests.
+    /// Test message type 1 for handler port sequencing tests.
     #[derive(Named)]
     struct TestMsg1;
 
-    /// Test message type 2 for actor port sequencing tests.
+    /// Test message type 2 for handler port sequencing tests.
     #[derive(Named)]
     struct TestMsg2;
 
@@ -475,8 +517,8 @@ mod tests {
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_ref: crate::ref_::ActorRef = test_actor_id("test_0", "test").into();
-        let port_ref = actor_ref.port_ref(Port::from(1));
+        let actor_ref: ActorAddr = test_actor_id("test_0", "test");
+        let port_ref = actor_ref.port_addr(Port::from(1));
 
         // Modify original sequencer
         sequencer.assign_seq(&port_ref);
@@ -489,79 +531,117 @@ mod tests {
     }
 
     #[test]
-    fn test_sequencer_actor_ports_share_sequence() {
+    fn test_sequencer_handler_ports_share_sequence() {
         let sequencer = Sequencer {
             session_id: Uuid::now_v7(),
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_ref: crate::ref_::ActorRef = test_actor_id("worker_0", "worker").into();
-        // Two different actor ports for the same actor (using Named::port())
-        let actor_port_1 = actor_ref.port_ref(Port::from(TestMsg1::port()));
-        let actor_port_2 = actor_ref.port_ref(Port::from(TestMsg2::port()));
+        let actor_ref: ActorAddr = test_actor_id("worker_0", "worker");
+        // Two different handler ports for the same actor (using Named::port())
+        let handler_port_1 = actor_ref.port_addr(Port::from(TestMsg1::port()));
+        let handler_port_2 = actor_ref.port_addr(Port::from(TestMsg2::port()));
 
-        // Actor ports should share a sequence (keyed by ActorRef)
-        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 1);
-        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_2)), 2); // continues from 1
-        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 3);
+        // Handler ports should share a sequence (keyed by ActorAddr)
+        assert_eq!(get_seq(sequencer.assign_seq(&handler_port_1)), 1);
+        assert_eq!(get_seq(sequencer.assign_seq(&handler_port_2)), 2); // continues from 1
+        assert_eq!(get_seq(sequencer.assign_seq(&handler_port_1)), 3);
 
-        // Actor ports from a different actor get their own shared sequence
-        let actor_ref_2: crate::ref_::ActorRef = test_actor_id("worker_1", "worker").into();
-        let actor_port_3 = actor_ref_2.port_ref(Port::from(TestMsg1::port()));
-        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_3)), 1); // independent from actor_ref
+        // Handler ports from a different actor get their own shared sequence
+        let actor_ref_2: ActorAddr = test_actor_id("worker_1", "worker");
+        let handler_port_3 = actor_ref_2.port_addr(Port::from(TestMsg1::port()));
+        assert_eq!(get_seq(sequencer.assign_seq(&handler_port_3)), 1); // independent from actor_ref
     }
 
     #[test]
-    fn test_sequencer_non_actor_ports_have_independent_sequences() {
+    fn test_sequencer_non_handler_ports_have_independent_sequences() {
         let sequencer = Sequencer {
             session_id: Uuid::now_v7(),
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_ref_0: crate::ref_::ActorRef = test_actor_id("worker_0", "worker").into();
-        let actor_ref_1: crate::ref_::ActorRef = test_actor_id("worker_1", "worker").into();
+        let actor_ref_0: ActorAddr = test_actor_id("worker_0", "worker");
+        let actor_ref_1: ActorAddr = test_actor_id("worker_1", "worker");
 
-        // Non-actor ports from the same actor (without ACTOR_PORT_BIT)
-        let port_1 = actor_ref_0.port_ref(Port::from(1));
-        let port_2 = actor_ref_0.port_ref(Port::from(2));
+        // Non-handler ports from the same actor (without ACTOR_PORT_BIT)
+        let port_1 = actor_ref_0.port_addr(Port::from(1));
+        let port_2 = actor_ref_0.port_addr(Port::from(2));
 
-        // Non-actor ports should have independent sequences (keyed by PortRef)
+        // Non-handler ports should have independent sequences (keyed by PortAddr)
         assert_eq!(get_seq(sequencer.assign_seq(&port_1)), 1);
         assert_eq!(get_seq(sequencer.assign_seq(&port_2)), 1); // independent, starts at 1
         assert_eq!(get_seq(sequencer.assign_seq(&port_1)), 2);
         assert_eq!(get_seq(sequencer.assign_seq(&port_2)), 2);
 
-        // Non-actor ports from different actors are also independent
-        let port_3 = actor_ref_1.port_ref(Port::from(1));
+        // Non-handler ports from different actors are also independent
+        let port_3 = actor_ref_1.port_addr(Port::from(1));
         assert_eq!(get_seq(sequencer.assign_seq(&port_3)), 1); // independent from port_1
         assert_eq!(get_seq(sequencer.assign_seq(&port_1)), 3);
         assert_eq!(get_seq(sequencer.assign_seq(&port_3)), 2);
     }
 
     #[test]
-    fn test_sequencer_mixed_actor_and_non_actor_ports() {
+    fn test_sequencer_mixed_handler_and_non_handler_ports() {
         let sequencer = Sequencer {
             session_id: Uuid::now_v7(),
             last_seqs: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        let actor_ref: crate::ref_::ActorRef = test_actor_id("worker_0", "worker").into();
+        let actor_ref: ActorAddr = test_actor_id("worker_0", "worker");
 
-        // Actor ports (share sequence per actor)
-        let actor_port_1 = actor_ref.port_ref(Port::from(TestMsg1::port()));
-        let actor_port_2 = actor_ref.port_ref(Port::from(TestMsg2::port()));
+        // Handler ports (share sequence per actor)
+        let handler_port_1 = actor_ref.port_addr(Port::from(TestMsg1::port()));
+        let handler_port_2 = actor_ref.port_addr(Port::from(TestMsg2::port()));
 
-        // Non-actor ports (independent sequences per port)
-        let non_actor_port_1 = actor_ref.port_ref(Port::from(1));
-        let non_actor_port_2 = actor_ref.port_ref(Port::from(2));
+        // Non-handler ports (independent sequences per port)
+        let non_handler_port_1 = actor_ref.port_addr(Port::from(1));
+        let non_handler_port_2 = actor_ref.port_addr(Port::from(2));
 
         // Interleave sends to all port types
-        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 1);
-        assert_eq!(get_seq(sequencer.assign_seq(&non_actor_port_1)), 1); // independent
-        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_2)), 2); // continues actor sequence
-        assert_eq!(get_seq(sequencer.assign_seq(&non_actor_port_2)), 1); // independent
-        assert_eq!(get_seq(sequencer.assign_seq(&non_actor_port_1)), 2); // continues its own
-        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 3); // continues actor sequence
-        assert_eq!(get_seq(sequencer.assign_seq(&non_actor_port_2)), 2); // continues its own
+        assert_eq!(get_seq(sequencer.assign_seq(&handler_port_1)), 1);
+        assert_eq!(get_seq(sequencer.assign_seq(&non_handler_port_1)), 1); // independent
+        assert_eq!(get_seq(sequencer.assign_seq(&handler_port_2)), 2); // continues handler sequence
+        assert_eq!(get_seq(sequencer.assign_seq(&non_handler_port_2)), 1); // independent
+        assert_eq!(get_seq(sequencer.assign_seq(&non_handler_port_1)), 2); // continues its own
+        assert_eq!(get_seq(sequencer.assign_seq(&handler_port_1)), 3); // continues handler sequence
+        assert_eq!(get_seq(sequencer.assign_seq(&non_handler_port_2)), 2); // continues its own
+    }
+
+    #[test]
+    fn bypass_registry_introspect_message() {
+        assert!(is_bypass_workq_type_id(TypeId::of::<IntrospectMessage>()));
+        assert!(is_bypass_workq_actor_port(IntrospectMessage::port()));
+    }
+
+    #[test]
+    fn bypass_registry_signal() {
+        assert!(is_bypass_workq_type_id(TypeId::of::<Signal>()));
+        assert!(is_bypass_workq_actor_port(Signal::port()));
+    }
+
+    #[test]
+    fn bypass_registry_lists_have_matching_lengths() {
+        // If this fails, BYPASS_TYPE_IDS and BYPASS_ACTOR_PORTS have drifted.
+        assert_eq!(BYPASS_TYPE_IDS.len(), BYPASS_ACTOR_PORTS.len());
+    }
+
+    #[test]
+    fn bypass_actor_port_uses_per_port_seq_counter() {
+        // Regression test for the seq-gap bug that caused pyspy 504s when
+        // ENABLE_DEST_ACTOR_REORDERING_BUFFER=true. A bypass-channel actor port
+        // (IntrospectMessage) must use SeqKey::Port so it doesn't share a counter
+        // with workq-bound messages to the same actor.
+        let sequencer = Sequencer::new(Uuid::now_v7());
+        let actor_ref: ActorAddr = test_actor_id("agent_0", "proc_agent");
+
+        let introspect_port = actor_ref.port_addr(Port::from(IntrospectMessage::port()));
+        let regular_actor_port = actor_ref.port_addr(Port::from(TestMsg1::port()));
+
+        // Both should start at seq=1 because their counters are independent.
+        assert_eq!(get_seq(sequencer.assign_seq(&introspect_port)), 1);
+        assert_eq!(get_seq(sequencer.assign_seq(&regular_actor_port)), 1);
+        // And continue independently.
+        assert_eq!(get_seq(sequencer.assign_seq(&introspect_port)), 2);
+        assert_eq!(get_seq(sequencer.assign_seq(&regular_actor_port)), 2);
     }
 }

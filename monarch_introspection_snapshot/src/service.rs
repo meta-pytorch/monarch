@@ -125,10 +125,10 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
+use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeRef;
 use hyperactor_mesh::mesh_admin::MeshAdminAgent;
@@ -313,7 +313,7 @@ wirevalue::register_type!(CaptureSnapshot);
 /// delegates per-tick execution to [`run_periodic_tick`].
 ///
 /// The spawn site sends the first `CaptureSnapshot` (PT-3). The
-/// handler reschedules after each tick via `self_message_with_delay`.
+/// handler reschedules after each tick via `post_after`.
 /// Stopped by framework lifecycle (`DrainAndStop` on proc teardown).
 #[hyperactor::export(handlers = [CaptureSnapshot])]
 pub struct SnapshotCaptureActor {
@@ -321,7 +321,7 @@ pub struct SnapshotCaptureActor {
     service: SnapshotService,
     /// Typed admin actor reference used to resolve `NodeRef`s during
     /// capture.
-    admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent>,
+    admin_ref: ActorRef<MeshAdminAgent>,
     /// Delay between periodic capture ticks after the initial
     /// immediate fire.
     interval: Duration,
@@ -353,11 +353,8 @@ impl Handler<CaptureSnapshot> for SnapshotCaptureActor {
         };
         run_periodic_tick(&self.service, resolve).await;
 
-        // Reschedule. If the actor is stopping, this spawns a
-        // detached task whose eventual port.send() fails harmlessly.
-        if let Err(e) = cx.self_message_with_delay(CaptureSnapshot, self.interval) {
-            tracing::error!("snapshot capture actor failed to reschedule: {:#}", e);
-        }
+        // Reschedule through the actor runtime instead of detached work.
+        cx.post_after(cx, CaptureSnapshot, self.interval);
         Ok(())
     }
 }
@@ -367,7 +364,7 @@ impl SnapshotCaptureActor {
     /// start it.
     pub fn new(
         table_store: TableStore,
-        admin_ref: hyperactor_reference::ActorRef<MeshAdminAgent>,
+        admin_ref: ActorRef<MeshAdminAgent>,
         interval: Duration,
     ) -> Self {
         Self {
@@ -428,8 +425,8 @@ mod tests {
     use std::collections::HashMap;
     use std::time::SystemTime;
 
+    use hyperactor::ProcAddr;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::reference::ProcId;
     use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
     use hyperactor_mesh::introspect::NodeProperties;
     use hyperactor_mesh::introspect::NodeRef;
@@ -444,8 +441,8 @@ mod tests {
     /// and as the `actor_type` string in test fixtures.
     const ACTOR_TYPE: &str = "test_actor";
 
-    fn test_proc_id() -> ProcId {
-        ProcId::from_resource_name(ChannelAddr::Local(0), PROC_NAME)
+    fn test_proc_id() -> ProcAddr {
+        hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(ChannelAddr::Local(0), PROC_NAME)
     }
 
     /// Build a stub resolver backed by a `HashMap`.
@@ -467,8 +464,8 @@ mod tests {
     /// Build a minimal mesh topology: root → host → proc → actor.
     fn minimal_mesh_payloads() -> HashMap<NodeRef, NodePayload> {
         let proc_id = test_proc_id();
-        let host_actor_id = proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME);
-        let actor_id = proc_id.actor_id(ACTOR_TYPE);
+        let host_actor_id = proc_id.actor_addr(HOST_MESH_AGENT_ACTOR_NAME);
+        let actor_id = proc_id.actor_addr(ACTOR_TYPE);
 
         let host_ref = NodeRef::Host(host_actor_id.clone());
         let proc_ref = NodeRef::Proc(proc_id.clone());

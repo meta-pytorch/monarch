@@ -220,15 +220,16 @@ declare_attrs! {
     pub attr ACTOR_QUEUE_DISPATCH: bool = false;
 
     /// ZMQ-style address of a remote host's duplex server to attach the
-    /// Python client to. When non-empty, the client bootstrap path
-    /// attaches its singleton proc to the host at this address rather
-    /// than creating a fully-local host mesh, so messages from the
-    /// client are routed through that host as a forwarder. This is
-    /// intended for cases (e.g., the client running outside a
-    /// Kubernetes cluster) where the client cannot be reached directly
-    /// by the procs in the mesh, so a single in-mesh host serves as
-    /// the client's mailbox. An empty string disables attach-mode
-    /// bootstrap.
+    /// Python client's gateway to. When non-empty, the client bootstrap
+    /// path connects the client's local gateway to the gateway at this
+    /// address: the client's outbound traffic is forwarded over the
+    /// duplex, and the remote gateway registers routes back to the
+    /// client's local procs so return traffic flows over the same
+    /// duplex. This is intended for cases (e.g., the client running
+    /// outside a Kubernetes cluster) where the client cannot be reached
+    /// directly by the procs in the mesh, so a single in-mesh host
+    /// serves as the client's mailbox. An empty string disables
+    /// attach-mode bootstrap.
     @meta(CONFIG = ConfigAttr::new(
         Some("MONARCH_CLIENT_ATTACH_ADDR".to_string()),
         Some("client_attach_addr".to_string()),
@@ -304,7 +305,7 @@ where
             key.name(),
         ))
     })?;
-    let val: Option<P> = hyperactor_config::global::try_get_cloned(key.clone())
+    let val: Option<P> = hyperactor_config::global::try_get_cloned(*key)
         .map(|v| v.try_into())
         .transpose()?;
     val.map(|v| v.into_py_any(py)).transpose()
@@ -330,7 +331,7 @@ where
     let key = key.downcast_ref::<T>().expect("cannot fail");
     let runtime = hyperactor_config::global::runtime_attrs();
     let val: Option<P> = runtime
-        .get(key.clone())
+        .get(*key)
         .cloned()
         .map(|v| v.try_into())
         .transpose()?;
@@ -350,7 +351,7 @@ fn set_runtime_config_py<T: AttrValue + Debug>(
     // Again, can't fail unless there's a bug in the code in this file.
     let key = key.downcast_ref().expect("cannot fail");
     let mut attrs = Attrs::new();
-    attrs.set(key.clone(), value);
+    attrs.set(*key, value);
     hyperactor_config::global::create_or_merge(Source::Runtime, attrs);
     Ok(())
 }

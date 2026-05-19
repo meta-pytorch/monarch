@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use local_memory::RdmaLocalMemory;
+use local_memory::KeepaliveLocalMemory;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -56,7 +56,7 @@ pub enum RdmaOpType {
 #[derive(Debug)]
 pub struct RdmaOp {
     pub op_type: RdmaOpType,
-    pub local: Arc<dyn RdmaLocalMemory>,
+    pub local: Arc<KeepaliveLocalMemory>,
     pub remote: RdmaRemoteBuffer,
 }
 

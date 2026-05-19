@@ -19,8 +19,9 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
+use hyperactor as reference;
+use hyperactor::Endpoint as _;
 use hyperactor::Instance;
-use hyperactor::reference;
 use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::mailbox::PyPortId;
@@ -386,7 +387,7 @@ impl DatabaseScanner {
         let instance: Instance<PythonActor> = py_instance.clone_for_py();
 
         // Build destination PortRef once
-        let dest_port_id: reference::PortId = dest.clone().into();
+        let dest_port_id: reference::PortAddr = dest.clone().into();
         let dest_ref: reference::PortRef<QueryResponse> = reference::PortRef::attest(dest_port_id);
 
         // Execute scan, streaming batches directly to destination
@@ -762,14 +763,7 @@ impl DatabaseScanner {
                         let msg = QueryResponse {
                             data: Part::from(data),
                         };
-                        if let Err(e) = dest_ref.send(instance, msg) {
-                            tracing::debug!(
-                                "Scanner {}: send error for batch {}: {:?}",
-                                rank,
-                                count,
-                                e
-                            );
-                        }
+                        dest_ref.post(instance, msg);
                         count += 1;
                     }
                 }

@@ -17,7 +17,6 @@ import unittest
 from pathlib import Path
 from typing import Any, Generator
 
-import pytest
 from monarch._src.actor.code_sync.auto_reload import AutoReloader, SysAuditImportHook
 
 

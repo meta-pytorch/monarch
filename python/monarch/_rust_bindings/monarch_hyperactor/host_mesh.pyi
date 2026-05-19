@@ -6,12 +6,12 @@
 
 # pyre-strict
 
-from typing import Any, final
+from typing import Any, Callable, final
 
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
+from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Point, Region
 
 @final
 class HostMesh:
@@ -21,6 +21,7 @@ class HostMesh:
         name: str,
         per_host: Extent,
         proc_bind: list[dict[str, str]] | None = None,
+        per_rank_bootstrap: Callable[[Point], BootstrapCommand] | None = None,
     ) -> PythonTask[ProcMesh]:
         """
         Spawn a new actor on this mesh.
@@ -29,6 +30,11 @@ class HostMesh:
         - `instance`: The instance to use to spawn the mesh.
         - `name`: Name of the proc mesh
         - `per_host`: Extent describing the shape of the proc mesh on each host.
+        - `proc_bind`: Optional per-process CPU/NUMA binding config.
+        - `per_rank_bootstrap`: Optional callable invoked once per proc with
+          that proc's ``Point`` over the combined ``host ⊕ per_host``
+          extent; its returned ``BootstrapCommand`` is used for that proc.
+          Scoped to this spawn; the mesh itself is not mutated.
         """
         ...
 
@@ -102,35 +108,57 @@ class BootstrapCommand:
         ...
 
     def __repr__(self) -> str: ...
+    def with_env(self, env: dict[str, str]) -> "BootstrapCommand":
+        """
+        Return a copy of this command with `env` merged on top of its
+        environment. Keys in `env` override any conflicting keys in the
+        existing environment.
+
+        Arguments:
+        - `env`: Additional environment variables to merge.
+        """
+        ...
 
 def bootstrap_host(
     bootstrap_cmd: BootstrapCommand | None,
+    via: str | None = None,
 ) -> PythonTask[tuple[HostMesh, ProcMesh, Instance]]:
     """
-    Bootstrap a host mesh in this process, returning the host mesh,
-    proc mesh, and client instance.
+    Bootstrap a host mesh in this process, returning ``(host mesh,
+    proc mesh, client instance)``.
 
     Arguments:
-    - `bootstrap_cmd`: The bootstrap command to use to bootstrap the host.
-    """
-    ...
+        bootstrap_cmd: The bootstrap command to use to bootstrap the
+            host. ``None`` uses the current process's bootstrap command.
+        via: Optional ZMQ-style address of a remote host's duplex
+            server. When set, the local host's gateway is attached to
+            that remote gateway: outbound traffic to unknown
+            destinations is forwarded over the duplex, and inbound
+            traffic from the duplex is delivered into local procs. Use
+            this when this process cannot be reached directly by the
+            procs it talks to — typically a developer machine driving
+            a job whose hosts live inside a Kubernetes cluster.
 
-def bootstrap_attached(
-    bootstrap_cmd: BootstrapCommand | None,
-    duplex_addr: str,
-) -> PythonTask[tuple[HostMesh, ProcMesh, Instance]]:
-    """
-    Bootstrap a host mesh in this process, returning the host mesh,
-    proc mesh, and client instance.
+    Returns:
+        A tuple ``(HostMesh, ProcMesh, Instance)``:
 
-    Arguments:
-    - `bootstrap_cmd`: The bootstrap command to use to bootstrap this host.
-        This does *not* apply to nor change the host that serves the duplex address.
-    - `duplex_addr`: The host that serves a duplex address which this proc will
-        attach as a remote proc. This proc's lifecycle is not owned by that host,
-        but it does use the host to provide the mailbox.
-        This allows a host to act as a forwarder of messages to a remote proc,
-        in cases where the proc is not visible to other hosts in the mesh.
+        * the local host mesh (this machine),
+        * the local ``ProcMesh`` on this host,
+        * the root client actor instance on the local proc mesh.
+
+    Reachability and identity (when ``via`` is set):
+        * ``this_host()`` always names the actual current host (this
+          machine), regardless of how its procs are served. ``via``
+          controls how procs are *reached*, not the host's identity.
+        * Outbound traffic to destinations the local gateway does not
+          know is forwarded through the duplex to the remote host;
+          inbound traffic from the duplex is routed to local procs by
+          the gateway.
+        * To drive procs on the *remote* (attach-target) host instead,
+          use a separate ``HostMesh`` (e.g., one returned by a job).
+
+    Shutdown is local-only: tearing down this client does not stop the
+    remote host.
     """
     ...
 

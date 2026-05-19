@@ -10,9 +10,12 @@
 
 use std::collections::BTreeSet;
 
+use hyperactor::ActorRef;
+use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
+use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
 use hyperactor::context;
 use hyperactor::mailbox;
 use hyperactor::mailbox::MailboxSenderError;
@@ -20,7 +23,6 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
-use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::Selection;
@@ -37,6 +39,7 @@ use ndslice::selection::ReifySlice;
 use ndslice::selection::normal;
 
 use crate::CommActor;
+use crate::comm::ENABLE_NATIVE_V1_CASTING;
 use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
@@ -44,6 +47,19 @@ use crate::comm::multicast::Uslice;
 use crate::config::MAX_CAST_DIMENSION_SIZE;
 use crate::mesh_id::ActorMeshId;
 use crate::metrics;
+
+/// Returns true if native V1 casting is enabled. Panics if V1 casting
+/// is on but the required dest actor reordering buffer is not.
+pub(crate) fn v1_casting_enabled() -> bool {
+    let enabled = hyperactor_config::global::get(ENABLE_NATIVE_V1_CASTING);
+    if enabled {
+        assert!(
+            hyperactor_config::global::get(ENABLE_DEST_ACTOR_REORDERING_BUFFER),
+            "native V1 casting requires ENABLE_DEST_ACTOR_REORDERING_BUFFER to be enabled",
+        );
+    }
+    enabled
+}
 
 declare_attrs! {
     /// Which mesh this message was cast to. Used for undeliverable message
@@ -58,13 +74,16 @@ declare_attrs! {
 pub fn update_undeliverable_envelope_for_casting(
     mut envelope: Undeliverable<MessageEnvelope>,
 ) -> Undeliverable<MessageEnvelope> {
-    let old_actor = envelope.0.sender().clone();
-    if let Some(actor_id) = envelope.0.headers().get(CAST_ORIGINATING_SENDER) {
+    let Some(message) = envelope.as_message_mut() else {
+        return envelope;
+    };
+    let old_actor = message.sender().clone();
+    if let Some(actor_id) = message.headers().get(CAST_ORIGINATING_SENDER) {
         tracing::debug!(
             actor_id = %old_actor,
             "remapped comm-actor id to id from CAST_ORIGINATING_SENDER {}", actor_id
         );
-        envelope.0.update_sender(actor_id);
+        message.update_sender(actor_id);
     }
     // Else do nothing, it wasn't from a comm actor.
     envelope
@@ -81,7 +100,7 @@ pub fn update_undeliverable_envelope_for_casting(
 pub(crate) fn actor_mesh_cast<A, M>(
     cx: &impl context::Actor,
     actor_mesh_id: ActorMeshId,
-    comm_actor_ref: &hyperactor_reference::ActorRef<CommActor>,
+    comm_actor_ref: &ActorRef<CommActor>,
     selection_of_root: Selection,
     root_mesh_shape: &Shape,
     cast_mesh_shape: &Shape,
@@ -106,7 +125,7 @@ where
     headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
     let message = CastMessageEnvelope::new::<A, M>(
         actor_mesh_id.clone(),
-        cx.mailbox().actor_id().clone().into(),
+        cx.mailbox().actor_addr().clone(),
         cast_mesh_shape.clone(),
         headers,
         message,
@@ -154,7 +173,7 @@ where
 
     comm_actor_ref
         .port()
-        .send_with_headers(cx, headers, cast_message)?;
+        .post_with_headers(cx, headers, cast_message);
 
     Ok(())
 }
@@ -163,7 +182,7 @@ where
 pub(crate) fn cast_to_sliced_mesh<A, M>(
     cx: &impl context::Actor,
     actor_mesh_id: ActorMeshId,
-    comm_actor_ref: &hyperactor_reference::ActorRef<CommActor>,
+    comm_actor_ref: &ActorRef<CommActor>,
     sel_of_sliced: &Selection,
     message: M,
     sliced_shape: &Shape,

@@ -329,23 +329,23 @@ fn convert_failure(
 mod tests {
     use std::time::Duration;
 
+    use hyperactor::ProcAddr;
     use hyperactor::channel::ChannelAddr;
-    use hyperactor::reference::ProcId;
 
     use super::*;
 
     // Test fixtures
 
-    fn test_proc_id() -> ProcId {
-        ProcId::from_resource_name(ChannelAddr::Local(0), "worker")
+    fn test_proc_id() -> ProcAddr {
+        hyperactor_mesh::mesh_id::ResourceId::proc_addr_from_name(ChannelAddr::Local(0), "worker")
     }
 
-    fn test_actor_id() -> hyperactor::reference::ActorId {
-        test_proc_id().actor_id("actor")
+    fn test_actor_id() -> hyperactor::ActorAddr {
+        test_proc_id().actor_addr("actor")
     }
 
-    fn test_host_actor_id() -> hyperactor::reference::ActorId {
-        test_proc_id().actor_id("host_agent")
+    fn test_host_actor_id() -> hyperactor::ActorAddr {
+        test_proc_id().actor_addr("host_agent")
     }
 
     fn test_time() -> SystemTime {
@@ -576,10 +576,10 @@ mod tests {
     // CV-5: Proc with mixed system/stopped/regular children.
     #[test]
     fn test_child_classification_mixed() {
-        let regular = test_proc_id().actor_id("regular");
-        let sys_only = test_proc_id().actor_id("sys_actor");
-        let stopped_only = test_proc_id().actor_id("stopped_actor");
-        let sys_and_stopped = test_proc_id().actor_id("both");
+        let regular = test_proc_id().actor_addr("regular");
+        let sys_only = test_proc_id().actor_addr("sys_actor");
+        let stopped_only = test_proc_id().actor_addr("stopped_actor");
+        let sys_and_stopped = test_proc_id().actor_addr("both");
 
         let children = vec![
             NodeRef::Actor(regular.clone()),
@@ -634,9 +634,9 @@ mod tests {
     // CV-4: child_sort_key is enumeration order.
     #[test]
     fn test_child_sort_key_is_enumeration_order() {
-        let a0 = test_proc_id().actor_id("a");
-        let a1 = test_proc_id().actor_id("b");
-        let a2 = test_proc_id().actor_id("c");
+        let a0 = test_proc_id().actor_addr("a");
+        let a1 = test_proc_id().actor_addr("b");
+        let a2 = test_proc_id().actor_addr("c");
 
         let payload = NodePayload {
             identity: NodeRef::Proc(test_proc_id()),

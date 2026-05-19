@@ -15,33 +15,33 @@ use serde::Serialize;
 
 use crate as hyperactor; // for macros
 use crate::Actor;
+use crate::ActorRef;
 use crate::Context;
 use crate::Handler;
 use crate::Instance;
+use crate::OncePortRef;
+use crate::PortRef;
 use crate::RemoteSpawn;
+use crate::endpoint::Endpoint as _;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableMessageError;
-use crate::reference;
 
 /// A message that can be passed around. It contains
 /// 0. the TTL of this PingPong game
 /// 1. the next actor to send the message to
 /// 2. a port to send a true value to when TTL = 0.
 #[derive(Serialize, Deserialize, Debug, typeuri::Named)]
-pub struct PingPongMessage(
-    pub u64,
-    pub reference::ActorRef<PingPongActor>,
-    pub reference::OncePortRef<bool>,
-);
+pub struct PingPongMessage(pub u64, pub ActorRef<PingPongActor>, pub OncePortRef<bool>);
 wirevalue::register_type!(PingPongMessage);
 
 /// A PingPong actor that can play the PingPong game by sending messages around.
 #[derive(Debug)]
-#[hyperactor::export(spawn = true, handlers = [PingPongMessage])]
+#[hyperactor::export(PingPongMessage)]
+#[hyperactor::spawnable]
 pub struct PingPongActor {
     /// A port to send undeliverable messages to.
-    undeliverable_port_ref: Option<reference::PortRef<Undeliverable<MessageEnvelope>>>,
+    undeliverable_port_ref: Option<PortRef<Undeliverable<MessageEnvelope>>>,
     /// The TTL at which the actor will exit with error.
     error_ttl: Option<u64>,
     /// Manual delay before sending handling the message.
@@ -55,7 +55,7 @@ impl PingPongActor {
     /// - `error_ttl`: The TTL at which the actor will exit with error.
     /// - `delay`: Manual delay before sending handling the message.
     pub fn new(
-        undeliverable_port_ref: Option<reference::PortRef<Undeliverable<MessageEnvelope>>>,
+        undeliverable_port_ref: Option<PortRef<Undeliverable<MessageEnvelope>>>,
         error_ttl: Option<u64>,
         delay: Option<Duration>,
     ) -> Self {
@@ -70,7 +70,7 @@ impl PingPongActor {
 #[async_trait]
 impl RemoteSpawn for PingPongActor {
     type Params = (
-        Option<reference::PortRef<Undeliverable<MessageEnvelope>>>,
+        Option<PortRef<Undeliverable<MessageEnvelope>>>,
         Option<u64>,
         Option<Duration>,
     );
@@ -94,11 +94,15 @@ impl Actor for PingPongActor {
         undelivered: crate::mailbox::Undeliverable<crate::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         match &self.undeliverable_port_ref {
-            Some(port) => port.send(cx, undelivered).unwrap(),
-            None => {
-                let Undeliverable(envelope) = undelivered;
-                anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
-            }
+            Some(port) => port.post(cx, undelivered),
+            None => match undelivered {
+                Undeliverable::Message(envelope) => {
+                    anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+                }
+                Undeliverable::Lost(lost) => {
+                    anyhow::bail!(UndeliverableMessageError::Lost { lost });
+                }
+            },
         }
 
         Ok(())
@@ -121,13 +125,13 @@ impl Handler<PingPongMessage> for PingPongActor {
             anyhow::bail!("PingPong handler encountered an Error");
         }
         if ttl == 0 {
-            done_port.send(cx, true)?;
+            done_port.post(cx, true);
         } else {
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }
             let next_message = PingPongMessage(ttl - 1, cx.bind(), done_port);
-            pong_actor.send(cx, next_message)?;
+            pong_actor.post(cx, next_message);
         }
         Ok(())
     }

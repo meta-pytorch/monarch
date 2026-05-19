@@ -11,13 +11,14 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::proc::Proc;
-use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -40,9 +41,10 @@ impl Handler<Subscribe> for CounterActor {
         cx: &Context<Self>,
         subscriber: Subscribe,
     ) -> Result<(), anyhow::Error> {
-        self.subscribers.push(subscriber.0);
+        let port: reference::PortRef<u64> = subscriber.0;
+        self.subscribers.push(port);
         for port in &self.subscribers {
-            port.send(cx, self.n)?;
+            port.post(cx, self.n);
         }
         self.n += 1;
         Ok(())
@@ -65,7 +67,7 @@ impl Actor for CountClient {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         // Subscribe to the counter on initialization. We give it our u64 port to report
         // messages back to.
-        self.counter.send(this, Subscribe(this.port().bind()))?;
+        self.counter.post(this, Subscribe(this.port().bind()));
         Ok(())
     }
 }
@@ -73,14 +75,14 @@ impl Actor for CountClient {
 #[async_trait]
 impl Handler<u64> for CountClient {
     async fn handle(&mut self, cx: &Context<Self>, count: u64) -> Result<(), anyhow::Error> {
-        eprintln!("{}: count: {}", cx.self_id(), count);
+        eprintln!("{}: count: {}", cx.self_addr(), count);
         Ok(())
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let proc = Proc::local();
+    let proc = Proc::isolated();
 
     let counter_actor: ActorHandle<CounterActor> =
         proc.spawn("counter", CounterActor::default()).unwrap();

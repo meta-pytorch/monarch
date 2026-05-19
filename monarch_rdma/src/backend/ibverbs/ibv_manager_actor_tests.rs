@@ -16,7 +16,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::PollTarget;
-    use super::super::manager_actor::IbvManagerMessageClient;
+    use super::super::manager_actor::request_queue_pair;
     use super::super::primitives::IbvQpType;
     use super::super::primitives::get_all_devices;
     use super::super::test_utils::IbvTestEnv;
@@ -33,30 +33,19 @@ mod tests {
             return Ok(());
         }
         let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         // Poll for completion
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
-
-        env.ibv_actor_1
-            .release_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-                qp_1,
-            )
-            .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
         Ok(())
@@ -72,29 +61,18 @@ mod tests {
             return Ok(());
         }
         let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
-
-        env.ibv_actor_1
-            .release_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-                qp_1,
-            )
-            .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
         Ok(())
@@ -112,16 +90,15 @@ mod tests {
             return Ok(());
         }
         let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.get(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         // Poll for completion
@@ -143,16 +120,15 @@ mod tests {
             return Ok(());
         }
         let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
 
@@ -172,26 +148,24 @@ mod tests {
             return Ok(());
         }
         let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
-        let mut qp_2 = env
-            .ibv_actor_2
-            .request_queue_pair(
-                &env.client_2,
-                env.ibv_actor_1.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_2 = request_queue_pair(
+            &env.ibv_handle_2,
+            &env.client_2,
+            env.ibv_actor_1.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         qp_1.recv(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         let wr_id = qp_2.put_with_recv(env.ibv_buffer_2.clone(), env.ibv_buffer_1.clone())?;
         wait_for_completion(&mut qp_2, PollTarget::Send, &wr_id, 5).await?;
@@ -201,8 +175,10 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_write_separate_devices_db() -> Result<(), anyhow::Error> {
+        if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
+            return Ok(());
+        }
         const BSIZE: usize = 1024;
         let devices = get_all_devices();
         if devices.len() < 4 {
@@ -212,16 +188,15 @@ mod tests {
             return Ok(());
         }
         let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         qp_1.ring_doorbell()?;
         // Poll for completion
@@ -232,8 +207,10 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_read_separate_devices_db_check() -> Result<(), anyhow::Error> {
+        if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
+            return Ok(());
+        }
         const BSIZE: usize = 1024;
         let devices = get_all_devices();
         if devices.len() < 4 {
@@ -243,16 +220,15 @@ mod tests {
             return Ok(());
         }
         let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
-        let mut qp_2 = env
-            .ibv_actor_2
-            .request_queue_pair(
-                &env.client_2,
-                env.ibv_actor_1.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_2 = request_queue_pair(
+            &env.ibv_handle_2,
+            &env.client_2,
+            env.ibv_actor_1.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_2.enqueue_get(env.ibv_buffer_2.clone(), env.ibv_buffer_1.clone())?;
         qp_2.ring_doorbell()?;
         // Poll for completion
@@ -335,16 +311,15 @@ mod tests {
             return Ok(());
         }
         let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         ring_db_gpu(&qp_1).await?;
         // Poll for completion
@@ -356,8 +331,10 @@ mod tests {
 
     // Test that RDMA read can be performed between two actors on separate devices with CUDA.
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_read_separate_devices_db_device_trigger() -> Result<(), anyhow::Error> {
+        if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
+            return Ok(());
+        }
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -375,16 +352,15 @@ mod tests {
             return Ok(());
         }
         let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         qp_1.enqueue_get(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         ring_db_gpu(&qp_1).await?;
         // Poll for completion
@@ -395,8 +371,10 @@ mod tests {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
-    #[ignore = "This test needed to be run in isolation"]
     async fn test_rdma_write_recv_separate_devices_db_trigger() -> Result<(), anyhow::Error> {
+        if std::env::var("MONARCH_RDMA_RUN_ISOLATED").is_err() {
+            return Ok(());
+        }
         if is_cpu_only_mode() {
             println!("Skipping CUDA test in CPU-only mode");
             return Ok(());
@@ -414,26 +392,24 @@ mod tests {
             return Ok(());
         }
         let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
-        let mut qp_2 = env
-            .ibv_actor_2
-            .request_queue_pair(
-                &env.client_2,
-                env.ibv_actor_1.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_2 = request_queue_pair(
+            &env.ibv_handle_2,
+            &env.client_2,
+            env.ibv_actor_1.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         recv_wqe_gpu(
             &mut qp_1,
             &env.ibv_buffer_1,
@@ -473,16 +449,15 @@ mod tests {
         }
         let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cpu:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
@@ -509,16 +484,15 @@ mod tests {
         }
         let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
-        let mut qp_1 = env
-            .ibv_actor_1
-            .request_queue_pair(
-                &env.client_1,
-                env.ibv_actor_2.clone(),
-                env.ibv_buffer_1.device_name.clone(),
-                env.ibv_buffer_2.device_name.clone(),
-            )
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp_1 = request_queue_pair(
+            &env.ibv_handle_1,
+            &env.client_1,
+            env.ibv_actor_2.clone(),
+            env.ibv_buffer_1.device_name.clone(),
+            env.ibv_buffer_2.device_name.clone(),
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
         let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
@@ -627,7 +601,11 @@ mod tests {
         Ok(())
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 30)]
+    // Wrapper is intentionally generous: under full-suite parallel
+    // load, `IbvTestEnv::setup` (proc spawn + CUDA ctx + buffer
+    // registration) alone takes >30s, while the actual concurrent
+    // reads are tens to hundreds of ms.
+    #[timed_test::async_timed_test(timeout_secs = 120)]
     async fn test_concurrent_send_to_same_target() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 2 * 1024 * 1024;
         let devices = get_all_devices();
@@ -841,6 +819,88 @@ mod tests {
         env.cleanup().await?;
 
         println!("2GB RDMA write test completed successfully");
+        Ok(())
+    }
+
+    // ============================================================
+    // Wiring tests for IbvManagerActor's QP state machine.
+    // ============================================================
+
+    /// Two concurrent local `request_queue_pair` calls for the same
+    /// `(self_device, peer, other_device)` key must both succeed and
+    /// return the same QP; that QP must be usable for data-plane ops.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_concurrent_request_queue_pair_converges() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        if get_all_devices().is_empty() {
+            panic!("Skipping test: RDMA devices not available");
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+        let self_device = env.ibv_buffer_1.device_name.clone();
+        let other_device = env.ibv_buffer_2.device_name.clone();
+
+        let (r1, r2) = tokio::join!(
+            request_queue_pair(
+                &env.ibv_handle_1,
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                self_device.clone(),
+                other_device.clone(),
+            ),
+            request_queue_pair(
+                &env.ibv_handle_1,
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                self_device.clone(),
+                other_device.clone(),
+            ),
+        );
+        let qp1 = r1?.map_err(|e| anyhow::anyhow!(e))?;
+        let mut qp2 = r2?.map_err(|e| anyhow::anyhow!(e))?;
+        assert_eq!(qp1.qp, qp2.qp);
+
+        let wr_id = qp2.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        wait_for_completion(&mut qp2, PollTarget::Send, &wr_id, 2).await?;
+        env.verify_buffers(BSIZE, 0).await?;
+        Ok(())
+    }
+
+    /// Two managers call `request_queue_pair` for each other at the
+    /// same time. Each side spawns a [`QueuePairInitializer`] and the
+    /// two initializers must rendezvous on the wire (peer endpoint +
+    /// `NotifyRts`) without either side deadlocking the other. The
+    /// resulting QP must be usable for a data-plane op.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_bidirectional_concurrent_request_queue_pair() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        if get_all_devices().is_empty() {
+            panic!("Skipping test: RDMA devices not available");
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+        let dev_1 = env.ibv_buffer_1.device_name.clone();
+        let dev_2 = env.ibv_buffer_2.device_name.clone();
+
+        let (r_local, r_remote) = tokio::join!(
+            request_queue_pair(
+                &env.ibv_handle_1,
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                dev_1.clone(),
+                dev_2.clone(),
+            ),
+            request_queue_pair(
+                &env.ibv_handle_2,
+                &env.client_2,
+                env.ibv_actor_1.clone(),
+                dev_2.clone(),
+                dev_1.clone(),
+            ),
+        );
+        let mut qp1 = r_local?.map_err(|e| anyhow::anyhow!(e))?;
+        let _ = r_remote?.map_err(|e| anyhow::anyhow!(e))?;
+        let wr_id = qp1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        wait_for_completion(&mut qp1, PollTarget::Send, &wr_id, 2).await?;
+        env.verify_buffers(BSIZE, 0).await?;
         Ok(())
     }
 }

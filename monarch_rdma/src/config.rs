@@ -8,6 +8,8 @@
 
 //! RDMA configuration attributes.
 
+use std::time::Duration;
+
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -53,4 +55,40 @@ declare_attrs! {
         Some("rdma_tcp_fallback_parallelism".to_string()),
     ))
     pub attr RDMA_TCP_FALLBACK_PARALLELISM: usize = 1;
+
+    /// Cooperative-yield window for the ibverbs CQ poll loop. While
+    /// the policy is within this window it calls
+    /// `tokio::task::yield_now` between polls; past it, polls fall
+    /// into an exponential backoff sleep (1ms initial, x2, capped at
+    /// 10ms). `None` (the default) disables the cutoff entirely:
+    /// the loop only ever yields, never sleeps.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_CQ_BUSY_POLL_WINDOW".to_string()),
+        Some("rdma_cq_busy_poll_window".to_string()),
+    ))
+    pub attr RDMA_CQ_BUSY_POLL_WINDOW: Option<Duration> = None;
+
+    /// Capacity of the per-processor LRU cache that memoizes
+    /// `IbvMemoryRegionView`s by `(virtual_addr, size)`. Hits skip
+    /// the manager round-trip; misses ask the manager to register
+    /// the region and insert the result. A value of `0` is clamped
+    /// to `1` (the LRU is effectively disabled at that size, but
+    /// the processor still functions).
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_MR_LRU_CACHE_SIZE".to_string()),
+        Some("rdma_mr_lru_cache_size".to_string()),
+    ))
+    pub attr RDMA_MR_LRU_CACHE_SIZE: usize = 1024;
+
+    /// Per-side budget for the `QueuePairInitializer` handshake. The
+    /// timer arms once when we send `EnsureQueuePair` and is rearmed
+    /// after we hit RTS while still waiting for the peer's
+    /// `NotifyRts`. If it fires the entry is tombstoned with a
+    /// `qp_initializer_failed` so further `RequestQueuePair` calls
+    /// for the same key surface the same error rather than hanging.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("MONARCH_RDMA_QP_INIT_TIMEOUT".to_string()),
+        Some("rdma_qp_init_timeout".to_string()),
+    ))
+    pub attr RDMA_QP_INIT_TIMEOUT: Duration = Duration::from_secs(30);
 }
