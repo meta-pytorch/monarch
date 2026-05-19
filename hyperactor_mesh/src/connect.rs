@@ -426,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn test_simple_connection() -> Result<()> {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client")?;
+        let client = proc.client("client");
         let (connect, completer) = Connect::allocate(client.self_addr().clone(), client);
         let actor = proc.spawn("actor", EchoActor {})?;
         actor.send(&completer.caps, connect)?;
@@ -451,13 +451,13 @@ mod tests {
     #[tokio::test]
     async fn test_connection_close_on_drop() -> Result<()> {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client")?;
+        let client = proc.client("client");
+        let client_addr = client.self_addr().clone();
+        let server = proc.client("server");
+        let server_addr = server.self_addr().clone();
 
-        let (connect, completer) =
-            Connect::allocate(client.self_addr().clone(), client.clone_for_py());
-        let (mut rd, _) = accept(client.clone_for_py(), client.self_addr().clone(), connect)
-            .await?
-            .into_split();
+        let (connect, completer) = Connect::allocate(client_addr, client);
+        let (mut rd, _) = accept(server, server_addr, connect).await?.into_split();
         let (_, mut wr) = completer.complete().await?.into_split();
 
         // Write some data
@@ -478,13 +478,13 @@ mod tests {
     #[tokio::test]
     async fn test_no_eof_on_drop_after_shutdown() -> Result<()> {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client")?;
+        let client = proc.client("client");
+        let client_addr = client.self_addr().clone();
+        let server = proc.client("server");
+        let server_addr = server.self_addr().clone();
 
-        let (connect, completer) =
-            Connect::allocate(client.self_addr().clone(), client.clone_for_py());
-        let (mut rd, _) = accept(client.clone_for_py(), client.self_addr().clone(), connect)
-            .await?
-            .into_split();
+        let (connect, completer) = Connect::allocate(client_addr, client);
+        let (mut rd, _) = accept(server, server_addr, connect).await?.into_split();
         let (_, mut wr) = completer.complete().await?.into_split();
 
         // Write some data
