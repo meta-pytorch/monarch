@@ -34,10 +34,23 @@ use super::queue_pair::PollTarget;
 use crate::IbvConfig;
 use crate::RdmaManagerMessageClient;
 use crate::RdmaRemoteBuffer;
-use crate::local_memory::RdmaLocalMemory;
-use crate::local_memory::UnsafeLocalMemory;
+use crate::local_memory::Keepalive;
+use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
+
+// HACK — `NoKeepalive` keeps nothing alive. Test buffers are
+// either CPU `Box<[u8]>`s owned by `IbvTestEnv` (which lives across
+// the whole test) or raw CUDA allocations leaked by `CudaActor` for
+// the lifetime of the process.
+//
+// We tolerate the lie here *temporarily* because the actual implementation
+// logic is unchanged from the pre-`Keepalive` version. If it was correct
+// before, it's still correct now.
+//
+// TODO(samlurye): use real `Keepalive` implementations for test buffers.
+struct NoKeepalive;
+impl Keepalive for NoKeepalive {}
 
 #[derive(Debug)]
 struct SendSyncCudaContext(rdmaxcel_sys::CUcontext);
@@ -203,8 +216,12 @@ impl Handler<CudaActorMessage> for CudaActor {
                 };
 
                 // Register via RdmaManagerActor request_buffer.
-                let local_memory: Arc<dyn RdmaLocalMemory> =
-                    Arc::new(UnsafeLocalMemory::new(dptr, padded_size));
+                // See the module-level note on `NoKeepalive`.
+                let local_memory: Arc<KeepaliveLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
+                    dptr,
+                    padded_size,
+                    Arc::new(NoKeepalive),
+                ));
                 let handle = rdma_actor
                     .downcast_handle(cx)
                     .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -473,8 +490,8 @@ pub struct IbvTestEnv {
     pub ibv_handle_2: ActorHandle<IbvManagerActor>,
     pub rdma_handle_1: RdmaRemoteBuffer,
     pub rdma_handle_2: RdmaRemoteBuffer,
-    pub local_memory_1: Arc<dyn RdmaLocalMemory>,
-    pub local_memory_2: Arc<dyn RdmaLocalMemory>,
+    pub local_memory_1: Arc<KeepaliveLocalMemory>,
+    pub local_memory_2: Arc<KeepaliveLocalMemory>,
     pub ibv_buffer_1: IbvBuffer,
     pub ibv_buffer_2: IbvBuffer,
     cuda_actor_1: Option<ActorRef<CudaActor>>,
@@ -549,8 +566,8 @@ impl IbvTestEnv {
             format!("rdma_test_{id}_b"),
         )?;
 
-        let (instance_1, _client_handle_1) = proc_1.instance("client")?;
-        let (instance_2, _client_handle_2) = proc_2.instance("client")?;
+        let (instance_1, _client_handle_1) = proc_1.client("client")?;
+        let (instance_2, _client_handle_2) = proc_2.client("client")?;
 
         let rdma_actor_1 = RdmaManagerActor::new(Some(config1), Flattrs::default()).await?;
         let rdma_actor_handle_1 = proc_1.spawn("rdma_manager", rdma_actor_1)?;
@@ -568,8 +585,8 @@ impl IbvTestEnv {
 
         let rdma_handle_1;
         let rdma_handle_2;
-        let local_memory_1: Arc<dyn RdmaLocalMemory>;
-        let local_memory_2: Arc<dyn RdmaLocalMemory>;
+        let local_memory_1: Arc<KeepaliveLocalMemory>;
+        let local_memory_2: Arc<KeepaliveLocalMemory>;
 
         // Process first accelerator
         if parsed_accel1.0 == "cpu" {
@@ -580,7 +597,12 @@ impl IbvTestEnv {
                 len: buffer.len(),
                 cpu_ref: Some(buffer),
             });
-            local_memory_1 = Arc::new(UnsafeLocalMemory::new(ptr as usize, buffer_size));
+            // See the module-level note on `NoKeepalive`.
+            local_memory_1 = Arc::new(KeepaliveLocalMemory::new(
+                ptr as usize,
+                buffer_size,
+                Arc::new(NoKeepalive),
+            ));
             let handle_1 = actor_1
                 .downcast_handle(&instance_1)
                 .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -598,7 +620,12 @@ impl IbvTestEnv {
                 .await?;
             rdma_handle_1 = rdma_buf;
             device_ptr_1 = Some(dev_ptr);
-            local_memory_1 = Arc::new(UnsafeLocalMemory::new(dev_ptr, buffer_size));
+            // See the module-level note on `NoKeepalive`.
+            local_memory_1 = Arc::new(KeepaliveLocalMemory::new(
+                dev_ptr,
+                buffer_size,
+                Arc::new(NoKeepalive),
+            ));
 
             buf_vec.push(Buffer {
                 ptr: dev_ptr as u64,
@@ -617,7 +644,12 @@ impl IbvTestEnv {
                 len: buffer.len(),
                 cpu_ref: Some(buffer),
             });
-            local_memory_2 = Arc::new(UnsafeLocalMemory::new(ptr as usize, buffer_size));
+            // See the module-level note on `NoKeepalive`.
+            local_memory_2 = Arc::new(KeepaliveLocalMemory::new(
+                ptr as usize,
+                buffer_size,
+                Arc::new(NoKeepalive),
+            ));
             let handle_2 = actor_2
                 .downcast_handle(&instance_2)
                 .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -635,7 +667,12 @@ impl IbvTestEnv {
                 .await?;
             rdma_handle_2 = rdma_buf;
             device_ptr_2 = Some(dev_ptr);
-            local_memory_2 = Arc::new(UnsafeLocalMemory::new(dev_ptr, buffer_size));
+            // See the module-level note on `NoKeepalive`.
+            local_memory_2 = Arc::new(KeepaliveLocalMemory::new(
+                dev_ptr,
+                buffer_size,
+                Arc::new(NoKeepalive),
+            ));
 
             buf_vec.push(Buffer {
                 ptr: dev_ptr as u64,

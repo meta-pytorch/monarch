@@ -24,6 +24,10 @@ use serde::Serialize;
 /// A variant of `pyo3::IntoPyObject` used to wrap unsafe impls and propagates the
 /// unsafety to the caller.
 pub trait TryIntoPyObjectUnsafe<'py, P> {
+    /// # Safety
+    ///
+    /// The caller must ensure self is valid for the duration of the call
+    /// and that the type-erased pointer invariants of the trait are upheld.
     unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, P>>;
 }
 
