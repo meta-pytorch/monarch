@@ -39,6 +39,7 @@ use humantime::format_duration;
 use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
+use hyperactor::Endpoint as _;
 use hyperactor::ProcAddr;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -1204,12 +1205,12 @@ impl BootstrapProcHandle {
         // killing the process.
         let mut agent_port = agent.port();
         agent_port.return_undeliverable(false);
-        agent_port.send(
+        agent_port.post(
             cx,
             resource::StopAll {
                 reason: reason.to_string(),
             },
-        )?;
+        );
         // The agent handling Stop should exit the process, if it doesn't within
         // the time window, we escalate to SIGTERM.
         match tokio::time::timeout(timeout, self.wait()).await {
@@ -1744,7 +1745,7 @@ impl BootstrapProcManager {
         if let Some(agent) = handle.agent_ref() {
             let mut agent_port = agent.port();
             agent_port.return_undeliverable(false);
-            let _ = agent_port.send(
+            let _ = agent_port.post(
                 cx,
                 resource::StopAll {
                     reason: reason.to_string(),

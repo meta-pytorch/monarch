@@ -45,6 +45,7 @@ use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::actor::Referable;
 use crate::context;
+use crate::endpoint::Endpoint as _;
 
 /// An object `T` that is [`Unbind`] can extract a set of parameters from itself,
 /// and store in [`Bindings`]. The extracted parameters in [`Bindings`] can be
@@ -255,7 +256,7 @@ impl<M: Bind> IndexedErasedUnbound<M> {
         let port_handle = mailbox.open_enqueue_port::<IndexedErasedUnbound<M>>({
             move |_, m| {
                 let bound_m = m.downcast()?.bind()?;
-                actor_ref.send(&cx, bound_m)?;
+                (&actor_ref).post(&cx, bound_m);
                 Ok(())
             }
         });

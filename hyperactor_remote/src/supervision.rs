@@ -24,6 +24,7 @@ use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::AnyActorHandle;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
@@ -112,7 +113,7 @@ impl Actor for Supervisor {
             .expect("supervisor initialized more than once")
             .spawn_supervisor(this)?;
         self.link_handle = Some(link_handle);
-        self.worker.send(
+        (&self.worker).post(
             this,
             Link {
                 session_id: self.session_id.clone(),
@@ -121,7 +122,7 @@ impl Actor for Supervisor {
                 link,
                 options: self.options.clone(),
             },
-        )?;
+        );
         Ok(())
     }
 
@@ -209,14 +210,14 @@ impl Supervisor {
         let Some(stop) = self.pending_stop.take() else {
             return Ok(());
         };
-        self.worker.send(
+        (&self.worker).post(
             cx,
             SupervisedWorker::Stop {
                 session_id: self.session_id.clone(),
                 mode: stop.mode,
                 reason: stop.reason,
             },
-        )?;
+        );
         Ok(())
     }
 
@@ -303,19 +304,14 @@ where
             if let Some(session) = &self.session {
                 let supervisor = session.supervisor.clone();
                 let session_id = session.session_id.clone();
-                if supervisor
-                    .send(
-                        this,
-                        WorkerSupervisor::SupervisionEvent {
-                            session_id: session_id.into_uid(),
-                            event: event.clone(),
-                            disposition: RemoteActorDisposition::Terminal,
-                        },
-                    )
-                    .is_err()
-                {
-                    let _ = self.unlink_orphaned_supervisor("supervisor session undeliverable");
-                }
+                supervisor.post(
+                    this,
+                    WorkerSupervisor::SupervisionEvent {
+                        session_id: session_id.into_uid(),
+                        event: event.clone(),
+                        disposition: RemoteActorDisposition::Terminal,
+                    },
+                );
             }
             self.child_handle = None;
             this.exit("supervised child stopped")?;
@@ -350,7 +346,7 @@ where
 {
     async fn handle(&mut self, cx: &Context<Self>, message: Link) -> anyhow::Result<()> {
         if self.session.is_some() {
-            let _ = message.supervisor.send(
+            let _ = message.supervisor.post(
                 cx,
                 WorkerSupervisor::LinkRejected {
                     session_id: message.session_id,
@@ -375,19 +371,14 @@ where
             options: message.options,
             link_handle,
         });
-        if supervisor
-            .send(
-                cx,
-                WorkerSupervisor::Linked {
-                    session_id: message.session_id.clone(),
-                    child: child_addr,
-                    display_name: self.child_display_name.clone(),
-                },
-            )
-            .is_err()
-        {
-            self.handle_orphaned_supervisor("supervisor session undeliverable")?;
-        }
+        supervisor.post(
+            cx,
+            WorkerSupervisor::Linked {
+                session_id: message.session_id.clone(),
+                child: child_addr,
+                display_name: self.child_display_name.clone(),
+            },
+        );
         Ok(())
     }
 }
@@ -420,7 +411,7 @@ where
                         OrphanPolicy::Detach => (),
                     }
 
-                    let _ = session.supervisor.send(
+                    let _ = session.supervisor.post(
                         cx,
                         WorkerSupervisor::Unlinked {
                             session_id: session_id.into_uid(),
@@ -493,28 +484,20 @@ impl<C: Actor> Worker<C> {
         let supervisor = session.supervisor.clone();
         let session_id = session.session_id.clone();
         let orphan_policy = session.options.orphan_policy;
-        if let Some(child) = &self.child_handle
-            && supervisor
-                .send(
-                    cx,
-                    WorkerSupervisor::SupervisionEvent {
-                        session_id: session_id.into_uid(),
-                        event: ActorSupervisionEvent::new(
-                            child.actor_addr().clone(),
-                            self.child_display_name.clone(),
-                            ActorStatus::generic_failure(format!(
-                                "supervision link failed: {}",
-                                event
-                            )),
-                            None,
-                        ),
-                        disposition: RemoteActorDisposition::Unreachable,
-                    },
-                )
-                .is_err()
-        {
-            self.handle_orphaned_supervisor("supervisor session undeliverable")?;
-            return Ok(());
+        if let Some(child) = &self.child_handle {
+            supervisor.post(
+                cx,
+                WorkerSupervisor::SupervisionEvent {
+                    session_id: session_id.into_uid(),
+                    event: ActorSupervisionEvent::new(
+                        child.actor_addr().clone(),
+                        self.child_display_name.clone(),
+                        ActorStatus::generic_failure(format!("supervision link failed: {}", event)),
+                        None,
+                    ),
+                    disposition: RemoteActorDisposition::Unreachable,
+                },
+            );
         }
         let session = self
             .session
@@ -582,13 +565,13 @@ mod tests {
     #[async_trait]
     impl Actor for TestChild {
         async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
-            self.ready.send(this, this.self_addr().clone())?;
+            self.ready.post(this, this.self_addr().clone());
             match self.action.take() {
                 Some(TestChildAction::FailAfter(delay)) => {
-                    this.self_message_with_delay(TestChildCommand::Fail, delay)?;
+                    this.post_after(this, TestChildCommand::Fail, delay);
                 }
                 Some(TestChildAction::DrainAfter(delay, tag)) => {
-                    this.self_message_with_delay(TestChildCommand::Drain(tag), delay)?;
+                    this.post_after(this, TestChildCommand::Drain(tag), delay);
                 }
                 None => {}
             }
@@ -601,7 +584,7 @@ mod tests {
             mode: StopMode,
             reason: &str,
         ) -> anyhow::Result<()> {
-            self.stopped.send(this, reason.to_string())?;
+            self.stopped.post(this, reason.to_string());
             this.close();
             match mode {
                 StopMode::Stop => this.exit(reason)?,
@@ -622,7 +605,7 @@ mod tests {
                 TestChildCommand::Fail => cx.kill("test child failed")?,
                 TestChildCommand::Drain(tag) => {
                     if let Some(ref port) = self.drain_observer {
-                        port.send(cx, tag)?;
+                        port.post(cx, tag);
                     }
                 }
             }
@@ -652,7 +635,7 @@ mod tests {
             this: &Instance<Self>,
             event: &ActorSupervisionEvent,
         ) -> anyhow::Result<bool> {
-            self.events.send(this, event.clone())?;
+            self.events.post(this, event.clone());
             Ok(true)
         }
     }
@@ -674,7 +657,7 @@ mod tests {
                     .take()
                     .expect("grandparent initialized more than once"),
             )?;
-            self.parent_addr.send(this, parent.actor_addr().clone())?;
+            self.parent_addr.post(this, parent.actor_addr().clone());
             self.parent_handle = Some(parent);
             Ok(())
         }
@@ -684,7 +667,7 @@ mod tests {
             this: &Instance<Self>,
             event: &ActorSupervisionEvent,
         ) -> anyhow::Result<bool> {
-            self.events.send(this, event.clone())?;
+            self.events.post(this, event.clone());
             Ok(true)
         }
     }
@@ -789,7 +772,7 @@ mod tests {
     impl Handler<Link> for TestSlowWorker {
         async fn handle(&mut self, cx: &Context<Self>, message: Link) -> anyhow::Result<()> {
             self.session = Some((message.session_id, message.supervisor));
-            self.link_started.send(cx, ())?;
+            self.link_started.post(cx, ());
             self.release_link.notified().await;
             Ok(())
         }
@@ -810,8 +793,8 @@ mod tests {
                     anyhow::bail!("stop received before link");
                 };
                 anyhow::ensure!(session_id == expected_session_id, "unexpected session id");
-                self.received_stop.send(cx, reason.clone())?;
-                let _ = supervisor.send(cx, WorkerSupervisor::Unlinked { session_id, reason });
+                self.received_stop.post(cx, reason.clone());
+                let _ = supervisor.post(cx, WorkerSupervisor::Unlinked { session_id, reason });
             }
             Ok(())
         }
@@ -945,18 +928,16 @@ mod tests {
         let _child_addr = ready_rx.recv().await.unwrap();
         let session_id = hyperactor::Uid::anonymous();
 
-        worker
-            .send(
-                &client,
-                Link {
-                    session_id: session_id.clone(),
-                    supervisor: supervisor_ref.clone(),
-                    parent: client.self_addr().clone(),
-                    link,
-                    options: LinkOptions::default(),
-                },
-            )
-            .unwrap();
+        worker.post(
+            &client,
+            Link {
+                session_id: session_id.clone(),
+                supervisor: supervisor_ref.clone(),
+                parent: client.self_addr().clone(),
+                link,
+                options: LinkOptions::default(),
+            },
+        );
         let linked = tokio::time::timeout(Duration::from_secs(5), supervisor_rx.recv())
             .await
             .unwrap()
@@ -975,8 +956,7 @@ mod tests {
         .unwrap();
         worker
             .port::<Undeliverable<MessageEnvelope>>()
-            .send(&client, Undeliverable(envelope))
-            .unwrap();
+            .post(&client, Undeliverable::Message(envelope));
 
         let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
             .await
@@ -1048,7 +1028,7 @@ mod tests {
         let parent_addr = parent_addr_rx.recv().await.unwrap();
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        grandparent.send(&client, KillParent).unwrap();
+        grandparent.post(&client, KillParent);
 
         let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
             .await
@@ -1106,21 +1086,19 @@ mod tests {
         let _child_addr = ready_rx.recv().await.unwrap();
         let session_id = hyperactor::Uid::anonymous();
 
-        worker
-            .send(
-                &inst,
-                Link {
-                    session_id: session_id.clone(),
-                    supervisor: supervisor_ref.clone(),
-                    parent: inst.self_addr().clone(),
-                    link: link_spec,
-                    options: LinkOptions {
-                        orphan_policy: OrphanPolicy::Detach,
-                        ..Default::default()
-                    },
+        worker.post(
+            &inst,
+            Link {
+                session_id: session_id.clone(),
+                supervisor: supervisor_ref.clone(),
+                parent: inst.self_addr().clone(),
+                link: link_spec,
+                options: LinkOptions {
+                    orphan_policy: OrphanPolicy::Detach,
+                    ..Default::default()
                 },
-            )
-            .unwrap();
+            },
+        );
         let linked = tokio::time::timeout(Duration::from_secs(5), supervisor_rx.recv())
             .await
             .unwrap()
@@ -1143,8 +1121,7 @@ mod tests {
         .unwrap();
         worker
             .port::<Undeliverable<MessageEnvelope>>()
-            .send(&inst, Undeliverable(envelope))
-            .unwrap();
+            .post(&inst, Undeliverable::Message(envelope));
 
         // Under `Detach`, the worker clears its session and stops the
         // link, but does NOT stop the child. No message shhould arrive on
@@ -1212,15 +1189,13 @@ mod tests {
         // issuing Unlink.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        worker
-            .send(
-                &inst,
-                SupervisedWorker::Unlink {
-                    session_id: session_id.clone(),
-                    reason: "test unlink".to_string(),
-                },
-            )
-            .unwrap();
+        worker.post(
+            &inst,
+            SupervisedWorker::Unlink {
+                session_id: session_id.clone(),
+                reason: "test unlink".to_string(),
+            },
+        );
 
         // Under OrphanPolicy::Stop the worker stops the child with
         // the unlink reason.
@@ -1300,15 +1275,13 @@ mod tests {
         // issuing Unlink.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        worker
-            .send(
-                &inst,
-                SupervisedWorker::Unlink {
-                    session_id: session_id.clone(),
-                    reason: "test unlink".to_string(),
-                },
-            )
-            .unwrap();
+        worker.post(
+            &inst,
+            SupervisedWorker::Unlink {
+                session_id: session_id.clone(),
+                reason: "test unlink".to_string(),
+            },
+        );
 
         // Supervisor receives `Unlinked` and exits cleanly via cx.exit;
         // Parent observes that supervisor exit as a `Stopped(reason)`
@@ -1615,16 +1588,14 @@ mod tests {
         assert_eq!(drained_tag, "child work");
 
         // Now send Stop with DrainAndStop.
-        worker
-            .send(
-                &inst,
-                SupervisedWorker::Stop {
-                    session_id: session_id.clone(),
-                    mode: StopMode::DrainAndStop,
-                    reason: "drain test".to_string(),
-                },
-            )
-            .unwrap();
+        worker.post(
+            &inst,
+            SupervisedWorker::Stop {
+                session_id: session_id.clone(),
+                mode: StopMode::DrainAndStop,
+                reason: "drain test".to_string(),
+            },
+        );
 
         // Child reports the drain-stop reason via handle_stop.
         let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
@@ -1684,15 +1655,13 @@ mod tests {
         // issuing Unlink.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        worker
-            .send(
-                &inst,
-                SupervisedWorker::Unlink {
-                    session_id: session_id1.clone(),
-                    reason: "first unlink".to_string(),
-                },
-            )
-            .unwrap();
+        worker.post(
+            &inst,
+            SupervisedWorker::Unlink {
+                session_id: session_id1.clone(),
+                reason: "first unlink".to_string(),
+            },
+        );
 
         let event1 = tokio::time::timeout(Duration::from_secs(5), events_rx1.recv())
             .await
@@ -1732,15 +1701,13 @@ mod tests {
         // Give the second Link/Linked handshake time to complete.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        worker
-            .send(
-                &inst,
-                SupervisedWorker::Unlink {
-                    session_id: session_id2.clone(),
-                    reason: "second unlink".to_string(),
-                },
-            )
-            .unwrap();
+        worker.post(
+            &inst,
+            SupervisedWorker::Unlink {
+                session_id: session_id2.clone(),
+                reason: "second unlink".to_string(),
+            },
+        );
 
         let event2 = tokio::time::timeout(Duration::from_secs(5), events_rx2.recv())
             .await

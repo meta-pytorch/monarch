@@ -17,6 +17,7 @@ use clap::Parser;
 use hyperactor as reference;
 use hyperactor::Actor;
 use hyperactor::Context;
+use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RemoteSpawn;
@@ -78,7 +79,7 @@ pub struct Echo(pub String, pub reference::PortRef<String>);
 impl Handler<Echo> for TestActor {
     async fn handle(&mut self, cx: &Context<Self>, message: Echo) -> Result<(), anyhow::Error> {
         let Echo(message, reply_port) = message;
-        reply_port.send(cx, message)?;
+        reply_port.post(cx, message);
         Ok(())
     }
 }
@@ -159,8 +160,8 @@ impl Handler<Echo> for ProxyActor {
         let actor = self.actor_mesh.as_ref().unwrap().get(0).unwrap();
 
         let (tx, mut rx) = cx.open_port();
-        actor.send(cx, Echo(message.0, tx.bind()))?;
-        message.1.send(cx, rx.recv().await.unwrap())?;
+        actor.post(cx, Echo(message.0, tx.bind()));
+        message.1.post(cx, rx.recv().await.unwrap());
 
         Ok(())
     }
@@ -197,7 +198,7 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
         .await?;
     let proxy_actor = actor_mesh.get(0).unwrap();
     let (tx, mut rx) = instance.mailbox().open_port::<String>();
-    proxy_actor.send(instance, Echo("hello!".to_owned(), tx.bind()))?;
+    proxy_actor.post(instance, Echo("hello!".to_owned(), tx.bind()));
 
     let msg = rx.recv().await?;
     println!("{}", msg);

@@ -402,6 +402,7 @@ mod tests {
     use tokio::time;
 
     use super::*;
+    use crate::Endpoint as _;
     use crate::Label;
     use crate::mailbox::MailboxSender;
     use crate::mailbox::PortLocation;
@@ -542,12 +543,10 @@ mod tests {
 
         let (local_port, local_receiver) = client.open_once_port();
 
-        ping_handle
-            .send(
-                &client,
-                PingPongMessage(10, pong_handle.bind(), local_port.bind()),
-            )
-            .unwrap();
+        ping_handle.post(
+            &client,
+            PingPongMessage(10, pong_handle.bind(), local_port.bind()),
+        );
 
         let received = time::timeout(Duration::from_secs(5), local_receiver.recv())
             .await
@@ -774,10 +773,14 @@ mod tests {
         // synchronously to our return port.
         weak.post(envelope, return_handle);
 
-        let Undeliverable(envelope) = time::timeout(Duration::from_secs(5), return_rx.recv())
-            .await
-            .expect("return_rx timed out")
-            .expect("return_rx closed");
+        let Undeliverable::Message(envelope) =
+            time::timeout(Duration::from_secs(5), return_rx.recv())
+                .await
+                .expect("return_rx timed out")
+                .expect("return_rx closed")
+        else {
+            panic!("expected returned envelope");
+        };
         assert_eq!(envelope.dest(), &dest);
         assert!(
             envelope
