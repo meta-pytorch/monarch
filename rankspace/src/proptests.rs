@@ -158,7 +158,7 @@ fn gen_movable_space_pattern() -> impl Strategy<Value = (RankSpace, RankSpace, R
     })
 }
 
-fn gen_restriction(
+fn gen_selection(
     max_dims: usize,
     max_size: usize,
     max_step: usize,
@@ -300,28 +300,28 @@ proptest! {
     }
 
     #[test]
-    fn restrict_preserves_base_rank_embedding(
-        (rect, dim_index, start, end, step) in gen_restriction(4, 8, 4)
+    fn select_preserves_base_rank_embedding(
+        (rect, dim_index, start, end, step) in gen_selection(4, 8, 4)
     ) {
         let dim_name = rect.extent().dims()[dim_index].name().to_string();
-        let Ok(restricted) = rect.restrict(
+        let Ok(selected) = rect.select(
             &dim_name,
             DimRange::new(start, Some(end), NonZeroUsize::new(step).unwrap()),
         ) else {
             return Ok(());
         };
 
-        for coord in coords_for(restricted.extent()) {
+        for coord in coords_for(selected.extent()) {
             let mut base_coord = coord.clone();
             base_coord[dim_index] = start + coord[dim_index] * step;
             prop_assert!(
                 base_coord[dim_index] < end,
-                "restricted coordinate projects outside source range"
+                "selected coordinate projects outside source range"
             );
             prop_assert_eq!(
-                restricted.rank_of(&coord),
+                selected.rank_of(&coord),
                 rect.rank_of(&base_coord),
-                "restricted coordinate did not preserve base rank"
+                "selected coordinate did not preserve base rank"
             );
         }
     }
