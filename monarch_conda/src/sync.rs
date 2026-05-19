@@ -153,10 +153,10 @@ impl ActionsBuilder {
         match self.state.entry(path) {
             Entry::Occupied(val) => {
                 let (path, (existing_origin, existing_metadata)) = val.remove_entry();
-                if let Some(ignores) = &self.ignores {
-                    if ignores.is_match(path.as_path()) {
-                        return Ok(());
-                    }
+                if let Some(ignores) = &self.ignores
+                    && ignores.is_match(path.as_path())
+                {
+                    return Ok(());
                 }
                 ensure!(existing_origin != origin);
                 let (src, dst) = match origin {
@@ -213,10 +213,10 @@ impl ActionsBuilder {
         for (path, (origin, metadata)) in self.state.into_iter() {
             match origin {
                 Origin::Src => {
-                    if let Some(ignores) = &self.ignores {
-                        if ignores.is_match(path.as_path()) {
-                            continue;
-                        }
+                    if let Some(ignores) = &self.ignores
+                        && ignores.is_match(path.as_path())
+                    {
+                        continue;
                     }
                     actions.insert(
                         path,
@@ -423,7 +423,7 @@ async fn persist(tmp: TempFile, path: &Path) -> Result<(), std::io::Error> {
 /// Helper function to set the FileTime for every file, symlink, and directory in a directory tree
 async fn set_mtime(path: &Path, mtime: SystemTime) -> Result<(), std::io::Error> {
     let mtime = FileTime::from_system_time(mtime);
-    filetime::set_symlink_file_times(path, mtime.clone(), mtime)?;
+    filetime::set_symlink_file_times(path, mtime, mtime)?;
     Ok(())
 }
 
