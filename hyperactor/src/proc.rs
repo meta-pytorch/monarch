@@ -486,6 +486,15 @@ struct ProcState {
     /// gracefully stop the server and join it (flushing receive-side
     /// acks) during shutdown.
     mailbox_server_handle: std::sync::Mutex<Option<crate::mailbox::MailboxServerHandle>>,
+
+    /// Detach guard for this proc's registration with `gateway`. Held
+    /// here so that dropping the proc removes its entry from the
+    /// gateway's proc map without a separate explicit step. Wrapped in
+    /// a `OnceLock` because the guard is constructed *after* the
+    /// `ProcState` Arc exists (so we can pass `&proc` to
+    /// `gateway.attach`); it is set exactly once during construction
+    /// and never read by anyone outside of drop ordering.
+    _attach_guard: OnceLock<crate::gateway::AttachGuard>,
 }
 
 struct TerminatedSnapshot {
@@ -583,8 +592,26 @@ impl Builder<GlobalGateway> {
     }
 
     /// Build the proc.
+    ///
+    /// Procs built on the global gateway must not use legacy
+    /// pseudo-singleton ids — those ids are reserved for in-host
+    /// service/local procs whose location is bound to the host's
+    /// frontend address. Use [`Builder::shared_gateway`] (passing the
+    /// host's gateway) to construct legacy-id procs.
     pub fn build(self) -> Result<Proc, anyhow::Error> {
-        self.build_with_gateway(Gateway::global().clone())
+        let proc_id = self
+            .proc_id
+            .unwrap_or_else(|| ProcId::new(Uid::anonymous(), None));
+        if is_legacy_pseudo_singleton_proc_id(&proc_id) {
+            anyhow::bail!(
+                "legacy pseudo-singleton proc id '{}' is reserved for host-scoped construction; use Builder::shared_gateway",
+                proc_id
+            );
+        }
+        Ok(Proc::from_parts_unchecked(
+            proc_id,
+            Gateway::global().clone(),
+        ))
     }
 }
 
@@ -595,24 +622,16 @@ impl<State> Builder<State> {
         self
     }
 
-    fn build_with_gateway(self, gateway: Gateway) -> Result<Proc, anyhow::Error> {
-        Self::build_proc(self.proc_id, gateway)
-    }
-
     fn build_proc(proc_id: Option<ProcId>, gateway: Gateway) -> Result<Proc, anyhow::Error> {
         let proc_id = proc_id.unwrap_or_else(ProcId::anonymous);
-        if is_legacy_pseudo_singleton_proc_id(&proc_id) {
-            anyhow::bail!(
-                "legacy pseudo-singleton proc id '{}' must be constructed with a dedicated Proc constructor",
-                proc_id
-            );
-        }
         Ok(Proc::from_parts_unchecked(proc_id, gateway))
     }
 }
 
 impl Builder<SharedGateway> {
-    /// Build the proc.
+    /// Build the proc. Accepts any proc id, including legacy
+    /// pseudo-singleton ids, because the caller has explicit control
+    /// over the gateway's default location.
     pub fn build(self) -> Result<Proc, anyhow::Error> {
         let Builder {
             proc_id,
@@ -656,9 +675,17 @@ impl Proc {
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
                 mailbox_server_handle: std::sync::Mutex::new(None),
+                _attach_guard: OnceLock::new(),
             }),
         };
-        gateway.attach(&proc);
+        // Attach now that the `Arc<ProcState>` exists; the returned
+        // guard's drop will remove the entry from the gateway's proc
+        // map when the last `Proc` referencing this state is dropped.
+        let guard = gateway.attach(&proc);
+        proc.inner
+            ._attach_guard
+            .set(guard)
+            .expect("fresh ProcState's attach guard slot is empty");
         proc
     }
 
@@ -1635,10 +1662,16 @@ impl MailboxSender for Proc {
     ) {
         let dest_proc = envelope.dest().actor_addr().proc_addr();
         if self.is_local_delivery_target(&dest_proc) {
-            self.state().proc_muxer.post(envelope, return_handle)
-        } else {
-            self.state().gateway.post(envelope, return_handle)
+            self.state().proc_muxer.post(envelope, return_handle);
+            return;
         }
+        // Route through the gateway as a [`MailboxSender`] (not its
+        // raw forwarder) so peers sharing the same gateway —
+        // typically a host's `service_proc` / `local_proc` and any
+        // procs attached via `gateway.attach((proc_id, sender))` —
+        // are reached by an in-gateway lookup rather than bouncing
+        // out through the forwarder.
+        self.state().gateway.post(envelope, return_handle);
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
@@ -4858,6 +4891,76 @@ mod tests {
         assert_eq!(envelope.dest(), &remote_dest);
     }
 
+    #[tokio::test]
+    async fn test_gateway_attach_remote_proc_routes_via_sender() {
+        use tokio::sync::mpsc::UnboundedSender;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        use crate::mailbox::IntoBoxedMailboxSender;
+        use crate::mailbox::MailboxSender as _;
+        use crate::mailbox::monitored_return_handle;
+        use crate::testing::ids::test_actor_id;
+
+        #[derive(Clone)]
+        struct RecordingSender(UnboundedSender<MessageEnvelope>);
+
+        #[async_trait]
+        impl crate::mailbox::MailboxSender for RecordingSender {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                self.0.send(envelope).unwrap();
+            }
+        }
+
+        let proc = Proc::isolated();
+        let gateway = proc.gateway();
+
+        let remote_proc = ProcAddr::instance(ChannelAddr::Local(1234), "remote");
+        let remote_dest = remote_proc.actor_addr("worker").port_addr(Port::from(0));
+
+        let (tx, mut rx) = unbounded_channel::<MessageEnvelope>();
+        let attach_guard =
+            gateway.attach((remote_proc.id().clone(), RecordingSender(tx).into_boxed()));
+
+        gateway.post(
+            MessageEnvelope::serialize(
+                test_actor_id("sender", "client"),
+                remote_dest.clone(),
+                &42u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            monitored_return_handle(),
+        );
+
+        let routed = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("attach did not route envelope before timeout")
+            .expect("recording sender closed unexpectedly");
+        assert_eq!(routed.dest(), &remote_dest);
+
+        drop(attach_guard);
+
+        let (client, _) = proc.client("client").unwrap();
+        let (return_handle, mut undeliverable_rx) =
+            client.open_port::<Undeliverable<MessageEnvelope>>();
+        gateway.post(
+            MessageEnvelope::serialize(
+                test_actor_id("sender", "client"),
+                remote_dest.clone(),
+                &43u64,
+                Flattrs::new(),
+            )
+            .unwrap(),
+            return_handle,
+        );
+        let Undeliverable(envelope) = undeliverable_rx.recv().await.unwrap();
+        assert_eq!(envelope.dest(), &remote_dest);
+    }
+
     #[derive(Debug, Default)]
     #[export]
     struct LookupTestActor;
@@ -5329,8 +5432,13 @@ mod tests {
         }
     }
 
+    // Supervision propagation is deterministic (uses Notify + channel
+    // recv for ordering), but the chain of message passes is sensitive
+    // to tokio runtime scheduling. Under suite-wide CPU contention this
+    // can take well above the natural sub-second runtime; 60s gives
+    // headroom without masking genuine hangs.
     #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_local_supervision_propagation() {
         hyperactor_telemetry::initialize_logging_for_test();
 
