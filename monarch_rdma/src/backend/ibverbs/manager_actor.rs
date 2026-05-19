@@ -82,7 +82,7 @@ use crate::RdmaOp;
 use crate::RdmaOpType;
 use crate::RdmaTransportLevel;
 use crate::backend::RdmaBackend;
-use crate::local_memory::RdmaLocalMemory;
+use crate::local_memory::KeepaliveLocalMemory;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::GetIbvActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
@@ -161,7 +161,7 @@ pub enum IbvManagerLocalMessage {
     /// is deregistered on [`IbvManagerMessage::ReleaseBuffer`].
     RegisterRemoteBuffer {
         remote_buf_id: usize,
-        local: Arc<dyn RdmaLocalMemory>,
+        local: Arc<KeepaliveLocalMemory>,
         #[reply]
         reply: OncePortHandle<Result<IbvBuffer, String>>,
     },
@@ -896,7 +896,7 @@ impl IbvManagerLocalMessageHandler for IbvManagerActor {
         &mut self,
         _cx: &Context<Self>,
         remote_buf_id: usize,
-        local: Arc<dyn RdmaLocalMemory>,
+        local: Arc<KeepaliveLocalMemory>,
     ) -> Result<Result<IbvBuffer, String>, anyhow::Error> {
         if let Some((buf, _)) = self.buffer_registrations.get(&remote_buf_id) {
             return Ok(Ok(buf.clone()));

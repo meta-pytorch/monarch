@@ -34,11 +34,7 @@ struct State<T> {
 
 impl<T> Drop for State<T> {
     fn drop(&mut self) {
-        loop {
-            let Some(entry) = self.ring.pop() else {
-                break;
-            };
-
+        while let Some(entry) = self.ring.pop() {
             if !entry.initialized.load(Ordering::Acquire) {
                 continue;
             }
