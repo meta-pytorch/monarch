@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["InstanceWrapper","PyActorId","PyProc","PySerialized"]};
+window.SIDEBAR_ITEMS = {"fn":["register_python_bindings"],"struct":["InstanceWrapper","PyActorAddr","PyProc","PySerialized"]};

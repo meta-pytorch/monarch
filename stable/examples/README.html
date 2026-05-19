@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="ping_pong.py: Demonstrates the basics of Monarch’s Actor/endpoint API with a ping-pong communication example, crawler.py: Demonstrates Monarch’s actor API and many-to-one communications with a web ..." />
 
-    <title>Examples &#8212; Monarch v0.4.1 documentation</title>
+    <title>Examples &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../_static/documentation_options.js?v=e663822d"></script>
     <script src="../_static/doctools.js?v=888ff710"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/examples/README.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -960,6 +972,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1277,6 +1301,8 @@ document.write(`
 <li><p><a class="reference internal" href="../generated/examples/ddp/spmd_job.html"><span class="doc">Interactive SPMD Job</span></a>: Shows how to use <code class="docutils literal notranslate"><span class="pre">serve()</span></code> and <code class="docutils literal notranslate"><span class="pre">run_spmd()</span></code> for interactive SPMD training with job caching and debugging</p></li>
 <li><p><a class="reference internal" href="../generated/examples/ddp/kubernetes_ddp.html"><span class="doc">kubernetes_ddp.py</span></a>: Extends the DDP example to run on Kubernetes using MonarchMesh CRD and operator</p></li>
 <li><p><a class="reference internal" href="../generated/examples/grpo_actor.html"><span class="doc">grpo_actor.py</span></a>: Implements a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework</p></li>
+<li><p><a class="reference internal" href="../generated/examples/grpo_yield.html"><span class="doc">grpo_yield.py</span></a>: Same GRPO task as <code class="docutils literal notranslate"><span class="pre">grpo_actor.py</span></code>, wired with direct port messaging instead of queue actors and <code class="docutils literal notranslate"><span class="pre">RDMABuffer</span></code>; each actor’s <code class="docutils literal notranslate"><span class="pre">run</span></code> endpoint is structured like a Python generator that yields values to, and receives values from, the next actor in the ring</p></li>
+<li><p><a class="reference internal" href="../generated/examples/grpo/kubernetes_grpo.html"><span class="doc">kubernetes_grpo.py</span></a>: Extends the GRPO example to run on Kubernetes using MonarchMesh CRDs, fine-tuning the open-source Qwen3.5-0.8B model on the GSM8K math dataset</p></li>
 <li><p><a class="reference internal" href="../generated/examples/distributed_tensors.html"><span class="doc">distributed_tensors.py</span></a>: Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs</p></li>
 <li><p><a class="reference internal" href="../generated/examples/debugging.html"><span class="doc">debugging.py</span></a>: Shows how to use the Monarch debugger to debug a distributed program</p></li>
 <li><p><a class="reference internal" href="../generated/examples/otel_collector.html"><span class="doc">otel_collector.py</span></a>: Exports Monarch metrics and logs to an OpenTelemetry Collector deployed on Kubernetes, with Grafana for visualization</p></li>
@@ -1528,7 +1554,7 @@ document.write(`
        "headline": "Examples",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/examples/README.html",
-       "articleBody": "Examples# ping_pong.py: Demonstrates the basics of Monarch\u2019s Actor/endpoint API with a ping-pong communication example crawler.py: Demonstrates Monarch\u2019s actor API and many-to-one communications with a web crawler example spmd_ddp.py: Shows how to run PyTorch\u2019s Distributed Data Parallel (DDP) using SPMDActor Interactive SPMD Job: Shows how to use serve() and run_spmd() for interactive SPMD training with job caching and debugging kubernetes_ddp.py: Extends the DDP example to run on Kubernetes using MonarchMesh CRD and operator grpo_actor.py: Implements a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework distributed_tensors.py: Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs debugging.py: Shows how to use the Monarch debugger to debug a distributed program otel_collector.py: Exports Monarch metrics and logs to an OpenTelemetry Collector deployed on Kubernetes, with Grafana for visualization Multinode Slurm Tutorial: Multinode distributed training tutorial using Monarch and Slurm to run an SPMD training job. Running on Kubernetes using Skypilot: Run Monarch on Kubernetes and cloud VMs via SkyPilot.",
+       "articleBody": "Examples# ping_pong.py: Demonstrates the basics of Monarch\u2019s Actor/endpoint API with a ping-pong communication example crawler.py: Demonstrates Monarch\u2019s actor API and many-to-one communications with a web crawler example spmd_ddp.py: Shows how to run PyTorch\u2019s Distributed Data Parallel (DDP) using SPMDActor Interactive SPMD Job: Shows how to use serve() and run_spmd() for interactive SPMD training with job caching and debugging kubernetes_ddp.py: Extends the DDP example to run on Kubernetes using MonarchMesh CRD and operator grpo_actor.py: Implements a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework grpo_yield.py: Same GRPO task as grpo_actor.py, wired with direct port messaging instead of queue actors and RDMABuffer; each actor\u2019s run endpoint is structured like a Python generator that yields values to, and receives values from, the next actor in the ring kubernetes_grpo.py: Extends the GRPO example to run on Kubernetes using MonarchMesh CRDs, fine-tuning the open-source Qwen3.5-0.8B model on the GSM8K math dataset distributed_tensors.py: Shows how to dispatch tensors and tensor level operations to a distributed mesh of workers and GPUs debugging.py: Shows how to use the Monarch debugger to debug a distributed program otel_collector.py: Exports Monarch metrics and logs to an OpenTelemetry Collector deployed on Kubernetes, with Grafana for visualization Multinode Slurm Tutorial: Multinode distributed training tutorial using Monarch and Slurm to run an SPMD training job. Running on Kubernetes using Skypilot: Run Monarch on Kubernetes and cloud VMs via SkyPilot.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

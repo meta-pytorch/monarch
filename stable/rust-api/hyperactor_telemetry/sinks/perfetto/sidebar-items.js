@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["MONARCH_TRACE_DIR_ENV","USER_TELEMETRY_PREFIX"],"enum":["PerfettoTraceMode"],"fn":["default_trace_dir"],"static":["PERFETTO_TRACE_MODE"],"struct":["PerfettoFileSink"]};
+window.SIDEBAR_ITEMS = {"constant":["ENDPOINT_TELEMETRY_TARGET","MONARCH_TRACE_DIR_ENV","USER_TELEMETRY_PREFIX"],"enum":["PerfettoTraceMode"],"fn":["default_trace_dir"],"static":["PERFETTO_TRACE_MODE"],"struct":["PerfettoFileSink"]};

@@ -303,23 +303,22 @@ Supports two modes:
 
 *Pre-provisioned* - connect to pre-provisioned pods discovered via label
 selectors. Compatible with the MonarchMesh operator, third-party
-schedulers, or manually created pods. Used when `image_spec` or `pod_spec`
-is not specified in `add_mesh`.
+schedulers, or manually created pods. Used when `image_spec` or
+`pod_template` is not specified in `add_mesh`.
 
 *Provisioning* - create MonarchMesh CRDs via the K8s API so the
 pre-installed operator provisions StatefulSets and Services
-automatically. Pass `image_spec` or `pod_spec` (a `V1PodSpec`) to
-`add_mesh` to enable provisioning for that
-mesh. If the MonarchMesh CRD
-already exists, it is patched instead
+automatically. Pass `image_spec` or `pod_template` (a
+`V1PodTemplateSpec`) to `add_mesh` to enable provisioning for that
+mesh. If the MonarchMesh CRD already exists, it is patched instead
 of created.
 
-add_mesh(*name*, *num_replicas*, *label_selector=None*, *pod_rank_label='apps.kubernetes.io/pod-index'*, *image_spec=None*, *port=26600*, *pod_spec=None*, *labels=None*)[[source]](../_modules/monarch/_src/job/kubernetes.html#KubernetesJob.add_mesh)
+add_mesh(*name*, *num_replicas*, *label_selector=None*, *pod_rank_label='apps.kubernetes.io/pod-index'*, *image_spec=None*, *port=26600*, *pod_template=None*, *labels=None*, *annotations=None*)[[source]](../_modules/monarch/_src/job/kubernetes.html#KubernetesJob.add_mesh)
 
 Add a mesh specification.
 
 In *attach-only* mode (default), meshes are discovered by label
-selector. In *provisioning* mode (`image_spec` or `pod_spec`
+selector. In *provisioning* mode (`image_spec` or `pod_template`
 supplied), a MonarchMesh CRD is created so the operator can
 provision the pods.
 
@@ -334,12 +333,18 @@ Parameters:
 - **label_selector** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)*|**None*) - Custom label selector for pod discovery. Cannot be set when provisioning.
 - **pod_rank_label** ([*str*](https://docs.python.org/3/library/stdtypes.html#str)) - Label key containing the pod rank. Cannot be customized when provisioning.
 - **image_spec** (*ImageSpec**|**None*) - `ImageSpec` with container image and optional resources for simple provisioning.
-Mutually exclusive with `pod_spec`.
+Mutually exclusive with `pod_template`.
 - **port** ([*int*](https://docs.python.org/3/library/functions.html#int)) - Monarch worker port (default: 26600).
-- **pod_spec** (*V1PodSpec**|**None*) - `V1PodSpec` for advanced provisioning (e.g. custom volumes, sidecars).
-Mutually exclusive with `image_spec`.
+- **pod_template** (*V1PodTemplateSpec**|**None*) - `V1PodTemplateSpec` for advanced provisioning (e.g. custom volumes, sidecars,
+pod-level labels/annotations). Mutually exclusive with `image_spec`.
 - **labels** ([*dict*](https://docs.python.org/3/library/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**|**None*) - Optional labels to apply to the MonarchMesh CRD metadata.
-Only used when provisioning (`image_spec` or `pod_spec` supplied).
+Propagated by the operator to the StatefulSet metadata. To set
+labels on the worker pods, use `pod_template.metadata.labels`.
+Only used when provisioning (`image_spec` or `pod_template` supplied).
+- **annotations** ([*dict*](https://docs.python.org/3/library/stdtypes.html#dict)*[*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*,*[*str*](https://docs.python.org/3/library/stdtypes.html#str)*]**|**None*) - Optional annotations to apply to the MonarchMesh CRD metadata.
+Propagated by the operator to the StatefulSet metadata. To set
+annotations on the worker pods, use `pod_template.metadata.annotations`.
+Only used when provisioning (`image_spec` or `pod_template` supplied).
 
 Raises:
 

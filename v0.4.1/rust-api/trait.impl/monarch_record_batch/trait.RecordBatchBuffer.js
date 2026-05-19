@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["monarch_distributed_telemetry",[["impl <a class=\"trait\" href=\"monarch_record_batch/trait.RecordBatchBuffer.html\" title=\"trait monarch_record_batch::RecordBatchBuffer\">RecordBatchBuffer</a> for <a class=\"struct\" href=\"monarch_distributed_telemetry/pyspy_table/struct.PySpyDumpBuffer.html\" title=\"struct monarch_distributed_telemetry::pyspy_table::PySpyDumpBuffer\">PySpyDumpBuffer</a>",0],["impl <a class=\"trait\" href=\"monarch_record_batch/trait.RecordBatchBuffer.html\" title=\"trait monarch_record_batch::RecordBatchBuffer\">RecordBatchBuffer</a> for <a class=\"struct\" href=\"monarch_distributed_telemetry/pyspy_table/struct.PySpyFrameBuffer.html\" title=\"struct monarch_distributed_telemetry::pyspy_table::PySpyFrameBuffer\">PySpyFrameBuffer</a>",0],["impl <a class=\"trait\" href=\"monarch_record_batch/trait.RecordBatchBuffer.html\" title=\"trait monarch_record_batch::RecordBatchBuffer\">RecordBatchBuffer</a> for <a class=\"struct\" href=\"monarch_distributed_telemetry/pyspy_table/struct.PySpyLocalVariableBuffer.html\" title=\"struct monarch_distributed_telemetry::pyspy_table::PySpyLocalVariableBuffer\">PySpyLocalVariableBuffer</a>",0],["impl <a class=\"trait\" href=\"monarch_record_batch/trait.RecordBatchBuffer.html\" title=\"trait monarch_record_batch::RecordBatchBuffer\">RecordBatchBuffer</a> for <a class=\"struct\" href=\"monarch_distributed_telemetry/pyspy_table/struct.PySpyStackTraceBuffer.html\" title=\"struct monarch_distributed_telemetry::pyspy_table::PySpyStackTraceBuffer\">PySpyStackTraceBuffer</a>",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[1551]}

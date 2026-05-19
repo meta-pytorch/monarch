@@ -1,10 +1,10 @@
 # Binds
 
-The `Binds` trait defines how an actor's ports are associated with the message types it can receive remotely.
+The `Binds` trait defines how an actor's handler ports are associated with the message types it can receive remotely.
 
 ```
 pub trait Binds<A: Actor>: Referable {
- fn bind(ports: &Ports<A>);
+ fn bind(ports: &HandlerPorts<A>);
 }
 ```
 
@@ -17,10 +17,8 @@ In most cases, you do not implement this trait manually. Instead, the `#[export]
 For example:
 
 ```
-#[hyperactor::export(
- spawn = true,
- handlers = [ShoppingList],
-)]
+#[hyperactor::spawnable]
+#[hyperactor::export(ShoppingList)]
 struct ShoppingListActor;
 ```
 
@@ -28,7 +26,7 @@ Expands to:
 
 ```
 impl Binds<ShoppingListActor> for ShoppingListActor {
- fn bind(ports: &Ports<Self>) {
+ fn bind(ports: &HandlerPorts<Self>) {
  ports.bind::<ShoppingList>();
  }
 }

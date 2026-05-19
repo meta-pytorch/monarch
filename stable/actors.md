@@ -11,7 +11,8 @@
 7. Error Handling in Meshes
 8. Advanced Patterns
 9. CPU/NUMA Binding
-10. Best Practices
+10. Bootstrap Command Customization
+11. Best Practices
 
 ---
 
@@ -723,7 +724,8 @@ This is similar to exception handling mechanisms: one can choose to handle excep
 
 ### Supervision Python API
 
-Actors can handle failures by providing an implementation of the `__supervise__` method:
+Actors can handle failures by providing an implementation of the `__supervise__` method.
+It may be declared with either `def` or `async def`:
 
 ```
 class ManagerActor(Actor):
@@ -746,6 +748,12 @@ class ManagerActor(Actor):
  return None
 ```
 
+An `async def` override is awaited on the actor's asyncio event loop - the same
+loop that runs endpoint coroutines - so it may `await` other endpoints or I/O.
+A sync override runs under `fake_sync_state` and cannot observe a running loop
+with `asyncio.get_running_loop`. Both forms receive the same arguments and obey
+the same truthy/falsey handled/unhandled contract.
+
 `__supervise__` is special: Because it handles "exceptions", we have to be able
 to invoke it at any (safe) point. This is because otherwise we might run into a
 deadlock: for example, an actor might be waiting for a result from a failed actor.
@@ -757,7 +765,7 @@ If `__supervise__` returns a truthy value, the failure will be considered handle
 and not delivered further up the chain. If it returns a falsey value (including None, if there is no return),
 the failure will be delivered to that Actor's owner recursively until it reaches
 the original client. If it reaches the original client with no handling, it will crash.
-If `__supervise__` raises an Exception of any kind, it will be considered a new supervision event to be delivered to that Actor's owner. Its cause will be set to the supervision event it was handling. This behavior matches the special method `__exit__` for context managers.
+If `__supervise__` raises an Exception of any kind, it will be considered a new supervision event to be delivered to that Actor's owner. Its cause will be set to the supervision event it was handling. This behavior matches the special method `__exit__` for context managers. Both sync and async overrides observe this behavior.
 
 We make no guarantees about how many times `__supervise__` will be called.
 If you own a mesh of N actors, each of which generates a supervision error, it may be called anywhere between 1 and N times inclusive.
@@ -954,6 +962,138 @@ per host (i.e. `math.prod(per_host.values())`).
 - Custom proc launchers receive the binding configuration in
 `LaunchOptions.proc_bind` and may apply it using backend-appropriate
 mechanisms (e.g., systemd unit properties, Docker `--cpuset-cpus`).
+
+---
+
+## Bootstrap Command Customization
+
+When spawning processes, you can customize the bootstrap command used to launch each proc using the `bootstrap_command` parameter on `HostMesh.spawn_procs()`. This is useful for setting environment variables like `CUDA_VISIBLE_DEVICES`, `RANK`, `LOCAL_RANK`, or customizing the program and arguments.
+
+### Uniform BootstrapCommand
+
+Pass a `BootstrapCommand` to use the same command for all spawned processes:
+
+```
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import BootstrapCommand
+from monarch.actor import this_host
+
+host = this_host()
+
+# Custom BootstrapCommand for all procs
+cmd = BootstrapCommand(
+ program="/custom/python",
+ arg0=None,
+ args=["-m", "monarch._src.actor.bootstrap_main"],
+ env={"CUDA_VISIBLE_DEVICES": "0,1,2,3", "MY_VAR": "value"},
+)
+procs = host.spawn_procs(
+ per_host={"gpus": 4},
+ bootstrap_command=cmd
+)
+```
+
+### Per-Coordinate BootstrapCommand
+
+Pass a callable to customize the bootstrap command per process. The callable receives a `Point` representing the combined coordinate across host and per_host dimensions:
+
+```
+from monarch.actor import this_host
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import BootstrapCommand
+
+host = this_host()
+
+# Set CUDA_VISIBLE_DEVICES based on coordinate
+def make_bootstrap(point):
+ return BootstrapCommand(
+ program="/usr/bin/python3",
+ arg0=None,
+ args=["-m", "monarch._src.actor.bootstrap_main"],
+ env={"CUDA_VISIBLE_DEVICES": str(point["gpus"])},
+ )
+
+procs = host.spawn_procs(
+ per_host={"gpus": 4},
+ bootstrap_command=make_bootstrap
+)
+
+# point["gpus"] is the GPU index within each host
+# point["hosts"] is the host index (if host mesh has multiple hosts)
+```
+
+This is particularly useful for:
+
+- Setting `CUDA_VISIBLE_DEVICES` to restrict each proc to specific GPUs
+- Configuring `RANK` and `LOCAL_RANK` for distributed training
+- Assigning different configurations based on host or device position
+- Using different Python executables or arguments per coordinate
+
+### Using with_env for Ergonomic Customization
+
+The `BootstrapCommand.with_env()` method makes it easy to create modified copies of a base command with additional environment variables. Use `default_bootstrap_cmd()` to get the default command for the current environment:
+
+```
+from monarch.actor import this_host
+from monarch._src.actor.host_mesh import default_bootstrap_cmd
+
+host = this_host()
+
+# Start with the default bootstrap command
+base = default_bootstrap_cmd()
+
+# Customize per coordinate using with_env
+def make_bootstrap(point):
+ return base.with_env({
+ "CUDA_VISIBLE_DEVICES": str(point["gpus"]),
+ "RANK": str(point["hosts"] * 4 + point["gpus"]),
+ })
+
+procs = host.spawn_procs(
+ per_host={"gpus": 4},
+ bootstrap_command=make_bootstrap
+)
+```
+
+> **Note:** `default_bootstrap_cmd()` returns the default for the *local* (client) environment. It is not guaranteed to match the bootstrap command that the actual remote hosts would use on their own -- those may differ in program path, args, or env. When you pass the result of `default_bootstrap_cmd().with_env(...)` as `bootstrap_command`, the client-side default is what gets sent to the hosts, replacing whatever default they would have used. In most setups the client and host environments are equivalent, so this is usually what you want; if your hosts run with a different default, supply an explicit `BootstrapCommand` instead of starting from `default_bootstrap_cmd()`.
+
+### Non-Mutating Behavior
+
+The `bootstrap_command` parameter only affects the specific `spawn_procs` call. The original `HostMesh` is not modified, so subsequent spawns on the same mesh use the original bootstrap command:
+
+```
+host = this_host()
+
+# First spawn with custom bootstrap command
+cmd1 = BootstrapCommand(...)
+procs1 = host.spawn_procs(
+ per_host={"gpus": 2},
+ bootstrap_command=cmd1
+)
+
+# Second spawn without bootstrap_command uses the mesh's default
+procs2 = host.spawn_procs(per_host={"gpus": 2})
+# procs2 uses the default bootstrap command
+```
+
+### Combining with with_python_executable
+
+Bootstrap commands work with other HostMesh customization methods:
+
+```
+host = this_host()
+
+# Customize Python executable and bootstrap command
+custom_host = host.with_python_executable("/path/to/python")
+cmd = BootstrapCommand(
+ program="/path/to/python",
+ arg0=None,
+ args=["-m", "monarch._src.actor.bootstrap_main"],
+ env={"CUDA_VISIBLE_DEVICES": "0,1,2,3"},
+)
+procs = custom_host.spawn_procs(
+ per_host={"gpus": 4},
+ bootstrap_command=cmd
+)
+```
 
 ---
 

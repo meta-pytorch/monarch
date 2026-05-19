@@ -157,7 +157,7 @@ The `cx` parameter provides the actor context required to send messages and open
 ### Example Usage
 
 ```
-let mut proc = Proc::local();
+let mut proc = Proc::isolated();
 let actor = proc.spawn::<ShoppingListActor>("shopping", ()).await?;
 let client = proc.attach("client").unwrap();
 

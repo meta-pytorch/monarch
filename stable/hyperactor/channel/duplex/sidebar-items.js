@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["dial","serve"],"struct":["DuplexRx","DuplexServer","DuplexTx"]};
+window.SIDEBAR_ITEMS = {"fn":["dial","serve"],"struct":["DuplexClient","DuplexRx","DuplexServer","DuplexTx"]};

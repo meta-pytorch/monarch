@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The#[derive(Named)] macro implements the typeuri::Named trait for a type, making it identifiable at runtime through a globally unique string and stable hash. The Named trait: The typeuri::Named tra..." />
 
-    <title>#[derive(Named)] &#8212; Monarch v0.4.1 documentation</title>
+    <title>#[derive(Named)] &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/macros/named.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -960,6 +972,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1295,7 +1319,7 @@ document.write(`
 </section>
 <section id="typehash-u64">
 <h4><code class="docutils literal notranslate"><span class="pre">typehash()</span> <span class="pre">-&gt;</span> <span class="pre">u64</span></code><a class="headerlink" href="#typehash-u64" title="Link to this heading">#</a></h4>
-<p>Returns a stable hash derived from <code class="docutils literal notranslate"><span class="pre">typename()</span></code>. This value is used for message port derivation.</p>
+<p>Returns a stable hash derived from <code class="docutils literal notranslate"><span class="pre">typename()</span></code>. This value is used for handler port derivation.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">cityhasher</span><span class="p">::</span><span class="n">hash</span><span class="p">(</span><span class="bp">Self</span><span class="p">::</span><span class="n">typename</span><span class="p">())</span>
 </pre></div>
 </div>
@@ -1613,7 +1637,7 @@ document.write(`
        "headline": "#[derive(Named)]",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/macros/named.html",
-       "articleBody": "#[derive(Named)]# The #[derive(Named)] macro implements the typeuri::Named trait for a type, making it identifiable at runtime through a globally unique string and stable hash. The Named trait# The typeuri::Named trait is the foundation of type identification in hyperactor. It gives each type a globally unique identity based on its name used in routing. pub trait Named: Sized + \u0027static { fn typename() -\u003e \u0026\u0027static str; fn typehash() -\u003e u64 { ... } fn typeid() -\u003e TypeId { ... } fn port() -\u003e u64 { ... } fn arm(\u0026self) -\u003e Option\u003c\u0026\u0027static str\u003e { ... } unsafe fn arm_unchecked(self_: *const ()) -\u003e Option\u003c\u0026\u0027static str\u003e { ... } } Trait Methods# typename() -\u003e \u0026\u0027static str# Returns the globally unique, fully-qualified type name for the type. This should typically look like: \"foo::bar::Corge\u003cquux::garpy::Waldo\u003e\" typehash() -\u003e u64# Returns a stable hash derived from typename(). This value is used for message port derivation. cityhasher::hash(Self::typename()) typeid() -\u003e TypeId# Returns the Rust TypeId for the type (, which is only unique within a single binary). port() -\u003e u64# Returns a globally unique port number for the type: Self::typehash() | (1 \u003c\u003c 63) Typed ports are reserved in the range 2^63 .. 2^64 - 1. arm(\u0026self) -\u003e Option\u003c\u0026\u0027static str\u003e# For enum types, this returns the name of the current variant, e.g., \u201cAdd\u201d or \u201cRemove\u201d. unsafe fn arm_unchecked(ptr: *const ()) -\u003e Option\u003c\u0026\u0027static str\u003e# The type-erased version of arm(). Casts ptr back to \u0026Self and calls arm(). Useful for dynamic reflection when the concrete type isn\u2019t statically known Runtime Registration# In addition to implementing the Named trait, the macro registers the type\u2019s metadata at startup using the inventory crate: const _: () = { static __INVENTORY: ::inventory::Node = ::inventory::Node { value: \u0026TypeInfo { ... }, ... }; // Registers the type info before main() runs #[link_section = \".init_array\"] static __CTOR: unsafe extern \"C\" fn() = __ctor; }; This allows the type to be discovered at runtime, enabling: Message dispatch from erased or serialized inputs Introspection and diagnostics Dynamic spawning or reflection Tooling support Types registered this way appear in the global inventory::iter\u003cTypeInfo\u003e set, which is how the hyperactor runtime locates known message types.",
+       "articleBody": "#[derive(Named)]# The #[derive(Named)] macro implements the typeuri::Named trait for a type, making it identifiable at runtime through a globally unique string and stable hash. The Named trait# The typeuri::Named trait is the foundation of type identification in hyperactor. It gives each type a globally unique identity based on its name used in routing. pub trait Named: Sized + \u0027static { fn typename() -\u003e \u0026\u0027static str; fn typehash() -\u003e u64 { ... } fn typeid() -\u003e TypeId { ... } fn port() -\u003e u64 { ... } fn arm(\u0026self) -\u003e Option\u003c\u0026\u0027static str\u003e { ... } unsafe fn arm_unchecked(self_: *const ()) -\u003e Option\u003c\u0026\u0027static str\u003e { ... } } Trait Methods# typename() -\u003e \u0026\u0027static str# Returns the globally unique, fully-qualified type name for the type. This should typically look like: \"foo::bar::Corge\u003cquux::garpy::Waldo\u003e\" typehash() -\u003e u64# Returns a stable hash derived from typename(). This value is used for handler port derivation. cityhasher::hash(Self::typename()) typeid() -\u003e TypeId# Returns the Rust TypeId for the type (, which is only unique within a single binary). port() -\u003e u64# Returns a globally unique port number for the type: Self::typehash() | (1 \u003c\u003c 63) Typed ports are reserved in the range 2^63 .. 2^64 - 1. arm(\u0026self) -\u003e Option\u003c\u0026\u0027static str\u003e# For enum types, this returns the name of the current variant, e.g., \u201cAdd\u201d or \u201cRemove\u201d. unsafe fn arm_unchecked(ptr: *const ()) -\u003e Option\u003c\u0026\u0027static str\u003e# The type-erased version of arm(). Casts ptr back to \u0026Self and calls arm(). Useful for dynamic reflection when the concrete type isn\u2019t statically known Runtime Registration# In addition to implementing the Named trait, the macro registers the type\u2019s metadata at startup using the inventory crate: const _: () = { static __INVENTORY: ::inventory::Node = ::inventory::Node { value: \u0026TypeInfo { ... }, ... }; // Registers the type info before main() runs #[link_section = \".init_array\"] static __CTOR: unsafe extern \"C\" fn() = __ctor; }; This allows the type to be discovered at runtime, enabling: Message dispatch from erased or serialized inputs Introspection and diagnostics Dynamic spawning or reflection Tooling support Types registered this way appear in the global inventory::iter\u003cTypeInfo\u003e set, which is how the hyperactor runtime locates known message types.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

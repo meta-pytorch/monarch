@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["deserialize_bincode","serialize_bincode"],"struct":["Frame","Message","Part"]};

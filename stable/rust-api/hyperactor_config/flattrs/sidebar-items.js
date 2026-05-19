@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["Flattrs"]};
+window.SIDEBAR_ITEMS = {"struct":["Flattrs","FlattrsIter"]};

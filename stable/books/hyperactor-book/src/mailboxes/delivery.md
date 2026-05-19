@@ -47,9 +47,9 @@ impl MessageEnvelope {
 impl MessageEnvelope {
  fn new_unknown(dest: PortId, data: Serialized) -> Self {
  let unknown_addr = ChannelAddr::any(ChannelTransport::Local);
- let unknown_proc_id = ProcId::unique(unknown_addr, "unknown");
- let unknown_actor_id = ActorId::root(unknown_proc_id, "unknown".to_string());
- Self::new(unknown_actor_id, dest, data)
+ let unknown_proc = ProcAddr::instance(unknown_addr, "unknown");
+ let unknown_actor = ActorAddr::root(unknown_proc, Label::strip("unknown"));
+ Self::new(unknown_actor, dest, data)
  }
 }
 ```

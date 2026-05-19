@@ -1,0 +1,36 @@
+# Logging
+
+Monarch v1's logging subsystem streams `stdout`/`stderr` from remote procs back to the client and lets Python control log delivery and levels. This section is written **top-down**: start with the big picture, then dive into each component.
+
+## What's in this section
+
+- **[Overview](overview.html)** -- Python kickoff → Rust actors: how `ProcMesh` boots logging, what `LoggingManager` does, and what `LoggingMeshClient.spawn(...)` creates.
+- **[Forwarder internals](forwarder.html)** -- `LogForwardActor`, `BOOTSTRAP_LOG_CHANNEL`, streaming vs. silent mode, and the versioned sync-flush path.
+- **[Stream forwarders](stream-forwarders.html)** -- `StreamFwder`, `tee`, `FileAppender`, `RotatingLineBuffer`; how raw bytes become lines sent to forwarders/files.
+- **[Client actor](client.html)** -- `LogClientActor` aggregation windows, similarity bucketing, flush barriers, and teardown.
+- **[Python control surface](python.html)** -- `logging_option(...)`, `flush()`, IPython cell-end flushers, FD capture.
+- **[Config & env](config.html)** -- Tunables like `HYPERACTOR_READ_LOG_BUFFER`, `HYPERACTOR_FORCE_FILE_LOG`, `HYPERACTOR_PREFIX_WITH_RANK`, defaults.
+- **[Ordering](ordering.html)** -- what is guaranteed (and what isn't)
+- **[Teardown](teardown.html)** -- barrier-before-stop, EOF handling, drop paths
+- **[File aggregation](file-aggregation.html)** -- per-proc files on bootstrap hosts
+
+## Quick mental model
+
+- **Three moving parts**: a client-side coordinator (`LogClientActor`) and two per-proc meshes (`LogForwardActor` (optional), `LoggerRuntimeActor`).
+- **Two planes**: raw FD streams (stdout/stderr) → forwarders (if enabled); and Python logging (levels/handlers) → logger runtime.
+- **Barriers**: versioned sync flush guarantees all logs up to a point have been delivered.
+- **Conditional forwarding**: The `LogForwardActor` mesh is only spawned if `MESH_ENABLE_LOG_FORWARDING` is true; otherwise logs stay local.
+
+## Quickstart (Python)
+
+```
+pm = host_mesh.spawn_procs(per_host={"gpus": 1})
+await pm.logging_option(
+ stream_to_client=True,
+ aggregate_window_sec=3,
+ level=logging.INFO,
+)
+# ...run workload; logs stream back...
+
+await pm.stop() # does a blocking flush before teardown
+```

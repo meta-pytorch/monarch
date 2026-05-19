@@ -1,0 +1,157 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Derive a custom handler trait for given an enum containing tuple structs.  The handler trait defines a method corresponding to each of the enum’s variants, and a `handle` function that dispatches messages to the correct method.  The macro supports two messaging patterns: “call” and “oneway”. A call is a request-response message; a [`hyperactor::mailbox::OncePortRef`] or [`hyperactor::mailbox::OncePortHandle`] in the last position is used to send the return value."><title>Handler in hyperactor_macros - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="hyperactor_macros" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc derive"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Handler</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../hyperactor_macros/index.html">hyperactor_<wbr>macros</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Handler</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#example" title="Example">Example</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="index.html">In crate hyperactor_<wbr>macros</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">hyperactor_macros</a></div><h1>Derive Macro <span class="derive">Handler</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/hyperactor_macros/lib.rs.html#669-873">Source</a> </span></div><pre class="rust item-decl"><code>#[derive(Handler)]
+{
+    <span class="comment">// Attributes available to this derive:</span>
+    #[reply]
+}
+</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Derive a custom handler trait for given an enum containing tuple
+structs.  The handler trait defines a method corresponding
+to each of the enum’s variants, and a <code>handle</code> function
+that dispatches messages to the correct method.  The macro
+supports two messaging patterns: “call” and “oneway”. A call is a
+request-response message; a [<code>hyperactor::mailbox::OncePortRef</code>] or
+[<code>hyperactor::mailbox::OncePortHandle</code>] in the last position is used
+to send the return value.</p>
+<p>The macro also derives a client trait that can be automatically implemented
+by specifying <a href="derive.HandleClient.html" title="derive hyperactor_macros::HandleClient"><code>HandleClient</code></a> for <code>ActorHandle&lt;Actor&gt;</code> and <a href="derive.RefClient.html" title="derive hyperactor_macros::RefClient"><code>RefClient</code></a>
+for <code>ActorRef&lt;Actor&gt;</code> accordingly. We require two implementations because
+not <code>ActorRef</code>s require that its message type is serializable.</p>
+<p>The associated [<code>hyperactor_macros::handler</code>] macro can be used to add
+a dispatching handler directly to an [<code>hyperactor::Actor</code>].</p>
+<h2 id="example"><a class="doc-anchor" href="#example">§</a>Example</h2>
+<p>The following example creates a “shopping list” actor responsible for
+maintaining a shopping list.</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>std::collections::HashSet;
+<span class="kw">use </span>std::time::Duration;
+
+<span class="kw">use </span>async_trait::async_trait;
+<span class="kw">use </span>hyperactor::Actor;
+<span class="kw">use </span>hyperactor::HandleClient;
+<span class="kw">use </span>hyperactor::Handler;
+<span class="kw">use </span>hyperactor::Instance;
+<span class="kw">use </span>hyperactor::RefClient;
+<span class="kw">use </span>hyperactor::proc::Proc;
+<span class="kw">use </span>hyperactor::reference;
+<span class="kw">use </span>serde::Deserialize;
+<span class="kw">use </span>serde::Serialize;
+<span class="kw">use </span>typeuri::Named;
+
+<span class="attr">#[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
+</span><span class="kw">enum </span>ShoppingList {
+    <span class="comment">// Oneway messages dispatch messages asynchronously, with no reply.
+    </span>Add(String),
+    Remove(String),
+
+    <span class="comment">// Call messages dispatch a request, expecting a reply to the
+    // provided port, which must be in the last position.
+    </span>Exists(String, <span class="attr">#[reply] </span>reference::OncePortRef&lt;bool&gt;),
+
+    List(<span class="attr">#[reply] </span>reference::OncePortRef&lt;Vec&lt;String&gt;&gt;),
+}
+
+<span class="comment">// Define an actor.
+</span><span class="attr">#[derive(Debug)]
+#[hyperactor::export(
+    spawn = <span class="bool-val">true</span>,
+    handlers = [
+        ShoppingList,
+    ]</span>,
+)]
+<span class="kw">struct </span>ShoppingListActor(HashSet&lt;String&gt;);
+
+<span class="attr">#[async_trait]
+</span><span class="kw">impl </span>Actor <span class="kw">for </span>ShoppingListActor {
+    <span class="kw">type </span>Params = ();
+
+    <span class="kw">async fn </span>new(_params: ()) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, anyhow::Error&gt; {
+        <span class="prelude-val">Ok</span>(<span class="self">Self</span>(HashSet::new()))
+    }
+}
+
+<span class="comment">// ShoppingListHandler is the trait generated by derive(Handler) above.
+// We implement the trait here for the actor, defining a handler for
+// each ShoppingList message.
+//
+// The `handle` attribute installs a handler that routes messages
+// to the `ShoppingListHandler` implementation directly. This can also
+// be done manually:
+//
+// ```ignore
+//&lt;ShoppingListActor as ShoppingListHandler&gt;
+//     ::handle(self, comm, message).await
+// ```
+</span><span class="attr">#[async_trait]
+#[hyperactor::handle(ShoppingList)]
+</span><span class="kw">impl </span>ShoppingListHandler <span class="kw">for </span>ShoppingListActor {
+    <span class="kw">async fn </span>add(<span class="kw-2">&amp;mut </span><span class="self">self</span>, _cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;, item: String) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+        <span class="macro">eprintln!</span>(<span class="string">"insert {}"</span>, item);
+        <span class="self">self</span>.<span class="number">0</span>.insert(item);
+        <span class="prelude-val">Ok</span>(())
+    }
+
+    <span class="kw">async fn </span>remove(<span class="kw-2">&amp;mut </span><span class="self">self</span>, _cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;, item: String) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+        <span class="macro">eprintln!</span>(<span class="string">"remove {}"</span>, item);
+        <span class="self">self</span>.<span class="number">0</span>.remove(<span class="kw-2">&amp;</span>item);
+        <span class="prelude-val">Ok</span>(())
+    }
+
+    <span class="kw">async fn </span>exists(
+        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+        _cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;,
+        item: String,
+    ) -&gt; <span class="prelude-ty">Result</span>&lt;bool, anyhow::Error&gt; {
+        <span class="prelude-val">Ok</span>(<span class="self">self</span>.<span class="number">0</span>.contains(<span class="kw-2">&amp;</span>item))
+    }
+
+    <span class="kw">async fn </span>list(<span class="kw-2">&amp;mut </span><span class="self">self</span>, _cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;String&gt;, anyhow::Error&gt; {
+        <span class="prelude-val">Ok</span>(<span class="self">self</span>.<span class="number">0</span>.iter().cloned().collect())
+    }
+}
+
+<span class="attr">#[tokio::main]
+</span><span class="kw">async fn </span>main() -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+    <span class="kw">let </span><span class="kw-2">mut </span>proc = Proc::local();
+
+    <span class="comment">// Spawn our actor, and get a handle for rank 0.
+    </span><span class="kw">let </span>shopping_list_actor: hyperactor::ActorHandle&lt;ShoppingListActor&gt; =
+        proc.spawn(<span class="string">"shopping"</span>, ()).<span class="kw">await</span><span class="question-mark">?</span>;
+
+    <span class="comment">// We join the system, so that we can send messages to actors.
+    </span><span class="kw">let </span>client = proc.attach(<span class="string">"client"</span>).unwrap();
+
+    <span class="comment">// todo: consider making this a macro to remove the magic names
+
+    // Derive(Handler) generates client methods, which call the
+    // remote handler provided an actor instance,
+    // the destination actor, and the method arguments.
+
+    </span>shopping_list_actor.add(<span class="kw-2">&amp;</span>client, <span class="string">"milk"</span>.into()).<span class="kw">await</span><span class="question-mark">?</span>;
+    shopping_list_actor.add(<span class="kw-2">&amp;</span>client, <span class="string">"eggs"</span>.into()).<span class="kw">await</span><span class="question-mark">?</span>;
+
+    <span class="macro">println!</span>(
+        <span class="string">"got milk? {}"</span>,
+        shopping_list_actor.exists(<span class="kw-2">&amp;</span>client, <span class="string">"milk"</span>.into()).<span class="kw">await</span><span class="question-mark">?
+    </span>);
+    <span class="macro">println!</span>(
+        <span class="string">"got yoghurt? {}"</span>,
+        shopping_list_actor
+            .exists(<span class="kw-2">&amp;</span>client, <span class="string">"yoghurt"</span>.into())
+            .<span class="kw">await</span><span class="question-mark">?
+    </span>);
+
+    shopping_list_actor.remove(<span class="kw-2">&amp;</span>client, <span class="string">"milk"</span>.into()).<span class="kw">await</span><span class="question-mark">?</span>;
+    <span class="macro">println!</span>(
+        <span class="string">"got milk now? {}"</span>,
+        shopping_list_actor.exists(<span class="kw-2">&amp;</span>client, <span class="string">"milk"</span>.into()).<span class="kw">await</span><span class="question-mark">?
+    </span>);
+
+    <span class="macro">println!</span>(
+        <span class="string">"shopping list: {:?}"</span>,
+        shopping_list_actor.list(<span class="kw-2">&amp;</span>client).<span class="kw">await</span><span class="question-mark">?
+    </span>);
+
+    <span class="kw">let _ </span>= proc
+        .destroy_and_wait::&lt;()&gt;(Duration::from_secs(<span class="number">1</span>), <span class="prelude-val">None</span>)
+        .<span class="kw">await</span><span class="question-mark">?</span>;
+    <span class="prelude-val">Ok</span>(())
+}</code></pre></div></div></details></section></div></main></body></html>

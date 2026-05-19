@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["RefParseError"],"struct":["ActorRef","Location","PortRef","ProcRef"]};
+window.SIDEBAR_ITEMS = {"enum":["UnboundPortKind"],"struct":["ActorRef","OncePortRef","PortRef","UnboundPort"]};

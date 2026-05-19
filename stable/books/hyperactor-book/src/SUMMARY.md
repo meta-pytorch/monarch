@@ -43,12 +43,12 @@
 - [Handler](actors/handler.html)
 - [RemoteSpawn](actors/remote_spawn.html)
 - [Remote Registry](actors/remote.html)
-- [Checkpointable](actors/checkpointable.html)
 - [Referable](actors/referable.html)
 - [Binds](actors/binds.html)
 - [RemoteHandles](actors/remote_handles.html)
 - [ActorHandle](actors/actor_handle.html)
 - [Actor Lifecycle](actors/actor_lifecycle.html)
+- [Remote Supervision and Rendezvous](remote_supervision.html)
 - [Macros](macros/index.html)
 
 - [`#[derive(Handler)]`](macros/handler.html)

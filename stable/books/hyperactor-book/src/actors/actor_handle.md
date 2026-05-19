@@ -9,14 +9,14 @@ Unlike remote references (e.g. `ActorRef<A>`), which may refer to actors on othe
 ```
 pub struct ActorHandle<A: Actor> {
  cell: InstanceCell,
- ports: Arc<Ports<A>>,
+ ports: Arc<HandlerPorts<A>>,
 }
 ```
 
 An `ActorHandle` contains:
 
 - `cell` is the actor's internal runtime state, including identity and lifecycle metadata.
-- `ports` is a shared dictionary of all typed message ports available to the actor.
+- `ports` is a shared dictionary of all typed handler ports available to the actor.
 
 This handle is cloneable, sendable across tasks, and allows interaction with the actor via messaging, status observation, and controlled shutdown.
 
@@ -24,10 +24,10 @@ This handle is cloneable, sendable across tasks, and allows interaction with the
 
 ### `new` (internal)
 
-Constructs a new `ActorHandle` from its backing `InstanceCell` and `Ports`. This is called by the runtime when spawning a new actor.
+Constructs a new `ActorHandle` from its backing `InstanceCell` and `HandlerPorts`. This is called by the runtime when spawning a new actor.
 
 ```
-pub(crate) fn new(cell: InstanceCell, ports: Arc<Ports<A>>) -> Self {
+pub(crate) fn new(cell: InstanceCell, ports: Arc<HandlerPorts<A>>) -> Self {
  Self { cell, ports }
 }
 ```
@@ -122,7 +122,7 @@ This method requires that `R` implements the `Binds<A>` trait. The `Binds` trait
 
 ```
 pub trait Binds<A: Actor>: Referable {
- fn bind(ports: &Ports<A>);
+ fn bind(ports: &HandlerPorts<A>);
 }
 ```
 
@@ -132,8 +132,8 @@ In practice, `A` and `R` are usually the same type; this is the pattern produced
 
 Calling `bind()` on the `ActorHandle`:
 
-1. Invokes the `Binds<A>::bind()` implementation for `R`, registering the actor's message handlers into the `Ports<A>` dictionary.
-2. Always binds the `Signal` type (used for draining, stopping, and supervision).
+1. Invokes the `Binds<A>::bind()` implementation for `R`, registering the actor's message handlers into the `HandlerPorts<A>` dictionary.
+2. Always binds the `Undeliverable<MessageEnvelope>` handler. Runtime control-plane ports such as `Signal` and `IntrospectMessage` are provisioned directly by the instance.
 3. Records the bound message types into `InstanceState::exported_named_ports`, enabling routing and diagnostics.
 4. Constructs the final `ActorRef<R>` using `ActorRef::attest(...)`, which assumes the type-level correspondence between `R` and the bound ports.
 

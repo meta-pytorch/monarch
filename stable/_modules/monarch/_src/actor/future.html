@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.actor.future &#8212; Monarch v0.4.1 documentation</title>
+    <title>monarch._src.actor.future &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -28,7 +28,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -41,7 +41,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -57,7 +57,7 @@ window.addEventListener("load", () => mermaid.run());
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/actor/future.html" />
@@ -81,7 +81,7 @@ window.addEventListener("load", () => mermaid.run());
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -195,7 +195,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -590,6 +590,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -955,6 +967,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -1282,6 +1306,8 @@ document.write(`
 <span class="c1"># pyre-strict</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">Any</span><span class="p">,</span>
     <span class="n">cast</span><span class="p">,</span>
@@ -1298,6 +1324,7 @@ document.write(`
     <span class="n">PythonTask</span><span class="p">,</span>
     <span class="n">Shared</span><span class="p">,</span>
 <span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">log_with_tracing</span>
 
 <span class="n">R</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">&quot;R&quot;</span><span class="p">)</span>
 
@@ -1386,6 +1413,24 @@ document.write(`
 <div class="viewcode-block" id="Future.get">
 <a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Future.get">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span>
+        <span class="n">in_asyncio</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">_get_running_loop</span><span class="p">()</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="n">in_tokio</span> <span class="o">=</span> <span class="n">is_tokio_thread</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">in_asyncio</span> <span class="ow">or</span> <span class="n">in_tokio</span><span class="p">:</span>
+            <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+                <span class="s2">&quot;Future.get() called from within an active event loop blocks it; &quot;</span>
+                <span class="s2">&quot;use &#39;await&#39; instead. This will become a RuntimeError in monarch v0.6.&quot;</span><span class="p">,</span>
+                <span class="ne">DeprecationWarning</span><span class="p">,</span>
+                <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="c1"># Forward the event directly to Rust tracing so we capture it in</span>
+            <span class="c1"># non-actor driver processes too, where no `TracingForwarder`</span>
+            <span class="c1"># handler is attached to the Python logging chain.</span>
+            <span class="n">log_with_tracing</span><span class="p">(</span>
+                <span class="n">logging</span><span class="o">.</span><span class="n">WARNING</span><span class="p">,</span>
+                <span class="s2">&quot;Future.get() called from within an active event loop&quot;</span><span class="p">,</span>
+                <span class="n">extra</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;context&quot;</span><span class="p">:</span> <span class="s2">&quot;asyncio&quot;</span> <span class="k">if</span> <span class="n">in_asyncio</span> <span class="k">else</span> <span class="s2">&quot;tokio&quot;</span><span class="p">},</span>
+                <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+            <span class="p">)</span>
         <span class="k">match</span> <span class="bp">self</span><span class="o">.</span><span class="n">_status</span><span class="p">:</span>
             <span class="k">case</span> <span class="n">_Unawaited</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">coro</span><span class="p">):</span>
                 <span class="k">try</span><span class="p">:</span>
@@ -1669,7 +1714,7 @@ document.write(`
        "headline": "monarch._src.actor.future",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/actor/future.html",
-       "articleBody": "Source code for monarch._src.actor.future # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import asyncio from typing import ( Any, cast, Coroutine, Generator, Generic, NamedTuple, Optional, TypeVar, ) from monarch._rust_bindings.monarch_hyperactor.pytokio import ( is_tokio_thread, PythonTask, Shared, ) R = TypeVar(\"R\") async def _aincomplete(impl: Any, self: Any) -\u003e Any: try: return self._set_result(await impl()) except Exception as e: self._set_exception(e) raise # Future is our generic mechanism for providing both a synchronous and asynchronous API for # Monarch Future objects. # We treat all code as running in one of two contexts: synchronous (asyncio._get_running_loop() is None) # or asynchronous. # Inside of asynchronous code, clients of our API must use `await` to wait for monarch Futures to prevent # blocking the surrounding event loop. # In synchronous code users must call get() because the call is comming from an non-async function so # await is not allowed. # [avoiding async code duplication] # Because we allow for two modes, it is tempting as developers of Monarch to start to write two copies of # of code for each mode. However, this results in a lot of confusing code duplication. # To avoid this, we utilize the fact that synchronous code is allowed to start/complete an asyncio event loop # via asyncio.run in order to complete the `get()` operation. So we can just write the async version and use # it to implement the synchronoous version. # However, starting and running an event loop is somewhat expensive. For simple messages, using an event loop # is about 4x slower than just directly waiting on the tokio result. To avoid this slow down we perform an # optimization. For any case where the `impl` coroutine of a future calls `await` only on PythonFuture # (a Tokio future returning a Python value) objects, we pass requires_loop=False to the Future. In this mode, # the future will just run the coroutine manually, and the PythonFuture object will recognize it is being awaited # without an event loop (search [avoiding code duplication]) and simply do a blocking wait. By avoiding the event # loop machinery, this gives it the same throughput as if we ran it synchronously. class _Unawaited(NamedTuple): coro: PythonTask[Any] class _Complete(NamedTuple): value: Any class _Exception(NamedTuple): exe: Exception class _Asyncio(NamedTuple): fut: asyncio.Future class _Tokio(NamedTuple): shared: Shared[Any] _Status = _Unawaited | _Complete | _Exception | _Asyncio | _Tokio [docs] class Future(Generic[R]): \"\"\" The Future class wraps a PythonTask, which is a handle to a asyncio coroutine running on the Tokio event loop. These coroutines do not use asyncio or asyncio.Future; instead, they are executed directly on the Tokio runtime. The Future class provides both synchronous (.get()) and asynchronous APIs (await) for interacting with these tasks. Args: coro (Coroutine[Any, Any, R] | PythonTask[R]): The coroutine or PythonTask representing the asynchronous computation. \"\"\" [docs] def __init__(self, *, coro: \"Coroutine[Any, Any, R] | PythonTask[R]\") -\u003e None: self._status: _Status = _Unawaited( coro if isinstance(coro, PythonTask) else PythonTask.from_coroutine(coro) ) [docs] def get(self, timeout: Optional[float] = None) -\u003e R: match self._status: case _Unawaited(coro=coro): try: if timeout is not None: coro = coro.with_timeout(timeout) v = coro.block_on() self._status = _Complete(v) return cast(\"R\", v) except Exception as e: self._status = _Exception(e) raise e from None case _Asyncio(_): raise ValueError( \"already converted into an asyncio.Future, use \u0027await\u0027 to get the value.\" ) case _Complete(value=value): return cast(\"R\", value) case _Exception(exe=exe): raise exe case _Tokio(_): raise ValueError( \"already converted into a pytokio.Shared object, use \u0027await\u0027 from a PythonTask coroutine to get the value.\" ) case _: raise RuntimeError(\"unknown status\") def __await__(self) -\u003e Generator[Any, Any, R]: if asyncio._get_running_loop() is not None: match self._status: case _Unawaited(coro=coro): loop = asyncio.get_running_loop() fut = loop.create_future() self._status = _Asyncio(fut) def set_result(fut: asyncio.Future[R], value: R) -\u003e None: if not fut.cancelled(): fut.set_result(value) def set_exception(fut: asyncio.Future[R], e: Exception) -\u003e None: if not fut.cancelled(): fut.set_exception(e) async def mark_complete() -\u003e None: try: func, value = set_result, await coro except Exception as e: func, value = set_exception, e loop.call_soon_threadsafe(func, fut, value) PythonTask.from_coroutine(mark_complete()).spawn() return fut.__await__() case _Asyncio(fut=fut): return fut.__await__() case _Tokio(_): raise ValueError( \"already converted into a tokio future, but being awaited from the asyncio loop.\" ) case _: raise ValueError( \"already converted into a synchronous future, use \u0027get\u0027 to get the value.\" ) elif is_tokio_thread(): match self._status: case _Unawaited(coro=coro): shared = coro.spawn() self._status = _Tokio(shared) return shared.__await__() case _Tokio(shared=shared): return shared.__await__() case _Asyncio(_): raise ValueError( \"already converted into asyncio future, but being awaited from the tokio loop.\" ) case _: raise ValueError( \"already converted into a synchronous future, use \u0027get\u0027 to get the value.\" ) else: raise ValueError( \"__await__ with no active event loop (either asyncio or tokio)\" ) # compatibility with old tensor engine Future objects # hopefully we do not need done(), add_callback because # they are harder to implement right. [docs] def result(self, timeout: Optional[float] = None) -\u003e R: return self.get(timeout) [docs] def exception(self, timeout: Optional[float] = None) -\u003e Optional[Exception]: try: self.get(timeout) return None except Exception as e: return e",
+       "articleBody": "Source code for monarch._src.actor.future # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import asyncio import logging import warnings from typing import ( Any, cast, Coroutine, Generator, Generic, NamedTuple, Optional, TypeVar, ) from monarch._rust_bindings.monarch_hyperactor.pytokio import ( is_tokio_thread, PythonTask, Shared, ) from monarch._src.actor.telemetry import log_with_tracing R = TypeVar(\"R\") async def _aincomplete(impl: Any, self: Any) -\u003e Any: try: return self._set_result(await impl()) except Exception as e: self._set_exception(e) raise # Future is our generic mechanism for providing both a synchronous and asynchronous API for # Monarch Future objects. # We treat all code as running in one of two contexts: synchronous (asyncio._get_running_loop() is None) # or asynchronous. # Inside of asynchronous code, clients of our API must use `await` to wait for monarch Futures to prevent # blocking the surrounding event loop. # In synchronous code users must call get() because the call is comming from an non-async function so # await is not allowed. # [avoiding async code duplication] # Because we allow for two modes, it is tempting as developers of Monarch to start to write two copies of # of code for each mode. However, this results in a lot of confusing code duplication. # To avoid this, we utilize the fact that synchronous code is allowed to start/complete an asyncio event loop # via asyncio.run in order to complete the `get()` operation. So we can just write the async version and use # it to implement the synchronoous version. # However, starting and running an event loop is somewhat expensive. For simple messages, using an event loop # is about 4x slower than just directly waiting on the tokio result. To avoid this slow down we perform an # optimization. For any case where the `impl` coroutine of a future calls `await` only on PythonFuture # (a Tokio future returning a Python value) objects, we pass requires_loop=False to the Future. In this mode, # the future will just run the coroutine manually, and the PythonFuture object will recognize it is being awaited # without an event loop (search [avoiding code duplication]) and simply do a blocking wait. By avoiding the event # loop machinery, this gives it the same throughput as if we ran it synchronously. class _Unawaited(NamedTuple): coro: PythonTask[Any] class _Complete(NamedTuple): value: Any class _Exception(NamedTuple): exe: Exception class _Asyncio(NamedTuple): fut: asyncio.Future class _Tokio(NamedTuple): shared: Shared[Any] _Status = _Unawaited | _Complete | _Exception | _Asyncio | _Tokio [docs] class Future(Generic[R]): \"\"\" The Future class wraps a PythonTask, which is a handle to a asyncio coroutine running on the Tokio event loop. These coroutines do not use asyncio or asyncio.Future; instead, they are executed directly on the Tokio runtime. The Future class provides both synchronous (.get()) and asynchronous APIs (await) for interacting with these tasks. Args: coro (Coroutine[Any, Any, R] | PythonTask[R]): The coroutine or PythonTask representing the asynchronous computation. \"\"\" [docs] def __init__(self, *, coro: \"Coroutine[Any, Any, R] | PythonTask[R]\") -\u003e None: self._status: _Status = _Unawaited( coro if isinstance(coro, PythonTask) else PythonTask.from_coroutine(coro) ) [docs] def get(self, timeout: Optional[float] = None) -\u003e R: in_asyncio = asyncio._get_running_loop() is not None in_tokio = is_tokio_thread() if in_asyncio or in_tokio: warnings.warn( \"Future.get() called from within an active event loop blocks it; \" \"use \u0027await\u0027 instead. This will become a RuntimeError in monarch v0.6.\", DeprecationWarning, stacklevel=2, ) # Forward the event directly to Rust tracing so we capture it in # non-actor driver processes too, where no `TracingForwarder` # handler is attached to the Python logging chain. log_with_tracing( logging.WARNING, \"Future.get() called from within an active event loop\", extra={\"context\": \"asyncio\" if in_asyncio else \"tokio\"}, stacklevel=2, ) match self._status: case _Unawaited(coro=coro): try: if timeout is not None: coro = coro.with_timeout(timeout) v = coro.block_on() self._status = _Complete(v) return cast(\"R\", v) except Exception as e: self._status = _Exception(e) raise e from None case _Asyncio(_): raise ValueError( \"already converted into an asyncio.Future, use \u0027await\u0027 to get the value.\" ) case _Complete(value=value): return cast(\"R\", value) case _Exception(exe=exe): raise exe case _Tokio(_): raise ValueError( \"already converted into a pytokio.Shared object, use \u0027await\u0027 from a PythonTask coroutine to get the value.\" ) case _: raise RuntimeError(\"unknown status\") def __await__(self) -\u003e Generator[Any, Any, R]: if asyncio._get_running_loop() is not None: match self._status: case _Unawaited(coro=coro): loop = asyncio.get_running_loop() fut = loop.create_future() self._status = _Asyncio(fut) def set_result(fut: asyncio.Future[R], value: R) -\u003e None: if not fut.cancelled(): fut.set_result(value) def set_exception(fut: asyncio.Future[R], e: Exception) -\u003e None: if not fut.cancelled(): fut.set_exception(e) async def mark_complete() -\u003e None: try: func, value = set_result, await coro except Exception as e: func, value = set_exception, e loop.call_soon_threadsafe(func, fut, value) PythonTask.from_coroutine(mark_complete()).spawn() return fut.__await__() case _Asyncio(fut=fut): return fut.__await__() case _Tokio(_): raise ValueError( \"already converted into a tokio future, but being awaited from the asyncio loop.\" ) case _: raise ValueError( \"already converted into a synchronous future, use \u0027get\u0027 to get the value.\" ) elif is_tokio_thread(): match self._status: case _Unawaited(coro=coro): shared = coro.spawn() self._status = _Tokio(shared) return shared.__await__() case _Tokio(shared=shared): return shared.__await__() case _Asyncio(_): raise ValueError( \"already converted into asyncio future, but being awaited from the tokio loop.\" ) case _: raise ValueError( \"already converted into a synchronous future, use \u0027get\u0027 to get the value.\" ) else: raise ValueError( \"__await__ with no active event loop (either asyncio or tokio)\" ) # compatibility with old tensor engine Future objects # hopefully we do not need done(), add_callback because # they are harder to implement right. [docs] def result(self, timeout: Optional[float] = None) -\u003e R: return self.get(timeout) [docs] def exception(self, timeout: Optional[float] = None) -\u003e Optional[Exception]: try: self.get(timeout) return None except Exception as e: return e",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",

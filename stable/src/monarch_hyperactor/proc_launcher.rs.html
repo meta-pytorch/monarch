@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_hyperactor/src/proc_launcher.rs`."><title>proc_launcher.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">monarch_hyperactor/</div>proc_launcher.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `monarch_hyperactor/src/proc_launcher.rs`."><title>proc_launcher.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-b7b9f40b.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="monarch_hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.95.0-nightly (3a70d0349 2026-02-27)" data-channel="nightly" data-search-js="search-63369b7b.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-170eb4bf.js" ><script src="../../static.files/storage-41dd4d93.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">monarch_hyperactor/</div>proc_launcher.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
 <a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
 <a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
 <a href=#4 id=4 data-nosnippet>4</a> *
@@ -22,9 +22,9 @@
 <a href=#22 id=22 data-nosnippet>22</a>
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span>async_trait::async_trait;
 <a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span>hyperactor::ActorHandle;
-<a href=#25 id=25 data-nosnippet>25</a><span class="kw">use </span>hyperactor::Instance;
-<a href=#26 id=26 data-nosnippet>26</a><span class="kw">use </span>hyperactor::Mailbox;
-<a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span>hyperactor::reference;
+<a href=#25 id=25 data-nosnippet>25</a><span class="kw">use </span>hyperactor::Endpoint <span class="kw">as _</span>;
+<a href=#26 id=26 data-nosnippet>26</a><span class="kw">use </span>hyperactor::Instance;
+<a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span>hyperactor::Mailbox;
 <a href=#28 id=28 data-nosnippet>28</a><span class="kw">use </span>hyperactor_mesh::proc_launcher::LaunchOptions;
 <a href=#29 id=29 data-nosnippet>29</a><span class="kw">use </span>hyperactor_mesh::proc_launcher::LaunchResult;
 <a href=#30 id=30 data-nosnippet>30</a><span class="kw">use </span>hyperactor_mesh::proc_launcher::ProcExitKind;
@@ -543,7 +543,7 @@
 <a href=#543 id=543 data-nosnippet>543</a>/// [`ProcLauncher`] methods don't take a context parameter, but
 <a href=#544 id=544 data-nosnippet>544</a>/// sending actor messages does. This launcher stores an
 <a href=#545 id=545 data-nosnippet>545</a>/// [`Instance&lt;()&gt;`] ("client-only" actor) to use as the send context.
-<a href=#546 id=546 data-nosnippet>546</a>/// The instance is created via [`Proc::instance()`] and must remain
+<a href=#546 id=546 data-nosnippet>546</a>/// The instance is created via [`Proc::client()`] and must remain
 <a href=#547 id=547 data-nosnippet>547</a>/// valid for the lifetime of the launcher.
 <a href=#548 id=548 data-nosnippet>548</a></span><span class="attr">#[derive(Debug)]
 <a href=#549 id=549 data-nosnippet>549</a></span><span class="kw">pub struct </span>ActorProcLauncher {
@@ -558,7 +558,7 @@
 <a href=#558 id=558 data-nosnippet>558</a>    <span class="doccomment">/// Client-only actor instance used as the send context for all
 <a href=#559 id=559 data-nosnippet>559</a>    /// messages to `spawner`.
 <a href=#560 id=560 data-nosnippet>560</a>    ///
-<a href=#561 id=561 data-nosnippet>561</a>    /// Created via `Proc::instance()`. The `()` type indicates this
+<a href=#561 id=561 data-nosnippet>561</a>    /// Created via `Proc::client()`. The `()` type indicates this
 <a href=#562 id=562 data-nosnippet>562</a>    /// is not a real actor—just a sending context. Must outlive the
 <a href=#563 id=563 data-nosnippet>563</a>    /// launcher.
 <a href=#564 id=564 data-nosnippet>564</a>    </span>instance: Instance&lt;()&gt;,
@@ -567,7 +567,7 @@
 <a href=#567 id=567 data-nosnippet>567</a>    ///
 <a href=#568 id=568 data-nosnippet>568</a>    /// Not used for correctness; used for diagnostics and sanity
 <a href=#569 id=569 data-nosnippet>569</a>    /// checks.
-<a href=#570 id=570 data-nosnippet>570</a>    </span>active_procs: Arc&lt;Mutex&lt;HashSet&lt;reference::ProcId&gt;&gt;&gt;,
+<a href=#570 id=570 data-nosnippet>570</a>    </span>active_procs: Arc&lt;Mutex&lt;HashSet&lt;hyperactor::ProcAddr&gt;&gt;&gt;,
 <a href=#571 id=571 data-nosnippet>571</a>}
 <a href=#572 id=572 data-nosnippet>572</a>
 <a href=#573 id=573 data-nosnippet>573</a><span class="kw">impl </span>ActorProcLauncher {
@@ -579,7 +579,7 @@
 <a href=#579 id=579 data-nosnippet>579</a>    ///   `ProcLauncher` ABC.
 <a href=#580 id=580 data-nosnippet>580</a>    /// * `mailbox` - Mailbox used to create one-shot exit ports.
 <a href=#581 id=581 data-nosnippet>581</a>    /// * `instance` - Send context for `ActorHandle::send` (typically
-<a href=#582 id=582 data-nosnippet>582</a>    ///   from `Proc::instance()`). Any valid instance granting send
+<a href=#582 id=582 data-nosnippet>582</a>    ///   from `Proc::client()`). Any valid instance granting send
 <a href=#583 id=583 data-nosnippet>583</a>    ///   capability is sufficient; it need not be
 <a href=#584 id=584 data-nosnippet>584</a>    ///   `Instance&lt;PythonActor&gt;`. Must remain valid for the
 <a href=#585 id=585 data-nosnippet>585</a>    ///   launcher's lifetime.
@@ -621,7 +621,7 @@
 <a href=#621 id=621 data-nosnippet>621</a>    ///   resolves to `ProcExitKind::Failed` with a decode error reason.
 <a href=#622 id=622 data-nosnippet>622</a>    </span><span class="kw">async fn </span>launch(
 <a href=#623 id=623 data-nosnippet>623</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#624 id=624 data-nosnippet>624</a>        proc_id: <span class="kw-2">&amp;</span>reference::ProcId,
+<a href=#624 id=624 data-nosnippet>624</a>        proc_id: <span class="kw-2">&amp;</span>hyperactor::ProcAddr,
 <a href=#625 id=625 data-nosnippet>625</a>        opts: LaunchOptions,
 <a href=#626 id=626 data-nosnippet>626</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;LaunchResult, ProcLauncherError&gt; {
 <a href=#627 id=627 data-nosnippet>627</a>        <span class="kw">let </span>(exit_port, exit_port_rx) = <span class="self">self</span>.mailbox.open_once_port::&lt;PythonMessage&gt;();
@@ -700,130 +700,130 @@
 <a href=#700 id=700 data-nosnippet>700</a>            message: pickled_args.into(),
 <a href=#701 id=701 data-nosnippet>701</a>        };
 <a href=#702 id=702 data-nosnippet>702</a>
-<a href=#703 id=703 data-nosnippet>703</a>        <span class="self">self</span>.spawner
-<a href=#704 id=704 data-nosnippet>704</a>            .send(<span class="kw-2">&amp;</span><span class="self">self</span>.instance, message)
-<a href=#705 id=705 data-nosnippet>705</a>            .map_err(|e| ProcLauncherError::Other(<span class="macro">format!</span>(<span class="string">"send to spawner failed: {e}"</span>)))<span class="question-mark">?</span>;
-<a href=#706 id=706 data-nosnippet>706</a>
-<a href=#707 id=707 data-nosnippet>707</a>        <span class="self">self</span>.active_procs.lock().<span class="kw">await</span>.insert(proc_id.clone());
-<a href=#708 id=708 data-nosnippet>708</a>
-<a href=#709 id=709 data-nosnippet>709</a>        <span class="kw">let </span>(exit_tx, exit_rx) = oneshot::channel();
-<a href=#710 id=710 data-nosnippet>710</a>        <span class="kw">let </span>active_procs = Arc::clone(<span class="kw-2">&amp;</span><span class="self">self</span>.active_procs);
-<a href=#711 id=711 data-nosnippet>711</a>        <span class="kw">let </span>proc_id_clone = proc_id.clone();
-<a href=#712 id=712 data-nosnippet>712</a>
-<a href=#713 id=713 data-nosnippet>713</a>        tokio::spawn(<span class="kw">async move </span>{
-<a href=#714 id=714 data-nosnippet>714</a>            <span class="kw">let </span>result = <span class="kw">match </span>exit_port_rx.recv().<span class="kw">await </span>{
-<a href=#715 id=715 data-nosnippet>715</a>                <span class="prelude-val">Ok</span>(py_message) =&gt; {
-<a href=#716 id=716 data-nosnippet>716</a>                    convert_py_exit_result(py_message).unwrap_or_else(|e| ProcExitResult {
-<a href=#717 id=717 data-nosnippet>717</a>                        kind: ProcExitKind::Failed {
-<a href=#718 id=718 data-nosnippet>718</a>                            reason: <span class="macro">format!</span>(<span class="string">"failed to decode exit result: {e}"</span>),
-<a href=#719 id=719 data-nosnippet>719</a>                        },
-<a href=#720 id=720 data-nosnippet>720</a>                        stderr_tail: <span class="prelude-val">None</span>,
-<a href=#721 id=721 data-nosnippet>721</a>                    })
-<a href=#722 id=722 data-nosnippet>722</a>                }
-<a href=#723 id=723 data-nosnippet>723</a>                <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; ProcExitResult {
-<a href=#724 id=724 data-nosnippet>724</a>                    kind: ProcExitKind::Failed {
-<a href=#725 id=725 data-nosnippet>725</a>                        reason: <span class="string">"exit port closed (spawner crashed or forgot to send)"</span>.into(),
-<a href=#726 id=726 data-nosnippet>726</a>                    },
-<a href=#727 id=727 data-nosnippet>727</a>                    stderr_tail: <span class="prelude-val">None</span>,
-<a href=#728 id=728 data-nosnippet>728</a>                },
-<a href=#729 id=729 data-nosnippet>729</a>            };
-<a href=#730 id=730 data-nosnippet>730</a>            active_procs.lock().<span class="kw">await</span>.remove(<span class="kw-2">&amp;</span>proc_id_clone);
-<a href=#731 id=731 data-nosnippet>731</a>            <span class="kw">let _ </span>= exit_tx.send(result);
-<a href=#732 id=732 data-nosnippet>732</a>        });
-<a href=#733 id=733 data-nosnippet>733</a>
-<a href=#734 id=734 data-nosnippet>734</a>        <span class="prelude-val">Ok</span>(LaunchResult {
-<a href=#735 id=735 data-nosnippet>735</a>            pid: <span class="prelude-val">None</span>,
-<a href=#736 id=736 data-nosnippet>736</a>            started_at: std::time::SystemTime::now(),
-<a href=#737 id=737 data-nosnippet>737</a>            stdio: StdioHandling::ManagedByLauncher,
-<a href=#738 id=738 data-nosnippet>738</a>            exit_rx,
-<a href=#739 id=739 data-nosnippet>739</a>        })
-<a href=#740 id=740 data-nosnippet>740</a>    }
-<a href=#741 id=741 data-nosnippet>741</a>
-<a href=#742 id=742 data-nosnippet>742</a>    <span class="doccomment">/// Request graceful termination of a proc, with a best-effort
-<a href=#743 id=743 data-nosnippet>743</a>    /// timeout.
-<a href=#744 id=744 data-nosnippet>744</a>    ///
-<a href=#745 id=745 data-nosnippet>745</a>    /// This delegates to the Python spawner actor's
-<a href=#746 id=746 data-nosnippet>746</a>    /// `terminate(proc_id, timeout_secs)` method. The request is sent
-<a href=#747 id=747 data-nosnippet>747</a>    /// fire-and-forget: we do not wait for an acknowledgment, and
-<a href=#748 id=748 data-nosnippet>748</a>    /// there is no guarantee the proc will actually exit within
-<a href=#749 id=749 data-nosnippet>749</a>    /// `timeout`.
-<a href=#750 id=750 data-nosnippet>750</a>    ///
-<a href=#751 id=751 data-nosnippet>751</a>    /// ## Errors
+<a href=#703 id=703 data-nosnippet>703</a>        <span class="self">self</span>.spawner.post(<span class="kw-2">&amp;</span><span class="self">self</span>.instance, message);
+<a href=#704 id=704 data-nosnippet>704</a>
+<a href=#705 id=705 data-nosnippet>705</a>        <span class="kw">let </span><span class="kw-2">mut </span>active_procs: tokio::sync::MutexGuard&lt;<span class="lifetime">'_</span>, HashSet&lt;hyperactor::ProcAddr&gt;&gt; =
+<a href=#706 id=706 data-nosnippet>706</a>            <span class="self">self</span>.active_procs.lock().<span class="kw">await</span>;
+<a href=#707 id=707 data-nosnippet>707</a>        active_procs.insert(proc_id.clone());
+<a href=#708 id=708 data-nosnippet>708</a>        drop(active_procs);
+<a href=#709 id=709 data-nosnippet>709</a>
+<a href=#710 id=710 data-nosnippet>710</a>        <span class="kw">let </span>(exit_tx, exit_rx) = oneshot::channel();
+<a href=#711 id=711 data-nosnippet>711</a>        <span class="kw">let </span>active_procs: Arc&lt;Mutex&lt;HashSet&lt;hyperactor::ProcAddr&gt;&gt;&gt; =
+<a href=#712 id=712 data-nosnippet>712</a>            Arc::clone(<span class="kw-2">&amp;</span><span class="self">self</span>.active_procs);
+<a href=#713 id=713 data-nosnippet>713</a>        <span class="kw">let </span>proc_id_clone = proc_id.clone();
+<a href=#714 id=714 data-nosnippet>714</a>
+<a href=#715 id=715 data-nosnippet>715</a>        tokio::spawn(<span class="kw">async move </span>{
+<a href=#716 id=716 data-nosnippet>716</a>            <span class="kw">let </span>result = <span class="kw">match </span>exit_port_rx.recv().<span class="kw">await </span>{
+<a href=#717 id=717 data-nosnippet>717</a>                <span class="prelude-val">Ok</span>(py_message) =&gt; {
+<a href=#718 id=718 data-nosnippet>718</a>                    convert_py_exit_result(py_message).unwrap_or_else(|e| ProcExitResult {
+<a href=#719 id=719 data-nosnippet>719</a>                        kind: ProcExitKind::Failed {
+<a href=#720 id=720 data-nosnippet>720</a>                            reason: <span class="macro">format!</span>(<span class="string">"failed to decode exit result: {e}"</span>),
+<a href=#721 id=721 data-nosnippet>721</a>                        },
+<a href=#722 id=722 data-nosnippet>722</a>                        stderr_tail: <span class="prelude-val">None</span>,
+<a href=#723 id=723 data-nosnippet>723</a>                    })
+<a href=#724 id=724 data-nosnippet>724</a>                }
+<a href=#725 id=725 data-nosnippet>725</a>                <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; ProcExitResult {
+<a href=#726 id=726 data-nosnippet>726</a>                    kind: ProcExitKind::Failed {
+<a href=#727 id=727 data-nosnippet>727</a>                        reason: <span class="string">"exit port closed (spawner crashed or forgot to send)"</span>.into(),
+<a href=#728 id=728 data-nosnippet>728</a>                    },
+<a href=#729 id=729 data-nosnippet>729</a>                    stderr_tail: <span class="prelude-val">None</span>,
+<a href=#730 id=730 data-nosnippet>730</a>                },
+<a href=#731 id=731 data-nosnippet>731</a>            };
+<a href=#732 id=732 data-nosnippet>732</a>            active_procs.lock().<span class="kw">await</span>.remove(<span class="kw-2">&amp;</span>proc_id_clone);
+<a href=#733 id=733 data-nosnippet>733</a>            <span class="kw">let _ </span>= exit_tx.send(result);
+<a href=#734 id=734 data-nosnippet>734</a>        });
+<a href=#735 id=735 data-nosnippet>735</a>
+<a href=#736 id=736 data-nosnippet>736</a>        <span class="prelude-val">Ok</span>(LaunchResult {
+<a href=#737 id=737 data-nosnippet>737</a>            pid: <span class="prelude-val">None</span>,
+<a href=#738 id=738 data-nosnippet>738</a>            started_at: std::time::SystemTime::now(),
+<a href=#739 id=739 data-nosnippet>739</a>            stdio: StdioHandling::ManagedByLauncher,
+<a href=#740 id=740 data-nosnippet>740</a>            exit_rx,
+<a href=#741 id=741 data-nosnippet>741</a>        })
+<a href=#742 id=742 data-nosnippet>742</a>    }
+<a href=#743 id=743 data-nosnippet>743</a>
+<a href=#744 id=744 data-nosnippet>744</a>    <span class="doccomment">/// Request graceful termination of a proc, with a best-effort
+<a href=#745 id=745 data-nosnippet>745</a>    /// timeout.
+<a href=#746 id=746 data-nosnippet>746</a>    ///
+<a href=#747 id=747 data-nosnippet>747</a>    /// This delegates to the Python spawner actor's
+<a href=#748 id=748 data-nosnippet>748</a>    /// `terminate(proc_id, timeout_secs)` method. The request is sent
+<a href=#749 id=749 data-nosnippet>749</a>    /// fire-and-forget: we do not wait for an acknowledgment, and
+<a href=#750 id=750 data-nosnippet>750</a>    /// there is no guarantee the proc will actually exit within
+<a href=#751 id=751 data-nosnippet>751</a>    /// `timeout`.
 <a href=#752 id=752 data-nosnippet>752</a>    ///
-<a href=#753 id=753 data-nosnippet>753</a>    /// Returns `ProcLauncherError::Terminate` if we fail to:
-<a href=#754 id=754 data-nosnippet>754</a>    /// - import/serialize the request via `cloudpickle`, or
-<a href=#755 id=755 data-nosnippet>755</a>    /// - send the message to the spawner actor.
-<a href=#756 id=756 data-nosnippet>756</a>    </span><span class="kw">async fn </span>terminate(
-<a href=#757 id=757 data-nosnippet>757</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#758 id=758 data-nosnippet>758</a>        proc_id: <span class="kw-2">&amp;</span>reference::ProcId,
-<a href=#759 id=759 data-nosnippet>759</a>        timeout: Duration,
-<a href=#760 id=760 data-nosnippet>760</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(), ProcLauncherError&gt; {
-<a href=#761 id=761 data-nosnippet>761</a>        <span class="kw">let </span>pickled = Python::attach(|py| -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;u8&gt;, ProcLauncherError&gt; {
-<a href=#762 id=762 data-nosnippet>762</a>            <span class="kw">let </span>cloudpickle =
-<a href=#763 id=763 data-nosnippet>763</a>                import_cloudpickle(py).map_err(|e| ProcLauncherError::Terminate(<span class="macro">format!</span>(<span class="string">"{e}"</span>)))<span class="question-mark">?</span>;
-<a href=#764 id=764 data-nosnippet>764</a>            <span class="kw">let </span>args = (proc_id.to_string(), timeout.as_secs_f64());
-<a href=#765 id=765 data-nosnippet>765</a>            <span class="kw">let </span>kwargs = pyo3::types::PyDict::new(py);
-<a href=#766 id=766 data-nosnippet>766</a>            cloudpickle
-<a href=#767 id=767 data-nosnippet>767</a>                .call_method1(<span class="string">"dumps"</span>, ((args, kwargs),))
-<a href=#768 id=768 data-nosnippet>768</a>                .map_err(|e| ProcLauncherError::Terminate(<span class="macro">format!</span>(<span class="string">"cloudpickle: {e}"</span>)))<span class="question-mark">?
-<a href=#769 id=769 data-nosnippet>769</a>                </span>.extract()
-<a href=#770 id=770 data-nosnippet>770</a>                .map_err(|e| ProcLauncherError::Terminate(<span class="macro">format!</span>(<span class="string">"extract: {e}"</span>)))
-<a href=#771 id=771 data-nosnippet>771</a>        })<span class="question-mark">?</span>;
-<a href=#772 id=772 data-nosnippet>772</a>
-<a href=#773 id=773 data-nosnippet>773</a>        <span class="kw">let </span>message = PythonMessage {
-<a href=#774 id=774 data-nosnippet>774</a>            kind: PythonMessageKind::CallMethod {
-<a href=#775 id=775 data-nosnippet>775</a>                name: MethodSpecifier::ReturnsResponse {
-<a href=#776 id=776 data-nosnippet>776</a>                    name: <span class="string">"terminate"</span>.into(),
-<a href=#777 id=777 data-nosnippet>777</a>                },
-<a href=#778 id=778 data-nosnippet>778</a>                response_port: <span class="prelude-val">None</span>,
-<a href=#779 id=779 data-nosnippet>779</a>            },
-<a href=#780 id=780 data-nosnippet>780</a>            message: pickled.into(),
-<a href=#781 id=781 data-nosnippet>781</a>        };
-<a href=#782 id=782 data-nosnippet>782</a>
-<a href=#783 id=783 data-nosnippet>783</a>        <span class="self">self</span>.spawner
-<a href=#784 id=784 data-nosnippet>784</a>            .send(<span class="kw-2">&amp;</span><span class="self">self</span>.instance, message)
-<a href=#785 id=785 data-nosnippet>785</a>            .map_err(|e| ProcLauncherError::Terminate(<span class="macro">format!</span>(<span class="string">"send failed: {e}"</span>)))
-<a href=#786 id=786 data-nosnippet>786</a>    }
-<a href=#787 id=787 data-nosnippet>787</a>
-<a href=#788 id=788 data-nosnippet>788</a>    <span class="doccomment">/// Forcefully kill a proc.
-<a href=#789 id=789 data-nosnippet>789</a>    ///
-<a href=#790 id=790 data-nosnippet>790</a>    /// This delegates to the Python spawner actor's `kill(proc_id)`
-<a href=#791 id=791 data-nosnippet>791</a>    /// method. Like `terminate`, this is best-effort and
-<a href=#792 id=792 data-nosnippet>792</a>    /// fire-and-forget: success here means the request was serialized
-<a href=#793 id=793 data-nosnippet>793</a>    /// and delivered to the spawner actor, not that the process is
-<a href=#794 id=794 data-nosnippet>794</a>    /// already dead.
-<a href=#795 id=795 data-nosnippet>795</a>    ///
-<a href=#796 id=796 data-nosnippet>796</a>    /// ## Errors
-<a href=#797 id=797 data-nosnippet>797</a>    ///
-<a href=#798 id=798 data-nosnippet>798</a>    /// Returns `ProcLauncherError::Kill` if we fail to:
-<a href=#799 id=799 data-nosnippet>799</a>    /// - import/serialize the request via `cloudpickle`, or
-<a href=#800 id=800 data-nosnippet>800</a>    /// - send the message to the spawner actor.
-<a href=#801 id=801 data-nosnippet>801</a>    </span><span class="kw">async fn </span>kill(<span class="kw-2">&amp;</span><span class="self">self</span>, proc_id: <span class="kw-2">&amp;</span>reference::ProcId) -&gt; <span class="prelude-ty">Result</span>&lt;(), ProcLauncherError&gt; {
-<a href=#802 id=802 data-nosnippet>802</a>        <span class="kw">let </span>pickled = Python::attach(|py| -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;u8&gt;, ProcLauncherError&gt; {
-<a href=#803 id=803 data-nosnippet>803</a>            <span class="kw">let </span>cloudpickle =
-<a href=#804 id=804 data-nosnippet>804</a>                import_cloudpickle(py).map_err(|e| ProcLauncherError::Kill(<span class="macro">format!</span>(<span class="string">"{e}"</span>)))<span class="question-mark">?</span>;
-<a href=#805 id=805 data-nosnippet>805</a>            <span class="kw">let </span>args = (proc_id.to_string(),);
-<a href=#806 id=806 data-nosnippet>806</a>            <span class="kw">let </span>kwargs = pyo3::types::PyDict::new(py);
-<a href=#807 id=807 data-nosnippet>807</a>            cloudpickle
-<a href=#808 id=808 data-nosnippet>808</a>                .call_method1(<span class="string">"dumps"</span>, ((args, kwargs),))
-<a href=#809 id=809 data-nosnippet>809</a>                .map_err(|e| ProcLauncherError::Kill(<span class="macro">format!</span>(<span class="string">"cloudpickle: {e}"</span>)))<span class="question-mark">?
-<a href=#810 id=810 data-nosnippet>810</a>                </span>.extract()
-<a href=#811 id=811 data-nosnippet>811</a>                .map_err(|e| ProcLauncherError::Kill(<span class="macro">format!</span>(<span class="string">"extract: {e}"</span>)))
-<a href=#812 id=812 data-nosnippet>812</a>        })<span class="question-mark">?</span>;
-<a href=#813 id=813 data-nosnippet>813</a>
-<a href=#814 id=814 data-nosnippet>814</a>        <span class="kw">let </span>message = PythonMessage {
-<a href=#815 id=815 data-nosnippet>815</a>            kind: PythonMessageKind::CallMethod {
-<a href=#816 id=816 data-nosnippet>816</a>                name: MethodSpecifier::ReturnsResponse {
-<a href=#817 id=817 data-nosnippet>817</a>                    name: <span class="string">"kill"</span>.into(),
-<a href=#818 id=818 data-nosnippet>818</a>                },
-<a href=#819 id=819 data-nosnippet>819</a>                response_port: <span class="prelude-val">None</span>,
-<a href=#820 id=820 data-nosnippet>820</a>            },
-<a href=#821 id=821 data-nosnippet>821</a>            message: pickled.into(),
-<a href=#822 id=822 data-nosnippet>822</a>        };
-<a href=#823 id=823 data-nosnippet>823</a>
-<a href=#824 id=824 data-nosnippet>824</a>        <span class="self">self</span>.spawner
-<a href=#825 id=825 data-nosnippet>825</a>            .send(<span class="kw-2">&amp;</span><span class="self">self</span>.instance, message)
-<a href=#826 id=826 data-nosnippet>826</a>            .map_err(|e| ProcLauncherError::Kill(<span class="macro">format!</span>(<span class="string">"send failed: {e}"</span>)))
+<a href=#753 id=753 data-nosnippet>753</a>    /// ## Errors
+<a href=#754 id=754 data-nosnippet>754</a>    ///
+<a href=#755 id=755 data-nosnippet>755</a>    /// Returns `ProcLauncherError::Terminate` if we fail to:
+<a href=#756 id=756 data-nosnippet>756</a>    /// - import/serialize the request via `cloudpickle`, or
+<a href=#757 id=757 data-nosnippet>757</a>    /// - send the message to the spawner actor.
+<a href=#758 id=758 data-nosnippet>758</a>    </span><span class="kw">async fn </span>terminate(
+<a href=#759 id=759 data-nosnippet>759</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#760 id=760 data-nosnippet>760</a>        proc_id: <span class="kw-2">&amp;</span>hyperactor::ProcAddr,
+<a href=#761 id=761 data-nosnippet>761</a>        timeout: Duration,
+<a href=#762 id=762 data-nosnippet>762</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(), ProcLauncherError&gt; {
+<a href=#763 id=763 data-nosnippet>763</a>        <span class="kw">let </span>pickled = Python::attach(|py| -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;u8&gt;, ProcLauncherError&gt; {
+<a href=#764 id=764 data-nosnippet>764</a>            <span class="kw">let </span>cloudpickle =
+<a href=#765 id=765 data-nosnippet>765</a>                import_cloudpickle(py).map_err(|e| ProcLauncherError::Terminate(<span class="macro">format!</span>(<span class="string">"{e}"</span>)))<span class="question-mark">?</span>;
+<a href=#766 id=766 data-nosnippet>766</a>            <span class="kw">let </span>args = (proc_id.to_string(), timeout.as_secs_f64());
+<a href=#767 id=767 data-nosnippet>767</a>            <span class="kw">let </span>kwargs = pyo3::types::PyDict::new(py);
+<a href=#768 id=768 data-nosnippet>768</a>            cloudpickle
+<a href=#769 id=769 data-nosnippet>769</a>                .call_method1(<span class="string">"dumps"</span>, ((args, kwargs),))
+<a href=#770 id=770 data-nosnippet>770</a>                .map_err(|e| ProcLauncherError::Terminate(<span class="macro">format!</span>(<span class="string">"cloudpickle: {e}"</span>)))<span class="question-mark">?
+<a href=#771 id=771 data-nosnippet>771</a>                </span>.extract()
+<a href=#772 id=772 data-nosnippet>772</a>                .map_err(|e| ProcLauncherError::Terminate(<span class="macro">format!</span>(<span class="string">"extract: {e}"</span>)))
+<a href=#773 id=773 data-nosnippet>773</a>        })<span class="question-mark">?</span>;
+<a href=#774 id=774 data-nosnippet>774</a>
+<a href=#775 id=775 data-nosnippet>775</a>        <span class="kw">let </span>message = PythonMessage {
+<a href=#776 id=776 data-nosnippet>776</a>            kind: PythonMessageKind::CallMethod {
+<a href=#777 id=777 data-nosnippet>777</a>                name: MethodSpecifier::ReturnsResponse {
+<a href=#778 id=778 data-nosnippet>778</a>                    name: <span class="string">"terminate"</span>.into(),
+<a href=#779 id=779 data-nosnippet>779</a>                },
+<a href=#780 id=780 data-nosnippet>780</a>                response_port: <span class="prelude-val">None</span>,
+<a href=#781 id=781 data-nosnippet>781</a>            },
+<a href=#782 id=782 data-nosnippet>782</a>            message: pickled.into(),
+<a href=#783 id=783 data-nosnippet>783</a>        };
+<a href=#784 id=784 data-nosnippet>784</a>
+<a href=#785 id=785 data-nosnippet>785</a>        <span class="self">self</span>.spawner.post(<span class="kw-2">&amp;</span><span class="self">self</span>.instance, message);
+<a href=#786 id=786 data-nosnippet>786</a>        <span class="prelude-val">Ok</span>(())
+<a href=#787 id=787 data-nosnippet>787</a>    }
+<a href=#788 id=788 data-nosnippet>788</a>
+<a href=#789 id=789 data-nosnippet>789</a>    <span class="doccomment">/// Forcefully kill a proc.
+<a href=#790 id=790 data-nosnippet>790</a>    ///
+<a href=#791 id=791 data-nosnippet>791</a>    /// This delegates to the Python spawner actor's `kill(proc_id)`
+<a href=#792 id=792 data-nosnippet>792</a>    /// method. Like `terminate`, this is best-effort and
+<a href=#793 id=793 data-nosnippet>793</a>    /// fire-and-forget: success here means the request was serialized
+<a href=#794 id=794 data-nosnippet>794</a>    /// and delivered to the spawner actor, not that the process is
+<a href=#795 id=795 data-nosnippet>795</a>    /// already dead.
+<a href=#796 id=796 data-nosnippet>796</a>    ///
+<a href=#797 id=797 data-nosnippet>797</a>    /// ## Errors
+<a href=#798 id=798 data-nosnippet>798</a>    ///
+<a href=#799 id=799 data-nosnippet>799</a>    /// Returns `ProcLauncherError::Kill` if we fail to:
+<a href=#800 id=800 data-nosnippet>800</a>    /// - import/serialize the request via `cloudpickle`, or
+<a href=#801 id=801 data-nosnippet>801</a>    /// - send the message to the spawner actor.
+<a href=#802 id=802 data-nosnippet>802</a>    </span><span class="kw">async fn </span>kill(<span class="kw-2">&amp;</span><span class="self">self</span>, proc_id: <span class="kw-2">&amp;</span>hyperactor::ProcAddr) -&gt; <span class="prelude-ty">Result</span>&lt;(), ProcLauncherError&gt; {
+<a href=#803 id=803 data-nosnippet>803</a>        <span class="kw">let </span>pickled = Python::attach(|py| -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;u8&gt;, ProcLauncherError&gt; {
+<a href=#804 id=804 data-nosnippet>804</a>            <span class="kw">let </span>cloudpickle =
+<a href=#805 id=805 data-nosnippet>805</a>                import_cloudpickle(py).map_err(|e| ProcLauncherError::Kill(<span class="macro">format!</span>(<span class="string">"{e}"</span>)))<span class="question-mark">?</span>;
+<a href=#806 id=806 data-nosnippet>806</a>            <span class="kw">let </span>args = (proc_id.to_string(),);
+<a href=#807 id=807 data-nosnippet>807</a>            <span class="kw">let </span>kwargs = pyo3::types::PyDict::new(py);
+<a href=#808 id=808 data-nosnippet>808</a>            cloudpickle
+<a href=#809 id=809 data-nosnippet>809</a>                .call_method1(<span class="string">"dumps"</span>, ((args, kwargs),))
+<a href=#810 id=810 data-nosnippet>810</a>                .map_err(|e| ProcLauncherError::Kill(<span class="macro">format!</span>(<span class="string">"cloudpickle: {e}"</span>)))<span class="question-mark">?
+<a href=#811 id=811 data-nosnippet>811</a>                </span>.extract()
+<a href=#812 id=812 data-nosnippet>812</a>                .map_err(|e| ProcLauncherError::Kill(<span class="macro">format!</span>(<span class="string">"extract: {e}"</span>)))
+<a href=#813 id=813 data-nosnippet>813</a>        })<span class="question-mark">?</span>;
+<a href=#814 id=814 data-nosnippet>814</a>
+<a href=#815 id=815 data-nosnippet>815</a>        <span class="kw">let </span>message = PythonMessage {
+<a href=#816 id=816 data-nosnippet>816</a>            kind: PythonMessageKind::CallMethod {
+<a href=#817 id=817 data-nosnippet>817</a>                name: MethodSpecifier::ReturnsResponse {
+<a href=#818 id=818 data-nosnippet>818</a>                    name: <span class="string">"kill"</span>.into(),
+<a href=#819 id=819 data-nosnippet>819</a>                },
+<a href=#820 id=820 data-nosnippet>820</a>                response_port: <span class="prelude-val">None</span>,
+<a href=#821 id=821 data-nosnippet>821</a>            },
+<a href=#822 id=822 data-nosnippet>822</a>            message: pickled.into(),
+<a href=#823 id=823 data-nosnippet>823</a>        };
+<a href=#824 id=824 data-nosnippet>824</a>
+<a href=#825 id=825 data-nosnippet>825</a>        <span class="self">self</span>.spawner.post(<span class="kw-2">&amp;</span><span class="self">self</span>.instance, message);
+<a href=#826 id=826 data-nosnippet>826</a>        <span class="prelude-val">Ok</span>(())
 <a href=#827 id=827 data-nosnippet>827</a>    }
 <a href=#828 id=828 data-nosnippet>828</a>}
 <a href=#829 id=829 data-nosnippet>829</a>

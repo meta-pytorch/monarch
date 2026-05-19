@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["SupervisionEventType"],"struct":["CauseSupervisionEvent","FailingCreateTestActor","Forward","GetActorId","GetCastInfo","GetConfigAttrs","NextSupervisionFailure","SetConfigAttrs","SleepActor","TestActor","TestActorWithSupervisionHandling","WrapperActor"],"trait":["GetCastInfoClient","GetCastInfoHandler"]};

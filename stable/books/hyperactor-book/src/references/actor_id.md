@@ -1,81 +1,56 @@
 # `ActorId`
 
-An `ActorId` uniquely identifies an actor within a proc. It combines the proc the actor lives on, a string name, and a numeric pid (process-local instance index).
+An `ActorId` uniquely identifies an actor within a proc. It combines the owning `ProcId` with an actor uid.
 
 ```
 #[derive(
- Debug,
  Serialize,
  Deserialize,
  Clone,
- PartialEq,
- Eq,
- PartialOrd,
- Hash,
- Ord,
- Named
 )]
-pub struct ActorId(ProcId, String, Index);
+pub struct ActorId {
+ uid: Uid,
+ proc_id: ProcId,
+}
 ```
-
-- The first field is the actor's `ProcId`.
-- The second is the actor's name (used for grouping and logging).
-- The third is the pid (`Index`), which distinguishes multiple instances with the same name.
 
 ## Construction
 
 Fields are private; use named constructors:
 
 ```
-use hyperactor::reference::{ActorId, ProcId};
+use hyperactor::id::{ActorId, Label, ProcId};
 
-let addr = "tcp:127.0.0.1:8080".parse()?;
-let proc = ProcId::with_name(addr, "myproc");
-let actor = ActorId::new(proc.clone(), "worker", 1);
-```
-
-To refer to the root actor (the canonical instance), use:
-
-```
-let root = ActorId::root(proc, "worker".into());
-// Equivalent to ActorId::new(proc, "worker", 0)
+let proc = ProcId::instance(Label::new("myproc").unwrap());
+let anonymous = ActorId::anonymous(proc.clone());
+let worker = ActorId::instance(Label::new("worker").unwrap(), proc.clone());
+let root = ActorId::singleton(Label::new("root").unwrap(), proc);
 ```
 
 ## Methods
 
 ```
 impl ActorId {
+ pub fn uid(&self) -> &Uid;
  pub fn proc_id(&self) -> &ProcId;
- pub fn name(&self) -> &str;
- pub fn pid(&self) -> usize;
- pub fn child_id(&self, pid: usize) -> Self;
- pub fn port_id(&self, port: u64) -> PortId;
- pub fn root(proc: ProcId, name: String) -> Self;
+ pub fn label(&self) -> Option<&Label>;
 }
 ```
 
-- `.proc_id()` returns the ProcId that owns this actor.
-- `.name()` returns the logical name of the actor (e.g., "worker").
-- `.pid()` returns the actor's instance ID.
-- `.child_id(pid)` creates a new `ActorId` with the same name and proc but a different pid.
-- `.port_id(port)` returns a `PortId` representing a port on this actor.
-- `.root(proc, name)` constructs a new root actor (`pid = 0`) in the given proc.
+- `.uid()` returns the actor identity uid.
+- `.proc_id()` returns the `ProcId` that owns this actor.
+- `.label()` returns display metadata for instance ids, or the singleton name for singleton ids.
 
 ## Traits
 
 `ActorId` implements:
 
-- `Display` -- formats as `addr,proc_name,name[pid]`
-- `FromStr` -- parses strings like `"tcp:[::1]:1234,myproc,logger[1]"`
+- `Display`
+- `FromStr`
 - `Clone`, `Eq`, `Ord`, `Hash` -- useful in maps, sets, and registries
-- `Named` -- enables type-based routing, port lookup, and reflection
 
 ## Semantics
 
-- The `name` groups actors logically within a proc (e.g., `"worker"`, `"trainer"`).
-- The `pid` distinguishes physical instances:
-
-- `pid = 0` represents the **root** actor instance.
-- `pid > 0` typically corresponds to **child actors** spawned by the root.
-- Most routing and API surfaces operate on root actors by default.
-- Port creation is always rooted in an `ActorId`, via `.port_id(...)`.
+- `ActorId::anonymous(proc_id)` creates a fresh unlabeled actor identity.
+- `ActorId::instance(label, proc_id)` creates a fresh actor identity with label metadata.
+- `ActorId::singleton(label, proc_id)` creates an actor identity whose label is the uid identity.

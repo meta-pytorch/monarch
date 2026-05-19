@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="The#[derive(Handler)] macro generates the infrastructure for sending and receiving typed messages in hyperactor. This can be applied to an enum or a struct. Structs can be generic and non-generic. ..." />
 
-    <title>#[derive(Handler)] &#8212; Monarch v0.4.1 documentation</title>
+    <title>#[derive(Handler)] &#8212; Monarch v0.5.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=ace20255" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -50,7 +50,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/documentation_options.js?v=e663822d"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -58,7 +58,7 @@
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
-        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.5.0';
         DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
         </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/macros/handler.html" />
@@ -82,7 +82,7 @@
 
 <meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
 <meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
-<meta name="llm:version" content="v0.4.1">
+<meta name="llm:version" content="v0.5.0">
 <meta name="llm:project" content="Monarch">
 <meta name="llm:page-type" content="documentation">
 <link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
@@ -196,7 +196,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', 'v0.4.1');
+  document.documentElement.setAttribute('data-version', 'v0.5.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -591,6 +591,18 @@ document.write(`
               </li>
             
               <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
+                </a>
+              </li>
+            
+              <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
                   Distributed Tensors in Monarch
                 </a>
@@ -956,6 +968,18 @@ document.write(`
               <li class=" ">
                 <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
                   Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_yield.html">
+                  GRPO with Direct Port Messaging
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo/kubernetes_grpo.html">
+                  GRPO on Kubernetes (Qwen3.5-0.8B-Base on GSM8K)
                 </a>
               </li>
             
@@ -1417,7 +1441,7 @@ When applied to a struct like this</p>
 </section>
 <section id="example-usage">
 <h3>Example Usage<a class="headerlink" href="#example-usage" title="Link to this heading">#</a></h3>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">local</span><span class="p">();</span>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">proc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Proc</span><span class="p">::</span><span class="n">isolated</span><span class="p">();</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">actor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">spawn</span><span class="p">::</span><span class="o">&lt;</span><span class="n">ShoppingListActor</span><span class="o">&gt;</span><span class="p">(</span><span class="s">&quot;shopping&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">()).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc</span><span class="p">.</span><span class="n">attach</span><span class="p">(</span><span class="s">&quot;client&quot;</span><span class="p">).</span><span class="n">unwrap</span><span class="p">();</span>
 
@@ -1710,7 +1734,7 @@ When applied to a struct like this</p>
        "headline": "#[derive(Handler)]",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/macros/handler.html",
-       "articleBody": "#[derive(Handler)]# The #[derive(Handler)] macro generates the infrastructure for sending and receiving typed messages in hyperactor. This can be applied to an enum or a struct. Structs can be generic and non-generic. For an Enum:# When applied to an enum like this #[derive(Handler)] enum ShoppingList { // Fire-and-forget messages Add(String), Remove(String), // Request-response messages Exists(String, #[reply] OncePortRef\u003cbool\u003e), List(#[reply] OncePortRef\u003cVec\u003cString\u003e\u003e), } \u2026 it generates two key things: 1. ShoppingListHandler trait# This trait defines a method for each variant, and a handle method to route incoming messages: use async_trait::async_trait; use hyperactor::anyhow::Error; #[async_trait] pub trait ShoppingListHandler: hyperactor::Actor + Send + Sync { async fn add(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003c(), Error\u003e; async fn remove(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003c(), Error\u003e; async fn exists(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003cbool, Error\u003e; async fn list(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e) -\u003e Result\u003cVec\u003cString\u003e, Error\u003e; async fn handle(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, msg: ShoppingList) -\u003e Result\u003c(), Error\u003e { match msg { ShoppingList::Add(item) =\u003e { self.add(ctx, item).await } ShoppingList::Remove(item) =\u003e { self.remove(ctx, item).await } ShoppingList::Exists(item, reply_to) =\u003e { let result = self.exists(ctx, item).await?; reply_to.send(ctx, result)?; Ok(()) } ShoppingList::List(reply_to) =\u003e { let result = self.list(ctx).await?; reply_to.send(ctx, result)?; Ok(()) } } } } Note: Add and Remove are oneway: no reply port Exists and List are call-style: they take a #[reply] OncePortRef\u003cT\u003e and expect a response to be sent back. 2. ShoppingListClient trait# Alongside the handler, the #[derive(Handler)] macro also generates a client-side trait named ShoppingListClient. This trait provides a convenient and type-safe interface for sending messages to an actor. Each method in the trait corresponds to a variant of the message enum. For example: use async_trait::async_trait; use hyperactor::anyhow::Error; use hyperactor::context::Actor; #[async_trait] pub trait ShoppingListClient: Send + Sync { async fn add(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003c(), Error\u003e; async fn remove(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003c(), Error\u003e; async fn exists(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003cbool, Error\u003e; async fn list(\u0026self, cx: \u0026impl Actor) -\u003e Result\u003cVec\u003cString\u003e, Error\u003e; } For a struct# Supports both generic and non-generic structs. Generic structs must implement the trait bounds Serialize, Deserialize, Send, Sync, Debug, and Named. This is automatically enforced by the macro. When applied to a struct like this #[derive(Handler)] struct GetItemCount\u003cC\u003e { category_filter: String, #[reply] reply: OncePortRef\u003cC\u003e, } \u2026 it generates: 1. GetItemCountHandler trait# use async_trait::async_trait; use hyperactor::anyhow::Error; #[async_trait] pub trait GetItemCountHandler\u003c C: serde::Serialize + for\u003c\u0027de\u003e serde::Deserialize\u003c\u0027de\u003e + Send + Sync + std::fmt::Debug + typeuri::Named, \u003e: hyperactor::Actor + Send + Sync { async fn get_item_count( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, category_filter: String, ) -\u003e Result\u003c(), anyhow::Error\u003e; async fn handle( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, msg: GetItemCount, ) -\u003e Result\u003c(), anyhow::Error\u003e { match msg { GetItemCount { category_filter, reply_to } =\u003e { let result = self.get_item_count(_cx, category_filter).await?; reply_to.send(_cx, result)?; Ok(()) } } } } 2. GetItemCountClient trait# #[async_trait] pub trait GetItemCountClient: Send + Sync { async fn get_item_count( \u0026mut self, cx: \u0026impl Actor, category_filter: String, ) -\u003e Result\u003c(), anyhow::Error\u003e; } Capability Parameter# The cx parameter provides the actor context required to send messages and open ports. In typical usage, cx is a Mailbox or other type implementing the Actor trait. Example Usage# let mut proc = Proc::local(); let actor = proc.spawn::\u003cShoppingListActor\u003e(\"shopping\", ()).await?; let client = proc.attach(\"client\").unwrap(); // Fire-and-forget actor.add(\u0026client, \"milk\".into()).await?; // With reply let found = actor.exists(\u0026client, \"milk\".into()).await?; println!(\"got milk? {found}\"); Here, actor is an ActorHandle\u003cShoppingListActor\u003e that implements ShoppingListClient, and client is a Mailbox that provides the necessary capabilities. #[reply]# #[reply] can take any of the four types: OncePortRef\u003cT\u003e OncePortHandle\u003cT\u003e PortRef\u003cT\u003e PortHandle\u003cT\u003e Note that OncePortRef\u003cT\u003e and OncePortHandle\u003cT\u003e support one-shot communication, compared to PortRef\u003cT\u003e and PortHandle\u003cT\u003e which can be used for multiple requests and responses.",
+       "articleBody": "#[derive(Handler)]# The #[derive(Handler)] macro generates the infrastructure for sending and receiving typed messages in hyperactor. This can be applied to an enum or a struct. Structs can be generic and non-generic. For an Enum:# When applied to an enum like this #[derive(Handler)] enum ShoppingList { // Fire-and-forget messages Add(String), Remove(String), // Request-response messages Exists(String, #[reply] OncePortRef\u003cbool\u003e), List(#[reply] OncePortRef\u003cVec\u003cString\u003e\u003e), } \u2026 it generates two key things: 1. ShoppingListHandler trait# This trait defines a method for each variant, and a handle method to route incoming messages: use async_trait::async_trait; use hyperactor::anyhow::Error; #[async_trait] pub trait ShoppingListHandler: hyperactor::Actor + Send + Sync { async fn add(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003c(), Error\u003e; async fn remove(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003c(), Error\u003e; async fn exists(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, item: String) -\u003e Result\u003cbool, Error\u003e; async fn list(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e) -\u003e Result\u003cVec\u003cString\u003e, Error\u003e; async fn handle(\u0026mut self, ctx: \u0026Context\u003cSelf\u003e, msg: ShoppingList) -\u003e Result\u003c(), Error\u003e { match msg { ShoppingList::Add(item) =\u003e { self.add(ctx, item).await } ShoppingList::Remove(item) =\u003e { self.remove(ctx, item).await } ShoppingList::Exists(item, reply_to) =\u003e { let result = self.exists(ctx, item).await?; reply_to.send(ctx, result)?; Ok(()) } ShoppingList::List(reply_to) =\u003e { let result = self.list(ctx).await?; reply_to.send(ctx, result)?; Ok(()) } } } } Note: Add and Remove are oneway: no reply port Exists and List are call-style: they take a #[reply] OncePortRef\u003cT\u003e and expect a response to be sent back. 2. ShoppingListClient trait# Alongside the handler, the #[derive(Handler)] macro also generates a client-side trait named ShoppingListClient. This trait provides a convenient and type-safe interface for sending messages to an actor. Each method in the trait corresponds to a variant of the message enum. For example: use async_trait::async_trait; use hyperactor::anyhow::Error; use hyperactor::context::Actor; #[async_trait] pub trait ShoppingListClient: Send + Sync { async fn add(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003c(), Error\u003e; async fn remove(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003c(), Error\u003e; async fn exists(\u0026self, cx: \u0026impl Actor, item: String) -\u003e Result\u003cbool, Error\u003e; async fn list(\u0026self, cx: \u0026impl Actor) -\u003e Result\u003cVec\u003cString\u003e, Error\u003e; } For a struct# Supports both generic and non-generic structs. Generic structs must implement the trait bounds Serialize, Deserialize, Send, Sync, Debug, and Named. This is automatically enforced by the macro. When applied to a struct like this #[derive(Handler)] struct GetItemCount\u003cC\u003e { category_filter: String, #[reply] reply: OncePortRef\u003cC\u003e, } \u2026 it generates: 1. GetItemCountHandler trait# use async_trait::async_trait; use hyperactor::anyhow::Error; #[async_trait] pub trait GetItemCountHandler\u003c C: serde::Serialize + for\u003c\u0027de\u003e serde::Deserialize\u003c\u0027de\u003e + Send + Sync + std::fmt::Debug + typeuri::Named, \u003e: hyperactor::Actor + Send + Sync { async fn get_item_count( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, category_filter: String, ) -\u003e Result\u003c(), anyhow::Error\u003e; async fn handle( \u0026mut self, _cx: \u0026Context\u003cSelf\u003e, msg: GetItemCount, ) -\u003e Result\u003c(), anyhow::Error\u003e { match msg { GetItemCount { category_filter, reply_to } =\u003e { let result = self.get_item_count(_cx, category_filter).await?; reply_to.send(_cx, result)?; Ok(()) } } } } 2. GetItemCountClient trait# #[async_trait] pub trait GetItemCountClient: Send + Sync { async fn get_item_count( \u0026mut self, cx: \u0026impl Actor, category_filter: String, ) -\u003e Result\u003c(), anyhow::Error\u003e; } Capability Parameter# The cx parameter provides the actor context required to send messages and open ports. In typical usage, cx is a Mailbox or other type implementing the Actor trait. Example Usage# let mut proc = Proc::isolated(); let actor = proc.spawn::\u003cShoppingListActor\u003e(\"shopping\", ()).await?; let client = proc.attach(\"client\").unwrap(); // Fire-and-forget actor.add(\u0026client, \"milk\".into()).await?; // With reply let found = actor.exists(\u0026client, \"milk\".into()).await?; println!(\"got milk? {found}\"); Here, actor is an ActorHandle\u003cShoppingListActor\u003e that implements ShoppingListClient, and client is a Mailbox that provides the necessary capabilities. #[reply]# #[reply] can take any of the four types: OncePortRef\u003cT\u003e OncePortHandle\u003cT\u003e PortRef\u003cT\u003e PortHandle\u003cT\u003e Note that OncePortRef\u003cT\u003e and OncePortHandle\u003cT\u003e support one-shot communication, compared to PortRef\u003cT\u003e and PortHandle\u003cT\u003e which can be used for multiple requests and responses.",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",
