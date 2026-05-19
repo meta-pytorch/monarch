@@ -1682,6 +1682,7 @@ pub mod testing {
     use hyperactor::Actor;
     use hyperactor::ActorAddr;
     use hyperactor::Context;
+    use hyperactor::Endpoint as _;
     use hyperactor::Handler;
     use hyperactor::OncePortRef;
     /// Just a simple actor, available in both the bootstrap binary as well as
@@ -1699,7 +1700,7 @@ pub mod testing {
             cx: &Context<Self>,
             reply: OncePortRef<ActorAddr>,
         ) -> Result<(), anyhow::Error> {
-            reply.send(cx, cx.self_addr().clone())?;
+            reply.post(cx, cx.self_addr().clone());
             Ok(())
         }
     }
@@ -1713,6 +1714,7 @@ mod tests {
     use async_trait::async_trait;
     use hyperactor::Actor;
     use hyperactor::Context;
+    use hyperactor::Endpoint as _;
     use hyperactor::Handler;
     use hyperactor::Instance;
     use hyperactor::OncePortRef;
@@ -1756,7 +1758,7 @@ mod tests {
     #[async_trait]
     impl Handler<SendTo> for UndeliverableCollector {
         async fn handle(&mut self, cx: &Context<Self>, dest: SendTo) -> Result<(), anyhow::Error> {
-            dest.send(cx, "into-the-void".to_string())?;
+            dest.post(cx, "into-the-void".to_string());
             Ok(())
         }
     }
@@ -1789,7 +1791,7 @@ mod tests {
 
         let (port, mut rx) = instance1.mailbox().open_port();
 
-        port.bind().send(&instance2, "hello".to_string()).unwrap();
+        port.bind().post(&instance2, "hello".to_string());
         assert_eq!(rx.recv().await.unwrap(), "hello".to_string());
 
         // Make sure that the system proc is also wired in correctly.
@@ -1797,8 +1799,7 @@ mod tests {
 
         // system->proc
         port.bind()
-            .send(&system_actor, "hello from the system proc".to_string())
-            .unwrap();
+            .post(&system_actor, "hello from the system proc".to_string());
         assert_eq!(
             rx.recv().await.unwrap(),
             "hello from the system proc".to_string()
@@ -1807,8 +1808,7 @@ mod tests {
         // system->system
         let (port, mut rx) = system_actor.mailbox().open_port();
         port.bind()
-            .send(&system_actor, "hello from the system".to_string())
-            .unwrap();
+            .post(&system_actor, "hello from the system".to_string());
         assert_eq!(
             rx.recv().await.unwrap(),
             "hello from the system".to_string()
@@ -1816,8 +1816,7 @@ mod tests {
 
         // proc->system
         port.bind()
-            .send(&instance1, "hello from the instance1".to_string())
-            .unwrap();
+            .post(&instance1, "hello from the instance1".to_string());
         assert_eq!(
             rx.recv().await.unwrap(),
             "hello from the instance1".to_string()
@@ -1866,7 +1865,7 @@ mod tests {
         .unwrap();
         let (client_inst, _h) = client.client("test").unwrap();
         let (port, rx) = client_inst.mailbox().open_once_port();
-        echo1.send(&client_inst, port.bind()).unwrap();
+        echo1.post(&client_inst, port.bind());
         let id = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .unwrap()
@@ -1881,7 +1880,7 @@ mod tests {
         // This exercises cross-proc routing between a child and an
         // external client under the same host.
         let (port2, rx2) = client_inst.mailbox().open_once_port();
-        echo2.send(&client_inst, port2.bind()).unwrap();
+        echo2.post(&client_inst, port2.bind());
         let id2 = tokio::time::timeout(Duration::from_secs(5), rx2.recv())
             .await
             .unwrap()
@@ -1900,7 +1899,7 @@ mod tests {
         let (port3, rx3) = client_inst.mailbox().open_once_port();
         // Send from system -> child via a message that ultimately
         // replies to client's port
-        echo1.send(&sys_inst, port3.bind()).unwrap();
+        echo1.post(&sys_inst, port3.bind());
         let id3 = tokio::time::timeout(Duration::from_secs(5), rx3.recv())
             .await
             .unwrap()
@@ -2179,9 +2178,7 @@ mod tests {
         let (remote_port, mut remote_rx) = remote_inst.mailbox().open_port();
         let remote_port = remote_port.bind();
 
-        remote_port
-            .send(&system_inst, "hello-to-remote".to_string())
-            .unwrap();
+        remote_port.post(&system_inst, "hello-to-remote".to_string());
 
         let arrived: String = tokio::time::timeout(Duration::from_secs(5), remote_rx.recv())
             .await
@@ -2194,9 +2191,7 @@ mod tests {
         let (host_port, mut host_rx) = system_inst.mailbox().open_port();
         let host_port = host_port.bind();
 
-        host_port
-            .send(&remote_inst, "hello-from-remote".to_string())
-            .unwrap();
+        host_port.post(&remote_inst, "hello-from-remote".to_string());
 
         let arrived: String = tokio::time::timeout(Duration::from_secs(5), host_rx.recv())
             .await
@@ -2241,15 +2236,21 @@ mod tests {
         let (trigger_inst, _h) = remote_proc.client("trigger").unwrap();
         collector_ref
             .port::<SendTo>()
-            .send(&trigger_inst, bogus_dest)
-            .unwrap();
+            .post(&trigger_inst, bogus_dest);
 
         let undeliverable = tokio::time::timeout(Duration::from_secs(5), undlv_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
             .expect("channel closed");
 
-        assert_eq!(undeliverable.0.dest().actor_id(), bogus_actor.id());
+        assert_eq!(
+            undeliverable
+                .into_message()
+                .expect("expected returned envelope")
+                .dest()
+                .actor_id(),
+            bogus_actor.id()
+        );
     }
 
     #[tokio::test]
@@ -2289,15 +2290,21 @@ mod tests {
         let (trigger_inst, _h) = host.system_proc().client("trigger").unwrap();
         collector_ref
             .port::<SendTo>()
-            .send(&trigger_inst, bogus_dest)
-            .unwrap();
+            .post(&trigger_inst, bogus_dest);
 
         let undeliverable = tokio::time::timeout(Duration::from_secs(5), undlv_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
             .expect("channel closed");
 
-        assert_eq!(undeliverable.0.dest().actor_id(), bogus_actor.id());
+        assert_eq!(
+            undeliverable
+                .into_message()
+                .expect("expected returned envelope")
+                .dest()
+                .actor_id(),
+            bogus_actor.id()
+        );
     }
 
     #[tokio::test]
@@ -2328,9 +2335,7 @@ mod tests {
 
         let (remote_port, mut remote_rx) = remote_inst.mailbox().open_port();
         let remote_port = remote_port.bind();
-        remote_port
-            .send(&system_inst, "pre-stop".to_string())
-            .unwrap();
+        remote_port.post(&system_inst, "pre-stop".to_string());
         let arrived: String = tokio::time::timeout(Duration::from_secs(5), remote_rx.recv())
             .await
             .expect("timed out waiting for message on remote rx")
@@ -2395,8 +2400,7 @@ mod tests {
         let reply_port = reply_port.bind();
         echo_ref
             .port::<OncePortRef<ActorAddr>>()
-            .send(&client_inst, reply_port)
-            .unwrap();
+            .post(&client_inst, reply_port);
         let _ = tokio::time::timeout(Duration::from_secs(5), reply_handle.recv())
             .await
             .expect("baseline round-trip timed out")
@@ -2509,8 +2513,7 @@ mod tests {
                     let reply_port = reply_port.bind();
                     echo_ref
                         .port::<OncePortRef<ActorAddr>>()
-                        .send(&client_inst, reply_port)
-                        .unwrap();
+                        .post(&client_inst, reply_port);
                     let received =
                         tokio::time::timeout(Duration::from_secs(10), reply_handle.recv())
                             .await
@@ -2584,8 +2587,7 @@ mod tests {
         let reply_port = reply_port.bind();
         echo_ref
             .port::<OncePortRef<ActorAddr>>()
-            .send(&client_inst, reply_port)
-            .unwrap();
+            .post(&client_inst, reply_port);
 
         let received = tokio::time::timeout(Duration::from_secs(10), reply_handle.recv())
             .await

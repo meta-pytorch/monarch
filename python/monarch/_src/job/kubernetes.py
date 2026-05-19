@@ -125,6 +125,7 @@ class KubernetesJob(JobTrait):
         port: int = _DEFAULT_MONARCH_PORT,
         pod_template: client.V1PodTemplateSpec | None = None,
         labels: dict[str, str] | None = None,
+        annotations: dict[str, str] | None = None,
     ) -> None:
         """
         Add a mesh specification.
@@ -149,6 +150,12 @@ class KubernetesJob(JobTrait):
             pod_template: ``V1PodTemplateSpec`` for advanced provisioning (e.g. custom volumes, sidecars,
                           pod-level labels/annotations). Mutually exclusive with ``image_spec``.
             labels: Optional labels to apply to the MonarchMesh CRD metadata.
+                    Propagated by the operator to the StatefulSet metadata. To set
+                    labels on the worker pods, use ``pod_template.metadata.labels``.
+                    Only used when provisioning (``image_spec`` or ``pod_template`` supplied).
+            annotations: Optional annotations to apply to the MonarchMesh CRD metadata.
+                    Propagated by the operator to the StatefulSet metadata. To set
+                    annotations on the worker pods, use ``pod_template.metadata.annotations``.
                     Only used when provisioning (``image_spec`` or ``pod_template`` supplied).
 
         Raises:
@@ -183,6 +190,8 @@ class KubernetesJob(JobTrait):
             raise ValueError("'pod_rank_label' cannot be customized when provisioning.")
         if not provisioned and labels is not None:
             raise ValueError("'labels' can only be set when provisioning.")
+        if not provisioned and annotations is not None:
+            raise ValueError("'annotations' can only be set when provisioning.")
 
         mesh_entry: Dict[str, Any] = {
             "label_selector": label_selector
@@ -195,6 +204,9 @@ class KubernetesJob(JobTrait):
 
         if labels is not None:
             mesh_entry["labels"] = labels
+
+        if annotations is not None:
+            mesh_entry["annotations"] = annotations
 
         if image_spec is not None:
             mesh_entry["pod_template"] = self._build_worker_pod_template(
@@ -248,6 +260,8 @@ class KubernetesJob(JobTrait):
             }
             if "labels" in mesh_config:
                 metadata["labels"] = mesh_config["labels"]
+            if "annotations" in mesh_config:
+                metadata["annotations"] = mesh_config["annotations"]
 
             body: Dict[str, Any] = {
                 "apiVersion": f"{_MONARCHMESH_GROUP}/{_MONARCHMESH_VERSION}",
