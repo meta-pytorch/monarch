@@ -137,7 +137,7 @@ async fn main() -> Result<(), anyhow::Error> {
         proc.spawn("shopping", ShoppingListActor::default())?;
     let shopping_api: reference::ActorRef<ShoppingApi> = shopping_list_actor.bind();
     // We join the system, so that we can send messages to actors.
-    let (client, _) = proc.client("client").unwrap();
+    let client = proc.client("client");
 
     // todo: consider making this a macro to remove the magic names
 
