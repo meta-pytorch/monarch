@@ -63,7 +63,7 @@ use crate::backend::ibverbs::manager_actor::IbvBackend;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::tcp::manager_actor::TcpBackend;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
-use crate::local_memory::RdmaLocalMemory;
+use crate::local_memory::KeepaliveLocalMemory;
 
 /// Lightweight handle representing a registered RDMA buffer.
 ///
@@ -138,7 +138,7 @@ impl RdmaRemoteBuffer {
     pub async fn write_from_local(
         &self,
         client: &(impl context::Actor + Send + Sync),
-        local: Arc<dyn RdmaLocalMemory>,
+        local: Arc<KeepaliveLocalMemory>,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
         let mut backend = self.choose_backend(client).await?;
@@ -160,7 +160,7 @@ impl RdmaRemoteBuffer {
     pub async fn read_into_local(
         &self,
         client: &(impl context::Actor + Send + Sync),
-        local: Arc<dyn RdmaLocalMemory>,
+        local: Arc<KeepaliveLocalMemory>,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
         let mut backend = self.choose_backend(client).await?;
