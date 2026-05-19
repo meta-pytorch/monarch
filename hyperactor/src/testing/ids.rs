@@ -19,7 +19,7 @@ use crate::channel::ChannelTransport;
 
 /// Create a test `ProcAddr` with a local channel address and name `"test_{name}"`.
 pub fn test_proc_id(name: &str) -> ProcAddr {
-    ProcAddr::named(
+    ProcAddr::singleton(
         ChannelAddr::any(ChannelTransport::Local),
         format!("test_{name}"),
     )
@@ -27,7 +27,7 @@ pub fn test_proc_id(name: &str) -> ProcAddr {
 
 /// Create a test `ProcAddr` with a custom address and name `"test_{name}"`.
 pub fn test_proc_id_with_addr(addr: ChannelAddr, name: &str) -> ProcAddr {
-    ProcAddr::named(addr, format!("test_{name}"))
+    ProcAddr::singleton(addr, format!("test_{name}"))
 }
 
 /// Create a test `ActorAddr`.
