@@ -8,6 +8,7 @@
 
 use anyhow::Result;
 use anyhow::anyhow;
+use hyperactor::Endpoint as _;
 use hyperactor::context::Mailbox;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::context;
@@ -106,12 +107,12 @@ CONSTANT = "modified_constant"
 
     // Send AutoReloadMessage to trigger reload
     let (result_tx, mut result_rx) = instance.mailbox().open_port::<Result<(), String>>();
-    actor_ref.send(
+    actor_ref.post(
         instance,
         AutoReloadMessage {
             result: result_tx.bind(),
         },
-    )?;
+    );
 
     // Wait for reload to complete
     let reload_result = result_rx.recv().await?;
