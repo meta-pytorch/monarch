@@ -88,6 +88,7 @@
 
 use std::any::Any;
 use std::any::TypeId;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
@@ -97,12 +98,13 @@ use std::panic::AssertUnwindSafe;
 use std::panic::Location as PanicLocation;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
-#[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -125,6 +127,7 @@ use hyperactor_telemetry::notify_message_status;
 use hyperactor_telemetry::recorder::Recording;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -1772,6 +1775,9 @@ struct InstanceState<A: Actor> {
 
     ports: Arc<HandlerPorts<A>>,
 
+    /// Runtime-owned delayed-post scheduler.
+    delayed_posts: DelayedPosts<A>,
+
     /// A watch for communicating the actor's state.
     status_tx: watch::Sender<ActorStatus>,
 
@@ -1783,6 +1789,303 @@ struct InstanceState<A: Actor> {
 
     /// Per-instance local storage.
     instance_locals: ActorLocalStorage,
+}
+
+type DelayedPost<A> = Box<dyn FnOnce(&Instance<A>) + Send>;
+
+trait PostAfterEndpoint<A: Actor, M: Message>: Send {
+    fn endpoint_location(&self) -> crate::EndpointLocation;
+
+    fn into_delayed_post(self, message: M) -> DelayedPost<A>;
+}
+
+impl<A, M> PostAfterEndpoint<A, M> for &Instance<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::EndpointLocation::Actor(self.self_addr().clone())
+    }
+
+    fn into_delayed_post(self, message: M) -> DelayedPost<A> {
+        let dest = self.clone_for_py();
+        Box::new(move |this| crate::Endpoint::post(&dest, this, message))
+    }
+}
+
+impl<A, M> PostAfterEndpoint<A, M> for &Context<'_, A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::EndpointLocation::Actor(self.self_addr().clone())
+    }
+
+    fn into_delayed_post(self, message: M) -> DelayedPost<A> {
+        let dest = self.clone_for_py();
+        Box::new(move |this| crate::Endpoint::post(&dest, this, message))
+    }
+}
+
+impl<A, M> PostAfterEndpoint<A, M> for Instance<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::EndpointLocation::Actor(self.self_addr().clone())
+    }
+
+    fn into_delayed_post(self, message: M) -> DelayedPost<A> {
+        Box::new(move |this| crate::Endpoint::post(&self, this, message))
+    }
+}
+
+impl<A, B, M> PostAfterEndpoint<A, M> for ActorHandle<B>
+where
+    A: Actor,
+    B: Actor + Handler<M>,
+    M: Message,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::Endpoint::endpoint_location(&self)
+    }
+
+    fn into_delayed_post(self, message: M) -> DelayedPost<A> {
+        Box::new(move |this| crate::Endpoint::post(&self, this, message))
+    }
+}
+
+impl<A, M> PostAfterEndpoint<A, M> for PortHandle<M>
+where
+    A: Actor,
+    M: Message,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::Endpoint::endpoint_location(&self)
+    }
+
+    fn into_delayed_post(self, message: M) -> DelayedPost<A> {
+        Box::new(move |this| crate::Endpoint::post(&self, this, message))
+    }
+}
+
+impl<A, M> PostAfterEndpoint<A, M> for OncePortHandle<M>
+where
+    A: Actor,
+    M: Message,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::Endpoint::endpoint_location(self)
+    }
+
+    fn into_delayed_post(self, message: M) -> DelayedPost<A> {
+        Box::new(move |this| crate::Endpoint::post(self, this, message))
+    }
+}
+
+impl<A, B, M> PostAfterEndpoint<A, M> for ActorRef<B>
+where
+    A: Actor,
+    B: Referable + RemoteHandles<M>,
+    M: RemoteMessage,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::Endpoint::endpoint_location(&self)
+    }
+
+    fn into_delayed_post(self, message: M) -> DelayedPost<A> {
+        Box::new(move |this| crate::Endpoint::post(&self, this, message))
+    }
+}
+
+impl<A, M> PostAfterEndpoint<A, M> for crate::PortRef<M>
+where
+    A: Actor,
+    M: RemoteMessage,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::Endpoint::endpoint_location(&self)
+    }
+
+    fn into_delayed_post(self, message: M) -> DelayedPost<A> {
+        Box::new(move |this| crate::Endpoint::post(&self, this, message))
+    }
+}
+
+impl<A, M> PostAfterEndpoint<A, M> for crate::OncePortRef<M>
+where
+    A: Actor,
+    M: RemoteMessage,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::Endpoint::endpoint_location(self)
+    }
+
+    fn into_delayed_post(self, message: M) -> DelayedPost<A> {
+        Box::new(move |this| crate::Endpoint::post(self, this, message))
+    }
+}
+
+struct DelayedPosts<A: Actor> {
+    ingress: Arc<DelayedPostIngressGate>,
+    state: Mutex<DelayedPostState<A>>,
+    notify: Notify,
+}
+
+struct DelayedPostState<A: Actor> {
+    queue: BTreeMap<(tokio::time::Instant, u64), DelayedPost<A>>,
+    next_order: u64,
+}
+
+impl<A: Actor> DelayedPosts<A> {
+    fn new() -> Self {
+        Self {
+            ingress: Arc::new(DelayedPostIngressGate::new()),
+            state: Mutex::new(DelayedPostState {
+                queue: BTreeMap::new(),
+                next_order: 0,
+            }),
+            notify: Notify::new(),
+        }
+    }
+
+    fn push(&self, deadline: tokio::time::Instant, post: DelayedPost<A>) {
+        let mut state = self.state.lock().unwrap();
+        let order = state.next_order;
+        state.next_order = state.next_order.wrapping_add(1);
+        state.queue.insert((deadline, order), post);
+        drop(state);
+        self.notify.notify_one();
+    }
+
+    fn next_deadline(&self) -> Option<tokio::time::Instant> {
+        self.state
+            .lock()
+            .unwrap()
+            .queue
+            .keys()
+            .next()
+            .map(|(deadline, _)| *deadline)
+    }
+
+    fn pop_due(&self, now: tokio::time::Instant) -> Vec<DelayedPost<A>> {
+        let mut posts = Vec::new();
+        let mut state = self.state.lock().unwrap();
+        while let Some((&(deadline, _), _)) = state.queue.first_key_value() {
+            if deadline > now {
+                break;
+            }
+            let (_, post) = state.queue.pop_first().expect("delayed post should exist");
+            posts.push(post);
+        }
+        posts
+    }
+
+    fn drain(&self) {
+        self.ingress.drain();
+    }
+
+    fn is_draining(&self) -> bool {
+        self.ingress.is_draining()
+    }
+}
+
+const DELAYED_POST_INGRESS_DRAINING: usize = 1usize << (usize::BITS as usize - 1);
+const DELAYED_POST_INGRESS_ACTIVE_MASK: usize = !DELAYED_POST_INGRESS_DRAINING;
+
+struct DelayedPostIngressGate {
+    state: AtomicUsize,
+    wait_lock: Mutex<()>,
+    drained: Condvar,
+}
+
+struct DelayedPostIngressGuard {
+    gate: Arc<DelayedPostIngressGate>,
+}
+
+impl DelayedPostIngressGate {
+    fn new() -> Self {
+        Self {
+            state: AtomicUsize::new(0),
+            wait_lock: Mutex::new(()),
+            drained: Condvar::new(),
+        }
+    }
+
+    fn try_enter(self: &Arc<Self>) -> Result<DelayedPostIngressGuard, ()> {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & DELAYED_POST_INGRESS_DRAINING != 0 {
+                return Err(());
+            }
+
+            let active = state & DELAYED_POST_INGRESS_ACTIVE_MASK;
+            assert!(
+                active < DELAYED_POST_INGRESS_ACTIVE_MASK,
+                "too many active delayed post sends"
+            );
+
+            match self.state.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(DelayedPostIngressGuard {
+                        gate: Arc::clone(self),
+                    });
+                }
+                Err(next_state) => state = next_state,
+            }
+        }
+    }
+
+    fn drain(&self) {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & DELAYED_POST_INGRESS_DRAINING != 0 {
+                break;
+            }
+            match self.state.compare_exchange_weak(
+                state,
+                state | DELAYED_POST_INGRESS_DRAINING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(next_state) => state = next_state,
+            }
+        }
+
+        let mut wait_guard = self.wait_lock.lock().unwrap();
+        while self.state.load(Ordering::Acquire) & DELAYED_POST_INGRESS_ACTIVE_MASK != 0 {
+            wait_guard = self.drained.wait(wait_guard).unwrap();
+        }
+    }
+
+    fn is_draining(&self) -> bool {
+        self.state.load(Ordering::Acquire) & DELAYED_POST_INGRESS_DRAINING != 0
+    }
+}
+
+impl Drop for DelayedPostIngressGuard {
+    fn drop(&mut self) {
+        let previous = self.gate.state.fetch_sub(1, Ordering::AcqRel);
+        assert!(
+            previous & DELAYED_POST_INGRESS_ACTIVE_MASK != 0,
+            "delayed post ingress active count underflow"
+        );
+        if previous & DELAYED_POST_INGRESS_DRAINING != 0
+            && previous & DELAYED_POST_INGRESS_ACTIVE_MASK == 1
+        {
+            let _wait_guard = self.gate.wait_lock.lock().unwrap();
+            self.gate.drained.notify_all();
+        }
+    }
 }
 
 impl<A: Actor> InstanceState<A> {
@@ -1899,6 +2202,7 @@ impl<A: Actor> Instance<A> {
             cell,
             mailbox,
             ports,
+            delayed_posts: DelayedPosts::new(),
             status_tx,
             sequencer: Sequencer::new(instance_id),
             id: instance_id,
@@ -2170,6 +2474,7 @@ impl<A: Actor> Instance<A> {
 
     /// Close handler ingress for this actor.
     pub fn close(&self) {
+        self.inner.delayed_posts.drain();
         self.inner.mailbox.drain();
     }
 
@@ -2294,19 +2599,50 @@ impl<A: Actor> Instance<A> {
             .0
     }
 
-    /// Send a message to the actor itself with a delay usually to trigger some event.
-    pub fn self_message_with_delay<M>(&self, message: M, delay: Duration) -> Result<(), ActorError>
+    /// Post `message` to `dest` after `delay`.
+    ///
+    /// Delayed posts are owned by the actor runtime. They are best-effort:
+    /// messages are posted no earlier than `delay`, and any delayed posts that
+    /// have not fired when the actor shuts down are discarded.
+    #[allow(private_bounds)]
+    pub fn post_after<D, M>(&self, dest: D, message: M, delay: Duration)
     where
         M: Message,
-        A: Handler<M>,
+        D: PostAfterEndpoint<A, M>,
     {
-        let client = Self::self_client();
-        let port = self.port();
-        tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            port.post(&client, message);
-        });
-        Ok(())
+        let dest_location = dest.endpoint_location();
+        if matches!(*self.inner.status_tx.borrow(), ActorStatus::Client) {
+            self.report_lost_message(crate::mailbox::LostMessage {
+                sender: self.mailbox().actor_addr().clone(),
+                dest: dest_location,
+                message_type: Some(std::any::type_name::<M>().to_string()),
+                error: "delayed posts require an actor runtime".to_string(),
+            });
+            return;
+        }
+        let Ok(_guard) = self.inner.delayed_posts.ingress.try_enter() else {
+            self.report_lost_message(crate::mailbox::LostMessage {
+                sender: self.mailbox().actor_addr().clone(),
+                dest: dest_location,
+                message_type: Some(std::any::type_name::<M>().to_string()),
+                error: "actor runtime is stopping".to_string(),
+            });
+            return;
+        };
+        if self.is_stopping() || self.is_terminal() {
+            self.report_lost_message(crate::mailbox::LostMessage {
+                sender: self.mailbox().actor_addr().clone(),
+                dest: dest_location,
+                message_type: Some(std::any::type_name::<M>().to_string()),
+                error: "actor runtime is stopping".to_string(),
+            });
+            return;
+        }
+
+        self.inner.delayed_posts.push(
+            tokio::time::Instant::now() + delay,
+            dest.into_delayed_post(message),
+        );
     }
 
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
@@ -2583,6 +2919,7 @@ impl<A: Actor> Instance<A> {
             if !self.is_stopping() {
                 self.change_status(ActorStatus::Idle);
             }
+            let next_delayed_deadline = self.inner.delayed_posts.next_deadline();
             let metric_pairs = hyperactor_telemetry::kv_pairs!("actor_id" => actor_id_str.clone());
             tokio::select! {
                 biased;
@@ -2629,6 +2966,21 @@ impl<A: Actor> Instance<A> {
                             actor_id: Box::new(self.self_addr().clone()),
                             kind: Box::new(kind),
                         });
+                    }
+                }
+                _ = self.inner.delayed_posts.notify.notified(), if !self.is_stopping() && !self.inner.delayed_posts.is_draining() => {
+                }
+                _ = async {
+                    match next_delayed_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                }, if !self.is_stopping() && !self.inner.delayed_posts.is_draining() && next_delayed_deadline.is_some() => {
+                    let now = tokio::time::Instant::now();
+                    if let Ok(_guard) = self.inner.delayed_posts.ingress.try_enter() {
+                        for post in self.inner.delayed_posts.pop_due(now) {
+                            post(self);
+                        }
                     }
                 }
                 Some(supervision_event) = supervision_event_receiver.recv() => {
@@ -2961,6 +3313,58 @@ impl<A: Actor> context::Actor for &Context<'_, A> {
     type A = A;
     fn instance(&self) -> &Instance<A> {
         self
+    }
+}
+
+impl<A, M> crate::Endpoint<M> for &Instance<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::EndpointLocation::Actor(self.self_addr().clone())
+    }
+
+    fn post<C>(self, cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
+        let port = self.port();
+        crate::Endpoint::post(&port, cx, message)
+    }
+}
+
+impl<A, M> crate::Endpoint<M> for &Context<'_, A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::EndpointLocation::Actor(self.self_addr().clone())
+    }
+
+    fn post<C>(self, cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
+        crate::Endpoint::post(self.instance, cx, message)
+    }
+}
+
+impl<A, M> crate::Endpoint<M> for Instance<A>
+where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    fn endpoint_location(&self) -> crate::EndpointLocation {
+        crate::EndpointLocation::Actor(self.self_addr().clone())
+    }
+
+    fn post<C>(self, cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
+        crate::Endpoint::post(&self, cx, message)
     }
 }
 
@@ -3828,6 +4232,59 @@ mod tests {
     struct TestActor;
 
     impl Actor for TestActor {}
+
+    #[derive(Debug)]
+    struct DelayedSelfActor {
+        ready: Option<OncePortRef<()>>,
+        fired: Option<OncePortRef<()>>,
+        delay: Duration,
+    }
+
+    #[derive(Debug)]
+    struct DelayedSelfTick;
+
+    #[async_trait]
+    impl Actor for DelayedSelfActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            if let Some(ready) = self.ready.take() {
+                ready.post(this, ());
+            }
+            this.post_after(this, DelayedSelfTick, self.delay);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Handler<DelayedSelfTick> for DelayedSelfActor {
+        async fn handle(
+            &mut self,
+            cx: &crate::Context<Self>,
+            _message: DelayedSelfTick,
+        ) -> anyhow::Result<()> {
+            if let Some(fired) = self.fired.take() {
+                fired.post(cx, ());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct DelayedPortActor {
+        reply: Option<PortRef<u64>>,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl Actor for DelayedPortActor {
+        async fn init(&mut self, this: &Instance<Self>) -> anyhow::Result<()> {
+            this.post_after(
+                self.reply.take().expect("reply port should be present"),
+                123u64,
+                self.delay,
+            );
+            Ok(())
+        }
+    }
 
     #[derive(Handler, HandleClient, Debug)]
     enum TestActorMessage {
@@ -4762,6 +5219,81 @@ mod tests {
         handle.await;
 
         assert_eq!(state.load(Ordering::SeqCst), 123);
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_post_after_self_message() {
+        let proc = Proc::isolated();
+        let (client, _) = proc.client("client").unwrap();
+        let (ready, ready_rx) = client.open_once_port();
+        let (fired, fired_rx) = client.open_once_port();
+        let delay = Duration::from_millis(50);
+        let start = tokio::time::Instant::now();
+        let handle = proc
+            .spawn(
+                "test",
+                DelayedSelfActor {
+                    ready: Some(ready.bind()),
+                    fired: Some(fired.bind()),
+                    delay,
+                },
+            )
+            .unwrap();
+
+        ready_rx.recv().await.unwrap();
+        fired_rx.recv().await.unwrap();
+
+        assert!(start.elapsed() >= delay);
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_post_after_port_ref() {
+        let proc = Proc::isolated();
+        let (client, _) = proc.client("client").unwrap();
+        let (reply, mut reply_rx) = client.open_port();
+        let delay = Duration::from_millis(50);
+        let start = tokio::time::Instant::now();
+        let handle = proc
+            .spawn(
+                "test",
+                DelayedPortActor {
+                    reply: Some(reply.bind()),
+                    delay,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(reply_rx.recv().await.unwrap(), 123);
+        assert!(start.elapsed() >= delay);
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_post_after_discards_pending_messages_on_shutdown() {
+        let proc = Proc::isolated();
+        let (client, _) = proc.client("client").unwrap();
+        let (ready, ready_rx) = client.open_once_port();
+        let (fired, fired_rx) = client.open_once_port();
+        let handle = proc
+            .spawn(
+                "test",
+                DelayedSelfActor {
+                    ready: Some(ready.bind()),
+                    fired: Some(fired.bind()),
+                    delay: Duration::from_secs(60),
+                },
+            )
+            .unwrap();
+
+        ready_rx.recv().await.unwrap();
+        handle.drain_and_stop("test").unwrap();
+        assert_matches!(handle.await, ActorStatus::Stopped(reason) if reason == "test");
+
+        let result = tokio::time::timeout(Duration::from_millis(100), fired_rx.recv()).await;
+        assert!(!matches!(result, Ok(Ok(()))));
     }
 
     #[async_timed_test(timeout_secs = 30)]

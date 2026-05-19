@@ -648,17 +648,18 @@ impl Actor for ProcAgent {
         });
 
         if let Some(delay) = &self.mesh_orphan_timeout {
-            this.self_message_with_delay(SelfCheck::default(), *delay)?;
+            this.post_after(this, SelfCheck::default(), *delay);
         }
         if cfg!(target_os = "linux") {
             let interval = hyperactor_config::global::get(PROCESS_MEMORY_METRIC_INTERVAL);
             if !interval.is_zero() {
-                this.self_message_with_delay(
+                this.post_after(
+                    this,
                     RepublishIntrospect {
                         emit_memory_metrics: true,
                     },
                     interval,
-                )?;
+                );
             }
         }
         Ok(())
@@ -726,7 +727,8 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
             // Multiple rapid events coalesce into one republish.
             if !self.introspect_dirty {
                 self.introspect_dirty = true;
-                let _ = cx.self_message_with_delay(
+                cx.post_after(
+                    cx,
                     RepublishIntrospect {
                         emit_memory_metrics: false,
                     },
@@ -786,12 +788,13 @@ impl Handler<RepublishIntrospect> for ProcAgent {
             }
             let interval = hyperactor_config::global::get(PROCESS_MEMORY_METRIC_INTERVAL);
             if !interval.is_zero() {
-                cx.self_message_with_delay(
+                cx.post_after(
+                    cx,
                     RepublishIntrospect {
                         emit_memory_metrics: true,
                     },
                     interval,
-                )?;
+                );
             }
         }
         Ok(())
@@ -1220,7 +1223,7 @@ impl Handler<SelfCheck> for ProcAgent {
         }
 
         // Reschedule.
-        cx.self_message_with_delay(SelfCheck::default(), duration)?;
+        cx.post_after(cx, SelfCheck::default(), duration);
         Ok(())
     }
 }

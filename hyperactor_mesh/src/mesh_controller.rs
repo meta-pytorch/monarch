@@ -565,16 +565,11 @@ impl<T: Controlled> ResourceController<T> {
     ///
     /// `send_fn` bridges the type gap: the caller passes a closure that
     /// captures the typed `Instance`/`Context` and calls
-    /// `self_message_with_delay`.
-    fn schedule_next_check(
-        &self,
-        send_fn: impl FnOnce(CheckState, Duration) -> Result<(), ActorError>,
-    ) -> Result<(), ActorError> {
+    /// `post_after`.
+    fn schedule_next_check(&self, send_fn: impl FnOnce(CheckState, Duration)) {
         if self.monitor.is_some() {
             let delay = hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY);
-            send_fn(CheckState(SystemTime::now() + delay), delay)
-        } else {
-            Ok(())
+            send_fn(CheckState(SystemTime::now() + delay), delay);
         }
     }
 
@@ -655,7 +650,7 @@ impl<T: Controlled> ResourceController<T> {
 
         match result {
             PollResult::Reschedule => {
-                self.schedule_next_check(|msg, delay| cx.self_message_with_delay(msg, delay))?;
+                self.schedule_next_check(|msg, delay| cx.post_after(cx, msg, delay));
             }
             PollResult::Processed { did_notify } => {
                 // Suppress heartbeats once any rank is terminating: the mesh is on
@@ -665,7 +660,7 @@ impl<T: Controlled> ResourceController<T> {
                     send_heartbeat(cx, &self.health_state);
                 }
                 if !self.health_state.all_terminating() {
-                    self.schedule_next_check(|msg, delay| cx.self_message_with_delay(msg, delay))?;
+                    self.schedule_next_check(|msg, delay| cx.post_after(cx, msg, delay));
                 } else {
                     self.monitor.take();
                 }
@@ -724,7 +719,7 @@ where
 
         // Start the monitor task.
         self.monitor = Some(());
-        self.schedule_next_check(|msg, delay| this.self_message_with_delay(msg, delay))?;
+        self.schedule_next_check(|msg, delay| this.post_after(this, msg, delay));
 
         let owner = if let Some(owner) = &self.health_state.owner {
             owner.to_string()

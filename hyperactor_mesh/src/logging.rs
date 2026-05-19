@@ -1000,7 +1000,7 @@ pub struct LogForwardActor {
 impl Actor for LogForwardActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
-        this.self_message_with_delay(LogForwardMessage::Forward {}, Duration::from_secs(0))?;
+        this.post_after(this, LogForwardMessage::Forward {}, Duration::from_secs(0));
 
         // Make sure we start the flush loop periodically so the log channel will not deadlock.
         self.flush_tx
@@ -1113,7 +1113,7 @@ impl LogForwardMessageHandler for LogForwardActor {
         }
 
         // This is not ideal as we are using raw tx/rx.
-        ctx.self_message_with_delay(LogForwardMessage::Forward {}, Duration::from_secs(0))?;
+        ctx.post_after(ctx, LogForwardMessage::Forward {}, Duration::from_secs(0));
 
         Ok(())
     }
@@ -1302,20 +1302,14 @@ impl LogMessageHandler for LogClientActor {
                     match self.next_flush_deadline {
                         None => {
                             self.next_flush_deadline = Some(new_deadline);
-                            cx.self_message_with_delay(
-                                LogMessage::Flush { sync_version: None },
-                                delay,
-                            )?;
+                            cx.post_after(cx, LogMessage::Flush { sync_version: None }, delay);
                         }
                         Some(deadline) => {
                             // Some early log lines have alrady triggered the flush.
                             if new_deadline < deadline {
                                 // This can happen if the user has adjusted the aggregation window.
                                 self.next_flush_deadline = Some(new_deadline);
-                                cx.self_message_with_delay(
-                                    LogMessage::Flush { sync_version: None },
-                                    delay,
-                                )?;
+                                cx.post_after(cx, LogMessage::Flush { sync_version: None }, delay);
                             }
                         }
                     }

@@ -113,7 +113,7 @@ impl Actor for Supervisor {
             .expect("supervisor initialized more than once")
             .spawn_supervisor(this)?;
         self.link_handle = Some(link_handle);
-        self.worker.post(
+        (&self.worker).post(
             this,
             Link {
                 session_id: self.session_id.clone(),
@@ -210,7 +210,7 @@ impl Supervisor {
         let Some(stop) = self.pending_stop.take() else {
             return Ok(());
         };
-        self.worker.post(
+        (&self.worker).post(
             cx,
             SupervisedWorker::Stop {
                 session_id: self.session_id.clone(),
@@ -568,10 +568,10 @@ mod tests {
             self.ready.post(this, this.self_addr().clone());
             match self.action.take() {
                 Some(TestChildAction::FailAfter(delay)) => {
-                    this.self_message_with_delay(TestChildCommand::Fail, delay)?;
+                    this.post_after(this, TestChildCommand::Fail, delay);
                 }
                 Some(TestChildAction::DrainAfter(delay, tag)) => {
-                    this.self_message_with_delay(TestChildCommand::Drain(tag), delay)?;
+                    this.post_after(this, TestChildCommand::Drain(tag), delay);
                 }
                 None => {}
             }

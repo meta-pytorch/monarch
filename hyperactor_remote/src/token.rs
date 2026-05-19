@@ -229,7 +229,7 @@ impl<C: TokenPeer, J: TokenPeer> Token<C, J> {
         joiner: J,
         result: PortRef<JoinResult<C>>,
     ) -> anyhow::Result<()> {
-        self.rendezvous.post(cx, Join { joiner, result });
+        (&self.rendezvous).post(cx, Join { joiner, result });
         Ok(())
     }
 
@@ -351,7 +351,7 @@ impl<C: TokenPeer + Clone, J: TokenPeer> Handler<Join<C, J>> for Rendezvous<C, J
             return Ok(());
         }
 
-        self.creator_joined.post(
+        (&self.creator_joined).post(
             cx,
             Joined {
                 peer: message.joiner,
