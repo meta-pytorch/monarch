@@ -4418,7 +4418,7 @@ mod tests {
 
         let Setup {
             mut receiver,
-            actor0: _,
+            actor0: _actor0,
             actor1,
             port_id: _,
             port_id1,
@@ -4462,7 +4462,7 @@ mod tests {
 
         let Setup {
             mut receiver,
-            actor0: _,
+            actor0: _actor0,
             actor1,
             port_id: _,
             port_id1,
