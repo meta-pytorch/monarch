@@ -100,7 +100,7 @@ pub(crate) fn get_proc_runtime() -> &'static Proc {
     static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
     RUNTIME_PROC.get_or_init(|| {
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = hyperactor::ProcAddr::unique(addr, "monarch_hyperactor_runtime");
+        let proc_id = hyperactor::ProcAddr::instance(addr, "monarch_hyperactor_runtime");
         Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     })
 }

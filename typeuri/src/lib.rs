@@ -55,6 +55,11 @@ pub trait Named: Sized + 'static {
 
     /// An unsafe version of 'arm', accepting a pointer to the value,
     /// for use in type-erased settings.
+    ///
+    /// # Safety
+    ///
+    /// self_ must be a valid pointer to a Self instance that
+    /// remains alive for the duration of the call.
     unsafe fn arm_unchecked(self_: *const ()) -> Option<&'static str> {
         // SAFETY: This isn't safe. We're passing it on.
         unsafe { &*(self_ as *const Self) }.arm()
