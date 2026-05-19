@@ -18,11 +18,9 @@
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
 //! # use hyperactor::Endpoint as _;
-//! # use hyperactor::Proc;
-//! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
-//! # let proc = Proc::isolated();
-//! # let client = proc.client("client");
+//! # let proc = hyperactor::Proc::current();
+//! # let client = hyperactor::client("client");
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
 //! let mbox = Mailbox::new(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
@@ -38,11 +36,9 @@
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
 //! # use hyperactor::Endpoint as _;
-//! # use hyperactor::Proc;
-//! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
-//! # let proc = Proc::isolated();
-//! # let client = proc.client("client");
+//! # let proc = hyperactor::Proc::current();
+//! # let client = hyperactor::client("client");
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
 //! let mbox = Mailbox::new(actor_id);
 //!
