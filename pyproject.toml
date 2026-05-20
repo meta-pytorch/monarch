@@ -140,10 +140,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://meta-pytorch.org/monarch/"
-Documentation = "https://meta-pytorch.org/monarch/"
-Repository = "https://github.com/meta-pytorch/monarch"
-Issues = "https://github.com/meta-pytorch/monarch/issues"
+homepage = "https://meta-pytorch.org/monarch/"
+documentation = "https://meta-pytorch.org/monarch/"
+source = "https://github.com/meta-pytorch/monarch"
+issues = "https://github.com/meta-pytorch/monarch/issues"
+releasenotes = "https://github.com/meta-pytorch/monarch/releases"
 
 [project.scripts]
 monarch = "monarch.tools.cli:main"
