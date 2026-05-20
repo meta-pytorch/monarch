@@ -282,13 +282,13 @@ pub async fn host(
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<MailboxServerHandle>();
 
     let system_proc = host.system_proc().clone();
-    let host_mesh_agent = system_proc.spawn::<HostAgent>(
+    let host_mesh_agent = system_proc.spawn_with_label::<HostAgent>(
         "host_agent",
         HostAgent::new(HostAgentMode::Process {
             host,
             shutdown_tx: Some(shutdown_tx),
         }),
-    )?;
+    );
 
     tracing::info!(
         "serving host at {}, agent: {}",
@@ -2479,10 +2479,8 @@ mod tests {
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> = proc
-            .spawn_with_label("log_client", log_client_actor)
-            .unwrap()
-            .bind();
+        let log_client: ActorRef<LogClientActor> =
+            proc.spawn_with_label("log_client", log_client_actor).bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
@@ -2492,7 +2490,6 @@ mod tests {
             .unwrap();
         let _log_forwarder: ActorRef<LogForwardActor> = proc
             .spawn_with_label("log_forwarder", log_forwarder_actor)
-            .unwrap()
             .bind();
 
         // Dial the channel but don't post until we know the forwarder

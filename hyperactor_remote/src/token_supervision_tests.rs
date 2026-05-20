@@ -273,7 +273,7 @@ impl Harness {
         let (child_stopped, child_stopped_rx) = observer.open_port::<String>();
         let (worker_out, mut worker_out_rx) = observer.open_port::<ActorRef<WorkerLike>>();
 
-        let parent_root = parent_proc.spawn(
+        let parent_root = parent_proc.spawn_with_label(
             "parent_root",
             ParentRoot {
                 parent: Some(Parent {
@@ -283,9 +283,9 @@ impl Harness {
                 }),
                 parent_handle: None,
             },
-        )?;
+        );
         let token: SupervisionToken = recv::<String>(&mut token_out_rx).await?.parse()?;
-        let worker_root = worker_proc.spawn(
+        let worker_root = worker_proc.spawn_with_label(
             "worker_root",
             WorkerRoot {
                 child_ready,
@@ -294,7 +294,7 @@ impl Harness {
                 child_action,
                 worker: None,
             },
-        )?;
+        );
         let worker_ref: ActorRef<WorkerLike> = recv(&mut worker_out_rx).await?;
         let (join_result, mut join_result_rx) =
             observer.open_port::<token::JoinResult<ActorAddr>>();

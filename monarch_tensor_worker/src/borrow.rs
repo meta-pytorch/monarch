@@ -199,21 +199,19 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc
-            .spawn::<WorkerActor>(
-                "worker",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 1,
-                        rank: 0,
-                        device_index: None,
-                        controller_actor: controller_ref,
-                    },
-                    Flattrs::default(),
-                )
-                .await?,
+        let worker_handle = proc.spawn_with_label::<WorkerActor>(
+            "worker",
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 1,
+                    rank: 0,
+                    device_index: None,
+                    controller_actor: controller_ref,
+                },
+                Flattrs::default(),
             )
-            .unwrap();
+            .await?,
+        );
 
         worker_handle
             .command_group(
@@ -354,22 +352,20 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc
-            .spawn::<WorkerActor>(
-                "worker",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 1,
-                        rank: 0,
-                        device_index: None,
-                        controller_actor: controller_ref,
-                    },
-                    Flattrs::default(),
-                )
-                .await
-                .unwrap(),
+        let worker_handle = proc.spawn_with_label::<WorkerActor>(
+            "worker",
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 1,
+                    rank: 0,
+                    device_index: None,
+                    controller_actor: controller_ref,
+                },
+                Flattrs::default(),
             )
-            .unwrap();
+            .await
+            .unwrap(),
+        );
 
         worker_handle
             .command_group(

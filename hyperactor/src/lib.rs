@@ -217,13 +217,13 @@ pub fn serve(
     Gateway::current().serve(addr)
 }
 
-/// Spawn a root actor on the current proc.
-pub fn spawn<A: Actor>(name: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
-    Proc::current().spawn(name, actor)
+/// Spawn a root actor with a fresh anonymous uid on the current proc.
+pub fn spawn<A: Actor>(actor: A) -> ActorHandle<A> {
+    Proc::current().spawn(actor)
 }
 
 /// Spawn a root actor with a fresh uid carrying a display label on the current proc.
-pub fn spawn_with_label<A: Actor>(label: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
+pub fn spawn_with_label<A: Actor>(label: &str, actor: A) -> ActorHandle<A> {
     Proc::current().spawn_with_label(label, actor)
 }
 

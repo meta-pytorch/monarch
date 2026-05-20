@@ -755,7 +755,7 @@ mod tests {
             .unwrap();
         let test_ref: ActorRef<TestActor> = test_handle.bind::<TestActor>();
 
-        let comm_handle = proc.spawn_with_label("comm", CommActor::default()).unwrap();
+        let comm_handle = proc.spawn_with_label("comm", CommActor::default());
 
         (
             client,

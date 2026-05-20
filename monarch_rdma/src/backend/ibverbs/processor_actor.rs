@@ -485,15 +485,17 @@ mod tests {
         let mgr = MockManagerActor {
             inner: Arc::clone(&mgr_inner),
         };
-        let mgr_handle = proc.spawn::<MockManagerActor>("mgr", mgr).unwrap();
+        let mgr_handle = proc.spawn_with_label::<MockManagerActor>("mgr", mgr);
         let processor = IbvProcessorActor::<MockManagerActor, MockQp>::new(
             mgr_handle,
             super::super::primitives::IbvConfig::default(),
             lru_capacity,
         );
         let processor_handle = proc
-            .spawn::<IbvProcessorActor<MockManagerActor, MockQp>>("processor", processor)
-            .unwrap();
+            .spawn_with_label::<IbvProcessorActor<MockManagerActor, MockQp>>(
+                "processor",
+                processor,
+            );
         Harness {
             client,
             processor: processor_handle,

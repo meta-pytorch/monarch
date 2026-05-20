@@ -1330,7 +1330,7 @@ mod tests {
         // Spawn an actor directly on the proc, bypassing ProcAgent's
         // gspawn message handler. This is how supervision-spawned
         // actors (e.g. sieve children) are created.
-        proc.spawn_with_label("extra_actor", ExtraActor).unwrap();
+        proc.spawn_with_label("extra_actor", ExtraActor);
 
         // Second query: extra_actor must appear without any republish.
         let payload2 = recv(query(&client)).await;
@@ -1426,7 +1426,7 @@ mod tests {
         let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             for i in 0..ITERATIONS {
                 let name = format!("churn_{}", i);
-                let handle = proc.spawn_with_label(&name, ExtraActor).unwrap();
+                let handle = proc.spawn_with_label(&name, ExtraActor);
                 let actor_id = handle.actor_addr().clone();
                 if let Some(mut status) = proc.stop_actor(actor_id.id(), "churn".to_string()) {
                     let _ = tokio::time::timeout(
@@ -1687,14 +1687,12 @@ mod tests {
 
         // Spawn a blocking actor with a shared gate.
         let gate = Arc::new(tokio::sync::Notify::new());
-        let blocker = proc
-            .spawn(
-                "blocker",
-                BlockActor {
-                    gate: Some(Arc::clone(&gate)),
-                },
-            )
-            .unwrap();
+        let blocker = proc.spawn_with_label(
+            "blocker",
+            BlockActor {
+                gate: Some(Arc::clone(&gate)),
+            },
+        );
 
         // Block the actor and queue additional work behind it.
         blocker.block(&client).await.unwrap();
