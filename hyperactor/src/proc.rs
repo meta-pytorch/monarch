@@ -1011,11 +1011,13 @@ impl Proc {
 
     /// Spawn a root actor on this proc using an explicit uid.
     ///
-    /// The uid must be unique among root actors on this proc. Instance labels,
-    /// if present, are descriptive only and do not affect uniqueness.
+    /// This is the explicit identity API, and the only root spawn API that
+    /// permits singleton actor identity. The uid must be unique among root
+    /// actors on this proc. Instance labels, if present, are descriptive only
+    /// and do not affect uniqueness.
     pub fn spawn_with_uid<A: Actor>(
         &self,
-        uid: crate::id::Uid,
+        uid: Uid,
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id: ActorAddr = self.allocate_root_uid(uid)?;
@@ -1271,7 +1273,7 @@ impl Proc {
     pub(crate) fn spawn_child_with_uid<A: Actor>(
         &self,
         parent: InstanceCell,
-        uid: crate::id::Uid,
+        uid: Uid,
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.ensure_child_uid(parent.actor_addr(), uid)?;
@@ -3209,6 +3211,17 @@ impl<A: Actor> Instance<A> {
         self.inner
             .proc
             .spawn_named_child(self.inner.cell.clone(), name, actor)
+    }
+
+    /// Spawn a child actor on this instance using an explicit uid.
+    ///
+    /// This is the explicit identity API, and the only child spawn API that
+    /// permits singleton actor identity. Instance labels, if present, are
+    /// descriptive only and do not affect uniqueness.
+    pub fn spawn_with_uid<C: Actor>(&self, uid: Uid, actor: C) -> anyhow::Result<ActorHandle<C>> {
+        self.inner
+            .proc
+            .spawn_child_with_uid(self.inner.cell.clone(), uid, actor)
     }
 
     /// Create a new direct child instance.
