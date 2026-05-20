@@ -227,9 +227,14 @@ pub fn spawn_with_label<A: Actor>(label: &str, actor: A) -> ActorHandle<A> {
     Proc::current().spawn_with_label(label, actor)
 }
 
+/// Spawn a root actor using an explicit uid on the current proc.
+pub fn spawn_with_uid<A: Actor>(uid: Uid, actor: A) -> anyhow::Result<ActorHandle<A>> {
+    Proc::current().spawn_with_uid(uid, actor)
+}
+
 /// Create a client actor on the current proc.
-pub fn client(name: &str) -> Client {
-    Proc::current().client(name)
+pub fn client(label: &str) -> Client {
+    Proc::current().client(label)
 }
 
 mod private {
