@@ -1950,7 +1950,7 @@ mod tests {
     struct TestSetup {
         proc: Proc,
         stream_actor: ActorHandle<StreamActor>,
-        client: Instance<()>,
+        client: reference::Client,
         // Unused, but necessary, because proc needs a supervision
         // port -- otherwise an actor failure will cause a crash.
         #[allow(dead_code)]
@@ -1973,7 +1973,7 @@ mod tests {
             let proc = Proc::isolated();
             let (_, controller_actor, controller_rx) =
                 proc.attach_actor::<ControllerActor, ControllerMessage>("controller")?;
-            let (client, _handle) = proc.client("client")?;
+            let client = proc.client("client");
             let (supervision_tx, supervision_rx) = client.open_port();
             proc.set_supervision_coordinator(supervision_tx)?;
             let stream_actor = proc.spawn(
