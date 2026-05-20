@@ -36,6 +36,8 @@ use hyperactor::RemoteEndpoint as _;
 use hyperactor::Unbind;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
+use hyperactor::id::Label;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::proc::Proc;
@@ -338,7 +340,10 @@ impl ProcAgent {
             stopping_all: false,
             mesh_orphan_timeout: orphan_timeout,
         };
-        proc.spawn::<Self>(PROC_AGENT_ACTOR_NAME, agent)
+        proc.spawn_with_uid::<Self>(
+            Uid::singleton(Label::new(PROC_AGENT_ACTOR_NAME).unwrap()),
+            agent,
+        )
     }
 
     /// Returns true when every tracked actor has a terminal supervision event

@@ -52,6 +52,7 @@ use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::id::Label;
+use hyperactor::id::Uid;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -464,8 +465,8 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn(
-                "host_agent",
+            .spawn_with_uid(
+                Uid::singleton(Label::new(host_agent::HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -528,8 +529,8 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn(
-                host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(host_agent::HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Local(host)),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
@@ -1797,8 +1798,8 @@ pub async fn spawn_admin(
     // Spawn the admin on the caller's local proc. Placement now
     // follows the caller context rather than mesh topology.
     let local_proc = cx.instance().proc();
-    let agent_handle = local_proc.spawn(
-        crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
+    let agent_handle = local_proc.spawn_with_uid(
+        Uid::singleton(Label::new(crate::mesh_admin::MESH_ADMIN_ACTOR_NAME).unwrap()),
         crate::mesh_admin::MeshAdminAgent::new(
             hosts,
             Some(root_client_id),
