@@ -43,6 +43,8 @@ pub struct Actor {
     pub full_name: String,
     /// User-facing name for this actor
     pub display_name: Option<String>,
+    /// Whether this is a system/infrastructure actor
+    pub is_system: bool,
 }
 
 /// Row data for the meshes table.
@@ -299,6 +301,7 @@ impl EntityEventDispatcher for EntityDispatcher {
                     rank: actor_event.rank,
                     full_name: actor_event.full_name,
                     display_name: actor_event.display_name,
+                    is_system: actor_event.is_system,
                 });
                 inner.flush_actors_if_full()?;
             }
