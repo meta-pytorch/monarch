@@ -1,0 +1,43 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+load("//tools/skycastle/api2/action_results.sky", "Classifier", "InfraFailure", "UserFailure")
+load("//tools/skycastle/api2/api.sky", "config", "entry_point")
+load("//tools/skycastle/api2/predicates.sky", "ExitCode", "eq", "gt")
+load("//tools/skycastle/api2/sandcastle_config.sky", "SandcastleConfig")
+load("//tools/skycastle/api2/slp_metadata.sky", "LandFriction", "LandFrictionReason", "OverrideLandFriction", "SLPMetadata")
+load("//tools/skycastle/lib2/buck/buck.sky", "buck_run")
+load("//tools/skycastle/lib2/sandcastle/flags.sky", "phabricator_diff_number", "phabricator_version_number")
+
+config(oncall = "monarch")
+
+_wait = buck_run(
+    description = "Wait for GitHub Actions CI signal to pass on the exported PR",
+    target = "fbcode//monarch/ci:poll_github_ci",
+    args = ["--diff", phabricator_diff_number, "--version-number", phabricator_version_number],
+    result_classifiers = [
+        Classifier(
+            predicate = ExitCode(eq(1)),
+            type = UserFailure("GitHub CI failed. Check the Monarch OSS CI workflow.", with_details = True),
+        ),
+        Classifier(
+            predicate = ExitCode(gt(1)),
+            type = InfraFailure("GitHub CI check timed out or errored. Retry the check.", with_details = True),
+        ),
+    ],
+)
+
+entry_point(
+    name = "main",
+    actions = [_wait],
+    sandcastle_config = SandcastleConfig(tenant = "fbcode_castle"),
+    slp_metadata = SLPMetadata(
+        override_land_friction = OverrideLandFriction(
+            land_friction = LandFriction.LAND_BLOCKING,
+            reason = LandFrictionReason.DEFAULT,
+        ),
+    ),
+)
