@@ -56,7 +56,7 @@ jobs:
 
         # tests the type_assert statements in test_python_actor are correct
         # pyre currently does not check these assertions
-        pyright python/tests/test_python_actors.py
+        pyrefly check python/tests/test_python_actors.py
 
         # run_test_groups disables errexit internally and leaks `set +e`,
         # so capture its exit code before `stage_test_artifacts` runs;
