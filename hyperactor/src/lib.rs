@@ -64,6 +64,7 @@ pub mod actor;
 pub mod actor_local;
 pub mod addr;
 pub mod channel;
+pub mod client;
 pub mod config;
 pub mod context;
 pub mod endpoint;
@@ -122,6 +123,7 @@ pub use addr::AddrParseError;
 pub use addr::Location;
 pub use addr::PortAddr;
 pub use addr::ProcAddr;
+pub use client::Client;
 pub use endpoint::Endpoint;
 pub use endpoint::EndpointLocation;
 pub use endpoint::RemoteEndpoint;
@@ -208,6 +210,28 @@ pub use signal_handler::sigpipe_disposition;
 #[doc(inline)]
 pub use signal_handler::unregister_signal_cleanup;
 
+/// Serve the current gateway on the provided channel address.
+pub fn serve(
+    addr: channel::ChannelAddr,
+) -> Result<gateway::GatewayServeHandle, channel::ChannelError> {
+    Gateway::current().serve(addr)
+}
+
+/// Spawn a root actor on the current proc.
+pub fn spawn<A: Actor>(name: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
+    Proc::current().spawn(name, actor)
+}
+
+/// Spawn a root actor with a fresh uid carrying a display label on the current proc.
+pub fn spawn_with_label<A: Actor>(label: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
+    Proc::current().spawn_with_label(label, actor)
+}
+
+/// Create a client actor on the current proc.
+pub fn client(name: &str) -> Client {
+    Proc::current().client(name)
+}
+
 mod private {
     /// Public trait in a private module for sealing traits within this crate:
     /// [Sealed trait pattern](https://rust-lang.github.io/api-guidelines/future-proofing.html#sealed-traits-protect-against-downstream-implementations-c-sealed).
@@ -218,6 +242,8 @@ mod private {
     impl<A: crate::Actor> Sealed for &crate::proc::Instance<A> {}
     impl<A: crate::Actor> Sealed for crate::proc::Context<'_, A> {}
     impl<A: crate::Actor> Sealed for &crate::proc::Context<'_, A> {}
+    impl Sealed for crate::client::Client {}
+    impl Sealed for &crate::client::Client {}
     impl Sealed for crate::mailbox::Mailbox {}
     impl Sealed for &crate::mailbox::Mailbox {}
     impl<A: crate::Actor> Sealed for &crate::actor::ActorHandle<A> {}

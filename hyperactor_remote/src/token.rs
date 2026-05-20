@@ -47,10 +47,12 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+#[cfg(test)]
 use hyperactor::Instance;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
+use hyperactor::context;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -191,7 +193,7 @@ hyperactor::behavior!(RendezvousLike<C, J>, Join<C, J>);
 /// The creator receives [`Joined`] notifications on `creator_joined`; joiners
 /// receive [`JoinResult`] on the result port they pass to [`Token::join`].
 pub fn create<A, C, J>(
-    this: &Instance<A>,
+    this: &impl context::Actor<A = A>,
     creator: C,
     creator_joined: PortRef<Joined<J>>,
     options: Options,
@@ -201,7 +203,9 @@ where
     C: TokenPeer + Clone,
     J: TokenPeer,
 {
-    let rendezvous = this.spawn(Rendezvous::new(creator, creator_joined, options))?;
+    let rendezvous = this
+        .instance()
+        .spawn(Rendezvous::new(creator, creator_joined, options))?;
     Ok(Token::new(rendezvous.bind::<RendezvousLike<C, J>>()))
 }
 
@@ -522,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_delivers_join_to_both_sides() {
         let proc = Proc::isolated();
-        let (creator, _creator_handle) = proc.client("creator").unwrap();
+        let creator = proc.client("creator");
         let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<JoinerRef>>();
         let token = create(
             &creator,
@@ -531,7 +535,7 @@ mod tests {
             Options::default(),
         )
         .unwrap();
-        let (joiner, _joiner_handle) = proc.client("joiner").unwrap();
+        let joiner = proc.client("joiner");
         let (join_result, mut join_result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
 
         token.join(&joiner, JoinerRef, join_result.bind()).unwrap();
@@ -546,7 +550,7 @@ mod tests {
     #[tokio::test]
     async fn test_once_token_rejects_later_joins() {
         let proc = Proc::isolated();
-        let (creator, _creator_handle) = proc.client("creator").unwrap();
+        let creator = proc.client("creator");
         let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<JoinerRef>>();
         let token = create(
             &creator,
@@ -557,7 +561,7 @@ mod tests {
             },
         )
         .unwrap();
-        let (joiner, _joiner_handle) = proc.client("joiner").unwrap();
+        let joiner = proc.client("joiner");
         let (first_result, mut first_result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
         let (second_result, mut second_result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
 
@@ -582,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn test_multi_token_accepts_every_join() {
         let proc = Proc::isolated();
-        let (creator, _creator_hndl) = proc.client("creator").unwrap();
+        let creator = proc.client("creator");
         let (creator_joined, mut creator_joined_rx) = creator.open_port::<Joined<MultiJoinerRef>>();
         let token = create(
             &creator,
@@ -594,9 +598,9 @@ mod tests {
         )
         .unwrap();
 
-        let (joiner1, _joiner1_handle) = proc.client("joiner1").unwrap();
-        let (joiner2, _joiner2_handle) = proc.client("joiner2").unwrap();
-        let (joiner3, _joiner3_handle) = proc.client("joiner3").unwrap();
+        let joiner1 = proc.client("joiner1");
+        let joiner2 = proc.client("joiner2");
+        let joiner3 = proc.client("joiner3");
 
         let (r1, mut r1_rx) = joiner1.open_port::<JoinResult<CreatorRef>>();
         let (r2, mut r2_rx) = joiner2.open_port::<JoinResult<CreatorRef>>();
@@ -645,7 +649,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_serializes_as_single_base64_json_string() {
         let proc = Proc::isolated();
-        let rendezvous = proc.spawn("rendezvous", RendezvousStub).unwrap();
+        let rendezvous = proc.spawn_with_label("rendezvous", RendezvousStub).unwrap();
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
         );
@@ -673,7 +677,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_display_includes_compact_json_suffix() {
         let proc = Proc::isolated();
-        let rendezvous = proc.spawn("rendezvous", RendezvousStub).unwrap();
+        let rendezvous = proc.spawn_with_label("rendezvous", RendezvousStub).unwrap();
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
         );
@@ -690,7 +694,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_from_str_accepts_display_suffix() {
         let proc = Proc::isolated();
-        let rendezvous = proc.spawn("rendezvous", RendezvousStub).unwrap();
+        let rendezvous = proc.spawn_with_label("rendezvous", RendezvousStub).unwrap();
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
         );
@@ -712,7 +716,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_rejects_incompatible_type_parameters() {
         let proc = Proc::isolated();
-        let rendezvous = proc.spawn("rendezvous", RendezvousStub).unwrap();
+        let rendezvous = proc.spawn_with_label("rendezvous", RendezvousStub).unwrap();
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
         );
@@ -742,7 +746,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_from_str_rejects_mismatched_type_uris() {
         let proc = Proc::isolated();
-        let rendezvous = proc.spawn("rendezvous", RendezvousStub).unwrap();
+        let rendezvous = proc.spawn_with_label("rendezvous", RendezvousStub).unwrap();
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
         );
@@ -758,7 +762,7 @@ mod tests {
     #[tokio::test]
     async fn test_join_fails_after_creator_stops() {
         let proc = Proc::isolated();
-        let (inst, _inst_handle) = proc.client("inst").unwrap();
+        let inst = proc.client("inst");
         let (creator_joined, _creator_joined_rx) = inst.open_port::<Joined<JoinerRef>>();
         let (token_out, mut token_out_rx) = inst.open_port::<Token<CreatorRef, JoinerRef>>();
 
@@ -781,7 +785,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (joiner, _joiner_handle) = proc.client("joiner").unwrap();
+        let joiner = proc.client("joiner");
         let (result, mut result_rx) = joiner.open_port::<JoinResult<CreatorRef>>();
         token.join(&joiner, JoinerRef, result.bind()).unwrap();
 

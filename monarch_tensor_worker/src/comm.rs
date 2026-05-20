@@ -437,7 +437,7 @@ mod tests {
     async fn all_reduce() {
         test_setup().unwrap();
         let proc = Proc::isolated();
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let unique_id = UniqueId::new_nccl().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
@@ -504,7 +504,7 @@ mod tests {
     async fn group_send_recv() {
         test_setup().unwrap();
         let proc = Proc::isolated();
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let unique_id = UniqueId::new_nccl().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
@@ -579,7 +579,7 @@ mod tests {
     async fn reduce() -> Result<()> {
         test_setup()?;
         let proc = Proc::isolated();
-        let (client, _handle) = proc.client("client")?;
+        let client = proc.client("client");
 
         let unique_id = UniqueId::new_nccl()?;
         let device0 = CudaDevice::new(DeviceIndex(0));
@@ -599,8 +599,8 @@ mod tests {
         let (actor0, actor1) = tokio::join!(actor0, actor1);
         let (actor0, actor1) = (actor0.unwrap(), actor1.unwrap());
 
-        let handle0 = proc.spawn("comm0", actor0).unwrap();
-        let handle1 = proc.spawn("comm1", actor1).unwrap();
+        let handle0 = proc.spawn_with_label("comm0", actor0).unwrap();
+        let handle1 = proc.spawn_with_label("comm1", actor1).unwrap();
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
         let dest_rank = 0;
@@ -655,7 +655,7 @@ mod tests {
 
         let world_size = 4;
         let workers = try_join_all((0..world_size).map(async |rank| {
-            proc.spawn(
+            proc.spawn_with_label(
                 &format!("worker{}", rank),
                 WorkerActor::new(
                     WorkerParams {
