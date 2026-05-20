@@ -1024,8 +1024,7 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let handle = proc.spawn_with_label(
-            "worker",
+        let handle = proc.spawn(
             WorkerActor::new(
                 WorkerParams {
                     world_size: 1,

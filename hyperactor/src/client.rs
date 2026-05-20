@@ -104,7 +104,7 @@ impl Client {
         self.instance.child()
     }
 
-    /// Spawn an actor as this client's child.
+    /// Spawn a child actor with a fresh uid labeled from the actor type.
     pub fn spawn<A: Actor>(&self, actor: A) -> anyhow::Result<ActorHandle<A>> {
         self.instance.spawn(actor)
     }

@@ -217,7 +217,7 @@ pub fn serve(
     Gateway::current().serve(addr)
 }
 
-/// Spawn a root actor with a fresh anonymous uid on the current proc.
+/// Spawn a root actor with a fresh uid labeled from the actor type on the current proc.
 pub fn spawn<A: Actor>(actor: A) -> ActorHandle<A> {
     Proc::current().spawn(actor)
 }

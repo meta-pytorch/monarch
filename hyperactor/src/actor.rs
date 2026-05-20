@@ -133,6 +133,8 @@ pub trait Actor: Sized + Send + 'static {
     }
 
     /// Spawn a child actor, given a spawning capability (usually given by [`Instance`]).
+    ///
+    /// The child gets a fresh uid labeled from the actor type.
     /// The spawned actor will be supervised by the parent (spawning) actor.
     fn spawn(self, cx: &impl context::Actor) -> anyhow::Result<ActorHandle<Self>> {
         cx.instance().spawn(self)
@@ -1058,7 +1060,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn_with_label::<EchoActor>("echo", actor);
+        let handle = proc.spawn(actor);
         handle.post(&client, 123u64);
         handle.drain_and_stop("test").unwrap();
         handle.await;
@@ -1150,7 +1152,7 @@ mod tests {
     async fn test_init() {
         let proc = Proc::isolated();
         let actor = InitActor(false);
-        let handle = proc.spawn_with_label::<InitActor>("init", actor);
+        let handle = proc.spawn(actor);
         let client = proc.client("client");
 
         let (port, receiver) = client.open_once_port();
@@ -1175,7 +1177,7 @@ mod tests {
             let proc = Proc::isolated();
             let values: MultiValues = Arc::new(Mutex::new((0, "".to_string())));
             let actor = MultiActor(values.clone());
-            let handle = proc.spawn_with_label::<MultiActor>("myactor", actor);
+            let handle = proc.spawn(actor);
             let client = proc.client("client");
             Self {
                 proc,
@@ -1292,7 +1294,7 @@ mod tests {
         // Just test that we can round-trip the handle through a downcast.
 
         let proc = Proc::isolated();
-        let handle = proc.spawn_with_label("nothing", NothingActor);
+        let handle = proc.spawn(NothingActor);
         let cell = handle.cell();
 
         // Invalid actor doesn't succeed.
@@ -1353,7 +1355,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
 
-        let actor_handle = proc.spawn_with_label("get_seq", GetSeqActor(tx.bind()));
+        let actor_handle = proc.spawn(GetSeqActor(tx.bind()));
 
         // Verify that unbound handle can send message.
         actor_handle.post(&client, "unbound".to_string());
@@ -1410,7 +1412,7 @@ mod tests {
         // Channel for receiving seq info from non-handler port
         let (non_handler_tx, mut non_handler_rx) = mpsc::unbounded_channel::<Option<SeqInfo>>();
 
-        let actor_handle = proc.spawn_with_label("get_seq", GetSeqActor(actor_tx.bind()));
+        let actor_handle = proc.spawn(GetSeqActor(actor_tx.bind()));
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         // Create a non-handler port using open_enqueue_port
@@ -1490,7 +1492,7 @@ mod tests {
         // Port for receiving seq info from actor handler
         let (tx, mut rx) = client1.open_port();
 
-        let actor_handle = proc.spawn_with_label("get_seq", GetSeqActor(tx.bind()));
+        let actor_handle = proc.spawn(GetSeqActor(tx.bind()));
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         // Each client should have a different session_id
@@ -1590,7 +1592,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
 
-        let actor_handle = proc.spawn_with_label("get_seq", GetSeqActor(tx.bind()));
+        let actor_handle = proc.spawn(GetSeqActor(tx.bind()));
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         let (callback_tx, mut callback_rx) = client.open_port();
@@ -1677,7 +1679,7 @@ mod tests {
         let client = local_proc.client("local");
         let (tx, mut rx) = client.open_port();
 
-        let handle = local_proc.spawn_with_label("get_seq", GetSeqActor(tx.bind()));
+        let handle = local_proc.spawn(GetSeqActor(tx.bind()));
         let actor_ref: ActorRef<GetSeqActor> = handle.bind();
 
         let remote_proc = Proc::configured(
@@ -1788,7 +1790,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn_with_label::<EchoActor>("echo_introspect", actor);
+        let handle = proc.spawn(actor);
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
         PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
@@ -1931,7 +1933,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn_with_label::<EchoActor>("ia_test", actor);
+        let handle = proc.spawn(actor);
 
         let payload = crate::introspect::live_actor_payload(handle.cell());
 
@@ -1960,7 +1962,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn_with_label::<EchoActor>("echo_qc", actor);
+        let handle = proc.spawn(actor);
 
         let child_ref = crate::Addr::Actor(test_proc_id("nonexistent").actor_addr("child"));
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
@@ -2001,7 +2003,7 @@ mod tests {
 
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let handle = proc.spawn_with_label("custom_introspect", CustomIntrospectActor);
+        let handle = proc.spawn(CustomIntrospectActor);
 
         handle
             .status()
@@ -2109,7 +2111,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn_with_label::<EchoActor>("echo_fresh", actor);
+        let handle = proc.spawn(actor);
 
         // Wait for the actor to finish initialization.
         handle
@@ -2145,7 +2147,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn_with_label::<EchoActor>("echo_after_msg", actor);
+        let handle = proc.spawn(actor);
 
         // Send a user message and wait for it to be processed.
         handle.post(&client, 42u64);
@@ -2179,7 +2181,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn_with_label::<EchoActor>("echo_consec", actor);
+        let handle = proc.spawn(actor);
 
         handle
             .status()
@@ -2238,7 +2240,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn_with_label::<EchoActor>("echo_attrs", actor);
+        let handle = proc.spawn(actor);
 
         // Before publishing, attrs are None.
         assert!(handle.cell().published_attrs().is_none());
@@ -2275,7 +2277,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn_with_label::<EchoActor>("echo_qch", actor);
+        let handle = proc.spawn(actor);
 
         // Before registering, query_child returns None.
         let test_ref = Addr::Actor(test_proc_id("test").actor_addr("child"));
@@ -2352,7 +2354,7 @@ mod tests {
 
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let handle = proc.spawn_with_label("wedged", WedgedActor);
+        let handle = proc.spawn(WedgedActor);
 
         // Wait for idle before sending the wedging message.
         handle
@@ -2397,7 +2399,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn_with_label::<EchoActor>("echo_no_perturb", actor);
+        let handle = proc.spawn(actor);
 
         // Wait for idle before sending the user message.
         handle

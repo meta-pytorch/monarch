@@ -200,13 +200,10 @@ mod tests {
             uid.clone(),
             bincode::serde::encode_to_vec((), bincode::config::legacy()).unwrap(),
         );
-        let parent = proc.spawn_with_label(
-            "parent",
-            TestParentActor {
-                link: Some(link),
-                events: events.bind(),
-            },
-        );
+        let parent = proc.spawn(TestParentActor {
+            link: Some(link),
+            events: events.bind(),
+        });
 
         let event = event_rx.recv().await.unwrap();
 

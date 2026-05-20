@@ -649,7 +649,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_serializes_as_single_base64_json_string() {
         let proc = Proc::isolated();
-        let rendezvous = proc.spawn_with_label("rendezvous", RendezvousStub);
+        let rendezvous = proc.spawn(RendezvousStub);
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
         );
@@ -677,7 +677,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_display_includes_compact_json_suffix() {
         let proc = Proc::isolated();
-        let rendezvous = proc.spawn_with_label("rendezvous", RendezvousStub);
+        let rendezvous = proc.spawn(RendezvousStub);
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
         );
@@ -694,7 +694,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_from_str_accepts_display_suffix() {
         let proc = Proc::isolated();
-        let rendezvous = proc.spawn_with_label("rendezvous", RendezvousStub);
+        let rendezvous = proc.spawn(RendezvousStub);
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
         );
@@ -716,7 +716,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_rejects_incompatible_type_parameters() {
         let proc = Proc::isolated();
-        let rendezvous = proc.spawn_with_label("rendezvous", RendezvousStub);
+        let rendezvous = proc.spawn(RendezvousStub);
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
         );
@@ -746,7 +746,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_from_str_rejects_mismatched_type_uris() {
         let proc = Proc::isolated();
-        let rendezvous = proc.spawn_with_label("rendezvous", RendezvousStub);
+        let rendezvous = proc.spawn(RendezvousStub);
         let token = Token::<CreatorRef, JoinerRef>::new(
             rendezvous.bind::<RendezvousLike<CreatorRef, JoinerRef>>(),
         );
@@ -766,13 +766,10 @@ mod tests {
         let (creator_joined, _creator_joined_rx) = inst.open_port::<Joined<JoinerRef>>();
         let (token_out, mut token_out_rx) = inst.open_port::<Token<CreatorRef, JoinerRef>>();
 
-        let creator_handle = proc.spawn_with_label(
-            "creator",
-            CreatorActor {
-                creator_joined,
-                token_out,
-            },
-        );
+        let creator_handle = proc.spawn(CreatorActor {
+            creator_joined,
+            token_out,
+        });
 
         let token = token_out_rx.recv().await.unwrap();
 
