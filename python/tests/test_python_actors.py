@@ -1150,7 +1150,7 @@ async def test_sync_workspace() -> None:
 
         # no file in remote workspace initially
         am = pm.spawn("ls", LsActor, workspace_dst)
-        for item in list(am.ls.call().get()):
+        for item in list(await am.ls.call()):
             assert len(item[1]) == 0
 
         # write a file to local workspace
@@ -1161,7 +1161,7 @@ async def test_sync_workspace() -> None:
 
         # force a sync and it should populate on the dst workspace
         await code_sync_mesh.sync_workspace(config.workspace, auto_reload=True)
-        for item in list(am.ls.call().get()):
+        for item in list(await am.ls.call()):
             assert len(item[1]) == 1
             assert item[1][0] == "new_file"
             file_path = os.path.join(workspace_dst, item[1][0])

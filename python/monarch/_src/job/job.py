@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.host_mesh import _spawn_admin
+from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.job.mount_config import Mounts
 
 # note: the jobs api is intended as a library so it should
@@ -470,11 +471,15 @@ class JobTrait(ABC):
         if self._mesh_admin is None or self._admin_url is not None:
             return None
 
-        admin_url, admin_ref = _spawn_admin(
-            host_meshes,
-            admin_addr=self._mesh_admin.admin_addr,
-            telemetry_url=self._telemetry_url,
-        ).get()
+        # state() is a sync API but is commonly called from inside
+        # asyncio.run(...); mask the running loop so the inner .get() does not
+        # trip the Future.get-in-loop check.
+        with fake_sync_state():
+            admin_url, admin_ref = _spawn_admin(
+                host_meshes,
+                admin_addr=self._mesh_admin.admin_addr,
+                telemetry_url=self._telemetry_url,
+            ).get()
         self._admin_url = admin_url
         return admin_ref
 
