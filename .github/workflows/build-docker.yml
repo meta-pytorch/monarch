@@ -54,7 +54,7 @@ jobs:
           file: ./Dockerfile.nightly
           push: false # Just building the image, not publishing
           build-args: |
-            PYTORCH_TAG=2.13.0.dev20260513-cuda12.6-cudnn9-runtime
+            PYTORCH_TAG=2.13.0.dev20260513-cuda13.2-cudnn9-runtime
           build-contexts: |
             monarch-wheels=${{ runner.temp }}/monarch_wheels
           outputs: type=docker,dest=${{ runner.temp }}/monarch_image.tar

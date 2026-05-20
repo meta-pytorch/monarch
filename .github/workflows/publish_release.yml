@@ -21,10 +21,25 @@ jobs:
     with:
       # TODO add 3.14 once we figure out py03 issue
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
-      runner: linux.g5.4xlarge.nvidia.gpu
-      torch-spec: 'torch==2.12.0 --extra-index-url https://download.pytorch.org/whl/cu128'
-      gpu-arch-type: cuda
-      gpu-arch-version: '12.8'
+      # Stable releases ship cu132 even though PR CI tests at cu130 (see
+      # set-matrix.yaml): pytorch core does the same split — publish cu132
+      # binaries, GPU-test only at cu130 — because no g4dn-fleet AMI yet
+      # carries an NVIDIA driver that satisfies nvidia-container-cli's
+      # cuda>=13.2 check.
+      #
+      # Building a wheel needs the CUDA toolkit (nvcc, headers, libs) but not
+      # host-GPU access. The cuda13.2 builder image supplies the toolkit; we
+      # set gpu-arch-type=cpu so test-infra's linux_job_v2.yml skips the
+      # `setup-nvidia` step that mounts `--gpus all` and triggers
+      # nvidia-container-cli's host-driver-vs-CUDA version check. Passing an
+      # already-tagged docker-image makes test-infra use it verbatim instead
+      # of auto-suffixing it from gpu-arch-type/version.
+      runner: linux.c7i.2xlarge
+      docker-image: 'pytorch/manylinux2_28-builder:cuda13.2'
+      torch-spec: 'torch==2.12.0 --extra-index-url https://download.pytorch.org/whl/cu132'
+      gpu-arch-type: cpu
+      gpu-arch-version: ''
+      arch-label: cuda13.2
       version: ${{ github.event.inputs.version }}
       platform: x86_64
 
@@ -33,10 +48,10 @@ jobs:
     with:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: linux.arm64.2xlarge
-      docker-image: 'pytorch/manylinuxaarch64-builder:cuda12.8'
-      torch-spec: 'torch==2.12.0 --extra-index-url https://download.pytorch.org/whl/cu128'
+      docker-image: 'pytorch/manylinuxaarch64-builder:cuda13.2'
+      torch-spec: 'torch==2.12.0 --extra-index-url https://download.pytorch.org/whl/cu132'
       gpu-arch-type: cuda
-      gpu-arch-version: '12.8'
+      gpu-arch-version: '13.2'
       version: ${{ github.event.inputs.version }}
       platform: aarch64
 
@@ -104,7 +119,7 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version }}"
           PRERELEASE="${{ github.event.inputs.is_prerelease }}"
-          TAGS="ghcr.io/${{ github.repository }}:${VERSION}-cuda12.6"
+          TAGS="ghcr.io/${{ github.repository }}:${VERSION}-cuda13.2"
           if [[ "$PRERELEASE" == "false" ]]; then
             TAGS="$TAGS,ghcr.io/${{ github.repository }}:latest"
           fi
@@ -118,7 +133,7 @@ jobs:
           push: true # Push the image to the registry
           tags: ${{ steps.determine-tags.outputs.tags }}
           build-args: |
-            PYTORCH_TAG=2.12.0-cuda12.6-cudnn9-runtime
+            PYTORCH_TAG=2.12.0-cuda13.2-cudnn9-runtime
             MONARCH_VERSION=${{ github.event.inputs.version }}
 
   create-docs-branch:
