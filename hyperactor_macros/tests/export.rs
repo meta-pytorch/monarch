@@ -149,7 +149,7 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
-        let actor_handle = proc.spawn_with_label("test", TestActor::new(tx.bind()));
+        let actor_handle = proc.spawn(TestActor::new(tx.bind()));
         //  This will call binds
         actor_handle.bind::<TestActor>();
         // Verify that the ports can be gotten successfully.
@@ -236,7 +236,7 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
-        let actor_handle = proc.spawn_with_label("test", TestActor::new(tx.bind()));
+        let actor_handle = proc.spawn(TestActor::new(tx.bind()));
 
         actor_handle.post(&client, 123u64);
         actor_handle.post(&client, TestMessage("foo".to_string()));
@@ -273,7 +273,7 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
-        let actor_handle = proc.spawn_with_label("generic", GenericActor::<u64>::new(tx.bind()));
+        let actor_handle = proc.spawn(GenericActor::<u64>::new(tx.bind()));
 
         actor_handle.bind::<GenericActor<u64>>();
 
