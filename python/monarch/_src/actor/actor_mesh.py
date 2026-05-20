@@ -1400,10 +1400,10 @@ class _Actor:
             raise AssertionError(error_message)
 
         supervise = getattr(instance, "__supervise__", None)
-        if supervise is None:
-            # If there is no __supervise__ method, the default would be to return
-            # None. That means the supervision error is not handled and will be
-            # propagated to the next owner.
+        if not _is_user_override(supervise):
+            # If there is no __supervise__ override, the default is to return
+            # None. The supervision error is not handled here and will propagate
+            # to the next owner.
             return None
 
         if inspect.iscoroutinefunction(supervise):
@@ -1422,9 +1422,9 @@ class _Actor:
             # was never constructed
             return None
 
-        # Forward a call to supervise on this actor to the user-provided instance.
+        # Forward a call to cleanup on this actor to the user-provided instance.
         cleanup = getattr(instance, "__cleanup__", None)
-        if cleanup is None:
+        if not _is_user_override(cleanup):
             return None
 
         if isinstance(exc, str):
@@ -1488,6 +1488,29 @@ class _Actor:
         return f"_Actor(instance={self.instance!r})"
 
 
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _doc_stub(fn: F) -> F:
+    """Mark a method on ``Actor`` as a documentation-only stub.
+
+    The base class declares ``__cleanup__`` and ``__supervise__`` so that
+    ``help()`` and IDEs can surface the docstring, but subclasses that do
+    not override them must be treated as if they provided no implementation.
+    Runtime code that detects user overrides (the sync/async endpoint check
+    in :class:`ActorMesh` and the dispatch in :class:`_Actor`) consults this
+    marker and ignores stub-marked methods.
+    """
+    # pyre-ignore[16]: function attributes are dynamic
+    fn._monarch_doc_stub = True
+    return fn
+
+
+def _is_user_override(method: Any) -> bool:
+    """Return True if ``method`` is a real user override, not a doc stub."""
+    return method is not None and not getattr(method, "_monarch_doc_stub", False)
+
+
 class Actor(MeshTrait):
     @functools.cached_property
     def logger(cls) -> logging.Logger:
@@ -1529,8 +1552,9 @@ class Actor(MeshTrait):
         # Return False to indicate that the undeliverable message was not handled.
         return False
 
+    @_doc_stub
     def __supervise__(self, failure: MeshFailure) -> bool:
-        """Called when the actor is stopped due to a failure in a resource that it
+        """Called when the actor observes a failure in a resource that it
         owns. A resource is a host, proc, actor, or meshes of these.
         If a truthy value is returned, the failure is considered handled and will not
         propagate any further. If a falsey value is returned, the failure will be
@@ -1545,17 +1569,45 @@ class Actor(MeshTrait):
         the exception is treated as a new supervision event chained to the
         one being handled, matching the ``__exit__`` convention of context
         managers.
-        """
-        return False
 
-    # This method can be sync or async, and thus there is no way to have a common
-    # super implementation.
-    # def __cleanup__(self, exc: str | Exception | None) -> None:
-    #     """Runs any cleanup of resources that should happen when the Actor is stopped or fails.
-    #     This is called even if there is an error.
-    #     It is *not* called in cases of fatal errors, which include (but are not limited to):
-    #     OOMs, panics, signals like SIGSEGV, etc."""
-    #     pass
+        This method is documentation-only on ``Actor``; subclasses provide the
+        real implementation.
+        """
+        ...
+
+    @_doc_stub
+    def __cleanup__(self, exc: Exception | None) -> None:
+        """Called when the actor stops, normally (via ``ActorMesh.stop()``) or
+        because of an error. The same ``__cleanup__`` runs in both cases;
+        ``exc`` is ``None`` on a normal stop and carries the exception on an
+        error stop. It is *not* called on fatal failures such as OOMs, panics,
+        or signals like ``SIGSEGV``. If it exceeds ``HYPERACTOR_CLEANUP_TIMEOUT``,
+        it is cancelled and the actor is placed in an error state.
+
+        By the time this runs, every mesh this actor owns has already been
+        stopped recursively, and each owned actor's ``__cleanup__`` has already
+        run. Owned actor meshes and proc meshes are no longer usable from this
+        method. For shutdown work that needs an owned mesh, expose a dedicated
+        endpoint and call it before ``stop()``.
+
+        Use ``__cleanup__`` to release resources the actor owns directly: open
+        files, network connections, background threads, asyncio tasks, and the
+        like -- not other actors or procs.
+
+        Overrides may be declared with either ``def`` or ``async def``; the
+        async-ness must match the actor's endpoints. Actors with sync endpoints
+        require a sync ``__cleanup__``; actors with async endpoints require an
+        async ``__cleanup__``. An ``async def`` override is awaited on the
+        actor's asyncio event loop -- the same loop that runs endpoint
+        coroutines -- so it can ``await`` other endpoints or I/O. A sync
+        override runs under ``fake_sync_state`` and cannot call
+        ``asyncio.get_running_loop``. If the override raises, the exception
+        becomes a supervision event and will notify the owner.
+
+        This method is documentation-only on ``Actor``; subclasses provide the
+        real implementation.
+        """
+        ...
 
 
 class ActorMesh(MeshTrait, Generic[T]):
@@ -1619,7 +1671,7 @@ class ActorMesh(MeshTrait, Generic[T]):
                     async_endpoints.append(attr_name)
                 else:
                     sync_endpoints.append(attr_name)
-            if attr_name == "__cleanup__" and attr_value is not None:
+            if attr_name == "__cleanup__" and _is_user_override(attr_value):
                 async_cleanup = inspect.iscoroutinefunction(attr_value)
 
         if sync_endpoints and async_endpoints:
@@ -1634,12 +1686,12 @@ class ActorMesh(MeshTrait, Generic[T]):
                 "Synchronous endpoints cannot be mixed with async endpoints because they can cause the asyncio loop to deadlock if they wait."
                 f"sync: {sync_endpoints}"
             )
-        # Check for False explicitly because None means there is no cleanup.
+        # Check for False explicitly because None means there is no override.
         if async_endpoints and async_cleanup is False:
             raise ValueError(
                 f"{self._class} has async endpoints, but a synchronous __cleanup__. Make sure __cleanup__ is also async."
                 "Synchronous endpoints cannot be mixed with async endpoints because they can cause the asyncio loop to deadlock if they wait."
-                f"sync: {sync_endpoints}"
+                f"async: {async_endpoints}"
             )
 
     def __getattr__(self, attr: str) -> NotAnEndpoint:
