@@ -111,6 +111,13 @@ impl Gateway {
         GLOBAL_GATEWAY.get_or_init(Self::new)
     }
 
+    /// Return the gateway for the current execution context.
+    ///
+    /// This is the gateway attached to [`Proc::current()`].
+    pub fn current() -> Self {
+        Proc::current().gateway()
+    }
+
     pub(crate) fn configured(default_location: Location, forwarder: BoxedMailboxSender) -> Self {
         Self {
             inner: Arc::new(GatewayState {
