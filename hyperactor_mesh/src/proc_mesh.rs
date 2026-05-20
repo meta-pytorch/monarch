@@ -1188,10 +1188,9 @@ mod tests {
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(cx, "test", &()).await.unwrap();
 
-        let (instance, _) = cx
+        let instance = cx
             .proc()
-            .client(&format!("random_casts_{}", Uuid::now_v7()))
-            .unwrap();
+            .client(&format!("random_casts_{}", Uuid::now_v7()));
         let n = 1;
         for _ in 0..n {
             actor_mesh.cast(&instance, ()).unwrap();

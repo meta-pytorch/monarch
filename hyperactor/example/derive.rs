@@ -8,7 +8,6 @@
 
 use std::collections::HashSet;
 use std::fmt::Debug;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor as reference;
@@ -17,7 +16,6 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
-use hyperactor::proc::Proc;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -130,14 +128,11 @@ hyperactor::behavior!(ShoppingApi, ShoppingList, ClearList, GetItemCount,);
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let mut proc = Proc::isolated();
-
-    // Spawn our actor, and get a handle for rank 0.
+    // Spawn our actor on the current proc.
     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =
-        proc.spawn("shopping", ShoppingListActor::default())?;
+        hyperactor::spawn("shopping", ShoppingListActor::default())?;
     let shopping_api: reference::ActorRef<ShoppingApi> = shopping_list_actor.bind();
-    // We join the system, so that we can send messages to actors.
-    let (client, _) = proc.client("client").unwrap();
+    let client = hyperactor::client("client");
 
     // todo: consider making this a macro to remove the magic names
 
@@ -200,8 +195,7 @@ async fn main() -> Result<(), anyhow::Error> {
         shopping_list_actor.list(&client).await?
     );
 
-    let _ = proc
-        .destroy_and_wait(Duration::from_secs(1), "example cleanup")
-        .await?;
+    shopping_list_actor.drain_and_stop("example cleanup")?;
+    let _ = shopping_list_actor.await;
     Ok(())
 }
