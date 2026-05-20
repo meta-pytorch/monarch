@@ -3326,7 +3326,7 @@ mod tests {
         // Only a mailbox is needed for reply ports — no actor message
         // loop required.
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // -- 4. Resolve "root" --
         let root_resp = admin_ref
@@ -3491,7 +3491,7 @@ mod tests {
 
         // Create a bare client instance for sending messages.
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Spawn a user proc via CreateOrUpdate<ProcSpec>.
         let user_proc_name = ResourceId::instance(Label::new("user-proc").unwrap());
@@ -3651,7 +3651,7 @@ mod tests {
         // Client for sending messages.
         let client_proc =
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Resolve "root" — should contain only the host.
         let root_resp = admin_ref
@@ -3804,7 +3804,7 @@ mod tests {
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Walk the tree breadth-first, checking the invariant at every node.
         // Each entry is (reference_string, expected_parent_identity).
@@ -3910,7 +3910,7 @@ mod tests {
 
         // -- 3. Create a bare client instance for sending messages --
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // -- 4. Resolve the host to get its children --
         let host_ref_str =
@@ -4126,7 +4126,7 @@ mod tests {
         // 2. Create a separate caller proc with an actor instance.
         let caller_proc = Proc::direct(ChannelTransport::Unix.any(), "caller".to_string()).unwrap();
         let _supervision = ProcSupervisionCoordinator::set(&caller_proc).await.unwrap();
-        let (caller_cx, _caller_handle) = caller_proc.client("caller").unwrap();
+        let caller_cx = caller_proc.client("caller");
 
         // 3. Call the real public entrypoint.
         let admin_ref = crate::host_mesh::spawn_admin(
@@ -4241,7 +4241,7 @@ mod tests {
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Resolve the user proc via MeshAdminAgent. HostMeshAgent
         // returns Error for QueryChild → fallback to proc_agent[0]

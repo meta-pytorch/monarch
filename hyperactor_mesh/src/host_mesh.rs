@@ -862,40 +862,29 @@ impl Drop for HostMeshShutdownGuard {
                                  relying on PDEATHSIG/manager Drop"
                             );
                         }
-                        Ok(proc) => match proc.client("drop") {
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "failed to create ephemeral instance for drop-cleanup; \
-                                     relying on PDEATHSIG/manager Drop"
-                                );
-                            }
-                            Ok((instance, _guard)) => {
-                                let mut attempted = 0usize;
-                                let mut ok = 0usize;
-                                let mut err = 0usize;
+                        Ok(proc) => {
+                            let client = proc.client("drop");
+                            let mut attempted = 0usize;
+                            let mut ok = 0usize;
+                            let mut err = 0usize;
 
-                                for host in hosts {
-                                    attempted += 1;
-                                    tracing::debug!(host = %host, "drop-cleanup: shutdown start");
-                                    match host.shutdown(&instance).await {
-                                        Ok(()) => {
-                                            ok += 1;
-                                            tracing::debug!(host = %host, "drop-cleanup: shutdown ok");
-                                        }
-                                        Err(e) => {
-                                            err += 1;
-                                            tracing::warn!(host = %host, error = %e, "drop-cleanup: shutdown failed");
-                                        }
+                            for host in hosts {
+                                attempted += 1;
+                                tracing::debug!(host = %host, "drop-cleanup: shutdown start");
+                                match host.shutdown(&client).await {
+                                    Ok(()) => {
+                                        ok += 1;
+                                        tracing::debug!(host = %host, "drop-cleanup: shutdown ok");
+                                    }
+                                    Err(e) => {
+                                        err += 1;
+                                        tracing::warn!(host = %host, error = %e, "drop-cleanup: shutdown failed");
                                     }
                                 }
-
-                                tracing::info!(
-                                    attempted, ok, err,
-                                    "hostmesh drop-cleanup summary"
-                                );
                             }
-                        },
+
+                            tracing::info!(attempted, ok, err, "hostmesh drop-cleanup summary");
+                        }
                     }
                 }
                 .instrument(span),
