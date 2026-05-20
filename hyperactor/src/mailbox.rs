@@ -4004,7 +4004,7 @@ mod tests {
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let client = proc.client("client");
 
-        let foo = proc.spawn_with_label("foo", Foo);
+        let foo = proc.spawn(Foo);
         let return_handle = foo.port::<Undeliverable<MessageEnvelope>>();
         let message = MessageEnvelope::new(
             foo.actor_addr().clone(),

@@ -1602,14 +1602,11 @@ mod tests {
             std::env::set_var(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         }
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> =
-            proc.spawn_with_label("log_client", log_client_actor).bind();
+        let log_client: ActorRef<LogClientActor> = proc.spawn(log_client_actor).bind();
         let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
             .await
             .unwrap();
-        let log_forwarder: ActorRef<LogForwardActor> = proc
-            .spawn_with_label("log_forwarder", log_forwarder_actor)
-            .bind();
+        let log_forwarder: ActorRef<LogForwardActor> = proc.spawn(log_forwarder_actor).bind();
 
         // Write some logs that will not be streamed
         let tx: ChannelTx<LogMessage> = channel::dial(log_channel).unwrap();

@@ -1001,7 +1001,7 @@ mod tests {
             let instance = proc.client("client");
 
             let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
-            let rdma_handle = proc.spawn_with_label("rdma_manager", rdma_actor);
+            let rdma_handle = proc.spawn(rdma_actor);
 
             let tcp_ref = rdma_handle.get_tcp_actor_ref(&instance).await?;
             let tcp_backend = TcpBackend(
@@ -1591,7 +1591,7 @@ mod tests {
             let instance = proc.client("client");
 
             let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
-            let rdma_handle = proc.spawn_with_label("rdma_manager", rdma_actor);
+            let rdma_handle = proc.spawn(rdma_actor);
 
             let tcp_ref = rdma_handle.get_tcp_actor_ref(&instance).await?;
             let tcp_backend = TcpBackend(

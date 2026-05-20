@@ -1687,12 +1687,9 @@ mod tests {
 
         // Spawn a blocking actor with a shared gate.
         let gate = Arc::new(tokio::sync::Notify::new());
-        let blocker = proc.spawn_with_label(
-            "blocker",
-            BlockActor {
-                gate: Some(Arc::clone(&gate)),
-            },
-        );
+        let blocker = proc.spawn(BlockActor {
+            gate: Some(Arc::clone(&gate)),
+        });
 
         // Block the actor and queue additional work behind it.
         blocker.block(&client).await.unwrap();

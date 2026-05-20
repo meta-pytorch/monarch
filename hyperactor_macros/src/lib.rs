@@ -617,7 +617,7 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// async fn main() -> Result<(), anyhow::Error> {
 ///     // Spawn our actor on the current proc.
 ///     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =
-///         hyperactor::spawn_with_label("shopping", ShoppingListActor::default())?;
+///         hyperactor::spawn(ShoppingListActor::default());
 ///     let client = hyperactor::client("client");
 ///
 ///     // todo: consider making this a macro to remove the magic names

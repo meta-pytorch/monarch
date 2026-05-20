@@ -151,7 +151,7 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
-        let handle = proc.spawn_with_label("echo", EchoActor { tx: tx.bind() });
+        let handle = proc.spawn(EchoActor { tx: tx.bind() });
 
         Endpoint::post(&handle, &client, 123u64);
 

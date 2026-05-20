@@ -99,23 +99,14 @@ impl Client {
         self.instance.bind()
     }
 
-    /// Create a new direct child instance.
-    pub fn child(&self) -> anyhow::Result<(Instance<()>, ActorHandle<()>)> {
-        self.instance.child()
+    /// Create a new direct child client.
+    pub fn child(&self) -> Client {
+        self.instance.child_client()
     }
 
-    /// Spawn an actor as this client's child.
+    /// Spawn a child actor with a fresh uid labeled from the actor type.
     pub fn spawn<A: Actor>(&self, actor: A) -> anyhow::Result<ActorHandle<A>> {
         self.instance.spawn(actor)
-    }
-
-    /// Spawn a named actor as this client's child.
-    pub fn spawn_with_name<A: Actor>(
-        &self,
-        name: &str,
-        actor: A,
-    ) -> anyhow::Result<ActorHandle<A>> {
-        self.instance.spawn_with_name(name, actor)
     }
 
     /// Spawn a child actor with a fresh uid carrying a display label.
@@ -125,6 +116,11 @@ impl Client {
         actor: A,
     ) -> anyhow::Result<ActorHandle<A>> {
         self.instance.spawn_with_label(label, actor)
+    }
+
+    /// Spawn a child actor using an explicit uid.
+    pub fn spawn_with_uid<A: Actor>(&self, uid: Uid, actor: A) -> anyhow::Result<ActorHandle<A>> {
+        self.instance.spawn_with_uid(uid, actor)
     }
 
     /// Spawn a registered actor as this client's child.
