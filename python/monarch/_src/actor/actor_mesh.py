@@ -108,6 +108,7 @@ if TYPE_CHECKING:
     def _assert_implements_endpoint(x: Endpoint[..., Any]) -> None: ...
 
     def _check_actor_endpoint_satisfies_protocol(ep: ActorEndpoint[..., Any]) -> None:
+        # pyrefly: ignore [bad-argument-type]
         _assert_implements_endpoint(ep)
 
 
@@ -147,7 +148,6 @@ class Instance(abc.ABC):
         # pyre-ignore[21]: mesh_controller may not be visible to pyre in this target
         from monarch.mesh_controller import spawn_tensor_engine as real_spawn
 
-        # pyre-ignore[16]: spawn_tensor_engine is defined in mesh_controller
         return real_spawn(proc_mesh)
 
     @abstractproperty
@@ -315,7 +315,6 @@ class Context:
     def _from_instance(instance: Instance) -> "Context": ...
 
 
-# pyre-fixme[9]: Initialization to None confuses the type bound.
 _context: contextvars.ContextVar[Optional[Context]] = contextvars.ContextVar(
     "monarch.actor_mesh._context", default=None
 )
@@ -370,7 +369,6 @@ def _init_context_log_handler() -> None:
         if af not in hdlr.filters:
             hdlr.addFilter(af)
 
-    # pyre-ignore[8]: Intentionally monkey-patching Logger.addHandler
     logging.Logger.addHandler = _patched_addHandler
 
 
@@ -621,6 +619,7 @@ def _check_endpoint_arguments(
     so we bind with one None placeholder for self.
     """
     match method_name:
+        # pyrefly: ignore [invalid-pattern]
         case MethodSpecifier.Init():
             # For Init, args[0] is ActorInitArgs which wraps the real constructor args
             if len(args) != 1 or not isinstance(args[0], ActorInitArgs):
@@ -628,6 +627,7 @@ def _check_endpoint_arguments(
             init_args = args[0]
             # Validate the actual constructor arguments against the signature
             signature.bind(None, *init_args.args, **kwargs)
+        # pyrefly: ignore [invalid-pattern]
         case MethodSpecifier.ExplicitPort():
             signature.bind(None, None, *args, **kwargs)
         case _:
@@ -657,12 +657,14 @@ def _create_endpoint_message(
     )
     objects = pickling_state.tensor_engine_references()
     if not objects:
+        # pyrefly: ignore [bad-argument-count]
         message_kind = PythonMessageKind.CallMethod(method_name, port_ref)
     else:
         message_kind = create_actor_message_kind(
             method_name, proc_mesh, objects, port_ref
         )
 
+    # pyrefly: ignore [bad-argument-type]
     return PendingMessage(message_kind, pickling_state)
 
 
@@ -708,6 +710,7 @@ def as_endpoint(
         else MethodSpecifier.ReturnsResponse
     )
     return not_an_endpoint._ref._endpoint(
+        # pyrefly: ignore [bad-argument-count, bad-argument-type]
         kind(not_an_endpoint._name),
         getattr(not_an_endpoint._ref, not_an_endpoint._name),
         propagate,
@@ -863,7 +866,6 @@ class ValueMesh(MeshTrait, Generic[R]):
             from monarch.common.device_mesh import no_mesh
         except ImportError:
             return self.get(local_idx)
-        # pyre-ignore[16]: no_mesh type resolved at runtime
         with no_mesh.activate():
             return self.get(local_idx)
 
@@ -876,6 +878,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         """
         extent = self._shape.extent
         for i, _global_rank in enumerate(self._shape.ranks()):
+            # pyrefly: ignore [invalid-yield]
             yield Point(i, extent), self.get(i)
 
     def values(self) -> Iterable[R]:
@@ -899,6 +902,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         return self._shape.ndslice
 
     @property
+    # pyrefly: ignore [bad-override]
     def _labels(self) -> Iterable[str]:
         return self._shape.labels
 
@@ -1072,16 +1076,21 @@ class PortReceiver(Generic[R]):
                 self._tag_supervision_error(e)
                 raise e
             if i == 0:
+                # pyrefly: ignore [bad-argument-type]
                 self._tag_supervision_error(result)
+                # pyrefly: ignore [bad-raise]
                 raise result
+        # pyrefly: ignore [bad-argument-type]
         return self._process(result)
 
     def _process(self, msg: PythonMessage) -> R:
         # TODO: Try to do something more structured than a cast here
         payload = cast(R, PicklingState(msg.message).unpickle())
         match msg.kind:
+            # pyrefly: ignore [invalid-pattern]
             case PythonMessageKind.Result():
                 return payload
+            # pyrefly: ignore [invalid-pattern]
             case PythonMessageKind.Exception():
                 e = cast(Exception, payload)
                 self._tag_supervision_error(e)
@@ -1121,6 +1130,7 @@ class RankedPortReceiver(PortReceiver[Tuple[int, R]]):
             raise ValueError(
                 f"RankedPort receiver got a message without a rank {msg}",
             )
+        # pyrefly: ignore [bad-return]
         return rank, super()._process(msg)
 
 
@@ -1206,6 +1216,7 @@ class _Actor:
             args, kwargs = PicklingState(message, local_state).unpickle()
 
             match method:
+                # pyrefly: ignore [invalid-pattern]
                 case MethodSpecifier.Init():
                     ins = ctx.actor_instance
                     (args,) = args
@@ -1246,8 +1257,10 @@ class _Actor:
                         raise
                     response_port.send(None)
                     return
+                # pyrefly: ignore [invalid-pattern]
                 case MethodSpecifier.ReturnsResponse():
                     pass
+                # pyrefly: ignore [invalid-pattern]
                 case MethodSpecifier.ExplicitPort():
                     args = (response_port, *args)
                     response_port = DroppingPort()
@@ -1448,6 +1461,7 @@ class _Actor:
                     e, allow_pending_pickles=False, allow_tensor_engine_references=False
                 )
                 error_msg = PythonMessage(
+                    # pyrefly: ignore [bad-argument-type, unexpected-keyword]
                     PythonMessageKind.Exception(rank=None),
                     state.buffer(),
                 )
@@ -1595,6 +1609,7 @@ class ActorMesh(MeshTrait, Generic[T]):
                     self,
                     attr_name,
                     self._endpoint(
+                        # pyrefly: ignore [bad-argument-count, bad-argument-type]
                         kind(attr_name),
                         attr_value._method,
                         attr_value._propagator,
@@ -1664,6 +1679,7 @@ class ActorMesh(MeshTrait, Generic[T]):
         return self._shape.ndslice
 
     @property
+    # pyrefly: ignore [bad-override]
     def _labels(self) -> Iterable[str]:
         return self._shape.labels
 
@@ -1749,7 +1765,7 @@ class RootClientActor(Actor):
         from monarch.actor import unhandled_fault_hook  # pyre-ignore
 
         try:
-            unhandled_fault_hook(failure)  # pyre-ignore
+            unhandled_fault_hook(failure)
         except BaseException as e:  # noqa: B036 - catch SystemExit from sys.exit; re-raised wrapped
             pid = os.getpid()
             hostname = socket.gethostname()
@@ -1762,7 +1778,7 @@ class RootClientActor(Actor):
             sys.stderr.write(message)
             sys.stderr.flush()
 
-            from monarch._rust_bindings.monarch_hyperactor.telemetry import (  # pyre-ignore
+            from monarch._rust_bindings.monarch_hyperactor.telemetry import (
                 instant_event,
             )
 

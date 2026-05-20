@@ -523,6 +523,7 @@ async def _do_test(func, dtype, data_getter, controller_device, receiver_device)
         controller_device=controller_device,
         receiver_device=receiver_device,
         data_getter=partial(data_getter, device=controller_device, dtype=dtype),
+        # pyrefly: ignore [bad-argument-type]
         receiver_actor=None,
     )
     error = await func(controller)

@@ -140,13 +140,17 @@ class OpaqueModule:
 
     def __init__(self, *args, **kwargs):
         self._object = OpaqueObject(*args, **kwargs)
+        # pyrefly: ignore [bad-assignment]
         self._parameters: List[torch.Tensor] = None
 
     def parameters(self):
         if self._parameters is None:
             tensor_group_pattern = call_on_shard_and_fetch(
-                remote(_get_parameters_shape), self._object
+                # pyrefly: ignore [bad-argument-type]
+                remote(_get_parameters_shape),
+                self._object,
             ).result()
+            # pyrefly: ignore [bad-assignment]
             self._parameters = [
                 p.requires_grad_(True)
                 for p in remote(
@@ -224,10 +228,12 @@ class OpaqueModule:
                         f.empty() if rg else None
                         for f, rg in zip(input_factories, requires_grad)
                     ),
+                    # pyrefly: ignore [bad-argument-type]
                 )(backward_ctx, all_grad_outputs)
                 return all_grad_inputs
 
         # apply unwraps the gradient tensors and inserts our custom block.
         flat_outputs = F.apply(*all_inputs)
+        # pyrefly: ignore [not-callable]
         result = unflatten_outputs(flat_outputs)
         return result

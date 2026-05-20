@@ -167,3 +167,23 @@ markers = [
 asyncio_mode = "auto"
 # Default timeout of 5 minutes
 timeout = 300
+
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+
+# Formatting code
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint.isort]
+case-sensitive = false
+combine-as-imports = true
+detect-same-package = false
+order-by-type = false
+
+[tool.ufmt]
+formatter = "ruff-api"
+sorter = "ruff-api"

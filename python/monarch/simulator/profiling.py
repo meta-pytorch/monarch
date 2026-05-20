@@ -382,6 +382,7 @@ class RuntimeProfiler:
                 return v.factory
             return v
 
+        # pyrefly: ignore [bad-argument-type]
         key_filters.append(dtensor_ref_filter)
         tensors, shape_key = hashable_tensor_flatten((cmd, ranks), {})
         inputs_group = TensorGroup([t._fake for t in tensors])  # pyre-ignore[16]
@@ -434,6 +435,7 @@ class FakeRuntimeProfiler:
                 return v.factory
             return v
 
+        # pyrefly: ignore [bad-argument-type]
         key_filters.append(dtensor_ref_filter)
         tensors, shape_key = hashable_tensor_flatten((cmd, ranks), {})
         inputs_group = TensorGroup([t._fake for t in tensors])  # pyre-ignore[16]
@@ -484,6 +486,7 @@ class FakeRuntimeProfiler:
         result = [((ret, 0),) for _ in ranks]
 
         self.cached[key] = result
+        # pyrefly: ignore [bad-return]
         return result
 
 
