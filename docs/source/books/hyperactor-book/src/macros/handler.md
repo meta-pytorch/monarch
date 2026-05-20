@@ -144,7 +144,7 @@ The `cx` parameter provides the actor context required to send messages and open
 
 #### Example Usage
 ```rust
-let actor = hyperactor::spawn("shopping", ShoppingListActor::default())?;
+let actor = hyperactor::spawn_with_label("shopping", ShoppingListActor::default())?;
 let client = hyperactor::client("client");
 
 // Fire-and-forget

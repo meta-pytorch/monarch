@@ -1091,7 +1091,7 @@ impl Handler<DrainHost> for HostAgent {
 
         let done_port = cx.port::<DrainComplete>();
 
-        cx.spawn_with_name(
+        cx.spawn_with_label(
             "drain_worker",
             DrainWorker {
                 host: Some(host),

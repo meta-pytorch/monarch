@@ -118,6 +118,15 @@ impl Client {
         self.instance.spawn_with_name(name, actor)
     }
 
+    /// Spawn a child actor with a fresh uid carrying a display label.
+    pub fn spawn_with_label<A: Actor>(
+        &self,
+        label: &str,
+        actor: A,
+    ) -> anyhow::Result<ActorHandle<A>> {
+        self.instance.spawn_with_label(label, actor)
+    }
+
     /// Spawn a registered actor as this client's child.
     pub async fn gspawn(&self, actor_type: &str, params: Data) -> anyhow::Result<AnyActorHandle> {
         self.instance.gspawn(actor_type, params).await

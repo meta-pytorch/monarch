@@ -601,7 +601,9 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
-        let supervisor = proc.spawn("silent_supervisor", SilentSupervisor).unwrap();
+        let supervisor = proc
+            .spawn_with_label("silent_supervisor", SilentSupervisor)
+            .unwrap();
         let uid = Uid::anonymous();
         let link = KeepaliveWorkerParams::new(
             supervisor.port::<Keepalive>().bind(),

@@ -148,6 +148,16 @@ pub trait Actor: Sized + Send + 'static {
         cx.instance().spawn_with_name(name, self)
     }
 
+    /// Spawn a child actor with a fresh uid carrying a display label.
+    /// Same supervision semantics as `spawn`.
+    fn spawn_with_label(
+        self,
+        cx: &impl context::Actor,
+        label: &str,
+    ) -> anyhow::Result<ActorHandle<Self>> {
+        cx.instance().spawn_with_label(label, self)
+    }
+
     /// Spawns this actor in a detached state, handling its messages
     /// in a background task. The returned handle is used to control
     /// the actor's lifecycle and to interact with it.
@@ -155,7 +165,7 @@ pub trait Actor: Sized + Send + 'static {
     /// Actors spawned through `spawn_detached` are not attached to a supervision
     /// hierarchy, and not managed by a [`Proc`].
     fn spawn_detached(self) -> Result<ActorHandle<Self>, anyhow::Error> {
-        Proc::isolated().spawn("anon", self)
+        Proc::isolated().spawn_with_label("anon", self)
     }
 
     /// This method is used by the runtime to spawn the actor server. It can be
@@ -1282,7 +1292,7 @@ mod tests {
         // Just test that we can round-trip the handle through a downcast.
 
         let proc = Proc::isolated();
-        let handle = proc.spawn("nothing", NothingActor).unwrap();
+        let handle = proc.spawn_with_label("nothing", NothingActor).unwrap();
         let cell = handle.cell();
 
         // Invalid actor doesn't succeed.
@@ -1343,7 +1353,9 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
 
-        let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let actor_handle = proc
+            .spawn_with_label("get_seq", GetSeqActor(tx.bind()))
+            .unwrap();
 
         // Verify that unbound handle can send message.
         actor_handle.post(&client, "unbound".to_string());
@@ -1400,7 +1412,9 @@ mod tests {
         // Channel for receiving seq info from non-handler port
         let (non_handler_tx, mut non_handler_rx) = mpsc::unbounded_channel::<Option<SeqInfo>>();
 
-        let actor_handle = proc.spawn("get_seq", GetSeqActor(actor_tx.bind())).unwrap();
+        let actor_handle = proc
+            .spawn_with_label("get_seq", GetSeqActor(actor_tx.bind()))
+            .unwrap();
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         // Create a non-handler port using open_enqueue_port
@@ -1480,7 +1494,9 @@ mod tests {
         // Port for receiving seq info from actor handler
         let (tx, mut rx) = client1.open_port();
 
-        let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let actor_handle = proc
+            .spawn_with_label("get_seq", GetSeqActor(tx.bind()))
+            .unwrap();
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         // Each client should have a different session_id
@@ -1580,7 +1596,9 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
 
-        let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let actor_handle = proc
+            .spawn_with_label("get_seq", GetSeqActor(tx.bind()))
+            .unwrap();
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         let (callback_tx, mut callback_rx) = client.open_port();
@@ -1666,7 +1684,9 @@ mod tests {
         let client = local_proc.client("local");
         let (tx, mut rx) = client.open_port();
 
-        let handle = local_proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+        let handle = local_proc
+            .spawn_with_label("get_seq", GetSeqActor(tx.bind()))
+            .unwrap();
         let actor_ref: ActorRef<GetSeqActor> = handle.bind();
 
         let remote_proc = Proc::configured(
@@ -1991,7 +2011,7 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let handle = proc
-            .spawn("custom_introspect", CustomIntrospectActor)
+            .spawn_with_label("custom_introspect", CustomIntrospectActor)
             .unwrap();
 
         handle
@@ -2345,7 +2365,7 @@ mod tests {
 
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let handle = proc.spawn("wedged", WedgedActor).unwrap();
+        let handle = proc.spawn_with_label("wedged", WedgedActor).unwrap();
 
         // Wait for idle before sending the wedging message.
         handle

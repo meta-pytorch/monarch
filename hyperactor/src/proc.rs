@@ -4604,7 +4604,7 @@ mod tests {
     async fn test_spawn_actor() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let handle = proc.spawn("test", TestActor).unwrap();
+        let handle = proc.spawn_with_label("test", TestActor).unwrap();
 
         // Check on the join handle.
         assert!(logs_contain(
@@ -5485,7 +5485,7 @@ mod tests {
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let client = proc.client("client");
-        let actor_handle = proc.spawn("test", TestActor).unwrap();
+        let actor_handle = proc.spawn_with_label("test", TestActor).unwrap();
         actor_handle
             .panic(&client, "some random failure".to_string())
             .await
@@ -5683,7 +5683,7 @@ mod tests {
             // Intentionally not setting a proc supervison coordinator. This
             // should cause the process to terminate.
             // ProcSupervisionCoordinator::set(&proc).await.unwrap();
-            let root = proc.spawn("root", TestActor).unwrap();
+            let root = proc.spawn_with_label("root", TestActor).unwrap();
             let client = proc.client("client");
             root.fail(&client, anyhow::anyhow!("some random failure"))
                 .await
@@ -5818,7 +5818,7 @@ mod tests {
     async fn test_mailbox_closed_with_owner_stopped_reason() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let actor_handle = proc.spawn("test", TestActor).unwrap();
+        let actor_handle = proc.spawn_with_label("test", TestActor).unwrap();
 
         // Clone the handle before awaiting since await consumes the handle
         let handle_for_send = actor_handle.clone();
@@ -5852,7 +5852,7 @@ mod tests {
         // be actor failure(s) in this test which trigger supervision.
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let actor_handle = proc.spawn("test", TestActor).unwrap();
+        let actor_handle = proc.spawn_with_label("test", TestActor).unwrap();
 
         // Clone the handle before awaiting since await consumes the handle
         let handle_for_send = actor_handle.clone();
@@ -6423,7 +6423,7 @@ mod tests {
     async fn test_queue_depth_increment_decrement() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let handle = proc.spawn("qd_test", TestActor).unwrap();
+        let handle = proc.spawn_with_label("qd_test", TestActor).unwrap();
         let actor_ref: crate::ActorRef<TestActor> = handle.bind();
         let actor_id = actor_ref.actor_addr().clone();
 
@@ -6480,8 +6480,8 @@ mod tests {
         let client = proc.client("client");
 
         // Spawn two actors.
-        let h1 = proc.spawn("a1", TestActor).unwrap();
-        let h2 = proc.spawn("a2", TestActor).unwrap();
+        let h1 = proc.spawn_with_label("a1", TestActor).unwrap();
+        let h2 = proc.spawn_with_label("a2", TestActor).unwrap();
 
         // Block both actors with a Wait message.
         let (reply1, rx1) = oneshot::channel();
@@ -6568,7 +6568,7 @@ mod tests {
     async fn test_retained_queue_stats_burst_then_drain() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let h = proc.spawn("ret_test", TestActor).unwrap();
+        let h = proc.spawn_with_label("ret_test", TestActor).unwrap();
 
         // Block the actor.
         let (ready_tx, ready_rx) = oneshot::channel();
