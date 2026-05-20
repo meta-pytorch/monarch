@@ -469,6 +469,9 @@ struct ProcState {
     /// All actor instances in this proc.
     instances: DashMap<ActorId, WeakInstanceCell>,
 
+    /// Root actor ids in this proc, tracked independently from uid shape.
+    root_actors: DashSet<ActorId>,
+
     /// Proc-level queue-pressure accounting (PD-6 through PD-9).
     /// Runtime-driven — updated from `account_enqueue` /
     /// `account_dequeue`, not from publish-time sampling.
@@ -659,6 +662,7 @@ impl Proc {
                 reserved_roots: DashSet::new(),
                 reserved_child_uids: DashSet::new(),
                 instances: DashMap::new(),
+                root_actors: DashSet::new(),
                 queue_stats: Arc::new(ProcQueueStats::new()),
                 terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
@@ -1119,21 +1123,12 @@ impl Proc {
     }
 
     /// Traverse all actor trees in this proc, starting from root actors.
-    ///
-    /// **Caution:** This holds DashMap shard read locks while doing
-    /// `Weak::upgrade()` and recursively walking the actor tree per
-    /// entry. Under rapid actor churn, this causes convoy starvation
-    /// with concurrent `insert`/`remove` operations. Prefer
-    /// `all_instance_keys()` with point lookups if you only need
-    /// actor IDs. Currently unused in production code.
     pub fn traverse<F>(&self, f: &mut F)
     where
         F: FnMut(&InstanceCell, usize),
     {
-        for entry in self.state().instances.iter() {
-            if entry.key().uid().is_singleton()
-                && let Some(cell) = entry.value().upgrade()
-            {
+        for entry in self.state().root_actors.iter() {
+            if let Some(cell) = self.get_instance_by_id(entry.key()) {
                 cell.traverse(f);
             }
         }
@@ -1168,24 +1163,12 @@ impl Proc {
     }
 
     /// Returns the ActorAddrs of all root actors in this proc.
-    ///
-    /// **Caution:** This iterates the full DashMap under shard read
-    /// locks. The per-entry work is lightweight (key filter + clone),
-    /// but under very rapid churn the iteration can still contend
-    /// with concurrent writes. Prefer `all_instance_keys()` with a
-    /// post-filter if this becomes a hot path. Currently unused in
-    /// production code.
     pub fn root_actor_ids(&self) -> Vec<ActorAddr> {
         self.state()
-            .instances
+            .root_actors
             .iter()
             .filter_map(|entry| {
-                entry
-                    .key()
-                    .uid()
-                    .is_singleton()
-                    .then(|| entry.value().upgrade())
-                    .flatten()
+                self.get_instance_by_id(entry.key())
                     .map(|cell| cell.actor_addr().clone())
             })
             .collect()
@@ -1385,10 +1368,9 @@ impl Proc {
         let mut statuses = HashMap::new();
         for actor_id in self
             .state()
-            .instances
+            .root_actors
             .iter()
-            .filter(|entry| entry.key().uid().is_singleton())
-            .filter_map(|entry| entry.value().upgrade())
+            .filter_map(|entry| self.get_instance_by_id(entry.key()))
             .filter(|cell| !matches!(*cell.status().borrow(), ActorStatus::Client))
             .map(|cell| cell.actor_addr().clone())
             .collect::<Vec<_>>()
@@ -3728,6 +3710,7 @@ impl InstanceCell {
         ports: Arc<dyn Any + Send + Sync>,
         queue_depth: Arc<AtomicU64>,
     ) -> Self {
+        let is_root = parent.is_none();
         let _ais = actor_id.to_string();
         let cell = Self {
             inner: Arc::new(InstanceCellState {
@@ -3757,6 +3740,9 @@ impl InstanceCell {
         proc.inner
             .instances
             .insert(actor_id.id().clone(), cell.downgrade());
+        if is_root {
+            proc.inner.root_actors.insert(actor_id.id().clone());
+        }
         cell
     }
 
@@ -4154,6 +4140,7 @@ impl Drop for InstanceCellState {
         {
             tracing::error!("instance {} was dropped but not in proc", self.actor_id);
         }
+        self.proc.inner.root_actors.remove(self.actor_id.id());
     }
 }
 
@@ -4375,6 +4362,11 @@ mod tests {
     impl Actor for TestActor {}
 
     #[derive(Debug)]
+    struct ChildLabelActor;
+
+    impl Actor for ChildLabelActor {}
+
+    #[derive(Debug)]
     struct DelayedSelfActor {
         ready: Option<OncePortRef<()>>,
         fired: Option<OncePortRef<()>>,
@@ -4529,28 +4521,53 @@ mod tests {
     async fn test_spawn_uses_actor_type_label_for_child_actor() {
         let proc = Proc::isolated();
         let parent = proc.spawn(TestActor);
-        let child = proc.spawn_child(
-            parent.cell().clone(),
-            DelayedSelfActor {
-                ready: None,
-                fired: None,
-                delay: Duration::from_secs(60),
-            },
-        );
+        let child = proc.spawn_child(parent.cell().clone(), ChildLabelActor);
 
         assert!(!child.actor_addr().is_root());
         assert_eq!(
             child.actor_addr().label().map(Label::as_str),
-            Some("delayedselfactor")
+            Some("childlabelactor")
         );
         assert!(matches!(
             child.actor_addr().uid(),
-            Uid::Instance(_, Some(label)) if label.as_str() == "delayedselfactor"
+            Uid::Instance(_, Some(label)) if label.as_str() == "childlabelactor"
         ));
 
-        child.kill("test").unwrap();
-        child.await;
+        child.drain_and_stop("test").unwrap();
         parent.drain_and_stop("test").unwrap();
+        child.await;
+        parent.await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_root_tracking_does_not_depend_on_singleton_uids() {
+        let proc = Proc::isolated();
+        let parent = proc.spawn(TestActor);
+        let child = proc.spawn_child(parent.cell().clone(), TestActor);
+
+        assert!(parent.actor_addr().uid().is_instance());
+        let roots = proc.root_actor_ids();
+        assert!(
+            roots
+                .iter()
+                .any(|root| root.id() == parent.actor_addr().id())
+        );
+        assert!(
+            !roots
+                .iter()
+                .any(|root| root.id() == child.actor_addr().id())
+        );
+
+        let mut traversed = Vec::new();
+        proc.traverse(&mut |cell, _depth| {
+            traversed.push(cell.actor_addr().id().clone());
+        });
+        assert!(traversed.contains(parent.actor_addr().id()));
+        assert!(traversed.contains(child.actor_addr().id()));
+
+        child.drain_and_stop("test").unwrap();
+        parent.drain_and_stop("test").unwrap();
+        child.await;
         parent.await;
     }
 
