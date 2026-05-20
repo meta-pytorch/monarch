@@ -120,6 +120,22 @@ for SOTA GSM8K accuracy -- the point is to show how to wire a Monarch
 actor mesh for distributed RL on Kubernetes (two heterogeneous meshes,
 replay-buffer actor, scorer actor, RDMA weight sync, async rollout /
 train).
+
+Running the example on GKE
+-------------------
+
+Follow the instructions in `Allocate network resources by using GKE managed DRANET <https://docs.cloud.google.com/kubernetes-engine/docs/how-to/allocate-network-resources-dra>`_ to create a GKE cluster with RDMA enabled.
+
+::
+
+    kubectl apply -f manifests/grpo_provision.yaml
+    kubectl apply -f manifests/gke/grpo_mesh.yaml
+    kubectl wait --for=condition=Ready pod/grpo-controller -n monarch-tests
+    kubectl cp kubernetes_grpo.py monarch-tests/grpo-controller:/tmp/kubernetes_grpo.py
+    kubectl exec -it grpo-controller -n monarch-tests -- python /tmp/kubernetes_grpo.py --no-provision --num_generator_hosts 2 --gpus_per_generator 3
+    kubectl delete -f manifests/gke/grpo_mesh.yaml
+    kubectl delete -f manifests/grpo_provision.yaml
+
 """
 
 # %%
@@ -992,6 +1008,9 @@ async def main(
     dataset_split: str,
     num_prompts: int,
     eval_size: int,
+    learner_mesh_name: str,
+    generator_mesh_name: str,
+    provision: bool,
 ) -> None:
     """Run GRPO fine-tuning across the learner and generator meshes."""
     prompts = load_gsm8k_prompts(split=dataset_split, num_prompts=num_prompts)
@@ -1010,29 +1029,41 @@ async def main(
     # 600s timeout lets the meshes finish cold-start pip install + model
     # download before state() gives up.
     k8s_job = KubernetesJob(namespace=namespace, timeout=600)
-    # Learner pod requests 2 GPUs; ``device_map="auto"`` inside the actor
-    # spreads the trainable policy across both. ``spawn_procs({"gpus": 1})``
-    # below still spawns a single learner proc that sees both GPUs in its
-    # CUDA namespace. To fine-tune a larger base model, bump this to 4
-    # (e.g. for a 4B-parameter policy, the static memory of params + bf16
-    # gradients + fp32 AdamW state alone is ~48 GB, requiring 4 x 22 GB GPUs).
-    k8s_job.add_mesh(
-        "learner",
-        num_replicas=1,
-        pod_template=build_pod_template(gpus=2),
-    )
-    k8s_job.add_mesh(
-        "generator",
-        num_replicas=num_generator_hosts,
-        pod_template=build_pod_template(gpus=gpus_per_generator),
-    )
+    if provision:
+        # Learner pod requests 2 GPUs; ``device_map="auto"`` inside the actor
+        # spreads the trainable policy across both. ``spawn_procs({"gpus": 1})``
+        # below still spawns a single learner proc that sees both GPUs in its
+        # CUDA namespace. To fine-tune a larger base model, bump this to 4
+        # (e.g. for a 4B-parameter policy, the static memory of params + bf16
+        # gradients + fp32 AdamW state alone is ~48 GB, requiring 4 x 22 GB GPUs).
+        k8s_job.add_mesh(
+            learner_mesh_name,
+            num_replicas=1,
+            pod_template=build_pod_template(gpus=2),
+        )
+        k8s_job.add_mesh(
+            generator_mesh_name,
+            num_replicas=num_generator_hosts,
+            pod_template=build_pod_template(gpus=gpus_per_generator),
+        )
+    else:
+        k8s_job.add_mesh(
+            learner_mesh_name,
+            num_replicas=1,
+        )
+        k8s_job.add_mesh(
+            generator_mesh_name,
+            num_replicas=num_generator_hosts,
+        )
 
     learner_mesh = None
     gen_mesh = None
     try:
         job_state = k8s_job.state()
-        learner_mesh = job_state.learner.spawn_procs({"gpus": 1})
-        gen_mesh = job_state.generator.spawn_procs({"gpus": gpus_per_generator})
+        learner_mesh = getattr(job_state, learner_mesh_name).spawn_procs({"gpus": 1})
+        gen_mesh = getattr(job_state, generator_mesh_name).spawn_procs(
+            {"gpus": gpus_per_generator}
+        )
 
         await asyncio.gather(
             learner_mesh.logging_option(stream_to_client=True),
@@ -1118,7 +1149,8 @@ async def main(
             except Exception as e:
                 print(f"[cleanup] gen_mesh.stop() failed: {e}")
         # Unconditional so MonarchMesh CRDs and pods are always torn down.
-        k8s_job.kill()
+        if provision:
+            k8s_job.kill()
 
 
 # %%
@@ -1177,6 +1209,24 @@ if __name__ == "__main__":
         default=512,
         help="Number of held-out GSM8K test prompts used for eval.",
     )
+    parser.add_argument(
+        "--learner_mesh_name",
+        type=str,
+        default="learner",
+        help="Name of the learner MonarchMesh CRD",
+    )
+    parser.add_argument(
+        "--generator_mesh_name",
+        type=str,
+        default="generator",
+        help="Name of the generator MonarchMesh CRD",
+    )
+    parser.add_argument(
+        "--no-provision",
+        action="store_false",
+        dest="provision",
+        help="Disable provisioning of new worker and generator meshes and use existing ones (YAML manifests required).",
+    )
     args = parser.parse_args()
     asyncio.run(
         main(
@@ -1188,5 +1238,8 @@ if __name__ == "__main__":
             dataset_split=args.dataset_split,
             num_prompts=args.num_prompts,
             eval_size=args.eval_size,
+            learner_mesh_name=args.learner_mesh_name,
+            generator_mesh_name=args.generator_mesh_name,
+            provision=args.provision,
         )
     )
