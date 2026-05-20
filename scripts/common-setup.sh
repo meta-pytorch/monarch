@@ -148,8 +148,8 @@ setup_tensor_engine() {
 # Usage: setup_pytorch_with_headers <gpu-arch-type> <gpu-arch-version> <torch-spec>
 setup_pytorch_with_headers() {
     local gpu_arch_type=${1:-"cuda"}
-    local gpu_arch_version=${2:-"12.8"}
-    local torch_spec=${3:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128"}
+    local gpu_arch_version=${2:-"13.2"}
+    local torch_spec=${3:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu132"}
 
     echo "Setting up PyTorch with C++ headers (${gpu_arch_type} ${gpu_arch_version})..."
 
@@ -159,12 +159,13 @@ setup_pytorch_with_headers() {
     if [[ "${gpu_arch_type}" == "rocm" ]]; then
         # ROCm uses version with dots: "7.1" -> "rocm7.1"
         libtorch_variant="rocm${gpu_arch_version}"
-        libtorch_filename="libtorch-shared-with-deps-latest.zip"
     else
-        # CUDA uses version without dots: "12.8" -> "cu128"
+        # CUDA uses version without dots: "13.2" -> "cu132"
         libtorch_variant="cu$(echo "${gpu_arch_version}" | tr -d '.')"
-        libtorch_filename="libtorch-cxx11-abi-shared-with-deps-latest.zip"
     fi
+    # PyTorch nightlies unified on cxx11 ABI and dropped the -cxx11-abi- infix;
+    # cu130+ only publishes libtorch-shared-with-deps-latest.zip.
+    libtorch_filename="libtorch-shared-with-deps-latest.zip"
     local libtorch_url="https://download.pytorch.org/libtorch/nightly/${libtorch_variant}/${libtorch_filename}"
 
     echo "Downloading libtorch from: ${libtorch_url}"
