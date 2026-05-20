@@ -2479,8 +2479,10 @@ mod tests {
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> =
-            proc.spawn("log_client", log_client_actor).unwrap().bind();
+        let log_client: ActorRef<LogClientActor> = proc
+            .spawn_with_label("log_client", log_client_actor)
+            .unwrap()
+            .bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
@@ -2489,7 +2491,7 @@ mod tests {
             .await
             .unwrap();
         let _log_forwarder: ActorRef<LogForwardActor> = proc
-            .spawn("log_forwarder", log_forwarder_actor)
+            .spawn_with_label("log_forwarder", log_forwarder_actor)
             .unwrap()
             .bind();
 

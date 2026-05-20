@@ -49,7 +49,7 @@ After spawning the real actor, re-type its id as the behavior:
 
 ```rust
 let shopping_list_actor: ActorHandle<ShoppingListActor> =
-    hyperactor::spawn("shopping", ShoppingListActor::default())?;
+    hyperactor::spawn_with_label("shopping", ShoppingListActor::default())?;
 let client = hyperactor::client("client");
 
 // Re-type the reference as ActorRef<ShoppingApi>.

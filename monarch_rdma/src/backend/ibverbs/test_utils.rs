@@ -570,11 +570,11 @@ impl IbvTestEnv {
         let instance_2 = proc_2.client("client");
 
         let rdma_actor_1 = RdmaManagerActor::new(Some(config1), Flattrs::default()).await?;
-        let rdma_actor_handle_1 = proc_1.spawn("rdma_manager", rdma_actor_1)?;
+        let rdma_actor_handle_1 = proc_1.spawn_with_label("rdma_manager", rdma_actor_1)?;
         let actor_1: ActorRef<RdmaManagerActor> = rdma_actor_handle_1.bind();
 
         let rdma_actor_2 = RdmaManagerActor::new(Some(config2), Flattrs::default()).await?;
-        let rdma_actor_handle_2 = proc_2.spawn("rdma_manager", rdma_actor_2)?;
+        let rdma_actor_handle_2 = proc_2.spawn_with_label("rdma_manager", rdma_actor_2)?;
         let actor_2: ActorRef<RdmaManagerActor> = rdma_actor_handle_2.bind();
 
         let mut buf_vec = Vec::new();
@@ -612,7 +612,7 @@ impl IbvTestEnv {
         } else {
             // CUDA case - spawn CudaActor on the same proc
             let cuda_actor = CudaActor::new(parsed_accel1.1 as i32, Flattrs::default()).await?;
-            let cuda_handle = proc_1.spawn("cuda_init", cuda_actor)?;
+            let cuda_handle = proc_1.spawn_with_label("cuda_init", cuda_actor)?;
             let cuda_actor_ref_1: ActorRef<CudaActor> = cuda_handle.bind();
 
             let (rdma_buf, dev_ptr) = cuda_actor_ref_1
@@ -659,7 +659,7 @@ impl IbvTestEnv {
         } else {
             // CUDA case - spawn CudaActor on the same proc
             let cuda_actor = CudaActor::new(parsed_accel2.1 as i32, Flattrs::default()).await?;
-            let cuda_handle = proc_2.spawn("cuda_init", cuda_actor)?;
+            let cuda_handle = proc_2.spawn_with_label("cuda_init", cuda_actor)?;
             let cuda_actor_ref_2: ActorRef<CudaActor> = cuda_handle.bind();
 
             let (rdma_buf, dev_ptr) = cuda_actor_ref_2

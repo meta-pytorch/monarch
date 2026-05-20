@@ -525,7 +525,7 @@ impl Actor for ProcAgent {
             // PA-1 (ProcAgent path): proc-node children used by
             // admin/TUI must be computed from live proc state at query
             // time, not solely from cached published_properties.
-            // Therefore a direct proc.spawn() actor must appear on the
+            // Therefore a direct proc.spawn_with_label() actor must appear on the
             // next QueryChild(Addr::Proc) response without an
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
@@ -1250,7 +1250,7 @@ mod tests {
     hyperactor::register_spawnable!(ExtraActor);
     // Verifies that QueryChild(Addr::Proc) on a ProcAgent returns
     // a live IntrospectResult whose children reflect actors spawned
-    // directly on the proc — i.e. via proc.spawn(), which bypasses the
+    // directly on the proc — i.e. via proc.spawn_with_label(), which bypasses the
     // gspawn message handler and therefore never triggers
     // publish_introspect_properties.
     //
@@ -1330,7 +1330,7 @@ mod tests {
         // Spawn an actor directly on the proc, bypassing ProcAgent's
         // gspawn message handler. This is how supervision-spawned
         // actors (e.g. sieve children) are created.
-        proc.spawn("extra_actor", ExtraActor).unwrap();
+        proc.spawn_with_label("extra_actor", ExtraActor).unwrap();
 
         // Second query: extra_actor must appear without any republish.
         let payload2 = recv(query(&client)).await;
@@ -1426,7 +1426,7 @@ mod tests {
         let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             for i in 0..ITERATIONS {
                 let name = format!("churn_{}", i);
-                let handle = proc.spawn(&name, ExtraActor).unwrap();
+                let handle = proc.spawn_with_label(&name, ExtraActor).unwrap();
                 let actor_id = handle.actor_addr().clone();
                 if let Some(mut status) = proc.stop_actor(actor_id.id(), "churn".to_string()) {
                     let _ = tokio::time::timeout(
