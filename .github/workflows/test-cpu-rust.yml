@@ -19,7 +19,7 @@ jobs:
             docker-image: pytorch/almalinux-builder
           - name: arm64
             runner: linux.arm64.2xlarge
-            docker-image: pytorch/manylinuxaarch64-builder:cuda12.8
+            docker-image: pytorch/manylinuxaarch64-builder:cuda13.2
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 120
@@ -45,7 +45,7 @@ jobs:
         install_system_dependencies
 
         # Install PyTorch (needed for ABI compatibility, no GPU required)
-        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128
+        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132
 
         # Run CPU-safe Rust tests (no GPU hardware available)
         echo "Running CPU Rust tests..."
