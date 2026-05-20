@@ -17,9 +17,11 @@ use hyperactor::Actor;
 use hyperactor::AnyActorHandle;
 use hyperactor::Bind;
 use hyperactor::Data;
+#[cfg(test)]
 use hyperactor::Instance;
 use hyperactor::Uid;
 use hyperactor::Unbind;
+use hyperactor::context;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -88,11 +90,12 @@ impl LinkSpec {
     }
 
     /// Spawn the worker-side link actor as a supervised child of `parent`.
-    pub async fn spawn_worker<A: Actor>(
+    pub async fn spawn_worker<C: context::Actor>(
         self,
-        parent: &Instance<A>,
+        parent: &C,
     ) -> anyhow::Result<AnyActorHandle> {
         parent
+            .instance()
             .gspawn_uid(&self.actor_type, self.uid, self.params)
             .await
     }
@@ -170,7 +173,7 @@ mod tests {
     #[tokio::test]
     async fn test_link_spec_spawns_supervised_child() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.client("parent").unwrap();
+        let parent = proc.client("parent");
         let uid = Uid::instance(Label::new("link").unwrap());
 
         let link = LinkSpec::for_actor_uid::<TestLinkActor>(
@@ -190,22 +193,20 @@ mod tests {
     #[tokio::test]
     async fn test_link_actor_failure_propagates_to_parent() {
         let proc = Proc::isolated();
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let uid = Uid::instance(Label::new("link").unwrap());
         let link = LinkSpec::for_actor_uid::<TestLinkActor>(
             uid.clone(),
             bincode::serde::encode_to_vec((), bincode::config::legacy()).unwrap(),
         );
-        let parent = proc
-            .spawn(
-                "parent",
-                TestParentActor {
-                    link: Some(link),
-                    events: events.bind(),
-                },
-            )
-            .unwrap();
+        let parent = proc.spawn_with_label(
+            "parent",
+            TestParentActor {
+                link: Some(link),
+                events: events.bind(),
+            },
+        );
 
         let event = event_rx.recv().await.unwrap();
 

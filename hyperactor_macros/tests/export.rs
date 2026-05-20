@@ -147,9 +147,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_binds() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
-        let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).unwrap();
+        let actor_handle = proc.spawn_with_label("test", TestActor::new(tx.bind()));
         //  This will call binds
         actor_handle.bind::<TestActor>();
         // Verify that the ports can be gotten successfully.
@@ -234,9 +234,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ref_alias() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
-        let actor_handle = proc.spawn("test", TestActor::new(tx.bind())).unwrap();
+        let actor_handle = proc.spawn_with_label("test", TestActor::new(tx.bind()));
 
         actor_handle.post(&client, 123u64);
         actor_handle.post(&client, TestMessage("foo".to_string()));
@@ -271,11 +271,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_generic_export() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
-        let actor_handle = proc
-            .spawn("generic", GenericActor::<u64>::new(tx.bind()))
-            .unwrap();
+        let actor_handle = proc.spawn_with_label("generic", GenericActor::<u64>::new(tx.bind()));
 
         actor_handle.bind::<GenericActor<u64>>();
 

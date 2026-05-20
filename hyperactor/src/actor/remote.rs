@@ -286,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn test_instance_gspawn_child_returns_erased_handle() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.client("parent").unwrap();
+        let parent = proc.client("parent");
 
         let child = parent
             .gspawn(
@@ -307,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn test_instance_gspawn_uid_uses_explicit_uid() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.client("parent").unwrap();
+        let parent = proc.client("parent");
         let uid = Uid::instance(Label::new("child").unwrap());
 
         let child = parent
@@ -328,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn test_instance_gspawn_uid_rejects_duplicate_uid() {
         let proc = Proc::isolated();
-        let (parent, _parent_handle) = proc.client("parent").unwrap();
+        let parent = proc.client("parent");
         let uid = Uid::instance(Label::new("child").unwrap());
 
         let child = parent

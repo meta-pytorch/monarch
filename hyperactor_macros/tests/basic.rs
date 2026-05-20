@@ -183,8 +183,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_client_macros() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
-        let actor_handle = proc.spawn("foo", TestVariantFormsActor {}).unwrap();
+        let client = proc.client("client");
+        let actor_handle = proc.spawn_with_label("foo", TestVariantFormsActor {});
 
         assert_eq!(actor_handle.call_struct(&client, 10).await.unwrap(), 10,);
 
