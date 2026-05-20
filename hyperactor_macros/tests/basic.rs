@@ -184,7 +184,7 @@ mod tests {
     async fn test_client_macros() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let actor_handle = proc.spawn_with_label("foo", TestVariantFormsActor {});
+        let actor_handle = proc.spawn(TestVariantFormsActor {});
 
         assert_eq!(actor_handle.call_struct(&client, 10).await.unwrap(), 10,);
 

@@ -2225,8 +2225,7 @@ mod tests {
 
         // Spawn a collector on the remote proc.
         let (undlv_tx, mut undlv_rx) = mpsc::unbounded_channel();
-        let handle =
-            remote_proc.spawn_with_label("collector", UndeliverableCollector { tx: undlv_tx });
+        let handle = remote_proc.spawn(UndeliverableCollector { tx: undlv_tx });
         let collector_ref = handle.bind::<UndeliverableCollector>();
 
         // Tell the collector to send to a nonexistent actor on the
@@ -2280,7 +2279,7 @@ mod tests {
         let (undlv_tx, mut undlv_rx) = mpsc::unbounded_channel();
         let handle = host
             .system_proc()
-            .spawn_with_label("collector", UndeliverableCollector { tx: undlv_tx });
+            .spawn(UndeliverableCollector { tx: undlv_tx });
         let collector_ref = handle.bind::<UndeliverableCollector>();
 
         // Tell the collector to send to a nonexistent actor on the
@@ -2381,9 +2380,7 @@ mod tests {
         let serve_handle = host.serve().unwrap();
 
         // Spawn an EchoActor and send a request from a simplex client.
-        let echo_handle = host
-            .system_proc()
-            .spawn_with_label::<EchoActor>("echo", EchoActor);
+        let echo_handle = host.system_proc().spawn(EchoActor);
         let echo_ref = echo_handle.bind::<EchoActor>();
 
         let dial_router = DialMailboxRouter::new();
@@ -2478,9 +2475,7 @@ mod tests {
         .unwrap();
         let serve_handle = host.serve().unwrap();
 
-        let echo_handle = host
-            .system_proc()
-            .spawn_with_label::<EchoActor>("echo", EchoActor);
+        let echo_handle = host.system_proc().spawn(EchoActor);
         let echo_ref = echo_handle.bind::<EchoActor>();
         let host_addr = host.addr().clone();
         let echo_actor_id = echo_ref.actor_addr().clone();
@@ -2557,9 +2552,7 @@ mod tests {
         let _serve_handle = host.serve().unwrap();
 
         // Spawn an EchoActor on the host's system_proc.
-        let echo_handle = host
-            .system_proc()
-            .spawn_with_label::<EchoActor>("echo", EchoActor);
+        let echo_handle = host.system_proc().spawn(EchoActor);
         let echo_ref = echo_handle.bind::<EchoActor>();
 
         // Create an external simplex client proc with a dial router
