@@ -191,7 +191,7 @@ async fn run_parent(args: ParentArgs) -> anyhow::Result<()> {
         ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Localhost)),
         "token_supervision_parent".to_string(),
     )?;
-    let parent = proc.spawn(
+    let parent = proc.spawn_with_label(
         "parent",
         Parent {
             token_file: args.token_file,
@@ -202,7 +202,7 @@ async fn run_parent(args: ParentArgs) -> anyhow::Result<()> {
             keepalive_timeout: args.keepalive_timeout,
             supervisor: None,
         },
-    )?;
+    );
     parent.await;
     println!("parent process exiting");
     Ok(())
@@ -215,12 +215,12 @@ async fn run_joiner(args: JoinerArgs) -> anyhow::Result<()> {
         "token_supervision_joiner".to_string(),
     )?;
     let joiner = proc.client("joiner");
-    let worker = proc.spawn(
+    let worker = proc.spawn_with_label(
         "worker",
         Worker::new(DemoChild {
             stopped_file: args.stopped_file,
         }),
-    )?;
+    );
     let (result_port, mut result_rx) = joiner.open_port::<token::JoinResult<ActorAddr>>();
 
     token.join(&joiner, worker.bind::<WorkerLike>(), result_port.bind())?;

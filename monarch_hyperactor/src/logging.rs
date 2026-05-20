@@ -306,7 +306,7 @@ impl LoggingMeshClient {
             };
             let client_actor: ActorHandle<LogClientActor> = instance
                 .proc()
-                .spawn_with_label(&name, LogClientActor::default())?;
+                .spawn_with_label(&name, LogClientActor::default());
             let client_actor_ref = client_actor.bind();
 
             // Read config to decide if we stand up per-proc

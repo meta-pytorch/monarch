@@ -1700,7 +1700,7 @@ mod tests {
                 state: state.clone(),
                 response,
             };
-            let mock_handle = proc.spawn_with_label("mock", mock)?;
+            let mock_handle = proc.spawn_with_label("mock", mock);
             let mock_ref = mock_handle.bind::<MockManager>();
             let qp_key = QpKey {
                 self_device: "mock0".into(),
@@ -1708,7 +1708,7 @@ mod tests {
                 other_device: "mock0".into(),
             };
             let initializer = QueuePairInitializer::new(mock_handle, mock_ref, qp_key.clone(), qp);
-            let init_handle = proc.spawn_with_label("initializer", initializer)?;
+            let init_handle = proc.spawn_with_label("initializer", initializer);
             // Bind well-known ports so PeerInfo/NotifyRts can route.
             let _ = init_handle.bind::<QueuePairInitializer<MockManager>>();
             Ok(Harness {

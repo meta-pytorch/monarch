@@ -4004,7 +4004,7 @@ mod tests {
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let client = proc.client("client");
 
-        let foo = proc.spawn_with_label("foo", Foo).unwrap();
+        let foo = proc.spawn_with_label("foo", Foo);
         let return_handle = foo.port::<Undeliverable<MessageEnvelope>>();
         let message = MessageEnvelope::new(
             foo.actor_addr().clone(),
@@ -4561,7 +4561,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(2), undeliverable_receiver.recv())
                 .await
                 .expect("should receive undeliverable message")
-                .expect("receiver should not be closed");
+                .expect("undeliverable receiver closed");
 
         // Verify the undeliverable message has the correct destination
         let split_port_ref: PortAddr = split_port_id;

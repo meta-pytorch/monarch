@@ -1499,6 +1499,7 @@ mod tests {
     use hyperactor::Proc;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::id::Label;
+    use hyperactor::id::Uid;
 
     use super::*;
     use crate::bootstrap::ProcStatus;
@@ -1519,8 +1520,8 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1579,8 +1580,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1629,8 +1630,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1685,8 +1686,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1733,8 +1734,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1836,8 +1837,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1914,8 +1915,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,

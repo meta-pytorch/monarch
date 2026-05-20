@@ -165,7 +165,7 @@ pub trait Actor: Sized + Send + 'static {
     /// Actors spawned through `spawn_detached` are not attached to a supervision
     /// hierarchy, and not managed by a [`Proc`].
     fn spawn_detached(self) -> Result<ActorHandle<Self>, anyhow::Error> {
-        Proc::isolated().spawn_with_label("anon", self)
+        Ok(Proc::isolated().spawn(self))
     }
 
     /// This method is used by the runtime to spawn the actor server. It can be
@@ -1058,7 +1058,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("echo", actor).unwrap();
+        let handle = proc.spawn_with_label::<EchoActor>("echo", actor);
         handle.post(&client, 123u64);
         handle.drain_and_stop("test").unwrap();
         handle.await;
@@ -1074,8 +1074,8 @@ mod tests {
 
         let ping_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
         let pong_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
-        let ping_handle = proc.spawn::<PingPongActor>("ping", ping_actor).unwrap();
-        let pong_handle = proc.spawn::<PingPongActor>("pong", pong_actor).unwrap();
+        let ping_handle = proc.spawn_with_label::<PingPongActor>("ping", ping_actor);
+        let pong_handle = proc.spawn_with_label::<PingPongActor>("pong", pong_actor);
 
         let (local_port, local_receiver) = client.open_once_port();
 
@@ -1103,8 +1103,8 @@ mod tests {
             PingPongActor::new(Some(undeliverable_msg_tx.bind()), Some(error_ttl), None);
         let pong_actor =
             PingPongActor::new(Some(undeliverable_msg_tx.bind()), Some(error_ttl), None);
-        let ping_handle = proc.spawn::<PingPongActor>("ping", ping_actor).unwrap();
-        let pong_handle = proc.spawn::<PingPongActor>("pong", pong_actor).unwrap();
+        let ping_handle = proc.spawn_with_label::<PingPongActor>("ping", ping_actor);
+        let pong_handle = proc.spawn_with_label::<PingPongActor>("pong", pong_actor);
 
         let (local_port, local_receiver) = client.open_once_port();
 
@@ -1150,7 +1150,7 @@ mod tests {
     async fn test_init() {
         let proc = Proc::isolated();
         let actor = InitActor(false);
-        let handle = proc.spawn::<InitActor>("init", actor).unwrap();
+        let handle = proc.spawn_with_label::<InitActor>("init", actor);
         let client = proc.client("client");
 
         let (port, receiver) = client.open_once_port();
@@ -1175,7 +1175,7 @@ mod tests {
             let proc = Proc::isolated();
             let values: MultiValues = Arc::new(Mutex::new((0, "".to_string())));
             let actor = MultiActor(values.clone());
-            let handle = proc.spawn::<MultiActor>("myactor", actor).unwrap();
+            let handle = proc.spawn_with_label::<MultiActor>("myactor", actor);
             let client = proc.client("client");
             Self {
                 proc,
@@ -1292,7 +1292,7 @@ mod tests {
         // Just test that we can round-trip the handle through a downcast.
 
         let proc = Proc::isolated();
-        let handle = proc.spawn_with_label("nothing", NothingActor).unwrap();
+        let handle = proc.spawn_with_label("nothing", NothingActor);
         let cell = handle.cell();
 
         // Invalid actor doesn't succeed.
@@ -1353,9 +1353,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
 
-        let actor_handle = proc
-            .spawn_with_label("get_seq", GetSeqActor(tx.bind()))
-            .unwrap();
+        let actor_handle = proc.spawn_with_label("get_seq", GetSeqActor(tx.bind()));
 
         // Verify that unbound handle can send message.
         actor_handle.post(&client, "unbound".to_string());
@@ -1412,9 +1410,7 @@ mod tests {
         // Channel for receiving seq info from non-handler port
         let (non_handler_tx, mut non_handler_rx) = mpsc::unbounded_channel::<Option<SeqInfo>>();
 
-        let actor_handle = proc
-            .spawn_with_label("get_seq", GetSeqActor(actor_tx.bind()))
-            .unwrap();
+        let actor_handle = proc.spawn_with_label("get_seq", GetSeqActor(actor_tx.bind()));
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         // Create a non-handler port using open_enqueue_port
@@ -1494,9 +1490,7 @@ mod tests {
         // Port for receiving seq info from actor handler
         let (tx, mut rx) = client1.open_port();
 
-        let actor_handle = proc
-            .spawn_with_label("get_seq", GetSeqActor(tx.bind()))
-            .unwrap();
+        let actor_handle = proc.spawn_with_label("get_seq", GetSeqActor(tx.bind()));
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         // Each client should have a different session_id
@@ -1596,9 +1590,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
 
-        let actor_handle = proc
-            .spawn_with_label("get_seq", GetSeqActor(tx.bind()))
-            .unwrap();
+        let actor_handle = proc.spawn_with_label("get_seq", GetSeqActor(tx.bind()));
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         let (callback_tx, mut callback_rx) = client.open_port();
@@ -1649,9 +1641,10 @@ mod tests {
                 }
 
                 for m in buffer.clone() {
-                    let seq = match m.headers().get(SEQ_INFO).expect("seq should be set") {
-                        SeqInfo::Session { seq, .. } => seq as usize,
-                        SeqInfo::Direct => panic!("expected Session variant"),
+                    let seq = match m.headers().get(SEQ_INFO) {
+                        Some(SeqInfo::Session { seq, .. }) => seq as usize,
+                        Some(SeqInfo::Direct) => panic!("expected Session variant"),
+                        None => panic!("expected seq info"),
                     };
                     // seq no is one-based.
                     let order = relay_orders[seq - 1];
@@ -1684,9 +1677,7 @@ mod tests {
         let client = local_proc.client("local");
         let (tx, mut rx) = client.open_port();
 
-        let handle = local_proc
-            .spawn_with_label("get_seq", GetSeqActor(tx.bind()))
-            .unwrap();
+        let handle = local_proc.spawn_with_label("get_seq", GetSeqActor(tx.bind()));
         let actor_ref: ActorRef<GetSeqActor> = handle.bind();
 
         let remote_proc = Proc::configured(
@@ -1797,7 +1788,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("echo_introspect", actor).unwrap();
+        let handle = proc.spawn_with_label::<EchoActor>("echo_introspect", actor);
 
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
         PortRef::<IntrospectMessage>::attest_handler_port(&handle.actor_addr().clone()).post(
@@ -1842,7 +1833,7 @@ mod tests {
     /// Assert that an IntrospectResult has valid JSON attrs (IA-1).
     fn assert_valid_attrs(result: &IntrospectResult) {
         let parsed: serde_json::Value =
-            serde_json::from_str(&result.attrs).expect("IA-1: attrs must be valid JSON");
+            serde_json::from_str(&result.attrs).expect("attrs must be valid JSON");
         assert!(parsed.is_object(), "IA-1: attrs must be a JSON object");
     }
 
@@ -1940,7 +1931,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("ia_test", actor).unwrap();
+        let handle = proc.spawn_with_label::<EchoActor>("ia_test", actor);
 
         let payload = crate::introspect::live_actor_payload(handle.cell());
 
@@ -1969,7 +1960,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
+        let handle = proc.spawn_with_label::<EchoActor>("echo_qc", actor);
 
         let child_ref = crate::Addr::Actor(test_proc_id("nonexistent").actor_addr("child"));
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
@@ -2010,9 +2001,7 @@ mod tests {
 
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let handle = proc
-            .spawn_with_label("custom_introspect", CustomIntrospectActor)
-            .unwrap();
+        let handle = proc.spawn_with_label("custom_introspect", CustomIntrospectActor);
 
         handle
             .status()
@@ -2048,15 +2037,13 @@ mod tests {
 
         // Spawn parent.
         let (tx_parent, _rx_parent) = client.open_port::<u64>();
-        let parent_handle = proc
-            .spawn::<EchoActor>("parent", EchoActor(tx_parent.bind()))
-            .unwrap();
+        let parent_handle =
+            proc.spawn_with_label::<EchoActor>("parent", EchoActor(tx_parent.bind()));
 
         // Spawn child under parent.
         let (tx_child, _rx_child) = client.open_port::<u64>();
-        let child_handle = proc
-            .spawn_child::<EchoActor>(parent_handle.cell().clone(), EchoActor(tx_child.bind()))
-            .unwrap();
+        let child_handle =
+            proc.spawn_child::<EchoActor>(parent_handle.cell().clone(), EchoActor(tx_child.bind()));
 
         // Query the child — supervisor should be the parent.
         let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
@@ -2122,7 +2109,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("echo_fresh", actor).unwrap();
+        let handle = proc.spawn_with_label::<EchoActor>("echo_fresh", actor);
 
         // Wait for the actor to finish initialization.
         handle
@@ -2158,7 +2145,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("echo_after_msg", actor).unwrap();
+        let handle = proc.spawn_with_label::<EchoActor>("echo_after_msg", actor);
 
         // Send a user message and wait for it to be processed.
         handle.post(&client, 42u64);
@@ -2192,7 +2179,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("echo_consec", actor).unwrap();
+        let handle = proc.spawn_with_label::<EchoActor>("echo_consec", actor);
 
         handle
             .status()
@@ -2251,7 +2238,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("echo_attrs", actor).unwrap();
+        let handle = proc.spawn_with_label::<EchoActor>("echo_attrs", actor);
 
         // Before publishing, attrs are None.
         assert!(handle.cell().published_attrs().is_none());
@@ -2288,7 +2275,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
+        let handle = proc.spawn_with_label::<EchoActor>("echo_qch", actor);
 
         // Before registering, query_child returns None.
         let test_ref = Addr::Actor(test_proc_id("test").actor_addr("child"));
@@ -2319,7 +2306,7 @@ mod tests {
         let payload = handle
             .cell()
             .query_child(&test_ref)
-            .expect("callback should produce a payload");
+            .expect("query_child must return payload");
         assert_eq!(
             payload.identity,
             crate::introspect::IntrospectRef::Actor(test_proc_id("test").actor_addr("child"))
@@ -2365,7 +2352,7 @@ mod tests {
 
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let handle = proc.spawn_with_label("wedged", WedgedActor).unwrap();
+        let handle = proc.spawn_with_label("wedged", WedgedActor);
 
         // Wait for idle before sending the wedging message.
         handle
@@ -2410,7 +2397,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
-        let handle = proc.spawn::<EchoActor>("echo_no_perturb", actor).unwrap();
+        let handle = proc.spawn_with_label::<EchoActor>("echo_no_perturb", actor);
 
         // Wait for idle before sending the user message.
         handle
@@ -2487,10 +2474,13 @@ mod tests {
             crate::introspect::IntrospectRef::Actor(actor_id.clone())
         );
         assert_status(&payload, "client");
-        let actor_type = attrs_get(&payload.attrs, "actor_type")
-            .and_then(|v| v.as_str().map(String::from))
-            .expect("must have actor_type");
-        assert_eq!(actor_type, "()", "CI-1: actor_type must be \"()\"");
+        let actor_type =
+            attrs_get(&payload.attrs, "actor_type").and_then(|v| v.as_str().map(String::from));
+        assert_eq!(
+            actor_type.as_deref(),
+            Some("()"),
+            "CI-1: actor_type must be \"()\""
+        );
     }
 
     /// Contrast with CI-1: a plain `client()` does NOT respond to

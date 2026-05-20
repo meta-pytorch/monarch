@@ -725,30 +725,26 @@ mod tests {
         let (ready, mut ready_rx) = inst.open_port::<ActorAddr>();
         let (stopped, stopped_rx) = inst.open_port::<String>();
         let (events, events_rx) = inst.open_port::<ActorSupervisionEvent>();
-        let worker = proc
-            .spawn_with_label(
-                "worker",
-                Worker::new(test_child(ready, stopped, child_action)),
-            )
-            .unwrap();
+        let worker = proc.spawn_with_label(
+            "worker",
+            Worker::new(test_child(ready, stopped, child_action)),
+        );
         let child_addr = ready_rx.recv().await.unwrap();
         // Spawning Parent starts the link handshake: Parent::init
         // spawns the Supervisor whose own init sends `Link` to the
         // worker.
-        let parent = proc
-            .spawn_with_label(
-                "parent",
-                Parent {
-                    supervisor: Some(Supervisor::new_uid(
-                        worker.bind::<WorkerLike>(),
-                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
-                        options,
-                        session_id,
-                    )),
-                    events,
-                },
-            )
-            .unwrap();
+        let parent = proc.spawn_with_label(
+            "parent",
+            Parent {
+                supervisor: Some(Supervisor::new_uid(
+                    worker.bind::<WorkerLike>(),
+                    KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                    options,
+                    session_id,
+                )),
+                events,
+            },
+        );
         (child_addr, worker, parent, stopped_rx, events_rx)
     }
 
@@ -918,9 +914,7 @@ mod tests {
         let (stopped, mut stopped_rx) = client.open_port::<String>();
         let (supervisor, mut supervisor_rx) = client.open_port::<WorkerSupervisor>();
         let supervisor_ref = supervisor.bind();
-        let worker = proc
-            .spawn_with_label("worker", Worker::new(test_child(ready, stopped, None)))
-            .unwrap();
+        let worker = proc.spawn_with_label("worker", Worker::new(test_child(ready, stopped, None)));
         let (link_handle, link) =
             KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
                 .spawn_supervisor(&client)
@@ -1000,30 +994,23 @@ mod tests {
         let (stopped, mut stopped_rx) = client.open_port::<String>();
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let (parent_addr, mut parent_addr_rx) = client.open_port::<ActorAddr>();
-        let worker = proc
-            .spawn_with_label("worker", Worker::new(test_child(ready, stopped, None)))
-            .unwrap();
-        let grandparent = proc
-            .spawn_with_label(
-                "grandparent",
-                Grandparent {
-                    parent: Some(Parent {
-                        supervisor: Some(Supervisor::new(
-                            worker.bind::<WorkerLike>(),
-                            KeepaliveLink::new(
-                                Duration::from_millis(100),
-                                Duration::from_millis(300),
-                            ),
-                            LinkOptions::default(),
-                        )),
-                        events: events.clone(),
-                    }),
-                    parent_addr,
-                    parent_handle: None,
-                    events,
-                },
-            )
-            .unwrap();
+        let worker = proc.spawn_with_label("worker", Worker::new(test_child(ready, stopped, None)));
+        let grandparent = proc.spawn_with_label(
+            "grandparent",
+            Grandparent {
+                parent: Some(Parent {
+                    supervisor: Some(Supervisor::new(
+                        worker.bind::<WorkerLike>(),
+                        KeepaliveLink::new(Duration::from_millis(100), Duration::from_millis(300)),
+                        LinkOptions::default(),
+                    )),
+                    events: events.clone(),
+                }),
+                parent_addr,
+                parent_handle: None,
+                events,
+            },
+        );
         let _child_addr = ready_rx.recv().await.unwrap();
         let parent_addr = parent_addr_rx.recv().await.unwrap();
 
@@ -1076,9 +1063,7 @@ mod tests {
         let (stopped, mut stopped_rx) = inst.open_port::<String>();
         let (supervisor, mut supervisor_rx) = inst.open_port::<WorkerSupervisor>();
         let supervisor_ref = supervisor.bind();
-        let worker = proc
-            .spawn_with_label("worker", Worker::new(test_child(ready, stopped, None)))
-            .unwrap();
+        let worker = proc.spawn_with_label("worker", Worker::new(test_child(ready, stopped, None)));
         let (keep_alive, link_spec) =
             KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
                 .spawn_supervisor(&inst)
@@ -1374,20 +1359,18 @@ mod tests {
         // rejected.
         let session_id2 = Uid::anonymous();
         let (events2, mut events_rx2) = inst.open_port::<ActorSupervisionEvent>();
-        let parent2 = proc
-            .spawn_with_label(
-                "parent2",
-                Parent {
-                    supervisor: Some(Supervisor::new_uid(
-                        worker.bind::<WorkerLike>(),
-                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
-                        LinkOptions::default(),
-                        session_id2.clone(),
-                    )),
-                    events: events2,
-                },
-            )
-            .unwrap();
+        let parent2 = proc.spawn_with_label(
+            "parent2",
+            Parent {
+                supervisor: Some(Supervisor::new_uid(
+                    worker.bind::<WorkerLike>(),
+                    KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                    LinkOptions::default(),
+                    session_id2.clone(),
+                )),
+                events: events2,
+            },
+        );
 
         // supervisor2 receives WorkerSupervisor::LinkRejected and
         // bails with "remote supervision link rejected: worker
@@ -1464,32 +1447,28 @@ mod tests {
         let (received_stop, mut received_stop_rx) = inst.open_port::<String>();
         let (events, _events_rx) = inst.open_port::<ActorSupervisionEvent>();
         let release_link = Arc::new(Notify::new());
-        let worker = proc
-            .spawn_with_label(
-                "worker",
-                TestSlowWorker {
-                    link_started,
-                    release_link: Arc::clone(&release_link),
-                    received_stop,
-                    session: None,
-                },
-            )
-            .unwrap();
+        let worker = proc.spawn_with_label(
+            "worker",
+            TestSlowWorker {
+                link_started,
+                release_link: Arc::clone(&release_link),
+                received_stop,
+                session: None,
+            },
+        );
         let session_id = Uid::anonymous();
-        let parent = proc
-            .spawn_with_label(
-                "parent",
-                Parent {
-                    supervisor: Some(Supervisor::new_uid(
-                        worker.bind::<WorkerLike>(),
-                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
-                        LinkOptions::default(),
-                        session_id.clone(),
-                    )),
-                    events,
-                },
-            )
-            .unwrap();
+        let parent = proc.spawn_with_label(
+            "parent",
+            Parent {
+                supervisor: Some(Supervisor::new_uid(
+                    worker.bind::<WorkerLike>(),
+                    KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                    LinkOptions::default(),
+                    session_id.clone(),
+                )),
+                events,
+            },
+        );
 
         // Observe Link receipt - worker is now blocked in Handler<Link>.
         tokio::time::timeout(Duration::from_secs(5), link_started_rx.recv())
@@ -1547,38 +1526,34 @@ mod tests {
         let (stopped, mut stopped_rx) = inst.open_port::<String>();
         let (drained, mut drained_rx) = inst.open_port::<String>();
         let (events, _events_rx) = inst.open_port::<ActorSupervisionEvent>();
-        let worker = proc
-            .spawn_with_label(
-                "worker",
-                Worker::new(
-                    test_child(
-                        ready,
-                        stopped,
-                        Some(TestChildAction::DrainAfter(
-                            Duration::from_millis(10),
-                            "child work".to_string(),
-                        )),
-                    )
-                    .with_drain_observer(drained),
-                ),
-            )
-            .unwrap();
+        let worker = proc.spawn_with_label(
+            "worker",
+            Worker::new(
+                test_child(
+                    ready,
+                    stopped,
+                    Some(TestChildAction::DrainAfter(
+                        Duration::from_millis(10),
+                        "child work".to_string(),
+                    )),
+                )
+                .with_drain_observer(drained),
+            ),
+        );
         let _child_addr = ready_rx.recv().await.unwrap();
         let session_id = Uid::anonymous();
-        let parent = proc
-            .spawn_with_label(
-                "parent",
-                Parent {
-                    supervisor: Some(Supervisor::new_uid(
-                        worker.bind::<WorkerLike>(),
-                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
-                        LinkOptions::default(),
-                        session_id.clone(),
-                    )),
-                    events,
-                },
-            )
-            .unwrap();
+        let parent = proc.spawn_with_label(
+            "parent",
+            Parent {
+                supervisor: Some(Supervisor::new_uid(
+                    worker.bind::<WorkerLike>(),
+                    KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                    LinkOptions::default(),
+                    session_id.clone(),
+                )),
+                events,
+            },
+        );
 
         // Wait for the self-scheduled child work.
         let drained_tag = tokio::time::timeout(Duration::from_secs(5), drained_rx.recv())
@@ -1680,23 +1655,21 @@ mod tests {
 
         let session_id2 = Uid::anonymous();
         let (events2, mut events_rx2) = inst.open_port::<ActorSupervisionEvent>();
-        let parent2 = proc
-            .spawn_with_label(
-                "parent2",
-                Parent {
-                    supervisor: Some(Supervisor::new_uid(
-                        worker.bind::<WorkerLike>(),
-                        KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
-                        LinkOptions {
-                            orphan_policy: OrphanPolicy::Detach,
-                            ..Default::default()
-                        },
-                        session_id2.clone(),
-                    )),
-                    events: events2,
-                },
-            )
-            .unwrap();
+        let parent2 = proc.spawn_with_label(
+            "parent2",
+            Parent {
+                supervisor: Some(Supervisor::new_uid(
+                    worker.bind::<WorkerLike>(),
+                    KeepaliveLink::new(Duration::from_millis(5), Duration::from_secs(60)),
+                    LinkOptions {
+                        orphan_policy: OrphanPolicy::Detach,
+                        ..Default::default()
+                    },
+                    session_id2.clone(),
+                )),
+                events: events2,
+            },
+        );
 
         // Give the second Link/Linked handshake time to complete.
         tokio::time::sleep(Duration::from_millis(100)).await;

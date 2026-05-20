@@ -545,8 +545,8 @@ mod tests {
 
         let ping_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
         let pong_actor = PingPongActor::new(Some(undeliverable_msg_tx.bind()), None, None);
-        let ping_handle = alpha.spawn::<PingPongActor>("ping", ping_actor).unwrap();
-        let pong_handle = beta.spawn::<PingPongActor>("pong", pong_actor).unwrap();
+        let ping_handle = alpha.spawn_with_label::<PingPongActor>("ping", ping_actor);
+        let pong_handle = beta.spawn_with_label::<PingPongActor>("pong", pong_actor);
 
         let (local_port, local_receiver) = client.open_once_port();
 
@@ -558,7 +558,7 @@ mod tests {
         let received = time::timeout(Duration::from_secs(5), local_receiver.recv())
             .await
             .expect("local_receiver timed out")
-            .expect("ping pong did not complete");
+            .expect("local_receiver closed");
         assert!(received);
 
         assert!(
