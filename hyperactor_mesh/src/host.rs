@@ -1765,8 +1765,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic() {
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
         let procs = Arc::clone(&proc_manager.procs);
         let mut host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Unix))
             .await
@@ -1786,8 +1787,8 @@ mod tests {
         let proc2 = procs.lock().await.get(&proc_id2).unwrap().clone();
 
         // Make sure they can talk to each other:
-        let (instance1, _handle) = proc1.client("client").unwrap();
-        let (instance2, _handle) = proc2.client("client").unwrap();
+        let instance1 = proc1.client("client");
+        let instance2 = proc2.client("client");
 
         let (port, mut rx) = instance1.mailbox().open_port();
 
@@ -1795,7 +1796,7 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap(), "hello".to_string());
 
         // Make sure that the system proc is also wired in correctly.
-        let (system_actor, _handle) = host.system_proc().client("test").unwrap();
+        let system_actor = host.system_proc().client("test");
 
         // system->proc
         port.bind()
@@ -1863,7 +1864,7 @@ mod tests {
             "test".to_string(),
         )
         .unwrap();
-        let (client_inst, _h) = client.client("test").unwrap();
+        let client_inst = client.client("test");
         let (port, rx) = client_inst.mailbox().open_once_port();
         echo1.post(&client_inst, port.bind());
         let id = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -1895,7 +1896,7 @@ mod tests {
         //        client port.
         // Because `client_inst` runs in its own proc, the reply
         // traverses the host (not local delivery within proc1).
-        let (sys_inst, _h) = host.system_proc().client("sys-client").unwrap();
+        let sys_inst = host.system_proc().client("sys-client");
         let (port3, rx3) = client_inst.mailbox().open_once_port();
         // Send from system -> child via a message that ultimately
         // replies to client's port
@@ -2155,8 +2156,9 @@ mod tests {
     #[tokio::test]
     async fn test_duplex_remote_proc() {
         // Create a host with a duplex server.
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
@@ -2172,8 +2174,8 @@ mod tests {
 
         // (1) Host -> remote: open a port on the remote proc, send from
         //     the system instance.
-        let (system_inst, _h) = host.system_proc().client("test-sender").unwrap();
-        let (remote_inst, _rh) = remote_proc.client("remote-client").unwrap();
+        let system_inst = host.system_proc().client("test-sender");
+        let remote_inst = remote_proc.client("remote-client");
 
         let (remote_port, mut remote_rx) = remote_inst.mailbox().open_port();
         let remote_port = remote_port.bind();
@@ -2206,8 +2208,9 @@ mod tests {
         // service proc. The message travels client → duplex → host →
         // service proc (actor not found) → undeliverable back through
         // duplex → client's collector actor.
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
@@ -2222,9 +2225,7 @@ mod tests {
 
         // Spawn a collector on the remote proc.
         let (undlv_tx, mut undlv_rx) = mpsc::unbounded_channel();
-        let handle = remote_proc
-            .spawn("collector", UndeliverableCollector { tx: undlv_tx })
-            .unwrap();
+        let handle = remote_proc.spawn(UndeliverableCollector { tx: undlv_tx });
         let collector_ref = handle.bind::<UndeliverableCollector>();
 
         // Tell the collector to send to a nonexistent actor on the
@@ -2233,7 +2234,7 @@ mod tests {
         let bogus_port = bogus_actor.port_addr(Port::from(0u64));
         let bogus_dest = PortRef::<String>::attest(bogus_port);
 
-        let (trigger_inst, _h) = remote_proc.client("trigger").unwrap();
+        let trigger_inst = remote_proc.client("trigger");
         collector_ref
             .port::<SendTo>()
             .post(&trigger_inst, bogus_dest);
@@ -2259,8 +2260,9 @@ mod tests {
         // proc. The message travels host → overlay (finds remote proc)
         // → duplex → remote proc (actor not found) → undeliverable
         // back through duplex → host's collector actor.
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
@@ -2277,8 +2279,7 @@ mod tests {
         let (undlv_tx, mut undlv_rx) = mpsc::unbounded_channel();
         let handle = host
             .system_proc()
-            .spawn("collector", UndeliverableCollector { tx: undlv_tx })
-            .unwrap();
+            .spawn(UndeliverableCollector { tx: undlv_tx });
         let collector_ref = handle.bind::<UndeliverableCollector>();
 
         // Tell the collector to send to a nonexistent actor on the
@@ -2287,7 +2288,7 @@ mod tests {
         let bogus_port = bogus_actor.port_addr(Port::from(0u64));
         let bogus_dest = PortRef::<String>::attest(bogus_port);
 
-        let (trigger_inst, _h) = host.system_proc().client("trigger").unwrap();
+        let trigger_inst = host.system_proc().client("trigger");
         collector_ref
             .port::<SendTo>()
             .post(&trigger_inst, bogus_dest);
@@ -2313,8 +2314,9 @@ mod tests {
         // to confirm routing is live. Then stop the serve handle and
         // assert it completes within a bounded time, indicating the
         // accept loop and per-connection tasks drained cleanly.
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
@@ -2330,8 +2332,8 @@ mod tests {
 
         let remote_proc = Proc::attach_to_host(host.addr().clone()).await.unwrap();
 
-        let (system_inst, _h) = host.system_proc().client("teardown-sender").unwrap();
-        let (remote_inst, _rh) = remote_proc.client("teardown-client").unwrap();
+        let system_inst = host.system_proc().client("teardown-sender");
+        let remote_inst = remote_proc.client("teardown-client");
 
         let (remote_port, mut remote_rx) = remote_inst.mailbox().open_port();
         let remote_port = remote_port.bind();
@@ -2365,7 +2367,7 @@ mod tests {
     #[tokio::test]
     async fn test_simplex_peer_sees_clean_close_on_host_shutdown() {
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
-            proc.spawn::<EchoActor>("host_agent", EchoActor)
+            Ok(proc.spawn_with_label::<EchoActor>("host_agent", EchoActor))
         });
         let mut host = Host::new_with_default(
             proc_manager,
@@ -2378,10 +2380,7 @@ mod tests {
         let serve_handle = host.serve().unwrap();
 
         // Spawn an EchoActor and send a request from a simplex client.
-        let echo_handle = host
-            .system_proc()
-            .spawn::<EchoActor>("echo", EchoActor)
-            .unwrap();
+        let echo_handle = host.system_proc().spawn(EchoActor);
         let echo_ref = echo_handle.bind::<EchoActor>();
 
         let dial_router = DialMailboxRouter::new();
@@ -2395,7 +2394,7 @@ mod tests {
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
-        let (client_inst, _h) = client_proc.client("requester").unwrap();
+        let client_inst = client_proc.client("requester");
         let (reply_port, reply_handle) = client_inst.mailbox().open_once_port::<ActorAddr>();
         let reply_port = reply_port.bind();
         echo_ref
@@ -2464,7 +2463,7 @@ mod tests {
     #[tokio::test]
     async fn test_simplex_clients_during_host_shutdown() {
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
-            proc.spawn::<EchoActor>("host_agent", EchoActor)
+            Ok(proc.spawn_with_label::<EchoActor>("host_agent", EchoActor))
         });
         let mut host = Host::new_with_default(
             proc_manager,
@@ -2476,10 +2475,7 @@ mod tests {
         .unwrap();
         let serve_handle = host.serve().unwrap();
 
-        let echo_handle = host
-            .system_proc()
-            .spawn::<EchoActor>("echo", EchoActor)
-            .unwrap();
+        let echo_handle = host.system_proc().spawn(EchoActor);
         let echo_ref = echo_handle.bind::<EchoActor>();
         let host_addr = host.addr().clone();
         let echo_actor_id = echo_ref.actor_addr().clone();
@@ -2507,7 +2503,7 @@ mod tests {
                 let echo_ref = ActorRef::<EchoActor>::attest(echo_actor_id);
 
                 for ri in 0..M_REQUESTS {
-                    let (client_inst, _h) = client_proc.client(&format!("req-{}", ri)).unwrap();
+                    let client_inst = client_proc.client(&format!("req-{}", ri));
                     let (reply_port, reply_handle) =
                         client_inst.mailbox().open_once_port::<ActorAddr>();
                     let reply_port = reply_port.bind();
@@ -2543,7 +2539,7 @@ mod tests {
     #[tokio::test]
     async fn test_simplex_client_to_duplex_host() {
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
-            proc.spawn::<EchoActor>("host_agent", EchoActor)
+            Ok(proc.spawn_with_label::<EchoActor>("host_agent", EchoActor))
         });
         let mut host = Host::new_with_default(
             proc_manager,
@@ -2556,10 +2552,7 @@ mod tests {
         let _serve_handle = host.serve().unwrap();
 
         // Spawn an EchoActor on the host's system_proc.
-        let echo_handle = host
-            .system_proc()
-            .spawn::<EchoActor>("echo", EchoActor)
-            .unwrap();
+        let echo_handle = host.system_proc().spawn(EchoActor);
         let echo_ref = echo_handle.bind::<EchoActor>();
 
         // Create an external simplex client proc with a dial router
@@ -2578,7 +2571,7 @@ mod tests {
         let client_proc = Proc::configured(client_proc_id, dial_router.into_boxed());
         let _client_handle = client_proc.clone().serve(client_rx);
 
-        let (client_inst, _client_h) = client_proc.client("requester").unwrap();
+        let client_inst = client_proc.client("requester");
 
         // Send a request to the echo actor on the host. The reply
         // travels back through the host's dial router → simplex dial
