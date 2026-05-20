@@ -1009,6 +1009,19 @@ impl Proc {
         self.spawn_inner(actor_id, actor, None)
     }
 
+    /// Spawn a root actor with a fresh uid carrying a display label.
+    ///
+    /// The label is descriptive only and does not participate in actor
+    /// identity.
+    pub fn spawn_with_label<A: Actor>(
+        &self,
+        label: &str,
+        actor: A,
+    ) -> Result<ActorHandle<A>, anyhow::Error> {
+        let actor_id: ActorAddr = self.allocate_root_label(label)?;
+        self.spawn_inner(actor_id, actor, None)
+    }
+
     /// Spawn a root actor on this proc using an explicit uid.
     ///
     /// This is the explicit identity API, and the only root spawn API that
@@ -1527,6 +1540,14 @@ impl Proc {
         self.reserve_root(Uid::singleton(Label::strip(name)))
     }
 
+    /// Create a root allocation with a display label and fresh identity.
+    ///
+    /// Uses `reserved_roots` to keep root allocation semantics consistent with
+    /// singleton and explicit-uid root actors.
+    fn allocate_root_label(&self, label: &str) -> Result<ActorAddr, anyhow::Error> {
+        self.reserve_root(Uid::instance(Label::strip(label)))
+    }
+
     /// Create a root allocation in the proc from an explicit uid.
     fn allocate_root_uid(&self, uid: Uid) -> Result<ActorAddr, anyhow::Error> {
         self.reserve_root(uid)
@@ -1563,7 +1584,7 @@ impl Proc {
     fn ensure_child_uid(
         &self,
         parent_id: &ActorAddr,
-        uid: crate::id::Uid,
+        uid: Uid,
     ) -> Result<ActorAddr, anyhow::Error> {
         assert_eq!(parent_id.proc_id(), self.proc_id());
         let actor_id = ActorId::new(uid.clone(), self.proc_id().clone(), None);
@@ -3211,6 +3232,20 @@ impl<A: Actor> Instance<A> {
         self.inner
             .proc
             .spawn_named_child(self.inner.cell.clone(), name, actor)
+    }
+
+    /// Spawn a child actor with a fresh uid carrying a display label.
+    ///
+    /// The label is descriptive only and does not participate in actor
+    /// identity. Supervision linkage to this instance is preserved.
+    pub fn spawn_with_label<C: Actor>(
+        &self,
+        label: &str,
+        actor: C,
+    ) -> anyhow::Result<ActorHandle<C>> {
+        self.inner
+            .proc
+            .spawn_named_child(self.inner.cell.clone(), label, actor)
     }
 
     /// Spawn a child actor on this instance using an explicit uid.
