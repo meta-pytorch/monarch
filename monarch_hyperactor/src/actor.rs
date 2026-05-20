@@ -1734,7 +1734,7 @@ impl Port {
 
     fn send_message(&mut self, message: PythonMessage) -> PyResult<()> {
         self.port_ref
-            .send_with_headers(&self.instance, self.reply_headers.clone(), message)
+            .post_with_headers(&self.instance, self.reply_headers.clone(), message)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
