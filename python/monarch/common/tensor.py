@@ -839,7 +839,7 @@ def check_torch_version() -> None:
     The check is performed by comparing the major, minor, and patch versions of the runtime PyTorch version
     with the build-time PyTorch version. If they do not match, a RuntimeError is raised.
     """
-    # torch version as a string may contain optional suffixes like "+cu128", and
+    # torch version as a string may contain optional suffixes like "+cu132", and
     # we can only compare the major/minor/patch version. Parse into a tuple of
     # integers.
     runtime_torch_version = torch.__version__.split(".")

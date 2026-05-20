@@ -27,9 +27,16 @@ jobs:
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 120
-      runner: linux.g5.4xlarge.nvidia.gpu
-      gpu-arch-type: cuda
-      gpu-arch-version: "12.8"
+      # Building docs needs the CUDA toolkit but not host-GPU access; matching
+      # pytorch core's pattern of CPU-only ephemeral runners for build-style
+      # jobs avoids the nvidia-container-cli host-driver-vs-CUDA version
+      # check (no g4dn-fleet AMI yet carries an NVIDIA driver that satisfies
+      # cuda>=13.2). Docs build at cu132 to match the wheels we ship; PR GPU
+      # CI runs at cu130 — see set-matrix.yaml.
+      runner: linux.c7i.2xlarge
+      docker-image: "pytorch/manylinux2_28-builder:cuda13.2"
+      gpu-arch-type: cpu
+      gpu-arch-version: ""
       submodules: recursive
       upload-artifact: docs
       script: |
@@ -53,7 +60,7 @@ jobs:
         setup_build_environment 3.13
 
         # Install PyTorch with CUDA support (matching build-cuda.yml)
-        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128
+        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132
 
         # Setup Tensor Engine
         setup_tensor_engine
