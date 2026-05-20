@@ -4,7 +4,7 @@
 #   1. setup.py needs to detect torch installation paths and C++11 ABI
 #   2. C++ extensions (monarch.common._C, gradient_generator) link against libtorch
 #   3. Build-time torch detection determines whether to enable tensor_engine feature
-# The torch index is controlled by [tool.uv.sources] below (e.g., pytorch-cu128)
+# The torch index is controlled by [tool.uv.sources] below (e.g., pytorch-cu132)
 requires = ["setuptools>=77", "setuptools-rust", "wheel", "numpy", "torch"]
 build-backend = "setuptools.build_meta"
 
@@ -71,15 +71,20 @@ url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
 # Override with: uv sync --extra-index-url https://download.pytorch.org/whl/nightly/{platform} e.g.
-# uv sync --extra-index-url https://download.pytorch.org/whl/nightly/cu128
+# uv sync --extra-index-url https://download.pytorch.org/whl/nightly/cu132
 torch = [
-    { index = "pytorch-cu128", marker = "sys_platform != 'darwin'"  },
+    { index = "pytorch-cu132", marker = "sys_platform != 'darwin'"  },
     # MacOS cannot have cuda symbols, so default to CPU.
     { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
 ]
