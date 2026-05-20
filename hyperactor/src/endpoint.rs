@@ -111,6 +111,7 @@ mod tests {
     use crate::PortRef;
     use crate::actor::Referable;
     use crate::actor::RemoteHandles;
+    use crate::context::Mailbox as _;
     use crate::proc::Context;
     use crate::proc::Proc;
 
@@ -148,11 +149,9 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_actor_handle() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
-        let handle = proc
-            .spawn("echo", EchoActor { tx: tx.bind() })
-            .expect("spawn should succeed");
+        let handle = proc.spawn_with_label("echo", EchoActor { tx: tx.bind() });
 
         Endpoint::post(&handle, &client, 123u64);
 
@@ -162,7 +161,7 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_port_handle() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
 
         Endpoint::post(&tx, &client, 123u64);
@@ -173,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_once_port_handle() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, rx) = client.open_once_port();
 
         Endpoint::post(tx, &client, 123u64);
@@ -196,7 +195,7 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_port_ref() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
         let port_ref = tx.bind();
 
@@ -208,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn test_endpoint_once_port_ref() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (tx, rx) = client.open_once_port();
         let port_ref = tx.bind();
 
@@ -220,21 +219,22 @@ mod tests {
     #[tokio::test]
     async fn test_remote_endpoint_headers() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
-        let port = client.mailbox_for_py().open_handler_enqueue_port(
-            move |headers: Flattrs, message: u64| {
-                observed_tx
-                    .send((
-                        headers
-                            .get(ENDPOINT_TEST_HEADER)
-                            .expect("header should be present"),
-                        message,
-                    ))
-                    .expect("test receiver should be alive");
-                Ok(())
-            },
-        );
+        let port =
+            client
+                .mailbox()
+                .open_handler_enqueue_port(move |headers: Flattrs, message: u64| {
+                    observed_tx
+                        .send((
+                            headers
+                                .get(ENDPOINT_TEST_HEADER)
+                                .expect("header should be present"),
+                            message,
+                        ))
+                        .expect("test receiver should be alive");
+                    Ok(())
+                });
         let port_ref = port.bind();
         let mut headers = Flattrs::new();
         headers.set(ENDPOINT_TEST_HEADER, 456u64);

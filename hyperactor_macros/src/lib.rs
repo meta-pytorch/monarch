@@ -540,7 +540,6 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// use hyperactor::Handler;
 /// use hyperactor::Instance;
 /// use hyperactor::RefClient;
-/// use hyperactor::proc::Proc;
 /// use hyperactor::reference;
 /// use serde::Deserialize;
 /// use serde::Serialize;
@@ -616,14 +615,10 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), anyhow::Error> {
-///     let mut proc = Proc::isolated();
-///
-///     // Spawn our actor, and get a handle for rank 0.
+///     // Spawn our actor on the current proc.
 ///     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =
-///         proc.spawn("shopping", ()).await?;
-///
-///     // We join the system, so that we can send messages to actors.
-///     let client = proc.attach("client").unwrap();
+///         hyperactor::spawn_with_label("shopping", ShoppingListActor::default())?;
+///     let client = hyperactor::client("client");
 ///
 ///     // todo: consider making this a macro to remove the magic names
 ///

@@ -56,7 +56,7 @@
 //!     admin_ref,
 //!     Duration::from_secs(30),
 //! );
-//! proc.spawn("snapshot_capture", actor)?;
+//! proc.spawn_with_label("snapshot_capture", actor)?;
 //! // Actor is stopped by framework lifecycle on proc teardown.
 //! ```
 //!

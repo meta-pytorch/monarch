@@ -17,7 +17,9 @@ async fn main() {
     hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
     let proc = ProcessProcManager::<hyperactor_mesh::host::testing::EchoActor>::boot_proc(
-        |proc| async move { proc.spawn("echo", hyperactor_mesh::host::testing::EchoActor) },
+        |proc| async move {
+            Ok(proc.spawn_with_label("echo", hyperactor_mesh::host::testing::EchoActor))
+        },
     )
     .await
     .unwrap();

@@ -1593,7 +1593,7 @@ mod tests {
         proc.clone().serve(client_rx);
         let proc_ref: ProcAddr = test_proc_id("client_0");
         router.bind(proc_ref, proc_addr.clone());
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         // Spin up both the forwarder and the client
         let log_channel = ChannelAddr::any(ChannelTransport::Unix);
@@ -1603,13 +1603,12 @@ mod tests {
         }
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
         let log_client: ActorRef<LogClientActor> =
-            proc.spawn("log_client", log_client_actor).unwrap().bind();
+            proc.spawn_with_label("log_client", log_client_actor).bind();
         let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
             .await
             .unwrap();
         let log_forwarder: ActorRef<LogForwardActor> = proc
-            .spawn("log_forwarder", log_forwarder_actor)
-            .unwrap()
+            .spawn_with_label("log_forwarder", log_forwarder_actor)
             .bind();
 
         // Write some logs that will not be streamed
