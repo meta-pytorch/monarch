@@ -133,6 +133,7 @@ def main(
             useStrictName=True,
             localityConstraints=["region", "gtn"],
             default_transport=ChannelTransport.MetaTlsWithIpV6,
+            use_case="example",
         )
         job.add_mesh("workers", 2)
     elif backend == "k8s":
