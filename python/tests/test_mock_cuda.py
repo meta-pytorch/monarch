@@ -63,19 +63,23 @@ class TestMockCuda(TestCase):
 
     @unittest.skip("Disabled due to older version of driver")
     def test_turn_mock_on_and_off(self):
+        # pyrefly: ignore [not-iterable]
         cpu_y, cpu_dw, cpu_db = simple_forward_backward("cpu")
 
+        # pyrefly: ignore [not-iterable]
         real_y, real_dw, real_db = simple_forward_backward("cuda")
         self.assertTrue(torch.allclose(cpu_y, real_y.cpu()))
         self.assertTrue(torch.allclose(cpu_dw, real_dw.cpu()))
         self.assertTrue(torch.allclose(cpu_db, real_db.cpu()))
 
         with mock_cuda().mock_cuda_guard():
+            # pyrefly: ignore [not-iterable]
             mocked_y, mocked_dw, mocked_db = simple_forward_backward("cuda")
             self.assertFalse(torch.allclose(cpu_y, mocked_y.cpu()))
             self.assertFalse(torch.allclose(cpu_dw, mocked_dw.cpu()))
             self.assertFalse(torch.allclose(cpu_db, mocked_db.cpu()))
 
+        # pyrefly: ignore [not-iterable]
         real_y, real_dw, real_db = simple_forward_backward("cuda")
         self.assertTrue(torch.allclose(cpu_y, real_y.cpu()))
         self.assertTrue(torch.allclose(cpu_dw, real_dw.cpu()))

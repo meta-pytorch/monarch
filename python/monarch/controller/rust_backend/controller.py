@@ -118,11 +118,14 @@ class RustController:
             if isinstance(msg, client.WorkerResponse):
                 results.append(_worker_response_to_result(msg))
             elif isinstance(msg, client.LogMessage):
+                # pyrefly: ignore [bad-argument-type]
                 results.append(LogMessage(msg.level, msg.message))
             elif isinstance(msg, client.DebuggerMessage):
+                # pyrefly: ignore [bad-argument-type]
                 results.append(msg)
             else:
                 raise RuntimeError(f"Unexpected message type {type(msg)}")
+        # pyrefly: ignore [bad-return]
         return results
 
     def _run_debugger_loop(self, message: client.DebuggerMessage) -> None:
