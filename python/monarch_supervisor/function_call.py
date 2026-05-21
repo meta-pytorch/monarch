@@ -22,7 +22,6 @@ if __name__ == "__main__":
         spec = importlib.util.spec_from_file_location("__entry__", filename)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
-        # pyre-ignore[16]
         spec.loader.exec_module(module)
         sys.modules["__entry__"] = module
         funcname = rest[0]

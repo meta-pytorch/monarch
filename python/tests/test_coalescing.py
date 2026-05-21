@@ -39,6 +39,7 @@ def inspect(x):
 
 @pytest.fixture(scope="module", autouse=True)
 def testing_context():
+    # pyrefly: ignore [unknown-name]
     global local
     with TestingContext() as local:
         yield
@@ -267,6 +268,7 @@ class TestCoalescing:
                 r = add(a, b)
                 assert r.size() == (3, 4)
                 r2 = add(b, a)
+                # pyrefly: ignore [bad-argument-type]
                 self.assertAliases([a, b, r2, r], [0, 1, 2, 3])
 
             c = torch.rand(4)
@@ -279,18 +281,23 @@ class TestCoalescing:
 
             with self.assertRecorded(1):
                 r = add(a, 4)
+                # pyrefly: ignore [bad-argument-type]
                 self.assertAliases([r, a], [0, 1])
 
             with self.assertRecorded(1):
                 r0 = return_cond(a, b, True)
+                # pyrefly: ignore [bad-argument-type]
                 self.assertAliases([a, b, r0], [0, 1, 0])
                 r1 = return_cond(b, a, True)
+                # pyrefly: ignore [bad-argument-type]
                 self.assertAliases([a, b, r1], [0, 1, 1])
 
             with self.assertRecorded(1):
                 r0 = return_cond(a, b, False)
+                # pyrefly: ignore [bad-argument-type]
                 self.assertAliases([a, b, r0], [0, 1, 1])
                 r1 = return_cond(a, b, False)
+                # pyrefly: ignore [bad-argument-type]
                 self.assertAliases([b, a, r1], [0, 1, 0])
 
             @compile(verify=False)
@@ -299,6 +306,7 @@ class TestCoalescing:
 
             with self.assertRecorded(1):
                 r = captured(b)
+                # pyrefly: ignore [bad-argument-type]
                 self.assertAliases([a, b, r], [0, 1, 2])
                 r = captured(torch.rand(3, 4))
                 assert r.size() == (3, 4)
@@ -316,7 +324,9 @@ class TestCoalescing:
             with self.assertRecorded(1):
                 r0, r1, r2, r3, r4 = weird(c, d)
                 self.assertAliases(
-                    [c, d, a, r0, r1, r2, r3, r4], [0, 1, 2, 3, 3, 0, 1, 2]
+                    # pyrefly: ignore [bad-argument-type]
+                    [c, d, a, r0, r1, r2, r3, r4],
+                    [0, 1, 2, 3, 3, 0, 1, 2],
                 )
 
     def test_compile_input_permissions(self, backend_type):
@@ -331,6 +341,7 @@ class TestCoalescing:
                 c = add(torch.rand(3, 4))
 
             other = Stream("other")
+            # pyrefly: ignore [bad-argument-type]
             ab, borrow = other.borrow(a, mutable=True)
 
             with borrow:
@@ -340,6 +351,7 @@ class TestCoalescing:
             # test we can read it again
             add(torch.rand(3, 4))
 
+            # pyrefly: ignore [bad-argument-type]
             ab, borrow = other.borrow(a)
             with borrow:
                 add(torch.rand(3, 4))
@@ -351,6 +363,7 @@ class TestCoalescing:
                 with borrow:
                     add(c)
 
+            # pyrefly: ignore [missing-attribute]
             a.drop()
 
             with pytest.raises(TypeError, match="DROPPED"):
@@ -397,6 +410,7 @@ class TestCoalescing:
 
             foo()
             with pytest.raises(TypeError, match="DROPPED"):
+                # pyrefly: ignore [missing-attribute]
                 b.add(4)
 
     def test_across_mesh(self, backend_type):
@@ -469,6 +483,7 @@ class TestCoalescing:
             z_alias = z[0, :]
 
             mutated_inputs = (y, y_alias, z, z_alias)
+            # pyrefly: ignore [missing-attribute]
             mutated_aliases = set().union(*[t._aliases.aliases for t in mutated_inputs])
             all_inputs = (x_not_mutated, w_not_mutated) + mutated_inputs
             with patch.object(

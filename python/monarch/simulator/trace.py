@@ -372,7 +372,6 @@ class MemoryViewer:
         self.snapshot["device_traces"][-1].append(trace)
         if delta < 0:
             self.snapshot["device_traces"][-1].append(
-                # pyre-ignore
                 {**trace, "action": "free_completed"}
             )
 
