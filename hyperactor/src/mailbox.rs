@@ -127,6 +127,7 @@ use std::task::Poll;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use enum_as_inner::EnumAsInner;
 use futures::Sink;
 use futures::Stream;
 use hyperactor_config::Flattrs;
@@ -199,6 +200,234 @@ impl<M: Message + Named + Serialize + DeserializeOwned> RemoteMessage for M {}
 
 /// Type alias for bytestring data used throughout the system.
 pub type Data = Vec<u8>;
+
+/// A structured delivery failure with optional metadata.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, typeuri::Named, Clone)]
+#[error("{kind}")]
+pub struct DeliveryFailure {
+    /// The delivery failure kind.
+    pub kind: DeliveryFailureKind,
+
+    /// Additional keyed metadata for higher-level delivery features.
+    pub attrs: Flattrs,
+}
+
+impl DeliveryFailure {
+    /// Create a delivery failure with no additional metadata.
+    pub fn new(kind: impl Into<DeliveryFailureKind>) -> Self {
+        Self {
+            kind: kind.into(),
+            attrs: Flattrs::new(),
+        }
+    }
+
+    /// Create a delivery failure with additional keyed metadata.
+    pub fn with_attrs(kind: impl Into<DeliveryFailureKind>, attrs: Flattrs) -> Self {
+        Self {
+            kind: kind.into(),
+            attrs,
+        }
+    }
+}
+
+/// The kind of delivery failure.
+#[derive(
+    thiserror::Error,
+    Debug,
+    Serialize,
+    Deserialize,
+    EnumAsInner,
+    typeuri::Named,
+    Clone,
+    PartialEq,
+    Eq
+)]
+pub enum DeliveryFailureKind {
+    /// The destination reference does not denote a valid recipient.
+    #[error("{0}")]
+    InvalidReference(#[from] InvalidReference),
+
+    /// The message could not be delivered for transport or receiver-lifecycle
+    /// reasons.
+    #[error("{0}")]
+    Undeliverable(#[from] UndeliverableReason),
+
+    /// The message exceeded its TTL.
+    #[error("{0}")]
+    Expired(#[from] ExpiredDelivery),
+}
+
+/// An invalid destination reference.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[error("invalid reference {target}: {reason}")]
+pub struct InvalidReference {
+    /// The invalid target.
+    pub target: Addr,
+
+    /// Why the reference is invalid.
+    pub reason: InvalidReferenceReason,
+}
+
+impl InvalidReference {
+    /// Create an invalid-reference failure.
+    pub fn new(target: impl Into<Addr>, reason: InvalidReferenceReason) -> Self {
+        Self {
+            target: target.into(),
+            reason,
+        }
+    }
+}
+
+/// Why a destination reference is invalid.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum InvalidReferenceReason {
+    /// The actor does not exist.
+    #[error("actor does not exist")]
+    ActorNotExist,
+
+    /// The handler port is not bound.
+    #[error("handler not bound")]
+    HandlerNotBound,
+
+    /// The actor stopped before delivery.
+    #[error("actor stopped")]
+    ActorStopped,
+
+    /// The actor failed before delivery.
+    #[error("actor failed")]
+    ActorFailed,
+
+    /// The port was never allocated.
+    #[error("port never allocated")]
+    PortNeverAllocated,
+
+    /// The message is incompatible with the destination.
+    #[error("protocol mismatch")]
+    ProtocolMismatch,
+
+    /// The envelope was delivered to the wrong mailbox owner.
+    #[error("wrong mailbox owner")]
+    WrongMailboxOwner,
+}
+
+/// A delivery failure caused by message expiration.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[error("ttl expired for {target}")]
+pub struct ExpiredDelivery {
+    /// The destination whose delivery expired.
+    pub target: PortAddr,
+}
+
+impl ExpiredDelivery {
+    /// Create an expired-delivery failure.
+    pub fn new(target: impl Into<PortAddr>) -> Self {
+        Self {
+            target: target.into(),
+        }
+    }
+}
+
+/// A non-invalid-reference delivery failure.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum UndeliverableReason {
+    /// Delivery failed while carrying the message.
+    #[error("{0}")]
+    Transport(#[from] TransportFailure),
+
+    /// The destination port's ordinary recipient is gone.
+    #[error("{0}")]
+    PortGone(#[from] PortGone),
+}
+
+impl UndeliverableReason {
+    /// Whether this failure is a transport failure.
+    pub fn is_transport(&self) -> bool {
+        matches!(self, Self::Transport(_))
+    }
+}
+
+/// A transport delivery failure.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[error("transport failure to {target}: {reason}")]
+pub struct TransportFailure {
+    /// The delivery target.
+    pub target: Addr,
+
+    /// Why transport failed.
+    pub reason: TransportFailureReason,
+}
+
+impl TransportFailure {
+    /// Create a transport failure.
+    pub fn new(target: impl Into<Addr>, reason: TransportFailureReason) -> Self {
+        Self {
+            target: target.into(),
+            reason,
+        }
+    }
+}
+
+/// Why transport failed.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum TransportFailureReason {
+    /// The channel closed.
+    #[error("channel closed: {addr}")]
+    ChannelClosed {
+        /// The channel address.
+        addr: ChannelAddr,
+    },
+
+    /// Delivery acknowledgement timed out.
+    #[error("ack timed out: {addr}")]
+    AckTimedOut {
+        /// The channel address.
+        addr: ChannelAddr,
+    },
+
+    /// Dialing the destination failed.
+    #[error("dial failed: {addr}: {error}")]
+    DialFailed {
+        /// The channel address.
+        addr: ChannelAddr,
+
+        /// The dial error.
+        error: String,
+    },
+
+    /// The router has no route and is not authoritative for destination
+    /// existence.
+    #[error("no route")]
+    NoRoute,
+
+    /// A weak reference in the delivery path could not be upgraded.
+    #[error("link unavailable: {0}")]
+    LinkUnavailable(String),
+
+    /// The forwarder is unavailable.
+    #[error("forwarder unavailable")]
+    ForwarderUnavailable,
+}
+
+/// A port whose ordinary recipient is gone.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[error("port gone: {port}")]
+pub struct PortGone {
+    /// The port whose recipient is gone.
+    pub port: PortAddr,
+
+    /// The message type, when known.
+    pub message_type: Option<String>,
+}
+
+impl PortGone {
+    /// Create a port-gone failure.
+    pub fn new(port: impl Into<PortAddr>, message_type: Option<String>) -> Self {
+        Self {
+            port: port.into(),
+            message_type,
+        }
+    }
+}
 
 /// Delivery errors occur during message posting.
 #[derive(
