@@ -161,16 +161,6 @@ pub trait Actor: Sized + Send + 'static {
         cx.instance().spawn_with_label(label, self)
     }
 
-    /// Spawns this actor in a detached state, handling its messages
-    /// in a background task. The returned handle is used to control
-    /// the actor's lifecycle and to interact with it.
-    ///
-    /// Actors spawned through `spawn_detached` are not attached to a supervision
-    /// hierarchy, and not managed by a [`Proc`].
-    fn spawn_detached(self) -> Result<ActorHandle<Self>, anyhow::Error> {
-        Ok(Proc::isolated().spawn(self))
-    }
-
     /// This method is used by the runtime to spawn the actor server. It can be
     /// used by actors that require customized runtime setups
     /// (e.g., dedicated actor threads), or want to use a custom tokio runtime.

@@ -459,8 +459,8 @@ mod tests {
         let (actor0, actor1) = tokio::join!(actor0, actor1);
         let (actor0, actor1) = (actor0.unwrap(), actor1.unwrap());
 
-        let handle0 = actor0.spawn_detached().unwrap();
-        let handle1 = actor1.spawn_detached().unwrap();
+        let handle0 = hyperactor::spawn(actor0).into_guard();
+        let handle1 = hyperactor::spawn(actor1).into_guard();
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
 
@@ -526,8 +526,8 @@ mod tests {
         let (actor0, actor1) = tokio::join!(actor0, actor1);
         let (actor0, actor1) = (actor0.unwrap(), actor1.unwrap());
 
-        let handle0 = actor0.spawn_detached().unwrap();
-        let handle1 = actor1.spawn_detached().unwrap();
+        let handle0 = hyperactor::spawn(actor0).into_guard();
+        let handle1 = hyperactor::spawn(actor1).into_guard();
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
 
