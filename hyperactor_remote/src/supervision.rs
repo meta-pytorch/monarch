@@ -287,7 +287,7 @@ where
             .take()
             .expect("worker initialized more than once");
         self.child_display_name = child.display_name();
-        self.child_handle = Some(this.spawn(child)?);
+        self.child_handle = Some(this.spawn(child));
         Ok(())
     }
 
@@ -626,7 +626,7 @@ mod tests {
                 self.supervisor
                     .take()
                     .expect("parent initialized more than once"),
-            )?;
+            );
             Ok(())
         }
 
@@ -656,7 +656,7 @@ mod tests {
                 self.parent
                     .take()
                     .expect("grandparent initialized more than once"),
-            )?;
+            );
             self.parent_addr.post(this, parent.actor_addr().clone());
             self.parent_handle = Some(parent);
             Ok(())

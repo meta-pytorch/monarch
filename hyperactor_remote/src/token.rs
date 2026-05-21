@@ -205,7 +205,7 @@ where
 {
     let rendezvous = this
         .instance()
-        .spawn(Rendezvous::new(creator, creator_joined, options))?;
+        .spawn(Rendezvous::new(creator, creator_joined, options));
     Ok(Token::new(rendezvous.bind::<RendezvousLike<C, J>>()))
 }
 

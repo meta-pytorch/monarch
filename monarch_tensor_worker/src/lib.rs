@@ -321,14 +321,15 @@ impl WorkerMessageHandler for WorkerActor {
         let Some(device) = self.device else {
             return Ok(());
         };
-        let comm = NcclCommActor::new(CommParams::New {
-            device,
-            unique_id,
-            world_size: self.world_size.try_into().unwrap(),
-            rank: self.rank.try_into().unwrap(),
-        })
-        .await?
-        .spawn(cx)?;
+        let comm = cx.spawn(
+            NcclCommActor::new(CommParams::New {
+                device,
+                unique_id,
+                world_size: self.world_size.try_into().unwrap(),
+                rank: self.rank.try_into().unwrap(),
+            })
+            .await?,
+        );
 
         let tensor = factory_zeros(&[1], ScalarType::Float, Layout::Strided, device.into());
         let cell = TensorCell::new(tensor);
@@ -456,7 +457,7 @@ impl WorkerMessageHandler for WorkerActor {
         result: StreamRef,
         creation_mode: StreamCreationMode,
     ) -> Result<()> {
-        let handle: ActorHandle<StreamActor> = StreamActor::new(StreamParams {
+        let handle: ActorHandle<StreamActor> = cx.spawn(StreamActor::new(StreamParams {
             world_size: self.world_size,
             rank: self.rank,
             creation_mode,
@@ -464,8 +465,7 @@ impl WorkerMessageHandler for WorkerActor {
             device: self.device,
             controller_actor: self.controller_actor.clone(),
             respond_with_python_message: self.respond_with_python_message,
-        })
-        .spawn(cx)?;
+        }));
         self.streams.insert(result, Arc::new(handle));
         Ok(())
     }

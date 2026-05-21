@@ -137,7 +137,7 @@ impl KeepaliveLink {
             this.instance()
                 .spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
                     params.timeout,
-                )))?;
+                )));
         let worker = KeepaliveWorkerParams::new(supervisor.port::<Keepalive>().bind(), params)
             .link_spec_uid(uid)?;
         Ok((supervisor, worker))
@@ -478,7 +478,7 @@ mod tests {
                     link.spawn_worker(this).await?;
                 }
                 ParentSpawn::Supervisor(supervisor) => {
-                    this.spawn(supervisor)?;
+                    this.spawn(supervisor);
                 }
             }
             Ok(())
@@ -512,11 +512,9 @@ mod tests {
     async fn test_keepalive_supervisor_replies_to_keepalive() {
         let proc = Proc::isolated();
         let parent = proc.client("parent");
-        let supervisor = parent
-            .spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
-                Duration::from_secs(60),
-            )))
-            .unwrap();
+        let supervisor = parent.spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
+            Duration::from_secs(60),
+        )));
         let (reply, ack_rx) = parent.open_once_port::<KeepaliveAck>();
 
         supervisor.post(
@@ -563,11 +561,9 @@ mod tests {
     async fn test_keepalive_worker_sends_keepalives() {
         let proc = Proc::isolated();
         let parent = proc.client("parent");
-        let supervisor = parent
-            .spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
-                Duration::from_secs(60),
-            )))
-            .unwrap();
+        let supervisor = parent.spawn(KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(
+            Duration::from_secs(60),
+        )));
         let worker = KeepaliveWorkerParams::new(
             supervisor.port::<Keepalive>().bind(),
             KeepaliveParams::new(Duration::from_millis(5), Duration::from_millis(50)),

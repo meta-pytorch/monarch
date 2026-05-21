@@ -45,7 +45,6 @@
 
 #![allow(clippy::result_large_err)]
 
-use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
@@ -1424,12 +1423,7 @@ impl HostMeshRef {
             // hyperactor::proc AI-3: controller name must include mesh
             // identity for proc-wide ActorAddr uniqueness.
             let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.id());
-            let controller_handle =
-                controller
-                    .spawn_with_label(cx, &controller_name)
-                    .map_err(|e| {
-                        crate::Error::ControllerActorSpawnError(mesh.id().resource_id().clone(), e)
-                    })?;
+            let controller_handle = cx.spawn_with_label(&controller_name, controller);
             // Bind the actor's well-known ports (Signal, IntrospectMessage,
             // Undeliverable). Without this, the controller's mailbox has no
             // port entries and messages (including introspection queries)
