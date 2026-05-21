@@ -480,6 +480,11 @@ pub struct MessageEnvelope {
     /// Error contains a delivery error when message delivery failed.
     errors: Vec<DeliveryError>,
 
+    /// Structured delivery failures. The first entry is the root delivery
+    /// failure; later entries record subsequent failures while returning or
+    /// forwarding the same envelope.
+    delivery_failures: Vec<DeliveryFailure>,
+
     /// Additional context for this message.
     headers: Flattrs,
 
@@ -508,6 +513,7 @@ impl MessageEnvelope {
             dest,
             data,
             errors: Vec::new(),
+            delivery_failures: Vec::new(),
             headers,
             ttl: hyperactor_config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
             // By default, all undeliverable messages should be returned to the sender.
@@ -538,6 +544,7 @@ impl MessageEnvelope {
             sender: source.into(),
             dest: dest.into(),
             errors: Vec::new(),
+            delivery_failures: Vec::new(),
             ttl: hyperactor_config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
             // By default, all undeliverable messages should be returned to the sender.
             return_undeliverable: true,
@@ -619,6 +626,19 @@ impl MessageEnvelope {
         self.errors.push(error)
     }
 
+    /// Push a structured delivery failure onto this message's failure history.
+    pub fn push_delivery_failure(&mut self, failure: DeliveryFailure) {
+        self.delivery_failures.push(failure)
+    }
+
+    /// Push a structured delivery failure only when this envelope does not
+    /// already have a root failure.
+    pub fn ensure_root_delivery_failure(&mut self, failure: impl FnOnce() -> DeliveryFailure) {
+        if self.root_delivery_failure().is_none() {
+            self.push_delivery_failure(failure());
+        }
+    }
+
     /// Change the sender on the envelope in case it was set incorrectly. This
     /// should only be used by CommActor since it is forwarding from another
     /// sender.
@@ -668,6 +688,17 @@ impl MessageEnvelope {
         &self.errors
     }
 
+    /// Get the structured delivery failures for this message. Empty means this
+    /// message was not determined as undeliverable through the structured path.
+    pub fn delivery_failures(&self) -> &[DeliveryFailure] {
+        &self.delivery_failures
+    }
+
+    /// Get the root structured delivery failure for this message.
+    pub fn root_delivery_failure(&self) -> Option<&DeliveryFailure> {
+        self.delivery_failures.first()
+    }
+
     /// Get the string representation of the errors of this message was
     /// undeliverable. None means this message was not determined as
     /// undeliverable.
@@ -691,6 +722,7 @@ impl MessageEnvelope {
             dest,
             data,
             errors,
+            delivery_failures,
             headers,
             ttl,
             return_undeliverable,
@@ -701,6 +733,7 @@ impl MessageEnvelope {
                 sender,
                 dest,
                 errors,
+                delivery_failures,
                 headers,
                 ttl,
                 return_undeliverable,
@@ -714,6 +747,7 @@ impl MessageEnvelope {
             sender,
             dest,
             errors,
+            delivery_failures,
             headers,
             ttl,
             return_undeliverable,
@@ -724,6 +758,7 @@ impl MessageEnvelope {
             dest,
             data,
             errors,
+            delivery_failures,
             headers,
             ttl,
             return_undeliverable,
@@ -763,6 +798,10 @@ pub struct MessageMetadata {
     sender: ActorAddr,
     dest: PortAddr,
     errors: Vec<DeliveryError>,
+    /// Structured delivery failures. The first entry is the root delivery
+    /// failure; later entries record subsequent failures while returning or
+    /// forwarding the same envelope.
+    delivery_failures: Vec<DeliveryFailure>,
     headers: Flattrs,
     ttl: u8,
     return_undeliverable: bool,
@@ -2086,6 +2125,7 @@ impl MailboxSender for Mailbox {
             sender,
             dest,
             errors: metadata_errors,
+            delivery_failures,
             ttl,
             return_undeliverable,
         } = metadata;
@@ -2128,6 +2168,7 @@ impl MailboxSender for Mailbox {
                         sender,
                         dest,
                         errors: metadata_errors,
+                        delivery_failures,
                         ttl,
                         return_undeliverable,
                     },
@@ -2148,6 +2189,7 @@ impl MailboxSender for Mailbox {
                         sender,
                         dest,
                         errors: metadata_errors,
+                        delivery_failures,
                         ttl,
                         return_undeliverable,
                     },
