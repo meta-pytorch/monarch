@@ -841,7 +841,7 @@ impl ProcMeshRef {
                 mesh.id()
             );
             let controller = controller
-                .spawn_with_name(cx, &controller_name)
+                .spawn_with_label(cx, &controller_name)
                 .map_err(|e| {
                     Error::ControllerActorSpawnError(mesh.id().resource_id().clone(), e)
                 })?;
@@ -1188,10 +1188,9 @@ mod tests {
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(cx, "test", &()).await.unwrap();
 
-        let (instance, _) = cx
+        let instance = cx
             .proc()
-            .client(&format!("random_casts_{}", Uuid::now_v7()))
-            .unwrap();
+            .client(&format!("random_casts_{}", Uuid::now_v7()));
         let n = 1;
         for _ in 0..n {
             actor_mesh.cast(&instance, ()).unwrap();
