@@ -51,6 +51,7 @@ use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
+use crate::mailbox::DeliveryFailure;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::MailboxSender as _;
@@ -58,7 +59,10 @@ use crate::mailbox::MailboxServer as _;
 use crate::mailbox::MailboxServerHandle;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
+use crate::mailbox::TransportFailure;
+use crate::mailbox::TransportFailureReason;
 use crate::mailbox::Undeliverable;
+use crate::mailbox::UndeliverableReason;
 use crate::mailbox::UnroutableMailboxSender;
 use crate::proc::Proc;
 use crate::proc::WeakProc;
@@ -332,10 +336,19 @@ impl crate::mailbox::MailboxSender for WeakGateway {
     ) {
         match self.upgrade() {
             Some(gateway) => gateway.post(envelope, return_handle),
-            None => envelope.undeliverable(
-                DeliveryError::BrokenLink("failed to upgrade WeakGateway".to_string()),
-                return_handle,
-            ),
+            None => {
+                let target = envelope.dest().clone();
+                let failure =
+                    DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                        target,
+                        TransportFailureReason::LinkUnavailable("gateway is gone".to_string()),
+                    )));
+                envelope.undeliverable_with_failure(
+                    DeliveryError::BrokenLink("failed to upgrade WeakGateway".to_string()),
+                    failure,
+                    return_handle,
+                )
+            }
         }
     }
 
@@ -404,6 +417,7 @@ mod tests {
     use super::*;
     use crate::Endpoint as _;
     use crate::Label;
+    use crate::mailbox::DeliveryFailureKind;
     use crate::mailbox::MailboxSender;
     use crate::mailbox::PortLocation;
     use crate::mailbox::monitored_return_handle;
@@ -738,7 +752,8 @@ mod tests {
 
     /// After the gateway is dropped, `WeakGateway::post_unchecked`
     /// (the sender used by gateway-served mailbox tasks) bounces
-    /// envelopes as `BrokenLink` rather than panicking or hanging.
+    /// envelopes as a structured transport failure rather than panicking or
+    /// hanging.
     /// Tested directly against `WeakGateway` — no channel server, no
     /// task lifecycle — because the bounce is in-process and
     /// observable at the caller's return port without going through
@@ -768,9 +783,8 @@ mod tests {
         )
         .unwrap();
 
-        // Post directly through the WeakGateway. Upgrade fails →
-        // envelope.undeliverable(BrokenLink, return_handle) sends
-        // synchronously to our return port.
+        // Post directly through the WeakGateway. Upgrade fails and sends the
+        // bounce synchronously to our return port.
         weak.post(envelope, return_handle);
 
         let Undeliverable::Message(envelope) =
@@ -784,11 +798,13 @@ mod tests {
         assert_eq!(envelope.dest(), &dest);
         assert!(
             envelope
-                .errors()
-                .iter()
-                .any(|e| matches!(e, DeliveryError::BrokenLink(_))),
-            "expected BrokenLink bounce, got {:?}",
-            envelope.errors(),
+                .root_delivery_failure()
+                .is_some_and(|failure| matches!(
+                    &failure.kind,
+                    DeliveryFailureKind::Undeliverable(UndeliverableReason::Transport(_))
+                )),
+            "expected structured transport bounce, got {:?}",
+            envelope.delivery_failures(),
         );
     }
 

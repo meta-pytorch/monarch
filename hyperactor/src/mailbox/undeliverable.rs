@@ -61,12 +61,16 @@ use crate::Instance;
 use crate::Message;
 use crate::Proc;
 use crate::mailbox::DeliveryError;
+use crate::mailbox::DeliveryFailure;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
+use crate::mailbox::TransportFailure;
+use crate::mailbox::TransportFailureReason;
 use crate::mailbox::UndeliverableMailboxSender;
+use crate::mailbox::UndeliverableReason;
 use crate::mailbox::headers::OPERATION_ADVERB;
 use crate::mailbox::headers::OPERATION_ENDPOINT;
 use crate::mailbox::headers::RUST_MESSAGE_TYPE;
@@ -164,6 +168,14 @@ pub fn monitored_return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
             while let Ok(undeliverable) = rx.recv().await {
                 match undeliverable {
                     Undeliverable::Message(mut envelope) => {
+                        envelope.push_delivery_failure(DeliveryFailure::new(
+                            UndeliverableReason::Transport(TransportFailure::new(
+                                envelope.dest().clone(),
+                                TransportFailureReason::LinkUnavailable(
+                                    "message returned to undeliverable port".to_string(),
+                                ),
+                            )),
+                        ));
                         envelope.set_error(DeliveryError::BrokenLink(
                             "message returned to undeliverable port".to_string(),
                         ));
@@ -199,6 +211,14 @@ pub fn custom_monitored_return_handle(caller: &str) -> PortHandle<Undeliverable<
         while let Ok(undeliverable) = rx.recv().await {
             match undeliverable {
                 Undeliverable::Message(mut envelope) => {
+                    envelope.push_delivery_failure(DeliveryFailure::new(
+                        UndeliverableReason::Transport(TransportFailure::new(
+                            envelope.dest().clone(),
+                            TransportFailureReason::LinkUnavailable(
+                                "message returned to undeliverable port".to_string(),
+                            ),
+                        )),
+                    ));
                     envelope.set_error(DeliveryError::BrokenLink(
                         "message returned to undeliverable port".to_string(),
                     ));
@@ -367,6 +387,8 @@ mod tests {
     use hyperactor_config::Flattrs;
 
     use super::*;
+    use crate::mailbox::InvalidReference;
+    use crate::mailbox::InvalidReferenceReason;
     use crate::mailbox::MessageEnvelope;
     use crate::testing::ids::test_actor_id;
     use crate::testing::ids::test_port_id;
@@ -451,6 +473,30 @@ mod tests {
         assert!(
             !rendered.contains(&payload),
             "UE-1: payload body leaked into rendered text"
+        );
+    }
+
+    #[test]
+    fn test_delivery_failure_display_uses_structured_failure() {
+        let mut envelope = make_envelope("payload", Flattrs::new());
+        let dest = envelope.dest().clone();
+        envelope.push_delivery_failure(DeliveryFailure::new(InvalidReference::new(
+            dest,
+            InvalidReferenceReason::PortNeverAllocated,
+        )));
+
+        let rendered = format!(
+            "{}",
+            UndeliverableMessageError::DeliveryFailure { envelope }
+        );
+
+        assert!(
+            rendered.contains("\terror: delivery failure: invalid reference"),
+            "structured delivery failure should render in error field, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("port never allocated"),
+            "structured reason should render in error field, got:\n{rendered}"
         );
     }
 

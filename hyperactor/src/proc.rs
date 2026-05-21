@@ -178,6 +178,7 @@ use crate::introspect::IntrospectMessage;
 use crate::introspect::IntrospectResult;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
+use crate::mailbox::DeliveryFailure;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::Mailbox;
@@ -190,7 +191,10 @@ use crate::mailbox::OncePortReceiver;
 use crate::mailbox::PanickingMailboxSender;
 use crate::mailbox::PortHandle;
 use crate::mailbox::PortReceiver;
+use crate::mailbox::TransportFailure;
+use crate::mailbox::TransportFailureReason;
 use crate::mailbox::Undeliverable;
+use crate::mailbox::UndeliverableReason;
 use crate::metrics::ACTOR_MESSAGE_HANDLER_DURATION;
 use crate::metrics::ACTOR_MESSAGE_QUEUE_SIZE;
 use crate::metrics::ACTOR_MESSAGES_RECEIVED;
@@ -1670,10 +1674,19 @@ impl MailboxSender for WeakProc {
     ) {
         match self.upgrade() {
             Some(proc) => proc.post(envelope, return_handle),
-            None => envelope.undeliverable(
-                DeliveryError::BrokenLink("fail to upgrade WeakProc".to_string()),
-                return_handle,
-            ),
+            None => {
+                let target = envelope.dest().clone();
+                let failure =
+                    DeliveryFailure::new(UndeliverableReason::Transport(TransportFailure::new(
+                        target,
+                        TransportFailureReason::LinkUnavailable("proc is gone".to_string()),
+                    )));
+                envelope.undeliverable_with_failure(
+                    DeliveryError::BrokenLink("fail to upgrade WeakProc".to_string()),
+                    failure,
+                    return_handle,
+                )
+            }
         }
     }
 
