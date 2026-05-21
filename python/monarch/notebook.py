@@ -41,6 +41,7 @@ TORCHX_MAST_TASK_GROUP_NAME = "script"
 
 
 class _Importer:
+    # pyrefly: ignore [missing-attribute]
     def __init__(self, ctx: zmq.Context, endpoint):
         self.socket = ctx.socket(zmq.REQ)
         self.socket.setsockopt(zmq.IPV6, True)
@@ -82,7 +83,9 @@ class _ExtensionLoader:
 
 
 class ControllerImporterServer:
+    # pyrefly: ignore [missing-attribute]
     def __init__(self, context: zmq.Context):
+        # pyrefly: ignore [missing-attribute]
         self.socket: zmq.Socket = context.socket(zmq.REP)
         self.socket.setsockopt(zmq.IPV6, True)
         self.hostname = socket.gethostname()
@@ -105,6 +108,7 @@ class ControllerImporterServer:
                         )
                     elif isinstance(s.loader, ExtensionFileLoader):
                         with open(s.loader.path, "rb") as f:
+                            # pyrefly: ignore [bad-assignment]
                             s.loader = _ExtensionLoader(
                                 s.loader.name, s.loader.path, f.read()
                             )
@@ -114,6 +118,7 @@ class ControllerImporterServer:
             self.socket.send_pyobj(s)
 
 
+# pyrefly: ignore [missing-attribute]
 def _start_importer_server(context: zmq.Context):
     server = ControllerImporterServer(
         context,
@@ -279,7 +284,6 @@ def launch_mast(
     }
 
     if base_image is not None:
-        # pyre-fixme[16]: Item `bool` of `Union[Dict[typing.Any, typing.Any], Dict[st...
         jobspec["hpcTaskGroups"][0]["baseImage"] = {
             "baseImagePackage": {
                 "fbpkgIdentifier": base_image,
@@ -679,6 +683,7 @@ def mast_mesh(
 
 
 def list_mast_jobs():
+    # pyrefly: ignore [missing-argument]
     for job in get_mast_notebook_jobs():
         print(job)
 
