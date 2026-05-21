@@ -63,7 +63,7 @@ class ErrorActor(Actor):
 class ErrorActorSync(Actor):
     """An actor that has endpoints cause segfaults."""
 
-    @endpoint  # pyre-ignore
+    @endpoint
     def cause_segfault(self) -> None:
         """Endpoint that causes a segmentation fault."""
         # Create a C function pointer to an invalid memory address
@@ -75,7 +75,7 @@ class ErrorActorSync(Actor):
         # Calling this function will cause a segfault
         invalid_function()
 
-    @endpoint  # pyre-ignore
+    @endpoint
     def cause_panic(self) -> None:
         """Endpoint that calls a Rust function that panics."""
         panicking_function()
@@ -155,8 +155,10 @@ def error_endpoint(num_procs, sync_test_impl, sync_endpoint, endpoint_name, v1):
     )
 
     if sync_test_impl:
+        # pyrefly: ignore [bad-argument-count]
         _run_error_test_sync(num_procs, sync_endpoint, endpoint_name, v1)
     else:
+        # pyrefly: ignore [bad-argument-count]
         _run_error_test(num_procs, sync_endpoint, endpoint_name, v1)
 
 
@@ -164,7 +166,9 @@ def error_endpoint(num_procs, sync_test_impl, sync_endpoint, endpoint_name, v1):
 def error_bootstrap():
     print("Started function error_bootstrap", flush=True)
     spawn_procs_on_this_host(
-        {"gpus": 4}, env={"MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1"}
+        {"gpus": 4},
+        # pyrefly: ignore [unexpected-keyword]
+        env={"MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1"},
     ).initialized.get()
 
 
