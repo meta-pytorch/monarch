@@ -17,7 +17,8 @@ config(oncall = "monarch")
 _wait = buck_run(
     description = "Wait for GitHub Actions CI signal to pass on the exported PR",
     target = "fbcode//monarch/ci:poll_github_ci",
-    args = ["--diff", phabricator_diff_number, "--version-number", phabricator_version_number],
+    buck_cell = "fbsource",
+    param_list = ["--diff", phabricator_diff_number, "--version-number", phabricator_version_number],
     result_classifiers = [
         Classifier(
             predicate = ExitCode(eq(1)),
