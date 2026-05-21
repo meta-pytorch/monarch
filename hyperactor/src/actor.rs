@@ -318,6 +318,7 @@ impl<A: Actor> Handler<crate::introspect::IntrospectMessage> for A {
     }
 }
 
+#[derive(Debug)]
 enum DeliveryFailurePolicy {
     InvalidReference,
     Expired,
@@ -1267,6 +1268,57 @@ mod tests {
             .actor_addr("actor")
             .port_addr(Port::from(1234));
         assert_delivery_policy_actor_fails(DeliveryFailure::new(ExpiredDelivery::new(port))).await;
+    }
+
+    #[test]
+    fn test_delivery_failure_policy_ignores_attrs() {
+        hyperactor_config::attrs::declare_attrs! {
+            attr TEST_DELIVERY_FAILURE_ATTR: String;
+        }
+
+        let sender = test_proc_id("sender").actor_addr("actor");
+        let dest = sender.port_addr(Port::from(1234));
+        let mut attrs = Flattrs::new();
+        attrs.set(TEST_DELIVERY_FAILURE_ATTR, "context".to_string());
+
+        let transport = delivery_policy_envelope(
+            &sender,
+            dest.clone(),
+            DeliveryFailure::with_attrs(
+                UndeliverableReason::Transport(TransportFailure::new(
+                    dest.clone(),
+                    TransportFailureReason::NoRoute,
+                )),
+                attrs.clone(),
+            ),
+        );
+        assert_matches!(
+            delivery_failure_policy(&Undeliverable::Message(transport)),
+            DeliveryFailurePolicy::Undeliverable
+        );
+
+        let invalid_reference = delivery_policy_envelope(
+            &sender,
+            dest.clone(),
+            DeliveryFailure::with_attrs(
+                InvalidReference::new(dest.clone(), InvalidReferenceReason::PortNeverAllocated),
+                attrs.clone(),
+            ),
+        );
+        assert_matches!(
+            delivery_failure_policy(&Undeliverable::Message(invalid_reference)),
+            DeliveryFailurePolicy::InvalidReference
+        );
+
+        let expired = delivery_policy_envelope(
+            &sender,
+            dest.clone(),
+            DeliveryFailure::with_attrs(ExpiredDelivery::new(dest), attrs),
+        );
+        assert_matches!(
+            delivery_failure_policy(&Undeliverable::Message(expired)),
+            DeliveryFailurePolicy::Expired
+        );
     }
 
     #[tokio::test]

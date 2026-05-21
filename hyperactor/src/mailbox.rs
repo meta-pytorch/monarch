@@ -3855,7 +3855,7 @@ mod tests {
             undelivered
                 .error_msg()
                 .expect("expected error")
-                .contains("cannot deliver to")
+                .contains("wrong mailbox owner")
         );
         let root_failure = undelivered
             .root_delivery_failure()
@@ -3886,11 +3886,12 @@ mod tests {
 
         mbox.post(envelope, return_handle);
 
-        let Undeliverable(undelivered) =
-            tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
-                .await
-                .expect("timed out waiting for undeliverable")
-                .expect("return port closed");
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("return port closed")
+            .into_message()
+            .expect("expected returned envelope");
         let root_failure = undelivered
             .root_delivery_failure()
             .expect("expected root delivery failure");
@@ -5617,16 +5618,14 @@ mod tests {
 
         mailbox.post(envelope, return_handle);
 
-        let undeliverable = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
-            .expect("return port closed");
-
-        let err = undeliverable
+            .expect("return port closed")
             .into_message()
-            .expect("expected returned envelope")
-            .error_msg()
-            .expect("expected error");
+            .expect("expected returned envelope");
+
+        let err = undelivered.error_msg().expect("expected error");
         assert!(
             err.contains("actor stopped"),
             "error should indicate actor stopped: {}",
@@ -5672,16 +5671,14 @@ mod tests {
 
         mailbox.post(envelope, return_handle);
 
-        let undeliverable = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
-            .expect("return port closed");
-
-        let err = undeliverable
+            .expect("return port closed")
             .into_message()
-            .expect("expected returned envelope")
-            .error_msg()
-            .expect("expected error");
+            .expect("expected returned envelope");
+
+        let err = undelivered.error_msg().expect("expected error");
         assert!(
             err.contains("actor failed"),
             "error should indicate actor failed: {}",
