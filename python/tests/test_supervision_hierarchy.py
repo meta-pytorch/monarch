@@ -22,7 +22,6 @@ T = TypeVar("T")
 
 
 class Lambda(Actor):
-    # pyre-ignore[56]
     @endpoint
     def run(self, func: Callable[[], T]) -> T:
         return func()
@@ -34,17 +33,15 @@ class Nest(Actor):
             this_host().spawn_procs(per_host={"a_dim": 1}).spawn("nested", Lambda)
         )
 
-    # pyre-ignore[56]
     @endpoint
     def nested(self, func: Callable[[], T]) -> T:
+        # pyrefly: ignore [bad-return]
         return self.nest.run.broadcast(func)
 
-    # pyre-ignore[56]
     @endpoint
     def nested_call_one(self, func: Callable[[], T]) -> T:
         return self.nest.run.call_one(func).get()
 
-    # pyre-ignore[56]
     @endpoint
     def direct(self, func: Callable[[], T]) -> T:
         return func()
@@ -61,6 +58,7 @@ def error():
 
 
 class SuperviseNest(Nest):
+    # pyrefly: ignore [bad-param-name-override]
     def __supervise__(self, x):
         print("SUPERVISE: ", x)
 
@@ -80,6 +78,7 @@ class FaultCapture:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.failure_happened.wait(timeout=30)
+        # pyrefly: ignore [bad-assignment]
         monarch.actor.unhandled_fault_hook = self.original_hook
 
     def capture_fault(self, failure: MeshFailure) -> None:
