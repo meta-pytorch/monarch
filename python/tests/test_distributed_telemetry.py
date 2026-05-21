@@ -43,7 +43,6 @@ class SenderActor(Actor):
     @endpoint
     def send_ping(self, target: WorkerActor) -> None:
         """Cast to the target actor mesh from within this actor."""
-        # pyre-ignore[29]: target is an ActorMesh
         target.ping.call().get()
 
 
@@ -85,7 +84,7 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
             reset_record_batch_flush_count,
         )
     except ImportError:
-        pytest.skip(  # pyre-ignore[29]: pytest.skip is callable
+        pytest.skip(
             "RecordBatch tracing not available (requires distributed_sql_telemetry feature)"
         )
         return
