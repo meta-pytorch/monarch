@@ -1863,8 +1863,7 @@ class ActorWithAsyncCleanup(Actor):
 
     # Cleanup should match the async-ness of the other endpoints,
     # to exercise the async `__cleanup__` dispatch path.
-    # pyre-ignore[15]: intentionally overrides the sync base with `async def`
-    async def __cleanup__(self, exc: Exception | None):
+    async def __cleanup__(self, exc: Exception | None):  # type: ignore[override]
         self.logger.info(f"Calling __cleanup__ on {self}, {exc=}")
         await self.counter.incr.call_one()
 
