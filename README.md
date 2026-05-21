@@ -43,13 +43,6 @@ The
 [introduction to monarch concepts](https://meta-pytorch.org/monarch/generated/examples/getting_started.html)
 provides an introduction to using these features.
 
-> ⚠️ **Early Development Warning** Monarch is currently in an experimental
-> stage. You should expect bugs, incomplete features, and APIs that may change
-> in future versions. The project welcomes bugfixes, but to make sure things are
-> well coordinated you should discuss any significant change before starting the
-> work. It's recommended that you signal your intention to contribute in the
-> issue tracker, either by filing a new issue or by claiming an existing one.
-
 ## 📖 Documentation
 
 View Monarch's hosted documentation
