@@ -60,7 +60,6 @@ use crate::Instance;
 // for macros
 use crate::Message;
 use crate::Proc;
-use crate::mailbox::DeliveryError;
 use crate::mailbox::DeliveryFailure;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MailboxSenderError;
@@ -176,9 +175,6 @@ pub fn monitored_return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
                                 ),
                             )),
                         ));
-                        envelope.set_error(DeliveryError::BrokenLink(
-                            "message returned to undeliverable port".to_string(),
-                        ));
                         super::UndeliverableMailboxSender
                             .post(envelope, /*unused */ h.clone());
                     }
@@ -218,9 +214,6 @@ pub fn custom_monitored_return_handle(caller: &str) -> PortHandle<Undeliverable<
                                 "message returned to undeliverable port".to_string(),
                             ),
                         )),
-                    ));
-                    envelope.set_error(DeliveryError::BrokenLink(
-                        "message returned to undeliverable port".to_string(),
                     ));
                     tracing::error!("{caller} took back an undeliverable message: {}", envelope);
                 }

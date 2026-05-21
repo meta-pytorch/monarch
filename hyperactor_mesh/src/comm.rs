@@ -35,7 +35,6 @@ use hyperactor::RemoteMessage;
 use hyperactor::UnboundPort;
 use hyperactor::UnboundPortKind;
 use hyperactor::accum::ReducerMode;
-use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;

@@ -50,7 +50,6 @@ use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
 use crate::mailbox::BoxedMailboxSender;
-use crate::mailbox::DeliveryError;
 use crate::mailbox::DeliveryFailure;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
@@ -343,11 +342,7 @@ impl crate::mailbox::MailboxSender for WeakGateway {
                         target,
                         TransportFailureReason::LinkUnavailable("gateway is gone".to_string()),
                     )));
-                envelope.undeliverable_with_failure(
-                    DeliveryError::BrokenLink("failed to upgrade WeakGateway".to_string()),
-                    failure,
-                    return_handle,
-                )
+                envelope.undeliverable(failure, return_handle)
             }
         }
     }
