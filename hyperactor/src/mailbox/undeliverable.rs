@@ -367,6 +367,9 @@ mod tests {
     use hyperactor_config::Flattrs;
 
     use super::*;
+    use crate::mailbox::DeliveryFailure;
+    use crate::mailbox::InvalidReference;
+    use crate::mailbox::InvalidReferenceReason;
     use crate::mailbox::MessageEnvelope;
     use crate::testing::ids::test_actor_id;
     use crate::testing::ids::test_port_id;
@@ -451,6 +454,30 @@ mod tests {
         assert!(
             !rendered.contains(&payload),
             "UE-1: payload body leaked into rendered text"
+        );
+    }
+
+    #[test]
+    fn test_delivery_failure_display_uses_structured_failure() {
+        let mut envelope = make_envelope("payload", Flattrs::new());
+        let dest = envelope.dest().clone();
+        envelope.push_delivery_failure(DeliveryFailure::new(InvalidReference::new(
+            dest,
+            InvalidReferenceReason::PortNeverAllocated,
+        )));
+
+        let rendered = format!(
+            "{}",
+            UndeliverableMessageError::DeliveryFailure { envelope }
+        );
+
+        assert!(
+            rendered.contains("\terror: delivery failure: invalid reference"),
+            "structured delivery failure should render in error field, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("port never allocated"),
+            "structured reason should render in error field, got:\n{rendered}"
         );
     }
 
