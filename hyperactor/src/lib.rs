@@ -110,7 +110,9 @@ pub mod internal_macro_support {
 }
 
 pub use actor::Actor;
+pub use actor::ActorGuard;
 pub use actor::ActorHandle;
+pub use actor::AnyActorGuard;
 pub use actor::AnyActorHandle;
 pub use actor::Handler;
 pub use actor::HandlerInfo;
