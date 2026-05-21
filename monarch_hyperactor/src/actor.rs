@@ -79,6 +79,7 @@ use crate::metrics::ENDPOINT_ACTOR_PANIC;
 use crate::pickle::pickle_to_part;
 use crate::proc::PyActorAddr;
 use crate::pympsc;
+use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::runtime::get_proc_runtime;
 use crate::runtime::get_tokio_runtime;
@@ -1624,6 +1625,10 @@ impl LocalPort {
         port.post(self.instance.deref(), Ok(obj));
         Ok(())
     }
+    fn resolve_and_send(&mut self, obj: Py<PyAny>) -> PyResult<PyPythonTask> {
+        self.send(obj)?;
+        PyPythonTask::new(async { Ok(()) })
+    }
     fn exception(&mut self, e: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
         port.post(self.instance.deref(), Err(e));
@@ -1647,6 +1652,11 @@ impl DroppingPort {
 
     fn send(&self, _obj: Py<PyAny>) -> PyResult<()> {
         Ok(())
+    }
+
+    fn resolve_and_send(&self, obj: Py<PyAny>) -> PyResult<PyPythonTask> {
+        self.send(obj)?;
+        PyPythonTask::new(async { Ok(()) })
     }
 
     fn send_message(&self, _message: PythonMessage) -> PyResult<()> {
