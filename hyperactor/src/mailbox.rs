@@ -3209,7 +3209,15 @@ impl MailboxSender for MailboxMuxer {
                     "no mailbox for actor {} registered in muxer",
                     dest_actor_ref
                 );
-                envelope.undeliverable(DeliveryError::Unroutable(err), return_handle)
+                let failure = DeliveryFailure::new(InvalidReference::new(
+                    dest_actor_ref,
+                    InvalidReferenceReason::ActorNotExist,
+                ));
+                envelope.undeliverable_with_failure(
+                    DeliveryError::Unroutable(err),
+                    failure,
+                    return_handle,
+                )
             }
             Some(sender) => sender.post(envelope, return_handle),
         }
@@ -4036,11 +4044,43 @@ mod tests {
 
         let (port, receiver) = mbox0.open_once_port::<u64>();
 
+        let muxer_sender = muxer.clone();
         let proc = Proc::configured(test_proc_id("0"), BoxedMailboxSender::new(muxer));
         let (client, _) = proc.client("client").unwrap();
 
         port.post(&client, 123u64);
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
+
+        let missing_actor = test_actor_id("0", "missing_actor");
+        let missing_dest = missing_actor.port_addr(Port::from(1234));
+        let envelope = MessageEnvelope::serialize(
+            client.self_addr().clone(),
+            missing_dest,
+            &456u64,
+            Flattrs::new(),
+        )
+        .expect("serialize");
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        muxer_sender.post(envelope, return_handle);
+
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("return port closed")
+            .into_message()
+            .expect("expected returned envelope");
+        let root_failure = undelivered
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        let DeliveryFailureKind::InvalidReference(invalid_reference) = &root_failure.kind else {
+            panic!("expected invalid reference, got {root_failure}");
+        };
+        assert_eq!(invalid_reference.target, Addr::Actor(missing_actor));
+        assert_eq!(
+            invalid_reference.reason,
+            InvalidReferenceReason::ActorNotExist
+        );
 
         /*
         let (tx, rx) = channel::local::new::<u64>();
