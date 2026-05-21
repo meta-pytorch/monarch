@@ -46,7 +46,9 @@ def invoke_main() -> None:
         # if this is invoked with the stdout piped somewhere, then print
         # changes its buffering behavior. So we default to the standard
         # behavior of std out as if it were a terminal.
+        # pyrefly: ignore [missing-attribute]
         sys.stdout.reconfigure(line_buffering=True)
+        # pyrefly: ignore [unknown-name]
         global bootstrap_main
 
         # TODO: figure out what from worker_main.py we should reproduce here.

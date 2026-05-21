@@ -22,7 +22,9 @@ def create_test_tasks(fake_tensor_tracker) -> Tuple[Task, ...]:
     def fake():
         for i in range(4):
             tensor = torch.randn(100, 100).cuda()
+            # pyrefly: ignore [missing-attribute]
             tensor.ref = i
+            # pyrefly: ignore [missing-attribute]
             tensor._fake = tensor
             fake_tensor_tracker.add({i: tensor})
 
@@ -73,12 +75,15 @@ class TestWorker(unittest.TestCase):
         cloned_task_manager = worker.task_manager.clone()
         cloned_storage_tracker = worker.storage_tracker.clone()
         cloned_cpu_tensors = worker.cpu_tensors.clone(
-            cloned_task_manager, cloned_storage_tracker
+            cloned_task_manager,
+            # pyrefly: ignore [bad-argument-type]
+            cloned_storage_tracker,
         )
         cloned_stream = main_stream.clone(
             cloned_task_manager, cloned_storage_tracker, cloned_cpu_tensors
         )
 
+        # pyrefly: ignore [missing-attribute]
         self.assertEqual(cloned_stream.last_task.task_id, main_stream.last_task.task_id)
         self.assertEqual(len(cloned_stream.task_queue), len(main_stream.task_queue))
 
