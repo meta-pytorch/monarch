@@ -653,11 +653,9 @@ def _symlink_attr(target_len: int) -> dict[str, object]:
 @contextlib.contextmanager
 def _fuse_mount(
     metadata: dict[str, object],
-    # pyre-ignore[24]: memoryview is not generic in Pyre
     chunks: list[memoryview],
     chunk_size: int,
     mount_point: str,
-    # pyre-ignore[24]
 ) -> Generator[FuseMountHandle, None, None]:
     """Mount a FUSE filesystem and unmount on exit for test isolation."""
     handle = mount_chunked_fuse(metadata, chunks, chunk_size, mount_point)
@@ -1832,7 +1830,6 @@ class TestReceiveBlockPreservesCache:
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_actor_cold_transfer() -> None:
@@ -1860,7 +1857,6 @@ def test_actor_cold_transfer() -> None:
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_actor_incremental_no_change() -> None:
@@ -1890,7 +1886,6 @@ def test_actor_incremental_no_change() -> None:
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_actor_incremental_partial() -> None:
@@ -1925,7 +1920,6 @@ def test_actor_incremental_partial() -> None:
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_unmount_not_mounted_returns_status() -> None:
@@ -1945,7 +1939,6 @@ def test_unmount_not_mounted_returns_status() -> None:
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_unmount_after_mount_returns_ok() -> None:
@@ -1967,12 +1960,14 @@ def test_unmount_after_mount_returns_ok() -> None:
                 assert f.read() == b"test content"
 
             # Unmount via the actor endpoint — should return 'ok'
+            # pyrefly: ignore [missing-attribute]
             result = rm.fuse_actors.unmount.call(mnt).get()
             for _rank, (status, _detail) in result:
                 assert status == "ok"
                 assert _detail == ""
 
             # Second unmount — should return 'not_mounted'
+            # pyrefly: ignore [missing-attribute]
             result = rm.fuse_actors.unmount.call(mnt).get()
             for _rank, (status, _detail) in result:
                 assert status == "not_mounted"
@@ -1983,7 +1978,6 @@ _tls_certs_available: bool = os.path.exists("/var/facebook/x509_identities/serve
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
 @pytest.mark.skipif(not _tls_certs_available, reason="TLS certs not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_tls_cold_transfer() -> None:
@@ -2012,7 +2006,6 @@ def test_tls_cold_transfer() -> None:
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
 @pytest.mark.skipif(not _tls_certs_available, reason="TLS certs not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_tls_incremental_no_change() -> None:
@@ -2041,7 +2034,6 @@ def test_tls_incremental_no_change() -> None:
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
 @pytest.mark.skipif(not _tls_certs_available, reason="TLS certs not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_tls_incremental_partial() -> None:
@@ -2073,7 +2065,6 @@ def test_tls_incremental_partial() -> None:
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_actor_refresh() -> None:
@@ -2107,7 +2098,6 @@ def test_actor_refresh() -> None:
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_actor_refresh_with_open_handles() -> None:
@@ -2144,7 +2134,6 @@ def test_actor_refresh_with_open_handles() -> None:
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_actor_refresh_no_change() -> None:
@@ -2173,7 +2162,6 @@ def test_actor_refresh_no_change() -> None:
 
 
 @pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
-# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_actor_refresh_add_file() -> None:

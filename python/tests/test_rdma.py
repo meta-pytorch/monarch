@@ -85,20 +85,24 @@ def test_host_memory_handle_read_write():
     handle = _make_local_memory_handle(data)
 
     # read_at
+    # pyrefly: ignore [missing-attribute]
     result = handle.read_at(1, 3)
     assert list(result) == [2, 3, 4]
 
     # write_at
+    # pyrefly: ignore [missing-attribute]
     handle.write_at(0, bytes([10, 20]))
     assert data[0].item() == 10
     assert data[1].item() == 20
 
     # out-of-bounds read
     with pytest.raises(RuntimeError):
+        # pyrefly: ignore [missing-attribute]
         handle.read_at(3, 5)
 
     # out-of-bounds write
     with pytest.raises(RuntimeError):
+        # pyrefly: ignore [missing-attribute]
         handle.write_at(4, bytes([1, 2, 3]))
 
 
@@ -111,20 +115,25 @@ def test_device_memory_handle_read_write():
     handle = _make_local_memory_handle(data)
 
     # read_at
+    # pyrefly: ignore [missing-attribute]
     result = handle.read_at(1, 3)
     assert list(result) == [20, 30, 40]
 
     # write_at
+    # pyrefly: ignore [missing-attribute]
     handle.write_at(0, bytes([99, 88]))
+    # pyrefly: ignore [missing-attribute]
     readback = handle.read_at(0, 5)
     assert list(readback) == [99, 88, 30, 40, 50]
 
     # out-of-bounds read
     with pytest.raises(RuntimeError):
+        # pyrefly: ignore [missing-attribute]
         handle.read_at(3, 5)
 
     # out-of-bounds write
     with pytest.raises(RuntimeError):
+        # pyrefly: ignore [missing-attribute]
         handle.write_at(4, bytes([1, 2, 3]))
 
 
@@ -245,6 +254,7 @@ async def test_rdma_buffer_drop():
         @endpoint
         async def drop_buffer(self) -> None:
             """Drop an RDMABuffer"""
+            # pyrefly: ignore [missing-attribute]
             await self.buffer.drop()
 
     class ConsumerActor(Actor):
@@ -395,6 +405,7 @@ async def test_rdma_concurrent_2gb_writes_in_order():
         @endpoint
         async def drop_buffer(self) -> None:
             """Drop an RDMABuffer"""
+            # pyrefly: ignore [missing-attribute]
             await self.rdma_buffer.drop()
 
         @endpoint
@@ -509,6 +520,7 @@ class ClientActor(Actor):
         self.data_b = torch.zeros(size, dtype=torch.float32)
         self.data_c = torch.zeros(size, dtype=torch.float32)
         self.action = None
+        # pyrefly: ignore [bad-assignment, bad-override]
         self.size = size
 
     @endpoint
@@ -599,6 +611,7 @@ class ClientActor(Actor):
         action.read_into(
             buffer_a, self.data_a.view(torch.uint8)[50 * 4 : 150 * 4].flatten()
         )
+        # pyrefly: ignore [bad-assignment]
         self.action = action
 
     @endpoint
