@@ -1102,6 +1102,7 @@ class IRGraph:
                 "size",
             ]
         else:  # is_dataclass
+            # pyrefly: ignore [missing-attribute]
             keys = list(first_value.__dataclass_fields__.keys())
 
         def get_value(obj, key):

@@ -33,7 +33,6 @@ class ExecutionTimer:
 
     @classmethod
     @contextmanager
-    # pyre-fixme[3]: Return type must be specified as type that does not contain `Any`.
     def time(
         cls, name: Optional[str] = None, use_cpu: bool = False
     ) -> Generator[None, Any, Any]:
