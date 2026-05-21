@@ -1091,7 +1091,7 @@ impl Handler<DrainHost> for HostAgent {
 
         let done_port = cx.port::<DrainComplete>();
 
-        cx.spawn_with_name(
+        cx.spawn_with_label(
             "drain_worker",
             DrainWorker {
                 host: Some(host),
@@ -1499,6 +1499,7 @@ mod tests {
     use hyperactor::Proc;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::id::Label;
+    use hyperactor::id::Uid;
 
     use super::*;
     use crate::bootstrap::ProcStatus;
@@ -1519,8 +1520,8 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1529,7 +1530,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let id = ResourceId::instance(Label::new("proc1").unwrap());
 
@@ -1579,8 +1580,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1589,7 +1590,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let id = ResourceId::instance(Label::new("proc1").unwrap());
         host_agent
@@ -1629,8 +1630,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1639,7 +1640,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let id = ResourceId::instance(Label::new("proc1").unwrap());
         host_agent
@@ -1685,8 +1686,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1695,7 +1696,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let id = ResourceId::instance(Label::new("proc1").unwrap());
 
@@ -1733,8 +1734,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1743,7 +1744,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let mesh_a = HostMeshId::instance(Label::new("mesh-a").unwrap());
         let mesh_b = HostMeshId::instance(Label::new("mesh-b").unwrap());
@@ -1836,8 +1837,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1846,7 +1847,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let mesh_a = HostMeshId::instance(Label::new("mesh-a").unwrap());
         let mesh_b = HostMeshId::instance(Label::new("mesh-b").unwrap());
@@ -1914,8 +1915,8 @@ mod tests {
 
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -1932,7 +1933,7 @@ mod tests {
 
         let client_proc =
             Proc::direct(ChannelTransport::Unix.any(), "qd_client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Spawn a proc so the host_agent processes at least one
         // CreateOrUpdate message, which goes through the work queue.

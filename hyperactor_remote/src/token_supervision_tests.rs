@@ -249,7 +249,7 @@ impl Handler<WorkerControl> for WorkerRoot {
 }
 
 struct Harness {
-    observer: Instance<()>,
+    observer: hyperactor::Client,
     parent_root: hyperactor::ActorHandle<ParentRoot>,
     worker_root: hyperactor::ActorHandle<WorkerRoot>,
     child_stopped_rx: PortReceiver<String>,
@@ -265,7 +265,7 @@ impl Harness {
         let observer_proc = local_proc("observer")?;
         let parent_proc = local_proc("parent")?;
         let worker_proc = local_proc("worker")?;
-        let (observer, _observer_handle) = observer_proc.client("observer")?;
+        let observer = observer_proc.client("observer");
         let (token_out, mut token_out_rx) = observer.open_port::<String>();
         let (parent_linked, mut parent_linked_rx) = observer.open_port::<ActorAddr>();
         let (parent_events, parent_events_rx) = observer.open_port::<ActorSupervisionEvent>();
@@ -273,7 +273,7 @@ impl Harness {
         let (child_stopped, child_stopped_rx) = observer.open_port::<String>();
         let (worker_out, mut worker_out_rx) = observer.open_port::<ActorRef<WorkerLike>>();
 
-        let parent_root = parent_proc.spawn(
+        let parent_root = parent_proc.spawn_with_label(
             "parent_root",
             ParentRoot {
                 parent: Some(Parent {
@@ -283,9 +283,9 @@ impl Harness {
                 }),
                 parent_handle: None,
             },
-        )?;
+        );
         let token: SupervisionToken = recv::<String>(&mut token_out_rx).await?.parse()?;
-        let worker_root = worker_proc.spawn(
+        let worker_root = worker_proc.spawn_with_label(
             "worker_root",
             WorkerRoot {
                 child_ready,
@@ -294,7 +294,7 @@ impl Harness {
                 child_action,
                 worker: None,
             },
-        )?;
+        );
         let worker_ref: ActorRef<WorkerLike> = recv(&mut worker_out_rx).await?;
         let (join_result, mut join_result_rx) =
             observer.open_port::<token::JoinResult<ActorAddr>>();
