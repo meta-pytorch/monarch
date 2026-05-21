@@ -70,7 +70,6 @@ class ComputeActor(Actor):
 
         child_procs = this_host().spawn_procs(name="child_worker")
         child = child_procs.spawn("child_compute", ComputeActor)
-        # pyre-ignore[29]: child is an ActorMesh
         return child.compute.call_one(100).get()
 
 
@@ -106,7 +105,6 @@ class SenderActor(Actor):
     @endpoint
     def send_compute(self, target: ComputeActor, iterations: int) -> int:
         """Send a compute request to the target actor mesh."""
-        # pyre-ignore[29]: target is an ActorMesh
         return sum(target.compute.call(iterations).get().values())
 
 
@@ -495,30 +493,24 @@ def run_workload(job, summary=False, interactive=False):
     procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers")
 
     print("Spawning compute actors...")
-    # pyre-ignore[29]: procs is a ProcMesh
     actors = procs.spawn("compute", ComputeActor)
 
     print("Doing computation work...")
-    # pyre-ignore[29]: actors is an ActorMesh
     results = actors.compute.call(1000).get()
     print(f"Computation results: {list(results)}")
 
     print("Doing nested work...")
-    # pyre-ignore[29]: actors is an ActorMesh
     nested_results = actors.nested_work.call(3).get()
     print(f"Nested work results: {list(nested_results)}")
 
     print("Spawning sender actor for actor-to-actor messaging...")
-    # pyre-ignore[29]: procs is a ProcMesh
     sender = procs.slice(hosts=0, workers=0).spawn("sender", SenderActor)
 
     print("Sending from sender actor to compute actors...")
-    # pyre-ignore[29]: sender is an ActorMesh
     result = sender.send_compute.call_one(actors, 42).get()
     print(f"Sender-to-compute result: {result}")
 
     print("Spawning a child process...")
-    # pyre-ignore[29]: actors is an ActorMesh
     actors.slice(hosts=0, workers=0).spawn_child_work.call_one().get()
 
     print("Stopping sender actor...")
@@ -533,17 +525,13 @@ def run_workload(job, summary=False, interactive=False):
     engine.query("SELECT COUNT(*) FROM actors")
 
     print("Spawning an actor that stops itself with a reason...")
-    # pyre-ignore[29]: procs is a ProcMesh
     stopper = procs.slice(hosts=0, workers=0).spawn("stopper", StoppingActor)
-    # pyre-ignore[29]: stopper is an ActorMesh
     result = stopper.do_work_then_stop.call_one().get()
     print(f"Stopper result before stopping: {result}")
 
     print("Spawning an actor that fails...")
-    # pyre-ignore[29]: procs is a ProcMesh
     failer = procs.slice(hosts=0, workers=0).spawn("failer", FailingActor)
     try:
-        # pyre-ignore[29]: failer is an ActorMesh
         failer.fail.call_one().get()
         time.sleep(2.0)
     except KeyboardInterrupt:

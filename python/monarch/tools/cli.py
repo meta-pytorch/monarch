@@ -200,7 +200,7 @@ class ContextCmd:
     def run(self, args: argparse.Namespace) -> None:
         if not hasattr(args, "context_func"):
             # No subcommand given — print help
-            args._subparser.print_help()  # pyre-ignore
+            args._subparser.print_help()
             sys.exit(1)
         args.context_func(args)
 

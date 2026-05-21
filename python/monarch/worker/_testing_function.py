@@ -78,6 +78,7 @@ def has_nan(t):
 
 
 def new_barrier_hackery(threads):
+    # pyrefly: ignore [unknown-name]
     global _barrier
     _barrier = threading.Barrier(threads)
     return torch.zeros(1)
@@ -132,7 +133,9 @@ def isend(t, destination, group=None):
     if isinstance(group, SingleControllerProcessGroupWrapper):
         group = group.process_group
     req = dist.isend(t, destination.item(), group=group)
+    # pyrefly: ignore [missing-attribute]
     assert isinstance(req.is_completed(), bool)
+    # pyrefly: ignore [missing-attribute]
     req.wait()
     return torch.ones(1)
 
@@ -148,7 +151,9 @@ def irecv(t, src, group=None):
     if isinstance(group, SingleControllerProcessGroupWrapper):
         group = group.process_group
     req = dist.irecv(tensor=t, src=src.item(), group=group)
+    # pyrefly: ignore [missing-attribute]
     assert isinstance(req.is_completed(), bool)
+    # pyrefly: ignore [missing-attribute]
     req.wait()
     return torch.ones(1)
 
@@ -185,6 +190,7 @@ class TestRemoteAutogradFunction(torch.autograd.Function):
         return out0, y, torch.ones(4), 4
 
     @staticmethod
+    # pyrefly: ignore [bad-override]
     def backward(ctx, dx1, dx2, dx3, dx4):
         return dx1, dx2
 
@@ -203,6 +209,7 @@ class _TestMultiplyAllReduce(torch.autograd.Function):
         return z
 
     @staticmethod
+    # pyrefly: ignore [bad-override]
     def backward(ctx, grad_output):
         x, y, a = ctx.saved_tensors
         assert ctx.my_property
