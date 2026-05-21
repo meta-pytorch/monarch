@@ -125,6 +125,7 @@ def start_dashboard(
         pass
 
     if ssl_ctx is not None and tls_hostname is not None:
+        # pyrefly: ignore [unbound-name]
         url = nest_dev_proxy_url(tls_hostname, port)
         local_url = f"https://{tls_hostname}:{port}"
     else:

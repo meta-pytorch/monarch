@@ -31,7 +31,6 @@ def pid_exists(pid: int) -> bool:
 
 # This test has to be in its own file so it does not share any process state
 # with other tests. The client cannot be restarted after it has been shutdown.
-# pyre-fixme[56]: invalid decoration
 @pytest.mark.timeout(30)
 def test_client_shutdown() -> None:
     procs = this_host().spawn_procs(per_host={"gpus": 2})
