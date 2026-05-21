@@ -28,6 +28,7 @@ use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::PortAddr;
 use hyperactor::PortRef;
 use hyperactor::RemoteEndpoint as _;
 use hyperactor::RemoteMessage;
@@ -68,6 +69,43 @@ declare_attrs! {
         Some("enable_native_v1_casting".to_string()),
     ))
     pub attr ENABLE_NATIVE_V1_CASTING: bool = true;
+
+    /// The multicast phase that attached context to a delivery failure.
+    pub attr MULTICAST_FAILURE_PHASE: String;
+
+    /// The comm actor that attached multicast context to a delivery failure.
+    pub attr MULTICAST_FAILURE_COMM_ACTOR: ActorAddr;
+
+    /// The originating cast sender.
+    pub attr MULTICAST_FAILURE_ORIGIN: ActorAddr;
+
+    /// The return port used to send the undeliverable message to the origin.
+    pub attr MULTICAST_FAILURE_RETURN_PORT: String;
+}
+
+fn annotate_multicast_failure(
+    envelope: &mut hyperactor::mailbox::MessageEnvelope,
+    comm_actor: &ActorAddr,
+    phase: &str,
+    origin: &ActorAddr,
+    return_port: &PortAddr,
+) {
+    let actor_mesh_id = envelope.headers().get(CAST_ACTOR_MESH_ID);
+    if let Some(failure) = envelope.root_delivery_failure_mut() {
+        failure
+            .attrs
+            .set(MULTICAST_FAILURE_PHASE, phase.to_string());
+        failure
+            .attrs
+            .set(MULTICAST_FAILURE_COMM_ACTOR, comm_actor.clone());
+        failure.attrs.set(MULTICAST_FAILURE_ORIGIN, origin.clone());
+        failure
+            .attrs
+            .set(MULTICAST_FAILURE_RETURN_PORT, return_port.to_string());
+        if let Some(actor_mesh_id) = actor_mesh_id {
+            failure.attrs.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
+        }
+    }
 }
 
 /// Parameters to initialize the CommActor
@@ -199,11 +237,13 @@ impl Actor for CommActor {
         {
             let sender = message.sender();
             let return_port = PortRef::attest_handler_port(sender);
-            message_envelope.set_error(DeliveryError::Multicast(format!(
-                "comm actor {} failed to forward the cast message; returning to origin {}",
+            annotate_multicast_failure(
+                &mut message_envelope,
                 cx.self_addr(),
+                "forward",
+                sender,
                 return_port.port_addr(),
-            )));
+            );
 
             // Needed so that the receiver of the undeliverable message can easily find the
             // original sender of the cast message.
@@ -216,12 +256,13 @@ impl Actor for CommActor {
         // 2. Case delivery failure at a "deliver here" step.
         if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
             let return_port = PortRef::attest_handler_port(&sender);
-            message_envelope.set_error(DeliveryError::Multicast(format!(
-                "comm actor {} failed to deliver the cast message to the dest \
-                actor; returning to origin {}",
+            annotate_multicast_failure(
+                &mut message_envelope,
                 cx.self_addr(),
+                "deliver_here",
+                &sender,
                 return_port.port_addr(),
-            )));
+            );
             return_port.post(cx, Undeliverable::Message(message_envelope.clone()));
             return Ok(());
         }
@@ -900,10 +941,17 @@ mod tests {
     use hyperactor::ProcAddr;
     use hyperactor::accum::Accumulator;
     use hyperactor::accum::ReducerSpec;
+    use hyperactor::channel::ChannelAddr;
     use hyperactor::context;
     use hyperactor::context::Mailbox;
+    use hyperactor::mailbox::DeliveryFailure;
+    use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::PortReceiver;
+    use hyperactor::mailbox::TransportFailure;
+    use hyperactor::mailbox::TransportFailureReason;
+    use hyperactor::mailbox::UndeliverableReason;
     use hyperactor::mailbox::open_port;
+    use hyperactor::port::Port;
     use hyperactor_config;
     use hyperactor_mesh_macros::sel;
     use maplit::btreemap;
@@ -922,6 +970,48 @@ mod tests {
     use crate::host_mesh::HostMesh;
     use crate::test_utils::local_host_mesh;
     use crate::testing;
+
+    #[test]
+    fn annotate_multicast_failure_adds_attrs_to_root_failure() {
+        let proc_addr = ProcAddr::singleton(ChannelAddr::Local(1), "test");
+        let origin = proc_addr.actor_addr("origin");
+        let comm_actor = proc_addr.actor_addr("comm");
+        let dest = proc_addr.actor_addr("dest").port_addr(Port::from(42));
+        let return_port = origin.port_addr(Port::from(7));
+        let mut envelope =
+            MessageEnvelope::serialize(origin.clone(), dest.clone(), &(), Flattrs::new()).unwrap();
+        envelope.push_delivery_failure(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(dest, TransportFailureReason::NoRoute),
+        )));
+
+        annotate_multicast_failure(
+            &mut envelope,
+            &comm_actor,
+            "deliver_here",
+            &origin,
+            &return_port,
+        );
+
+        let root_failure = envelope
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        assert_eq!(
+            root_failure.attrs.get(MULTICAST_FAILURE_PHASE).as_deref(),
+            Some("deliver_here")
+        );
+        assert_eq!(
+            root_failure.attrs.get(MULTICAST_FAILURE_COMM_ACTOR),
+            Some(comm_actor)
+        );
+        assert_eq!(
+            root_failure.attrs.get(MULTICAST_FAILURE_ORIGIN),
+            Some(origin)
+        );
+        assert_eq!(
+            root_failure.attrs.get(MULTICAST_FAILURE_RETURN_PORT),
+            Some(return_port.to_string())
+        );
+    }
 
     // Helper to look up the rank for a given actor ID using the rank_lookup table.
     fn lookup_rank(actor_id: &ActorAddr, rank_lookup: &HashMap<ProcAddr, usize>) -> usize {
