@@ -49,6 +49,7 @@ def torchx_runner() -> Runner:
 def create(
     config: Config,
     name: Optional[str] = None,
+    # pyrefly: ignore [bad-return]
 ) -> Union[str, AppDryRunInfo]:
     """Creates a monarch server by submitting it as a job to the target scheduler.
 
@@ -404,7 +405,7 @@ def _context_state(name: str) -> Path:
 def load_current_job() -> Any:
     from monarch._src.job.job import load_current_job as _load  # pyre-ignore[21]
 
-    return _load()  # pyre-ignore[16]
+    return _load()
 
 
 def _current_context() -> Optional[str]:
@@ -458,7 +459,7 @@ def context_rm(name: str) -> None:
         try:
             from monarch._src.job.job import job_load  # pyre-ignore[21]
 
-            job_load(str(state_file)).kill()  # pyre-ignore[16]
+            job_load(str(state_file)).kill()
         except Exception:
             pass
     shutil.rmtree(str(_context_dir(name)), ignore_errors=True)
@@ -506,7 +507,7 @@ def apply_job(module_path: Optional[str] = None) -> None:
     from monarch._src.job.job import BashActor, set_current_job  # pyre-ignore[21]
 
     if module_path is not None:
-        set_current_job(module_path)  # pyre-ignore[16]
+        set_current_job(module_path)
 
     job = load_current_job()
     state = job.state()
@@ -514,7 +515,7 @@ def apply_job(module_path: Optional[str] = None) -> None:
     mesh = next(iter(state._hosts.values()))
     procs = mesh.spawn_procs()
     try:
-        procs.spawn("_ready_check", BashActor).run.call("true").get()  # pyre-ignore[16]
+        procs.spawn("_ready_check", BashActor).run.call("true").get()
         print(f"Job is ready ({time.time() - t0:.0f}s)")
     finally:
         procs.stop().get(timeout=30.0)
@@ -661,7 +662,7 @@ def exec_on_job(
             bin_dir = os.path.dirname(exe)
             existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))
             mesh_env["PATH"] = f"{bin_dir}:{existing_path}"
-        rc = exec_command(  # pyre-ignore[16]
+        rc = exec_command(
             host_mesh,
             cmd,
             env=mesh_env,
@@ -678,6 +679,6 @@ def exec_on_job(
 
         last_mesh.shutdown().get()
         job.kill()
-        shutdown_context().get()  # pyre-ignore[16]
+        shutdown_context().get()
 
     return max_rc

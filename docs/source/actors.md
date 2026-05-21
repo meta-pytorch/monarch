@@ -160,16 +160,58 @@ sequenceDiagram
 ### 4. Termination Phase
 
 **Normal Termination:**
-- All child actors terminated
-- Mailbox drained
-- Resources cleaned up
-- Parent notified
+- Triggered by `ActorMesh.stop()`
+- Mailbox drained, `__cleanup__` runs, parent notified
 
 **Error Termination:**
-- Unhandled exception in handler
-- Propagated to supervisor
+- Triggered by an unhandled exception in a handler
+- `__cleanup__` runs, then the failure is propagated to the supervisor
 - Supervision tree handles recovery (see [Error Handling in Meshes](#error-handling-in-meshes))
-- All child actors terminated
+
+**The `__cleanup__` Method:**
+
+The same `__cleanup__` runs in both normal and error termination. The `exc` argument is `None` on a normal stop and carries the exception on an error stop.
+
+```python
+class FileWriter(Actor):
+    def __init__(self, path: str):
+        self.f = open(path, "w")
+
+    @endpoint
+    def write(self, line: str) -> None:
+        self.f.write(line)
+
+    def __cleanup__(self, exc: Exception | None) -> None:
+        # Runs on normal stop and on error termination.
+        # `exc` carries the exception that caused the stop, if any.
+        self.f.close()
+```
+
+**When It Runs:**
+- Called automatically in both normal and error termination
+- *Not* called on fatal failures such as OOMs, panics, or fatal signals (e.g., `SIGSEGV`)
+- Cancelled if it exceeds `HYPERACTOR_CLEANUP_TIMEOUT`, which puts the actor in an error state
+
+**What Has Already Happened:**
+- Every mesh this actor owns has already been stopped recursively
+- Each owned actor's `__cleanup__` has already run
+- Owned actor meshes and proc meshes are no longer usable from this method
+- For shutdown work that needs an owned mesh, expose a dedicated endpoint and call it before `stop()`
+
+**What to Clean Up Here:**
+- Open files and network connections
+- Background threads and asyncio tasks
+- Other resources the actor owns directly (not other actors or procs)
+
+**Sync vs. Async:**
+- Override with `def` or `async def`; the async-ness must match the actor's endpoints
+- Actors with sync endpoints require a sync `__cleanup__`
+- Actors with async endpoints require an async `__cleanup__`
+- An `async def` override is awaited on the actor's asyncio event loop, the same loop that runs endpoint coroutines, so it may `await` other endpoints or I/O
+- A sync override runs under `fake_sync_state` and cannot observe a running loop with `asyncio.get_running_loop`
+
+**Errors in `__cleanup__`:**
+- A raise is treated as a new supervision event chained to the one being handled, matching the `__exit__` convention for context managers
 
 ---
 
