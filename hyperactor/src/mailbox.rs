@@ -127,6 +127,7 @@ use std::task::Poll;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use enum_as_inner::EnumAsInner;
 use futures::Sink;
 use futures::Stream;
 use hyperactor_config::Flattrs;
@@ -200,6 +201,234 @@ impl<M: Message + Named + Serialize + DeserializeOwned> RemoteMessage for M {}
 /// Type alias for bytestring data used throughout the system.
 pub type Data = Vec<u8>;
 
+/// A structured delivery failure with optional metadata.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, typeuri::Named, Clone)]
+#[error("{kind}")]
+pub struct DeliveryFailure {
+    /// The delivery failure kind.
+    pub kind: DeliveryFailureKind,
+
+    /// Additional keyed metadata for higher-level delivery features.
+    pub attrs: Flattrs,
+}
+
+impl DeliveryFailure {
+    /// Create a delivery failure with no additional metadata.
+    pub fn new(kind: impl Into<DeliveryFailureKind>) -> Self {
+        Self {
+            kind: kind.into(),
+            attrs: Flattrs::new(),
+        }
+    }
+
+    /// Create a delivery failure with additional keyed metadata.
+    pub fn with_attrs(kind: impl Into<DeliveryFailureKind>, attrs: Flattrs) -> Self {
+        Self {
+            kind: kind.into(),
+            attrs,
+        }
+    }
+}
+
+/// The kind of delivery failure.
+#[derive(
+    thiserror::Error,
+    Debug,
+    Serialize,
+    Deserialize,
+    EnumAsInner,
+    typeuri::Named,
+    Clone,
+    PartialEq,
+    Eq
+)]
+pub enum DeliveryFailureKind {
+    /// The destination reference does not denote a valid recipient.
+    #[error("{0}")]
+    InvalidReference(#[from] InvalidReference),
+
+    /// The message could not be delivered for transport or receiver-lifecycle
+    /// reasons.
+    #[error("{0}")]
+    Undeliverable(#[from] UndeliverableReason),
+
+    /// The message exceeded its TTL.
+    #[error("{0}")]
+    Expired(#[from] ExpiredDelivery),
+}
+
+/// An invalid destination reference.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[error("invalid reference {target}: {reason}")]
+pub struct InvalidReference {
+    /// The invalid target.
+    pub target: Addr,
+
+    /// Why the reference is invalid.
+    pub reason: InvalidReferenceReason,
+}
+
+impl InvalidReference {
+    /// Create an invalid-reference failure.
+    pub fn new(target: impl Into<Addr>, reason: InvalidReferenceReason) -> Self {
+        Self {
+            target: target.into(),
+            reason,
+        }
+    }
+}
+
+/// Why a destination reference is invalid.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum InvalidReferenceReason {
+    /// The actor does not exist.
+    #[error("actor does not exist")]
+    ActorNotExist,
+
+    /// The handler port is not bound.
+    #[error("handler not bound")]
+    HandlerNotBound,
+
+    /// The actor stopped before delivery.
+    #[error("actor stopped")]
+    ActorStopped,
+
+    /// The actor failed before delivery.
+    #[error("actor failed")]
+    ActorFailed,
+
+    /// The port was never allocated.
+    #[error("port never allocated")]
+    PortNeverAllocated,
+
+    /// The message is incompatible with the destination.
+    #[error("protocol mismatch")]
+    ProtocolMismatch,
+
+    /// The envelope was delivered to the wrong mailbox owner.
+    #[error("wrong mailbox owner")]
+    WrongMailboxOwner,
+}
+
+/// A delivery failure caused by message expiration.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[error("ttl expired for {target}")]
+pub struct ExpiredDelivery {
+    /// The destination whose delivery expired.
+    pub target: PortAddr,
+}
+
+impl ExpiredDelivery {
+    /// Create an expired-delivery failure.
+    pub fn new(target: impl Into<PortAddr>) -> Self {
+        Self {
+            target: target.into(),
+        }
+    }
+}
+
+/// A non-invalid-reference delivery failure.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum UndeliverableReason {
+    /// Delivery failed while carrying the message.
+    #[error("{0}")]
+    Transport(#[from] TransportFailure),
+
+    /// The destination port's ordinary recipient is gone.
+    #[error("{0}")]
+    PortGone(#[from] PortGone),
+}
+
+impl UndeliverableReason {
+    /// Whether this failure is a transport failure.
+    pub fn is_transport(&self) -> bool {
+        matches!(self, Self::Transport(_))
+    }
+}
+
+/// A transport delivery failure.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[error("transport failure to {target}: {reason}")]
+pub struct TransportFailure {
+    /// The delivery target.
+    pub target: Addr,
+
+    /// Why transport failed.
+    pub reason: TransportFailureReason,
+}
+
+impl TransportFailure {
+    /// Create a transport failure.
+    pub fn new(target: impl Into<Addr>, reason: TransportFailureReason) -> Self {
+        Self {
+            target: target.into(),
+            reason,
+        }
+    }
+}
+
+/// Why transport failed.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum TransportFailureReason {
+    /// The channel closed.
+    #[error("channel closed: {addr}")]
+    ChannelClosed {
+        /// The channel address.
+        addr: ChannelAddr,
+    },
+
+    /// Delivery acknowledgement timed out.
+    #[error("ack timed out: {addr}")]
+    AckTimedOut {
+        /// The channel address.
+        addr: ChannelAddr,
+    },
+
+    /// Dialing the destination failed.
+    #[error("dial failed: {addr}: {error}")]
+    DialFailed {
+        /// The channel address.
+        addr: ChannelAddr,
+
+        /// The dial error.
+        error: String,
+    },
+
+    /// The router has no route and is not authoritative for destination
+    /// existence.
+    #[error("no route")]
+    NoRoute,
+
+    /// A weak reference in the delivery path could not be upgraded.
+    #[error("link unavailable: {0}")]
+    LinkUnavailable(String),
+
+    /// The forwarder is unavailable.
+    #[error("forwarder unavailable")]
+    ForwarderUnavailable,
+}
+
+/// A port whose ordinary recipient is gone.
+#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[error("port gone: {port}")]
+pub struct PortGone {
+    /// The port whose recipient is gone.
+    pub port: PortAddr,
+
+    /// The message type, when known.
+    pub message_type: Option<String>,
+}
+
+impl PortGone {
+    /// Create a port-gone failure.
+    pub fn new(port: impl Into<PortAddr>, message_type: Option<String>) -> Self {
+        Self {
+            port: port.into(),
+            message_type,
+        }
+    }
+}
+
 /// Delivery errors occur during message posting.
 #[derive(
     thiserror::Error,
@@ -251,6 +480,11 @@ pub struct MessageEnvelope {
     /// Error contains a delivery error when message delivery failed.
     errors: Vec<DeliveryError>,
 
+    /// Structured delivery failures. The first entry is the root delivery
+    /// failure; later entries record subsequent failures while returning or
+    /// forwarding the same envelope.
+    delivery_failures: Vec<DeliveryFailure>,
+
     /// Additional context for this message.
     headers: Flattrs,
 
@@ -279,6 +513,7 @@ impl MessageEnvelope {
             dest,
             data,
             errors: Vec::new(),
+            delivery_failures: Vec::new(),
             headers,
             ttl: hyperactor_config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
             // By default, all undeliverable messages should be returned to the sender.
@@ -309,6 +544,7 @@ impl MessageEnvelope {
             sender: source.into(),
             dest: dest.into(),
             errors: Vec::new(),
+            delivery_failures: Vec::new(),
             ttl: hyperactor_config::global::get(crate::config::MESSAGE_TTL_DEFAULT),
             // By default, all undeliverable messages should be returned to the sender.
             return_undeliverable: true,
@@ -390,6 +626,19 @@ impl MessageEnvelope {
         self.errors.push(error)
     }
 
+    /// Push a structured delivery failure onto this message's failure history.
+    pub fn push_delivery_failure(&mut self, failure: DeliveryFailure) {
+        self.delivery_failures.push(failure)
+    }
+
+    /// Push a structured delivery failure only when this envelope does not
+    /// already have a root failure.
+    pub fn ensure_root_delivery_failure(&mut self, failure: impl FnOnce() -> DeliveryFailure) {
+        if self.root_delivery_failure().is_none() {
+            self.push_delivery_failure(failure());
+        }
+    }
+
     /// Change the sender on the envelope in case it was set incorrectly. This
     /// should only be used by CommActor since it is forwarding from another
     /// sender.
@@ -433,10 +682,33 @@ impl MessageEnvelope {
         undeliverable::return_undeliverable(return_handle, self);
     }
 
+    /// Mark the message as undeliverable with both legacy and structured
+    /// failure information.
+    pub fn undeliverable_with_failure(
+        mut self,
+        error: DeliveryError,
+        failure: DeliveryFailure,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        self.push_delivery_failure(failure);
+        self.undeliverable(error, return_handle);
+    }
+
     /// Get the errors of why this message was undeliverable. Empty means this
     /// message was not determined as undeliverable.
     pub fn errors(&self) -> &Vec<DeliveryError> {
         &self.errors
+    }
+
+    /// Get the structured delivery failures for this message. Empty means this
+    /// message was not determined as undeliverable through the structured path.
+    pub fn delivery_failures(&self) -> &[DeliveryFailure] {
+        &self.delivery_failures
+    }
+
+    /// Get the root structured delivery failure for this message.
+    pub fn root_delivery_failure(&self) -> Option<&DeliveryFailure> {
+        self.delivery_failures.first()
     }
 
     /// Get the string representation of the errors of this message was
@@ -462,6 +734,7 @@ impl MessageEnvelope {
             dest,
             data,
             errors,
+            delivery_failures,
             headers,
             ttl,
             return_undeliverable,
@@ -472,6 +745,7 @@ impl MessageEnvelope {
                 sender,
                 dest,
                 errors,
+                delivery_failures,
                 headers,
                 ttl,
                 return_undeliverable,
@@ -485,6 +759,7 @@ impl MessageEnvelope {
             sender,
             dest,
             errors,
+            delivery_failures,
             headers,
             ttl,
             return_undeliverable,
@@ -495,6 +770,7 @@ impl MessageEnvelope {
             dest,
             data,
             errors,
+            delivery_failures,
             headers,
             ttl,
             return_undeliverable,
@@ -534,6 +810,10 @@ pub struct MessageMetadata {
     sender: ActorAddr,
     dest: PortAddr,
     errors: Vec<DeliveryError>,
+    /// Structured delivery failures. The first entry is the root delivery
+    /// failure; later entries record subsequent failures while returning or
+    /// forwarding the same envelope.
+    delivery_failures: Vec<DeliveryFailure>,
     headers: Flattrs,
     ttl: u8,
     return_undeliverable: bool,
@@ -784,7 +1064,8 @@ pub trait MailboxSender: Send + Sync + Any {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         if let Err(err) = envelope.dec_ttl_or_err() {
-            envelope.undeliverable(err, return_handle);
+            let failure = DeliveryFailure::new(ExpiredDelivery::new(envelope.dest().clone()));
+            envelope.undeliverable_with_failure(err, failure, return_handle);
             return;
         }
         self.post_unchecked(envelope, return_handle);
@@ -1857,6 +2138,7 @@ impl MailboxSender for Mailbox {
             sender,
             dest,
             errors: metadata_errors,
+            delivery_failures,
             ttl,
             return_undeliverable,
         } = metadata;
@@ -1899,6 +2181,7 @@ impl MailboxSender for Mailbox {
                         sender,
                         dest,
                         errors: metadata_errors,
+                        delivery_failures,
                         ttl,
                         return_undeliverable,
                     },
@@ -1919,6 +2202,7 @@ impl MailboxSender for Mailbox {
                         sender,
                         dest,
                         errors: metadata_errors,
+                        delivery_failures,
                         ttl,
                         return_undeliverable,
                     },
@@ -2925,7 +3209,15 @@ impl MailboxSender for MailboxMuxer {
                     "no mailbox for actor {} registered in muxer",
                     dest_actor_ref
                 );
-                envelope.undeliverable(DeliveryError::Unroutable(err), return_handle)
+                let failure = DeliveryFailure::new(InvalidReference::new(
+                    dest_actor_ref,
+                    InvalidReferenceReason::ActorNotExist,
+                ));
+                envelope.undeliverable_with_failure(
+                    DeliveryError::Unroutable(err),
+                    failure,
+                    return_handle,
+                )
             }
             Some(sender) => sender.post(envelope, return_handle),
         }
@@ -3448,6 +3740,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ttl_expiration_records_root_delivery_failure() {
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
+        let (port, _) = mbox.open_port::<u64>();
+        let port_ref = port.bind();
+        let envelope = MessageEnvelope::serialize(
+            mbox.actor_addr().clone(),
+            port_ref.port_addr().clone(),
+            &42u64,
+            Flattrs::new(),
+        )
+        .expect("serialize")
+        .set_ttl(0);
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        mbox.post(envelope, return_handle);
+
+        let Undeliverable(undelivered) =
+            tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+                .await
+                .expect("timed out waiting for undeliverable")
+                .expect("return port closed");
+        let root_failure = undelivered
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        assert!(
+            matches!(root_failure.kind, DeliveryFailureKind::Expired(_)),
+            "expected expired delivery failure, got {root_failure}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_mailbox_accum() {
         let proc = Proc::isolated();
         let (client, _) = proc.client("client").unwrap();
@@ -3721,11 +4044,43 @@ mod tests {
 
         let (port, receiver) = mbox0.open_once_port::<u64>();
 
+        let muxer_sender = muxer.clone();
         let proc = Proc::configured(test_proc_id("0"), BoxedMailboxSender::new(muxer));
         let (client, _) = proc.client("client").unwrap();
 
         port.post(&client, 123u64);
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
+
+        let missing_actor = test_actor_id("0", "missing_actor");
+        let missing_dest = missing_actor.port_addr(Port::from(1234));
+        let envelope = MessageEnvelope::serialize(
+            client.self_addr().clone(),
+            missing_dest,
+            &456u64,
+            Flattrs::new(),
+        )
+        .expect("serialize");
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        muxer_sender.post(envelope, return_handle);
+
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("return port closed")
+            .into_message()
+            .expect("expected returned envelope");
+        let root_failure = undelivered
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        let DeliveryFailureKind::InvalidReference(invalid_reference) = &root_failure.kind else {
+            panic!("expected invalid reference, got {root_failure}");
+        };
+        assert_eq!(invalid_reference.target, Addr::Actor(missing_actor));
+        assert_eq!(
+            invalid_reference.reason,
+            InvalidReferenceReason::ActorNotExist
+        );
 
         /*
         let (tx, rx) = channel::local::new::<u64>();
