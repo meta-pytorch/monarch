@@ -897,7 +897,7 @@ impl RdmaBackend for TcpBackend {
 
             let (remote_tcp_mgr, remote_buf_id) = op.remote.resolve_tcp()?;
             let tcp_op = TcpOp {
-                op_type: op.op_type.clone(),
+                op_type: op.op_type,
                 local_memory: op.local,
                 remote_tcp_manager: remote_tcp_mgr,
                 remote_buf_id,
