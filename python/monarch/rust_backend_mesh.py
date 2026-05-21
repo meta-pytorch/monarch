@@ -176,7 +176,6 @@ def rust_backend_mesh_provider(
     hosts: int,
     gpus: int,
     client_proc_id: str = "client[0]",
-    # pyre-fixme[11]: Annotation `DeviceMeshProvider` is not defined as a type.
 ) -> PoolDeviceMeshProvider:
     proc: Proc = init_proc(
         proc_id=client_proc_id,
