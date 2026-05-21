@@ -54,7 +54,6 @@ def _to_loopback(url: str) -> str:
     """
     parsed = urllib.parse.urlparse(url)
     netloc = f"127.0.0.1:{parsed.port}" if parsed.port else "127.0.0.1"
-    # pyre-fixme[7]: urlunparse returns str for str input
     return str(urllib.parse.urlunparse(parsed._replace(netloc=netloc)))
 
 
