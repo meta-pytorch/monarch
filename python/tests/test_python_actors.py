@@ -1861,7 +1861,7 @@ class ActorWithAsyncCleanup(Actor):
     async def check(self) -> None:
         pass
 
-    # Cleanup should match the async-ness of the other endpoints,
+    # Cleanup should match the async-ness of the other endpoints
     # to exercise the async `__cleanup__` dispatch path.
     async def __cleanup__(self, exc: Exception | None):  # type: ignore[override]
         self.logger.info(f"Calling __cleanup__ on {self}, {exc=}")
