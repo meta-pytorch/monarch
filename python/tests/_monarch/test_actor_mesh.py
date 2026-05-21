@@ -84,6 +84,7 @@ class MyActor:
         response_port: "PortProtocol[Any]",
     ) -> None:
         match method:
+            # pyrefly: ignore [invalid-pattern]
             case MethodSpecifier.Init():
                 # Since this actor is spawn from the root proc mesh, the rank
                 # passed from init should be the rank on the root mesh.
@@ -91,9 +92,11 @@ class MyActor:
                 if response_port is not None:
                     response_port.send(None)
                 return None
+            # pyrefly: ignore [invalid-pattern]
             case MethodSpecifier.ReturnsResponse(name=_):
                 response_port.send(self._rank_on_root_mesh)
                 return None
+            # pyrefly: ignore [invalid-pattern]
             case MethodSpecifier.ExplicitPort(name=_):
                 response_port.exception(
                     NotImplementedError("ExplicitPort is not supported yet")
@@ -138,6 +141,7 @@ def spawn_actor_mesh(proc_mesh_task: Shared[ProcMesh]) -> PythonActorMesh:
     # Create an explicit init message
     init_state = monarch_pickle(None)
     init_message = PendingMessage(
+        # pyrefly: ignore [bad-argument-count, bad-argument-type]
         PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
         init_state,
     )
@@ -175,6 +179,7 @@ async def verify_cast_to_call(
     # Now send the real message
     state = monarch_pickle("ping")
     message = PendingMessage(
+        # pyrefly: ignore [bad-argument-count, bad-argument-type]
         PythonMessageKind.CallMethod(MethodSpecifier.ReturnsResponse("echo"), port_ref),
         state,
     )
@@ -184,9 +189,12 @@ async def verify_cast_to_call(
     for _ in range(len(root_ranks)):
         message = await receiver.recv_task()
         result_kind = message.kind
+        # pyrefly: ignore [invalid-argument]
         assert isinstance(result_kind, PythonMessageKind.Result)
+        # pyrefly: ignore [missing-attribute]
         cast_rank = result_kind.rank
         assert cast_rank is not None
+        # pyrefly: ignore [bad-argument-type]
         root_rank = cast(int, pickle.loads(message.message))
         rcv_ranks.append((cast_rank, root_rank))
     rcv_ranks.sort(key=lambda pair: pair[0])

@@ -100,6 +100,7 @@ outer_remote_function_that_calls_inner = remote(
 
 @pytest.fixture(scope="module", autouse=True)
 def testing_context():
+    # pyrefly: ignore [unknown-name]
     global local
     with TestingContext() as local:
         yield
@@ -197,6 +198,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             # z is broken on rank 1 but not others
             z = do_bogus_tensor_work(x, y, fail_rank=1)
             # test that rank 1 is still doing work despite z failing
+            # pyrefly: ignore [missing-attribute]
             a = (x + y).reduce("gpu")
             fetch_shard(a).result()
             # but z itself should fail, even if we do not fetch it from rank 1
@@ -224,6 +226,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             # the wait on 'other'.
             other = Stream("other")
             t = new_barrier_hackery(2)
+            # pyrefly: ignore [bad-argument-type]
             t_other, borrow = other.borrow(t)
             with borrow:
                 with other.activate():
@@ -261,6 +264,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             assert (
                 "an argument processed"
                 == call_on_shard_and_fetch(
+                    # pyrefly: ignore [bad-argument-type]
                     remote("monarch.worker._testing_function.do_some_processing"),
                     "an argument",
                 ).result()
@@ -320,8 +324,11 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
 
         assert torch.equal(local_0_f, torch.full_like(local_0_f, 2))
         assert torch.equal(local_0, torch.ones_like(local_0))
+        # pyrefly: ignore [bad-argument-type]
         assert torch.equal(grad_local_0, torch.ones_like(local_0))
+        # pyrefly: ignore [bad-argument-type]
         assert torch.equal(grad_local_1, torch.ones_like(local_0))
+        # pyrefly: ignore [bad-argument-type]
         assert torch.equal(grad_local_1_f, torch.ones_like(local_0))
 
     def test_cached_remote_aliases(self):
@@ -358,6 +365,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
 
         with self.local_device_mesh(2, 2):
             a = torch.ones(())
+            # pyrefly: ignore [bad-argument-type]
             assert call_on_shard_and_fetch(check, bar(a, a)).result()
             # ensure we do not attempt to pickle closures
             close()
@@ -401,6 +409,7 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
 
         with self.local_device_mesh(1, 1):
             # This should be a valid return than an exception to raise
+            # pyrefly: ignore [bad-argument-type]
             call_on_shard_and_fetch(simple).result()
 
     def test_opaque_object(self):
@@ -417,7 +426,9 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             with monarch.no_mesh.activate():
                 assert torch.allclose(torch.full((3, 4), 5.0), result)
 
+            # pyrefly: ignore [missing-attribute]
             f.hi = 4
+            # pyrefly: ignore [missing-attribute]
             assert f.hi == 4
 
     def test_opaqueRef_key_deleted(self):
@@ -461,8 +472,11 @@ class TestRemoteFunctions(RemoteFunctionsTestBase):
             ig1, wg1, bg1 = monarch.inspect((input_.grad, weight.grad, bias.grad))
 
             with monarch.no_mesh.activate():
+                # pyrefly: ignore [bad-argument-type]
                 assert torch.allclose(ig0, ig1)
+                # pyrefly: ignore [bad-argument-type]
                 assert torch.allclose(wg0, wg1)
+                # pyrefly: ignore [bad-argument-type]
                 assert torch.allclose(bg0, bg1)
 
     def test_remote_function_failure_message_contains_traceback(self):
@@ -494,11 +508,13 @@ def return_them(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.T
 )
 class TestMeshSpecific(RemoteFunctionsTestBase):
     def test_value_mesh(self):
+        # pyrefly: ignore [bad-argument-type]
         with self.local_device_mesh(2, 2, "mesh") as device_mesh:
             x = device_mesh.rank("host")
             y = device_mesh.rank("gpu")
             r = return_them.call(x, y).get()
 
+        # pyrefly: ignore [not-iterable]
         for p, (h, g) in r:
             assert p["host"] == h.item()
             assert p["gpu"] == g.item()

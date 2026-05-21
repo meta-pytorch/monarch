@@ -84,7 +84,7 @@ class TestRustStructValueMesh:
         vm = _make_test_value_mesh(["rank"], [2], [1, 2])
         # Rust PyO3 objects reject arbitrary attribute assignment
         try:
-            vm._some_random_attr = "fail"  # pyre-ignore[16]
+            vm._some_random_attr = "fail"
             raise AssertionError("Should not set arbitrary attrs on Rust object")
         except AttributeError:
             pass  # Confirms Rust object, not Python wrapper

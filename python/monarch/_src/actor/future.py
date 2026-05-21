@@ -172,6 +172,7 @@ class Future(Generic[R]):
                             func, value = set_result, await coro
                         except Exception as e:
                             func, value = set_exception, e
+                        # pyrefly: ignore [bad-argument-type]
                         loop.call_soon_threadsafe(func, fut, value)
 
                     PythonTask.from_coroutine(mark_complete()).spawn()
