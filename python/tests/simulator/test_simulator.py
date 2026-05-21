@@ -95,6 +95,7 @@ class TestSimulator:
         mesh = monarch.Simulator(
             hosts=1,
             gpus=2,
+            # pyrefly: ignore [bad-argument-type]
             trace_path=trace_path,
             group_workers=group_workers,
             trace_mode=SimulatorTraceMode.EVERYTHING,
@@ -105,6 +106,7 @@ class TestSimulator:
             ac1 = torch.randn(100, 100)
             ac2 = torch.mm(ac1, ac1)
             ac3 = torch.nn.init.uniform_(ac2)
+            # pyrefly: ignore [bad-argument-type]
             borrow_ac3, borrow = other_stream.borrow(ac3, mutable=True)
             with other_stream.activate():
                 borrow_ac3.add_(borrow_ac3)
@@ -138,7 +140,11 @@ class TestSimulator:
     @with_tempfile()
     def test_to_mesh(self, group_workers, trace_path=None) -> None:
         mesh = monarch.Simulator(
-            hosts=2, gpus=2, trace_path=trace_path, group_workers=group_workers
+            hosts=2,
+            gpus=2,
+            # pyrefly: ignore [bad-argument-type]
+            trace_path=trace_path,
+            group_workers=group_workers,
         ).mesh
         pp_meshes = [mesh(host=0), mesh(host=1)]
 
@@ -180,6 +186,7 @@ class TestSimulator:
         mesh = monarch.Simulator(
             hosts=1,
             gpus=2,
+            # pyrefly: ignore [bad-argument-type]
             trace_path=trace_path,
             trace_mode=SimulatorTraceMode.STREAM_ONLY,
             group_workers=group_workers,
@@ -331,6 +338,7 @@ class TestSimulator:
         mesh = monarch.Simulator(
             hosts=1,
             gpus=2,
+            # pyrefly: ignore [bad-argument-type]
             trace_path=trace_path,
             trace_mode=SimulatorTraceMode.STREAM_ONLY,
         ).mesh
@@ -349,6 +357,7 @@ class TestSimulator:
         mesh = monarch.Simulator(
             hosts=1,
             gpus=2,
+            # pyrefly: ignore [bad-argument-type]
             trace_path=trace_path,
             trace_mode=SimulatorTraceMode.STREAM_ONLY,
         ).mesh
@@ -377,6 +386,7 @@ class TestSimulator:
         mesh = monarch.Simulator(
             hosts=1,
             gpus=2,
+            # pyrefly: ignore [bad-argument-type]
             trace_path=trace_path,
             trace_mode=SimulatorTraceMode.STREAM_ONLY,
         ).mesh
@@ -394,12 +404,14 @@ class TestSimulator:
         mesh = monarch.Simulator(
             hosts=1,
             gpus=2,
+            # pyrefly: ignore [bad-argument-type]
             trace_path=trace_path,
             trace_mode=SimulatorTraceMode.STREAM_ONLY,
         ).mesh
 
         with mesh(gpu=0).activate():
             x = torch.ones((4, 4), device="cuda")
+        # pyrefly: ignore [missing-attribute]
         _ = x.to_mesh(mesh(gpu=1))
         mesh.exit()
         commands, memory = self._get_simulation_result(1, trace_path)

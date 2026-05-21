@@ -84,30 +84,22 @@ class Tensor(Referenceable, BaseTensor):
 
     """
 
-    # pyre-fixme[13]: Attribute `stream` is never initialized.
     stream: Stream
-    # pyre-fixme[13]: Attribute `mesh` is never initialized.
     mesh: "DeviceMesh"
     ref: Optional[int]
-    # pyre-fixme[13]: Attribute `_invocation` is never initialized.
     _invocation: Optional[Invocation]
-    # pyre-fixme[13]: Attribute `_fake` is never initialized.
     _fake: torch.Tensor
-    # pyre-fixme[13]: Attribute `_aliases` is never initialized.
     _aliases: StorageAliases
     # pyre-fixme[13]: Attribute `_on_first_use` is never initialized.
     _on_first_use: Optional[Callable]
-    # pyre-fixme[13]: Attribute `_drop_location` is never initialized.
     _drop_location: Optional[DropLocation]
     # _seq represents the sequence number of the concrete invocation that
     # created this tensor, or the most recent invocation that mutated it.
     # Unlike the _invocation field, this will be set for both the rust and
     # python backends.
-    # pyre-fixme[13]: Attribute `_seq` is never initialized.
     _seq: Optional[int]
 
     def __new__(cls, fake: torch.Tensor, mesh: "DeviceMesh", stream: "Stream"):
-        # pyre-ignore[16]
         r = torch.Tensor._make_wrapper_subclass(
             cls,
             fake.size(),
@@ -138,6 +130,7 @@ class Tensor(Referenceable, BaseTensor):
         return r
 
     @classmethod
+    # pyrefly: ignore [bad-override]
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
         from monarch.common.remote import remote
 
@@ -298,8 +291,10 @@ class Tensor(Referenceable, BaseTensor):
                 raise ValueError(
                     f"reduction {reduction} or scatter = {scatter} is not valid for multiple dimensions"
                 )
+        # pyrefly: ignore [missing-attribute]
         if reduction not in _valid_reduce.__args__:
             raise ValueError(
+                # pyrefly: ignore [missing-attribute]
                 f"reduction {reduction} not supported, reductions are {_valid_reduce.__args__}"
             )
 
@@ -312,6 +307,7 @@ class Tensor(Referenceable, BaseTensor):
         with InputChecker(
             ts,
             lambda ts: (
+                # pyrefly: ignore [no-matching-overload]
                 f"reduce({next(ts)}, {dims}, reduction={reduction}, out={next(ts, None)})"
             ),
         ) as checker:
@@ -406,7 +402,9 @@ class MeshSliceTensor:
             stream = self.tensor.stream
 
         with InputChecker(
-            [self.tensor], lambda ts: f"{next(ts)}.to_mesh({mesh})"
+            [self.tensor],
+            # pyrefly: ignore [no-matching-overload]
+            lambda ts: f"{next(ts)}.to_mesh({mesh})",
         ) as checker:
             checker.check_no_requires_grad()
             checker.check_cuda()
@@ -636,10 +634,12 @@ class InputChecker:
         error_names: Dict["Tensor", "str"] = {}
         for i, (t, errors) in enumerate(self.errors.items()):
             name = f"ERROR_{i}"
+            # pyrefly: ignore [unsupported-operation]
             error_names[t] = name
             error_info.append(f"{name}:\n")
             error_info.extend(errors)
 
+        # pyrefly: ignore [no-matching-overload]
         call = self.format(_Symbol(error_names.get(t, ".")) for t in self.tensors)
         msg = f"Incorrect arguments to monarch operation:\n\n  {call}\n\n{''.join(error_info)}"
         raise TypeError(msg)
