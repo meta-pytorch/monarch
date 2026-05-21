@@ -268,6 +268,16 @@ pub struct InvalidReference {
     pub reason: InvalidReferenceReason,
 }
 
+impl InvalidReference {
+    /// Create an invalid-reference failure.
+    pub fn new(target: impl Into<Addr>, reason: InvalidReferenceReason) -> Self {
+        Self {
+            target: target.into(),
+            reason,
+        }
+    }
+}
+
 /// Why a destination reference is invalid.
 #[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum InvalidReferenceReason {
@@ -308,6 +318,15 @@ pub struct ExpiredDelivery {
     pub target: PortAddr,
 }
 
+impl ExpiredDelivery {
+    /// Create an expired-delivery failure.
+    pub fn new(target: impl Into<PortAddr>) -> Self {
+        Self {
+            target: target.into(),
+        }
+    }
+}
+
 /// A non-invalid-reference delivery failure.
 #[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum UndeliverableReason {
@@ -336,6 +355,16 @@ pub struct TransportFailure {
 
     /// Why transport failed.
     pub reason: TransportFailureReason,
+}
+
+impl TransportFailure {
+    /// Create a transport failure.
+    pub fn new(target: impl Into<Addr>, reason: TransportFailureReason) -> Self {
+        Self {
+            target: target.into(),
+            reason,
+        }
+    }
 }
 
 /// Why transport failed.
@@ -388,6 +417,16 @@ pub struct PortGone {
 
     /// The message type, when known.
     pub message_type: Option<String>,
+}
+
+impl PortGone {
+    /// Create a port-gone failure.
+    pub fn new(port: impl Into<PortAddr>, message_type: Option<String>) -> Self {
+        Self {
+            port: port.into(),
+            message_type,
+        }
+    }
 }
 
 /// Delivery errors occur during message posting.
