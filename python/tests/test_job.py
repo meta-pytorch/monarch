@@ -541,7 +541,9 @@ def test_train_script_job_state_batch():
         job = LocalJob(("batch_launched_hosts",))
         job.apply(client_script=train_script)
         status = job.process.wait()
+        # pyrefly: ignore [no-matching-overload]
         stdout = open(os.path.join(job._log_dir, "stdout.log"), "r").read()
+        # pyrefly: ignore [no-matching-overload]
         stderr = open(os.path.join(job._log_dir, "stderr.log"), "r").read()
         assert status == 0, f"Job failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
         assert "batch_launched_hosts True" in stdout

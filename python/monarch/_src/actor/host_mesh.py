@@ -313,6 +313,7 @@ class HostMesh(MeshTrait):
             None,
         )
 
+    # pyrefly: ignore [invalid-annotation]
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
         return HostMesh, (
             self._hy_host_mesh,
@@ -326,6 +327,7 @@ class HostMesh(MeshTrait):
     def is_fake_in_process(self) -> bool:
         return self._is_fake_in_process
 
+    # pyrefly: ignore [bad-override]
     def __eq__(self, other: "HostMesh") -> bool:
         # Should we include code sync proc mesh?
         return (
@@ -525,5 +527,6 @@ def hosts_from_config(name: str) -> HostMesh:
     return attach_to_workers(
         name=name,
         ca="trust_all_connections",
+        # pyrefly: ignore [bad-argument-type]
         workers=workers,
     )

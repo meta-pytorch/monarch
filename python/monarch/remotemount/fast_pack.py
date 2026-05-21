@@ -27,7 +27,6 @@ HASH_BLOCK_SIZE: int = 64 * 1024 * 1024  # 64MB blocks for incremental diffing
 FRAG_THRESHOLD: float = 0.2  # max dead-space ratio before sequential repack
 
 
-# pyre-fixme[24]: Generic type `memoryview` expects 1 type parameter.
 def block_hashes(data_mv: memoryview, block_size: int = HASH_BLOCK_SIZE) -> list[str]:
     """Compute xxh64 per block of a packed memoryview."""
     return list(block_hashes_py(data_mv, block_size))
@@ -38,7 +37,7 @@ def load_pack_index(path: str) -> dict[str, Any] | None:
     if not os.path.exists(path):
         return None
     with open(path) as f:
-        return json.load(f)  # pyre-ignore[7]
+        return json.load(f)
 
 
 def save_pack_index(path: str, index_data: dict[str, Any]) -> None:
@@ -48,7 +47,6 @@ def save_pack_index(path: str, index_data: dict[str, Any]) -> None:
 
 
 def _compute_file_hashes(
-    # pyre-fixme[24]: Generic type `memoryview` expects 1 type parameter.
     staging_mv: memoryview,
     file_entries: list[tuple[str, str, int, int]],
     offset_map: dict[str, int],
@@ -108,7 +106,6 @@ def pack_directory_chunked(
     source_path: str,
     chunk_size: int | None = None,
     previous_index: dict[str, Any] | None = None,
-    # pyre-fixme[24]: Generic type `memoryview` expects 1 type parameter.
 ) -> tuple[
     dict[str, Any],
     memoryview | None,
