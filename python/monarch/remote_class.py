@@ -50,6 +50,7 @@ class ControllerRemoteClass:
     def __del__(self) -> None:
         mesh = getattr(self, "mesh", None)
         if mesh is not None and not mesh.client._shutdown:
+            # pyrefly: ignore [missing-attribute]
             with self.mesh.activate():
                 _controller_remote_class_method(
                     self.cls_path,

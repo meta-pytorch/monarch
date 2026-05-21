@@ -127,5 +127,6 @@ def mock_mesh(hosts: int, gpus: int):
 
         return exit
 
+    # pyrefly: ignore [bad-assignment]
     dm.exit = create_exit(client)
     return dm

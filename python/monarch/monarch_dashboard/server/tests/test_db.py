@@ -150,7 +150,9 @@ class GetActorTest(_DbTestBase):
 
     def test_no_status_fields(self):
         actor = db.get_actor(1)
+        # pyrefly: ignore [bad-argument-type]
         self.assertNotIn("latest_status", actor)
+        # pyrefly: ignore [bad-argument-type]
         self.assertNotIn("status_timestamp_us", actor)
 
     def test_nonexistent_actor(self):
@@ -167,7 +169,9 @@ class GetActorLatestStatusTest(_DbTestBase):
 
     def test_status_value_populated(self):
         status = db.get_actor_latest_status(1)
+        # pyrefly: ignore [unsupported-operation]
         self.assertIsNotNone(status["latest_status"])
+        # pyrefly: ignore [unsupported-operation]
         self.assertIsNotNone(status["status_timestamp_us"])
 
     def test_nonexistent_actor(self):
