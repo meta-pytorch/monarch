@@ -77,6 +77,7 @@ class RemoteProcessGroup(Referenceable):
         self._split_comm_done.add(stream)
 
         msg = messages.SplitCommForProcessGroup(
+            # pyrefly: ignore [bad-argument-type]
             remote_process_group=self,
             stream=stream,
         )
@@ -340,6 +341,7 @@ class _ActiveMesh(TorchDispatchMode):
         fnstr = str(func)
         if fnstr in self.ignore:
             return func(*args, **kwargs)
+        # pyrefly: ignore [bad-index]
         if fnstr in self.allowed_local_accessors and not isinstance(args[0], Tensor):
             return func(*args, **kwargs)
         return _remote(func, propagate=func)(*args, **kwargs)
