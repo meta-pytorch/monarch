@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     def _assert_implements_endpoint(x: Endpoint[..., Any]) -> None: ...
 
     def _check_remote_satisfies_protocol(ep: Remote[..., Any]) -> None:
+        # pyrefly: ignore [bad-argument-type]
         _assert_implements_endpoint(ep)
 
 
@@ -347,6 +348,7 @@ class DummyProcessGroup(dist.ProcessGroup):
         self.dims = dims
         self.world_size = world_size
 
+    # pyrefly: ignore [bad-override]
     def allreduce(self, tensor, op=dist.ReduceOp.SUM, async_op=False):
         class DummyWork:
             def wait(self):
@@ -354,6 +356,7 @@ class DummyProcessGroup(dist.ProcessGroup):
 
         return DummyWork()
 
+    # pyrefly: ignore [bad-param-name-override]
     def _allgather_base(self, output_tensor, input_tensor, opts):
         class DummyWork:
             def wait(self):
@@ -361,6 +364,7 @@ class DummyProcessGroup(dist.ProcessGroup):
 
         return DummyWork()
 
+    # pyrefly: ignore [bad-param-name-override]
     def _reduce_scatter_base(self, output_tensor, input_tensor, opts):
         class DummyWork:
             def wait(self):

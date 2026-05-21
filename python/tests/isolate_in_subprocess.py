@@ -163,6 +163,7 @@ def isolate_in_subprocess(test_fn=None, *, env=None):
                 pytrace=False,
             )
 
+    # pyrefly: ignore [missing-attribute]
     wrapper.__wrapped__ = test_fn
     return wrapper
 
