@@ -2243,9 +2243,19 @@ impl MailboxSender for Mailbox {
                 error: sender_error,
                 headers,
             })) => {
+                let failure = matches!(
+                    sender_error.kind(),
+                    MailboxSenderErrorKind::Deserialize(_, _)
+                )
+                .then(|| {
+                    DeliveryFailure::new(InvalidReference::new(
+                        dest.clone(),
+                        InvalidReferenceReason::ProtocolMismatch,
+                    ))
+                });
                 let err = DeliveryError::Mailbox(format!("{}", sender_error));
 
-                MessageEnvelope::seal(
+                let envelope = MessageEnvelope::seal(
                     MessageMetadata {
                         headers,
                         sender,
@@ -2256,8 +2266,12 @@ impl MailboxSender for Mailbox {
                         return_undeliverable,
                     },
                     data,
-                )
-                .undeliverable(err, return_handle)
+                );
+                if let Some(failure) = failure {
+                    envelope.undeliverable_with_failure(err, failure, return_handle)
+                } else {
+                    envelope.undeliverable(err, return_handle)
+                }
             }
         }
     }
@@ -3790,6 +3804,16 @@ mod tests {
         transport
     }
 
+    fn root_invalid_reference(envelope: &MessageEnvelope) -> &InvalidReference {
+        let root_failure = envelope
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        let DeliveryFailureKind::InvalidReference(invalid_reference) = &root_failure.kind else {
+            panic!("expected invalid reference, got {root_failure}");
+        };
+        invalid_reference
+    }
+
     #[test]
     fn test_error() {
         use crate::testing::ids::test_actor_id;
@@ -4100,6 +4124,7 @@ mod tests {
         let (port, mut receiver) = mbox.open_port::<u64>();
         let port = port.bind();
         let port_index = port.port_addr().index();
+        let target: Addr = port.port_addr().clone().into();
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
 
@@ -4120,6 +4145,12 @@ mod tests {
                 .error_msg()
                 .is_some_and(|message| message.contains("deserialization error")),
             "expected deserialization error in {envelope}",
+        );
+        let invalid_reference = root_invalid_reference(&envelope);
+        assert_eq!(invalid_reference.target, target);
+        assert_eq!(
+            invalid_reference.reason,
+            InvalidReferenceReason::ProtocolMismatch
         );
         assert!(
             mbox.inner.ports.contains_key(&port_index),
@@ -4197,6 +4228,7 @@ mod tests {
         let (port, receiver) = mbox.open_once_port::<u64>();
         let port = port.bind();
         let port_index = port.port_addr().index();
+        let target: Addr = port.port_addr().clone().into();
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
 
@@ -4217,6 +4249,12 @@ mod tests {
                 .error_msg()
                 .is_some_and(|message| message.contains("deserialization error")),
             "expected deserialization error in {envelope}",
+        );
+        let invalid_reference = root_invalid_reference(&envelope);
+        assert_eq!(invalid_reference.target, target);
+        assert_eq!(
+            invalid_reference.reason,
+            InvalidReferenceReason::ProtocolMismatch
         );
         assert!(
             mbox.inner.ports.contains_key(&port_index),
