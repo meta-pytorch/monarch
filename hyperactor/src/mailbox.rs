@@ -1425,6 +1425,17 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                         envelope.set_error(DeliveryError::BrokenLink(
                             "message was undeliverable".to_owned(),
                         ));
+                        let target = envelope.dest().clone();
+                        envelope.ensure_root_delivery_failure(|| {
+                            DeliveryFailure::new(UndeliverableReason::Transport(
+                                TransportFailure::new(
+                                    target,
+                                    TransportFailureReason::LinkUnavailable(
+                                        "message was undeliverable".to_owned(),
+                                    ),
+                                ),
+                            ))
+                        });
                         let sender_id: ActorAddr = envelope.sender().clone();
                         let return_port =
                             PortRef::<Undeliverable<MessageEnvelope>>::attest_handler_port(
@@ -4936,6 +4947,14 @@ mod tests {
         // no outstanding return handles it terminates.
         let monitor_handle = tokio::spawn(async move {
             while let Ok(Undeliverable::Message(mut envelope)) = return_receiver.recv().await {
+                envelope.push_delivery_failure(DeliveryFailure::new(
+                    UndeliverableReason::Transport(TransportFailure::new(
+                        envelope.dest().clone(),
+                        TransportFailureReason::LinkUnavailable(
+                            "returned in unit test".to_string(),
+                        ),
+                    )),
+                ));
                 envelope.set_error(DeliveryError::BrokenLink(
                     "returned in unit test".to_string(),
                 ));
