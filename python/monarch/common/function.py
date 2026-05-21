@@ -56,7 +56,6 @@ def function_to_import_path(arg: BuiltinFunctionType | FunctionType) -> Optional
     if name is None:
         name = arg.__name__
     try:
-        # pyre-ignore
         module_name = whichmodule(arg, name)
         __import__(module_name, level=0)
         module = sys.modules[module_name]
@@ -71,7 +70,6 @@ def function_to_import_path(arg: BuiltinFunctionType | FunctionType) -> Optional
         except AttributeError:
             pass
 
-        # pyre-ignore
         obj2, parent = _getattribute(module, name)
         # support annotations that cover up the global impl
         if obj2 is arg or getattr(obj2, "_remote_impl", None) is arg:

@@ -110,8 +110,11 @@ def _ensure_torch_pickle() -> None:
         dispatch[key] = _torch_storage
 
     class TorchPickler(cloudpickle.Pickler):
+        # pyrefly: ignore [bad-override]
         dispatch_table: ChainMap[Any, Any] = ChainMap(
-            dispatch, cloudpickle.Pickler.dispatch_table
+            dispatch,
+            # pyrefly: ignore [bad-argument-type]
+            cloudpickle.Pickler.dispatch_table,
         )
 
     _TorchPickler = TorchPickler
@@ -130,6 +133,7 @@ def torch_loads(data: FrozenBuffer | bytes) -> Any:
 
     # pyre-ignore[16]: dynamic torch attribute
     with torch.utils._python_dispatch._disable_current_modes():
+        # pyrefly: ignore [bad-argument-type]
         return cloudpickle.loads(data)
 
 
@@ -137,8 +141,11 @@ class _Pickler(cloudpickle.Pickler):
     _torch_initialized = False
     _dispatch_table: dict[Any, Any] = {}
 
+    # pyrefly: ignore [bad-override]
     dispatch_table: ChainMap[Any, Any] = ChainMap(
-        _dispatch_table, cloudpickle.Pickler.dispatch_table
+        _dispatch_table,
+        # pyrefly: ignore [bad-argument-type]
+        cloudpickle.Pickler.dispatch_table,
     )
 
     def __init__(self, filter: Callable[[Any], bool], f: Buffer | io.BytesIO) -> None:
