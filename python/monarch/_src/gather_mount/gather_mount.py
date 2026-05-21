@@ -212,7 +212,7 @@ class GatherSourceActor(Actor):
             except OSError:
                 return None
         try:
-            future: asyncio.Future[None] = self._inotify.add_watch(  # pyre-ignore[1001]
+            future: asyncio.Future[None] = self._inotify.add_watch(
                 self._full(rel_path), rel_path
             )
             st = os.stat(self._full(rel_path))
@@ -251,8 +251,10 @@ class GatherSourceActor(Actor):
             return (-1, None, 0)
 
         mm = _mmap.mmap(-1, actual, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
+        # pyrefly: ignore [bad-assignment]
         mv: memoryview[bytes] = memoryview(mm)[:actual]
         mv[:] = data
+        # pyrefly: ignore [bad-argument-type]
         rdma_buf = RDMABuffer(mv)
 
         token = self._next_token
@@ -480,6 +482,7 @@ class GatherClientActor(Actor):
             return b""
         mm = _mmap.mmap(-1, actual_len, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
         try:
+            # pyrefly: ignore [bad-assignment]
             mv: memoryview[bytes] = memoryview(mm)[:actual_len]
             await rdma_buf.read_into(mv)
             data = bytes(mv)
@@ -552,21 +555,18 @@ class GatherMount:
 
         procs = host_mesh.spawn_procs(name="gather_mount")
 
-        actors = procs.spawn(  # pyre-ignore[16]
-            "GatherSourceActor", GatherSourceActor, remote_mount_point
-        )
+        actors = procs.spawn("GatherSourceActor", GatherSourceActor, remote_mount_point)
         client_actor = this_proc().spawn("GatherClientActor", GatherClientActor, actors)
 
         prepare_mount_point(local_mount_point)
 
         # Call init_watch on all source actors and wait for completion before
         # mounting — ensures inotify is ready before the first FUSE operation.
-        # pyre-ignore[16]
         actors.init_watch.call(client_actor).get()
 
         # The Rust FUSE session runs on the shared Tokio runtime; it calls
         # back into client_actor for every filesystem operation.
-        self._fuse_handle: object = mount_read_only_filesystem(  # pyre-ignore[16]
+        self._fuse_handle: object = mount_read_only_filesystem(
             client_actor, local_mount_point
         )
         self._mounted = True

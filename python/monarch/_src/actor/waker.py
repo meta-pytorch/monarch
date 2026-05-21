@@ -21,6 +21,7 @@ class Event(abc.ABC):
     _event_loop: asyncio.AbstractEventLoop | None
     _event: asyncio.Event | None
 
+    # pyrefly: ignore [unsupported-operation]
     async def wait(self) -> Literal[True]:
         """Wait for the event to be set. Once set, remains set until cleared.
 

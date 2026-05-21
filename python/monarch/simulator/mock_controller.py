@@ -80,6 +80,7 @@ class History:
         while worklist:
             invocation = worklist.popleft()
             if invocation.fail(remote_exception):
+                # pyrefly: ignore [bad-argument-type]
                 worklist.extend(invocation.users)
 
     def rank_completed(
