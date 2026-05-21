@@ -27,5 +27,4 @@ If you encounter issues:
 - Check that you're using a compatible version of PyTorch
 - Verify that all dependencies are installed correctly
 - Consult the [GitHub repository](https://github.com/meta-pytorch/monarch) for known issues
-
-Remember that Monarch is currently in an experimental stage, so you may encounter bugs or incomplete features. Contributions and bug reports are welcome!
+- If you don't find an existing issue that matches, please [file a new one](https://github.com/meta-pytorch/monarch/issues/new)
