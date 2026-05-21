@@ -203,6 +203,7 @@ def get_dora_schedule(
         num_stages=num_model_chunks * pipeline_parallel_size,
     )
 
+    # pyrefly: ignore [bad-argument-type]
     comms_str = _format_pipeline_order(lowered_comm_schedule)
     if dump_scheduler_ir:
         with open("lowered_comms.log", "w") as logf:
