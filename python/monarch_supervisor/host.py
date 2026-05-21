@@ -58,6 +58,7 @@ class Process:
         self,
         name: str,
         logfilename: Optional[str],
+        # pyrefly: ignore [missing-attribute]
         proc_comm: zmq.Socket,
         proc_id: int,
         rank: int,
@@ -138,7 +139,9 @@ class Host:
     """
 
     def __init__(self, supervisor_port: str, start_new_session: bool = True) -> None:
+        # pyrefly: ignore [missing-attribute]
         self.context: zmq.Context = zmq.Context(1)
+        # pyrefly: ignore [missing-attribute]
         self.supervisor_comm: zmq.Socket = self._socket(zmq.DEALER)
         self.supervisor_comm.setsockopt(zmq.IPV6, True)
         logger.info("Connecting to %s", supervisor_port)
@@ -150,12 +153,14 @@ class Host:
             pickle_dumps(("_hostname", None, socket.gethostname()))
         )
 
+        # pyrefly: ignore [missing-attribute]
         self.poller = zmq.Poller()
         self.poller.register(self.supervisor_comm, zmq.POLLIN)
 
         # optional way to send messages to processes.
         # all processes on this host will use the same
         # socket.
+        # pyrefly: ignore [missing-attribute]
         self.proc_comm: zmq.Socket = self._socket(zmq.ROUTER)
 
         self.proc_addr = f"ipc:///tmp/proc-{uuid.uuid4()}"
@@ -169,6 +174,7 @@ class Host:
         self.exits: List[bytes] = []
         self.start_new_session = start_new_session
 
+    # pyrefly: ignore [missing-attribute]
     def _socket(self, kind: int) -> zmq.Socket:
         socket = self.context.socket(kind)
         socket.setsockopt(zmq.SNDHWM, 0)
@@ -320,7 +326,6 @@ class Host:
                     supervisor_expiry = (
                         time.time() + HEARTBEAT_INTERVAL * HEARTBEAT_LIVENESS
                     )
-                    # pyre-ignore[29]
                     msg = self.supervisor_comm.recv()
                     if msg:
                         cmd, *args = pickle_loads(msg)
