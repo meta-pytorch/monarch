@@ -264,6 +264,7 @@ for hosts, gpus, message_size, Runner in itertools.product(
         FILE_PATH,
         use_counters=True,
         name=f"{bench.__class__.__name__}_{hosts=}_{gpus=}_{size_name}",
+        # pyrefly: ignore [bad-argument-type]
         bench=bench,
     )
     async def bench_actor_scaling(counters: UserCounters, bench: Benchmark) -> None:

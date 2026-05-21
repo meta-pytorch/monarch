@@ -25,4 +25,5 @@ class BaseTensor(torch.Tensor):
     # If __torch_dispatch__ is defined (which it will be for all our examples)
     # the default torch function implementation (which preserves subclasses)
     # typically must be disabled
+    # pyrefly: ignore [bad-override]
     __torch_function__ = torch._C._disabled_torch_function_impl

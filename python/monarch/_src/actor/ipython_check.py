@@ -21,6 +21,5 @@ def is_ipython() -> bool:
     if "IPython" not in sys.modules:
         return False
 
-    # pyre-ignore[16]: get_ipython exists in IPython module
     get_ipython = sys.modules["IPython"].get_ipython
     return get_ipython() is not None

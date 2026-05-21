@@ -88,6 +88,7 @@ if TYPE_CHECKING:
             rdma_disable_ibverbs: NotRequired[bool]
             rdma_max_chunk_size_mb: NotRequired[int]
 
+        # pyrefly: ignore [invalid-annotation]
         ConfigureKwargsType = Unpack[ConfigureArgs]
     else:
         ConfigureKwargsType = object
@@ -273,7 +274,6 @@ def configured(**overrides: "ConfigureKwargsType") -> Iterator[Dict[str, Any]]:
     finally:
         # Restore previous runtime
         clear_runtime_config()
-        # pyre-fixme[6]: Values are already from the config function.
         configure(**prev)
 
 
@@ -309,7 +309,7 @@ def parametrize_config(
     import inspect
     import itertools
 
-    import pytest  # pyre-ignore[21]: pytest is a test-only dependency
+    import pytest
 
     if not config_options:
         raise ValueError("parametrize_config requires at least one config option")
@@ -341,7 +341,6 @@ def parametrize_config(
             async def async_wrapper(
                 _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
-                # pyre-fixme[6]: Values are checked inside the function.
                 with configured(**_config_overrides):
                     return await fn(*args, **kwargs)
 
@@ -353,7 +352,6 @@ def parametrize_config(
             def sync_wrapper(
                 _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
-                # pyre-fixme[6]: Values are checked inside the function.
                 with configured(**_config_overrides):
                     return fn(*args, **kwargs)
 
@@ -402,7 +400,7 @@ def parametrize_config_pointwise(
     import functools
     import inspect
 
-    import pytest  # pyre-ignore[21]: pytest is a test-only dependency
+    import pytest
 
     if not config_options:
         raise ValueError(
@@ -438,7 +436,6 @@ def parametrize_config_pointwise(
             async def async_wrapper(
                 _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
-                # pyre-fixme[6]: Values are checked inside the function.
                 with configured(**_config_overrides):
                     return await fn(*args, **kwargs)
 
@@ -450,7 +447,6 @@ def parametrize_config_pointwise(
             def sync_wrapper(
                 _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
-                # pyre-fixme[6]: Values are checked inside the function.
                 with configured(**_config_overrides):
                     return fn(*args, **kwargs)
 

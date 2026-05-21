@@ -46,6 +46,7 @@ class MyActor:
         response_port: "PortProtocol[Any]",
     ) -> None:
         match method:
+            # pyrefly: ignore [invalid-pattern]
             case MethodSpecifier.Init():
                 # Handle init message - response_port may be None
                 if response_port is not None:
@@ -138,6 +139,7 @@ async def test_actor_mesh() -> None:
     # Create an explicit init message
     init_state = monarch_pickle(None)
     init_message = PendingMessage(
+        # pyrefly: ignore [bad-argument-count, bad-argument-type]
         PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
         init_state,
     )
