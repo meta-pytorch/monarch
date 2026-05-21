@@ -373,6 +373,8 @@ class TensorManager:
                     assert task.task_id is not None
                     new_v.add(task_manager.tasks[task.task_id])
                 else:
+                    # pyrefly: ignore [bad-argument-type]
                     new_v.add(task)
+            # pyrefly: ignore [unsupported-operation]
             ret.tensors[k] = new_v
         return ret

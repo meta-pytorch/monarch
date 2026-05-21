@@ -338,7 +338,6 @@ class TestMockPropagationEndToEnd(unittest.TestCase):
         # Clear registry between tests
         _actor_registry.clear()
 
-    # pyre-ignore[56]: Pyre cannot infer type of pytest.mark.timeout decorator
     @pytest.mark.timeout(60)
     def test_outer_actor_spawns_mocked_inner_actor(self) -> None:
         """
