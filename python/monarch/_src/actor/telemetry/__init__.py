@@ -49,9 +49,7 @@ def traced(fn: Callable[_P, _R]) -> Callable[_P, _R]: ...
 
 
 @overload
-def traced(
-    *, name: str
-) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]: ...  # pyre-ignore[34]
+def traced(*, name: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]: ...
 
 
 def traced(
@@ -80,6 +78,7 @@ def traced(
         if inspect.iscoroutinefunction(fn):
 
             @functools.wraps(fn)
+            # pyrefly: ignore [bad-return]
             async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
                 with span(span_name):
                     return await fn(*args, **kwargs)  # type: ignore[misc]
@@ -88,6 +87,7 @@ def traced(
         else:
 
             @functools.wraps(fn)
+            # pyrefly: ignore [bad-return]
             def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
                 with span(span_name):
                     return fn(*args, **kwargs)
@@ -160,6 +160,7 @@ class Counter(metrics.Counter):
     inner: PyCounter
 
     def __init__(self, name: str) -> None:
+        # pyrefly: ignore [missing-attribute]
         super().__init__(name)
         self.inner = PyCounter(name)
 
@@ -179,6 +180,7 @@ class UpDownCounter(metrics.UpDownCounter):
     inner: PyUpDownCounter
 
     def __init__(self, name: str) -> None:
+        # pyrefly: ignore [missing-attribute]
         super().__init__(name)
         self.inner = PyUpDownCounter(name)
 
@@ -198,6 +200,7 @@ class Histogram(metrics.Histogram):
     inner: PyHistogram
 
     def __init__(self, name: str) -> None:
+        # pyrefly: ignore [missing-attribute]
         super().__init__(name)
         self.inner = PyHistogram(name)
 

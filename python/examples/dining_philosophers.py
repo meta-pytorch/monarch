@@ -64,6 +64,7 @@ class Philosopher(Actor):
     """A philosopher that alternates between thinking and eating."""
 
     def __init__(self, size: int) -> None:
+        # pyrefly: ignore [bad-assignment, bad-override]
         self.size = size
         self.rank: int = 0
         self.left_status = ChopstickStatus.NONE
@@ -72,7 +73,9 @@ class Philosopher(Actor):
         self.meals_eaten: int = 0
 
     def _chopstick_indices(self) -> tuple[int, int]:
+        # pyrefly: ignore [unsupported-operation]
         left = self.rank % self.size
+        # pyrefly: ignore [unsupported-operation]
         right = (self.rank + 1) % self.size
         return left, right
 

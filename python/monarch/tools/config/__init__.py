@@ -57,6 +57,7 @@ class Config:
                 " Use `workspace=monarch.tools.config.workspace.Workspace(env=None)` instead."
             )
             warnings.warn(deprecation_msg, FutureWarning, stacklevel=2)
+            # pyrefly: ignore [bad-assignment]
             self.workspace = Workspace.null()
         elif isinstance(self.workspace, str):
             deprecation_msg = (

@@ -35,6 +35,7 @@ class Context(NamedTuple):
             # doesn't work correctly and somehow inactivates the device mesh
             # if it is already enabled. This is a temporary workaround for
             # the demo.
+            # pyrefly: ignore [missing-attribute]
             activate_mesh = self.device_mesh.activate()
         else:
             activate_mesh = nullcontext()
@@ -176,7 +177,6 @@ def gradient_execution_order(
             to_scan.append(nnode)
             value = min_sequence_nr.get(key)
             if value is not None:
-                # pyre-ignore
                 min_sequence_nr[key] = min(node._sequence_nr(), value)
 
     return sorted(
