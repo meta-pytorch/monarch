@@ -995,17 +995,17 @@ impl IbvQueuePair {
 
                 match ret {
                     1 => {
-                        if !wc.is_valid() {
-                            if let Some((status, vendor_err)) = wc.error() {
-                                return Err(PollCompletionError {
-                                    status: Some(status),
-                                    vendor_err: Some(vendor_err),
-                                    message: format!(
-                                        "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
-                                        cq_type, expected_wr_id, status, vendor_err,
-                                    ),
-                                });
-                            }
+                        if !wc.is_valid()
+                            && let Some((status, vendor_err)) = wc.error()
+                        {
+                            return Err(PollCompletionError {
+                                status: Some(status),
+                                vendor_err: Some(vendor_err),
+                                message: format!(
+                                    "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
+                                    cq_type, expected_wr_id, status, vendor_err,
+                                ),
+                            });
                         }
                         results.push((expected_wr_id, IbvWc::from(wc)));
                     }
@@ -1486,9 +1486,12 @@ mod tests {
     use hyperactor::Context;
     use hyperactor::Handler;
     use hyperactor::PortRef;
-    use hyperactor::mailbox::DeliveryError;
+    use hyperactor::mailbox::DeliveryFailure;
     use hyperactor::mailbox::MessageEnvelope;
+    use hyperactor::mailbox::TransportFailure;
+    use hyperactor::mailbox::TransportFailureReason;
     use hyperactor::mailbox::Undeliverable;
+    use hyperactor::mailbox::UndeliverableReason;
     use hyperactor::port::Port;
     use hyperactor::proc::Proc;
     use hyperactor_config::Flattrs;
@@ -1850,7 +1853,12 @@ mod tests {
             Flattrs::default(),
         )
         .unwrap();
-        envelope.set_error(DeliveryError::Mailbox(error.into()));
+        envelope.push_delivery_failure(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(
+                envelope.dest().clone(),
+                TransportFailureReason::LinkUnavailable(error.into()),
+            ),
+        )));
         Undeliverable::Message(envelope)
     }
 
