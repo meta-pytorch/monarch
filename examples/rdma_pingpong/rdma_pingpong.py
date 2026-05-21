@@ -37,14 +37,18 @@ class PingPongActor(Actor):
             self.data = torch.rand(n, dtype=torch.float32, device=device)
             self.recv_buf = torch.zeros(n, dtype=torch.float32, device=device)
         elif buffer_type == "bytearray":
+            # pyrefly: ignore [bad-assignment]
             self.data = bytearray(os.urandom(size_bytes))
+            # pyrefly: ignore [bad-assignment]
             self.recv_buf = bytearray(size_bytes)
         elif buffer_type == "memoryview":
             self._data_mmap = mmap.mmap(-1, size_bytes)
             self._data_mmap.write(os.urandom(size_bytes))
             self._data_mmap.seek(0)
+            # pyrefly: ignore [bad-assignment]
             self.data = self._data_mmap
             self._recv_mmap = mmap.mmap(-1, size_bytes)
+            # pyrefly: ignore [bad-assignment]
             self.recv_buf = self._recv_mmap
         else:
             raise ValueError(f"Unknown buffer_type: {buffer_type!r}")
@@ -55,6 +59,7 @@ class PingPongActor(Actor):
         from monarch._src.actor.future import Future
         from monarch._src.rdma.rdma import _ensure_init_rdma_manager
 
+        # pyrefly: ignore [bad-argument-type]
         await Future(coro=_ensure_init_rdma_manager())
 
     @endpoint
@@ -62,6 +67,7 @@ class PingPongActor(Actor):
         if self.buffer_type in ("cpu_tensor", "cuda_tensor"):
             return RDMABuffer(self.data.view(torch.uint8).flatten())
         else:
+            # pyrefly: ignore [bad-argument-type]
             return RDMABuffer(memoryview(self.data))
 
     @endpoint
@@ -73,11 +79,13 @@ class PingPongActor(Actor):
         elif self.buffer_type == "bytearray":
             for i in range(len(self.recv_buf)):
                 self.recv_buf[i] = 0
+            # pyrefly: ignore [bad-argument-type]
             local = memoryview(self.recv_buf)
         else:
             self._recv_mmap.seek(0)
             self._recv_mmap.write(b"\x00" * self.size_bytes)
             self._recv_mmap.seek(0)
+            # pyrefly: ignore [bad-argument-type]
             local = memoryview(self.recv_buf)
 
         t0 = time.perf_counter()
@@ -110,6 +118,7 @@ def main(
     buffer_type: str = "cpu_tensor",
 ):
     """RDMA Pingpong: transfer data between two nodes via RDMABuffer."""
+    # pyrefly: ignore [missing-attribute]
     sys.stdout.reconfigure(line_buffering=True)
     size = data_size_mb * 1024 * 1024
 
@@ -133,6 +142,7 @@ def main(
             useStrictName=True,
             localityConstraints=["region", "gtn"],
             default_transport=ChannelTransport.MetaTlsWithIpV6,
+            use_case="example",
         )
         job.add_mesh("workers", 2)
     elif backend == "k8s":

@@ -407,7 +407,7 @@ impl WorkerMessageHandler for WorkerActor {
         let device_meshes = self
             .device_meshes
             .iter()
-            .map(|(k, v)| (k.clone(), v.0.clone()))
+            .map(|(k, v)| (*k, v.0.clone()))
             .collect();
 
         let mut remote_process_groups = HashMap::new();
@@ -427,10 +427,8 @@ impl WorkerMessageHandler for WorkerActor {
                         anyhow::anyhow!("no comm found for remote process group {remote_process_group_ref:#?} stream {stream:#?}")
                     })?
                     .clone();
-                remote_process_groups.insert(
-                    remote_process_group_ref.clone(),
-                    (device_mesh, dims_vec, comm),
-                );
+                remote_process_groups
+                    .insert(*remote_process_group_ref, (device_mesh, dims_vec, comm));
             }
         }
 
@@ -779,7 +777,7 @@ impl WorkerMessageHandler for WorkerActor {
         } else {
             self.device_meshes
                 .iter()
-                .map(|(k, v)| (k.clone(), v.0.clone()))
+                .map(|(k, v)| (*k, v.0.clone()))
                 .collect()
         };
 
@@ -851,7 +849,7 @@ impl WorkerMessageHandler for WorkerActor {
                         cx,
                         ranks_for_group
                             .into_iter()
-                            .map(|v| v.clone().try_into())
+                            .map(|v| v.try_into())
                             .collect::<Result<Vec<_>, _>>()?,
                     )
                     .await?
@@ -903,7 +901,7 @@ impl WorkerMessageHandler for WorkerActor {
                         cx,
                         ranks_for_group
                             .into_iter()
-                            .map(|v| v.clone().try_into())
+                            .map(|v| v.try_into())
                             .collect::<Result<Vec<_>, _>>()?,
                     )
                     .await?
@@ -949,7 +947,7 @@ impl WorkerMessageHandler for WorkerActor {
         stream: StreamRef,
     ) -> Result<Option<Result<WireValue, String>>> {
         let stream = self.try_get_stream(stream)?;
-        Ok(stream.get_ref_unit_tests_only(cx, ref_id.clone()).await?)
+        Ok(stream.get_ref_unit_tests_only(cx, ref_id).await?)
     }
 
     async fn define_recording(

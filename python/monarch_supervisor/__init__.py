@@ -590,20 +590,25 @@ class Context(FilteredMessageQueue):
                 os.dup2(f.fileno(), sys.stderr.fileno())
 
         self._log_interval: float = log_interval
+        # pyrefly: ignore [missing-attribute]
         self._context: zmq.Context = zmq.Context(1)
 
         # to talk to python clients in this process
         self._requests: deque[Callable[[], None]] = deque()
         self._delivered_messages: deque[List[Letter]] = deque()
         self._delivered_messages_entry: List[Letter] = []
+        # pyrefly: ignore [missing-attribute]
         self._requests_ready: zmq.Socket = self._socket(zmq.PAIR)
 
         self._requests_ready.bind("inproc://doorbell")
+        # pyrefly: ignore [missing-attribute]
         self._doorbell: zmq.Socket = self._socket(zmq.PAIR)
         self._doorbell.connect("inproc://doorbell")
+        # pyrefly: ignore [missing-attribute]
         self._doorbell_poller = zmq.Poller()
         self._doorbell_poller.register(self._doorbell, zmq.POLLIN)
 
+        # pyrefly: ignore [missing-attribute]
         self._backend: zmq.Socket = self._socket(zmq.ROUTER)
         self._backend.setsockopt(zmq.IPV6, True)
         if port is None:
@@ -615,6 +620,7 @@ class Context(FilteredMessageQueue):
             self._backend.bind(f"tcp://*:{port}")
             self.port = port
 
+        # pyrefly: ignore [missing-attribute]
         self._poller = zmq.Poller()
         self._poller.register(self._backend, zmq.POLLIN)
         self._poller.register(self._requests_ready, zmq.POLLIN)
@@ -641,6 +647,7 @@ class Context(FilteredMessageQueue):
         self._thread = Thread(target=self._event_loop, daemon=True)
         self._thread.start()
 
+    # pyrefly: ignore [missing-attribute]
     def _socket(self, kind: int) -> zmq.Socket:
         socket = self._context.socket(kind)
         socket.setsockopt(zmq.SNDHWM, 0)
@@ -695,7 +702,6 @@ class Context(FilteredMessageQueue):
                 elif sock is self._requests_ready:
                     ttl = TTL(HEARTBEAT_INTERVAL / 2)
                     while self._requests and ttl() > 0:
-                        # pyre-ignore[29]
                         self._requests_ready.recv()
                         fn = self._requests.popleft()
                         fn()
@@ -754,6 +760,7 @@ class Context(FilteredMessageQueue):
         connection_histogram = {}
         for connection in self._name_to_connection.values():
             state = connection.state.name
+            # pyrefly: ignore [unsupported-operation]
             connection_histogram[state] = connection_histogram.setdefault(state, 0) + 1
 
         status = Status(
@@ -770,6 +777,7 @@ class Context(FilteredMessageQueue):
             self._heartbeats,
             self._heartbeat_ttl_sum / self._heartbeats if self._heartbeats else 0,
             self._heartbeat_min_ttl,
+            # pyrefly: ignore [bad-argument-type]
             connection_histogram,
             avg_event_loop_time,
             max_event_loop_time,
@@ -788,6 +796,7 @@ class Context(FilteredMessageQueue):
     def _heartbeat_ttl(self, ttl: float) -> None:
         # Updates heartbeat stats with most recent ttl
         self._heartbeats += 1
+        # pyrefly: ignore [bad-assignment]
         self._heartbeat_ttl_sum += ttl
         self._heartbeat_min_ttl = min(self._heartbeat_min_ttl, ttl)
 
@@ -915,7 +924,6 @@ class Context(FilteredMessageQueue):
             timeout=int(1000 * timeout)
         ):
             return []
-        # pyre-ignore[29]
         self._doorbell.recv()
         return self._delivered_messages.popleft()
 
@@ -947,16 +955,19 @@ class LocalMessageQueue(FilteredMessageQueue):
 
     def __init__(self, supervisor_ident: int, supervisor_pipe: str) -> None:
         super().__init__()
+        # pyrefly: ignore [missing-attribute]
         self._ctx = zmq.Context(1)
         self._sock = self._socket(zmq.DEALER)
         proc_id = supervisor_ident.to_bytes(8, byteorder="little")
         self._sock.setsockopt(zmq.IDENTITY, proc_id)
         self._sock.connect(supervisor_pipe)
         self._sock.send(b"")
+        # pyrefly: ignore [missing-attribute]
         self._poller = zmq.Poller()
         self._poller.register(self._sock, zmq.POLLIN)
         self._async_socket: Optional[zmq.asyncio.Socket] = None
 
+    # pyrefly: ignore [missing-attribute]
     def _socket(self, kind) -> zmq.Socket:
         sock = self._ctx.socket(kind)
         sock.setsockopt(zmq.SNDHWM, 0)
@@ -971,6 +982,7 @@ class LocalMessageQueue(FilteredMessageQueue):
     async def recv_async(self) -> Letter:
         if self._async_socket is None:
             self._async_socket = zmq.asyncio.Socket.from_socket(self._sock)
+        # pyrefly: ignore [missing-attribute]
         return Letter(None, await self._async_socket.recv_pyobj())
 
     def send(self, message: Any) -> None:
