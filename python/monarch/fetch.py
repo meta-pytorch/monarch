@@ -35,6 +35,7 @@ def fetch_shard(
             shard = {}
         shard.update(kwargs)
 
+    # pyrefly: ignore [bad-argument-type]
     return cast("Future[T]", call_on_shard_and_fetch(remote_identity, obj, shard=shard))
 
 

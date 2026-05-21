@@ -95,6 +95,7 @@ class Future(Generic[T]):
                 except Exception:
                     logger.exception("exception in controller's Future callback")
         self._callbacks = None
+        # pyrefly: ignore [bad-assignment]
         self._client = None
 
     def _wait(self, timeout: Optional[float]):

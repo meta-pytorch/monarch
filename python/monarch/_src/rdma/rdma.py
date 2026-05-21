@@ -218,6 +218,7 @@ class RdmaController(Actor):
                     coro=cast("PythonTask[Any]", proc_mesh._proc_mesh.task())
                 )
                 return none_throws(
+                    # pyrefly: ignore [missing-attribute]
                     await _RdmaManager.create_rdma_manager_nonblocking(
                         proc_mesh_result, context().actor_instance
                     )
@@ -339,9 +340,11 @@ class RDMABuffer:
         handle = _make_local_memory_handle(data)
 
         try:
+            # pyrefly: ignore [missing-attribute]
             if handle.size == 0:
                 raise ValueError("Cannot create RDMABuffer with size 0.")
             ctx = context()
+            # pyrefly: ignore [missing-attribute]
             self._buffer: _RdmaBuffer = _RdmaBuffer.create_rdma_buffer_blocking(
                 local=handle,
                 client=ctx.actor_instance,
@@ -357,6 +360,7 @@ class RDMABuffer:
         return get_rdma_backend()
 
     def size(self) -> int:
+        # pyrefly: ignore [missing-attribute]
         return self._buffer.size()
 
     def read_into(
@@ -385,8 +389,10 @@ class RDMABuffer:
         """
         handle = _make_local_memory_handle(dst)
 
+        # pyrefly: ignore [missing-attribute]
         if self.size() > handle.size:
             raise ValueError(
+                # pyrefly: ignore [missing-attribute]
                 f"Destination tensor size ({handle.size}) must be >= RDMA buffer size ({self.size()})"
             )
 
@@ -395,6 +401,7 @@ class RDMABuffer:
         async def read_into_nonblocking() -> Optional[int]:
             await _ensure_init_rdma_manager()
 
+            # pyrefly: ignore [missing-attribute]
             res = await self._buffer.read_into(
                 dst=handle,
                 client=client,
@@ -434,8 +441,10 @@ class RDMABuffer:
 
         handle = _make_local_memory_handle(src)
 
+        # pyrefly: ignore [missing-attribute]
         if handle.size > self.size():
             raise ValueError(
+                # pyrefly: ignore [missing-attribute]
                 f"Source tensor size ({handle.size}) must be <= RDMA buffer size ({self.size()})"
             )
         client = context().actor_instance
@@ -443,6 +452,7 @@ class RDMABuffer:
         async def write_from_nonblocking() -> None:
             await _ensure_init_rdma_manager()
 
+            # pyrefly: ignore [missing-attribute]
             res = await self._buffer.write_from(
                 src=handle,
                 client=client,
@@ -461,6 +471,7 @@ class RDMABuffer:
         async def drop_nonblocking() -> None:
             await _ensure_init_rdma_manager()
 
+            # pyrefly: ignore [missing-attribute]
             await self._buffer.drop(
                 client=client,
             )
@@ -472,6 +483,7 @@ class RDMABuffer:
         """
         The owner reference (str)
         """
+        # pyrefly: ignore [missing-attribute]
         return self._buffer.owner_actor_id()
 
 

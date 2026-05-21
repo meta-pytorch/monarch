@@ -218,6 +218,7 @@ class CommandHistory:
         for worker_rank in flattened_ranks:
             match dag_item_type:
                 case "CallFunction":
+                    # pyrefly: ignore [missing-attribute]
                     stream_name = getattr(msg, "stream", None).name
                     command_type = (
                         f"CallFunction: {clean_name(str(getattr(msg, 'function', '')))}"
@@ -257,6 +258,7 @@ class CommandHistory:
                     )
 
                 case "Reduce":
+                    # pyrefly: ignore [missing-attribute]
                     stream_name = getattr(msg, "stream", None).name
                     reduction = getattr(msg, "reduction", None)
                     scatter = getattr(msg, "scatter", False)
@@ -270,6 +272,7 @@ class CommandHistory:
                             reduce_type = "all_reduce"
                         else:
                             reduce_type = "reduce_scatter"
+                    # pyrefly: ignore [missing-attribute]
                     command_type = f"Reduce: {reduce_type}: {result.ref}"  # use result.ref as unique Reduce id
                     devices = flattened_ranks
                     _process_tensor_results(
@@ -277,15 +280,19 @@ class CommandHistory:
                     )
                 case "BorrowCreate":
                     borrow_id = getattr(msg, "borrow", None)
+                    # pyrefly: ignore [missing-attribute]
                     borrow_src_tensor_ref = getattr(msg, "tensor", None).ref
+                    # pyrefly: ignore [missing-attribute]
                     stream_name = src_stream_name = getattr(
                         msg, "from_stream", None
                     ).name
+                    # pyrefly: ignore [missing-attribute]
                     dst_stream_name = getattr(msg, "to_stream", None).name
 
                     command_type = f"BorrowCreate: {borrow_id}"
                     devices = [worker_rank]
                     ir.add_borrow(
+                        # pyrefly: ignore [bad-argument-type]
                         borrow_id,
                         worker_rank,
                         src_stream_name,
@@ -301,32 +308,41 @@ class CommandHistory:
                     )
                 case "BorrowFirstUse":
                     borrow_id = getattr(msg, "borrow", None)
+                    # pyrefly: ignore [bad-index]
                     stream_name = ir._control.borrows_info[borrow_id].dst_stream_name
                     command_type = f"BorrowFirstUse: {borrow_id}"
                     devices = [worker_rank]
                     control_dependencies = [
+                        # pyrefly: ignore [bad-index]
                         ir._control.borrows_info[borrow_id].create_id
                     ]
+                    # pyrefly: ignore [bad-index]
                     ir._control.borrows_info[borrow_id].firstuse_id = command_id
                 case "BorrowLastUse":
                     borrow_id = getattr(msg, "borrow", None)
                     stream_name = src_stream_name = ir._control.borrows_info[
+                        # pyrefly: ignore [bad-index]
                         borrow_id
                     ].dst_stream_name
                     dst_stream_name = ir._control.borrows_info[
+                        # pyrefly: ignore [bad-index]
                         borrow_id
                     ].src_stream_name
                     command_type = f"BorrowLastUse: {borrow_id}"
                     devices = [worker_rank]
+                    # pyrefly: ignore [bad-index]
                     ir._control.borrows_info[borrow_id].lastuse_id = command_id
                 case "BorrowDrop":
                     borrow_id = getattr(msg, "borrow", None)
+                    # pyrefly: ignore [bad-index]
                     stream_name = ir._control.borrows_info[borrow_id].src_stream_name
                     command_type = f"BorrowDrop: {borrow_id}"
                     devices = [worker_rank]
                     control_dependencies = [
+                        # pyrefly: ignore [bad-index]
                         ir._control.borrows_info[borrow_id].lastuse_id
                     ]
+                    # pyrefly: ignore [bad-index]
                     ir._control.borrows_info[borrow_id].drop_id = command_id
 
             if dag_item_type in [
@@ -339,10 +355,12 @@ class CommandHistory:
             ]:
                 ir.insert_node(
                     worker_rank,
+                    # pyrefly: ignore [bad-argument-type]
                     stream_name,
                     command_id,
                     command_type,
                     devices,
+                    # pyrefly: ignore [bad-argument-type]
                     control_dependencies,
                     tb,
                 )
@@ -356,7 +374,9 @@ class CommandHistory:
                 itertools.chain.from_iterable([ranks[1]])
             )  # for SendTensor, ranks[1] == destination ranks
 
+            # pyrefly: ignore [missing-attribute]
             src_stream_name = getattr(msg, "from_stream", None).name
+            # pyrefly: ignore [missing-attribute]
             dst_stream_name = getattr(msg, "to_stream", None).name
 
             # Create sets of (rank, stream) pairs for source and destination ranks
@@ -409,6 +429,7 @@ class CommandHistory:
 
         if dag_item_type == "DeleteRefs":
             refs = getattr(msg, "refs", None)
+            # pyrefly: ignore [not-iterable]
             for ref in refs:
                 stream_name = ir._data.tensorref_to_stream[ref]
                 # Do not call _insert_node() since we do not need DeleteRefs for the control DAG
