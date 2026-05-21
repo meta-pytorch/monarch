@@ -682,6 +682,18 @@ impl MessageEnvelope {
         undeliverable::return_undeliverable(return_handle, self);
     }
 
+    /// Mark the message as undeliverable with both legacy and structured
+    /// failure information.
+    pub fn undeliverable_with_failure(
+        mut self,
+        error: DeliveryError,
+        failure: DeliveryFailure,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        self.push_delivery_failure(failure);
+        self.undeliverable(error, return_handle);
+    }
+
     /// Get the errors of why this message was undeliverable. Empty means this
     /// message was not determined as undeliverable.
     pub fn errors(&self) -> &Vec<DeliveryError> {
@@ -1052,7 +1064,8 @@ pub trait MailboxSender: Send + Sync + Any {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         if let Err(err) = envelope.dec_ttl_or_err() {
-            envelope.undeliverable(err, return_handle);
+            let failure = DeliveryFailure::new(ExpiredDelivery::new(envelope.dest().clone()));
+            envelope.undeliverable_with_failure(err, failure, return_handle);
             return;
         }
         self.post_unchecked(envelope, return_handle);
@@ -3715,6 +3728,37 @@ mod tests {
                 .error_msg()
                 .expect("expected error")
                 .contains("cannot deliver to")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ttl_expiration_records_root_delivery_failure() {
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
+        let (port, _) = mbox.open_port::<u64>();
+        let port_ref = port.bind();
+        let envelope = MessageEnvelope::serialize(
+            mbox.actor_addr().clone(),
+            port_ref.port_addr().clone(),
+            &42u64,
+            Flattrs::new(),
+        )
+        .expect("serialize")
+        .set_ttl(0);
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        mbox.post(envelope, return_handle);
+
+        let Undeliverable(undelivered) =
+            tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+                .await
+                .expect("timed out waiting for undeliverable")
+                .expect("return port closed");
+        let root_failure = undelivered
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        assert!(
+            matches!(root_failure.kind, DeliveryFailureKind::Expired(_)),
+            "expected expired delivery failure, got {root_failure}"
         );
     }
 
