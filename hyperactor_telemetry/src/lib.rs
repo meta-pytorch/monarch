@@ -114,70 +114,6 @@ pub fn hash_to_u64(value: &impl Hash) -> u64 {
     hasher.finish()
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct TelemetrySample {
-    fields: Vec<(String, String)>,
-}
-
-impl TelemetrySample {
-    pub fn get_string(&self, key: &str) -> Option<&str> {
-        for (k, v) in &self.fields {
-            if k == key {
-                return Some(v.as_str());
-            }
-        }
-        None
-    }
-}
-
-#[cfg(all(fbcode_build, target_os = "linux"))]
-impl From<crate::meta::sample_buffer::Sample> for TelemetrySample {
-    fn from(sample: crate::meta::sample_buffer::Sample) -> Self {
-        let mut fields = Vec::new();
-        for (key, value) in sample.0 {
-            if let crate::meta::sample_buffer::SampleValue::String(s) = value {
-                fields.push((key.to_string(), s.to_string()));
-            }
-        }
-        Self { fields }
-    }
-}
-
-#[cfg(not(all(fbcode_build, target_os = "linux")))]
-impl TelemetrySample {
-    pub fn new() -> Self {
-        Self { fields: Vec::new() }
-    }
-}
-
-pub trait TelemetryTestHandle {
-    fn get_tracing_samples(&self) -> Vec<TelemetrySample>;
-}
-
-#[cfg(all(fbcode_build, target_os = "linux"))]
-struct MockScubaHandle {
-    tracing_client: crate::meta::scuba_utils::MockScubaClient,
-}
-
-#[cfg(all(fbcode_build, target_os = "linux"))]
-impl TelemetryTestHandle for MockScubaHandle {
-    fn get_tracing_samples(&self) -> Vec<TelemetrySample> {
-        self.tracing_client
-            .get_samples()
-            .into_iter()
-            .map(TelemetrySample::from)
-            .collect()
-    }
-}
-
-struct EmptyTestHandle;
-
-impl TelemetryTestHandle for EmptyTestHandle {
-    fn get_tracing_samples(&self) -> Vec<TelemetrySample> {
-        vec![]
-    }
-}
-
 pub trait TelemetryClock {
     fn now(&self) -> tokio::time::Instant;
     fn system_time_now(&self) -> std::time::SystemTime;
@@ -1052,21 +988,6 @@ pub fn initialize_logging_with_log_prefix(
     clock: impl TelemetryClock + Send + 'static,
     prefix_env_var: Option<String>,
 ) {
-    let _ = initialize_logging_with_log_prefix_impl(clock, prefix_env_var, false);
-}
-
-pub fn initialize_logging_with_log_prefix_mock_scuba(
-    clock: impl TelemetryClock + Send + 'static,
-    prefix_env_var: Option<String>,
-) -> Box<dyn TelemetryTestHandle> {
-    initialize_logging_with_log_prefix_impl(clock, prefix_env_var, true)
-}
-
-fn initialize_logging_with_log_prefix_impl(
-    clock: impl TelemetryClock + Send + 'static,
-    prefix_env_var: Option<String>,
-    mock_scuba: bool,
-) -> Box<dyn TelemetryTestHandle> {
     let should_install_subscriber = !tracing::dispatcher::has_been_set();
 
     swap_telemetry_clock(clock);
@@ -1086,8 +1007,6 @@ fn initialize_logging_with_log_prefix_impl(
 
     #[cfg(all(fbcode_build, target_os = "linux"))]
     {
-        let mut mock_scuba_client: Option<crate::meta::scuba_utils::MockScubaClient> = None;
-
         if should_install_subscriber {
             let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
             sinks.push(Box::new(sinks::glog::GlogSink::new(
@@ -1131,29 +1050,11 @@ fn initialize_logging_with_log_prefix_impl(
 
             if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
                 use crate::meta;
-                use crate::meta::scuba_utils::LOG_ENTER_EXIT;
 
-                if mock_scuba {
-                    let tracing_client = meta::scuba_utils::MockScubaClient::new();
-
-                    sinks.push(Box::new(
-                        meta::scuba_sink::ScubaSink::with_client(
-                            tracing_client.clone(),
-                            match meta::tracing_resource().get(&LOG_ENTER_EXIT) {
-                                Some(Value::Bool(enabled)) => enabled,
-                                _ => false,
-                            },
-                        )
+                sinks.push(Box::new(
+                    meta::scuba_sink::ScubaSink::new(meta::tracing_resource())
                         .with_target_filter(crate::config::get_tracing_targets()),
-                    ));
-
-                    mock_scuba_client = Some(tracing_client);
-                } else {
-                    sinks.push(Box::new(
-                        meta::scuba_sink::ScubaSink::new(meta::tracing_resource())
-                            .with_target_filter(crate::config::get_tracing_targets()),
-                    ));
-                }
+                ));
             }
 
             let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
@@ -1213,12 +1114,6 @@ fn initialize_logging_with_log_prefix_impl(
         if hyperactor_config::global::get(ENABLE_OTEL_METRICS) {
             otel::init_metrics();
         }
-
-        if let Some(tracing_client) = mock_scuba_client {
-            Box::new(MockScubaHandle { tracing_client })
-        } else {
-            Box::new(EmptyTestHandle)
-        }
     }
     #[cfg(not(all(fbcode_build, target_os = "linux")))]
     {
@@ -1266,8 +1161,6 @@ fn initialize_logging_with_log_prefix_impl(
         }
 
         otel::init_metrics();
-
-        Box::new(EmptyTestHandle)
     }
 }
 
