@@ -399,7 +399,7 @@ impl PythonUndeliverableMessageEnvelope {
 
     fn sender(&self) -> PyResult<PyActorAddr> {
         let envelope = self.inner()?.as_message().ok_or_else(|| {
-            PyErr::new::<PyRuntimeError, _>("lost undeliverable messages do not have an envelope")
+            PyErr::new::<PyRuntimeError, _>("undeliverable message reports do not have an envelope")
         })?;
         Ok(PyActorAddr {
             inner: envelope.sender().clone(),
@@ -408,7 +408,7 @@ impl PythonUndeliverableMessageEnvelope {
 
     fn dest(&self) -> PyResult<PyPortId> {
         let envelope = self.inner()?.as_message().ok_or_else(|| {
-            PyErr::new::<PyRuntimeError, _>("lost undeliverable messages do not have an envelope")
+            PyErr::new::<PyRuntimeError, _>("undeliverable message reports do not have an envelope")
         })?;
         let port_id: hyperactor::PortAddr = envelope.dest().clone();
         Ok(port_id.into())
@@ -416,10 +416,10 @@ impl PythonUndeliverableMessageEnvelope {
 
     fn error_msg(&self) -> PyResult<String> {
         match self.inner()? {
-            Undeliverable::Message(envelope) => {
+            Undeliverable::Returned(envelope) => {
                 Ok(envelope.error_msg().unwrap_or_else(|| "None".to_string()))
             }
-            Undeliverable::Lost(lost) => Ok(lost.error.clone()),
+            Undeliverable::Report(report) => Ok(report.error_msg().unwrap_or_default()),
         }
     }
 }

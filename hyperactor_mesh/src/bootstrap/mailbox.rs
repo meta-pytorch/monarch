@@ -17,11 +17,14 @@ use hyperactor::PortHandle;
 use hyperactor::Uid;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
-use hyperactor::mailbox::DeliveryError;
+use hyperactor::mailbox::DeliveryFailure;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::TransportFailure;
+use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableReason;
 
 /// LocalProcDialer dials local procs directly through a configured socket
 /// directory.
@@ -91,8 +94,16 @@ impl MailboxSender for LocalProcDialer {
             match senders.get(&key).unwrap() {
                 Ok(sender) => sender.post_unchecked(envelope, return_handle),
                 Err(e) => {
-                    let err = DeliveryError::BrokenLink(format!("failed to dial proc: {}", e));
-                    envelope.undeliverable(err, return_handle);
+                    let failure = DeliveryFailure::new(UndeliverableReason::Transport(
+                        TransportFailure::new(
+                            envelope.dest().clone(),
+                            TransportFailureReason::DialFailed {
+                                addr: addr.clone(),
+                                error: e.to_string(),
+                            },
+                        ),
+                    ));
+                    envelope.undeliverable(failure, return_handle);
                 }
             }
         } else {
@@ -175,15 +186,19 @@ mod tests {
             Flattrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
+        let envelope = return_rx
+            .recv()
+            .await
+            .unwrap()
+            .into_message()
+            .expect("expected returned envelope");
         assert_matches!(
-            &return_rx
-                .recv()
-                .await
-                .unwrap()
-                .into_message()
-                .expect("expected returned envelope")
-                .errors()[..],
-            &[DeliveryError::BrokenLink(_)]
+            envelope
+                .root_delivery_failure()
+                .map(|failure| &failure.kind),
+            Some(hyperactor::mailbox::DeliveryFailureKind::Undeliverable(
+                UndeliverableReason::Transport(_)
+            ))
         );
 
         // Outside the host:

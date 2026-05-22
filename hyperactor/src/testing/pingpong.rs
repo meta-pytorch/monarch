@@ -25,7 +25,6 @@ use crate::RemoteSpawn;
 use crate::endpoint::Endpoint as _;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
-use crate::mailbox::UndeliverableMessageError;
 
 /// A message that can be passed around. It contains
 /// 0. the TTL of this PingPong game
@@ -95,14 +94,7 @@ impl Actor for PingPongActor {
     ) -> Result<(), anyhow::Error> {
         match &self.undeliverable_port_ref {
             Some(port) => port.post(cx, undelivered),
-            None => match undelivered {
-                Undeliverable::Message(envelope) => {
-                    anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
-                }
-                Undeliverable::Lost(lost) => {
-                    anyhow::bail!(UndeliverableMessageError::Lost { lost });
-                }
-            },
+            None => anyhow::bail!(undelivered.into_error()),
         }
 
         Ok(())
