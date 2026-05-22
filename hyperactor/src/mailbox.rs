@@ -163,6 +163,7 @@ use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
 use crate::channel::SendError;
+use crate::channel::SendErrorReason;
 use crate::channel::TxStatus;
 use crate::context;
 use crate::gateway::Gateway;
@@ -431,6 +432,19 @@ pub enum TransportFailureReason {
     /// existence.
     #[error("no route")]
     NoRoute,
+
+    /// The serialized frame exceeded the configured channel frame limit.
+    #[error(
+        "rejecting oversize frame: len={len} > max={max}. \
+        ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow."
+    )]
+    OversizedFrame {
+        /// The serialized frame length.
+        len: usize,
+
+        /// The configured frame limit.
+        max: usize,
+    },
 
     /// A weak reference in the delivery path could not be upgraded.
     #[error("link unavailable: {0}")]
@@ -1533,11 +1547,16 @@ impl MailboxClient {
                             reason,
                         }) => {
                             let target = message.dest().clone();
+                            let reason = match reason {
+                                Some(SendErrorReason::OversizedFrame { len, max }) => {
+                                    TransportFailureReason::OversizedFrame { len, max }
+                                }
+                                Some(SendErrorReason::Other(_)) | None => {
+                                    TransportFailureReason::ChannelClosed { addr }
+                                }
+                            };
                             let failure = DeliveryFailure::new(UndeliverableReason::Transport(
-                                TransportFailure::new(
-                                    target,
-                                    TransportFailureReason::ChannelClosed { addr },
-                                ),
+                                TransportFailure::new(target, reason.clone()),
                             ));
                             tracing::debug!(
                                 %error,

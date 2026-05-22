@@ -664,12 +664,12 @@ fn spawn_inner<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             .deque
             .drain(..)
             .chain(deliveries.outbox.deque.drain(..))
-            .for_each(|queued| queued.try_return(Some(reason.clone())));
+            .for_each(|queued| queued.try_return(Some(SendErrorReason::Other(reason.clone()))));
         while let Ok((msg, return_channel, _)) = receiver.try_recv() {
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message: msg,
-                reason: Some(reason.clone()),
+                reason: Some(SendErrorReason::Other(reason.clone())),
             });
         }
 
@@ -966,7 +966,11 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
             self.sender
                 .send((message, return_channel, tokio::time::Instant::now()))
         {
-            let reason = self.status.borrow().as_closed().map(|r| r.to_string());
+            let reason = self
+                .status
+                .borrow()
+                .as_closed()
+                .map(|r| SendErrorReason::Other(r.to_string()));
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message,
