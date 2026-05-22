@@ -328,7 +328,16 @@ impl ExpiredDelivery {
 }
 
 /// A non-invalid-reference delivery failure.
-#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(
+    thiserror::Error,
+    Debug,
+    Serialize,
+    Deserialize,
+    EnumAsInner,
+    Clone,
+    PartialEq,
+    Eq
+)]
 pub enum UndeliverableReason {
     /// Delivery failed while carrying the message.
     #[error("{0}")]
@@ -337,13 +346,6 @@ pub enum UndeliverableReason {
     /// The destination port's ordinary recipient is gone.
     #[error("{0}")]
     PortGone(#[from] PortGone),
-}
-
-impl UndeliverableReason {
-    /// Whether this failure is a transport failure.
-    pub fn is_transport(&self) -> bool {
-        matches!(self, Self::Transport(_))
-    }
 }
 
 /// A transport delivery failure.
@@ -2218,11 +2220,7 @@ impl MailboxSender for Mailbox {
             }
             Err(SerializedSendFailure::Dead { data, headers }) => {
                 self.inner.ports.remove(&port_index);
-                let (err, failure) = unbound_port_delivery_failure(
-                    &dest,
-                    &data,
-                    self.inner.next_port.load(Ordering::SeqCst),
-                );
+                let (err, failure) = port_gone_delivery_failure(&dest, &data);
 
                 MessageEnvelope::seal(
                     MessageMetadata {
@@ -2268,24 +2266,14 @@ fn unbound_port_delivery_failure(
     data: &wirevalue::Any,
     next_port: u64,
 ) -> (DeliveryError, DeliveryFailure) {
-    let error = DeliveryError::Unroutable(format!(
-        "port not bound in mailbox; port id: {}; message type: {}",
-        port.index(),
-        data.typename().map_or_else(
-            || format!("unregistered type hash {}", data.typehash()),
-            |name| name.to_string(),
-        )
-    ));
+    let error = unbound_port_delivery_error(port, data);
     let failure = if port.is_handler_port() {
         DeliveryFailure::new(InvalidReference::new(
             port.clone(),
             InvalidReferenceReason::HandlerNotBound,
         ))
     } else if port.index() < next_port {
-        DeliveryFailure::new(UndeliverableReason::PortGone(PortGone::new(
-            port.clone(),
-            data.typename().map(str::to_string),
-        )))
+        DeliveryFailure::new(port_gone(port, data))
     } else {
         DeliveryFailure::new(InvalidReference::new(
             port.clone(),
@@ -2294,6 +2282,34 @@ fn unbound_port_delivery_failure(
     };
 
     (error, failure)
+}
+
+fn port_gone_delivery_failure(
+    port: &PortAddr,
+    data: &wirevalue::Any,
+) -> (DeliveryError, DeliveryFailure) {
+    (
+        unbound_port_delivery_error(port, data),
+        DeliveryFailure::new(port_gone(port, data)),
+    )
+}
+
+fn unbound_port_delivery_error(port: &PortAddr, data: &wirevalue::Any) -> DeliveryError {
+    DeliveryError::Unroutable(format!(
+        "port not bound in mailbox; port id: {}; message type: {}",
+        port.index(),
+        data.typename().map_or_else(
+            || format!("unregistered type hash {}", data.typehash()),
+            |name| name.to_string(),
+        )
+    ))
+}
+
+fn port_gone(port: &PortAddr, data: &wirevalue::Any) -> UndeliverableReason {
+    UndeliverableReason::PortGone(PortGone::new(
+        port.clone(),
+        data.typename().map(str::to_string),
+    ))
 }
 
 /// Inner state of a [`PortHandle`], shared via `Arc` to make cloning cheap
@@ -3853,11 +3869,12 @@ mod tests {
 
         mbox.post(envelope, return_handle);
 
-        let Undeliverable(undelivered) =
-            tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
-                .await
-                .expect("timed out waiting for undeliverable")
-                .expect("return port closed");
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("return port closed")
+            .into_message()
+            .expect("expected returned envelope");
         let root_failure = undelivered
             .root_delivery_failure()
             .expect("expected root delivery failure");
@@ -3932,6 +3949,40 @@ mod tests {
             panic!("expected port gone, got {root_failure}");
         };
         assert_eq!(port_gone.port, *port_ref.port_addr());
+    }
+
+    #[tokio::test]
+    async fn test_missing_dropped_handler_port_records_recipient_gone() {
+        let mbox = Mailbox::new(test_actor_id("0", "test"));
+        let (_port, receiver) = mbox.bind_handler_port::<TestMessage>();
+        let dest = mbox.actor_addr().port_addr(Port::handler::<TestMessage>());
+        drop(receiver);
+        let envelope = MessageEnvelope::serialize(
+            mbox.actor_addr().clone(),
+            dest.clone(),
+            &TestMessage,
+            Flattrs::new(),
+        )
+        .expect("serialize");
+        let (return_handle, mut return_rx) = undeliverable::new_undeliverable_port();
+
+        mbox.post(envelope, return_handle);
+
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+            .await
+            .expect("timed out waiting for undeliverable")
+            .expect("return port closed")
+            .into_message()
+            .expect("expected returned envelope");
+        let root_failure = undelivered
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        let DeliveryFailureKind::Undeliverable(UndeliverableReason::PortGone(port_gone)) =
+            &root_failure.kind
+        else {
+            panic!("expected port gone, got {root_failure}");
+        };
+        assert_eq!(port_gone.port, dest);
     }
 
     #[tokio::test]
@@ -5461,16 +5512,14 @@ mod tests {
 
         mailbox.post(envelope, return_handle);
 
-        let undeliverable = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
-            .expect("return port closed");
-
-        let err = undeliverable
+            .expect("return port closed")
             .into_message()
-            .expect("expected returned envelope")
-            .error_msg()
-            .expect("expected error");
+            .expect("expected returned envelope");
+
+        let err = undelivered.error_msg().expect("expected error");
         assert!(
             err.contains(&format!("owner {} is stopped", actor_id)),
             "error should indicate actor stopped: {}",
@@ -5516,16 +5565,14 @@ mod tests {
 
         mailbox.post(envelope, return_handle);
 
-        let undeliverable = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
+        let undelivered = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
-            .expect("return port closed");
-
-        let err = undeliverable
+            .expect("return port closed")
             .into_message()
-            .expect("expected returned envelope")
-            .error_msg()
-            .expect("expected error");
+            .expect("expected returned envelope");
+
+        let err = undelivered.error_msg().expect("expected error");
         assert!(
             err.contains(&format!("owner {} failed", actor_id)),
             "error should indicate actor failed: {}",
