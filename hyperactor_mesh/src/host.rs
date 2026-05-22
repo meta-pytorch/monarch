@@ -1765,8 +1765,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic() {
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
         let procs = Arc::clone(&proc_manager.procs);
         let mut host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Unix))
             .await
@@ -2155,8 +2156,9 @@ mod tests {
     #[tokio::test]
     async fn test_duplex_remote_proc() {
         // Create a host with a duplex server.
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
@@ -2206,8 +2208,9 @@ mod tests {
         // service proc. The message travels client → duplex → host →
         // service proc (actor not found) → undeliverable back through
         // duplex → client's collector actor.
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
@@ -2222,9 +2225,8 @@ mod tests {
 
         // Spawn a collector on the remote proc.
         let (undlv_tx, mut undlv_rx) = mpsc::unbounded_channel();
-        let handle = remote_proc
-            .spawn_with_label("collector", UndeliverableCollector { tx: undlv_tx })
-            .unwrap();
+        let handle =
+            remote_proc.spawn_with_label("collector", UndeliverableCollector { tx: undlv_tx });
         let collector_ref = handle.bind::<UndeliverableCollector>();
 
         // Tell the collector to send to a nonexistent actor on the
@@ -2259,8 +2261,9 @@ mod tests {
         // proc. The message travels host → overlay (finds remote proc)
         // → duplex → remote proc (actor not found) → undeliverable
         // back through duplex → host's collector actor.
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
@@ -2277,8 +2280,7 @@ mod tests {
         let (undlv_tx, mut undlv_rx) = mpsc::unbounded_channel();
         let handle = host
             .system_proc()
-            .spawn_with_label("collector", UndeliverableCollector { tx: undlv_tx })
-            .unwrap();
+            .spawn_with_label("collector", UndeliverableCollector { tx: undlv_tx });
         let collector_ref = handle.bind::<UndeliverableCollector>();
 
         // Tell the collector to send to a nonexistent actor on the
@@ -2313,8 +2315,9 @@ mod tests {
         // to confirm routing is live. Then stop the serve handle and
         // assert it completes within a bounded time, indicating the
         // accept loop and per-connection tasks drained cleanly.
-        let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
+        let proc_manager = LocalProcManager::new(|proc: Proc| async move {
+            Ok(proc.spawn_with_label::<()>("host_agent", ()))
+        });
         let mut host = Host::new_with_default(
             proc_manager,
             ChannelAddr::any(ChannelTransport::Unix),
@@ -2365,7 +2368,7 @@ mod tests {
     #[tokio::test]
     async fn test_simplex_peer_sees_clean_close_on_host_shutdown() {
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
-            proc.spawn::<EchoActor>("host_agent", EchoActor)
+            Ok(proc.spawn_with_label::<EchoActor>("host_agent", EchoActor))
         });
         let mut host = Host::new_with_default(
             proc_manager,
@@ -2380,8 +2383,7 @@ mod tests {
         // Spawn an EchoActor and send a request from a simplex client.
         let echo_handle = host
             .system_proc()
-            .spawn::<EchoActor>("echo", EchoActor)
-            .unwrap();
+            .spawn_with_label::<EchoActor>("echo", EchoActor);
         let echo_ref = echo_handle.bind::<EchoActor>();
 
         let dial_router = DialMailboxRouter::new();
@@ -2464,7 +2466,7 @@ mod tests {
     #[tokio::test]
     async fn test_simplex_clients_during_host_shutdown() {
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
-            proc.spawn::<EchoActor>("host_agent", EchoActor)
+            Ok(proc.spawn_with_label::<EchoActor>("host_agent", EchoActor))
         });
         let mut host = Host::new_with_default(
             proc_manager,
@@ -2478,8 +2480,7 @@ mod tests {
 
         let echo_handle = host
             .system_proc()
-            .spawn::<EchoActor>("echo", EchoActor)
-            .unwrap();
+            .spawn_with_label::<EchoActor>("echo", EchoActor);
         let echo_ref = echo_handle.bind::<EchoActor>();
         let host_addr = host.addr().clone();
         let echo_actor_id = echo_ref.actor_addr().clone();
@@ -2543,7 +2544,7 @@ mod tests {
     #[tokio::test]
     async fn test_simplex_client_to_duplex_host() {
         let proc_manager = LocalProcManager::new(|proc: Proc| async move {
-            proc.spawn::<EchoActor>("host_agent", EchoActor)
+            Ok(proc.spawn_with_label::<EchoActor>("host_agent", EchoActor))
         });
         let mut host = Host::new_with_default(
             proc_manager,
@@ -2558,8 +2559,7 @@ mod tests {
         // Spawn an EchoActor on the host's system_proc.
         let echo_handle = host
             .system_proc()
-            .spawn::<EchoActor>("echo", EchoActor)
-            .unwrap();
+            .spawn_with_label::<EchoActor>("echo", EchoActor);
         let echo_ref = echo_handle.bind::<EchoActor>();
 
         // Create an external simplex client proc with a dial router

@@ -541,15 +541,13 @@ mod tests {
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let supervisor =
             KeepaliveSupervisor::new(KeepaliveSupervisorParams::new(Duration::from_millis(10)));
-        let parent: ActorHandle<ParentActor> = proc
-            .spawn(
-                "parent",
-                ParentActor {
-                    spawn: Some(ParentSpawn::Supervisor(supervisor)),
-                    events: events.bind(),
-                },
-            )
-            .unwrap();
+        let parent: ActorHandle<ParentActor> = proc.spawn_with_label(
+            "parent",
+            ParentActor {
+                spawn: Some(ParentSpawn::Supervisor(supervisor)),
+                events: events.bind(),
+            },
+        );
 
         let event = event_rx.recv().await.unwrap();
 
@@ -601,9 +599,7 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
-        let supervisor = proc
-            .spawn_with_label("silent_supervisor", SilentSupervisor)
-            .unwrap();
+        let supervisor = proc.spawn_with_label("silent_supervisor", SilentSupervisor);
         let uid = Uid::anonymous();
         let link = KeepaliveWorkerParams::new(
             supervisor.port::<Keepalive>().bind(),
@@ -611,15 +607,13 @@ mod tests {
         )
         .link_spec_uid(uid.clone())
         .unwrap();
-        let parent: ActorHandle<ParentActor> = proc
-            .spawn(
-                "parent",
-                ParentActor {
-                    spawn: Some(ParentSpawn::Link(link)),
-                    events: events.bind(),
-                },
-            )
-            .unwrap();
+        let parent: ActorHandle<ParentActor> = proc.spawn_with_label(
+            "parent",
+            ParentActor {
+                spawn: Some(ParentSpawn::Link(link)),
+                events: events.bind(),
+            },
+        );
 
         let event = event_rx.recv().await.unwrap();
 

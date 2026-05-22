@@ -1976,7 +1976,7 @@ mod tests {
             let client = proc.client("client");
             let (supervision_tx, supervision_rx) = client.open_port();
             proc.set_supervision_coordinator(supervision_tx)?;
-            let stream_actor = proc.spawn(
+            let stream_actor = proc.spawn_with_label(
                 "stream",
                 StreamActor::new(StreamParams {
                     world_size,
@@ -1987,7 +1987,7 @@ mod tests {
                     controller_actor: controller_actor.clone(),
                     respond_with_python_message: false,
                 }),
-            )?;
+            );
 
             Ok(Self {
                 proc,
@@ -2447,7 +2447,7 @@ mod tests {
             .define_recording(&test_setup.client, 0.into())
             .await?;
 
-        let dummy_comm = test_setup.proc.spawn(
+        let dummy_comm = test_setup.proc.spawn_with_label(
             "comm",
             NcclCommActor::new(CommParams::New {
                 device: CudaDevice::new(0.into()),
@@ -2457,7 +2457,7 @@ mod tests {
             })
             .await
             .unwrap(),
-        )?;
+        );
 
         test_setup
             .stream_actor

@@ -972,7 +972,7 @@ impl Proc {
 
     /// Attach a mailbox to the proc as a child actor.
     pub fn attach_child(&self, parent_id: &ActorAddr) -> Result<Mailbox, anyhow::Error> {
-        let actor_id: ActorAddr = self.allocate_child_id(parent_id)?;
+        let actor_id: ActorAddr = self.allocate_child_id(parent_id);
         Ok(self.bind_mailbox(actor_id))
     }
 
@@ -1002,10 +1002,9 @@ impl Proc {
         Ok((client, actor_ref, rx))
     }
 
-    /// Spawn a named (root) actor on this proc. The name of the actor must be
-    /// unique.
-    pub fn spawn<A: Actor>(&self, name: &str, actor: A) -> Result<ActorHandle<A>, anyhow::Error> {
-        let actor_id: ActorAddr = self.allocate_root_id(name)?;
+    /// Spawn a root actor with a fresh anonymous uid.
+    pub fn spawn<A: Actor>(&self, actor: A) -> ActorHandle<A> {
+        let actor_id: ActorAddr = self.allocate_root_anonymous();
         self.spawn_inner(actor_id, actor, None)
     }
 
@@ -1013,12 +1012,8 @@ impl Proc {
     ///
     /// The label is descriptive only and does not participate in actor
     /// identity.
-    pub fn spawn_with_label<A: Actor>(
-        &self,
-        label: &str,
-        actor: A,
-    ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let actor_id: ActorAddr = self.allocate_root_label(label)?;
+    pub fn spawn_with_label<A: Actor>(&self, label: &str, actor: A) -> ActorHandle<A> {
+        let actor_id: ActorAddr = self.allocate_root_label(label);
         self.spawn_inner(actor_id, actor, None)
     }
 
@@ -1034,19 +1029,18 @@ impl Proc {
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id: ActorAddr = self.allocate_root_uid(uid)?;
-        self.spawn_inner(actor_id, actor, None)
+        Ok(self.spawn_inner(actor_id, actor, None))
     }
 
     /// Common spawn logic for both root and child actors.
-    #[hyperactor::instrument(fields(subject = actor_id.subject().to_string()))]
     fn spawn_inner<A: Actor>(
         &self,
         actor_id: ActorAddr,
         actor: A,
         parent: Option<InstanceCell>,
-    ) -> Result<ActorHandle<A>, anyhow::Error> {
+    ) -> ActorHandle<A> {
         let (instance, receivers) = Instance::new(self.clone(), actor_id, false, parent);
-        Ok(instance.start(actor, receivers))
+        instance.start(actor, receivers)
     }
 
     /// Create a lightweight client instance (no actor loop, no
@@ -1254,7 +1248,7 @@ impl Proc {
         &self,
         parent: InstanceCell,
     ) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
-        let actor_id = self.allocate_child_id(parent.actor_addr())?;
+        let actor_id = self.allocate_child_id(parent.actor_addr());
         let _ = tracing::debug_span!(
             "child_actor_instance",
             subject = %actor_id.subject(),
@@ -1273,12 +1267,8 @@ impl Proc {
     ///
     /// When spawn_child returns, the child has an associated cell and is linked
     /// with its parent.
-    pub(crate) fn spawn_child<A: Actor>(
-        &self,
-        parent: InstanceCell,
-        actor: A,
-    ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let actor_id = self.allocate_child_id(parent.actor_addr())?;
+    pub(crate) fn spawn_child<A: Actor>(&self, parent: InstanceCell, actor: A) -> ActorHandle<A> {
+        let actor_id = self.allocate_child_id(parent.actor_addr());
         self.spawn_inner(actor_id, actor, Some(parent))
     }
 
@@ -1290,7 +1280,7 @@ impl Proc {
         actor: A,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let actor_id = self.ensure_child_uid(parent.actor_addr(), uid)?;
-        self.spawn_inner(actor_id, actor, Some(parent))
+        Ok(self.spawn_inner(actor_id, actor, Some(parent)))
     }
 
     /// Spawn a named child actor. Same as `spawn_child` but the child
@@ -1301,8 +1291,8 @@ impl Proc {
         parent: InstanceCell,
         name: &str,
         actor: A,
-    ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let actor_id = self.allocate_named_child_id(parent.actor_addr(), name)?;
+    ) -> ActorHandle<A> {
+        let actor_id = self.allocate_named_child_id(parent.actor_addr(), name);
         self.spawn_inner(actor_id, actor, Some(parent))
     }
 
@@ -1392,8 +1382,8 @@ impl Proc {
             .state()
             .instances
             .iter()
-            .filter(|entry| entry.key().uid().is_singleton())
             .filter_map(|entry| entry.value().upgrade())
+            .filter(|cell| cell.parent().is_none())
             .filter(|cell| !matches!(*cell.status().borrow(), ActorStatus::Client))
             .map(|cell| cell.actor_addr().clone())
             .collect::<Vec<_>>()
@@ -1540,12 +1530,14 @@ impl Proc {
         self.reserve_root(Uid::singleton(Label::strip(name)))
     }
 
+    /// Create a root allocation with fresh anonymous identity.
+    fn allocate_root_anonymous(&self) -> ActorAddr {
+        self.root_addr(Uid::anonymous())
+    }
+
     /// Create a root allocation with a display label and fresh identity.
-    ///
-    /// Uses `reserved_roots` to keep root allocation semantics consistent with
-    /// singleton and explicit-uid root actors.
-    fn allocate_root_label(&self, label: &str) -> Result<ActorAddr, anyhow::Error> {
-        self.reserve_root(Uid::instance(Label::strip(label)))
+    fn allocate_root_label(&self, label: &str) -> ActorAddr {
+        self.root_addr(Uid::instance(Label::strip(label)))
     }
 
     /// Create a root allocation in the proc from an explicit uid.
@@ -1570,14 +1562,17 @@ impl Proc {
         Ok(ActorAddr::new(actor_id, self.default_location()))
     }
 
+    fn root_addr(&self, uid: Uid) -> ActorAddr {
+        ActorAddr::new(
+            ActorId::new(uid, self.proc_id().clone(), None),
+            self.default_location(),
+        )
+    }
+
     /// Create a child allocation in the proc.
-    #[hyperactor::instrument]
-    pub(crate) fn allocate_child_id(
-        &self,
-        parent_id: &ActorAddr,
-    ) -> Result<ActorAddr, anyhow::Error> {
+    pub(crate) fn allocate_child_id(&self, parent_id: &ActorAddr) -> ActorAddr {
         assert_eq!(parent_id.proc_id(), self.proc_id());
-        Ok(parent_id.anonymous_child())
+        parent_id.anonymous_child()
     }
 
     /// Ensure that the requested child uid is available in this proc.
@@ -1596,15 +1591,11 @@ impl Proc {
     }
 
     /// Allocate an actor ID with a custom name on this proc.
-    pub(crate) fn allocate_named_child_id(
-        &self,
-        parent_id: &ActorAddr,
-        name: &str,
-    ) -> Result<ActorAddr, anyhow::Error> {
+    pub(crate) fn allocate_named_child_id(&self, parent_id: &ActorAddr, name: &str) -> ActorAddr {
         assert_eq!(parent_id.proc_id(), self.proc_id());
         let proc_id = self.proc_id().clone();
         let actor_id = crate::id::ActorId::instance(crate::id::Label::strip(name), proc_id);
-        Ok(ActorAddr::new(actor_id, self.default_location()))
+        ActorAddr::new(actor_id, self.default_location())
     }
 
     /// Downgrade to a weak reference that doesn't prevent the proc from being dropped.
@@ -3218,7 +3209,7 @@ impl<A: Actor> Instance<A> {
 
     /// Spawn on child on this instance.
     pub fn spawn<C: Actor>(&self, actor: C) -> anyhow::Result<ActorHandle<C>> {
-        self.inner.proc.spawn_child(self.inner.cell.clone(), actor)
+        Ok(self.inner.proc.spawn_child(self.inner.cell.clone(), actor))
     }
 
     /// Spawn a named child actor on this instance. The child gets a
@@ -3229,9 +3220,10 @@ impl<A: Actor> Instance<A> {
         name: &str,
         actor: C,
     ) -> anyhow::Result<ActorHandle<C>> {
-        self.inner
+        Ok(self
+            .inner
             .proc
-            .spawn_named_child(self.inner.cell.clone(), name, actor)
+            .spawn_named_child(self.inner.cell.clone(), name, actor))
     }
 
     /// Spawn a child actor with a fresh uid carrying a display label.
@@ -3243,9 +3235,10 @@ impl<A: Actor> Instance<A> {
         label: &str,
         actor: C,
     ) -> anyhow::Result<ActorHandle<C>> {
-        self.inner
+        Ok(self
+            .inner
             .proc
-            .spawn_named_child(self.inner.cell.clone(), label, actor)
+            .spawn_named_child(self.inner.cell.clone(), label, actor))
     }
 
     /// Spawn a child actor on this instance using an explicit uid.
@@ -4544,7 +4537,7 @@ mod tests {
             reply: oneshot::Sender<CurrentProcSnapshot>,
         ) -> Result<(), anyhow::Error> {
             let current = Proc::current();
-            let spawned_handle = crate::spawn("current_spawned", TestActor)?;
+            let spawned_handle = crate::spawn_with_label("current_spawned", TestActor);
             let client = crate::client("current_client");
             reply
                 .send(CurrentProcSnapshot {
@@ -4562,9 +4555,7 @@ mod tests {
     async fn test_current_proc_tracks_actor_context() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let actor = proc
-            .spawn::<CurrentProcActor>("current", CurrentProcActor)
-            .unwrap();
+        let actor = proc.spawn_with_label::<CurrentProcActor>("current", CurrentProcActor);
         let (tx, rx) = oneshot::channel();
 
         crate::Endpoint::post(&actor, &client, CurrentProcMessage::Check(tx));
@@ -4604,7 +4595,7 @@ mod tests {
     async fn test_spawn_actor() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let handle = proc.spawn_with_label("test", TestActor).unwrap();
+        let handle = proc.spawn_with_label("test", TestActor);
 
         // Check on the join handle.
         assert!(logs_contain(
@@ -4652,8 +4643,8 @@ mod tests {
     async fn test_proc_actors_messaging() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let first = proc.spawn::<TestActor>("first", TestActor).unwrap();
-        let second = proc.spawn::<TestActor>("second", TestActor).unwrap();
+        let first = proc.spawn_with_label::<TestActor>("first", TestActor);
+        let second = proc.spawn_with_label::<TestActor>("second", TestActor);
         let (tx, rx) = oneshot::channel::<()>();
         let reply_message = TestActorMessage::Reply(tx);
         first.post(
@@ -5064,11 +5055,9 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
 
-        let target_actor = proc.spawn::<TestActor>("target", TestActor).unwrap();
+        let target_actor = proc.spawn_with_label::<TestActor>("target", TestActor);
         let target_actor_ref = target_actor.bind();
-        let lookup_actor = proc
-            .spawn::<LookupTestActor>("lookup", LookupTestActor)
-            .unwrap();
+        let lookup_actor = proc.spawn_with_label::<LookupTestActor>("lookup", LookupTestActor);
 
         assert!(
             lookup_actor
@@ -5134,7 +5123,7 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
 
-        let first = proc.spawn::<TestActor>("first", TestActor).unwrap();
+        let first = proc.spawn_with_label::<TestActor>("first", TestActor);
         let second = TestActor::spawn_child(&client, &first).await;
         let third = TestActor::spawn_child(&client, &second).await;
 
@@ -5203,7 +5192,7 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
 
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
         let root_1 = TestActor::spawn_child(&client, &root).await;
         let root_2 = TestActor::spawn_child(&client, &root).await;
         let root_2_1 = TestActor::spawn_child(&client, &root_2).await;
@@ -5264,15 +5253,13 @@ mod tests {
         let proc = Proc::isolated();
         let stop_started = Arc::new(tokio::sync::Notify::new());
         let release_stop = Arc::new(tokio::sync::Notify::new());
-        let handle = proc
-            .spawn(
-                "deferred_stop",
-                DeferredStopActor {
-                    stop_started: Arc::clone(&stop_started),
-                    release_stop: Arc::clone(&release_stop),
-                },
-            )
-            .unwrap();
+        let handle = proc.spawn_with_label(
+            "deferred_stop",
+            DeferredStopActor {
+                stop_started: Arc::clone(&stop_started),
+                release_stop: Arc::clone(&release_stop),
+            },
+        );
 
         let mut status = handle.status();
         handle.stop("test").unwrap();
@@ -5292,15 +5279,13 @@ mod tests {
         let client = proc.client("client");
         let stop_started = Arc::new(tokio::sync::Notify::new());
         let release_stop = Arc::new(tokio::sync::Notify::new());
-        let handle = proc
-            .spawn(
-                "deferred_drain_stop",
-                DeferredStopActor {
-                    stop_started: Arc::clone(&stop_started),
-                    release_stop: Arc::clone(&release_stop),
-                },
-            )
-            .unwrap();
+        let handle = proc.spawn_with_label(
+            "deferred_drain_stop",
+            DeferredStopActor {
+                stop_started: Arc::clone(&stop_started),
+                release_stop: Arc::clone(&release_stop),
+            },
+        );
 
         handle.drain_and_stop("test").unwrap();
         stop_started.notified().await;
@@ -5322,7 +5307,7 @@ mod tests {
         // be actor failure(s) in this test which trigger supervision.
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
         let root_1 = TestActor::spawn_child(&client, &root).await;
         let root_2 = TestActor::spawn_child(&client, &root).await;
         let root_2_1 = TestActor::spawn_child(&client, &root_2).await;
@@ -5386,7 +5371,7 @@ mod tests {
         let proc = Proc::isolated();
         let state = Arc::new(AtomicUsize::new(0));
         let actor = TestActor(state.clone());
-        let handle = proc.spawn::<TestActor>("test", actor).unwrap();
+        let handle = proc.spawn_with_label::<TestActor>("test", actor);
         let client = proc.client("client");
         let (tx, rx) = client.open_once_port();
         handle.post(&client, tx);
@@ -5407,16 +5392,14 @@ mod tests {
         let (fired, fired_rx) = client.open_once_port();
         let delay = Duration::from_millis(50);
         let start = tokio::time::Instant::now();
-        let handle = proc
-            .spawn(
-                "test",
-                DelayedSelfActor {
-                    ready: Some(ready.bind()),
-                    fired: Some(fired.bind()),
-                    delay,
-                },
-            )
-            .unwrap();
+        let handle = proc.spawn_with_label(
+            "test",
+            DelayedSelfActor {
+                ready: Some(ready.bind()),
+                fired: Some(fired.bind()),
+                delay,
+            },
+        );
 
         ready_rx.recv().await.unwrap();
         fired_rx.recv().await.unwrap();
@@ -5433,15 +5416,13 @@ mod tests {
         let (reply, mut reply_rx) = client.open_port();
         let delay = Duration::from_millis(50);
         let start = tokio::time::Instant::now();
-        let handle = proc
-            .spawn(
-                "test",
-                DelayedPortActor {
-                    reply: Some(reply.bind()),
-                    delay,
-                },
-            )
-            .unwrap();
+        let handle = proc.spawn_with_label(
+            "test",
+            DelayedPortActor {
+                reply: Some(reply.bind()),
+                delay,
+            },
+        );
 
         assert_eq!(reply_rx.recv().await.unwrap(), 123);
         assert!(start.elapsed() >= delay);
@@ -5455,16 +5436,14 @@ mod tests {
         let client = proc.client("client");
         let (ready, ready_rx) = client.open_once_port();
         let (fired, fired_rx) = client.open_once_port();
-        let handle = proc
-            .spawn(
-                "test",
-                DelayedSelfActor {
-                    ready: Some(ready.bind()),
-                    fired: Some(fired.bind()),
-                    delay: Duration::from_secs(60),
-                },
-            )
-            .unwrap();
+        let handle = proc.spawn_with_label(
+            "test",
+            DelayedSelfActor {
+                ready: Some(ready.bind()),
+                fired: Some(fired.bind()),
+                delay: Duration::from_secs(60),
+            },
+        );
 
         ready_rx.recv().await.unwrap();
         handle.drain_and_stop("test").unwrap();
@@ -5485,7 +5464,7 @@ mod tests {
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let client = proc.client("client");
-        let actor_handle = proc.spawn_with_label("test", TestActor).unwrap();
+        let actor_handle = proc.spawn_with_label("test", TestActor);
         actor_handle
             .panic(&client, "some random failure".to_string())
             .await
@@ -5572,34 +5551,25 @@ mod tests {
         let root_2_state = Arc::new(AtomicBool::new(false));
         let root_2_1_state = Arc::new(AtomicBool::new(false));
 
-        let root = proc
-            .spawn::<TestActor>("root", make_actor(&root_state, false))
-            .unwrap();
-        let root_1 = proc
-            .spawn_child::<TestActor>(
-                root.cell().clone(),
-                TestActor {
-                    handled: root_1_state.clone(),
-                    notify: root_1_notify.clone(),
-                    should_handle: true, // children's event stops here
-                },
-            )
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", make_actor(&root_state, false));
+        let root_1 = proc.spawn_child::<TestActor>(
+            root.cell().clone(),
+            TestActor {
+                handled: root_1_state.clone(),
+                notify: root_1_notify.clone(),
+                should_handle: true, // children's event stops here
+            },
+        );
         let root_1_1 = proc
-            .spawn_child::<TestActor>(root_1.cell().clone(), make_actor(&root_1_1_state, false))
-            .unwrap();
-        let root_1_1_1 = proc
-            .spawn_child::<TestActor>(
-                root_1_1.cell().clone(),
-                make_actor(&root_1_1_1_state, false),
-            )
-            .unwrap();
-        let root_2 = proc
-            .spawn_child::<TestActor>(root.cell().clone(), make_actor(&root_2_state, false))
-            .unwrap();
+            .spawn_child::<TestActor>(root_1.cell().clone(), make_actor(&root_1_1_state, false));
+        let root_1_1_1 = proc.spawn_child::<TestActor>(
+            root_1_1.cell().clone(),
+            make_actor(&root_1_1_1_state, false),
+        );
+        let root_2 =
+            proc.spawn_child::<TestActor>(root.cell().clone(), make_actor(&root_2_state, false));
         let root_2_1 = proc
-            .spawn_child::<TestActor>(root_2.cell().clone(), make_actor(&root_2_1_state, false))
-            .unwrap();
+            .spawn_child::<TestActor>(root_2.cell().clone(), make_actor(&root_2_1_state, false));
 
         // fail `root_1_1_1`, the supervision msg should be propagated to
         // `root_1` because `root_1` has set `true` to `handle_supervision_event`.
@@ -5683,7 +5653,7 @@ mod tests {
             // Intentionally not setting a proc supervison coordinator. This
             // should cause the process to terminate.
             // ProcSupervisionCoordinator::set(&proc).await.unwrap();
-            let root = proc.spawn_with_label("root", TestActor).unwrap();
+            let root = proc.spawn_with_label("root", TestActor);
             let client = proc.client("client");
             root.fail(&client, anyhow::anyhow!("some random failure"))
                 .await
@@ -5818,7 +5788,7 @@ mod tests {
     async fn test_mailbox_closed_with_owner_stopped_reason() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let actor_handle = proc.spawn_with_label("test", TestActor).unwrap();
+        let actor_handle = proc.spawn_with_label("test", TestActor);
 
         // Clone the handle before awaiting since await consumes the handle
         let handle_for_send = actor_handle.clone();
@@ -5852,7 +5822,7 @@ mod tests {
         // be actor failure(s) in this test which trigger supervision.
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let actor_handle = proc.spawn_with_label("test", TestActor).unwrap();
+        let actor_handle = proc.spawn_with_label("test", TestActor);
 
         // Clone the handle before awaiting since await consumes the handle
         let handle_for_send = actor_handle.clone();
@@ -5918,7 +5888,7 @@ mod tests {
         let proc = Proc::isolated();
         let _client = proc.client("client");
 
-        let handle = proc.spawn::<TestActor>("actor", TestActor).unwrap();
+        let handle = proc.spawn_with_label::<TestActor>("actor", TestActor);
         let actor_id = handle.actor_addr().clone();
 
         // Actor is live — no terminated snapshot yet.
@@ -5933,7 +5903,7 @@ mod tests {
         // it to observe the terminal status and store the snapshot.
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
         let attrs: hyperactor_config::Attrs =
-            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
         let status = attrs
             .get(crate::introspect::STATUS)
             .expect("must have status");
@@ -5964,7 +5934,7 @@ mod tests {
         // Supervision coordinator required for actor failure handling.
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let handle = proc.spawn_with_label::<TestActor>("fail_actor", TestActor);
         let actor_id = handle.actor_addr().clone();
 
         // Trigger a failure.
@@ -5973,7 +5943,7 @@ mod tests {
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
         let attrs: hyperactor_config::Attrs =
-            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
         let status = attrs
             .get(crate::introspect::STATUS)
             .expect("must have status");
@@ -5991,16 +5961,16 @@ mod tests {
         let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let handle = proc.spawn_with_label::<TestActor>("fail_actor", TestActor);
         let actor_id = handle.actor_addr().clone();
         let cell = handle.cell().clone();
 
         handle.post(&client, TestActorMessage::Fail(anyhow::anyhow!("boom")));
         handle.await;
 
-        let event = cell.supervision_event();
-        assert!(event.is_some(), "failed actor must have supervision_event");
-        let event = event.unwrap();
+        let event = cell
+            .supervision_event()
+            .expect("failed actor must have supervision_event");
         assert_eq!(event.actor_id, actor_id);
         assert!(event.actor_status.is_failed());
         // Originated here, not propagated.
@@ -6013,7 +5983,7 @@ mod tests {
         let proc = Proc::isolated();
         let _client = proc.client("client");
 
-        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let handle = proc.spawn_with_label::<TestActor>("stop_actor", TestActor);
         let cell = handle.cell().clone();
 
         handle.drain_and_stop("test").unwrap();
@@ -6021,7 +5991,7 @@ mod tests {
 
         let event = cell
             .supervision_event()
-            .expect("cleanly stopped actor must have a supervision_event");
+            .expect("clean stop must store supervision event");
         assert!(
             matches!(event.actor_status, ActorStatus::Stopped(_)),
             "expected Stopped status, got {:?}",
@@ -6037,7 +6007,7 @@ mod tests {
         let (mut reported_event, _coordinator_handle) =
             ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let handle = proc.spawn_with_label::<TestActor>("stop_actor", TestActor);
         let actor_id = handle.actor_addr().clone();
 
         handle.drain_and_stop("test").unwrap();
@@ -6063,9 +6033,7 @@ mod tests {
         // Spawn several actors that will all stop during destroy_and_wait.
         let mut actor_ids = Vec::new();
         for i in 0..3 {
-            let handle = proc
-                .spawn::<TestActor>(&format!("actor_{i}"), TestActor)
-                .unwrap();
+            let handle = proc.spawn_with_label::<TestActor>(&format!("actor_{i}"), TestActor);
             actor_ids.push(handle.actor_addr().clone());
         }
 
@@ -6100,7 +6068,7 @@ mod tests {
         let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
+        let parent = proc.spawn_with_label::<TestActor>("parent", TestActor);
         let parent_cell = parent.cell().clone();
         // Spawn child under parent.
         let (tx, rx) = oneshot::channel();
@@ -6139,7 +6107,7 @@ mod tests {
         let proc = Proc::isolated();
         let _client = proc.client("client");
 
-        let handle = proc.spawn::<TestActor>("target", TestActor).unwrap();
+        let handle = proc.spawn_with_label::<TestActor>("target", TestActor);
         let actor_ref: ActorRef<TestActor> = handle.bind();
 
         // Actor is live — resolve should succeed.
@@ -6166,7 +6134,7 @@ mod tests {
         let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let handle = proc.spawn_with_label::<TestActor>("fail_actor", TestActor);
         let actor_id = handle.actor_addr().clone();
 
         handle.post(&client, TestActorMessage::Fail(anyhow::anyhow!("kaboom")));
@@ -6174,7 +6142,7 @@ mod tests {
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
         let attrs: hyperactor_config::Attrs =
-            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
         let status = attrs
             .get(crate::introspect::STATUS)
             .expect("must have status");
@@ -6208,7 +6176,7 @@ mod tests {
         let client = proc.client("client");
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
-        let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
+        let parent = proc.spawn_with_label::<TestActor>("parent", TestActor);
         let parent_id = parent.actor_addr().clone();
 
         let (tx, rx) = oneshot::channel();
@@ -6224,7 +6192,7 @@ mod tests {
 
         let snapshot = wait_for_terminated_snapshot(&proc, &parent_id).await;
         let attrs: hyperactor_config::Attrs =
-            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
         let root_cause = attrs
             .get(crate::introspect::FAILURE_ROOT_CAUSE_ACTOR)
             .expect("propagated failure must have root_cause_actor");
@@ -6239,10 +6207,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_creates_descriptive_name() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let handle = proc
-            .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let handle = proc.spawn_named_child(root.cell().clone(), "my_controller", TestActor);
         assert_eq!(
             handle.actor_addr().label().unwrap().as_str(),
             "my_controller"
@@ -6254,13 +6220,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_increments_index() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let first = proc
-            .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
-            .unwrap();
-        let second = proc
-            .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let first = proc.spawn_named_child(root.cell().clone(), "my_controller", TestActor);
+        let second = proc.spawn_named_child(root.cell().clone(), "my_controller", TestActor);
         assert_ne!(first.actor_addr().uid(), second.actor_addr().uid());
     }
 
@@ -6269,12 +6231,10 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_preserves_supervision() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let child = proc
-            .spawn_named_child(root.cell().clone(), "supervised_child", TestActor)
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let child = proc.spawn_named_child(root.cell().clone(), "supervised_child", TestActor);
         let child_cell = child.cell();
-        let parent = child_cell.parent().expect("named child must have a parent");
+        let parent = child_cell.parent().expect("child must have parent");
         assert_eq!(parent.actor_addr(), root.actor_addr());
     }
 
@@ -6282,8 +6242,8 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_unchanged() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let child = proc.spawn_child(root.cell().clone(), TestActor).unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let child = proc.spawn_child(root.cell().clone(), TestActor);
         assert!(!child.actor_addr().is_root());
     }
 
@@ -6291,13 +6251,9 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_different_names_different_pids() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let a = proc
-            .spawn_named_child(root.cell().clone(), "controller_a", TestActor)
-            .unwrap();
-        let b = proc
-            .spawn_named_child(root.cell().clone(), "controller_b", TestActor)
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let a = proc.spawn_named_child(root.cell().clone(), "controller_a", TestActor);
+        let b = proc.spawn_named_child(root.cell().clone(), "controller_b", TestActor);
         assert_ne!(a.actor_addr().uid(), b.actor_addr().uid());
         assert_eq!(a.actor_addr().label().unwrap().as_str(), "controller_a");
         assert_eq!(b.actor_addr().label().unwrap().as_str(), "controller_b");
@@ -6307,14 +6263,10 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_no_child_overwrite() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let _a = proc
-            .spawn_named_child(root.cell().clone(), "ctrl", TestActor)
-            .unwrap();
-        let _b = proc
-            .spawn_named_child(root.cell().clone(), "ctrl", TestActor)
-            .unwrap();
-        let _c = proc.spawn_child(root.cell().clone(), TestActor).unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let _a = proc.spawn_named_child(root.cell().clone(), "ctrl", TestActor);
+        let _b = proc.spawn_named_child(root.cell().clone(), "ctrl", TestActor);
+        let _c = proc.spawn_child(root.cell().clone(), TestActor);
         assert_eq!(root.cell().child_count(), 3);
     }
 
@@ -6322,30 +6274,25 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_does_not_pollute_roots() {
         let proc = Proc::isolated();
-        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
-        let _child = proc
-            .spawn_named_child(root.cell().clone(), "foo", TestActor)
-            .unwrap();
+        let root = proc.spawn_with_label::<TestActor>("root", TestActor);
+        let _child = proc.spawn_named_child(root.cell().clone(), "foo", TestActor);
         // "foo" was used as a named child name but should NOT
         // prevent spawning a root actor with that name.
-        let result = proc.spawn::<TestActor>("foo", TestActor);
-        assert!(result.is_ok(), "named child should not pollute roots");
+        let _root = proc.spawn_with_label::<TestActor>("foo", TestActor);
     }
 
     /// Exercises AI-3 (see module doc).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ai3_controller_actor_ids_unique_across_parents_same_proc() {
         let proc = Proc::isolated();
-        let parent_a = proc.spawn::<TestActor>("parent_a", TestActor).unwrap();
-        let parent_b = proc.spawn::<TestActor>("parent_b", TestActor).unwrap();
+        let parent_a = proc.spawn_with_label::<TestActor>("parent_a", TestActor);
+        let parent_b = proc.spawn_with_label::<TestActor>("parent_b", TestActor);
 
         // Simulate the correct pattern: include mesh identity in name.
-        let ctrl_a = proc
-            .spawn_named_child(parent_a.cell().clone(), "controller_mesh_a", TestActor)
-            .unwrap();
-        let ctrl_b = proc
-            .spawn_named_child(parent_b.cell().clone(), "controller_mesh_b", TestActor)
-            .unwrap();
+        let ctrl_a =
+            proc.spawn_named_child(parent_a.cell().clone(), "controller_mesh_a", TestActor);
+        let ctrl_b =
+            proc.spawn_named_child(parent_b.cell().clone(), "controller_mesh_b", TestActor);
 
         assert_ne!(
             ctrl_a.actor_addr(),
@@ -6358,15 +6305,13 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ai3_no_controller_overwrite_in_parent_or_proc_maps() {
         let proc = Proc::isolated();
-        let parent_a = proc.spawn::<TestActor>("parent_a", TestActor).unwrap();
-        let parent_b = proc.spawn::<TestActor>("parent_b", TestActor).unwrap();
+        let parent_a = proc.spawn_with_label::<TestActor>("parent_a", TestActor);
+        let parent_b = proc.spawn_with_label::<TestActor>("parent_b", TestActor);
 
-        let ctrl_a = proc
-            .spawn_named_child(parent_a.cell().clone(), "controller_mesh_a", TestActor)
-            .unwrap();
-        let ctrl_b = proc
-            .spawn_named_child(parent_b.cell().clone(), "controller_mesh_b", TestActor)
-            .unwrap();
+        let ctrl_a =
+            proc.spawn_named_child(parent_a.cell().clone(), "controller_mesh_a", TestActor);
+        let ctrl_b =
+            proc.spawn_named_child(parent_b.cell().clone(), "controller_mesh_b", TestActor);
 
         // Both must be independently resolvable via the proc's instances.
         assert!(
@@ -6388,7 +6333,7 @@ mod tests {
         let proc = Proc::isolated();
         let _client = proc.client("client");
 
-        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let handle = proc.spawn_with_label::<TestActor>("stop_actor", TestActor);
         let actor_id = handle.actor_addr().clone();
 
         handle.drain_and_stop("test").unwrap();
@@ -6396,7 +6341,7 @@ mod tests {
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
         let attrs: hyperactor_config::Attrs =
-            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+            serde_json::from_str(&snapshot.attrs).expect("snapshot attrs must be valid");
         let status = attrs
             .get(crate::introspect::STATUS)
             .expect("must have status");
@@ -6423,12 +6368,12 @@ mod tests {
     async fn test_queue_depth_increment_decrement() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let handle = proc.spawn_with_label("qd_test", TestActor).unwrap();
+        let handle = proc.spawn_with_label("qd_test", TestActor);
         let actor_ref: crate::ActorRef<TestActor> = handle.bind();
         let actor_id = actor_ref.actor_addr().clone();
 
         // Before any message: queue depth should be 0.
-        let cell = proc.get_instance(&actor_id).expect("actor exists");
+        let cell = proc.get_instance(&actor_id).expect("actor must exist");
         assert_eq!(cell.queue_depth(), 0, "initial queue depth should be 0");
 
         // Send a message that blocks until we signal it. This lets
@@ -6480,8 +6425,8 @@ mod tests {
         let client = proc.client("client");
 
         // Spawn two actors.
-        let h1 = proc.spawn_with_label("a1", TestActor).unwrap();
-        let h2 = proc.spawn_with_label("a2", TestActor).unwrap();
+        let h1 = proc.spawn_with_label("a1", TestActor);
+        let h2 = proc.spawn_with_label("a2", TestActor);
 
         // Block both actors with a Wait message.
         let (reply1, rx1) = oneshot::channel();
@@ -6568,7 +6513,7 @@ mod tests {
     async fn test_retained_queue_stats_burst_then_drain() {
         let proc = Proc::isolated();
         let client = proc.client("client");
-        let h = proc.spawn_with_label("ret_test", TestActor).unwrap();
+        let h = proc.spawn_with_label("ret_test", TestActor);
 
         // Block the actor.
         let (ready_tx, ready_rx) = oneshot::channel();

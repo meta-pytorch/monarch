@@ -40,6 +40,7 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
+use hyperactor::Label;
 use hyperactor::ProcAddr;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -48,6 +49,7 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::context;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
@@ -78,6 +80,7 @@ use crate::host::SingleTerminate;
 use crate::host::TerminateError;
 use crate::host::TerminateSummary;
 use crate::host::WaitError;
+use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::logging::OutputTarget;
@@ -282,8 +285,8 @@ pub async fn host(
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<MailboxServerHandle>();
 
     let system_proc = host.system_proc().clone();
-    let host_mesh_agent = system_proc.spawn::<HostAgent>(
-        "host_agent",
+    let host_mesh_agent = system_proc.spawn_with_uid(
+        Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
         HostAgent::new(HostAgentMode::Process {
             host,
             shutdown_tx: Some(shutdown_tx),
@@ -2479,10 +2482,8 @@ mod tests {
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> = proc
-            .spawn_with_label("log_client", log_client_actor)
-            .unwrap()
-            .bind();
+        let log_client: ActorRef<LogClientActor> =
+            proc.spawn_with_label("log_client", log_client_actor).bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
@@ -2492,7 +2493,6 @@ mod tests {
             .unwrap();
         let _log_forwarder: ActorRef<LogForwardActor> = proc
             .spawn_with_label("log_forwarder", log_forwarder_actor)
-            .unwrap()
             .bind();
 
         // Dial the channel but don't post until we know the forwarder
