@@ -66,10 +66,13 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::id::Label;
-use hyperactor::mailbox::DeliveryError;
+use hyperactor::mailbox::DeliveryFailure;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor::mailbox::TransportFailure;
+use hyperactor::mailbox::TransportFailureReason;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::proc::Proc;
 use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -298,9 +301,14 @@ impl Actor for GlobalClientActor {
                 return Ok(());
             }
         };
-        env.set_error(DeliveryError::BrokenLink(
-            "message returned to global root client".to_string(),
-        ));
+        env.push_delivery_failure(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(
+                env.dest().clone(),
+                TransportFailureReason::LinkUnavailable(
+                    "message returned to global root client".to_string(),
+                ),
+            ),
+        )));
         let actor_ref = env.dest().actor_addr();
         let headers = env.headers().clone();
         let event = ActorSupervisionEvent::new(
@@ -317,7 +325,7 @@ impl Actor for GlobalClientActor {
             None => {
                 tracing::warn!(
                     actor=%actor_ref,
-                    error=?env.errors(),
+                    error=%env.error_msg().unwrap_or_default(),
                     "no supervision sink; undeliverable message logged but not forwarded"
                 );
             }
