@@ -2319,7 +2319,7 @@ impl<A: Actor> Instance<A> {
         });
 
         if let Err(error) =
-            return_handle.try_send(self, crate::mailbox::Undeliverable::report(report.clone()))
+            return_handle.try_post(self, crate::mailbox::Undeliverable::report(report.clone()))
         {
             tracing::error!(
                 sender = %report.sender,
@@ -5048,7 +5048,7 @@ mod tests {
             assert!(
                 actor
                     .port::<TestActorMessage>()
-                    .try_send(&client, TestActorMessage::Noop())
+                    .try_post(&client, TestActorMessage::Noop())
                     .is_err()
             );
             assert_matches!(actor.await, ActorStatus::Stopped(reason) if reason == "parent stopping");
@@ -5140,7 +5140,7 @@ mod tests {
 
         // Drain closes runtime-dispatched handler ingress, so new
         // sends to the actor's handler port are rejected.
-        let err = handle.port::<()>().try_send(&client, ()).unwrap_err();
+        let err = handle.port::<()>().try_post(&client, ()).unwrap_err();
         assert_matches!(err.kind(), crate::mailbox::MailboxSenderErrorKind::Closed);
 
         release_stop.notify_one();
@@ -5663,7 +5663,7 @@ mod tests {
         // Try to send a message to the stopped actor
         let result = handle_for_send
             .port::<TestActorMessage>()
-            .try_send(&client, TestActorMessage::Noop());
+            .try_post(&client, TestActorMessage::Noop());
 
         assert!(result.is_err(), "send should fail when actor is stopped");
         let err = result.unwrap_err();
@@ -5700,7 +5700,7 @@ mod tests {
         // Try to send a message to the failed actor
         let result = handle_for_send
             .port::<TestActorMessage>()
-            .try_send(&client, TestActorMessage::Noop());
+            .try_post(&client, TestActorMessage::Noop());
 
         assert!(result.is_err(), "send should fail when actor has failed");
         let err = result.unwrap_err();
