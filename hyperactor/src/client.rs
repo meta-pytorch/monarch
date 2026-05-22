@@ -8,6 +8,8 @@
 
 //! Client caller contexts.
 
+use std::sync::Arc;
+
 use crate as hyperactor;
 use crate::Actor;
 use crate::ActorAddr;
@@ -33,12 +35,22 @@ impl Actor for ClientActor {}
 
 /// A scoped caller context.
 ///
-/// Dropping a client closes its mailbox. Messages already accepted into
-/// port receivers remain available; later deliveries to the client's ports
-/// fail as ordinary closed-mailbox deliveries.
+/// Dropping the last clone of a client closes its mailbox. Messages already
+/// accepted into port receivers remain available; later deliveries to the
+/// client's ports fail as ordinary closed-mailbox deliveries.
 pub struct Client {
     instance: Instance<ClientActor>,
-    lifecycle: Arc<()>,
+    lifecycle: Arc<ClientLifecycle>,
+}
+
+struct ClientLifecycle {
+    instance: Instance<ClientActor>,
+}
+
+impl Drop for ClientLifecycle {
+    fn drop(&mut self) {
+        self.instance.close_client("client dropped");
+    }
 }
 
 impl Client {
@@ -62,14 +74,6 @@ impl Client {
         let (handle, receiver) = self.instance.open_port();
         handle.bind_handler_port();
         (handle, receiver)
-    }
-}
-
-impl Drop for Client {
-    fn drop(&mut self) {
-        if Arc::strong_count(&self.lifecycle) == 1 {
-            self.instance.close_client("client dropped");
-        }
     }
 }
 
