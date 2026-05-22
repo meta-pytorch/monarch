@@ -284,6 +284,7 @@ async def _test_debug(nested: bool) -> None:
                         breakpoints[i].function
                         == "test_debugger._debugee_actor_internal"
                     )
+                    # pyrefly: ignore [unsupported-operation]
                     assert breakpoints[i].lineno == initial_linenos[i] + 2
                 else:
                     assert (
@@ -415,6 +416,7 @@ async def test_debug_multi_actor() -> None:
                     assert breakpoints[i].rank == 1
                     assert (
                         breakpoints[i].lineno
+                        # pyrefly: ignore [unsupported-operation]
                         == initial_linenos[breakpoints[i].rank] + 1
                     )
                 elif i == 6:
@@ -422,6 +424,7 @@ async def test_debug_multi_actor() -> None:
                     assert breakpoints[i].rank == 2
                     assert (
                         breakpoints[i].lineno
+                        # pyrefly: ignore [unsupported-operation]
                         == initial_linenos[breakpoints[i].rank] + 1
                     )
                 else:
@@ -945,6 +948,7 @@ async def test_debug_cli():
                 assert (
                     breakpoints[i].function == "test_debugger._debugee_actor_internal"
                 )
+                # pyrefly: ignore [unsupported-operation]
                 assert breakpoints[i].lineno == initial_linenos[i] + 2
             else:
                 assert (

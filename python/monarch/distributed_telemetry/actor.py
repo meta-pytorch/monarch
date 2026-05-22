@@ -81,8 +81,8 @@ def _register_scanner(
         retention_secs=retention_secs,
     )
     _scanner = scanner
-    # pyre-ignore[9]: startup function is called for side effects; return value discarded.
     _scanner_startup_impl = functools.partial(
+        # pyrefly: ignore [bad-argument-type]
         _register_scanner,
         batch_size=batch_size,
         retention_secs=retention_secs,
@@ -176,7 +176,6 @@ class DistributedTelemetryActor(Actor):
         self._scanner.apply_retention(table_name, where_clause)
         for child_mesh in self._children.values():
             try:
-                # pyre-ignore[29]: child_mesh is an ActorMesh
                 child_mesh.apply_retention.call(table_name, where_clause).get()
             except Exception:
                 logger.info("child apply_retention failed, skipping")
@@ -214,7 +213,6 @@ class DistributedTelemetryActor(Actor):
         child_futures = []
         for child_mesh in self._children.values():
             try:
-                # pyre-ignore[29]: child_mesh is an ActorMesh
                 fut = child_mesh.scan.call(
                     dest, table_name, projection, limit, filter_expr
                 )
@@ -226,7 +224,6 @@ class DistributedTelemetryActor(Actor):
         for fut in child_futures:
             try:
                 child_results = fut.get(timeout=_SCAN_CHILD_TIMEOUT_SECS)
-                # pyre-ignore[16]: child_results is iterable of tuples
                 for _rank, count in child_results:
                     total_count += count
             except TimeoutError:

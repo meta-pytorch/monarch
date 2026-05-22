@@ -43,13 +43,6 @@ The
 [introduction to monarch concepts](https://meta-pytorch.org/monarch/generated/examples/getting_started.html)
 provides an introduction to using these features.
 
-> ⚠️ **Early Development Warning** Monarch is currently in an experimental
-> stage. You should expect bugs, incomplete features, and APIs that may change
-> in future versions. The project welcomes bugfixes, but to make sure things are
-> well coordinated you should discuss any significant change before starting the
-> work. It's recommended that you signal your intention to contribute in the
-> issue tracker, either by filing a new issue or by claiming an existing one.
-
 ## 📖 Documentation
 
 View Monarch's hosted documentation
@@ -96,13 +89,13 @@ brew install uv
 ```
 
 **Configuring PyTorch Index**: By default, Monarch builds with PyTorch from the
-`pytorch-cu128` index (CUDA 12.8). To use a different CUDA version:
+`pytorch-cu132` index (CUDA 13.2). To use a different CUDA version:
 
 - Edit `[tool.uv.sources]` in `pyproject.toml` to point to a different index
-  (e.g., `pytorch-cu126`, `pytorch-cu130`, or `pytorch-cpu`)
+  (e.g., `pytorch-cu130`, or `pytorch-cpu`)
 - Or use `--extra-index-url` when running uv:
   ```sh
-  uv sync --extra-index-url https://download.pytorch.org/whl/cu126
+  uv sync --extra-index-url https://download.pytorch.org/whl/cu130
   ```
 
 #### Understanding Tensor Engine
@@ -160,7 +153,7 @@ rustup default nightly
 sudo dnf install -y cmake ninja-build protobuf-compiler libunwind
 
 # Install the correct cuda and cuda-toolkit versions for your machine
-sudo dnf install cuda-toolkit-12-8 cuda-12-8
+sudo dnf install cuda-toolkit-13-2 cuda-13-2
 
 # Install clang-devel, nccl-devel, and libstdc++-static
 sudo dnf install clang-devel libnccl-devel libstdc++-static
@@ -202,7 +195,7 @@ export CC=clang
 export CXX=clang++
 
 # Install the correct cuda and cuda-toolkit versions for your machine
-sudo apt install -y cuda-toolkit-12-8 cuda-12-8
+sudo apt install -y cuda-toolkit-13-2 cuda-13-2
 
 # Install RDMA libraries (needed for tensor_engine builds)
 sudo apt install -y rdma-core libibverbs1 libmlx5-1 libibverbs-dev
