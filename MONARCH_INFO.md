@@ -109,9 +109,9 @@ uv sync
 - `MONARCH_GPU_PLATFORM` - Select GPU platform: `cuda`, `rocm`, or `none` (CPU-only tensor engine). Leave unset to auto-detect; required when both CUDA and ROCm are installed
 
 **PyTorch Index Configuration:**
-The project uses PyTorch from specific indices (see `pyproject.toml`). Default is `pytorch-cu128`. To change:
+The project uses PyTorch from specific indices (see `pyproject.toml`). Default is `pytorch-cu132`. To change:
 ```bash
-uv sync --extra-index-url https://download.pytorch.org/whl/cu126
+uv sync --extra-index-url https://download.pytorch.org/whl/cu130
 ```
 
 ### Meta Internal Build (Buck2)
@@ -304,7 +304,7 @@ Default pytest timeout is 5 minutes (configured in `pyproject.toml`).
 
 1. **Rust Python Linking Errors**: If you see "could not find native static library `python3.12`", activate your Python environment first
 2. **C++11 ABI Mismatches**: The build auto-detects PyTorch's ABI, but mismatches cause runtime errors
-3. **CUDA Version Mismatches**: Ensure your CUDA installation matches the PyTorch index (e.g., cu128 = CUDA 12.8)
+3. **CUDA Version Mismatches**: Ensure your CUDA installation matches the PyTorch index (e.g., cu132 = CUDA 13.2)
 4. **Missing tensor_engine**: If you get import errors for RDMA/distributed tensors, rebuild with `USE_TENSOR_ENGINE=1`
 
 ## Development Workflow

@@ -47,17 +47,22 @@ class TestTask(unittest.TestCase):
 
         self.assertEqual(len(manager.tasks), 3)
         self.assertEqual(manager.tasks.keys(), cloned_manager.tasks.keys())
+        # pyrefly: ignore [bad-index]
         cloned_task2 = cloned_manager.tasks[task2.task_id]
         self.assertNotEqual(task2, cloned_task2)
         for k in kwargs.keys():
             self.assertEqual(getattr(cloned_task2, k), getattr(task2, k))
         self.assertEqual(cloned_task2.dependencies[0].task_id, task.task_id)
         self.assertNotEqual(cloned_task2.dependencies[0], task)
+        # pyrefly: ignore [bad-index]
         cloned_wait_task = cloned_manager.tasks[wait_task.task_id]
+        # pyrefly: ignore [unsupported-operation]
         self.assertEqual(cloned_wait_task.waits[0].task_id, task.task_id)
+        # pyrefly: ignore [unsupported-operation]
         self.assertNotEqual(cloned_wait_task.waits[0], task)
 
         self.assertEqual(len(collectives), 3)
+        # pyrefly: ignore [bad-index]
         cloned_collective_task = cloned_manager.tasks[collective_task.task_id]
         self.assertTrue(collective_task in collectives)
         self.assertTrue(cloned_collective_task in collectives)
