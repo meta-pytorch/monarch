@@ -1012,6 +1012,85 @@ mod tests {
         );
     }
 
+    #[test]
+    fn annotate_multicast_failure_records_forward_phase() {
+        let proc_addr = ProcAddr::singleton(ChannelAddr::Local(1), "test");
+        let origin = proc_addr.actor_addr("origin");
+        let comm_actor = proc_addr.actor_addr("comm");
+        let dest = proc_addr.actor_addr("dest").port_addr(Port::from(42));
+        let return_port = origin.port_addr(Port::from(7));
+        let mut envelope =
+            MessageEnvelope::serialize(origin.clone(), dest.clone(), &(), Flattrs::new()).unwrap();
+        envelope.push_delivery_failure(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(dest, TransportFailureReason::NoRoute),
+        )));
+
+        annotate_multicast_failure(&mut envelope, &comm_actor, "forward", &origin, &return_port);
+
+        let root_failure = envelope
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        assert_eq!(
+            root_failure.attrs.get(MULTICAST_FAILURE_PHASE).as_deref(),
+            Some("forward")
+        );
+    }
+
+    #[test]
+    fn annotate_multicast_failure_copies_actor_mesh_id_attr() {
+        let proc_addr = ProcAddr::singleton(ChannelAddr::Local(1), "test");
+        let origin = proc_addr.actor_addr("origin");
+        let comm_actor = proc_addr.actor_addr("comm");
+        let dest = proc_addr.actor_addr("dest").port_addr(Port::from(42));
+        let return_port = origin.port_addr(Port::from(7));
+        let actor_mesh_id =
+            crate::mesh_id::ActorMeshId::instance(hyperactor::id::Label::new("mesh").unwrap());
+        let mut headers = Flattrs::new();
+        headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id.clone());
+        let mut envelope =
+            MessageEnvelope::serialize(origin.clone(), dest.clone(), &(), headers).unwrap();
+        envelope.push_delivery_failure(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(dest, TransportFailureReason::NoRoute),
+        )));
+
+        annotate_multicast_failure(
+            &mut envelope,
+            &comm_actor,
+            "deliver_here",
+            &origin,
+            &return_port,
+        );
+
+        let root_failure = envelope
+            .root_delivery_failure()
+            .expect("expected root delivery failure");
+        assert_eq!(
+            root_failure.attrs.get(CAST_ACTOR_MESH_ID),
+            Some(actor_mesh_id)
+        );
+    }
+
+    #[test]
+    fn annotate_multicast_failure_noops_without_root_failure() {
+        let proc_addr = ProcAddr::singleton(ChannelAddr::Local(1), "test");
+        let origin = proc_addr.actor_addr("origin");
+        let comm_actor = proc_addr.actor_addr("comm");
+        let dest = proc_addr.actor_addr("dest").port_addr(Port::from(42));
+        let return_port = origin.port_addr(Port::from(7));
+        let mut envelope =
+            MessageEnvelope::serialize(origin.clone(), dest, &(), Flattrs::new()).unwrap();
+
+        annotate_multicast_failure(
+            &mut envelope,
+            &comm_actor,
+            "deliver_here",
+            &origin,
+            &return_port,
+        );
+
+        assert!(envelope.root_delivery_failure().is_none());
+    }
+
     // Helper to look up the rank for a given actor ID using the rank_lookup table.
     fn lookup_rank(actor_id: &ActorAddr, rank_lookup: &HashMap<ProcAddr, usize>) -> usize {
         let proc_id = actor_id.proc_addr();
