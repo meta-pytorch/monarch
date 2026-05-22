@@ -372,6 +372,19 @@ pub enum TransportFailureReason {
     #[error("no route")]
     NoRoute,
 
+    /// The serialized frame exceeded the configured channel frame limit.
+    #[error(
+        "rejecting oversize frame: len={len} > max={max}. \
+        ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow."
+    )]
+    OversizedFrame {
+        /// The serialized frame length.
+        len: usize,
+
+        /// The configured frame limit.
+        max: usize,
+    },
+
     /// A weak reference in the delivery path could not be upgraded.
     #[error("link unavailable: {0}")]
     LinkUnavailable(String),
