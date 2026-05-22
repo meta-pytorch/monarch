@@ -166,7 +166,6 @@ impl GlogSink {
                 level,
                 fields,
                 parent_span,
-                thread_id,
                 file,
                 line,
                 ..
@@ -179,11 +178,11 @@ impl GlogSink {
                     tracing::Level::TRACE => 'T',
                 };
 
-                // [prefix]LMMDD HH:MM:SS.ffffff thread_id file:line] message, key:value, key:value
+                // [prefix]LMMDD HH:MM:SS.ffffff file:line] message, key:value, key:value
                 write!(
                     &mut self.line_buffer,
-                    "{}{}{} {} ",
-                    prefix_str, level_char, timestamp_str, thread_id
+                    "{}{}{} ",
+                    prefix_str, level_char, timestamp_str
                 )?;
 
                 if let (Some(f), Some(l)) = (file, line) {
