@@ -48,12 +48,22 @@ impl Binds<ClientActor> for () {
 
 /// A scoped caller context.
 ///
-/// Dropping a client closes its mailbox. Messages already accepted into
-/// port receivers remain available; later deliveries to the client's ports
-/// fail as ordinary closed-mailbox deliveries.
+/// Dropping the last clone of a client closes its mailbox. Messages already
+/// accepted into port receivers remain available; later deliveries to the
+/// client's ports fail as ordinary closed-mailbox deliveries.
 pub struct Client {
     instance: Instance<ClientActor>,
-    lifecycle: Arc<()>,
+    lifecycle: Arc<ClientLifecycle>,
+}
+
+struct ClientLifecycle {
+    instance: Instance<ClientActor>,
+}
+
+impl Drop for ClientLifecycle {
+    fn drop(&mut self) {
+        self.instance.close_client("client dropped");
+    }
 }
 
 impl fmt::Debug for Client {
@@ -67,8 +77,10 @@ impl fmt::Debug for Client {
 impl Client {
     pub(crate) fn new(instance: Instance<ClientActor>) -> Self {
         Self {
+            lifecycle: Arc::new(ClientLifecycle {
+                instance: instance.clone_for_py(),
+            }),
             instance,
-            lifecycle: Arc::new(()),
         }
     }
 
@@ -146,14 +158,6 @@ impl Client {
     /// The client's lifecycle status.
     pub fn status(&self) -> tokio::sync::watch::Receiver<ActorStatus> {
         self.instance.status()
-    }
-}
-
-impl Drop for Client {
-    fn drop(&mut self) {
-        if Arc::strong_count(&self.lifecycle) == 1 {
-            self.instance.close_client("client dropped");
-        }
     }
 }
 
