@@ -1100,7 +1100,7 @@ impl Handler<DrainHost> for HostAgent {
                 ack: Some(msg.ack),
                 done_notify: done_port,
             },
-        )?;
+        );
 
         Ok(())
     }

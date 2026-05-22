@@ -133,34 +133,6 @@ pub trait Actor: Sized + Send + 'static {
         Ok(())
     }
 
-    /// Spawn a child actor, given a spawning capability (usually given by [`Instance`]).
-    ///
-    /// The child gets a fresh uid labeled from the actor type.
-    /// The spawned actor will be supervised by the parent (spawning) actor.
-    fn spawn(self, cx: &impl context::Actor) -> anyhow::Result<ActorHandle<Self>> {
-        cx.instance().spawn(self)
-    }
-
-    /// Spawn a named child actor. Same supervision semantics as
-    /// `spawn`, but the child gets `name` in its ActorAddr.
-    fn spawn_with_name(
-        self,
-        cx: &impl context::Actor,
-        name: &str,
-    ) -> anyhow::Result<ActorHandle<Self>> {
-        cx.instance().spawn_with_name(name, self)
-    }
-
-    /// Spawn a child actor with a fresh uid carrying a display label.
-    /// Same supervision semantics as `spawn`.
-    fn spawn_with_label(
-        self,
-        cx: &impl context::Actor,
-        label: &str,
-    ) -> anyhow::Result<ActorHandle<Self>> {
-        cx.instance().spawn_with_label(label, self)
-    }
-
     /// This method is used by the runtime to spawn the actor server. It can be
     /// used by actors that require customized runtime setups
     /// (e.g., dedicated actor threads), or want to use a custom tokio runtime.

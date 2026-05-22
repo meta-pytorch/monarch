@@ -122,16 +122,12 @@ impl Client {
     }
 
     /// Spawn a child actor with a fresh uid labeled from the actor type.
-    pub fn spawn<A: Actor>(&self, actor: A) -> anyhow::Result<ActorHandle<A>> {
+    pub fn spawn<A: Actor>(&self, actor: A) -> ActorHandle<A> {
         self.instance.spawn(actor)
     }
 
     /// Spawn a child actor with a fresh uid carrying a display label.
-    pub fn spawn_with_label<A: Actor>(
-        &self,
-        label: &str,
-        actor: A,
-    ) -> anyhow::Result<ActorHandle<A>> {
+    pub fn spawn_with_label<A: Actor>(&self, label: &str, actor: A) -> ActorHandle<A> {
         self.instance.spawn_with_label(label, actor)
     }
 

@@ -108,7 +108,7 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
             message.peer,
             KeepaliveLink::new(Duration::from_millis(100), Duration::from_millis(300)),
             LinkOptions::default(),
-        ))?;
+        ));
         Ok(())
     }
 }
@@ -134,7 +134,7 @@ impl Actor for ParentRoot {
             self.parent
                 .take()
                 .expect("parent root initialized more than once"),
-        )?;
+        );
         self.parent_handle = Some(parent);
         Ok(())
     }
@@ -222,7 +222,7 @@ impl Actor for WorkerRoot {
             ready: self.child_ready.clone(),
             stopped: self.child_stopped.clone(),
             action: self.child_action.take(),
-        }))?;
+        }));
         self.worker_out.post(this, worker.bind::<WorkerLike>());
         self.worker = Some(worker);
         Ok(())

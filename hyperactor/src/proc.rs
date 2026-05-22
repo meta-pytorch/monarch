@@ -1232,10 +1232,7 @@ impl Proc {
     }
 
     /// Create a child instance. Called from `Instance`.
-    fn child_instance(
-        &self,
-        parent: InstanceCell,
-    ) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
+    fn child_instance(&self, parent: InstanceCell) -> (Instance<()>, ActorHandle<()>) {
         let actor_id = self.allocate_anonymous_child_id(parent.actor_addr());
         let _ = tracing::debug_span!(
             "child_actor_instance",
@@ -1247,7 +1244,7 @@ impl Proc {
         // Receivers are intentionally dropped.
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
-        Ok((instance, handle))
+        (instance, handle)
     }
 
     /// Spawn a child actor from the provided parent on this proc. The parent actor
@@ -3225,37 +3222,27 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Spawn a child actor with a fresh uid labeled from the actor type.
-    pub fn spawn<C: Actor>(&self, actor: C) -> anyhow::Result<ActorHandle<C>> {
-        Ok(self.inner.proc.spawn_child(self.inner.cell.clone(), actor))
+    pub fn spawn<C: Actor>(&self, actor: C) -> ActorHandle<C> {
+        self.inner.proc.spawn_child(self.inner.cell.clone(), actor)
     }
 
     /// Spawn a named child actor on this instance. The child gets a
     /// descriptive name in its ActorId instead of inheriting this
     /// instance's name. Supervision linkage is preserved.
-    pub fn spawn_with_name<C: Actor>(
-        &self,
-        name: &str,
-        actor: C,
-    ) -> anyhow::Result<ActorHandle<C>> {
-        Ok(self
-            .inner
+    pub fn spawn_with_name<C: Actor>(&self, name: &str, actor: C) -> ActorHandle<C> {
+        self.inner
             .proc
-            .spawn_named_child(self.inner.cell.clone(), name, actor))
+            .spawn_named_child(self.inner.cell.clone(), name, actor)
     }
 
     /// Spawn a child actor with a fresh uid carrying a display label.
     ///
     /// The label is descriptive only and does not participate in actor
     /// identity. Supervision linkage to this instance is preserved.
-    pub fn spawn_with_label<C: Actor>(
-        &self,
-        label: &str,
-        actor: C,
-    ) -> anyhow::Result<ActorHandle<C>> {
-        Ok(self
-            .inner
+    pub fn spawn_with_label<C: Actor>(&self, label: &str, actor: C) -> ActorHandle<C> {
+        self.inner
             .proc
-            .spawn_named_child(self.inner.cell.clone(), label, actor))
+            .spawn_named_child(self.inner.cell.clone(), label, actor)
     }
 
     /// Spawn a child actor on this instance using an explicit uid.
@@ -3270,7 +3257,7 @@ impl<A: Actor> Instance<A> {
     }
 
     /// Create a new direct child instance.
-    pub fn child(&self) -> anyhow::Result<(Instance<()>, ActorHandle<()>)> {
+    pub fn child(&self) -> (Instance<()>, ActorHandle<()>) {
         self.inner.proc.child_instance(self.inner.cell.clone())
     }
 
@@ -4576,13 +4563,13 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
 
-        let spawned = client.spawn(TestActor).unwrap();
+        let spawned = client.spawn(TestActor);
         assert_eq!(
             spawned.actor_addr().label().map(Label::as_str),
             Some("testactor")
         );
 
-        let labeled = client.spawn_with_label("custom", TestActor).unwrap();
+        let labeled = client.spawn_with_label("custom", TestActor);
         assert_eq!(
             labeled.actor_addr().label().map(Label::as_str),
             Some("custom")
@@ -4596,7 +4583,7 @@ mod tests {
         assert!(!child.self_addr().is_root());
         assert!(matches!(child.self_addr().uid(), Uid::Instance(_, None)));
         assert_eq!(child.self_addr().label(), None);
-        let child_spawned = child.spawn(TestActor).unwrap();
+        let child_spawned = child.spawn(TestActor);
         assert_eq!(
             child_spawned.actor_addr().label().map(Label::as_str),
             Some("testactor")
@@ -4683,7 +4670,7 @@ mod tests {
             cx: &crate::Context<Self>,
             reply: oneshot::Sender<ActorHandle<TestActor>>,
         ) -> Result<(), anyhow::Error> {
-            let handle = TestActor.spawn(cx)?;
+            let handle = cx.spawn(TestActor);
             reply.send(handle).unwrap();
             Ok(())
         }
@@ -5786,7 +5773,7 @@ mod tests {
         let client = proc.client("my_test_actor");
         let status = client.status();
 
-        let child_actor = TestActor.spawn(&client).unwrap();
+        let child_actor = client.spawn(TestActor);
 
         let (port, mut receiver) = client.open_port();
         child_actor.post(&client, ("hello".to_string(), port.bind()));

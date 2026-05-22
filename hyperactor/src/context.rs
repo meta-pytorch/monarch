@@ -34,6 +34,7 @@ use crate::accum::ErasedCommReducer;
 use crate::accum::ReducerMode;
 use crate::accum::ReducerSpec;
 use crate::config;
+use crate::id::Uid;
 use crate::mailbox;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MessageEnvelope;
@@ -67,6 +68,34 @@ pub trait Actor: Mailbox {
 
     /// The instance associated with this context.
     fn instance(&self) -> &Instance<Self::A>;
+
+    /// Spawn a child actor under this actor context.
+    fn spawn<C: crate::Actor>(&self, actor: C) -> crate::ActorHandle<C>
+    where
+        Self: Sized,
+    {
+        self.instance().spawn(actor)
+    }
+
+    /// Spawn a child actor with a fresh uid carrying a display label.
+    fn spawn_with_label<C: crate::Actor>(&self, label: &str, actor: C) -> crate::ActorHandle<C>
+    where
+        Self: Sized,
+    {
+        self.instance().spawn_with_label(label, actor)
+    }
+
+    /// Spawn a child actor using an explicit uid.
+    fn spawn_with_uid<C: crate::Actor>(
+        &self,
+        uid: Uid,
+        actor: C,
+    ) -> anyhow::Result<crate::ActorHandle<C>>
+    where
+        Self: Sized,
+    {
+        self.instance().spawn_with_uid(uid, actor)
+    }
 }
 
 /// An internal extension trait for Mailbox contexts.

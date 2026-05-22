@@ -121,7 +121,7 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
             message.peer,
             KeepaliveLink::new(self.keepalive_interval, self.keepalive_timeout),
             LinkOptions::default(),
-        ))?;
+        ));
         self.supervisor = Some(supervisor);
         if let Some(path) = &self.ready_file {
             write_text(path, "linked").await?;

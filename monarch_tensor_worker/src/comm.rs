@@ -225,9 +225,9 @@ impl CommMessageHandler for NcclCommActor {
             .await
             .unwrap()?;
 
-        NcclCommActor::new(CommParams::FromComm(Arc::new(Mutex::new(split_comm))))
-            .await?
-            .spawn(cx)
+        Ok(cx.spawn(
+            NcclCommActor::new(CommParams::FromComm(Arc::new(Mutex::new(split_comm)))).await?,
+        ))
     }
 
     async fn split_from(
@@ -242,11 +242,9 @@ impl CommMessageHandler for NcclCommActor {
             .unwrap()?;
 
         match split_comm {
-            Some(split_comm) => Ok(Some(
-                NcclCommActor::new(CommParams::FromComm(Arc::new(Mutex::new(split_comm))))
-                    .await?
-                    .spawn(cx)?,
-            )),
+            Some(split_comm) => Ok(Some(cx.spawn(
+                NcclCommActor::new(CommParams::FromComm(Arc::new(Mutex::new(split_comm)))).await?,
+            ))),
             None => Ok(None),
         }
     }
