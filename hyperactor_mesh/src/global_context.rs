@@ -66,6 +66,7 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::id::Label;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
@@ -380,8 +381,8 @@ async fn bootstrap_host() -> GlobalState {
 
     // 3. Spawn HostAgent on system_proc (takes ownership of Host).
     let host_agent = system_proc
-        .spawn(
-            HOST_MESH_AGENT_ACTOR_NAME,
+        .spawn_with_uid(
+            Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
             HostAgent::new(HostAgentMode::Local(host)),
         )
         .expect("failed to spawn host agent");
