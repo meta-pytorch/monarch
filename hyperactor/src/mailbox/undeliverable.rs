@@ -252,7 +252,7 @@ pub(crate) fn return_undeliverable(
             .0;
         let envelope_copy = envelope.clone();
         if return_handle
-            .try_send(client, Undeliverable::message(envelope))
+            .try_post(client, Undeliverable::message(envelope))
             .is_err()
         {
             UndeliverableMailboxSender.post(envelope_copy, /*unused*/ return_handle)

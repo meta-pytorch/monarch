@@ -194,9 +194,6 @@ Configuration
    * - ``OTEL_METRIC_EXPORT_INTERVAL``
      - ``1s``
      - How often the periodic metric reader pushes to the exporter.
-   * - ``USE_UNIFIED_LAYER``
-     - ``true``
-     - Enables the unified tracing layer and OTLP log sink. Enabled by default.
    * - ``ENABLE_OTEL_METRICS``
      - ``true``
      - Set to ``false`` to disable OTel metrics entirely.
