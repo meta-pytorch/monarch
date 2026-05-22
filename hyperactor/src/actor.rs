@@ -48,8 +48,6 @@ use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
-use crate::mailbox::TransportFailure;
-use crate::mailbox::TransportFailureReason;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableReason;
 use crate::message::Castable;
@@ -259,15 +257,7 @@ pub async fn handle_delivery_failure_event<A: Actor>(
                 .handle_undeliverable_message(cx, reason, undeliverable)
                 .await
         }
-        None => {
-            let reason = UndeliverableReason::Transport(TransportFailure::new(
-                delivery_failure_event_target(&undeliverable),
-                TransportFailureReason::LinkUnavailable("message was undeliverable".to_string()),
-            ));
-            actor
-                .handle_undeliverable_message(cx, reason, undeliverable)
-                .await
-        }
+        None => anyhow::bail!(undeliverable.into_error()),
     }
 }
 
@@ -449,7 +439,7 @@ impl fmt::Display for DeliveryFailureLogError {
                     if index > 0 {
                         write!(f, "; ")?;
                     }
-                    write!(f, "{}", failure.render_bounded())?;
+                    write!(f, "{}", failure)?;
                 }
                 Ok(())
             }
@@ -466,28 +456,40 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
         cx: &Context<Self>,
         message: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        let log_fields = DeliveryFailureLogFields::new(&message);
+        let log_fields = (tracing::enabled!(tracing::Level::DEBUG)
+            || tracing::enabled!(tracing::Level::ERROR))
+        .then(|| DeliveryFailureLogFields::new(&message));
         let result = self.handle_delivery_failure_event(cx, message).await;
         match result {
             Ok(_) => {
-                tracing::debug!(
-                    actor_id = %cx.self_addr(),
-                    name = "undeliverable_message_handled",
-                    sender = %log_fields.sender,
-                    dest = %log_fields.dest,
-                    error = %log_fields.error,
-                );
+                if let Some(log_fields) = log_fields {
+                    tracing::debug!(
+                        actor_id = %cx.self_addr(),
+                        name = "undeliverable_message_handled",
+                        sender = %log_fields.sender,
+                        dest = %log_fields.dest,
+                        error = %log_fields.error,
+                    );
+                }
                 Ok(())
             }
             Err(e) => {
-                tracing::error!(
-                    actor_id = %cx.self_addr(),
-                    name = "undeliverable_message",
-                    sender = %log_fields.sender,
-                    dest = %log_fields.dest,
-                    error = %log_fields.error,
-                    handler_error = %e,
-                );
+                if let Some(log_fields) = log_fields {
+                    tracing::error!(
+                        actor_id = %cx.self_addr(),
+                        name = "undeliverable_message",
+                        sender = %log_fields.sender,
+                        dest = %log_fields.dest,
+                        error = %log_fields.error,
+                        handler_error = %e,
+                    );
+                } else {
+                    tracing::error!(
+                        actor_id = %cx.self_addr(),
+                        name = "undeliverable_message",
+                        handler_error = %e,
+                    );
+                }
                 Err(e)
             }
         }
