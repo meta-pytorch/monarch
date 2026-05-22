@@ -309,7 +309,16 @@ pub struct ExpiredDelivery {
 }
 
 /// A non-invalid-reference delivery failure.
-#[derive(thiserror::Error, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(
+    thiserror::Error,
+    Debug,
+    Serialize,
+    Deserialize,
+    EnumAsInner,
+    Clone,
+    PartialEq,
+    Eq
+)]
 pub enum UndeliverableReason {
     /// Delivery failed while carrying the message.
     #[error("{0}")]
@@ -318,13 +327,6 @@ pub enum UndeliverableReason {
     /// The destination port's ordinary recipient is gone.
     #[error("{0}")]
     PortGone(#[from] PortGone),
-}
-
-impl UndeliverableReason {
-    /// Whether this failure is a transport failure.
-    pub fn is_transport(&self) -> bool {
-        matches!(self, Self::Transport(_))
-    }
 }
 
 /// A transport delivery failure.
