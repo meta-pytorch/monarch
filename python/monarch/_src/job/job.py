@@ -20,7 +20,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Self, Sequence
 
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 from monarch._src.actor.bootstrap import attach_to_workers
@@ -522,7 +522,7 @@ class JobTrait(ABC):
 
     def enable_telemetry(
         self, config: "Optional[TelemetryConfig]" = None, **kwargs
-    ) -> "JobTrait":
+    ) -> Self:
         """Configure automatic telemetry startup on the next :meth:`state` call.
 
         Args:
@@ -537,7 +537,7 @@ class JobTrait(ABC):
 
     def enable_admin(
         self, config: "Optional[MeshAdminConfig]" = None, **kwargs
-    ) -> "JobTrait":
+    ) -> Self:
         """Configure automatic mesh admin agent startup on the next :meth:`state` call.
 
         Args:
