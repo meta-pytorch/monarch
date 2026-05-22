@@ -125,15 +125,15 @@ Running the example on GKE
 -------------------
 
 Follow the instructions in `Allocate network resources by using GKE managed DRANET <https://docs.cloud.google.com/kubernetes-engine/docs/how-to/allocate-network-resources-dra>`_ to create a GKE cluster with RDMA enabled.
-
+**NOTE:** The gpus_per_generator must match the generator resource claim template device count in ``resource_claim_templates.yaml``.
 ::
 
     kubectl apply -f manifests/grpo_provision.yaml
-    kubectl apply -f manifests/gke/grpo_mesh.yaml
+    kubectl apply -f manifests/gke/resource_claim_templates.yaml
     kubectl wait --for=condition=Ready pod/grpo-controller -n monarch-tests
     kubectl cp kubernetes_grpo.py monarch-tests/grpo-controller:/tmp/kubernetes_grpo.py
-    kubectl exec -it grpo-controller -n monarch-tests -- python /tmp/kubernetes_grpo.py --no-provision --num_generator_hosts 2 --gpus_per_generator 3
-    kubectl delete -f manifests/gke/grpo_mesh.yaml
+    kubectl exec -it grpo-controller -n monarch-tests -- python /tmp/kubernetes_grpo.py --gpus_per_generator 3 --learner_resource_claim_template "learner-rdma" --generator_resource_claim_template "generator-rdma"
+    kubectl delete -f manifests/gke/resource_claim_templates.yaml
     kubectl delete -f manifests/grpo_provision.yaml
 
 """
@@ -158,9 +158,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from kubernetes.client import (
+    CoreV1ResourceClaim,
     V1Container,
     V1EmptyDirVolumeSource,
     V1EnvVar,
+    V1PodResourceClaim,
     V1PodSpec,
     V1PodTemplateSpec,
     V1Probe,
@@ -886,7 +888,9 @@ PIP_INSTALL = textwrap.dedent("""\
 """)
 
 
-def build_pod_template(gpus: int) -> V1PodTemplateSpec:
+def build_pod_template(
+    gpus: int, resource_claim_template: Optional[str] = None
+) -> V1PodTemplateSpec:
     """Shared pod template for learner and generator meshes.
 
     Prepends a pip-install prefix to the Monarch worker bootstrap so that
@@ -905,6 +909,7 @@ def build_pod_template(gpus: int) -> V1PodTemplateSpec:
     """
     bootstrap = PIP_INSTALL + _WORKER_BOOTSTRAP_SCRIPT
     resources = None
+    node_selector = None
     env = [
         V1EnvVar(name="MONARCH_PORT", value="26600"),
         # /tmp/hf_cache forces the Hugging Face cache onto
@@ -917,11 +922,22 @@ def build_pod_template(gpus: int) -> V1PodTemplateSpec:
         # hammer the HF Hub.
         V1EnvVar(name="HF_HOME", value="/tmp/hf_cache"),
     ]
+    resource_claims = []
+    claims = []
     if gpus > 0:
+        if resource_claim_template:
+            resource_claims = [
+                V1PodResourceClaim(
+                    name="rdma", resource_claim_template_name=resource_claim_template
+                )
+            ]
+            claims = [CoreV1ResourceClaim(name="rdma")]
+
         gpu_resources = {"nvidia.com/gpu": str(gpus)}
         resources = V1ResourceRequirements(
             limits=gpu_resources,
             requests=gpu_resources,
+            claims=claims if claims else None,
         )
         env.insert(
             1,
@@ -957,6 +973,8 @@ def build_pod_template(gpus: int) -> V1PodTemplateSpec:
                     ],
                 )
             ],
+            node_selector=node_selector,
+            resource_claims=resource_claims if resource_claims else None,
             volumes=[
                 V1Volume(
                     name="dshm",
@@ -1008,9 +1026,8 @@ async def main(
     dataset_split: str,
     num_prompts: int,
     eval_size: int,
-    learner_mesh_name: str,
-    generator_mesh_name: str,
-    provision: bool,
+    learner_resource_claim_template: Optional[str] = None,
+    generator_resource_claim_template: Optional[str] = None,
 ) -> None:
     """Run GRPO fine-tuning across the learner and generator meshes."""
     prompts = load_gsm8k_prompts(split=dataset_split, num_prompts=num_prompts)
@@ -1024,46 +1041,43 @@ async def main(
     print(f"Namespace: {namespace} | Training steps: {training_steps}")
     print(f"Dataset: openai/gsm8k[{dataset_split}] ({len(prompts)} prompts)")
     print(f"Eval: openai/gsm8k[test] ({len(eval_prompts)} prompts)")
+    if learner_resource_claim_template:
+        print(f"Learner Resource Claim Template: {learner_resource_claim_template}")
+    if generator_resource_claim_template:
+        print(f"Generator Resource Claim Template: {generator_resource_claim_template}")
     print("=" * 60)
 
     # 600s timeout lets the meshes finish cold-start pip install + model
     # download before state() gives up.
     k8s_job = KubernetesJob(namespace=namespace, timeout=600)
-    if provision:
-        # Learner pod requests 2 GPUs; ``device_map="auto"`` inside the actor
-        # spreads the trainable policy across both. ``spawn_procs({"gpus": 1})``
-        # below still spawns a single learner proc that sees both GPUs in its
-        # CUDA namespace. To fine-tune a larger base model, bump this to 4
-        # (e.g. for a 4B-parameter policy, the static memory of params + bf16
-        # gradients + fp32 AdamW state alone is ~48 GB, requiring 4 x 22 GB GPUs).
-        k8s_job.add_mesh(
-            learner_mesh_name,
-            num_replicas=1,
-            pod_template=build_pod_template(gpus=2),
-        )
-        k8s_job.add_mesh(
-            generator_mesh_name,
-            num_replicas=num_generator_hosts,
-            pod_template=build_pod_template(gpus=gpus_per_generator),
-        )
-    else:
-        k8s_job.add_mesh(
-            learner_mesh_name,
-            num_replicas=1,
-        )
-        k8s_job.add_mesh(
-            generator_mesh_name,
-            num_replicas=num_generator_hosts,
-        )
+    # Learner pod requests 2 GPUs; ``device_map="auto"`` inside the actor
+    # spreads the trainable policy across both. ``spawn_procs({"gpus": 1})``
+    # below still spawns a single learner proc that sees both GPUs in its
+    # CUDA namespace. To fine-tune a larger base model, bump this to 4
+    # (e.g. for a 4B-parameter policy, the static memory of params + bf16
+    # gradients + fp32 AdamW state alone is ~48 GB, requiring 4 x 22 GB GPUs).
+    k8s_job.add_mesh(
+        "learner",
+        num_replicas=1,
+        pod_template=build_pod_template(
+            gpus=2, resource_claim_template=learner_resource_claim_template
+        ),
+    )
+    k8s_job.add_mesh(
+        "generator",
+        num_replicas=num_generator_hosts,
+        pod_template=build_pod_template(
+            gpus=gpus_per_generator,
+            resource_claim_template=generator_resource_claim_template,
+        ),
+    )
 
     learner_mesh = None
     gen_mesh = None
     try:
         job_state = k8s_job.state()
-        learner_mesh = getattr(job_state, learner_mesh_name).spawn_procs({"gpus": 1})
-        gen_mesh = getattr(job_state, generator_mesh_name).spawn_procs(
-            {"gpus": gpus_per_generator}
-        )
+        learner_mesh = job_state.learner.spawn_procs({"gpus": 1})
+        gen_mesh = job_state.generator.spawn_procs({"gpus": gpus_per_generator})
 
         await asyncio.gather(
             learner_mesh.logging_option(stream_to_client=True),
@@ -1149,8 +1163,7 @@ async def main(
             except Exception as e:
                 print(f"[cleanup] gen_mesh.stop() failed: {e}")
         # Unconditional so MonarchMesh CRDs and pods are always torn down.
-        if provision:
-            k8s_job.kill()
+        k8s_job.kill()
 
 
 # %%
@@ -1210,22 +1223,16 @@ if __name__ == "__main__":
         help="Number of held-out GSM8K test prompts used for eval.",
     )
     parser.add_argument(
-        "--learner_mesh_name",
+        "--learner_resource_claim_template",
         type=str,
-        default="learner",
-        help="Name of the learner MonarchMesh CRD",
+        default=None,
+        help="Name of the ResourceClaimTemplate for Learner RDMA (e.g. 'two-rdma')",
     )
     parser.add_argument(
-        "--generator_mesh_name",
+        "--generator_resource_claim_template",
         type=str,
-        default="generator",
-        help="Name of the generator MonarchMesh CRD",
-    )
-    parser.add_argument(
-        "--no-provision",
-        action="store_false",
-        dest="provision",
-        help="Disable provisioning of new worker and generator meshes and use existing ones (YAML manifests required).",
+        default=None,
+        help="Name of the ResourceClaimTemplate for Generator RDMA (e.g. 'two-rdma')",
     )
     args = parser.parse_args()
     asyncio.run(
@@ -1238,8 +1245,7 @@ if __name__ == "__main__":
             dataset_split=args.dataset_split,
             num_prompts=args.num_prompts,
             eval_size=args.eval_size,
-            learner_mesh_name=args.learner_mesh_name,
-            generator_mesh_name=args.generator_mesh_name,
-            provision=args.provision,
+            learner_resource_claim_template=args.learner_resource_claim_template,
+            generator_resource_claim_template=args.generator_resource_claim_template,
         )
     )
