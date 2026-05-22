@@ -895,6 +895,20 @@ impl<A: Actor> ActorHandle<A> {
         self.ports.get()
     }
 
+    /// Post `message` to this actor's handler port for `M`, returning an error
+    /// if delivery fails (the actor has stopped, its mailbox is closed, or the
+    /// underlying channel is disconnected). Unlike [`Endpoint::post`], the
+    /// caller observes the failure instead of having it reported through the
+    /// actor's lost-message channel.
+    pub fn try_post<C, M>(&self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    where
+        C: context::Actor,
+        M: Message,
+        A: Handler<M>,
+    {
+        self.ports.get::<M>().try_post(cx, message)
+    }
+
     /// TEMPORARY: bind...
     /// TODO: we shoudl also have a default binding(?)
     pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
