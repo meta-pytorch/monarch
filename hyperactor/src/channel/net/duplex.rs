@@ -56,6 +56,7 @@ use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
 use crate::channel::Rx;
 use crate::channel::SendError;
+use crate::channel::SendErrorReason;
 use crate::channel::Tx;
 use crate::channel::TxStatus;
 use crate::channel::net::Stream;
@@ -200,7 +201,11 @@ impl<M: RemoteMessage> Tx<M> for DuplexTx<M> {
             self.tx
                 .send((message, return_channel, tokio::time::Instant::now()))
         {
-            let reason = self.status.borrow().as_closed().map(|r| r.to_string());
+            let reason = self
+                .status
+                .borrow()
+                .as_closed()
+                .map(|r| SendErrorReason::Other(r.to_string()));
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message,
