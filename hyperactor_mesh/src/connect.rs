@@ -430,7 +430,7 @@ mod tests {
         let proc = Proc::isolated();
         let client = proc.client("client");
         let (connect, completer) = Connect::allocate(client.self_addr().clone(), client);
-        let actor = proc.spawn_with_label("actor", EchoActor {});
+        let actor = proc.spawn(EchoActor {});
         actor.post(&completer.caps, connect);
         let (mut rd, mut wr) = completer.complete().await?.into_split();
         let send = [3u8, 4u8, 5u8, 6u8];

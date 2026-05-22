@@ -1132,8 +1132,7 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc.spawn_with_label(
-            "worker",
+        let worker_handle = proc.spawn(
             WorkerActor::new(
                 WorkerParams {
                     world_size: 1,
@@ -1239,8 +1238,7 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc.spawn_with_label(
-            "worker",
+        let worker_handle = proc.spawn(
             WorkerActor::new(
                 WorkerParams {
                     world_size: 1,
@@ -1300,8 +1298,7 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc.spawn_with_label(
-            "worker",
+        let worker_handle = proc.spawn(
             WorkerActor::new(
                 WorkerParams {
                     world_size: 1,
@@ -1372,8 +1369,7 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc.spawn_with_label(
-            "worker",
+        let worker_handle = proc.spawn(
             WorkerActor::new(
                 WorkerParams {
                     world_size: 1,
@@ -1449,8 +1445,7 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc.spawn_with_label(
-            "worker",
+        let worker_handle = proc.spawn(
             WorkerActor::new(
                 WorkerParams {
                     world_size: 1,
@@ -1749,8 +1744,7 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc.spawn_with_label(
-            "worker",
+        let worker_handle = proc.spawn(
             WorkerActor::new(
                 WorkerParams {
                     world_size: 1,
@@ -1825,8 +1819,7 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc.spawn_with_label(
-            "worker",
+        let worker_handle = proc.spawn(
             WorkerActor::new(
                 WorkerParams {
                     world_size: 1,

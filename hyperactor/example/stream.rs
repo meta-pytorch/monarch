@@ -81,8 +81,7 @@ impl Handler<u64> for CountClient {
 
 #[tokio::main]
 async fn main() {
-    let counter_actor: ActorHandle<CounterActor> =
-        hyperactor::spawn_with_label("counter", CounterActor::default());
+    let counter_actor: ActorHandle<CounterActor> = hyperactor::spawn(CounterActor::default());
 
     for i in 0..10 {
         // Spawn new "countees". Every time each subscribes, the counter broadcasts
