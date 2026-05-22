@@ -97,6 +97,36 @@ pub enum ChannelError {
     Timeout(std::time::Duration),
 }
 
+/// Structured context for a send error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendErrorReason {
+    /// The serialized frame exceeded the configured channel frame limit.
+    OversizedFrame {
+        /// The serialized frame length.
+        len: usize,
+
+        /// The configured frame limit.
+        max: usize,
+    },
+
+    /// Other human-readable context.
+    Other(String),
+}
+
+impl fmt::Display for SendErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OversizedFrame { len, max } => write!(
+                f,
+                "rejecting oversize frame: len={} > max={}. \
+                ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow.",
+                len, max
+            ),
+            Self::Other(reason) => write!(f, "{}", reason),
+        }
+    }
+}
+
 /// An error that occurred during send. Returns the message that failed to send.
 #[derive(thiserror::Error, Debug)]
 #[error("{error} for reason {reason:?}")]
@@ -107,7 +137,7 @@ pub struct SendError<M: RemoteMessage> {
     /// Message that couldn't be sent
     pub message: M,
     /// Reason that message couldn't be sent, if any.
-    pub reason: Option<String>,
+    pub reason: Option<SendErrorReason>,
 }
 
 impl<M: RemoteMessage> From<SendError<M>> for ChannelError {
