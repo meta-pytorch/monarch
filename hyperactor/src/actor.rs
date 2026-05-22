@@ -16,6 +16,7 @@ use std::fmt;
 use std::fmt::Debug;
 use std::future::Future;
 use std::future::IntoFuture;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -820,6 +821,63 @@ impl<A: Actor> ActorHandle<A> {
     pub fn into_any(self) -> AnyActorHandle {
         AnyActorHandle { cell: self.cell }
     }
+
+    /// Convert this handle into a guard that stops the actor when dropped.
+    ///
+    /// Dropping the returned guard sends a normal stop signal. The guard does
+    /// not wait for the actor to stop.
+    pub fn into_guard(self) -> ActorGuard<A> {
+        ActorGuard { handle: Some(self) }
+    }
+}
+
+/// A guard that stops an actor when dropped.
+pub struct ActorGuard<A: Actor> {
+    handle: Option<ActorHandle<A>>,
+}
+
+impl<A: Actor> ActorGuard<A> {
+    /// Return the actor handle without stopping the actor.
+    pub fn into_inner(mut self) -> ActorHandle<A> {
+        self.handle
+            .take()
+            .expect("actor guard must contain a handle")
+    }
+}
+
+impl<A: Actor> Deref for ActorGuard<A> {
+    type Target = ActorHandle<A>;
+
+    fn deref(&self) -> &Self::Target {
+        self.handle
+            .as_ref()
+            .expect("actor guard must contain a handle")
+    }
+}
+
+impl<A: Actor> Drop for ActorGuard<A> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take()
+            && let Err(err) = handle.stop("actor guard dropped")
+        {
+            tracing::debug!(
+                actor_id = %handle.actor_addr(),
+                "actor guard failed to stop actor: {}",
+                err
+            );
+        }
+    }
+}
+
+impl<A: Actor> Debug for ActorGuard<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        f.debug_struct("ActorGuard")
+            .field(
+                "actor_id",
+                &self.handle.as_ref().map(|handle| handle.actor_addr()),
+            )
+            .finish()
+    }
 }
 
 /// A type-erased handle to a running actor whose concrete type is erased.
@@ -860,6 +918,63 @@ impl AnyActorHandle {
     /// Attempt to recover a typed actor handle.
     pub fn downcast<A: Actor>(&self) -> Option<ActorHandle<A>> {
         self.cell.downcast_handle()
+    }
+
+    /// Convert this handle into a guard that stops the actor when dropped.
+    ///
+    /// Dropping the returned guard sends a normal stop signal. The guard does
+    /// not wait for the actor to stop.
+    pub fn into_guard(self) -> AnyActorGuard {
+        AnyActorGuard { handle: Some(self) }
+    }
+}
+
+/// A type-erased guard that stops an actor when dropped.
+pub struct AnyActorGuard {
+    handle: Option<AnyActorHandle>,
+}
+
+impl AnyActorGuard {
+    /// Return the actor handle without stopping the actor.
+    pub fn into_inner(mut self) -> AnyActorHandle {
+        self.handle
+            .take()
+            .expect("actor guard must contain a handle")
+    }
+}
+
+impl Deref for AnyActorGuard {
+    type Target = AnyActorHandle;
+
+    fn deref(&self) -> &Self::Target {
+        self.handle
+            .as_ref()
+            .expect("actor guard must contain a handle")
+    }
+}
+
+impl Drop for AnyActorGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take()
+            && let Err(err) = handle.stop("actor guard dropped")
+        {
+            tracing::debug!(
+                actor_id = %handle.actor_id(),
+                "actor guard failed to stop actor: {}",
+                err
+            );
+        }
+    }
+}
+
+impl Debug for AnyActorGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        f.debug_struct("AnyActorGuard")
+            .field(
+                "actor_id",
+                &self.handle.as_ref().map(|handle| handle.actor_id()),
+            )
+            .finish()
     }
 }
 
@@ -1080,6 +1195,53 @@ mod tests {
         handle.await;
 
         assert_eq!(rx.drain(), vec![123u64]);
+    }
+
+    #[tokio::test]
+    async fn test_actor_handle_guard_stops_actor_on_drop() {
+        let proc = Proc::isolated();
+        let handle = proc.spawn(());
+        let mut status = handle.status();
+
+        {
+            let _guard = handle.into_guard();
+        }
+
+        let stopped = timeout(
+            Duration::from_secs(5),
+            status.wait_for(|status| {
+                matches!(status, ActorStatus::Stopped(reason) if reason == "actor guard dropped")
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .clone();
+
+        match stopped {
+            ActorStatus::Stopped(reason) => assert_eq!(reason, "actor guard dropped"),
+            status => panic!("actor guard should stop actor, got {status}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_actor_handle_guard_into_inner_disarms_stop() {
+        let proc = Proc::isolated();
+        let handle = proc.spawn(());
+        let mut status = handle.status();
+
+        let guard = handle.into_guard();
+        let _ = guard.status();
+        let guarded_handle = guard.into_inner();
+        let result = timeout(
+            Duration::from_millis(100),
+            status.wait_for(ActorStatus::is_terminal),
+        )
+        .await;
+        assert!(result.is_err());
+
+        guarded_handle.drain_and_stop("test").unwrap();
+        guarded_handle.await;
     }
 
     #[tokio::test]
