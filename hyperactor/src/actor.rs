@@ -40,11 +40,13 @@ use crate::Message;
 use crate::RemoteMessage;
 use crate::context;
 use crate::endpoint::Endpoint;
+use crate::mailbox::DeliveryFailure;
 use crate::mailbox::DeliveryFailureKind;
 use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
+use crate::mailbox::TransportFailureReason;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableMessageError;
 use crate::message::Castable;
@@ -235,6 +237,17 @@ pub fn handle_undeliverable_message<A: Actor>(
     }
 }
 
+fn undeliverable_reason_fails_actor(reason: &UndeliverableReason) -> bool {
+    matches!(
+        reason,
+        UndeliverableReason::Transport(transport)
+            if matches!(
+                &transport.reason,
+                TransportFailureReason::OversizedFrame { .. }
+            )
+    )
+}
+
 /// Default implementation of [`Actor::handle_invalid_reference`]. Defined
 /// as a free function so that `Actor` implementations that override
 /// [`Actor::handle_invalid_reference`] can fallback to this default.
@@ -369,7 +382,7 @@ impl DeliveryFailureLogFields {
 }
 
 enum DeliveryFailureLogError {
-    DeliveryFailures(Vec<crate::mailbox::DeliveryFailure>),
+    DeliveryFailures(Vec<DeliveryFailure>),
     Lost(String),
 }
 
@@ -1264,6 +1277,21 @@ mod tests {
                 TransportFailureReason::NoRoute,
             )),
         ))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_oversized_frame_transport_policy_fails_actor() {
+        let target = Addr::Proc(test_proc_id("target"));
+        assert_delivery_policy_actor_fails(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(
+                target,
+                TransportFailureReason::OversizedFrame {
+                    len: 55001392,
+                    max: 50000000,
+                },
+            ),
+        )))
         .await;
     }
 
