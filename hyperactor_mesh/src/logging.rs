@@ -1593,7 +1593,7 @@ mod tests {
         proc.clone().serve(client_rx);
         let proc_ref: ProcAddr = test_proc_id("client_0");
         router.bind(proc_ref, proc_addr.clone());
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         // Spin up both the forwarder and the client
         let log_channel = ChannelAddr::any(ChannelTransport::Unix);
