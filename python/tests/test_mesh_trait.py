@@ -28,6 +28,7 @@ class Mesh(MeshTrait):
         return self._shape.ndslice
 
     @property
+    # pyrefly: ignore [bad-override]
     def _labels(self) -> Iterable[str]:
         return self._shape.labels
 

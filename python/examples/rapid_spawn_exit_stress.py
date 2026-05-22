@@ -38,6 +38,7 @@ def unhandled_fault(fault):
     time.sleep(10000)
 
 
+# pyrefly: ignore [bad-assignment]
 monarch.actor.unhandled_fault_hook = unhandled_fault
 
 

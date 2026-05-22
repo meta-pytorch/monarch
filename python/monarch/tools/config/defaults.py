@@ -30,7 +30,7 @@ def component_fn(scheduler: str) -> Callable[..., specs.AppDef]:
 
 def scheduler_factories() -> dict[str, SchedulerFactory]:
     """Supported schedulers (name -> scheduler static factory method)"""
-    return {  # pyre-ignore[7]
+    return {
         # --- local schedulers (no multi-host support) ---
         "local_cwd": local_scheduler.create_scheduler,
         "local_docker": docker_scheduler.create_scheduler,

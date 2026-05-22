@@ -18,6 +18,7 @@ _SKIP_BASES: frozenset[Type[object]] = frozenset({object, abc.ABC, Generic})
 
 class PatchRustClass:
     def __init__(self, rust_class: Type[T]) -> None:
+        # pyrefly: ignore [invalid-type-var]
         self.rust_class = rust_class
 
     def __call__(self, python_class: Type[T]) -> Type[T]:
