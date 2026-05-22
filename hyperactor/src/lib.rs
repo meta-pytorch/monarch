@@ -64,6 +64,7 @@ pub mod actor;
 pub mod actor_local;
 pub mod addr;
 pub mod channel;
+pub mod client;
 pub mod config;
 pub mod context;
 pub mod endpoint;
@@ -122,6 +123,7 @@ pub use addr::AddrParseError;
 pub use addr::Location;
 pub use addr::PortAddr;
 pub use addr::ProcAddr;
+pub use client::Client;
 pub use endpoint::Endpoint;
 pub use endpoint::EndpointLocation;
 pub use endpoint::RemoteEndpoint;
@@ -235,6 +237,8 @@ mod private {
     impl<A: crate::Actor> Sealed for &crate::proc::Instance<A> {}
     impl<A: crate::Actor> Sealed for crate::proc::Context<'_, A> {}
     impl<A: crate::Actor> Sealed for &crate::proc::Context<'_, A> {}
+    impl Sealed for crate::client::Client {}
+    impl Sealed for &crate::client::Client {}
     impl Sealed for crate::mailbox::Mailbox {}
     impl Sealed for &crate::mailbox::Mailbox {}
     impl<A: crate::Actor> Sealed for &crate::actor::ActorHandle<A> {}
