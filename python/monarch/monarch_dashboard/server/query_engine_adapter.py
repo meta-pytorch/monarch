@@ -7,7 +7,7 @@
 """Production adapter: wraps the Monarch DataFusion QueryEngine.
 
 Unlike the SQLite-based db.py (local dev/testing), this connects directly
-to the live telemetry engine started by start_telemetry(). The QueryEngine
+to the live telemetry engine attached to a job state. The QueryEngine
 uses DataFusion as its SQL planner/executor and returns pyarrow Tables.
 """
 
@@ -25,8 +25,10 @@ class QueryEngineAdapter(DBAdapter):
 
     Usage::
 
-        from monarch.distributed_telemetry.actor import start_telemetry
-        engine, _, _scanner = start_telemetry()
+        from monarch.job import ProcessJob, TelemetryConfig
+        state = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig()).state()
+        engine = state.query_engine
+        assert engine is not None
         adapter = QueryEngineAdapter(engine)
         rows = adapter.query("SELECT * FROM actors LIMIT 10")
     """
