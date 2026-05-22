@@ -1034,9 +1034,9 @@ impl Actor for PythonActor {
             envelope = update_undeliverable_envelope_for_casting(envelope);
         }
         let envelope = match envelope {
-            Undeliverable::Message(envelope) => envelope,
-            Undeliverable::Lost(lost) => {
-                return Err(UndeliverableMessageError::Lost { lost }.into());
+            Undeliverable::Returned(envelope) => envelope,
+            Undeliverable::Report(report) => {
+                return Err(UndeliverableMessageError::Report { report }.into());
             }
         };
         assert_eq!(
@@ -1071,7 +1071,7 @@ impl Actor for PythonActor {
             }
             .into_bound_py_any(py)?;
             let py_envelope = PythonUndeliverableMessageEnvelope {
-                inner: Some(Undeliverable::Message(envelope)),
+                inner: Some(Undeliverable::Returned(envelope)),
             }
             .into_bound_py_any(py)?;
             let handled = self

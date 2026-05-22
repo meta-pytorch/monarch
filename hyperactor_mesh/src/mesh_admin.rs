@@ -1057,17 +1057,17 @@ impl Actor for MeshAdminAgent {
         undeliverable: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         match undeliverable {
-            hyperactor::mailbox::Undeliverable::Message(envelope) => {
+            hyperactor::mailbox::Undeliverable::Returned(envelope) => {
                 tracing::debug!(
                     "admin agent: undeliverable message to {} (port not bound?), ignoring",
                     envelope.dest(),
                 );
             }
-            hyperactor::mailbox::Undeliverable::Lost(lost) => {
+            hyperactor::mailbox::Undeliverable::Report(report) => {
                 tracing::debug!(
-                    "admin agent: lost message to {} ({}), ignoring",
-                    lost.dest,
-                    lost.error,
+                    "admin agent: undeliverable message report to {} ({}), ignoring",
+                    report.dest,
+                    report.error_msg().unwrap_or_default(),
                 );
             }
         }

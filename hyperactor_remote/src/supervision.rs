@@ -956,7 +956,7 @@ mod tests {
         .unwrap();
         worker
             .port::<Undeliverable<MessageEnvelope>>()
-            .post(&client, Undeliverable::Message(envelope));
+            .post(&client, Undeliverable::Returned(envelope));
 
         let reason = tokio::time::timeout(Duration::from_secs(5), stopped_rx.recv())
             .await
@@ -1121,7 +1121,7 @@ mod tests {
         .unwrap();
         worker
             .port::<Undeliverable<MessageEnvelope>>()
-            .post(&inst, Undeliverable::Message(envelope));
+            .post(&inst, Undeliverable::Returned(envelope));
 
         // Under `Detach`, the worker clears its session and stops the
         // link, but does NOT stop the child. No message shhould arrive on

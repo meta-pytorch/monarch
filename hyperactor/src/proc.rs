@@ -2297,14 +2297,14 @@ impl<A: Actor> Instance<A> {
         self.inner.self_addr()
     }
 
-    /// Report a message that could not be delivered and could not be returned.
-    pub(crate) fn report_lost_message(&self, lost: crate::mailbox::LostMessage) {
-        static REPORT_LOST_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
+    /// Report a delivery failure whose original payload is unavailable.
+    pub(crate) fn report_delivery_failure(&self, report: crate::mailbox::DeliveryFailureReport) {
+        static REPORT_WARNED_MAILBOXES: OnceLock<DashSet<ActorAddr>> = OnceLock::new();
 
         let mailbox = &self.inner.mailbox;
         let return_handle = mailbox.bound_return_handle().unwrap_or_else(|| {
             let actor_id = mailbox.actor_addr();
-            if REPORT_LOST_WARNED_MAILBOXES
+            if REPORT_WARNED_MAILBOXES
                 .get_or_init(DashSet::new)
                 .insert(actor_id.clone())
             {
@@ -2312,22 +2312,22 @@ impl<A: Actor> Instance<A> {
                 tracing::warn!(
                     actor_id = ?actor_id,
                     backtrace = ?bt,
-                    "actor attempted to report a lost message without binding Undeliverable<MessageEnvelope>"
+                    "actor attempted to report delivery failure without binding Undeliverable<MessageEnvelope>"
                 );
             }
             crate::mailbox::monitored_return_handle()
         });
 
         if let Err(error) =
-            return_handle.try_send(self, crate::mailbox::Undeliverable::lost(lost.clone()))
+            return_handle.try_send(self, crate::mailbox::Undeliverable::report(report.clone()))
         {
             tracing::error!(
-                sender = %lost.sender,
-                dest = %lost.dest,
-                message_type = lost.message_type.as_deref().unwrap_or("unknown"),
-                error = %lost.error,
+                sender = %report.sender,
+                dest = %report.dest,
+                message_type = report.message_type.as_deref().unwrap_or("unknown"),
+                error = %report.error_msg().unwrap_or_default(),
                 return_error = %error,
-                "lost message could not be reported"
+                "delivery failure report could not be returned"
             );
         }
     }
@@ -2620,30 +2620,33 @@ impl<A: Actor> Instance<A> {
     {
         let dest_location = dest.endpoint_location();
         if matches!(*self.inner.status_tx.borrow(), ActorStatus::Client) {
-            self.report_lost_message(crate::mailbox::LostMessage {
-                sender: self.mailbox().actor_addr().clone(),
-                dest: dest_location,
-                message_type: Some(std::any::type_name::<M>().to_string()),
-                error: "delayed posts require an actor runtime".to_string(),
-            });
+            self.report_delivery_failure(
+                crate::mailbox::DeliveryFailureReport::link_unavailable::<M>(
+                    self.mailbox().actor_addr().clone(),
+                    dest_location,
+                    "delayed posts require an actor runtime",
+                ),
+            );
             return;
         }
         let Ok(_guard) = self.inner.delayed_posts.ingress.try_enter() else {
-            self.report_lost_message(crate::mailbox::LostMessage {
-                sender: self.mailbox().actor_addr().clone(),
-                dest: dest_location,
-                message_type: Some(std::any::type_name::<M>().to_string()),
-                error: "actor runtime is stopping".to_string(),
-            });
+            self.report_delivery_failure(
+                crate::mailbox::DeliveryFailureReport::link_unavailable::<M>(
+                    self.mailbox().actor_addr().clone(),
+                    dest_location,
+                    "actor runtime is stopping",
+                ),
+            );
             return;
         };
         if self.is_stopping() || self.is_terminal() {
-            self.report_lost_message(crate::mailbox::LostMessage {
-                sender: self.mailbox().actor_addr().clone(),
-                dest: dest_location,
-                message_type: Some(std::any::type_name::<M>().to_string()),
-                error: "actor runtime is stopping".to_string(),
-            });
+            self.report_delivery_failure(
+                crate::mailbox::DeliveryFailureReport::link_unavailable::<M>(
+                    self.mailbox().actor_addr().clone(),
+                    dest_location,
+                    "actor runtime is stopping",
+                ),
+            );
             return;
         }
 
@@ -4860,7 +4863,7 @@ mod tests {
             return_handle,
         );
 
-        let Undeliverable::Message(envelope) = undeliverable_rx.recv().await.unwrap() else {
+        let Undeliverable::Returned(envelope) = undeliverable_rx.recv().await.unwrap() else {
             panic!("expected returned message");
         };
         assert_eq!(envelope.dest(), &remote_dest);

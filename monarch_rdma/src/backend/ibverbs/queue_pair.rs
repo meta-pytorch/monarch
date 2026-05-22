@@ -1360,8 +1360,8 @@ where
         undeliverable: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         let error = match undeliverable {
-            Undeliverable::Message(envelope) => envelope.error_msg().unwrap_or_default(),
-            Undeliverable::Lost(lost) => lost.error,
+            Undeliverable::Returned(envelope) => envelope.error_msg().unwrap_or_default(),
+            Undeliverable::Report(report) => report.error_msg().unwrap_or_default(),
         };
         if self.terminal {
             tracing::warn!(
@@ -1859,7 +1859,7 @@ mod tests {
                 TransportFailureReason::LinkUnavailable(error.into()),
             ),
         )));
-        Undeliverable::Message(envelope)
+        Undeliverable::Returned(envelope)
     }
 
     /// In an awaiting state, an undeliverable message returned to the
