@@ -1310,6 +1310,60 @@ impl RankMask {
             RankMask::Union(masks) => masks.iter().any(|mask| mask.contains(rank)),
         }
     }
+
+    /// Returns whether this mask and `rect` share any base rank.
+    pub fn intersects_rect(&self, rect: &RankRect) -> bool {
+        match self {
+            RankMask::Empty => false,
+            RankMask::Rect(mask_rect) => mask_rect.intersects(rect),
+            RankMask::Ranks(ranks) => ranks.iter().any(|rank| rect.contains_rank(*rank)),
+            RankMask::Union(masks) => masks.iter().any(|mask| mask.intersects_rect(rect)),
+        }
+    }
+
+    /// Returns whether every rank in `rect` is contained in this mask.
+    pub fn contains_rect(&self, rect: &RankRect) -> bool {
+        if rect.is_empty() {
+            return true;
+        }
+        match self {
+            RankMask::Empty => false,
+            RankMask::Rect(mask_rect) => mask_rect.contains_rect(rect),
+            RankMask::Ranks(ranks) => rect.iter_ranks().all(|rank| ranks.contains(&rank)),
+            RankMask::Union(masks) => {
+                if masks.iter().any(|mask| mask.contains_rect(rect)) {
+                    return true;
+                }
+                if rect.cardinality() == 1 {
+                    return self.contains(rect.offset());
+                }
+                let Some((first, second)) = rect.split_largest_dim() else {
+                    return self.contains(rect.offset());
+                };
+                self.contains_rect(&first) && self.contains_rect(&second)
+            }
+        }
+    }
+
+    /// Returns whether this mask and `other` share any base rank.
+    pub fn intersects_mask(&self, other: &Self) -> bool {
+        match other {
+            RankMask::Empty => false,
+            RankMask::Rect(rect) => self.intersects_rect(rect),
+            RankMask::Ranks(ranks) => ranks.iter().any(|rank| self.contains(*rank)),
+            RankMask::Union(masks) => masks.iter().any(|mask| self.intersects_mask(mask)),
+        }
+    }
+
+    /// Returns whether every rank in `other` is contained in this mask.
+    pub fn contains_mask(&self, other: &Self) -> bool {
+        match other {
+            RankMask::Empty => true,
+            RankMask::Rect(rect) => self.contains_rect(rect),
+            RankMask::Ranks(ranks) => ranks.iter().all(|rank| self.contains(*rank)),
+            RankMask::Union(masks) => masks.iter().all(|mask| self.contains_mask(mask)),
+        }
+    }
 }
 
 /// A possibly sparse rank space: a dense base rectangle minus occluded ranks.
@@ -1359,9 +1413,147 @@ impl RankSpace {
         self.iter_ranks().next().is_none()
     }
 
+    /// Returns the coarse half-open base-rank interval covering visible ranks.
+    ///
+    /// This trims occluded ranks from the beginning and end of the base
+    /// rectangle's rank order. The result is still coarse for strided spaces:
+    /// not every rank inside the returned interval is necessarily visible.
+    pub fn rank_bounds(&self) -> Option<RankBounds> {
+        let bounds = self.base.rank_bounds()?;
+        let start = bounds.start();
+        let end_rank = bounds_end_rank(bounds);
+
+        let min = if self.occlusion.contains(start) {
+            min_visible_rank(&self.base, &self.occlusion)?
+        } else {
+            start
+        };
+        let max = if self.occlusion.contains(end_rank) {
+            max_visible_rank(&self.base, &self.occlusion)?
+        } else {
+            end_rank
+        };
+
+        RankBounds::new(min, max.get().checked_add(1).map(Rank))
+    }
+
     /// Returns true if the base rank is visible in this rank space.
     pub fn contains_rank(&self, rank: Rank) -> bool {
         self.base.contains_rank(rank) && !self.occlusion.contains(rank)
+    }
+
+    /// Returns whether this space and `other` share any visible base rank.
+    ///
+    /// This is an exact set operation over visible ranks:
+    ///
+    /// ```text
+    /// exists rank r:
+    ///   r in self.base
+    ///   r in other.base
+    ///   r not in self.occlusion
+    ///   r not in other.occlusion
+    /// ```
+    ///
+    /// Occlusions from both spaces are unioned before searching for a witness.
+    pub fn intersects(&self, other: &Self) -> bool {
+        let occlusion = RankMask::union([self.occlusion.clone(), other.occlusion.clone()]);
+        rects_intersect_outside_mask(&self.base, &other.base, &occlusion)
+    }
+
+    /// Returns whether every visible rank in `other` is also visible in `self`.
+    ///
+    /// This is an exact set operation:
+    ///
+    /// ```text
+    /// other.base - other.occlusion <= self.base - self.occlusion
+    /// ```
+    ///
+    /// Equivalently, every rank in `other.base` that is not hidden by
+    /// `other.occlusion` must be contained in `self.base`, and none of those
+    /// ranks may be hidden by `self.occlusion`.
+    pub fn contains_space(&self, other: &Self) -> bool {
+        self.contains_visible_rect(&other.base, &other.occlusion)
+    }
+
+    /// Embeds `local` through this space.
+    ///
+    /// `local.base` is embedded through `self.base` using [`RankRect::embed`].
+    /// Ranks hidden by `local.occlusion` are first interpreted as local
+    /// row-major indices into `self.base`, then projected into final base-rank
+    /// coordinates. The resulting occlusion is the union of those embedded
+    /// local occlusions and `self.occlusion`.
+    ///
+    /// Extra occlusions outside the resulting base rectangle are harmless:
+    /// occlusions are base-rank sets, and only ranks inside the returned base
+    /// rectangle can affect visibility.
+    ///
+    /// Continuing the dense example from [`RankRect::embed`], suppose the
+    /// parent hides base rank `20`, and the local space hides parent local
+    /// index `3`:
+    ///
+    /// ```text
+    /// parent visible base ranks
+    ///
+    ///           gpu
+    ///         0   1   2   3
+    /// host 0  10  12  14  16
+    ///      1  18  x   22  24
+    ///
+    /// local coordinates -> parent local indices
+    ///
+    ///               local gpu
+    ///               0  1
+    /// local host 0  1  x
+    ///            1  5  7
+    /// ```
+    ///
+    /// Embedding projects the local occlusion from parent local index `3` to
+    /// base rank `16`, then unions it with the parent occlusion at base rank
+    /// `20`. The returned space has base rectangle ranks `{12, 16, 20, 24}`
+    /// and visible ranks `{12, 24}`.
+    pub fn embed(&self, local: &Self) -> Result<Self, RankSpaceError> {
+        let base = self.base.embed(&local.base)?;
+        let local_occlusion = embed_occlusion(&self.base, &local.base, &local.occlusion)?;
+        Ok(Self::sparse(
+            base,
+            RankMask::union([self.occlusion.clone(), local_occlusion]),
+        ))
+    }
+
+    /// Projects `space` into this space's local row-major index space.
+    ///
+    /// This is the reverse coordinate transform of [`RankSpace::embed`].
+    /// `space.base` is expressed in `self.base`'s local row-major index space
+    /// using [`RankRect::project`]. The returned space uses local row-major
+    /// indices into `self.base` as its base-rank coordinate system.
+    ///
+    /// Occlusions from both spaces are translated into that local coordinate
+    /// system. A rank is visible in the returned space exactly when the
+    /// corresponding base rank is visible in both `self` and `space`.
+    ///
+    /// If an extracted space has base rectangle ranks `{12, 16, 20, 24}`, hides
+    /// base rank `16`, and the parent hides base rank `20`, projection returns a
+    /// local-index space over parent local indices `{1, 3, 5, 7}`:
+    ///
+    /// ```text
+    /// extracted coordinates -> parent local indices
+    ///
+    ///           local gpu
+    ///           0  1
+    /// host 0    1  x    x = extracted-space occlusion, projected from base rank 16
+    ///      1    x  7    x = parent occlusion, projected from base rank 20
+    /// ```
+    ///
+    /// The visible projected ranks are `{1, 7}`. Those ranks are local indices
+    /// into `self.base`, not final base-rank coordinates.
+    pub fn project(&self, space: &Self) -> Result<Self, RankSpaceError> {
+        let base = self.base.project(&space.base)?;
+        let parent_occlusion = project_occlusion(&self.base, &base, &self.occlusion)?;
+        let space_occlusion = project_occlusion(&self.base, &base, &space.occlusion)?;
+        Ok(Self::sparse(
+            base,
+            RankMask::union([parent_occlusion, space_occlusion]),
+        ))
     }
 
     /// Converts a coordinate into a visible base rank.
@@ -1438,12 +1630,159 @@ impl RankSpace {
             occlusion: self.occlusion.clone(),
         })
     }
+
+    fn contains_visible_rect(&self, rect: &RankRect, hidden: &RankMask) -> bool {
+        if rect.is_empty() || hidden.contains_rect(rect) {
+            return true;
+        }
+
+        if self.base.contains_rect(rect) && !self.occlusion.intersects_rect(rect) {
+            return true;
+        }
+
+        if rect.cardinality() == 1 {
+            let rank = rect.offset();
+            return hidden.contains(rank) || self.contains_rank(rank);
+        }
+
+        let Some((first, second)) = rect.split_largest_dim() else {
+            let rank = rect.offset();
+            return hidden.contains(rank) || self.contains_rank(rank);
+        };
+        self.contains_visible_rect(&first, hidden) && self.contains_visible_rect(&second, hidden)
+    }
 }
 
 impl From<RankRect> for RankSpace {
     fn from(rect: RankRect) -> Self {
         Self::dense(rect)
     }
+}
+
+fn rects_intersect_outside_mask(left: &RankRect, right: &RankRect, mask: &RankMask) -> bool {
+    if !left.intersects(right) {
+        return false;
+    }
+
+    if left.cardinality() == 1 {
+        let rank = left.offset();
+        return right.contains_rank(rank) && !mask.contains(rank);
+    }
+
+    if right.cardinality() == 1 {
+        let rank = right.offset();
+        return left.contains_rank(rank) && !mask.contains(rank);
+    }
+
+    if left.cardinality() >= right.cardinality() {
+        if let Some((first, second)) = left.split_largest_dim() {
+            rects_intersect_outside_mask(&first, right, mask)
+                || rects_intersect_outside_mask(&second, right, mask)
+        } else {
+            let rank = left.offset();
+            right.contains_rank(rank) && !mask.contains(rank)
+        }
+    } else if let Some((first, second)) = right.split_largest_dim() {
+        rects_intersect_outside_mask(left, &first, mask)
+            || rects_intersect_outside_mask(left, &second, mask)
+    } else {
+        let rank = right.offset();
+        left.contains_rank(rank) && !mask.contains(rank)
+    }
+}
+
+fn min_visible_rank(rect: &RankRect, mask: &RankMask) -> Option<Rank> {
+    let bounds = rect.rank_bounds()?;
+    if !mask.contains(bounds.start()) {
+        return Some(bounds.start());
+    }
+    if rect.cardinality() == 1 || mask.contains_rect(rect) {
+        return None;
+    }
+
+    let (first, second) = rect.split_largest_dim()?;
+    min_optional_rank(
+        min_visible_rank(&first, mask),
+        min_visible_rank(&second, mask),
+    )
+}
+
+fn max_visible_rank(rect: &RankRect, mask: &RankMask) -> Option<Rank> {
+    let bounds = rect.rank_bounds()?;
+    let end_rank = bounds_end_rank(bounds);
+    if !mask.contains(end_rank) {
+        return Some(end_rank);
+    }
+    if rect.cardinality() == 1 || mask.contains_rect(rect) {
+        return None;
+    }
+
+    let (first, second) = rect.split_largest_dim()?;
+    max_optional_rank(
+        max_visible_rank(&first, mask),
+        max_visible_rank(&second, mask),
+    )
+}
+
+fn min_optional_rank(left: Option<Rank>, right: Option<Rank>) -> Option<Rank> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(rank), None) | (None, Some(rank)) => Some(rank),
+        (None, None) => None,
+    }
+}
+
+fn max_optional_rank(left: Option<Rank>, right: Option<Rank>) -> Option<Rank> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(rank), None) | (None, Some(rank)) => Some(rank),
+        (None, None) => None,
+    }
+}
+
+fn bounds_end_rank(bounds: RankBounds) -> Rank {
+    bounds
+        .end()
+        .and_then(|end| end.get().checked_sub(1).map(Rank))
+        .unwrap_or(Rank(usize::MAX))
+}
+
+fn embed_occlusion(
+    parent: &RankRect,
+    local_base: &RankRect,
+    local_occlusion: &RankMask,
+) -> Result<RankMask, RankSpaceError> {
+    let ranks = local_base
+        .iter_ranks()
+        .filter(|rank| local_occlusion.contains(*rank))
+        .map(|rank| {
+            parent
+                .rank_at(rank.get())
+                .ok_or(RankSpaceError::IncompatibleEmbedding)
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    Ok(RankMask::ranks(ranks))
+}
+
+fn project_occlusion(
+    parent: &RankRect,
+    local_base: &RankRect,
+    occlusion: &RankMask,
+) -> Result<RankMask, RankSpaceError> {
+    let ranks = local_base
+        .iter_ranks()
+        .map(|local_rank| {
+            let base_rank = parent
+                .rank_at(local_rank.get())
+                .ok_or(RankSpaceError::IncompatibleEmbedding)?;
+            Ok((local_rank, base_rank))
+        })
+        .filter_map(|result| match result {
+            Ok((local_rank, base_rank)) => occlusion.contains(base_rank).then_some(Ok(local_rank)),
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<Result<BTreeSet<_>, RankSpaceError>>()?;
+    Ok(RankMask::ranks(ranks))
 }
 
 fn gcd(mut left: usize, mut right: usize) -> usize {
@@ -1822,6 +2161,89 @@ mod tests {
     }
 
     #[test]
+    fn rank_mask_rect_relationships_are_exact() {
+        let rect = host_gpu_rect();
+        let host0 = rect.fix("host", 0).unwrap();
+        let host1 = rect.fix("host", 1).unwrap();
+        let mask = RankMask::union([
+            RankMask::ranks([Rank(0), Rank(1)]),
+            RankMask::ranks([Rank(2), Rank(3)]),
+        ]);
+
+        assert!(mask.contains_rect(&host0));
+        assert!(!mask.contains_rect(&host1));
+        assert!(mask.intersects_rect(&host0));
+        assert!(!mask.intersects_rect(&host1));
+        assert!(mask.contains_mask(&RankMask::rect(host0)));
+        assert!(!mask.intersects_mask(&RankMask::rect(host1)));
+    }
+
+    #[test]
+    fn rank_space_relationships_use_visible_rank_sets() {
+        let rect = host_gpu_rect();
+        let host0 = RankSpace::dense(rect.fix("host", 0).unwrap());
+        let host1 = RankSpace::dense(rect.fix("host", 1).unwrap());
+        let gpu2 = RankSpace::dense(rect.fix("gpu", 2).unwrap());
+        let without_rank_6 = RankSpace::dense(rect).without(RankMask::ranks([Rank(6)]));
+
+        assert!(!host0.intersects(&host1));
+        assert!(host1.intersects(&gpu2));
+        assert!(!without_rank_6.intersects(&RankSpace::dense(rankrect!(offset = 6; x = 1))));
+        assert!(without_rank_6.contains_space(&host0));
+        assert!(!without_rank_6.contains_space(&gpu2));
+    }
+
+    #[test]
+    fn rank_space_bounds_trim_edge_occlusions() {
+        let space = RankSpace::dense(host_gpu_rect()).without(RankMask::ranks([Rank(0), Rank(7)]));
+
+        assert_eq!(space.rank_bounds(), RankBounds::new(Rank(1), Some(Rank(7))));
+    }
+
+    #[test]
+    fn rank_space_bounds_trim_strided_edge_occlusions() {
+        let rect = RankRect::affine(
+            Extent::new(vec![Dim::new("host", 2), Dim::new("gpu", 4)]).unwrap(),
+            Rank(10),
+            vec![8, 2],
+        )
+        .unwrap();
+
+        let internally_masked = RankSpace::dense(rect.clone()).without(RankMask::ranks([Rank(20)]));
+        assert_eq!(
+            internally_masked.rank_bounds(),
+            RankBounds::new(Rank(10), Some(Rank(25)))
+        );
+
+        let edge_masked = RankSpace::dense(rect).without(RankMask::ranks([Rank(10), Rank(24)]));
+        assert_eq!(
+            edge_masked.rank_bounds(),
+            RankBounds::new(Rank(12), Some(Rank(23)))
+        );
+    }
+
+    #[test]
+    fn rank_space_embed_projects_local_occlusions() {
+        let parent = RankSpace::dense(host_gpu_rect()).without(RankMask::ranks([Rank(5)]));
+        let local = RankSpace::dense(
+            RankRect::affine(
+                Extent::new(vec![Dim::new("host", 2), Dim::new("gpu", 2)]).unwrap(),
+                Rank(1),
+                vec![4, 2],
+            )
+            .unwrap(),
+        )
+        .without(RankMask::ranks([Rank(3)]));
+
+        let embedded = parent.embed(&local).unwrap();
+
+        assert_eq!(
+            embedded.iter_ranks().collect::<Vec<_>>(),
+            vec![Rank(1), Rank(7)]
+        );
+    }
+
+    #[test]
     fn rank_bounds_cover_rect_ranks() {
         let rect = RankRect::affine(
             Extent::new(vec![Dim::new("row", 2), Dim::new("col", 3)]).unwrap(),
@@ -1955,6 +2377,49 @@ mod tests {
 
         assert_eq!(
             column_major.project(&flat).unwrap_err(),
+            RankSpaceError::IncompatibleEmbedding
+        );
+    }
+
+    #[test]
+    fn rank_space_project_projects_occlusions() {
+        let parent = RankSpace::dense(host_gpu_rect()).without(RankMask::ranks([Rank(5)]));
+        let extracted = RankSpace::dense(
+            RankRect::affine(
+                Extent::new(vec![Dim::new("host", 2), Dim::new("gpu", 2)]).unwrap(),
+                Rank(1),
+                vec![4, 2],
+            )
+            .unwrap(),
+        )
+        .without(RankMask::ranks([Rank(3)]));
+
+        let projected = parent.project(&extracted).unwrap();
+
+        assert_eq!(
+            projected.iter_ranks().collect::<Vec<_>>(),
+            vec![Rank(1), Rank(7)]
+        );
+    }
+
+    #[test]
+    fn rank_space_embed_rejects_local_indices_outside_parent() {
+        let parent = RankSpace::dense(rankrect!(x = 4));
+        let local = RankSpace::dense(rankrect!(offset = 3; i = 2));
+
+        assert_eq!(
+            parent.embed(&local).unwrap_err(),
+            RankSpaceError::IncompatibleEmbedding
+        );
+    }
+
+    #[test]
+    fn rank_space_project_rejects_base_ranks_outside_parent() {
+        let parent = RankSpace::dense(rankrect!(x = 4));
+        let extracted = RankSpace::dense(rankrect!(offset = 3; i = 2));
+
+        assert_eq!(
+            parent.project(&extracted).unwrap_err(),
             RankSpaceError::IncompatibleEmbedding
         );
     }
