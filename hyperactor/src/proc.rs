@@ -927,7 +927,12 @@ impl Proc {
     /// Return the process-global proc.
     pub fn global() -> Self {
         static GLOBAL_PROC: OnceLock<Proc> = OnceLock::new();
-        GLOBAL_PROC.get_or_init(Proc::anonymous).clone()
+        GLOBAL_PROC
+            .get_or_init(|| {
+                let label = global_proc_label();
+                Proc::instance(label.as_str())
+            })
+            .clone()
     }
 
     /// Return the proc for the current execution context.
@@ -1663,6 +1668,18 @@ fn default_actor_label<A>() -> Label {
         .split_once('<')
         .map_or(type_name, |(base, _)| base);
     Label::strip(type_name.rsplit("::").next().unwrap_or(type_name))
+}
+
+fn global_proc_label() -> Label {
+    let hostname = hostname::get().expect("hostname should be available");
+    global_proc_label_from(&hostname.to_string_lossy(), std::process::id())
+}
+
+fn global_proc_label_from(hostname: &str, pid: u32) -> Label {
+    let short_hostname = hostname
+        .split_once('.')
+        .map_or(hostname, |(short, _)| short);
+    Label::strip(&format!("{}-{}", short_hostname, pid))
 }
 
 fn assert_not_legacy_pseudo_singleton_proc_id(proc_id: &ProcId) {
@@ -4476,6 +4493,18 @@ mod tests {
             "hashmap"
         );
         assert_eq!(default_actor_label::<()>().as_str(), "nil");
+    }
+
+    #[test]
+    fn test_global_proc_label_uses_short_hostname_and_pid() {
+        assert_eq!(
+            global_proc_label_from("devvm34959.nha0.facebook.com", 123555).as_str(),
+            "devvm34959-123555"
+        );
+        assert_eq!(
+            global_proc_label_from("DevVM34959.nha0.facebook.com", 7).as_str(),
+            "devvm34959-7"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
