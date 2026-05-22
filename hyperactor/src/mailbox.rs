@@ -2325,7 +2325,12 @@ impl<M: Message> PortHandle<M> {
         }
     }
 
-    pub(crate) fn try_send<C>(&self, cx: &C, message: M) -> Result<(), MailboxSenderError>
+    /// Post `message` to this port, returning an error if delivery fails (the
+    /// port is closed, its owner has terminated, or its underlying channel is
+    /// disconnected). Unlike [`Endpoint::post`], the caller observes the
+    /// failure instead of having it reported through the actor's lost-message
+    /// channel.
+    pub fn try_post<C>(&self, cx: &C, message: M) -> Result<(), MailboxSenderError>
     where
         C: context::Actor,
     {
@@ -2393,7 +2398,7 @@ where
     where
         C: context::Actor,
     {
-        if let Err(err) = self.try_send(cx, message) {
+        if let Err(err) = self.try_post(cx, message) {
             cx.instance()
                 .report_lost_message(LostMessage::from_send_error::<M>(
                     cx.mailbox().actor_addr().clone(),
@@ -2495,17 +2500,12 @@ impl<M: Message> OncePortHandle<M> {
     pub fn port_addr(&self) -> &PortAddr {
         &self.port_id
     }
-}
 
-impl<M> Endpoint<M> for OncePortHandle<M>
-where
-    M: Message,
-{
-    fn endpoint_location(&self) -> EndpointLocation {
-        EndpointLocation::Port(self.port_id.clone())
-    }
-
-    fn post<C>(self, _cx: &C, message: M)
+    /// Post `message` to this port, returning an error if delivery fails (the
+    /// receiver has been dropped). Unlike [`Endpoint::post`], the caller
+    /// observes the failure instead of having it reported through the actor's
+    /// lost-message channel.
+    pub fn try_post<C>(self, _cx: &C, message: M) -> Result<(), MailboxSenderError>
     where
         C: context::Actor,
     {
@@ -2519,17 +2519,33 @@ where
         );
 
         let actor_id = self.mailbox.actor_addr().clone();
-        let endpoint_location = self.endpoint_location();
-        if let Err(err) = self.sender.send(message).map_err(|_| {
+        self.sender.send(message).map_err(|_| {
             // Here, the value is returned when the port is
             // closed.  We should consider having a similar
             // API for send_once, though arguably it makes less
             // sense in this context.
             MailboxSenderError::new_unbound::<M>(actor_id, MailboxSenderErrorKind::Closed)
-        }) {
-            _cx.instance()
+        })
+    }
+}
+
+impl<M> Endpoint<M> for OncePortHandle<M>
+where
+    M: Message,
+{
+    fn endpoint_location(&self) -> EndpointLocation {
+        EndpointLocation::Port(self.port_id.clone())
+    }
+
+    fn post<C>(self, cx: &C, message: M)
+    where
+        C: context::Actor,
+    {
+        let endpoint_location = self.endpoint_location();
+        if let Err(err) = self.try_post(cx, message) {
+            cx.instance()
                 .report_lost_message(LostMessage::from_send_error::<M>(
-                    _cx.mailbox().actor_addr().clone(),
+                    cx.mailbox().actor_addr().clone(),
                     endpoint_location,
                     &err,
                 ));
@@ -5351,7 +5367,7 @@ mod tests {
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
 
-        let err = port_handle.try_send(&client, 42u64).unwrap_err();
+        let err = port_handle.try_post(&client, 42u64).unwrap_err();
         assert_matches!(
             err.kind(),
             MailboxSenderErrorKind::Mailbox(mailbox_err)
@@ -5375,7 +5391,7 @@ mod tests {
             "test failure".to_string(),
         )));
 
-        let err = port_handle.try_send(&client, 42u64).unwrap_err();
+        let err = port_handle.try_post(&client, 42u64).unwrap_err();
         assert_matches!(
             err.kind(),
             MailboxSenderErrorKind::Mailbox(mailbox_err)
