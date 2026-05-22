@@ -38,6 +38,7 @@ impl Actor for ClientActor {}
 /// fail as ordinary closed-mailbox deliveries.
 pub struct Client {
     instance: Instance<ClientActor>,
+    lifecycle: Arc<()>,
 }
 
 impl Client {
@@ -66,7 +67,18 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        self.instance.close_client("client dropped");
+        if Arc::strong_count(&self.lifecycle) == 1 {
+            self.instance.close_client("client dropped");
+        }
+    }
+}
+
+impl Clone for Client {
+    fn clone(&self) -> Self {
+        Self {
+            instance: self.instance.clone_for_py(),
+            lifecycle: Arc::clone(&self.lifecycle),
+        }
     }
 }
 
