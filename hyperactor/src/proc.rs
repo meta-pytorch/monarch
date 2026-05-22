@@ -1382,8 +1382,8 @@ impl Proc {
             .state()
             .instances
             .iter()
-            .filter(|entry| entry.key().uid().is_singleton())
             .filter_map(|entry| entry.value().upgrade())
+            .filter(|cell| cell.parent().is_none())
             .filter(|cell| !matches!(*cell.status().borrow(), ActorStatus::Client))
             .map(|cell| cell.actor_addr().clone())
             .collect::<Vec<_>>()
