@@ -221,6 +221,7 @@ impl Actor for CommActor {
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
+        _reason: hyperactor::mailbox::UndeliverableReason,
         undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         let mut message_envelope = match undelivered {

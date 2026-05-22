@@ -1045,7 +1045,7 @@ impl Actor for MeshAdminAgent {
     /// via `cx.spawn()` whose `#[export]` list does not include it).
     /// When the message cannot be delivered, the routing layer
     /// bounces an `Undeliverable` back to the sender. The default
-    /// `Actor::handle_undeliverable_message` calls `bail!()`, which
+    /// delivery-failure handling would fail the actor, which
     /// would kill this admin agent and — via supervision cascade —
     /// take down the entire admin process with `exit(1)`.
     ///
@@ -1054,6 +1054,7 @@ impl Actor for MeshAdminAgent {
     async fn handle_undeliverable_message(
         &mut self,
         _cx: &Instance<Self>,
+        _reason: hyperactor::mailbox::UndeliverableReason,
         undeliverable: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         match undeliverable {

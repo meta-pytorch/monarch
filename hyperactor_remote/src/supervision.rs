@@ -33,6 +33,7 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::StopMode;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::supervision::ActorSupervisionEvent;
 
 use crate::KeepaliveLink;
@@ -333,6 +334,7 @@ where
     async fn handle_undeliverable_message(
         &mut self,
         _this: &Instance<Self>,
+        _reason: UndeliverableReason,
         _envelope: Undeliverable<MessageEnvelope>,
     ) -> anyhow::Result<()> {
         self.handle_orphaned_supervisor("supervisor session undeliverable")

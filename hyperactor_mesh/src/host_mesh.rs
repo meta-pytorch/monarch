@@ -2283,8 +2283,8 @@ mod tests {
         // itself the assertion. `TestRootClient::handle::<MeshFailure>`
         // panics on supervision events; if the request bounce had
         // escaped through `Undeliverable<MessageEnvelope>`, the
-        // root-client's default `handle_undeliverable_message` would
-        // bail with `UndeliverableMessageError::DeliveryFailure`,
+        // root-client's default delivery-failure handling would
+        // surface an `UndeliverableMessageError::DeliveryFailure`,
         // supervision would fire, and we wouldn't be here.
     }
 

@@ -30,6 +30,7 @@ use hyperactor::kv_pairs;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::RemoteMessage;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -756,11 +757,12 @@ where
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
+        reason: UndeliverableReason,
         mut envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         envelope = update_undeliverable_envelope_for_casting(envelope);
         let Some(returned) = envelope.as_message() else {
-            return handle_undeliverable_message(cx, envelope);
+            return handle_undeliverable_message(cx, reason, envelope);
         };
         if let Some(true) = returned.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
             // Remove from the subscriber list (if it existed) so we don't
@@ -791,7 +793,7 @@ where
             );
             Ok(())
         } else {
-            handle_undeliverable_message(cx, envelope)
+            handle_undeliverable_message(cx, reason, envelope)
         }
     }
 }

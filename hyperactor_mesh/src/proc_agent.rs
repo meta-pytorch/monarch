@@ -37,6 +37,7 @@ use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableReason;
 use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
@@ -668,10 +669,11 @@ impl Actor for ProcAgent {
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
+        reason: UndeliverableReason,
         envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         let Some(returned) = envelope.as_message() else {
-            return handle_undeliverable_message(cx, envelope);
+            return handle_undeliverable_message(cx, reason, envelope);
         };
         if let Some(true) = returned.headers().get(STREAM_STATE_SUBSCRIBER) {
             let dest_port_id: PortAddr = returned.dest().clone();
@@ -682,7 +684,7 @@ impl Actor for ProcAgent {
             }
             Ok(())
         } else {
-            handle_undeliverable_message(cx, envelope)
+            handle_undeliverable_message(cx, reason, envelope)
         }
     }
 }

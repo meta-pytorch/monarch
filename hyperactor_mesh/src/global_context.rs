@@ -271,6 +271,7 @@ impl Actor for GlobalClientActor {
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
+        _reason: UndeliverableReason,
         undeliverable: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         let mut env = match undeliverable {

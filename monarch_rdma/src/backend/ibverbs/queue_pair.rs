@@ -34,6 +34,7 @@ use hyperactor::actor::Referable;
 use hyperactor::actor::RemoteHandles;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
+use hyperactor::mailbox::UndeliverableReason;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -1357,6 +1358,7 @@ where
     async fn handle_undeliverable_message(
         &mut self,
         this: &Instance<Self>,
+        _reason: UndeliverableReason,
         undeliverable: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         let error = match undeliverable {

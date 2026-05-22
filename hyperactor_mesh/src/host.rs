@@ -1748,6 +1748,7 @@ mod tests {
         async fn handle_undeliverable_message(
             &mut self,
             _cx: &Instance<Self>,
+            _reason: hyperactor::mailbox::UndeliverableReason,
             message: Undeliverable<MessageEnvelope>,
         ) -> Result<(), anyhow::Error> {
             let _ = self.tx.send(message);
