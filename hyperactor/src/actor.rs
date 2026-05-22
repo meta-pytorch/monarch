@@ -41,6 +41,7 @@ use crate::Message;
 use crate::RemoteMessage;
 use crate::context;
 use crate::endpoint::Endpoint;
+use crate::mailbox::DeliveryFailure;
 use crate::mailbox::DeliveryFailureKind;
 use crate::mailbox::ExpiredDelivery;
 use crate::mailbox::InvalidReference;
@@ -48,6 +49,7 @@ use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
+use crate::mailbox::TransportFailureReason;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableReason;
 use crate::message::Castable;
@@ -287,11 +289,25 @@ fn assert_delivery_failure_sender<A: Actor>(
 /// [`Actor::handle_undeliverable_message`] can fallback to this default.
 pub fn handle_undeliverable_message<A: Actor>(
     cx: &Instance<A>,
-    _reason: UndeliverableReason,
+    reason: UndeliverableReason,
     undeliverable: Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
     assert_delivery_failure_sender(cx, &undeliverable);
+    if undeliverable_reason_fails_actor(&reason) {
+        anyhow::bail!(undeliverable.into_error());
+    }
     Ok(())
+}
+
+fn undeliverable_reason_fails_actor(reason: &UndeliverableReason) -> bool {
+    matches!(
+        reason,
+        UndeliverableReason::Transport(transport)
+            if matches!(
+                &transport.reason,
+                TransportFailureReason::OversizedFrame { .. }
+            )
+    )
 }
 
 /// Default implementation of [`Actor::handle_invalid_reference`]. Defined
@@ -425,7 +441,7 @@ impl DeliveryFailureLogFields {
 }
 
 enum DeliveryFailureLogError {
-    DeliveryFailures(Vec<crate::mailbox::DeliveryFailure>),
+    DeliveryFailures(Vec<DeliveryFailure>),
 }
 
 impl fmt::Display for DeliveryFailureLogError {
@@ -1310,6 +1326,21 @@ mod tests {
                 TransportFailureReason::NoRoute,
             )),
         ))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_oversized_frame_transport_policy_fails_actor() {
+        let target = Addr::Proc(test_proc_id("target"));
+        assert_delivery_policy_actor_fails(DeliveryFailure::new(UndeliverableReason::Transport(
+            TransportFailure::new(
+                target,
+                TransportFailureReason::OversizedFrame {
+                    len: 55001392,
+                    max: 50000000,
+                },
+            ),
+        )))
         .await;
     }
 
