@@ -42,6 +42,48 @@ fn gen_rect(dims: RangeInclusive<usize>, max_size: usize) -> impl Strategy<Value
         .prop_map(|extent| RankRect::new(extent).expect("generated extent is valid"))
 }
 
+fn gen_scaled_rect(
+    dims: RangeInclusive<usize>,
+    max_size: usize,
+    max_offset: usize,
+    max_stride_scale: usize,
+) -> impl Strategy<Value = RankRect> {
+    (
+        gen_extent(dims, max_size),
+        0..=max_offset,
+        1..=max_stride_scale,
+    )
+        .prop_map(|(extent, offset, stride_scale)| {
+            let strides = row_major_strides(extent.sizes())
+                .into_iter()
+                .map(|stride| stride * stride_scale)
+                .collect();
+            RankRect::affine(extent, Rank(offset), strides).expect("generated strides are valid")
+        })
+}
+
+fn gen_embeddable_rect_pair() -> impl Strategy<Value = (RankRect, RankRect)> {
+    gen_scaled_rect(0..=4, 4, 32, 4).prop_flat_map(|parent| {
+        let cardinality = parent.cardinality();
+        (0..cardinality).prop_flat_map(move |start| {
+            let parent = parent.clone();
+            (start + 1..=cardinality).prop_flat_map(move |end| {
+                let parent = parent.clone();
+                (1..=4usize).prop_map(move |step| {
+                    let local_len = (end - start).div_ceil(step);
+                    let local = RankRect::affine(
+                        Extent::new(vec![Dim::new("i", local_len)]).unwrap(),
+                        Rank(start),
+                        vec![step],
+                    )
+                    .unwrap();
+                    (parent.clone(), local)
+                })
+            })
+        })
+    })
+}
+
 fn gen_sparse_space(
     dims: RangeInclusive<usize>,
     max_size: usize,
@@ -102,6 +144,19 @@ fn coord_at(index: usize, sizes: impl IntoIterator<Item = usize>) -> Option<Vec<
         rest /= size;
     }
     Some(coord)
+}
+
+fn rank_set(rect: &RankRect) -> BTreeSet<Rank> {
+    rect.iter_ranks().collect()
+}
+
+fn row_major_strides(sizes: impl IntoIterator<Item = usize>) -> Vec<usize> {
+    let sizes = sizes.into_iter().collect::<Vec<_>>();
+    let mut strides = vec![1; sizes.len()];
+    for index in (0..sizes.len().saturating_sub(1)).rev() {
+        strides[index] = strides[index + 1] * sizes[index + 1];
+    }
+    strides
 }
 
 proptest! {
@@ -222,6 +277,76 @@ proptest! {
                 }
             }
         }
+    }
+
+    #[test]
+    fn rank_rect_intersects_matches_materialized_sets(
+        left in gen_scaled_rect(0..=4, 4, 32, 4),
+        right in gen_scaled_rect(0..=4, 4, 32, 4),
+    ) {
+        let left_ranks = rank_set(&left);
+        let right_ranks = rank_set(&right);
+        let expected = left_ranks.iter().any(|rank| right_ranks.contains(rank));
+
+        prop_assert_eq!(left.intersects(&right), expected);
+        prop_assert_eq!(left.intersects(&right), right.intersects(&left));
+    }
+
+    #[test]
+    fn rank_rect_contains_rect_matches_materialized_sets(
+        outer in gen_scaled_rect(0..=4, 4, 32, 4),
+        inner in gen_scaled_rect(0..=4, 4, 32, 4),
+    ) {
+        let outer_ranks = rank_set(&outer);
+        let inner_ranks = rank_set(&inner);
+
+        prop_assert_eq!(outer.contains_rect(&inner), inner_ranks.is_subset(&outer_ranks));
+    }
+
+    #[test]
+    fn rank_rect_bounds_match_materialized_min_and_max(
+        rect in gen_scaled_rect(0..=4, 4, 32, 4),
+    ) {
+        let ranks = rank_set(&rect);
+        let min = *ranks.iter().next().expect("generated rectangles are non-empty");
+        let max = *ranks.iter().next_back().expect("generated rectangles are non-empty");
+        let bounds = rect.rank_bounds().expect("generated rectangles are non-empty");
+
+        prop_assert_eq!(bounds.start(), min);
+        prop_assert_eq!(bounds.end(), max.get().checked_add(1).map(Rank));
+        for rank in ranks {
+            prop_assert!(bounds.start() <= rank);
+            prop_assert!(bounds.end().is_none_or(|end| rank < end));
+        }
+    }
+
+    #[test]
+    fn rank_rect_embed_matches_materialized_parent_image(
+        (parent, local) in gen_embeddable_rect_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local rect is embeddable");
+        let expected = local
+            .iter_ranks()
+            .map(|rank| parent.rank_at(rank.get()).expect("local rank is in parent"))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(rank_set(&embedded), expected);
+        prop_assert!(parent.contains_rect(&embedded));
+    }
+
+    #[test]
+    fn rank_rect_project_matches_materialized_parent_indices(
+        (parent, local) in gen_embeddable_rect_pair(),
+    ) {
+        let embedded = parent.embed(&local).expect("generated local rect is embeddable");
+        let projected = parent.project(&embedded).expect("embedded rect is projectable");
+        let expected = embedded
+            .iter_ranks()
+            .map(|rank| Rank(parent.local_index_of(rank).expect("embedded rank is in parent")))
+            .collect::<BTreeSet<_>>();
+
+        prop_assert_eq!(rank_set(&projected), expected);
+        prop_assert_eq!(parent.embed(&projected), Ok(embedded));
     }
 
     #[test]
