@@ -197,3 +197,42 @@ impl context::Actor for &Client {
         &self.instance
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Proc;
+
+    #[test]
+    fn client_ids_are_fresh_instances() {
+        let proc = Proc::isolated();
+
+        let first = proc.client("caller");
+        let second = proc.client("caller");
+        let anonymous = proc.client("");
+
+        assert!(first.self_addr().id().uid().is_instance());
+        assert!(second.self_addr().id().uid().is_instance());
+        assert!(anonymous.self_addr().id().uid().is_instance());
+        assert_eq!(
+            first.self_addr().id().label().map(|label| label.as_str()),
+            Some("caller")
+        );
+        assert_eq!(anonymous.self_addr().id().label(), None);
+        assert_ne!(first.self_addr().id(), second.self_addr().id());
+    }
+
+    #[tokio::test]
+    async fn dropping_client_closes_mailbox_but_preserves_accepted_messages() {
+        let proc = Proc::isolated();
+        let receiver = proc.client("receiver");
+        let sender = proc.client("sender");
+        let (port, mut rx) = receiver.open_port::<u64>();
+
+        port.try_post(&sender, 1).unwrap();
+        drop(receiver);
+
+        assert_eq!(rx.recv().await.unwrap(), 1);
+        assert!(port.try_post(&sender, 2).is_err());
+        assert_eq!(rx.try_recv().unwrap(), None);
+    }
+}
