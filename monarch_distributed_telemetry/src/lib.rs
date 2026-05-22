@@ -27,6 +27,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 pub use entity_dispatcher::EntityDispatcher;
 use hyperactor::Bind;
 use hyperactor::Unbind;
+pub use monarch_telemetry_schema::serialize_batch;
 use pyo3::prelude::*;
 pub use pyspy_table::PySpyDump;
 pub use pyspy_table::PySpyFrame;
@@ -69,14 +70,6 @@ pub(crate) fn serialize_schema(schema: &SchemaRef) -> anyhow::Result<Vec<u8>> {
     let mut buf = Vec::new();
     let mut writer = StreamWriter::try_new(&mut buf, schema)?;
     writer.write(&batch)?;
-    writer.finish()?;
-    Ok(buf)
-}
-
-pub(crate) fn serialize_batch(batch: &RecordBatch) -> anyhow::Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    let mut writer = StreamWriter::try_new(&mut buf, &batch.schema())?;
-    writer.write(batch)?;
     writer.finish()?;
     Ok(buf)
 }
