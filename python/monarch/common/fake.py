@@ -27,6 +27,7 @@ def fake_call(fn, *args, **kwargs):
     First call (ThreadPoolExecutor init) will take the GIL and may block for long time!
     TODO: this will be replaced with something more performant
     """
+    # pyrefly: ignore [unknown-name]
     global _fake_mode_worker, fake_mode
 
     # # Calls FakeTensorMode while re-enabling version counter tracking

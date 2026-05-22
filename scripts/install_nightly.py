@@ -73,7 +73,7 @@ def main() -> None:
         f"torch=={torch_version}",
         "--pre",
         "--extra-index-url",
-        "https://download.pytorch.org/whl/nightly/cu128",
+        "https://download.pytorch.org/whl/nightly/cu132",
     ]
 
     print(f"Executing command:\n\t{' '.join(pip_command)}\n\n")

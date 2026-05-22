@@ -331,7 +331,7 @@ impl StreamMessage {
                 reduction: reduction.clone(),
                 scatter: *scatter,
                 in_place: *in_place,
-                out: out.clone(),
+                out: *out,
             },
             StreamMessage::SendTensor {
                 result,
@@ -1743,7 +1743,7 @@ impl StreamMessageHandler for StreamActor {
                     // to check for existing errors on the input tensors and set the
                     // recording's error if necessary.
                     if error.is_none() {
-                        let inputs_to_check = [Some(local_tensor), out.clone()]
+                        let inputs_to_check = [Some(local_tensor), *out]
                             .iter()
                             .filter_map(|r| *r)
                             .collect::<Vec<_>>();

@@ -33,6 +33,7 @@ class TestFuture:
                     return False
                 time, action = the_messages[0]
                 if timeout is None or time <= the_time + timeout:
+                    # pyrefly: ignore [bad-assignment]
                     the_time = time
                     action()
                     the_messages.pop(0)

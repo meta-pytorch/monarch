@@ -1563,6 +1563,61 @@ mod tests {
     }
 
     #[test]
+    fn rank_rect_affine_rejects_invalid_strides() {
+        let extent =
+            |a: usize, b: usize| Extent::new(vec![Dim::new("a", a), Dim::new("b", b)]).unwrap();
+
+        // `DimMismatch`: strides length doesn't match extent rank.
+        assert_eq!(
+            RankRect::affine(extent(2, 2), Rank(0), vec![2]).unwrap_err(),
+            RankSpaceError::DimMismatch {
+                dims: 2,
+                strides: 1,
+            },
+        );
+
+        // `NonrectangularStrides`: after sorting, a stride doesn't divide its predecessor.
+        assert_eq!(
+            RankRect::affine(extent(2, 2), Rank(0), vec![4, 3]).unwrap_err(),
+            RankSpaceError::NonrectangularStrides,
+        );
+
+        // `OverlappingStrides`: two non-unit dims share a stride.
+        assert_eq!(
+            RankRect::affine(extent(2, 2), Rank(0), vec![2, 2]).unwrap_err(),
+            RankSpaceError::OverlappingStrides,
+        );
+
+        // `StrideTooSmall`: a stride is smaller than the coordinate space below it.
+        assert_eq!(
+            RankRect::affine(extent(4, 4), Rank(0), vec![3, 1]).unwrap_err(),
+            RankSpaceError::StrideTooSmall {
+                stride: 3,
+                space: 4,
+            },
+        );
+    }
+
+    #[test]
+    fn rank_rect_with_empty_extent_is_a_single_point() {
+        // 0-dim `RankRect`: a "scalar" rect whose one rank is the offset.
+        let rect = RankRect::affine(Extent::new(vec![]).unwrap(), Rank(42), vec![]).unwrap();
+
+        assert!(!rect.is_empty());
+        assert_eq!(rect.cardinality(), 1);
+        assert_eq!(rect.iter_ranks().collect::<Vec<_>>(), vec![Rank(42)]);
+        assert_eq!(rect.coord_of(Rank(42)), Some(Coord::new(vec![])));
+        assert_eq!(rect.coord_of(Rank(0)), None);
+        let coord = Coord::new(vec![]);
+        assert_eq!(rect.rank_of(coord.indices()), Some(Rank(42)));
+
+        // `RankRect::new` (default offset 0) takes the same scalar shape.
+        let zero_rect = RankRect::new(Extent::new(vec![]).unwrap()).unwrap();
+        assert_eq!(zero_rect.cardinality(), 1);
+        assert_eq!(zero_rect.iter_ranks().collect::<Vec<_>>(), vec![Rank(0)]);
+    }
+
+    #[test]
     fn select_preserves_base_rank_coordinates() {
         let rect = host_gpu_rect();
         let gpus = rect
@@ -1574,6 +1629,60 @@ mod tests {
         assert_eq!(
             gpus.iter_ranks().collect::<Vec<_>>(),
             vec![Rank(1), Rank(3), Rank(5), Rank(7)]
+        );
+    }
+
+    #[test]
+    fn select_with_start_past_dim_yields_empty() {
+        // `start >= dim_size`: clamped start equals end, len = 0.
+        let rect = host_gpu_rect();
+        let selected = rect
+            .select("gpu", DimRange::with_step(4, None, 1).unwrap())
+            .unwrap();
+
+        assert_eq!(selected.extent().dims()[1].size(), 0);
+        assert!(selected.iter_ranks().next().is_none());
+    }
+
+    #[test]
+    fn select_with_end_before_start_yields_empty() {
+        // `end <= start`: short-circuit to len = 0.
+        let rect = host_gpu_rect();
+        let selected = rect
+            .select("gpu", DimRange::with_step(2, Some(2), 1).unwrap())
+            .unwrap();
+
+        assert_eq!(selected.extent().dims()[1].size(), 0);
+        assert!(selected.iter_ranks().next().is_none());
+    }
+
+    #[test]
+    fn select_with_step_past_range_yields_single() {
+        // step > (end - start), end set explicitly: len = 1, picks up `start`.
+        let rect = host_gpu_rect();
+        let selected = rect
+            .select("gpu", DimRange::with_step(1, Some(2), 8).unwrap())
+            .unwrap();
+
+        assert_eq!(selected.extent().dims()[1].size(), 1);
+        assert_eq!(
+            selected.iter_ranks().collect::<Vec<_>>(),
+            vec![Rank(1), Rank(5)],
+        );
+    }
+
+    #[test]
+    fn select_with_step_past_dim_yields_single() {
+        // step > dim_size, end defaulted from `None`: len = 1, picks up `start = 0`.
+        let rect = host_gpu_rect();
+        let selected = rect
+            .select("gpu", DimRange::with_step(0, None, 8).unwrap())
+            .unwrap();
+
+        assert_eq!(selected.extent().dims()[1].size(), 1);
+        assert_eq!(
+            selected.iter_ranks().collect::<Vec<_>>(),
+            vec![Rank(0), Rank(4)],
         );
     }
 
@@ -1629,6 +1738,23 @@ mod tests {
     }
 
     #[test]
+    fn rank_space_under_full_occlusion_is_empty() {
+        let base = host_gpu_rect();
+        let space = RankSpace::dense(base.clone()).without(RankMask::rect(base.clone()));
+
+        assert!(space.is_empty());
+        assert_eq!(space.cardinality(), 0);
+        assert!(space.iter_ranks().next().is_none());
+        assert_eq!(space.rank_at(0), None);
+
+        // Every base rank is occluded.
+        for rank in base.iter_ranks() {
+            assert!(!space.contains_rank(rank));
+            assert_eq!(space.local_index_of(rank), None);
+        }
+    }
+
+    #[test]
     fn mask_can_be_an_affine_rect() {
         let rect = host_gpu_rect();
         let host1 = rect.fix("host", 1).unwrap();
@@ -1638,6 +1764,61 @@ mod tests {
             space.iter_ranks().collect::<Vec<_>>(),
             vec![Rank(0), Rank(1), Rank(2), Rank(3)]
         );
+    }
+
+    #[test]
+    fn mask_union_all_empty_yields_empty() {
+        let mask = RankMask::union([RankMask::empty(), RankMask::empty(), RankMask::empty()]);
+        assert_eq!(mask, RankMask::Empty);
+    }
+
+    #[test]
+    fn mask_union_single_non_empty_unwraps() {
+        let ranks = RankMask::ranks([Rank(5)]);
+        let mask = RankMask::union([RankMask::empty(), ranks.clone(), RankMask::empty()]);
+        assert_eq!(mask, ranks);
+    }
+
+    #[test]
+    fn mask_union_mixed_variants_yields_union() {
+        let rect = RankMask::rect(host_gpu_rect()); // covers ranks 0..=7
+        let ranks = RankMask::ranks([Rank(42)]);
+        let mask = RankMask::union([rect, RankMask::empty(), ranks]);
+
+        match &mask {
+            RankMask::Union(children) => {
+                assert_eq!(children.len(), 2);
+                assert!(matches!(children[0], RankMask::Rect(_)));
+                assert!(matches!(children[1], RankMask::Ranks(_)));
+            }
+            other => panic!("expected Union, got {other:?}"),
+        }
+
+        assert!(mask.contains(Rank(0))); // in the rect
+        assert!(mask.contains(Rank(42))); // in the explicit ranks
+        assert!(!mask.contains(Rank(100))); // in neither
+    }
+
+    #[test]
+    fn mask_union_preserves_nested_unions() {
+        // Pins current behavior: `union` does not flatten nested `Union`s.
+        // `contains` still resolves through both layers.
+        let inner_a = RankMask::union([RankMask::ranks([Rank(1)]), RankMask::ranks([Rank(2)])]);
+        let inner_b = RankMask::union([RankMask::ranks([Rank(3)]), RankMask::ranks([Rank(4)])]);
+        let outer = RankMask::union([inner_a, inner_b]);
+
+        match &outer {
+            RankMask::Union(children) => {
+                assert_eq!(children.len(), 2);
+                assert!(matches!(children[0], RankMask::Union(_)));
+                assert!(matches!(children[1], RankMask::Union(_)));
+            }
+            other => panic!("expected Union, got {other:?}"),
+        }
+
+        assert!(outer.contains(Rank(1)));
+        assert!(outer.contains(Rank(4)));
+        assert!(!outer.contains(Rank(99)));
     }
 
     #[test]
