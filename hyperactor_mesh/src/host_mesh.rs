@@ -1426,7 +1426,7 @@ impl HostMeshRef {
             let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.id());
             let controller_handle =
                 controller
-                    .spawn_with_name(cx, &controller_name)
+                    .spawn_with_label(cx, &controller_name)
                     .map_err(|e| {
                         crate::Error::ControllerActorSpawnError(mesh.id().resource_id().clone(), e)
                     })?;

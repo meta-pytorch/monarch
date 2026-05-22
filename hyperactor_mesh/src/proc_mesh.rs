@@ -841,7 +841,7 @@ impl ProcMeshRef {
                 mesh.id()
             );
             let controller = controller
-                .spawn_with_name(cx, &controller_name)
+                .spawn_with_label(cx, &controller_name)
                 .map_err(|e| {
                     Error::ControllerActorSpawnError(mesh.id().resource_id().clone(), e)
                 })?;

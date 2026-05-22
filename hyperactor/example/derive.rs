@@ -130,7 +130,7 @@ hyperactor::behavior!(ShoppingApi, ShoppingList, ClearList, GetItemCount,);
 async fn main() -> Result<(), anyhow::Error> {
     // Spawn our actor on the current proc.
     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =
-        hyperactor::spawn("shopping", ShoppingListActor::default())?;
+        hyperactor::spawn_with_label("shopping", ShoppingListActor::default())?;
     let shopping_api: reference::ActorRef<ShoppingApi> = shopping_list_actor.bind();
     let client = hyperactor::client("client");
 

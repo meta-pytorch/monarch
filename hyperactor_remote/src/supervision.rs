@@ -726,7 +726,7 @@ mod tests {
         let (stopped, stopped_rx) = inst.open_port::<String>();
         let (events, events_rx) = inst.open_port::<ActorSupervisionEvent>();
         let worker = proc
-            .spawn(
+            .spawn_with_label(
                 "worker",
                 Worker::new(test_child(ready, stopped, child_action)),
             )
@@ -736,7 +736,7 @@ mod tests {
         // spawns the Supervisor whose own init sends `Link` to the
         // worker.
         let parent = proc
-            .spawn(
+            .spawn_with_label(
                 "parent",
                 Parent {
                     supervisor: Some(Supervisor::new_uid(
@@ -919,7 +919,7 @@ mod tests {
         let (supervisor, mut supervisor_rx) = client.open_port::<WorkerSupervisor>();
         let supervisor_ref = supervisor.bind();
         let worker = proc
-            .spawn("worker", Worker::new(test_child(ready, stopped, None)))
+            .spawn_with_label("worker", Worker::new(test_child(ready, stopped, None)))
             .unwrap();
         let (link_handle, link) =
             KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
@@ -1001,10 +1001,10 @@ mod tests {
         let (events, mut event_rx) = client.open_port::<ActorSupervisionEvent>();
         let (parent_addr, mut parent_addr_rx) = client.open_port::<ActorAddr>();
         let worker = proc
-            .spawn("worker", Worker::new(test_child(ready, stopped, None)))
+            .spawn_with_label("worker", Worker::new(test_child(ready, stopped, None)))
             .unwrap();
         let grandparent = proc
-            .spawn(
+            .spawn_with_label(
                 "grandparent",
                 Grandparent {
                     parent: Some(Parent {
@@ -1077,7 +1077,7 @@ mod tests {
         let (supervisor, mut supervisor_rx) = inst.open_port::<WorkerSupervisor>();
         let supervisor_ref = supervisor.bind();
         let worker = proc
-            .spawn("worker", Worker::new(test_child(ready, stopped, None)))
+            .spawn_with_label("worker", Worker::new(test_child(ready, stopped, None)))
             .unwrap();
         let (keep_alive, link_spec) =
             KeepaliveLink::new(Duration::from_secs(60), Duration::from_secs(60))
@@ -1375,7 +1375,7 @@ mod tests {
         let session_id2 = Uid::anonymous();
         let (events2, mut events_rx2) = inst.open_port::<ActorSupervisionEvent>();
         let parent2 = proc
-            .spawn(
+            .spawn_with_label(
                 "parent2",
                 Parent {
                     supervisor: Some(Supervisor::new_uid(
@@ -1465,7 +1465,7 @@ mod tests {
         let (events, _events_rx) = inst.open_port::<ActorSupervisionEvent>();
         let release_link = Arc::new(Notify::new());
         let worker = proc
-            .spawn(
+            .spawn_with_label(
                 "worker",
                 TestSlowWorker {
                     link_started,
@@ -1477,7 +1477,7 @@ mod tests {
             .unwrap();
         let session_id = Uid::anonymous();
         let parent = proc
-            .spawn(
+            .spawn_with_label(
                 "parent",
                 Parent {
                     supervisor: Some(Supervisor::new_uid(
@@ -1548,7 +1548,7 @@ mod tests {
         let (drained, mut drained_rx) = inst.open_port::<String>();
         let (events, _events_rx) = inst.open_port::<ActorSupervisionEvent>();
         let worker = proc
-            .spawn(
+            .spawn_with_label(
                 "worker",
                 Worker::new(
                     test_child(
@@ -1566,7 +1566,7 @@ mod tests {
         let _child_addr = ready_rx.recv().await.unwrap();
         let session_id = Uid::anonymous();
         let parent = proc
-            .spawn(
+            .spawn_with_label(
                 "parent",
                 Parent {
                     supervisor: Some(Supervisor::new_uid(
@@ -1681,7 +1681,7 @@ mod tests {
         let session_id2 = Uid::anonymous();
         let (events2, mut events_rx2) = inst.open_port::<ActorSupervisionEvent>();
         let parent2 = proc
-            .spawn(
+            .spawn_with_label(
                 "parent2",
                 Parent {
                     supervisor: Some(Supervisor::new_uid(

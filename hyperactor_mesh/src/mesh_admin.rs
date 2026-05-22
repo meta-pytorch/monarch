@@ -905,7 +905,7 @@ impl axum::serve::Listener for TlsListener {
 impl Actor for MeshAdminAgent {
     /// Initializes the mesh admin agent and its HTTP server.
     ///
-    /// 1. Binds well-known handler ports (`proc.spawn()` does not
+    /// 1. Binds well-known handler ports (`proc.spawn_with_label()` does not
     ///    call `bind()` — unlike `gspawn` — so the actor must do it
     ///    itself before becoming reachable).
     /// 2. Binds a TCP listener (ephemeral or fixed port).
@@ -3292,7 +3292,7 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn(
+            .spawn_with_label(
                 crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
                 HostAgent::new(HostAgentMode::Local(host)),
             )
@@ -3310,7 +3310,7 @@ mod tests {
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
-            .spawn(
+            .spawn_with_label(
                 MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
@@ -3462,7 +3462,7 @@ mod tests {
         let local_proc_id: ProcAddr = host.local_proc().proc_addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn(
+            .spawn_with_label(
                 crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
                 HostAgent::new(HostAgentMode::Local(host)),
             )
@@ -3477,7 +3477,7 @@ mod tests {
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
-            .spawn(
+            .spawn_with_label(
                 MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
@@ -3614,12 +3614,14 @@ mod tests {
         // moving the host into HostAgentMode).
         let local_proc = host.local_proc();
         let local_proc_id = local_proc.proc_addr().clone();
-        let root_client_handle = local_proc.spawn("client", TestIntrospectableActor).unwrap();
+        let root_client_handle = local_proc
+            .spawn_with_label("client", TestIntrospectableActor)
+            .unwrap();
         let root_client_ref: ActorRef<TestIntrospectableActor> = root_client_handle.bind();
         let root_client_actor_id = root_client_ref.actor_addr().clone();
 
         let host_agent_handle = system_proc
-            .spawn(
+            .spawn_with_label(
                 crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
                 HostAgent::new(HostAgentMode::Local(host)),
             )
@@ -3636,7 +3638,7 @@ mod tests {
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
-            .spawn(
+            .spawn_with_label(
                 MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
@@ -3776,7 +3778,7 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn(
+            .spawn_with_label(
                 crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
                 HostAgent::new(HostAgentMode::Local(host)),
             )
@@ -3791,7 +3793,7 @@ mod tests {
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
-            .spawn(
+            .spawn_with_label(
                 MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(
                     vec![(host_addr_str, host_agent_ref)],
@@ -3880,7 +3882,7 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let system_proc_id = system_proc.proc_addr().clone();
         let host_agent_handle = system_proc
-            .spawn(
+            .spawn_with_label(
                 crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
                 HostAgent::new(HostAgentMode::Local(host)),
             )
@@ -3896,7 +3898,7 @@ mod tests {
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
-            .spawn(
+            .spawn_with_label(
                 MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
@@ -4202,7 +4204,7 @@ mod tests {
                 .unwrap();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn(
+            .spawn_with_label(
                 HOST_MESH_AGENT_ACTOR_NAME,
                 HostAgent::new(HostAgentMode::Local(host)),
             )
@@ -4228,7 +4230,7 @@ mod tests {
         let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
-            .spawn(
+            .spawn_with_label(
                 MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(
                     vec![(user_proc_addr, host_agent_ref.clone())],
@@ -4269,7 +4271,7 @@ mod tests {
         // Spawn an actor directly on the user proc, bypassing gspawn.
         // This simulates how sieve[0] spawns sieve[1], sieve[2], etc.
         user_proc
-            .spawn("extra_actor", TestIntrospectableActor)
+            .spawn_with_label("extra_actor", TestIntrospectableActor)
             .unwrap();
 
         // Resolve again — the new actor must appear immediately

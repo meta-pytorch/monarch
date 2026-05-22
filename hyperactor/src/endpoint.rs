@@ -152,7 +152,7 @@ mod tests {
         let client = proc.client("client");
         let (tx, mut rx) = client.open_port();
         let handle = proc
-            .spawn("echo", EchoActor { tx: tx.bind() })
+            .spawn_with_label("echo", EchoActor { tx: tx.bind() })
             .expect("spawn should succeed");
 
         Endpoint::post(&handle, &client, 123u64);

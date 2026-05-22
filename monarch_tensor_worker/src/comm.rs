@@ -599,8 +599,8 @@ mod tests {
         let (actor0, actor1) = tokio::join!(actor0, actor1);
         let (actor0, actor1) = (actor0.unwrap(), actor1.unwrap());
 
-        let handle0 = proc.spawn("comm0", actor0).unwrap();
-        let handle1 = proc.spawn("comm1", actor1).unwrap();
+        let handle0 = proc.spawn_with_label("comm0", actor0).unwrap();
+        let handle1 = proc.spawn_with_label("comm1", actor1).unwrap();
 
         let cell0 = TensorCell::new(factory_float_tensor(&[1.0], device0.into()));
         let dest_rank = 0;
@@ -655,7 +655,7 @@ mod tests {
 
         let world_size = 4;
         let workers = try_join_all((0..world_size).map(async |rank| {
-            proc.spawn(
+            proc.spawn_with_label(
                 &format!("worker{}", rank),
                 WorkerActor::new(
                     WorkerParams {

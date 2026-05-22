@@ -2223,7 +2223,7 @@ mod tests {
         // Spawn a collector on the remote proc.
         let (undlv_tx, mut undlv_rx) = mpsc::unbounded_channel();
         let handle = remote_proc
-            .spawn("collector", UndeliverableCollector { tx: undlv_tx })
+            .spawn_with_label("collector", UndeliverableCollector { tx: undlv_tx })
             .unwrap();
         let collector_ref = handle.bind::<UndeliverableCollector>();
 
@@ -2277,7 +2277,7 @@ mod tests {
         let (undlv_tx, mut undlv_rx) = mpsc::unbounded_channel();
         let handle = host
             .system_proc()
-            .spawn("collector", UndeliverableCollector { tx: undlv_tx })
+            .spawn_with_label("collector", UndeliverableCollector { tx: undlv_tx })
             .unwrap();
         let collector_ref = handle.bind::<UndeliverableCollector>();
 
