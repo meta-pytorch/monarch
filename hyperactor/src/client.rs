@@ -48,12 +48,22 @@ impl Binds<ClientActor> for () {
 
 /// A scoped caller context.
 ///
-/// Dropping a client closes its mailbox. Messages already accepted into
-/// port receivers remain available; later deliveries to the client's ports
-/// fail as ordinary closed-mailbox deliveries.
+/// Dropping the last clone of a client closes its mailbox. Messages already
+/// accepted into port receivers remain available; later deliveries to the
+/// client's ports fail as ordinary closed-mailbox deliveries.
 pub struct Client {
     instance: Instance<ClientActor>,
-    lifecycle: Arc<()>,
+    lifecycle: Arc<ClientLifecycle>,
+}
+
+struct ClientLifecycle {
+    instance: Instance<ClientActor>,
+}
+
+impl Drop for ClientLifecycle {
+    fn drop(&mut self) {
+        self.instance.close_client("client dropped");
+    }
 }
 
 impl fmt::Debug for Client {
@@ -67,8 +77,10 @@ impl fmt::Debug for Client {
 impl Client {
     pub(crate) fn new(instance: Instance<ClientActor>) -> Self {
         Self {
+            lifecycle: Arc::new(ClientLifecycle {
+                instance: instance.clone_for_py(),
+            }),
             instance,
-            lifecycle: Arc::new(()),
         }
     }
 
@@ -158,14 +170,6 @@ impl Client {
     }
 }
 
-impl Drop for Client {
-    fn drop(&mut self) {
-        if Arc::strong_count(&self.lifecycle) == 1 {
-            self.instance.close_client("client dropped");
-        }
-    }
-}
-
 impl Clone for Client {
     fn clone(&self) -> Self {
         Self {
@@ -233,11 +237,11 @@ mod tests {
         let sender = proc.client("sender");
         let (port, mut rx) = receiver.open_port::<u64>();
 
-        port.try_send(&sender, 1).unwrap();
+        port.try_post(&sender, 1).unwrap();
         drop(receiver);
 
         assert_eq!(rx.recv().await.unwrap(), 1);
-        assert!(port.try_send(&sender, 2).is_err());
+        assert!(port.try_post(&sender, 2).is_err());
         assert_eq!(rx.try_recv().unwrap(), None);
     }
 }
