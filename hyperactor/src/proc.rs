@@ -5918,7 +5918,7 @@ mod tests {
         trace_and_block(async {
             let proc = Proc::isolated();
             let client = proc.client("client");
-            let handle = LoggingActor.spawn_detached().unwrap();
+            let handle = hyperactor::spawn(LoggingActor).into_guard();
             handle.post(&client, "hello world".to_string());
             handle.post(&client, "hello world again".to_string());
             handle.post(&client, 123u64);
