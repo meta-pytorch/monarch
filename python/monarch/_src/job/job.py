@@ -20,7 +20,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Self, Sequence
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import PyMeshAdminRef
 from monarch._src.actor.bootstrap import attach_to_workers
@@ -41,6 +41,7 @@ from monarch.actor import (
 )
 from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.distributed_telemetry.engine import QueryEngine
+from typing_extensions import Self
 
 
 @contextlib.contextmanager
