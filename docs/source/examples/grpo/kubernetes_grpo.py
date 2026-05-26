@@ -120,6 +120,22 @@ for SOTA GSM8K accuracy -- the point is to show how to wire a Monarch
 actor mesh for distributed RL on Kubernetes (two heterogeneous meshes,
 replay-buffer actor, scorer actor, RDMA weight sync, async rollout /
 train).
+
+Running the example on GKE
+-------------------
+
+Follow the instructions in `Allocate network resources by using GKE managed DRANET <https://docs.cloud.google.com/kubernetes-engine/docs/how-to/allocate-network-resources-dra>`_ to create a GKE cluster with RDMA enabled.
+**NOTE:** The gpus_per_generator must match the generator resource claim template device count in ``resource_claim_templates.yaml``.
+::
+
+    kubectl apply -f manifests/grpo_provision.yaml
+    kubectl apply -f manifests/gke/resource_claim_templates.yaml
+    kubectl wait --for=condition=Ready pod/grpo-controller -n monarch-tests
+    kubectl cp kubernetes_grpo.py monarch-tests/grpo-controller:/tmp/kubernetes_grpo.py
+    kubectl exec -it grpo-controller -n monarch-tests -- python /tmp/kubernetes_grpo.py --gpus_per_generator 3 --learner_resource_claim_template "learner-rdma" --generator_resource_claim_template "generator-rdma"
+    kubectl delete -f manifests/gke/resource_claim_templates.yaml
+    kubectl delete -f manifests/grpo_provision.yaml
+
 """
 
 # %%
@@ -142,9 +158,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from kubernetes.client import (
+    CoreV1ResourceClaim,
     V1Container,
     V1EmptyDirVolumeSource,
     V1EnvVar,
+    V1PodResourceClaim,
     V1PodSpec,
     V1PodTemplateSpec,
     V1Probe,
@@ -870,7 +888,9 @@ PIP_INSTALL = textwrap.dedent("""\
 """)
 
 
-def build_pod_template(gpus: int) -> V1PodTemplateSpec:
+def build_pod_template(
+    gpus: int, resource_claim_template: Optional[str] = None
+) -> V1PodTemplateSpec:
     """Shared pod template for learner and generator meshes.
 
     Prepends a pip-install prefix to the Monarch worker bootstrap so that
@@ -889,6 +909,7 @@ def build_pod_template(gpus: int) -> V1PodTemplateSpec:
     """
     bootstrap = PIP_INSTALL + _WORKER_BOOTSTRAP_SCRIPT
     resources = None
+    node_selector = None
     env = [
         V1EnvVar(name="MONARCH_PORT", value="26600"),
         # /tmp/hf_cache forces the Hugging Face cache onto
@@ -901,11 +922,22 @@ def build_pod_template(gpus: int) -> V1PodTemplateSpec:
         # hammer the HF Hub.
         V1EnvVar(name="HF_HOME", value="/tmp/hf_cache"),
     ]
+    resource_claims = []
+    claims = []
     if gpus > 0:
+        if resource_claim_template:
+            resource_claims = [
+                V1PodResourceClaim(
+                    name="rdma", resource_claim_template_name=resource_claim_template
+                )
+            ]
+            claims = [CoreV1ResourceClaim(name="rdma")]
+
         gpu_resources = {"nvidia.com/gpu": str(gpus)}
         resources = V1ResourceRequirements(
             limits=gpu_resources,
             requests=gpu_resources,
+            claims=claims if claims else None,
         )
         env.insert(
             1,
@@ -941,6 +973,8 @@ def build_pod_template(gpus: int) -> V1PodTemplateSpec:
                     ],
                 )
             ],
+            node_selector=node_selector,
+            resource_claims=resource_claims if resource_claims else None,
             volumes=[
                 V1Volume(
                     name="dshm",
@@ -992,6 +1026,8 @@ async def main(
     dataset_split: str,
     num_prompts: int,
     eval_size: int,
+    learner_resource_claim_template: Optional[str] = None,
+    generator_resource_claim_template: Optional[str] = None,
 ) -> None:
     """Run GRPO fine-tuning across the learner and generator meshes."""
     prompts = load_gsm8k_prompts(split=dataset_split, num_prompts=num_prompts)
@@ -1005,6 +1041,10 @@ async def main(
     print(f"Namespace: {namespace} | Training steps: {training_steps}")
     print(f"Dataset: openai/gsm8k[{dataset_split}] ({len(prompts)} prompts)")
     print(f"Eval: openai/gsm8k[test] ({len(eval_prompts)} prompts)")
+    if learner_resource_claim_template:
+        print(f"Learner Resource Claim Template: {learner_resource_claim_template}")
+    if generator_resource_claim_template:
+        print(f"Generator Resource Claim Template: {generator_resource_claim_template}")
     print("=" * 60)
 
     # 600s timeout lets the meshes finish cold-start pip install + model
@@ -1019,12 +1059,17 @@ async def main(
     k8s_job.add_mesh(
         "learner",
         num_replicas=1,
-        pod_template=build_pod_template(gpus=2),
+        pod_template=build_pod_template(
+            gpus=2, resource_claim_template=learner_resource_claim_template
+        ),
     )
     k8s_job.add_mesh(
         "generator",
         num_replicas=num_generator_hosts,
-        pod_template=build_pod_template(gpus=gpus_per_generator),
+        pod_template=build_pod_template(
+            gpus=gpus_per_generator,
+            resource_claim_template=generator_resource_claim_template,
+        ),
     )
 
     learner_mesh = None
@@ -1177,6 +1222,18 @@ if __name__ == "__main__":
         default=512,
         help="Number of held-out GSM8K test prompts used for eval.",
     )
+    parser.add_argument(
+        "--learner_resource_claim_template",
+        type=str,
+        default=None,
+        help="Name of the ResourceClaimTemplate for Learner RDMA (e.g. 'two-rdma')",
+    )
+    parser.add_argument(
+        "--generator_resource_claim_template",
+        type=str,
+        default=None,
+        help="Name of the ResourceClaimTemplate for Generator RDMA (e.g. 'two-rdma')",
+    )
     args = parser.parse_args()
     asyncio.run(
         main(
@@ -1188,5 +1245,7 @@ if __name__ == "__main__":
             dataset_split=args.dataset_split,
             num_prompts=args.num_prompts,
             eval_size=args.eval_size,
+            learner_resource_claim_template=args.learner_resource_claim_template,
+            generator_resource_claim_template=args.generator_resource_claim_template,
         )
     )

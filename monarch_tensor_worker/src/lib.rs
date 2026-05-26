@@ -321,14 +321,15 @@ impl WorkerMessageHandler for WorkerActor {
         let Some(device) = self.device else {
             return Ok(());
         };
-        let comm = NcclCommActor::new(CommParams::New {
-            device,
-            unique_id,
-            world_size: self.world_size.try_into().unwrap(),
-            rank: self.rank.try_into().unwrap(),
-        })
-        .await?
-        .spawn(cx)?;
+        let comm = cx.spawn(
+            NcclCommActor::new(CommParams::New {
+                device,
+                unique_id,
+                world_size: self.world_size.try_into().unwrap(),
+                rank: self.rank.try_into().unwrap(),
+            })
+            .await?,
+        );
 
         let tensor = factory_zeros(&[1], ScalarType::Float, Layout::Strided, device.into());
         let cell = TensorCell::new(tensor);
@@ -456,7 +457,7 @@ impl WorkerMessageHandler for WorkerActor {
         result: StreamRef,
         creation_mode: StreamCreationMode,
     ) -> Result<()> {
-        let handle: ActorHandle<StreamActor> = StreamActor::new(StreamParams {
+        let handle: ActorHandle<StreamActor> = cx.spawn(StreamActor::new(StreamParams {
             world_size: self.world_size,
             rank: self.rank,
             creation_mode,
@@ -464,8 +465,7 @@ impl WorkerMessageHandler for WorkerActor {
             device: self.device,
             controller_actor: self.controller_actor.clone(),
             respond_with_python_message: self.respond_with_python_message,
-        })
-        .spawn(cx)?;
+        }));
         self.streams.insert(result, Arc::new(handle));
         Ok(())
     }
@@ -1132,22 +1132,19 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc
-            .spawn(
-                "worker",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 1,
-                        rank: 0,
-                        device_index: None,
-                        controller_actor: controller_ref,
-                    },
-                    Flattrs::default(),
-                )
-                .await
-                .unwrap(),
+        let worker_handle = proc.spawn(
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 1,
+                    rank: 0,
+                    device_index: None,
+                    controller_actor: controller_ref,
+                },
+                Flattrs::default(),
             )
-            .unwrap();
+            .await
+            .unwrap(),
+        );
         worker_handle
             .command_group(
                 &client,
@@ -1241,22 +1238,19 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc
-            .spawn(
-                "worker",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 1,
-                        rank: 0,
-                        device_index: None,
-                        controller_actor: controller_ref,
-                    },
-                    Flattrs::default(),
-                )
-                .await
-                .unwrap(),
+        let worker_handle = proc.spawn(
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 1,
+                    rank: 0,
+                    device_index: None,
+                    controller_actor: controller_ref,
+                },
+                Flattrs::default(),
             )
-            .unwrap();
+            .await
+            .unwrap(),
+        );
         worker_handle
             .command_group(
                 &client,
@@ -1304,22 +1298,19 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc
-            .spawn(
-                "worker",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 1,
-                        rank: 0,
-                        device_index: None,
-                        controller_actor: controller_ref,
-                    },
-                    Flattrs::default(),
-                )
-                .await
-                .unwrap(),
+        let worker_handle = proc.spawn(
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 1,
+                    rank: 0,
+                    device_index: None,
+                    controller_actor: controller_ref,
+                },
+                Flattrs::default(),
             )
-            .unwrap();
+            .await
+            .unwrap(),
+        );
         worker_handle
             .command_group(
                 &client,
@@ -1378,22 +1369,19 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc
-            .spawn(
-                "worker",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 1,
-                        rank: 0,
-                        device_index: None,
-                        controller_actor: controller_ref,
-                    },
-                    Flattrs::default(),
-                )
-                .await
-                .unwrap(),
+        let worker_handle = proc.spawn(
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 1,
+                    rank: 0,
+                    device_index: None,
+                    controller_actor: controller_ref,
+                },
+                Flattrs::default(),
             )
-            .unwrap();
+            .await
+            .unwrap(),
+        );
         worker_handle
             .command_group(
                 &client,
@@ -1457,22 +1445,19 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc
-            .spawn(
-                "worker",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 1,
-                        rank: 0,
-                        device_index: None,
-                        controller_actor: controller_ref,
-                    },
-                    Flattrs::default(),
-                )
-                .await
-                .unwrap(),
+        let worker_handle = proc.spawn(
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 1,
+                    rank: 0,
+                    device_index: None,
+                    controller_actor: controller_ref,
+                },
+                Flattrs::default(),
             )
-            .unwrap();
+            .await
+            .unwrap(),
+        );
         let (split_arg, sort_list, dim, layout, none, scalar, device, memory_format) =
             Python::attach(|py| {
                 let split_arg: PickledPyObject = PyString::new(py, "/fbs/fbc/foo/bar")
@@ -1759,22 +1744,19 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc
-            .spawn(
-                "worker",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 1,
-                        rank: 0,
-                        device_index: None,
-                        controller_actor: controller_ref,
-                    },
-                    Flattrs::default(),
-                )
-                .await
-                .unwrap(),
+        let worker_handle = proc.spawn(
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 1,
+                    rank: 0,
+                    device_index: None,
+                    controller_actor: controller_ref,
+                },
+                Flattrs::default(),
             )
-            .unwrap();
+            .await
+            .unwrap(),
+        );
         worker_handle
             .command_group(
                 &client,
@@ -1837,22 +1819,19 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, mut controller_rx) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle = proc
-            .spawn(
-                "worker",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 1,
-                        rank: 0,
-                        device_index: None,
-                        controller_actor: controller_ref,
-                    },
-                    Flattrs::default(),
-                )
-                .await
-                .unwrap(),
+        let worker_handle = proc.spawn(
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 1,
+                    rank: 0,
+                    device_index: None,
+                    controller_actor: controller_ref,
+                },
+                Flattrs::default(),
             )
-            .unwrap();
+            .await
+            .unwrap(),
+        );
         worker_handle
             .command_group(
                 &client,
@@ -1926,38 +1905,34 @@ mod tests {
         let proc = Proc::isolated();
         let (client, controller_ref, _) = proc.attach_actor("controller").unwrap();
 
-        let worker_handle1 = proc
-            .spawn(
-                "worker0",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 2,
-                        rank: 0,
-                        device_index: Some(0),
-                        controller_actor: controller_ref.clone(),
-                    },
-                    Flattrs::default(),
-                )
-                .await
-                .unwrap(),
+        let worker_handle1 = proc.spawn_with_label(
+            "worker0",
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 2,
+                    rank: 0,
+                    device_index: Some(0),
+                    controller_actor: controller_ref.clone(),
+                },
+                Flattrs::default(),
             )
-            .unwrap();
-        let worker_handle2 = proc
-            .spawn(
-                "worker1",
-                WorkerActor::new(
-                    WorkerParams {
-                        world_size: 2,
-                        rank: 1,
-                        device_index: Some(1),
-                        controller_actor: controller_ref,
-                    },
-                    Flattrs::default(),
-                )
-                .await
-                .unwrap(),
+            .await
+            .unwrap(),
+        );
+        let worker_handle2 = proc.spawn_with_label(
+            "worker1",
+            WorkerActor::new(
+                WorkerParams {
+                    world_size: 2,
+                    rank: 1,
+                    device_index: Some(1),
+                    controller_actor: controller_ref,
+                },
+                Flattrs::default(),
             )
-            .unwrap();
+            .await
+            .unwrap(),
+        );
 
         let unique_id = UniqueId::new_nccl().unwrap();
         worker_handle1

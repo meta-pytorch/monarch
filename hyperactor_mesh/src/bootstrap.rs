@@ -40,6 +40,7 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
+use hyperactor::Label;
 use hyperactor::ProcAddr;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -48,6 +49,7 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::context;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
@@ -78,6 +80,7 @@ use crate::host::SingleTerminate;
 use crate::host::TerminateError;
 use crate::host::TerminateSummary;
 use crate::host::WaitError;
+use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::logging::OutputTarget;
@@ -282,8 +285,8 @@ pub async fn host(
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<MailboxServerHandle>();
 
     let system_proc = host.system_proc().clone();
-    let host_mesh_agent = system_proc.spawn::<HostAgent>(
-        "host_agent",
+    let host_mesh_agent = system_proc.spawn_with_uid(
+        Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
         HostAgent::new(HostAgentMode::Process {
             host,
             shutdown_tx: Some(shutdown_tx),
@@ -2465,7 +2468,7 @@ mod tests {
         proc.clone().serve(proc_rx);
         let proc_ref: ProcAddr = test_proc_id("client_0");
         router.bind(proc_ref, proc_addr.clone());
-        let (client, _handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let (tap_tx, mut tap_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         test_tap::install(tap_tx);
@@ -2479,8 +2482,7 @@ mod tests {
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> =
-            proc.spawn("log_client", log_client_actor).unwrap().bind();
+        let log_client: ActorRef<LogClientActor> = proc.spawn(log_client_actor).bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
@@ -2488,10 +2490,7 @@ mod tests {
         let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
             .await
             .unwrap();
-        let _log_forwarder: ActorRef<LogForwardActor> = proc
-            .spawn("log_forwarder", log_forwarder_actor)
-            .unwrap()
-            .bind();
+        let _log_forwarder: ActorRef<LogForwardActor> = proc.spawn(log_forwarder_actor).bind();
 
         // Dial the channel but don't post until we know the forwarder
         // is receiving.
@@ -2982,7 +2981,7 @@ mod tests {
     ///   so its messages route via the host.
     #[cfg(fbcode_build)]
     async fn make_proc_id_and_backend_addr(
-        instance: &hyperactor::Instance<()>,
+        instance: &hyperactor::Client,
         _tag: &str,
     ) -> (ProcAddr, ChannelAddr) {
         // Serve a Unix channel as the "backend_addr" and hook it into
@@ -3006,7 +3005,7 @@ mod tests {
         // Create a root direct-addressed proc + client instance.
         let root =
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
-        let (instance, _handle) = root.client("client").unwrap();
+        let instance = root.client("client");
 
         let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
         let (proc_id, backend_addr) = make_proc_id_and_backend_addr(&instance, "t_term").await;
@@ -3073,7 +3072,7 @@ mod tests {
         // Root proc + client instance (so the child can dial back).
         let root =
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "root".to_string()).unwrap();
-        let (instance, _handle) = root.client("client").unwrap();
+        let instance = root.client("client");
 
         let mgr = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
 
@@ -3127,7 +3126,7 @@ mod tests {
         // Create a local instance just to call the local bootstrap actor.
         // We should find a way to avoid this for local handles.
         let temp_proc = Proc::isolated();
-        let (temp_instance, _) = temp_proc.client("temp").unwrap();
+        let temp_instance = temp_proc.client("temp");
 
         let handle = host(
             ChannelAddr::any(ChannelTransport::Unix),
