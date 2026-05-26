@@ -231,6 +231,14 @@ impl Actor for CommActor {
             .post(message_envelope, /*unused */ monitored_return_handle());
         Ok(())
     }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        undelivered: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.handle_undeliverable_message(cx, undelivered).await
+    }
 }
 
 impl CommActor {
@@ -313,14 +321,31 @@ impl CommActor {
         replace_with_self_ranks(&cast_point, message.data_mut())?;
 
         set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
-        cx.post_with_external_seq_info(
-            cx.self_addr()
-                .proc_addr()
-                .actor_addr_uid(message.dest_port().actor_uid().clone())
-                .port_addr(hyperactor::port::Port::from(message.dest_port().port())),
-            headers,
-            wirevalue::Any::serialize(message.data())?,
-        );
+
+        // Bind dest ONCE so we can pass to both the stamp helper and the
+        // post call.
+        let dest = cx
+            .self_addr()
+            .proc_addr()
+            .actor_addr_uid(message.dest_port().actor_uid().clone())
+            .port_addr(hyperactor::port::Port::from(message.dest_port().port()));
+
+        // Stamp SENDER_ACTOR_ID when headers already carry SEQ_INFO (V1
+        // path). V0 path leaves SEQ_INFO absent here; MailboxExt::post will
+        // assign it and stamp via its own helper call later. Flattrs::get
+        // returns an owned typed value, so seq_info isn't borrowed from
+        // headers and we can pass &mut headers to the helper without
+        // a borrow-checker conflict.
+        if let Some(seq_info) = headers.get(SEQ_INFO) {
+            hyperactor::mailbox::headers::stamp_sender_actor_id(
+                &mut headers,
+                &seq_info,
+                &dest,
+                message.sender(),
+            );
+        }
+
+        cx.post_with_external_seq_info(dest, headers, wirevalue::Any::serialize(message.data())?);
 
         Ok(())
     }
@@ -728,16 +753,12 @@ mod tests {
     async fn buffering_fixture(
         proc_name: &str,
     ) -> (
-        Instance<()>,
+        hyperactor::Client,
         hyperactor::mailbox::PortReceiver<TestMessage>,
         hyperactor::ActorHandle<CommActor>,
         crate::mesh_id::ActorMeshId,
-        // Drop guards: client handle, test actor handle, test actor ref.
-        (
-            hyperactor::ActorHandle<()>,
-            hyperactor::ActorHandle<TestActor>,
-            ActorRef<TestActor>,
-        ),
+        // Drop guards: test actor handle, test actor ref.
+        (hyperactor::ActorHandle<TestActor>, ActorRef<TestActor>),
     ) {
         use hyperactor::Proc;
         use hyperactor::RemoteSpawn;
@@ -745,7 +766,7 @@ mod tests {
         use hyperactor::id::Label;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), proc_name.to_string()).unwrap();
-        let (client, client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let actor_mesh_id = crate::mesh_id::ActorMeshId::instance(Label::new("test").unwrap());
 
@@ -759,19 +780,19 @@ mod tests {
             .unwrap();
         let test_ref: ActorRef<TestActor> = test_handle.bind::<TestActor>();
 
-        let comm_handle = proc.spawn("comm", CommActor::default()).unwrap();
+        let comm_handle = proc.spawn(CommActor::default());
 
         (
             client,
             rx,
             comm_handle,
             actor_mesh_id,
-            (client_handle, test_handle, test_ref),
+            (test_handle, test_ref),
         )
     }
 
     /// Send CommMeshConfig (single-rank mesh pointing at self).
-    fn send_config(client: &Instance<()>, comm_handle: &hyperactor::ActorHandle<CommActor>) {
+    fn send_config(client: &hyperactor::Client, comm_handle: &hyperactor::ActorHandle<CommActor>) {
         let comm_ref = comm_handle.bind::<CommActor>();
         let mut peers = HashMap::new();
         peers.insert(0, comm_ref);
@@ -782,7 +803,7 @@ mod tests {
     /// and verify both are delivered in order.
     async fn assert_buffered_and_replayed<M: hyperactor::Message>(
         proc_name: &str,
-        mut make_msg: impl FnMut(&Instance<()>, &crate::mesh_id::ActorMeshId, &str) -> M,
+        mut make_msg: impl FnMut(&hyperactor::Client, &crate::mesh_id::ActorMeshId, &str) -> M,
     ) where
         CommActor: hyperactor::Handler<M>,
     {

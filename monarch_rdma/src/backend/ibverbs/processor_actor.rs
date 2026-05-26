@@ -473,27 +473,25 @@ mod tests {
     }
 
     struct Harness {
-        client: hyperactor::Instance<()>,
+        client: hyperactor::Client,
         processor: ActorHandle<IbvProcessorActor<MockManagerActor, MockQp>>,
         mgr_inner: Arc<StdMutex<MockManagerInner>>,
     }
 
     async fn setup_with_lru(lru_capacity: usize) -> Harness {
         let proc = Proc::anonymous();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let mgr_inner = Arc::new(StdMutex::new(MockManagerInner::default()));
         let mgr = MockManagerActor {
             inner: Arc::clone(&mgr_inner),
         };
-        let mgr_handle = proc.spawn::<MockManagerActor>("mgr", mgr).unwrap();
+        let mgr_handle = proc.spawn(mgr);
         let processor = IbvProcessorActor::<MockManagerActor, MockQp>::new(
             mgr_handle,
             super::super::primitives::IbvConfig::default(),
             lru_capacity,
         );
-        let processor_handle = proc
-            .spawn::<IbvProcessorActor<MockManagerActor, MockQp>>("processor", processor)
-            .unwrap();
+        let processor_handle = proc.spawn(processor);
         Harness {
             client,
             processor: processor_handle,

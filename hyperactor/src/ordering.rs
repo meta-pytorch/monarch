@@ -76,6 +76,13 @@ struct BufferState<T> {
     ///
     /// Map's key is seq_no, value is msg.
     buffer: HashMap<u64, T>,
+    /// Sender ActorAddr, populated by **first non-None wins**: any
+    /// arrival carrying a sender claims the slot if it's still None.
+    /// Captured before the seq-ordering match, so even messages that are
+    /// buffered (not delivered) or rejected as duplicate still record the
+    /// sender. None when the originating send bypassed the normal
+    /// `MailboxExt::post` / `PortHandle::try_post` / cast-leaf path (rare).
+    sender: Option<ActorAddr>,
 }
 
 impl<T> Default for BufferState<T> {
@@ -83,6 +90,7 @@ impl<T> Default for BufferState<T> {
         Self {
             last_seq: 0,
             buffer: HashMap::new(),
+            sender: None,
         }
     }
 }
@@ -146,6 +154,7 @@ impl<T> OrderedSender<T> {
         &self,
         session_id: Uuid,
         seq_no: u64,
+        sender: Option<ActorAddr>,
         msg: T,
     ) -> Result<(), OrderedSenderError<T>> {
         use std::cmp::Ordering;
@@ -158,7 +167,21 @@ impl<T> OrderedSender<T> {
         // Make sure only this session's state is locked, not all states.
         let state = self.states.entry(session_id).or_default().value().clone();
         let mut state_guard = state.lock().unwrap();
-        let BufferState { last_seq, buffer } = state_guard.deref_mut();
+
+        // Capture sender BEFORE the seq match: first non-None wins.
+        // Ensures sender is recorded even when the message is buffered
+        // (not delivered) or rejected as duplicate.
+        if state_guard.sender.is_none()
+            && let Some(addr) = sender
+        {
+            state_guard.sender = Some(addr);
+        }
+
+        let BufferState {
+            last_seq,
+            buffer,
+            sender: _,
+        } = state_guard.deref_mut();
 
         match seq_no.cmp(&(*last_seq + 1)) {
             Ordering::Less => {
@@ -356,7 +379,7 @@ mod tests {
         let session_id_a = Uuid::now_v7();
         let (tx, mut rx) = ordered_channel::<u64>("test".to_string(), true);
         for s in 1..=10 {
-            tx.send(session_id_a, s, s).unwrap();
+            tx.send(session_id_a, s, None, s).unwrap();
             let got = drain_try_recv(&mut rx);
             assert_eq!(got, vec![s]);
         }
@@ -369,12 +392,12 @@ mod tests {
 
         // Send 2 to 4 in descending order: all should buffer until 1 arrives.
         for s in (2..=4).rev() {
-            tx.send(session_id_a, s, s).unwrap();
+            tx.send(session_id_a, s, None, s).unwrap();
         }
 
         // Send 7 to 9 in descending order: all should buffer until 1 - 6 arrives.
         for s in (7..=9).rev() {
-            tx.send(session_id_a, s, s).unwrap();
+            tx.send(session_id_a, s, None, s).unwrap();
         }
 
         assert!(
@@ -383,19 +406,19 @@ mod tests {
         );
 
         // Now send 1: should deliver 1 then flush 2 - 4.
-        tx.send(session_id_a, 1, 1).unwrap();
+        tx.send(session_id_a, 1, None, 1).unwrap();
         assert_eq!(drain_try_recv(&mut rx), vec![1, 2, 3, 4]);
 
         // Now send 5: should deliver immediately but not flush 7 - 9.
-        tx.send(session_id_a, 5, 5).unwrap();
+        tx.send(session_id_a, 5, None, 5).unwrap();
         assert_eq!(drain_try_recv(&mut rx), vec![5]);
 
         // Now send 6: should deliver 6 then flush 7 - 9.
-        tx.send(session_id_a, 6, 6).unwrap();
+        tx.send(session_id_a, 6, None, 6).unwrap();
         assert_eq!(drain_try_recv(&mut rx), vec![6, 7, 8, 9]);
 
         // Send 10: should deliver immediately.
-        tx.send(session_id_a, 10, 10).unwrap();
+        tx.send(session_id_a, 10, None, 10).unwrap();
         let got = drain_try_recv(&mut rx);
         assert_eq!(got, vec![10]);
     }
@@ -407,22 +430,22 @@ mod tests {
         let (tx, mut rx) = ordered_channel::<(Uuid, u64)>("test".to_string(), true);
 
         // A1 -> deliver
-        tx.send(session_id_a, 1, (session_id_a, 1)).unwrap();
+        tx.send(session_id_a, 1, None, (session_id_a, 1)).unwrap();
         assert_eq!(drain_try_recv(&mut rx), vec![(session_id_a, 1)]);
         // B1 -> deliver
-        tx.send(session_id_b, 1, (session_id_b, 1)).unwrap();
+        tx.send(session_id_b, 1, None, (session_id_b, 1)).unwrap();
         assert_eq!(drain_try_recv(&mut rx), vec![(session_id_b, 1)]);
         for s in (3..=5).rev() {
             // A3-5 -> buffer (waiting for A2)
-            tx.send(session_id_a, s, (session_id_a, s)).unwrap();
+            tx.send(session_id_a, s, None, (session_id_a, s)).unwrap();
             // B3-5 -> buffer (waiting for B2)
-            tx.send(session_id_b, s, (session_id_b, s)).unwrap();
+            tx.send(session_id_b, s, None, (session_id_b, s)).unwrap();
         }
         for s in (7..=9).rev() {
             // A7-9 -> buffer (waiting for A1-6)
-            tx.send(session_id_a, s, (session_id_a, s)).unwrap();
+            tx.send(session_id_a, s, None, (session_id_a, s)).unwrap();
             // B7-9 -> buffer (waiting for B1-6)
-            tx.send(session_id_b, s, (session_id_b, s)).unwrap();
+            tx.send(session_id_b, s, None, (session_id_b, s)).unwrap();
         }
         assert!(
             drain_try_recv(&mut rx).is_empty(),
@@ -430,7 +453,7 @@ mod tests {
         );
 
         // A2 -> deliver A2 then flush A3
-        tx.send(session_id_a, 2, (session_id_a, 2)).unwrap();
+        tx.send(session_id_a, 2, None, (session_id_a, 2)).unwrap();
         assert_eq!(
             drain_try_recv(&mut rx),
             vec![
@@ -441,7 +464,7 @@ mod tests {
             ]
         );
         // B2 -> deliver B2 then flush B3
-        tx.send(session_id_b, 2, (session_id_b, 2)).unwrap();
+        tx.send(session_id_b, 2, None, (session_id_b, 2)).unwrap();
         assert_eq!(
             drain_try_recv(&mut rx),
             vec![
@@ -453,7 +476,7 @@ mod tests {
         );
 
         // A6 -> should deliver immediately and flush A7-9
-        tx.send(session_id_a, 6, (session_id_a, 6)).unwrap();
+        tx.send(session_id_a, 6, None, (session_id_a, 6)).unwrap();
         assert_eq!(
             drain_try_recv(&mut rx),
             vec![
@@ -464,7 +487,7 @@ mod tests {
             ]
         );
         // B6 -> should deliver immediately and flush B7-9
-        tx.send(session_id_b, 6, (session_id_b, 6)).unwrap();
+        tx.send(session_id_b, 6, None, (session_id_b, 6)).unwrap();
         assert_eq!(
             drain_try_recv(&mut rx),
             vec![
@@ -487,22 +510,24 @@ mod tests {
 
         let (tx, mut rx) = ordered_channel::<(Uuid, u64)>("test".to_string(), true);
         // A1 -> deliver
-        tx.send(session_id_a, 1, (session_id_a, 1)).unwrap();
+        tx.send(session_id_a, 1, None, (session_id_a, 1)).unwrap();
         assert_eq!(drain_try_recv(&mut rx), vec![(session_id_a, 1)]);
         verify_empty_buffers(&tx.states);
         // duplicate A1 -> drop even if the message is different.
-        tx.send(session_id_a, 1, (session_id_a, 1_000)).unwrap();
+        tx.send(session_id_a, 1, None, (session_id_a, 1_000))
+            .unwrap();
         assert!(
             drain_try_recv(&mut rx).is_empty(),
             "nothing should be delivered yet"
         );
         verify_empty_buffers(&tx.states);
         // A2 -> deliver
-        tx.send(session_id_a, 2, (session_id_a, 2)).unwrap();
+        tx.send(session_id_a, 2, None, (session_id_a, 2)).unwrap();
         assert_eq!(drain_try_recv(&mut rx), vec![(session_id_a, 2)]);
         verify_empty_buffers(&tx.states);
         // late A1 duplicate -> drop
-        tx.send(session_id_a, 1, (session_id_a, 1_001)).unwrap();
+        tx.send(session_id_a, 1, None, (session_id_a, 1_001))
+            .unwrap();
         assert!(
             drain_try_recv(&mut rx).is_empty(),
             "nothing should be delivered yet"
@@ -643,5 +668,108 @@ mod tests {
         // And continue independently.
         assert_eq!(get_seq(sequencer.assign_seq(&introspect_port)), 2);
         assert_eq!(get_seq(sequencer.assign_seq(&regular_actor_port)), 2);
+    }
+
+    // --- SENDER_ACTOR_ID capture tests ---
+
+    /// First send carrying a sender populates BufferState.sender.
+    #[test]
+    fn test_ordered_send_records_sender_on_first_with_addr() {
+        let session_id = Uuid::now_v7();
+        let addr: ActorAddr = test_actor_id("sender_0", "client");
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+
+        tx.send(session_id, 1, Some(addr.clone()), 1).unwrap();
+
+        let state = tx.states.get(&session_id).unwrap().value().clone();
+        assert_eq!(state.lock().unwrap().sender, Some(addr));
+    }
+
+    /// First-non-None wins: a None arrival doesn't claim the slot; a
+    /// subsequent Some arrival does.
+    #[test]
+    fn test_ordered_send_first_non_none_wins() {
+        let session_id = Uuid::now_v7();
+        let addr: ActorAddr = test_actor_id("sender_0", "client");
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+
+        tx.send(session_id, 1, None, 1).unwrap();
+        tx.send(session_id, 2, Some(addr.clone()), 2).unwrap();
+
+        let state = tx.states.get(&session_id).unwrap().value().clone();
+        assert_eq!(state.lock().unwrap().sender, Some(addr));
+    }
+
+    /// Second non-None arrival does NOT overwrite the first. Pathological
+    /// (shouldn't happen in production); documents the invariant.
+    #[test]
+    fn test_ordered_send_second_addr_does_not_overwrite() {
+        let session_id = Uuid::now_v7();
+        let addr1: ActorAddr = test_actor_id("first_0", "client");
+        let addr2: ActorAddr = test_actor_id("second_0", "client");
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+
+        tx.send(session_id, 1, Some(addr1.clone()), 1).unwrap();
+        tx.send(session_id, 2, Some(addr2), 2).unwrap();
+
+        let state = tx.states.get(&session_id).unwrap().value().clone();
+        assert_eq!(state.lock().unwrap().sender, Some(addr1));
+    }
+
+    /// All sends with None sender produce BufferState.sender = None; no panic.
+    #[test]
+    fn test_ordered_send_sender_absent() {
+        let session_id = Uuid::now_v7();
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+
+        tx.send(session_id, 1, None, 1).unwrap();
+        tx.send(session_id, 2, None, 2).unwrap();
+
+        let state = tx.states.get(&session_id).unwrap().value().clone();
+        assert_eq!(state.lock().unwrap().sender, None);
+    }
+
+    /// Sender is captured even for messages that are buffered (not yet
+    /// delivered) — capture runs before the seq match.
+    #[test]
+    fn test_ordered_send_sender_capture_runs_before_seq_match() {
+        let session_id = Uuid::now_v7();
+        let addr: ActorAddr = test_actor_id("sender_0", "client");
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+
+        // Send seq 5 first: seq 1 is missing, so this gets buffered.
+        // Sender capture must still happen before the buffer insert.
+        tx.send(session_id, 5, Some(addr.clone()), 5).unwrap();
+
+        let state = tx.states.get(&session_id).unwrap().value().clone();
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.sender, Some(addr));
+        // Confirm the message was buffered (not delivered): last_seq stays 0
+        // and the buffer holds the message.
+        assert_eq!(guard.last_seq, 0);
+        assert!(guard.buffer.contains_key(&5));
+    }
+
+    /// Sequencer-level test for the debug-skip helper's underlying behavior:
+    /// `assign_seq` called `count` times advances the per-(actor,dest)
+    /// counter, so a subsequent `assign_seq` returns `count + 1` not 1.
+    /// The `Instance<A>::debug_skip_next_ordering_seq` method is a tiny
+    /// for-loop of `assign_seq` calls; its correctness reduces to this.
+    #[test]
+    fn test_sequencer_skip_advances_counter() {
+        let sequencer = Sequencer::new(Uuid::now_v7());
+        let actor_ref: ActorAddr = test_actor_id("test_0", "test");
+        let dest = actor_ref.port_addr(Port::from(TestMsg1::port()));
+
+        // Assign once: seq 1.
+        assert_eq!(get_seq(sequencer.assign_seq(&dest)), 1);
+
+        // Skip 2 (the helper would loop assign_seq).
+        for _ in 0..2 {
+            let _ = sequencer.assign_seq(&dest);
+        }
+
+        // Next assignment is seq 4, not 2.
+        assert_eq!(get_seq(sequencer.assign_seq(&dest)), 4);
     }
 }
