@@ -70,6 +70,7 @@ pub mod sqlite;
 pub mod task;
 pub mod trace;
 pub mod trace_dispatcher;
+mod unix_sink;
 
 // Re-export key types for external sink implementations
 use std::collections::hash_map::DefaultHasher;
@@ -98,6 +99,9 @@ use trace_dispatcher::TraceFields;
 pub use tracing;
 pub use tracing::Level;
 use tracing_appender::rolling::RollingFileAppender;
+pub use unix_sink::set_unix_socket_sink_path;
+pub use unix_sink::unix_socket_sink_dropped_frames;
+pub use unix_sink::unix_socket_sink_is_active;
 
 #[cfg(all(fbcode_build, target_os = "linux"))]
 use crate::config::ENABLE_OTEL_METRICS;
@@ -1057,6 +1061,8 @@ pub fn initialize_logging_with_log_prefix(
                 ));
             }
 
+            sinks.push(unix_sink::install_unix_socket_sink_inactive());
+
             let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
             let synthetic_sender = dispatcher.sender();
 
@@ -1149,6 +1155,8 @@ pub fn initialize_logging_with_log_prefix(
             if let Some(log_sink) = otlp::otlp_log_sink() {
                 sinks.push(log_sink);
             }
+
+            sinks.push(unix_sink::install_unix_socket_sink_inactive());
 
             let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
             let synthetic_sender = dispatcher.sender();
