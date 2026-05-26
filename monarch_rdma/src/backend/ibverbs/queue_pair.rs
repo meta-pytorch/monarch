@@ -15,12 +15,18 @@
 /// Maximum size for a single RDMA operation in bytes (1 GiB).
 const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
 
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::io::Error;
 use std::result::Result;
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
+use backoff::ExponentialBackoff;
+use backoff::ExponentialBackoffBuilder;
+use backoff::backoff::Backoff;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
@@ -30,6 +36,7 @@ use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortRef;
+use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::actor::Binds;
 use hyperactor::actor::Referable;
@@ -42,15 +49,18 @@ use serde::Serialize;
 use typeuri::Named;
 
 use super::IbvBuffer;
+use super::IbvOp;
 use super::manager_actor::EnsureQueuePair;
 use super::manager_actor::QpInitializerDone;
 use super::manager_actor::QpInitializerFailed;
 use super::primitives::Gid;
 use super::primitives::IbvConfig;
+use super::primitives::IbvMemoryRegionView;
 use super::primitives::IbvOperation;
 use super::primitives::IbvQpInfo;
 use super::primitives::IbvWc;
 use super::primitives::resolve_qp_type;
+use crate::RdmaOpType;
 
 /// A structured error from [`IbvQueuePair::poll_completion`].
 ///
@@ -77,6 +87,15 @@ impl PollCompletionError {
     /// error state due to a different work request's failure.
     pub fn is_wr_flush_err(&self) -> bool {
         self.status == Some(rdmaxcel_sys::ibv_wc_status::IBV_WC_WR_FLUSH_ERR)
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test(message: &str) -> Self {
+        Self {
+            message: message.to_string(),
+            status: None,
+            vendor_err: None,
+        }
     }
 }
 
@@ -1461,9 +1480,6 @@ pub(super) struct CreatePeerQueuePair<M: Referable> {
 
 /// Operations a [`QueuePairActor`] performs on its QP. Implemented
 /// on the real [`IbvQueuePair`] and on mocks in `#[cfg(test)]` code.
-///
-/// Today only [`Self::get_qp_info`] and [`Self::connect`] are used;
-/// data-path methods will be added alongside op processing.
 #[allow(dead_code)] // not yet referenced by IbvManagerActor
 pub(super) trait QueuePair: std::fmt::Debug + Send + Sync + 'static {
     /// Returns the local endpoint other peers need in order to
@@ -1473,6 +1489,107 @@ pub(super) trait QueuePair: std::fmt::Debug + Send + Sync + 'static {
     /// Transitions the QP through `INIT -> RTR -> RTS`, connected to
     /// `info`.
     fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error>;
+
+    /// Post an RDMA WRITE from `lhandle` to `rhandle`. Returns one
+    /// wr_id per `MAX_RDMA_MSG_SIZE` chunk the QP issues.
+    fn put(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>, anyhow::Error>;
+
+    /// Post an RDMA READ from `rhandle` into `lhandle`. Returns one
+    /// wr_id per chunk.
+    fn get(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>, anyhow::Error>;
+
+    /// Poll for completions of every wr_id in `expected_wr_ids`. See
+    /// [`IbvQueuePair::poll_completion`] for the outer/inner `Result`
+    /// semantics.
+    fn poll_completion(
+        &mut self,
+        target: PollTarget,
+        expected_wr_ids: &HashSet<u64>,
+    ) -> Result<Vec<(u64, Result<IbvWc, PollCompletionError>)>, PollCompletionError>;
+}
+
+impl QueuePair for IbvQueuePair {
+    fn get_qp_info(&mut self) -> Result<IbvQpInfo, anyhow::Error> {
+        IbvQueuePair::get_qp_info(self)
+    }
+    fn connect(&mut self, info: &IbvQpInfo) -> Result<(), anyhow::Error> {
+        IbvQueuePair::connect(self, info)
+    }
+    fn put(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>, anyhow::Error> {
+        IbvQueuePair::put(self, lhandle, rhandle)
+    }
+    fn get(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>, anyhow::Error> {
+        IbvQueuePair::get(self, lhandle, rhandle)
+    }
+    fn poll_completion(
+        &mut self,
+        target: PollTarget,
+        expected_wr_ids: &HashSet<u64>,
+    ) -> Result<Vec<(u64, Result<IbvWc, PollCompletionError>)>, PollCompletionError> {
+        IbvQueuePair::poll_completion(self, target, expected_wr_ids)
+    }
+}
+
+/// Adaptive backoff for the scheduler's `Tick` self-message. Use
+/// [`Self::next_interval`] to ask "how long should I wait before the
+/// next poll attempt?"; call [`Self::reset`] whenever the previous
+/// poll observed completions (so the actor stays tight while work
+/// is making progress).
+///
+/// While the elapsed time since the first non-zero interval is below
+/// `yield_window`, the policy returns `Duration::ZERO` so the actor
+/// just re-sends `Tick` to itself with no delay — keeping latency
+/// tight when WRs are about to complete. Past the window, it walks
+/// an exponential backoff (1ms initial, doubling, capped at 10ms)
+/// so a long-running op doesn't keep the runtime spinning. When
+/// `yield_window` is `None` (the default for
+/// `RDMA_CQ_BUSY_POLL_WINDOW`) the policy always returns
+/// `Duration::ZERO`.
+#[derive(Debug)]
+struct PollSleepPolicy {
+    yield_window: Option<Duration>,
+    started_at: Option<Instant>,
+    backoff: Option<ExponentialBackoff>,
+}
+
+impl PollSleepPolicy {
+    fn new() -> Self {
+        let yield_window = hyperactor_config::global::get(crate::config::RDMA_CQ_BUSY_POLL_WINDOW);
+        Self {
+            yield_window,
+            started_at: None,
+            backoff: None,
+        }
+    }
+
+    /// Forget all accumulated backoff state. Called after a poll
+    /// returns completions, so the next idle stretch starts fresh.
+    fn reset(&mut self) {
+        self.started_at = None;
+        self.backoff = None;
+    }
+
+    /// Suggested delay before the next `Tick`. `Duration::ZERO`
+    /// means "send `Tick` immediately".
+    fn next_interval(&mut self) -> Duration {
+        let Some(window) = self.yield_window else {
+            return Duration::ZERO;
+        };
+        let started = *self.started_at.get_or_insert_with(Instant::now);
+        if started.elapsed() < window {
+            return Duration::ZERO;
+        }
+        let backoff = self.backoff.get_or_insert_with(|| {
+            ExponentialBackoffBuilder::new()
+                .with_initial_interval(Duration::from_millis(1))
+                .with_max_interval(Duration::from_millis(10))
+                .with_multiplier(2.0)
+                .with_randomization_factor(0.0)
+                .with_max_elapsed_time(None)
+                .build()
+        });
+        backoff.next_backoff().unwrap_or(Duration::ZERO)
+    }
 }
 
 /// Bundle of trait bounds for an actor type that can serve as the
@@ -1484,6 +1601,69 @@ pub(super) trait Manager:
 }
 
 impl<T> Manager for T where T: Actor + Referable + RemoteHandles<CreatePeerQueuePair<T>> {}
+
+/// Per-op completion reply emitted by [`QueuePairActor`] back to the
+/// manager via [`ProcessOps::reply`]. A named newtype (rather than a
+/// raw `(usize, Result<…>)` tuple) so the manager can identify
+/// undeliverable `OpResult`s by type name in
+/// `handle_undeliverable_message` and absorb them when the original
+/// caller has gone away (typical at test teardown).
+#[allow(dead_code)] // not yet referenced by IbvManagerActor
+#[derive(Debug)]
+pub(super) struct OpResult {
+    pub(super) op_idx: usize,
+    pub(super) result: Result<(), String>,
+}
+
+/// Local-only message: enqueue a batch of ops on this QP. As each
+/// op resolves the actor sends one `(op_idx, result)` tuple on
+/// `reply` — `op_idx` is the original index of the op in the
+/// user-facing `IbvManagerActor::submit_ops` request, so the receiver
+/// can correlate replies across batches that were sliced per-QP. The
+/// inner `Result` is `Ok(())` if every WR for the op completed
+/// successfully, otherwise `Err` carrying the first per-WR error
+/// observed (held back until the op's other WRs also report, so the
+/// MR registration outlives the data path).
+#[allow(dead_code)] // not yet referenced by IbvManagerActor
+#[derive(Debug)]
+pub(super) struct ProcessOps<M: Referable> {
+    pub(super) items: Vec<(usize, IbvOp<M>, IbvMemoryRegionView)>,
+    pub(super) reply: PortHandle<OpResult>,
+}
+
+/// Local-only self-message that drives one round of the scheduler.
+#[derive(Debug)]
+struct Tick;
+
+/// An op accepted by the actor but not yet posted to the QP.
+#[derive(Debug)]
+struct PendingOp<M: Referable> {
+    op_idx: usize,
+    op: IbvOp<M>,
+    mrv: IbvMemoryRegionView,
+    reply: PortHandle<OpResult>,
+    /// WR count this op will issue when posted, computed once at
+    /// construction so retries from a credit head-block don't redo
+    /// the work.
+    wrs: u32,
+    is_read: bool,
+}
+
+/// State of an op whose WRs are in flight on the QP.
+#[derive(Debug)]
+struct PostedOpEntry {
+    op_idx: usize,
+    pending_wrs: HashSet<u64>,
+    is_read: bool,
+    /// Kept alive so the MR registration outlives every in-flight
+    /// WR touching it. Field is intentionally unread.
+    _mrv: IbvMemoryRegionView,
+    reply: PortHandle<OpResult>,
+    /// First per-WR error observed for this op. The op's final
+    /// reply is held back until `pending_wrs.is_empty()` so we don't
+    /// release the MR while remaining WRs are still in flight.
+    first_error: Option<String>,
+}
 
 /// Per-peer queue-pair actor.
 ///
@@ -1509,6 +1689,34 @@ pub(super) struct QueuePairActor<M: Manager, Qp: QueuePair> {
     /// handshake.
     is_loopback: bool,
     init_timeout: Duration,
+    /// QP-wide cap on outstanding send-queue WRs (reads + writes).
+    max_send_wr: u32,
+    /// QP-wide cap on outstanding RDMA-READ WRs at the initiator.
+    max_rd_atomic: u32,
+    /// Single FIFO of ops awaiting their first post attempt. If the
+    /// head op bumps against either credit cap, ops queued behind
+    /// it stall — a write stuck behind a credit-blocked read is the
+    /// known consequence; smarter interleaving is future work.
+    queue: VecDeque<PendingOp<M>>,
+    /// op-id → entry, for tracking WR completion. op-ids are local
+    /// to this actor (monotonic counter); they exist so we can
+    /// route per-WR completions to the right `PostedOpEntry`
+    /// without making any assumptions about uniqueness of `op_idx`
+    /// across batches.
+    posted: HashMap<u64, PostedOpEntry>,
+    /// wr_id → local op-id.
+    wr_to_op: HashMap<u64, u64>,
+    /// Mirrors `wr_to_op.keys()` exactly, maintained incrementally
+    /// so each tick can hand it straight to `poll_completion`
+    /// without rebuilding.
+    to_poll: HashSet<u64>,
+    next_op_id: u64,
+    in_flight_reads: u32,
+    in_flight_writes: u32,
+    /// `true` while a `Tick` self-message is already in flight; the
+    /// flag prevents stacking redundant ticks.
+    tick_armed: bool,
+    poll_policy: PollSleepPolicy,
 }
 
 impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
@@ -1519,6 +1727,8 @@ impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
         peer_manager: ActorRef<M>,
         qp: Qp,
         is_loopback: bool,
+        max_send_wr: u32,
+        max_rd_atomic: u32,
     ) -> Self {
         let init_timeout = hyperactor_config::global::get(crate::config::RDMA_QP_INIT_TIMEOUT);
         Self {
@@ -1528,7 +1738,226 @@ impl<M: Manager, Qp: QueuePair> QueuePairActor<M, Qp> {
             qp,
             is_loopback,
             init_timeout,
+            max_send_wr,
+            max_rd_atomic,
+            queue: VecDeque::new(),
+            posted: HashMap::new(),
+            wr_to_op: HashMap::new(),
+            to_poll: HashSet::new(),
+            next_op_id: 0,
+            in_flight_reads: 0,
+            in_flight_writes: 0,
+            tick_armed: false,
+            poll_policy: PollSleepPolicy::new(),
         }
+    }
+
+    /// Number of WRs the QP will issue for an op that targets
+    /// `local_size` bytes. The QP splits large transfers into
+    /// `MAX_RDMA_MSG_SIZE`-bound chunks; a zero-byte op still
+    /// consumes one WR.
+    fn wr_count(local_size: usize) -> u32 {
+        local_size.div_ceil(MAX_RDMA_MSG_SIZE).max(1) as u32
+    }
+
+    /// Try to post the head of `queue`.
+    ///
+    /// * `Ok(true)` — head was either posted or rejected with a
+    ///   per-op error (e.g. op too large for this QP); caller
+    ///   should attempt the next head.
+    /// * `Ok(false)` — head can't be posted because the QP is at
+    ///   either `max_send_wr` or, for a head read, `max_rd_atomic`.
+    ///   The op stays at the head; caller should stop walking.
+    /// * `Err(_)` — `qp.put`/`qp.get` failed (e.g. the QP is in
+    ///   error state). Fatal: the actor's handler returns this,
+    ///   which raises a supervision event.
+    fn try_post_head(&mut self, cx: &Instance<Self>) -> Result<bool, anyhow::Error> {
+        let pending = self.queue.pop_front().expect("non-empty queue");
+        let PendingOp {
+            op_idx,
+            op,
+            mrv,
+            reply,
+            wrs,
+            is_read,
+        } = pending;
+
+        let local_buf = IbvBuffer {
+            mr_id: mrv.id,
+            lkey: mrv.lkey,
+            rkey: mrv.rkey,
+            addr: mrv.rdma_addr,
+            size: mrv.size,
+            device_name: mrv.device_name.clone(),
+        };
+
+        // 1. Per-op fatal: op alone exceeds the QP's capacity.
+        if wrs > self.max_send_wr {
+            let err = format!(
+                "op too large for this QP [op_idx={}, qp_key={:?}, op_type={:?}, wrs={}, max_send_wr={}, local: {:?}, remote: {:?}]",
+                op_idx, self.qp_key, op.op_type, wrs, self.max_send_wr, local_buf, op.remote_buffer,
+            );
+            reply.post(
+                cx,
+                OpResult {
+                    op_idx,
+                    result: Err(err),
+                },
+            );
+            return Ok(true);
+        }
+        if is_read && wrs > self.max_rd_atomic {
+            let err = format!(
+                "read op too large for this QP [op_idx={}, qp_key={:?}, wrs={}, max_rd_atomic={}, local: {:?}, remote: {:?}]",
+                op_idx, self.qp_key, wrs, self.max_rd_atomic, local_buf, op.remote_buffer,
+            );
+            reply.post(
+                cx,
+                OpResult {
+                    op_idx,
+                    result: Err(err),
+                },
+            );
+            return Ok(true);
+        }
+
+        // 2. Credit gating. Every op consumes a send-queue slot;
+        //    reads additionally consume read credits. A read at the
+        //    head that hits either cap stalls the whole queue.
+        let projected_total = self.in_flight_reads + self.in_flight_writes + wrs;
+        if projected_total > self.max_send_wr
+            || (is_read && self.in_flight_reads + wrs > self.max_rd_atomic)
+        {
+            self.queue.push_front(PendingOp {
+                op_idx,
+                op,
+                mrv,
+                reply,
+                wrs,
+                is_read,
+            });
+            return Ok(false);
+        }
+
+        // 3. Post.
+        let post_result = match op.op_type {
+            RdmaOpType::WriteFromLocal => self.qp.put(local_buf.clone(), op.remote_buffer.clone()),
+            RdmaOpType::ReadIntoLocal => self.qp.get(local_buf.clone(), op.remote_buffer.clone()),
+        };
+        let wr_ids = post_result.map_err(|e| {
+            anyhow::anyhow!(
+                "qp.{} failed [op_idx={}, qp_key={:?}, local: {:?}, remote: {:?}]: {e}",
+                if is_read { "get" } else { "put" },
+                op_idx,
+                self.qp_key,
+                local_buf,
+                op.remote_buffer,
+            )
+        })?;
+
+        // 4. Track in-flight state.
+        let op_id = self.next_op_id;
+        self.next_op_id += 1;
+        let mut pending_wrs = HashSet::with_capacity(wr_ids.len());
+        for id in &wr_ids {
+            self.wr_to_op.insert(*id, op_id);
+            self.to_poll.insert(*id);
+            pending_wrs.insert(*id);
+        }
+        if is_read {
+            self.in_flight_reads += wr_ids.len() as u32;
+        } else {
+            self.in_flight_writes += wr_ids.len() as u32;
+        }
+        self.posted.insert(
+            op_id,
+            PostedOpEntry {
+                op_idx,
+                pending_wrs,
+                is_read,
+                _mrv: mrv,
+                reply,
+                first_error: None,
+            },
+        );
+        Ok(true)
+    }
+
+    /// One scheduler round: post everything that fits, poll for
+    /// completions, emit replies for finished ops, and re-arm
+    /// `Tick` if work remains. Returns `Err` for fatal QP-level
+    /// failures; the surrounding handler propagates the error so
+    /// supervision tears the actor down.
+    fn advance(&mut self, cx: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // 1. Post from the queue head until either it's empty or
+        //    the head is credit-blocked.
+        while !self.queue.is_empty() {
+            if !self.try_post_head(cx)? {
+                break;
+            }
+        }
+
+        // 2. Poll for completions.
+        let mut progressed = false;
+        if !self.to_poll.is_empty() {
+            let completions = self
+                .qp
+                .poll_completion(PollTarget::Send, &self.to_poll)
+                .map_err(|e| anyhow::anyhow!("CQ poll failed for qp_key={:?}: {e}", self.qp_key))?;
+            progressed = !completions.is_empty();
+            for (wr_id, wc_result) in completions {
+                self.to_poll.remove(&wr_id);
+                let op_id = self
+                    .wr_to_op
+                    .remove(&wr_id)
+                    .expect("completed wr_id missing from wr_to_op");
+                let entry = self
+                    .posted
+                    .get_mut(&op_id)
+                    .expect("op_id missing from posted");
+                entry.pending_wrs.remove(&wr_id);
+                if entry.is_read {
+                    self.in_flight_reads -= 1;
+                } else {
+                    self.in_flight_writes -= 1;
+                }
+                if let Err(per_wr) = wc_result
+                    && entry.first_error.is_none()
+                {
+                    entry.first_error = Some(per_wr.to_string());
+                }
+                if entry.pending_wrs.is_empty() {
+                    let entry = self.posted.remove(&op_id).expect("just verified");
+                    let result = match entry.first_error {
+                        Some(err) => Err(err),
+                        None => Ok(()),
+                    };
+                    entry.reply.post(
+                        cx,
+                        OpResult {
+                            op_idx: entry.op_idx,
+                            result,
+                        },
+                    );
+                }
+            }
+        }
+        if progressed {
+            self.poll_policy.reset();
+        }
+
+        // 3. Re-arm Tick if any work remains.
+        let pending_work = !self.queue.is_empty() || !self.posted.is_empty();
+        if pending_work && !self.tick_armed {
+            self.tick_armed = true;
+            let interval = self.poll_policy.next_interval();
+            if interval.is_zero() {
+                cx.handle().post(cx, Tick);
+            } else {
+                cx.post_after(cx, Tick, interval);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1600,6 +2029,43 @@ impl<M: Manager, Qp: QueuePair> Actor for QueuePairActor<M, Qp> {
             );
             anyhow::anyhow!("could not connect QP to peer: {e}")
         })?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<M: Manager, Qp: QueuePair> Handler<ProcessOps<M>> for QueuePairActor<M, Qp> {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: ProcessOps<M>,
+    ) -> Result<(), anyhow::Error> {
+        for (op_idx, op, mrv) in msg.items.into_iter() {
+            let wrs = Self::wr_count(op.local_memory.size());
+            let is_read = matches!(op.op_type, RdmaOpType::ReadIntoLocal);
+            self.queue.push_back(PendingOp {
+                op_idx,
+                op,
+                mrv,
+                reply: msg.reply.clone(),
+                wrs,
+                is_read,
+            });
+        }
+        // If a tick is already armed it will pick up the new ops on
+        // its next round; advancing here would just duplicate work.
+        if !self.tick_armed {
+            self.advance(cx)?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<M: Manager, Qp: QueuePair> Handler<Tick> for QueuePairActor<M, Qp> {
+    async fn handle(&mut self, cx: &Context<Self>, _msg: Tick) -> Result<(), anyhow::Error> {
+        self.tick_armed = false;
+        self.advance(cx)?;
         Ok(())
     }
 }
@@ -2195,6 +2661,8 @@ mod tests {
         peer_manager: ActorRef<QpaMockManager>,
         qp: MockQp,
         is_loopback: bool,
+        max_send_wr: u32,
+        max_rd_atomic: u32,
         reply: hyperactor::OncePortHandle<ActorHandle<QueuePairActor<QpaMockManager, MockQp>>>,
     }
 
@@ -2208,6 +2676,8 @@ mod tests {
                 msg.peer_manager,
                 msg.qp,
                 msg.is_loopback,
+                msg.max_send_wr,
+                msg.max_rd_atomic,
             );
             let handle = cx.spawn(actor);
             msg.reply.post(cx, handle);
@@ -2215,14 +2685,43 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Default)]
-    struct MockQpInner {
-        connect_calls: Vec<IbvQpInfo>,
+    /// One `put` or `get` call recorded by the mock, surfaced to the
+    /// test via the `posted_rx` channel returned alongside the QP.
+    #[derive(Debug)]
+    enum PostedOp {
+        Put {
+            lhandle: IbvBuffer,
+            rhandle: IbvBuffer,
+            wr_ids: Vec<u64>,
+        },
+        Get {
+            lhandle: IbvBuffer,
+            rhandle: IbvBuffer,
+            wr_ids: Vec<u64>,
+        },
     }
 
-    /// Minimal `QueuePair` impl used by the init-handshake tests.
-    /// Records every `connect` call so the test can assert what the
-    /// actor passed in.
+    #[derive(Debug)]
+    struct MockQpInner {
+        connect_calls: Vec<IbvQpInfo>,
+        next_wr_id: u64,
+        /// Every `put`/`get` call is forwarded here in order, so the
+        /// test body can `await` rather than poll.
+        posted_tx: tokio::sync::mpsc::UnboundedSender<PostedOp>,
+        /// FIFO of completions the next `poll_completion` will hand
+        /// back (after filtering by `expected_wr_ids`). Each entry
+        /// is either `Ok(IbvWc)` (success) or `Err(...)` (per-WR
+        /// completion failure).
+        pending_completions: VecDeque<(u64, std::result::Result<IbvWc, PollCompletionError>)>,
+        /// One-shot CQ-level error; cleared after the next poll consumes it.
+        poll_error: Option<PollCompletionError>,
+        /// One-shot error for the next `put` or `get` call.
+        post_error: Option<String>,
+    }
+
+    /// `QueuePair` mock used by `QueuePairActor` tests. Cloning is
+    /// cheap (shared `Arc<Mutex<...>>`); the test typically holds
+    /// one clone while handing another to the actor.
     #[derive(Debug, Clone)]
     struct MockQp {
         info: IbvQpInfo,
@@ -2230,20 +2729,64 @@ mod tests {
     }
 
     impl MockQp {
-        fn new(qp_num: u32, psn: u32) -> Self {
-            Self {
+        /// Returns the mock QP and the receiver that observes its
+        /// posts. Tests that don't care about post events can drop
+        /// the receiver.
+        fn new(qp_num: u32, psn: u32) -> (Self, tokio::sync::mpsc::UnboundedReceiver<PostedOp>) {
+            let (posted_tx, posted_rx) = tokio::sync::mpsc::unbounded_channel();
+            let qp = Self {
                 info: IbvQpInfo {
                     qp_num,
                     lid: 0,
                     gid: None,
                     psn,
                 },
-                inner: Arc::new(Mutex::new(MockQpInner::default())),
-            }
+                inner: Arc::new(Mutex::new(MockQpInner {
+                    connect_calls: Vec::new(),
+                    next_wr_id: 0,
+                    posted_tx,
+                    pending_completions: VecDeque::new(),
+                    poll_error: None,
+                    post_error: None,
+                })),
+            };
+            (qp, posted_rx)
         }
 
         fn connect_calls(&self) -> Vec<IbvQpInfo> {
             self.inner.lock().unwrap().connect_calls.clone()
+        }
+
+        /// Queue a successful WC for `wr_id`. The next poll whose
+        /// `expected_wr_ids` contains `wr_id` returns it.
+        fn queue_completion(&self, wr_id: u64) {
+            self.inner
+                .lock()
+                .unwrap()
+                .pending_completions
+                .push_back((wr_id, Ok(IbvWc::for_test(wr_id, true))));
+        }
+
+        /// Queue a per-WR completion failure for `wr_id` — the actor
+        /// receives it as the inner `Err` from `poll_completion` and
+        /// should fail just that op (not poison the QP).
+        fn queue_per_wr_error(&self, wr_id: u64, message: &str) {
+            self.inner
+                .lock()
+                .unwrap()
+                .pending_completions
+                .push_back((wr_id, Err(PollCompletionError::for_test(message))));
+        }
+
+        /// Queue a CQ-level poll error (one-shot). The next poll
+        /// returns this as the outer `Err`, simulating a poisoned QP.
+        fn queue_poll_error(&self, err: PollCompletionError) {
+            self.inner.lock().unwrap().poll_error = Some(err);
+        }
+
+        /// Make the next `put`/`get` return this error (one-shot).
+        fn queue_post_error(&self, message: &str) {
+            self.inner.lock().unwrap().post_error = Some(message.to_string());
         }
     }
 
@@ -2255,6 +2798,69 @@ mod tests {
         fn connect(&mut self, info: &IbvQpInfo) -> Result<()> {
             self.inner.lock().unwrap().connect_calls.push(info.clone());
             Ok(())
+        }
+
+        fn put(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>> {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(msg) = inner.post_error.take() {
+                return Err(anyhow::anyhow!(msg));
+            }
+            let wrs = lhandle.size.div_ceil(MAX_RDMA_MSG_SIZE).max(1);
+            let mut wr_ids = Vec::with_capacity(wrs);
+            for _ in 0..wrs {
+                wr_ids.push(inner.next_wr_id);
+                inner.next_wr_id += 1;
+            }
+            let _ = inner.posted_tx.send(PostedOp::Put {
+                lhandle,
+                rhandle,
+                wr_ids: wr_ids.clone(),
+            });
+            Ok(wr_ids)
+        }
+
+        fn get(&mut self, lhandle: IbvBuffer, rhandle: IbvBuffer) -> Result<Vec<u64>> {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(msg) = inner.post_error.take() {
+                return Err(anyhow::anyhow!(msg));
+            }
+            let wrs = lhandle.size.div_ceil(MAX_RDMA_MSG_SIZE).max(1);
+            let mut wr_ids = Vec::with_capacity(wrs);
+            for _ in 0..wrs {
+                wr_ids.push(inner.next_wr_id);
+                inner.next_wr_id += 1;
+            }
+            let _ = inner.posted_tx.send(PostedOp::Get {
+                lhandle,
+                rhandle,
+                wr_ids: wr_ids.clone(),
+            });
+            Ok(wr_ids)
+        }
+
+        fn poll_completion(
+            &mut self,
+            _target: PollTarget,
+            expected_wr_ids: &HashSet<u64>,
+        ) -> std::result::Result<
+            Vec<(u64, std::result::Result<IbvWc, PollCompletionError>)>,
+            PollCompletionError,
+        > {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(err) = inner.poll_error.take() {
+                return Err(err);
+            }
+            let mut matched = Vec::new();
+            let mut remaining = VecDeque::new();
+            while let Some((wr_id, wc)) = inner.pending_completions.pop_front() {
+                if expected_wr_ids.contains(&wr_id) {
+                    matched.push((wr_id, wc));
+                } else {
+                    remaining.push_back((wr_id, wc));
+                }
+            }
+            inner.pending_completions = remaining;
+            Ok(matched)
         }
     }
 
@@ -2347,6 +2953,19 @@ mod tests {
             qp: MockQp,
             is_loopback: bool,
         ) -> Result<ActorHandle<QueuePairActor<QpaMockManager, MockQp>>> {
+            self.spawn_actor_with_caps(qp_key, peer_manager, qp, is_loopback, 4, 2)
+                .await
+        }
+
+        async fn spawn_actor_with_caps(
+            &self,
+            qp_key: QpKey,
+            peer_manager: ActorRef<QpaMockManager>,
+            qp: MockQp,
+            is_loopback: bool,
+            max_send_wr: u32,
+            max_rd_atomic: u32,
+        ) -> Result<ActorHandle<QueuePairActor<QpaMockManager, MockQp>>> {
             let (reply, rx) = self.client.mailbox().open_once_port();
             self.parent.post(
                 &self.client,
@@ -2355,6 +2974,8 @@ mod tests {
                     peer_manager,
                     qp,
                     is_loopback,
+                    max_send_wr,
+                    max_rd_atomic,
                     reply,
                 },
             );
@@ -2382,7 +3003,7 @@ mod tests {
         };
         harness.peer_state.lock().unwrap().response = Some(Ok(peer_info.clone()));
 
-        let qp = MockQp::new(0x1234, 0xdead);
+        let (qp, _posted_rx) = MockQp::new(0x1234, 0xdead);
         let qp_key = QpKey {
             self_device: "mlx5_0".into(),
             other_id: harness.peer_id(),
@@ -2423,7 +3044,7 @@ mod tests {
     async fn qpa_init_loopback_skips_peer_round_trip() -> Result<()> {
         let harness = QpaHarness::build()?;
 
-        let qp = MockQp::new(0xaaa, 0xbbb);
+        let (qp, _posted_rx) = MockQp::new(0xaaa, 0xbbb);
         let qp_key = QpKey {
             self_device: "mlx5_0".into(),
             other_id: harness.parent_id(),
@@ -2463,13 +3084,9 @@ mod tests {
             other_id: harness.peer_id(),
             other_device: "mlx5_99".into(),
         };
+        let (qp, _posted_rx) = MockQp::new(1, 2);
         let handle = harness
-            .spawn_actor(
-                qp_key,
-                harness.peer.bind::<QpaMockManager>(),
-                MockQp::new(1, 2),
-                false,
-            )
+            .spawn_actor(qp_key, harness.peer.bind::<QpaMockManager>(), qp, false)
             .await?;
 
         let event = harness.next_supervision_failure().await;
@@ -2479,11 +3096,10 @@ mod tests {
             report.contains("peer rejected"),
             "failure report should surface the peer's error string; got: {report}"
         );
-        let status = await_status(&handle, |s| {
+        await_status(&handle, |s| {
             matches!(s, hyperactor::actor::ActorStatus::Failed(_))
         })
         .await;
-        assert!(matches!(status, hyperactor::actor::ActorStatus::Failed(_)));
         harness.teardown().await;
         Ok(())
     }
@@ -2503,13 +3119,9 @@ mod tests {
             other_id: harness.peer_id(),
             other_device: "mlx5_1".into(),
         };
+        let (qp, _posted_rx) = MockQp::new(1, 2);
         let handle = harness
-            .spawn_actor(
-                qp_key,
-                harness.peer.bind::<QpaMockManager>(),
-                MockQp::new(1, 2),
-                false,
-            )
+            .spawn_actor(qp_key, harness.peer.bind::<QpaMockManager>(), qp, false)
             .await?;
 
         let event = harness.next_supervision_failure().await;
@@ -2519,11 +3131,679 @@ mod tests {
             report.contains("timed out"),
             "failure report should mention timeout; got: {report}"
         );
-        let status = await_status(&handle, |s| {
+        await_status(&handle, |s| {
             matches!(s, hyperactor::actor::ActorStatus::Failed(_))
         })
         .await;
-        assert!(matches!(status, hyperactor::actor::ActorStatus::Failed(_)));
+        harness.teardown().await;
+        Ok(())
+    }
+
+    // =================================================================
+    // QueuePairActor op processing
+    // =================================================================
+
+    use crate::backend::ibverbs::primitives::IbvMemoryRegion;
+    use crate::local_memory::Keepalive;
+    use crate::local_memory::KeepaliveLocalMemory;
+
+    fn null_domain() -> Arc<IbvDomain> {
+        Arc::new(IbvDomain {
+            context: std::ptr::null_mut(),
+            pd: std::ptr::null_mut(),
+        })
+    }
+
+    /// No-op [`Keepalive`] for tests that mint a [`KeepaliveLocalMemory`]
+    /// from a fake address never actually read or written through.
+    struct FakeKeepalive;
+    impl Keepalive for FakeKeepalive {}
+
+    fn fake_local_memory(addr: usize, size: usize) -> Arc<KeepaliveLocalMemory> {
+        Arc::new(KeepaliveLocalMemory::new(
+            addr,
+            size,
+            Arc::new(FakeKeepalive),
+        ))
+    }
+
+    fn fake_mrv(id: usize, addr: usize, size: usize) -> IbvMemoryRegionView {
+        IbvMemoryRegionView::new(
+            id,
+            addr,
+            addr,
+            size,
+            0x1234,
+            0x5678,
+            "dev0".to_string(),
+            Arc::new(IbvMemoryRegion::Direct {
+                mr: std::ptr::null_mut(),
+                _domain: null_domain(),
+            }),
+        )
+    }
+
+    /// Build a `QpaMockManager` ref attested to an unrelated proc;
+    /// only used to populate `IbvOp::remote_manager` (the actor
+    /// never sends to it during op processing — it just reads
+    /// `op.remote_buffer`).
+    fn fake_remote_ref() -> ActorRef<QpaMockManager> {
+        let proc_id = hyperactor::id::ProcId::new(
+            hyperactor::id::Uid::Instance(0xc0ffee, None),
+            Some(hyperactor::id::Label::new("remote").unwrap()),
+        );
+        let proc_addr =
+            hyperactor::ProcAddr::new(proc_id, hyperactor::channel::ChannelAddr::Local(1).into());
+        ActorRef::attest(proc_addr.actor_addr("remote-mgr"))
+    }
+
+    fn make_op(op_type: RdmaOpType, addr: usize, size: usize) -> IbvOp<QpaMockManager> {
+        IbvOp {
+            op_type,
+            local_memory: fake_local_memory(addr, size),
+            remote_buffer: IbvBuffer {
+                mr_id: 1,
+                lkey: 0,
+                rkey: 0,
+                addr: 0x4000_0000,
+                size,
+                device_name: "remote_dev".to_string(),
+            },
+            remote_manager: fake_remote_ref(),
+        }
+    }
+
+    impl QpaHarness {
+        /// Spawn a `QueuePairActor` in loopback mode (no peer round
+        /// trip) so init completes immediately; await it reaching
+        /// `Idle`. Returns the actor handle along with the mock QP
+        /// the test can drive.
+        async fn spawn_ready_actor(
+            &self,
+            max_send_wr: u32,
+            max_rd_atomic: u32,
+        ) -> Result<(
+            ActorHandle<QueuePairActor<QpaMockManager, MockQp>>,
+            MockQp,
+            tokio::sync::mpsc::UnboundedReceiver<PostedOp>,
+        )> {
+            let (qp, posted_rx) = MockQp::new(0x1, 0x2);
+            let qp_key = QpKey {
+                self_device: "mlx5_0".into(),
+                other_id: self.parent_id(),
+                other_device: "mlx5_0".into(),
+            };
+            let handle = self
+                .spawn_actor_with_caps(
+                    qp_key,
+                    self.peer.bind::<QpaMockManager>(),
+                    qp.clone(),
+                    true,
+                    max_send_wr,
+                    max_rd_atomic,
+                )
+                .await?;
+            await_status(&handle, |s| {
+                matches!(s, hyperactor::actor::ActorStatus::Idle)
+            })
+            .await;
+            Ok((handle, qp, posted_rx))
+        }
+    }
+
+    /// Await the next `PostedOp` from the mock; panics on timeout.
+    async fn recv_posted(rx: &mut tokio::sync::mpsc::UnboundedReceiver<PostedOp>) -> PostedOp {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for post on MockQp")
+            .expect("MockQp post channel closed")
+    }
+
+    /// Assert that no further `PostedOp` arrives in `wait`. Used to
+    /// pin down a credit-blocked state.
+    async fn assert_no_post(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<PostedOp>,
+        wait: Duration,
+    ) {
+        if let Ok(Some(p)) = tokio::time::timeout(wait, rx.recv()).await {
+            panic!("unexpected post on MockQp: {p:?}");
+        }
+    }
+
+    fn expect_put(p: PostedOp) -> (IbvBuffer, IbvBuffer, Vec<u64>) {
+        match p {
+            PostedOp::Put {
+                lhandle,
+                rhandle,
+                wr_ids,
+            } => (lhandle, rhandle, wr_ids),
+            other => panic!("expected Put, got {other:?}"),
+        }
+    }
+
+    fn expect_get(p: PostedOp) -> (IbvBuffer, IbvBuffer, Vec<u64>) {
+        match p {
+            PostedOp::Get {
+                lhandle,
+                rhandle,
+                wr_ids,
+            } => (lhandle, rhandle, wr_ids),
+            other => panic!("expected Get, got {other:?}"),
+        }
+    }
+
+    /// Open a multi-shot port and send a `ProcessOps` batch. Returns
+    /// the receiver so the caller can await per-op results.
+    fn submit_ops(
+        harness: &QpaHarness,
+        actor: &ActorHandle<QueuePairActor<QpaMockManager, MockQp>>,
+        items: Vec<(usize, IbvOp<QpaMockManager>, IbvMemoryRegionView)>,
+    ) -> Result<hyperactor::mailbox::PortReceiver<OpResult>> {
+        let (reply, rx) = harness.client.mailbox().open_port::<OpResult>();
+        actor.post(&harness.client, ProcessOps { items, reply });
+        Ok(rx)
+    }
+
+    /// Collect exactly `n` replies with a per-recv timeout, sorted
+    /// by op_idx for deterministic comparison.
+    async fn collect_replies(
+        rx: &mut hyperactor::mailbox::PortReceiver<OpResult>,
+        n: usize,
+    ) -> Vec<(usize, Result<(), String>)> {
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            let m = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("timed out waiting for ProcessOps reply")
+                .expect("ProcessOps reply port closed");
+            out.push((m.op_idx, m.result));
+        }
+        out.sort_by_key(|(i, _)| *i);
+        out
+    }
+
+    /// Try to recv with a short timeout, returning `None` on timeout
+    /// so callers can assert "no reply yet".
+    async fn try_recv(
+        rx: &mut hyperactor::mailbox::PortReceiver<OpResult>,
+        wait: Duration,
+    ) -> Option<(usize, Result<(), String>)> {
+        match tokio::time::timeout(wait, rx.recv()).await {
+            Ok(Ok(m)) => Some((m.op_idx, m.result)),
+            Ok(Err(e)) => panic!("ProcessOps reply port closed: {e}"),
+            Err(_) => None,
+        }
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_processes_single_write() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+
+        let items = vec![(
+            7usize,
+            make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
+            fake_mrv(1, 0x1000, 4096),
+        )];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        // wr_ids start at 0 (fresh MockQp), so the single WR is wr 0.
+        let (lhandle, rhandle, wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(wr_ids, vec![0]);
+        assert_eq!(lhandle.addr, 0x1000);
+        assert_eq!(lhandle.size, 4096);
+        assert_eq!(lhandle.lkey, 0x1234);
+        assert_eq!(lhandle.rkey, 0x5678);
+        assert_eq!(lhandle.device_name, "dev0");
+        assert_eq!(rhandle.addr, 0x4000_0000);
+        assert_eq!(rhandle.size, 4096);
+        assert_eq!(rhandle.device_name, "remote_dev");
+
+        qp.queue_completion(0);
+        let replies = collect_replies(&mut rx, 1).await;
+        assert_eq!(replies, vec![(7, Ok(()))]);
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_chunked_op_waits_for_all_wrs() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 4).await?;
+
+        // A 3-chunk write (3 * MAX_RDMA_MSG_SIZE) splits into 3 WRs;
+        // the op's reply must be held back until all 3 complete.
+        let items = vec![(
+            11usize,
+            make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+            fake_mrv(1, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+        )];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        let (_, _, wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(wr_ids, vec![0, 1, 2]);
+
+        // Complete the first two — no reply yet.
+        qp.queue_completion(wr_ids[0]);
+        qp.queue_completion(wr_ids[1]);
+        assert!(
+            try_recv(&mut rx, Duration::from_millis(100))
+                .await
+                .is_none(),
+            "op should not be reported until every WR has completed",
+        );
+
+        // Complete the third — now the op resolves.
+        qp.queue_completion(wr_ids[2]);
+        let replies = collect_replies(&mut rx, 1).await;
+        assert_eq!(replies, vec![(11, Ok(()))]);
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_per_wr_error_held_until_all_wrs_complete() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 4).await?;
+
+        // 3-WR write: simulate the second WR failing first; the op's
+        // Err must not fire until the other 2 WRs have also reported
+        // so the MR registration outlives every in-flight WR.
+        let items = vec![(
+            42usize,
+            make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+            fake_mrv(1, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+        )];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        let (_, _, wr_ids) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(wr_ids.len(), 3);
+
+        // Deliver the per-WR error first.
+        qp.queue_per_wr_error(wr_ids[1], "simulated WR fail");
+        assert!(
+            try_recv(&mut rx, Duration::from_millis(100))
+                .await
+                .is_none(),
+            "op error must wait for the other WRs to drain",
+        );
+
+        // The remaining WRs complete (flush-style or otherwise) and
+        // finally the op's Err is reported.
+        qp.queue_completion(wr_ids[0]);
+        qp.queue_completion(wr_ids[2]);
+
+        let replies = collect_replies(&mut rx, 1).await;
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].0, 42);
+        let err = replies[0]
+            .1
+            .as_ref()
+            .expect_err("op should fail because one WR errored");
+        assert!(
+            err.contains("simulated WR fail"),
+            "op error should surface the per-WR error: {err}",
+        );
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_per_wr_error_isolates_to_failing_op() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 4).await?;
+
+        // Two writes share a batch: op_idx 0 is multi-WR (3 chunks),
+        // op_idx 1 is single-WR. One of op_idx 0's WRs fails;
+        // op_idx 1's WR succeeds independently.
+        let items = vec![
+            (
+                0usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+                fake_mrv(1, 0x1000, 3 * MAX_RDMA_MSG_SIZE),
+            ),
+            (
+                1usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
+                fake_mrv(2, 0x2000, 4096),
+            ),
+        ];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        let (_, _, big_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        let (_, _, small_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(big_wrs, vec![0, 1, 2]);
+        assert_eq!(small_wrs, vec![3]);
+
+        // op_idx 1 completes successfully on its own.
+        qp.queue_completion(small_wrs[0]);
+        // op_idx 0: middle WR fails, others succeed.
+        qp.queue_per_wr_error(big_wrs[1], "isolated per-WR fail");
+        qp.queue_completion(big_wrs[0]);
+        qp.queue_completion(big_wrs[2]);
+
+        let replies = collect_replies(&mut rx, 2).await;
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0].0, 0);
+        let err = replies[0]
+            .1
+            .as_ref()
+            .expect_err("op_idx 0 should fail because one WR errored");
+        assert!(
+            err.contains("isolated per-WR fail"),
+            "op_idx 0 error should name the per-WR error: {err}",
+        );
+        assert_eq!(replies[1], (1usize, Ok(())));
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_read_credit_gating() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        // max_rd_atomic=2 lets at most 2 RDMA_READs sit on the QP.
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(8, 2).await?;
+
+        let items = (0..3usize)
+            .map(|i| {
+                (
+                    i,
+                    make_op(RdmaOpType::ReadIntoLocal, 0x1000 + i * 0x1000, 4096),
+                    fake_mrv(i + 1, 0x1000 + i * 0x1000, 4096),
+                )
+            })
+            .collect();
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        // Only the first two reads make it onto the wire; the third
+        // stays parked at the queue head.
+        let (_, _, r0_wrs) = expect_get(recv_posted(&mut posted_rx).await);
+        let (_, _, r1_wrs) = expect_get(recv_posted(&mut posted_rx).await);
+        assert_eq!(r0_wrs, vec![0]);
+        assert_eq!(r1_wrs, vec![1]);
+        assert_no_post(&mut posted_rx, Duration::from_millis(50)).await;
+
+        // Complete the first read; the third should post.
+        qp.queue_completion(r0_wrs[0]);
+        let (_, _, r2_wrs) = expect_get(recv_posted(&mut posted_rx).await);
+        assert_eq!(r2_wrs, vec![2]);
+
+        qp.queue_completion(r1_wrs[0]);
+        qp.queue_completion(r2_wrs[0]);
+        let replies = collect_replies(&mut rx, 3).await;
+        assert_eq!(replies, vec![(0, Ok(())), (1, Ok(())), (2, Ok(()))]);
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_write_slot_gating() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        // max_send_wr=2 caps total in-flight WRs; submit 4 writes.
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(2, 8).await?;
+
+        let items = (0..4usize)
+            .map(|i| {
+                (
+                    i,
+                    make_op(RdmaOpType::WriteFromLocal, 0x1000 + i * 0x1000, 4096),
+                    fake_mrv(i + 1, 0x1000 + i * 0x1000, 4096),
+                )
+            })
+            .collect();
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        let (_, _, w0_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        let (_, _, w1_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(w0_wrs, vec![0]);
+        assert_eq!(w1_wrs, vec![1]);
+        assert_no_post(&mut posted_rx, Duration::from_millis(50)).await;
+
+        // Complete one — the third write should post; one slot still busy.
+        qp.queue_completion(w0_wrs[0]);
+        let (_, _, w2_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(w2_wrs, vec![2]);
+        assert_no_post(&mut posted_rx, Duration::from_millis(50)).await;
+
+        // Complete another — the fourth write posts.
+        qp.queue_completion(w1_wrs[0]);
+        let (_, _, w3_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(w3_wrs, vec![3]);
+
+        qp.queue_completion(w2_wrs[0]);
+        qp.queue_completion(w3_wrs[0]);
+        let replies = collect_replies(&mut rx, 4).await;
+        assert_eq!(
+            replies,
+            vec![(0, Ok(())), (1, Ok(())), (2, Ok(())), (3, Ok(()))],
+        );
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_blocked_until_one_read_and_one_write_complete() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        // max_send_wr=4, max_rd_atomic=2. The trailing 2-WR read
+        // needs *both* a free read credit (only 1 in use) and a free
+        // slot (currently full at 4) — so it sits parked until one
+        // read AND one write complete.
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+
+        let items = vec![
+            (
+                0usize,
+                make_op(RdmaOpType::ReadIntoLocal, 0x1000, 4096),
+                fake_mrv(1, 0x1000, 4096),
+            ),
+            (
+                1usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
+                fake_mrv(2, 0x2000, 4096),
+            ),
+            (
+                2usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x3000, 4096),
+                fake_mrv(3, 0x3000, 4096),
+            ),
+            (
+                3usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x4000, 4096),
+                fake_mrv(4, 0x4000, 4096),
+            ),
+            (
+                4usize,
+                make_op(RdmaOpType::ReadIntoLocal, 0x5000, 2 * MAX_RDMA_MSG_SIZE),
+                fake_mrv(5, 0x5000, 2 * MAX_RDMA_MSG_SIZE),
+            ),
+        ];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        // First four post: 1 read WR (op 0) + 3 write WRs (ops 1-3).
+        let (_, _, r0_wrs) = expect_get(recv_posted(&mut posted_rx).await);
+        let (_, _, w1_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        let (_, _, w2_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        let (_, _, w3_wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(r0_wrs, vec![0]);
+        assert_eq!(w1_wrs, vec![1]);
+        assert_eq!(w2_wrs, vec![2]);
+        assert_eq!(w3_wrs, vec![3]);
+        // The 2-WR read at op_idx 4 stays parked.
+        assert_no_post(&mut posted_rx, Duration::from_millis(50)).await;
+
+        // Completing just the in-flight read frees a read credit but
+        // doesn't free a slot — op 4 still blocks.
+        qp.queue_completion(r0_wrs[0]);
+        let first_reply = collect_replies(&mut rx, 1).await;
+        assert_eq!(first_reply, vec![(0, Ok(()))]);
+        assert_no_post(&mut posted_rx, Duration::from_millis(50)).await;
+
+        // Completing one write frees the last slot needed; op 4 posts.
+        qp.queue_completion(w1_wrs[0]);
+        let second_reply = collect_replies(&mut rx, 1).await;
+        assert_eq!(second_reply, vec![(1, Ok(()))]);
+        let (_, _, r4_wrs) = expect_get(recv_posted(&mut posted_rx).await);
+        assert_eq!(r4_wrs, vec![4, 5]);
+
+        // Drain everything else.
+        qp.queue_completion(w2_wrs[0]);
+        qp.queue_completion(w3_wrs[0]);
+        for &id in &r4_wrs {
+            qp.queue_completion(id);
+        }
+        let rest = collect_replies(&mut rx, 3).await;
+        assert_eq!(rest, vec![(2, Ok(())), (3, Ok(())), (4, Ok(()))]);
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_multiple_batches_share_credit() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+
+        // Batch A: 2 writes with op_idx 10, 11.
+        let batch_a = vec![
+            (
+                10usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
+                fake_mrv(1, 0x1000, 4096),
+            ),
+            (
+                11usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
+                fake_mrv(2, 0x2000, 4096),
+            ),
+        ];
+        let mut rx_a = submit_ops(&harness, &actor, batch_a)?;
+
+        // Batch B: 2 writes with op_idx 20, 21. Shares the QP with
+        // Batch A — together they sit at 4/4 max_send_wr.
+        let batch_b = vec![
+            (
+                20usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x3000, 4096),
+                fake_mrv(3, 0x3000, 4096),
+            ),
+            (
+                21usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x4000, 4096),
+                fake_mrv(4, 0x4000, 4096),
+            ),
+        ];
+        let mut rx_b = submit_ops(&harness, &actor, batch_b)?;
+
+        // Collect 4 post events (one per write).
+        let mut all_wr_ids = Vec::new();
+        for _ in 0..4 {
+            let (_, _, wrs) = expect_put(recv_posted(&mut posted_rx).await);
+            all_wr_ids.extend(wrs);
+        }
+        for &id in &all_wr_ids {
+            qp.queue_completion(id);
+        }
+
+        let replies_a = collect_replies(&mut rx_a, 2).await;
+        assert_eq!(replies_a, vec![(10, Ok(())), (11, Ok(()))]);
+        let replies_b = collect_replies(&mut rx_b, 2).await;
+        assert_eq!(replies_b, vec![(20, Ok(())), (21, Ok(()))]);
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_op_too_large_for_qp() -> Result<()> {
+        let harness = QpaHarness::build()?;
+        // max_send_wr=1 with a 2-chunk write → can never fit.
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(1, 1).await?;
+
+        let items = vec![
+            (
+                0usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x1000, 2 * MAX_RDMA_MSG_SIZE),
+                fake_mrv(1, 0x1000, 2 * MAX_RDMA_MSG_SIZE),
+            ),
+            (
+                1usize,
+                make_op(RdmaOpType::WriteFromLocal, 0x2000, 4096),
+                fake_mrv(2, 0x2000, 4096),
+            ),
+        ];
+        let mut rx = submit_ops(&harness, &actor, items)?;
+
+        // Only op_idx 1 reaches the wire (op_idx 0 was rejected).
+        let (_, _, wrs) = expect_put(recv_posted(&mut posted_rx).await);
+        assert_eq!(wrs, vec![0]);
+        qp.queue_completion(0);
+
+        let replies = collect_replies(&mut rx, 2).await;
+        // op_idx 0 must report a "too large" error; op_idx 1 succeeds.
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0].0, 0);
+        let err = replies[0]
+            .1
+            .as_ref()
+            .expect_err("op_idx 0 should fail as too large");
+        assert!(err.contains("too large"), "expected too-large error: {err}");
+        assert_eq!(replies[1], (1usize, Ok(())));
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_poll_error_kills_actor_via_supervision() -> Result<()> {
+        let mut harness = QpaHarness::build()?;
+        let (actor, qp, mut posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+
+        // Post one op so the next poll has something to look at.
+        let items = vec![(
+            0usize,
+            make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
+            fake_mrv(1, 0x1000, 4096),
+        )];
+        let _rx = submit_ops(&harness, &actor, items)?;
+        let _ = recv_posted(&mut posted_rx).await;
+        qp.queue_poll_error(PollCompletionError::for_test("simulated CQ poison"));
+
+        let event = harness.next_supervision_failure().await;
+        assert_eq!(&event.actor_id, actor.actor_addr());
+        let report = event.failure_report().expect("event should be a failure");
+        assert!(
+            report.contains("CQ poll failed") && report.contains("simulated CQ poison"),
+            "supervision report should name the poll failure: {report}",
+        );
+        await_status(&actor, |s| {
+            matches!(s, hyperactor::actor::ActorStatus::Failed(_))
+        })
+        .await;
+        harness.teardown().await;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn qpa_post_error_kills_actor_via_supervision() -> Result<()> {
+        let mut harness = QpaHarness::build()?;
+        let (actor, qp, _posted_rx) = harness.spawn_ready_actor(4, 2).await?;
+
+        qp.queue_post_error("simulated post failure");
+        let items = vec![(
+            0usize,
+            make_op(RdmaOpType::WriteFromLocal, 0x1000, 4096),
+            fake_mrv(1, 0x1000, 4096),
+        )];
+        let _rx = submit_ops(&harness, &actor, items)?;
+
+        let event = harness.next_supervision_failure().await;
+        assert_eq!(&event.actor_id, actor.actor_addr());
+        let report = event.failure_report().expect("event should be a failure");
+        assert!(
+            report.contains("qp.put failed") && report.contains("simulated post failure"),
+            "supervision report should name the post failure: {report}",
+        );
+        await_status(&actor, |s| {
+            matches!(s, hyperactor::actor::ActorStatus::Failed(_))
+        })
+        .await;
         harness.teardown().await;
         Ok(())
     }
