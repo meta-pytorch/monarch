@@ -23,6 +23,7 @@ use hyperactor::ActorAddr;
 use hyperactor::ActorHandle;
 use hyperactor::Addr;
 use hyperactor::Bind;
+use hyperactor::Client;
 use hyperactor::Context;
 use hyperactor::Data;
 use hyperactor::Endpoint as _;
@@ -35,6 +36,8 @@ use hyperactor::RemoteEndpoint as _;
 use hyperactor::Unbind;
 use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::actor::remote::Remote;
+use hyperactor::id::Label;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::proc::Proc;
@@ -337,7 +340,10 @@ impl ProcAgent {
             stopping_all: false,
             mesh_orphan_timeout: orphan_timeout,
         };
-        proc.spawn::<Self>(PROC_AGENT_ACTOR_NAME, agent)
+        proc.spawn_with_uid::<Self>(
+            Uid::singleton(Label::new(PROC_AGENT_ACTOR_NAME).unwrap()),
+            agent,
+        )
     }
 
     /// Returns true when every tracked actor has a terminal supervision event
@@ -519,7 +525,7 @@ impl Actor for ProcAgent {
             // PA-1 (ProcAgent path): proc-node children used by
             // admin/TUI must be computed from live proc state at query
             // time, not solely from cached published_properties.
-            // Therefore a direct proc.spawn() actor must appear on the
+            // Therefore a direct proc.spawn_with_label() actor must appear on the
             // next QueryChild(Addr::Proc) response without an
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
@@ -1141,7 +1147,7 @@ impl Handler<resource::KeepaliveGetState<ActorState>> for ProcAgent {
 #[derive(Debug, hyperactor::Handler, hyperactor::HandleClient)]
 pub struct NewClientInstance {
     #[reply]
-    pub client_instance: PortHandle<Instance<()>>,
+    pub client_instance: PortHandle<Client>,
 }
 
 #[async_trait]
@@ -1151,8 +1157,8 @@ impl Handler<NewClientInstance> for ProcAgent {
         cx: &Context<Self>,
         NewClientInstance { client_instance }: NewClientInstance,
     ) -> anyhow::Result<()> {
-        let (instance, _handle) = self.proc.client("client")?;
-        client_instance.post(cx, instance);
+        let client = self.proc.client("client");
+        client_instance.post(cx, client);
         Ok(())
     }
 }
@@ -1244,7 +1250,7 @@ mod tests {
     hyperactor::register_spawnable!(ExtraActor);
     // Verifies that QueryChild(Addr::Proc) on a ProcAgent returns
     // a live IntrospectResult whose children reflect actors spawned
-    // directly on the proc — i.e. via proc.spawn(), which bypasses the
+    // directly on the proc — i.e. via proc.spawn_with_label(), which bypasses the
     // gspawn message handler and therefore never triggers
     // publish_introspect_properties.
     //
@@ -1275,14 +1281,14 @@ mod tests {
 
         // Client instance for opening reply ports.
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
 
         // Helper: send QueryChild(Proc) and return the payload with a
         // timeout so a misrouted reply fails fast rather than hanging.
-        let query = |client: &hyperactor::Instance<()>| {
+        let query = |client: &hyperactor::Client| {
             let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
             port.post(
                 client,
@@ -1324,7 +1330,7 @@ mod tests {
         // Spawn an actor directly on the proc, bypassing ProcAgent's
         // gspawn message handler. This is how supervision-spawned
         // actors (e.g. sieve children) are created.
-        proc.spawn("extra_actor", ExtraActor).unwrap();
+        proc.spawn_with_label("extra_actor", ExtraActor);
 
         // Second query: extra_actor must appear without any republish.
         let payload2 = recv(query(&client)).await;
@@ -1380,7 +1386,7 @@ mod tests {
             .unwrap();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         let agent_id: ActorAddr = proc.proc_addr().actor_addr(PROC_AGENT_ACTOR_NAME);
         let port = PortRef::<IntrospectMessage>::attest_handler_port(&agent_id);
@@ -1388,7 +1394,7 @@ mod tests {
         // Concurrent query task: send QueryChild(Proc) every 10ms.
         let query_client_proc =
             Proc::direct(ChannelTransport::Unix.any(), "query_client".to_string()).unwrap();
-        let (query_client, _qc_handle) = query_client_proc.client("qc").unwrap();
+        let query_client = query_client_proc.client("qc");
         let query_port = port.clone();
         let query_proc_id = proc.proc_addr().clone();
         let query_count = Arc::new(AtomicUsize::new(0));
@@ -1420,7 +1426,7 @@ mod tests {
         let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             for i in 0..ITERATIONS {
                 let name = format!("churn_{}", i);
-                let handle = proc.spawn(&name, ExtraActor).unwrap();
+                let handle = proc.spawn_with_label(&name, ExtraActor);
                 let actor_id = handle.actor_addr().clone();
                 if let Some(mut status) = proc.stop_actor(actor_id.id(), "churn".to_string()) {
                     let _ = tokio::time::timeout(
@@ -1492,7 +1498,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (client, _client_handle) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let agent_ref: ActorRef<ProcAgent> = agent_handle.bind();
 
         let actor_type = hyperactor::actor::remote::Remote::collect()
@@ -1677,18 +1683,13 @@ mod tests {
 
         let client_proc =
             Proc::direct(ChannelTransport::Unix.any(), "qd_client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Spawn a blocking actor with a shared gate.
         let gate = Arc::new(tokio::sync::Notify::new());
-        let blocker = proc
-            .spawn(
-                "blocker",
-                BlockActor {
-                    gate: Some(Arc::clone(&gate)),
-                },
-            )
-            .unwrap();
+        let blocker = proc.spawn(BlockActor {
+            gate: Some(Arc::clone(&gate)),
+        });
 
         // Block the actor and queue additional work behind it.
         blocker.block(&client).await.unwrap();
