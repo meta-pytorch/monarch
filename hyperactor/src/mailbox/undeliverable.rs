@@ -55,8 +55,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::ActorAddr;
-use crate::Client;
 use crate::Addr;
+use crate::Client;
 use crate::EndpointLocation;
 // for macros
 use crate::Message;
