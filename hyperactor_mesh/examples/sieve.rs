@@ -103,11 +103,9 @@ impl Handler<NextNumber> for SieveActor {
                 );
                 msg.prime_collector.post(cx, msg.number);
 
-                self.next = Some(
-                    SieveActor::new(SieveParams { prime: msg.number }, Flattrs::default())
-                        .await?
-                        .spawn(cx)?,
-                );
+                self.next = Some(cx.spawn(
+                    SieveActor::new(SieveParams { prime: msg.number }, Flattrs::default()).await?,
+                ));
             }
         }
         Ok(())

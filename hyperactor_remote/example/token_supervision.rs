@@ -121,7 +121,7 @@ impl Handler<token::Joined<ActorRef<WorkerLike>>> for Parent {
             message.peer,
             KeepaliveLink::new(self.keepalive_interval, self.keepalive_timeout),
             LinkOptions::default(),
-        ))?;
+        ));
         self.supervisor = Some(supervisor);
         if let Some(path) = &self.ready_file {
             write_text(path, "linked").await?;
@@ -191,18 +191,15 @@ async fn run_parent(args: ParentArgs) -> anyhow::Result<()> {
         ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Localhost)),
         "token_supervision_parent".to_string(),
     )?;
-    let parent = proc.spawn(
-        "parent",
-        Parent {
-            token_file: args.token_file,
-            ready_file: args.ready_file,
-            event_file: args.event_file,
-            exit_after_link: args.exit_after_link,
-            keepalive_interval: args.keepalive_interval,
-            keepalive_timeout: args.keepalive_timeout,
-            supervisor: None,
-        },
-    )?;
+    let parent = proc.spawn(Parent {
+        token_file: args.token_file,
+        ready_file: args.ready_file,
+        event_file: args.event_file,
+        exit_after_link: args.exit_after_link,
+        keepalive_interval: args.keepalive_interval,
+        keepalive_timeout: args.keepalive_timeout,
+        supervisor: None,
+    });
     parent.await;
     println!("parent process exiting");
     Ok(())
@@ -214,13 +211,10 @@ async fn run_joiner(args: JoinerArgs) -> anyhow::Result<()> {
         ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Localhost)),
         "token_supervision_joiner".to_string(),
     )?;
-    let (joiner, _joiner_handle) = proc.client("joiner")?;
-    let worker = proc.spawn(
-        "worker",
-        Worker::new(DemoChild {
-            stopped_file: args.stopped_file,
-        }),
-    )?;
+    let joiner = proc.client("joiner");
+    let worker = proc.spawn(Worker::new(DemoChild {
+        stopped_file: args.stopped_file,
+    }));
     let (result_port, mut result_rx) = joiner.open_port::<token::JoinResult<ActorAddr>>();
 
     token.join(&joiner, worker.bind::<WorkerLike>(), result_port.bind())?;
