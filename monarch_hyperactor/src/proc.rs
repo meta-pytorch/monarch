@@ -12,11 +12,11 @@ use std::hash::Hasher;
 use std::time::Duration;
 
 use anyhow::Result;
+use hyperactor::Client;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyRuntimeError;
@@ -99,11 +99,9 @@ impl PyProc {
         let proc = self.inner.clone();
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
         crate::runtime::future_into_py(py, async move {
+            let actor = PythonActor::new(pickled_type, None, None, None)?;
             Ok(PythonActorHandle {
-                inner: proc.spawn(
-                    name.as_deref().unwrap_or("anon"),
-                    PythonActor::new(pickled_type, None, None, None)?,
-                )?,
+                inner: proc.spawn_with_label(name.as_deref().unwrap_or("anon"), actor),
             })
         })
     }
@@ -119,12 +117,11 @@ impl PyProc {
         let pickled_type = PickledPyObject::pickle(actor.as_any())?;
         Ok(PythonActorHandle {
             inner: signal_safe_block_on(py, async move {
-                proc.spawn(
-                    name.as_deref().unwrap_or("anon"),
-                    PythonActor::new(pickled_type, None, None, None)?,
-                )
+                let actor = PythonActor::new(pickled_type, None, None, None)?;
+                Ok(proc.spawn_with_label(name.as_deref().unwrap_or("anon"), actor))
             })
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))??,
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            .map_err(|e: anyhow::Error| PyRuntimeError::new_err(e.to_string()))?,
         })
     }
 }
@@ -324,7 +321,7 @@ impl PySerialized {
 /// a python actor. This helps by allowing users to specialize the actor to the
 /// message type they want to handle.
 pub struct InstanceWrapper<M: RemoteMessage> {
-    instance: Instance<()>,
+    instance: Client,
     message_receiver: PortReceiver<M>,
     signal_receiver: PortReceiver<Signal>,
     status: InstanceStatus,
@@ -333,7 +330,7 @@ pub struct InstanceWrapper<M: RemoteMessage> {
 
 impl<M: RemoteMessage> InstanceWrapper<M> {
     pub fn new(proc: &PyProc, actor_name: &str) -> Result<Self> {
-        let instance = proc.inner.client(actor_name)?.0;
+        let instance = proc.inner.client(actor_name);
         // TEMPORARY: remove after using fixed handler ports.
         let (_handler_port, message_receiver) = instance.bind_handler_port::<M>();
 
@@ -451,7 +448,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         Ok(messages)
     }
 
-    pub fn instance(&self) -> &Instance<()> {
+    pub fn instance(&self) -> &Client {
         &self.instance
     }
 
