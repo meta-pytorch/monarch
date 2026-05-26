@@ -11,7 +11,7 @@
 import json
 import time
 import unittest.mock
-from typing import cast
+from typing import Any, cast
 
 import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
@@ -24,7 +24,6 @@ from monarch._src.actor.proc_mesh import (
     SetupActor,
     unregister_proc_mesh_spawn_callback,
 )
-from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.job import MeshAdminConfig, ProcessJob, TelemetryConfig
 from scoped_state import scoped_state
 
@@ -44,6 +43,11 @@ class SenderActor(Actor):
     def send_ping(self, target: WorkerActor) -> None:
         """Cast to the target actor mesh from within this actor."""
         target.ping.call().get()
+
+
+def _telemetry_config(**kwargs: Any) -> TelemetryConfig:
+    kwargs.setdefault("dashboard_port", 0)
+    return TelemetryConfig(**kwargs)
 
 
 @pytest.fixture
@@ -114,7 +118,7 @@ def test_actors_table() -> None:
     """Test that the actors table is populated when actors are spawned."""
     # Spawn some worker actors - this should trigger notify_actor_created
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -174,7 +178,7 @@ def test_meshes_table() -> None:
     """Test that the meshes table is populated when actor meshes are spawned."""
     # Spawn some worker actors - this should trigger notify_mesh_created
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -269,7 +273,7 @@ def test_proc_mesh_in_meshes_table() -> None:
     """Test that ProcMesh creation is recorded in the meshes table with class 'Proc'."""
     # Spawn a named proc mesh — this should emit a mesh event with class "Proc"
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -332,7 +336,7 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     """Test that actors.mesh_id matches meshes.id, enabling joins."""
     # Spawn actors — this populates both the actors and meshes tables
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -385,7 +389,7 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
     # Spawn a named proc mesh and user actors
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -452,7 +456,7 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
     # Spawn a named proc mesh and user actors
     with scoped_state(
-        ProcessJob({"hosts": 2}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 2}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -504,7 +508,6 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
         child_names = child_dict.get("given_name", [])
         child_ids = child_dict.get("id", [])
 
-        # The proc mesh should contain user-spawned actor and telemetry, logger, setup, agent, and comm actors.
         assert set(child_names) == {
             "worker_actors",
             "telemetry",
@@ -534,7 +537,7 @@ def test_actor_status_events_table() -> None:
     """Test that the actor_status_events table is populated when actors change status."""
     # Spawn worker actors — actors go through status transitions during spawn
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -594,7 +597,7 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
     """Test that rank and parent_view_json are correct for sliced and full actor meshes."""
     # Spawn 3 workers so we can slice a subset
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -701,7 +704,7 @@ def test_sent_messages_table(
       - shape_json: serialized ndslice::Shape (converted from the Region)
     """
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -783,7 +786,7 @@ def test_sent_messages_table(
 def test_messages_table(cleanup_callbacks) -> None:
     """Test that the messages table is populated when messages are received."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -839,7 +842,7 @@ def test_messages_table(cleanup_callbacks) -> None:
 def test_messages_endpoint(cleanup_callbacks) -> None:
     """Test that the messages table endpoint column is populated with the method name."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -879,7 +882,7 @@ def test_messages_endpoint(cleanup_callbacks) -> None:
 def test_message_status_events_table(cleanup_callbacks) -> None:
     """Test that message_status_events captures queued/active/complete transitions."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -932,7 +935,7 @@ def test_message_status_events_table(cleanup_callbacks) -> None:
 def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -989,7 +992,7 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
     """Test that sender_actor_id identifies the actor that initiated the cast,
     not the target actor, when one actor casts to another actor mesh."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -1058,7 +1061,7 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
 def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
     """Test that query still works after a user-spawned actor's proc mesh is stopped."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -1151,7 +1154,7 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
     messages) is still queryable.
     """
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -1237,105 +1240,115 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
     """Store a py-spy dump via actor endpoint, query it back via SQL."""
-    engine, _, _scanner = start_telemetry(include_dashboard=False)
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
 
-    pyspy_json = json.dumps(
-        {
-            "Ok": {
-                "pid": 1234,
-                "binary": "python3",
-                "stack_traces": [
-                    {
-                        "pid": 1234,
-                        "thread_id": 1,
-                        "thread_name": "MainThread",
-                        "os_thread_id": 100,
-                        "active": True,
-                        "owns_gil": True,
-                        "frames": [
-                            {
-                                "name": "stalling_fn",
-                                "filename": "app.py",
-                                "module": "app",
-                                "short_filename": "app.py",
-                                "line": 10,
-                                "locals": [
-                                    {
-                                        "name": "x",
-                                        "addr": 100,
-                                        "arg": True,
-                                        "repr": "42",
-                                    },
-                                    {
-                                        "name": "y",
-                                        "addr": 200,
-                                        "arg": False,
-                                        "repr": None,
-                                    },
-                                ],
-                                "is_entry": False,
-                            },
-                            {
-                                "name": "main",
-                                "filename": "app.py",
-                                "module": "app",
-                                "short_filename": "app.py",
-                                "line": 5,
-                                "locals": [
-                                    {
-                                        "name": "z",
-                                        "addr": 300,
-                                        "arg": True,
-                                        "repr": "'hello'",
-                                    },
-                                ],
-                                "is_entry": True,
-                            },
-                        ],
-                    }
-                ],
-                "warnings": [],
+        pyspy_json = json.dumps(
+            {
+                "Ok": {
+                    "pid": 1234,
+                    "binary": "python3",
+                    "stack_traces": [
+                        {
+                            "pid": 1234,
+                            "thread_id": 1,
+                            "thread_name": "MainThread",
+                            "os_thread_id": 100,
+                            "active": True,
+                            "owns_gil": True,
+                            "frames": [
+                                {
+                                    "name": "stalling_fn",
+                                    "filename": "app.py",
+                                    "module": "app",
+                                    "short_filename": "app.py",
+                                    "line": 10,
+                                    "locals": [
+                                        {
+                                            "name": "x",
+                                            "addr": 100,
+                                            "arg": True,
+                                            "repr": "42",
+                                        },
+                                        {
+                                            "name": "y",
+                                            "addr": 200,
+                                            "arg": False,
+                                            "repr": None,
+                                        },
+                                    ],
+                                    "is_entry": False,
+                                },
+                                {
+                                    "name": "main",
+                                    "filename": "app.py",
+                                    "module": "app",
+                                    "short_filename": "app.py",
+                                    "line": 5,
+                                    "locals": [
+                                        {
+                                            "name": "z",
+                                            "addr": 300,
+                                            "arg": True,
+                                            "repr": "'hello'",
+                                        },
+                                    ],
+                                    "is_entry": True,
+                                },
+                            ],
+                        }
+                    ],
+                    "warnings": [],
+                }
             }
-        }
-    )
+        )
 
-    engine._actor.store_pyspy_dump.call("dump-1", "proc[0]", pyspy_json).get()
+        engine._actor.store_pyspy_dump.call("dump-1", "proc[0]", pyspy_json).get()
 
-    result = engine.query(
-        "SELECT name, line FROM pyspy_frames "
-        "WHERE dump_id = 'dump-1' ORDER BY frame_depth"
-    )
-    result_dict = result.to_pydict()
-    assert len(result_dict["name"]) == 2
-    assert result_dict["name"] == ["stalling_fn", "main"]
+        result = engine.query(
+            "SELECT name, line FROM pyspy_frames "
+            "WHERE dump_id = 'dump-1' ORDER BY frame_depth"
+        )
+        result_dict = result.to_pydict()
+        assert len(result_dict["name"]) == 2
+        assert result_dict["name"] == ["stalling_fn", "main"]
 
-    # Query local variables
-    locals_result = engine.query(
-        "SELECT name, addr, arg, repr, frame_depth FROM pyspy_local_variables "
-        "WHERE dump_id = 'dump-1' ORDER BY frame_depth, name"
-    )
-    locals_dict = locals_result.to_pydict()
-    assert len(locals_dict["name"]) == 3
-    assert locals_dict["name"] == ["x", "y", "z"]
-    assert locals_dict["addr"] == [100, 200, 300]
-    assert locals_dict["arg"] == [True, False, True]
-    assert locals_dict["repr"] == ["42", None, "'hello'"]
-    assert locals_dict["frame_depth"] == [0, 0, 1]
+        # Query local variables
+        locals_result = engine.query(
+            "SELECT name, addr, arg, repr, frame_depth FROM pyspy_local_variables "
+            "WHERE dump_id = 'dump-1' ORDER BY frame_depth, name"
+        )
+        locals_dict = locals_result.to_pydict()
+        assert len(locals_dict["name"]) == 3
+        assert locals_dict["name"] == ["x", "y", "z"]
+        assert locals_dict["addr"] == [100, 200, 300]
+        assert locals_dict["arg"] == [True, False, True]
+        assert locals_dict["repr"] == ["42", None, "'hello'"]
+        assert locals_dict["frame_depth"] == [0, 0, 1]
 
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
     """py-spy tables are visible in information_schema."""
-    engine, _, _scanner = start_telemetry(include_dashboard=False)
-    result = engine.query(
-        "SELECT table_name FROM information_schema.tables ORDER BY table_name"
-    )
-    table_names = result.to_pydict().get("table_name", [])
-    assert "pyspy_dumps" in table_names
-    assert "pyspy_stack_traces" in table_names
-    assert "pyspy_frames" in table_names
-    assert "pyspy_local_variables" in table_names
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        result = engine.query(
+            "SELECT table_name FROM information_schema.tables ORDER BY table_name"
+        )
+        table_names = result.to_pydict().get("table_name", [])
+        assert "pyspy_dumps" in table_names
+        assert "pyspy_stack_traces" in table_names
+        assert "pyspy_frames" in table_names
+        assert "pyspy_local_variables" in table_names
 
 
 @pytest.mark.timeout(120)
@@ -1343,7 +1356,7 @@ def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
 def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
     """store_pyspy_dump stores data with a child proc_ref."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -1430,7 +1443,7 @@ def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
 def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
     """store_pyspy_dump stores data even for unknown proc_ref values."""
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -1501,12 +1514,16 @@ def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_json_columns_are_valid_json() -> None:
     """Test that all view_json and shape_json columns contain valid JSON."""
-    engine, _, _scanner = start_telemetry(batch_size=10)
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
 
-    # Spawn actors and send messages to populate all tables that have JSON columns:
-    # - meshes: shape_json, parent_view_json
-    # - sent_messages: view_json, shape_json
-    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        # Spawn actors and send messages to populate all tables that have JSON columns:
+        # - meshes: shape_json, parent_view_json
+        # - sent_messages: view_json, shape_json
         hosts = state.hosts
         worker_procs = hosts.spawn_procs(
             per_host={"workers": 2}, name="json_test_procs"
@@ -1585,7 +1602,7 @@ def test_per_table_row_retention(cleanup_callbacks) -> None:
     # Use a 1-second retention window so rows expire quickly.
     with scoped_state(
         ProcessJob({"hosts": 1}).enable_telemetry(
-            TelemetryConfig(batch_size=2, retention_secs=1)
+            _telemetry_config(batch_size=2, retention_secs=1)
         ),
         cached_path=None,
     ) as state:
@@ -1624,7 +1641,7 @@ def test_scan_timeout_on_dead_child(cleanup_callbacks) -> None:
     then verifies the query completes within a bounded time instead of hanging.
     """
     with scoped_state(
-        ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10)),
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config(batch_size=10)),
         cached_path=None,
     ) as state:
         engine = state.query_engine
@@ -1693,33 +1710,40 @@ def test_snapshot_schemas_pre_registered(cleanup_callbacks) -> None:
     SI-1 (discoverable), SI-6 (unconditional schemas); see snapshot
     integration invariants in monarch_introspection_snapshot::integration.
     """
-    engine, _, _scanner = start_telemetry(include_dashboard=False)
-    result = engine.query(
-        "SELECT table_name FROM information_schema.tables ORDER BY table_name"
-    )
-    table_names = result.to_pydict().get("table_name", [])
-
-    expected_snapshot_tables = [
-        "actor_failures",
-        "actor_nodes",
-        "children",
-        "host_nodes",
-        "nodes",
-        "proc_nodes",
-        "resolution_errors",
-        "root_nodes",
-        "snapshots",
-    ]
-    for table in expected_snapshot_tables:
-        assert table in table_names, (
-            f"snapshot table '{table}' should be pre-registered"
+    with scoped_state(
+        ProcessJob({"hosts": 1}).enable_telemetry(_telemetry_config()),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        result = engine.query(
+            "SELECT table_name FROM information_schema.tables ORDER BY table_name"
         )
+        table_names = result.to_pydict().get("table_name", [])
 
-    # All snapshot tables should be queryable with 0 rows.
-    for table in expected_snapshot_tables:
-        count_result = engine.query(f"SELECT COUNT(*) AS cnt FROM {table}")
-        cnt = count_result.to_pydict()["cnt"][0]
-        assert cnt == 0, f"'{table}' should have 0 rows before any capture, got {cnt}"
+        expected_snapshot_tables = [
+            "actor_failures",
+            "actor_nodes",
+            "children",
+            "host_nodes",
+            "nodes",
+            "proc_nodes",
+            "resolution_errors",
+            "root_nodes",
+            "snapshots",
+        ]
+        for table in expected_snapshot_tables:
+            assert table in table_names, (
+                f"snapshot table '{table}' should be pre-registered"
+            )
+
+        # All snapshot tables should be queryable with 0 rows.
+        for table in expected_snapshot_tables:
+            count_result = engine.query(f"SELECT COUNT(*) AS cnt FROM {table}")
+            cnt = count_result.to_pydict()["cnt"][0]
+            assert cnt == 0, (
+                f"'{table}' should have 0 rows before any capture, got {cnt}"
+            )
 
 
 @pytest.mark.timeout(180)
@@ -1740,7 +1764,7 @@ def test_snapshot_periodic_capture_populates_tables(cleanup_callbacks) -> None:
 
     with scoped_state(
         ProcessJob({"hosts": 1})
-        .enable_telemetry(TelemetryConfig(batch_size=10, snapshot_interval_secs=5))
+        .enable_telemetry(_telemetry_config(batch_size=10, snapshot_interval_secs=5))
         .enable_admin(
             MeshAdminConfig(
                 # Use an ephemeral admin port so concurrent --stress-runs
