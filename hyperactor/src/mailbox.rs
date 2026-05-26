@@ -2052,6 +2052,17 @@ impl<M: Message> PortHandle<M> {
             let sequencer = cx.instance().sequencer();
             let bound_ref: PortAddr = bound_port.clone();
             let seq_info = sequencer.assign_seq(&bound_ref);
+            // Pair SENDER_ACTOR_ID stamp with SEQ_INFO. PortHandle::try_post
+            // starts with Flattrs::new(), so there's no caller-supplied stale
+            // header to defend against — use the simpler "fresh" helper.
+            if let SeqInfo::Session { seq, .. } = &seq_info {
+                crate::mailbox::headers::stamp_sender_actor_id_fresh(
+                    &mut headers,
+                    *seq,
+                    &bound_ref,
+                    cx.mailbox().actor_addr(),
+                );
+            }
             headers.set(SEQ_INFO, seq_info);
         } else {
             // Because the port is not bound, messages can only be sent through

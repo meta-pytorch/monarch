@@ -3342,6 +3342,22 @@ impl<A: Actor> Instance<A> {
         &self.inner.sequencer
     }
 
+    /// Reserve (consume) the next `count` ordering sequence numbers for
+    /// the given destination without posting any messages. Subsequent
+    /// normal sends to this destination pick up at `last_reserved + 1`,
+    /// creating a deterministic gap from the receiver's perspective.
+    ///
+    /// Test/demo only. Production code should not call this; misuse will
+    /// produce stalled receivers. Marked `#[doc(hidden)]`; review
+    /// discipline is the misuse defense.
+    #[doc(hidden)]
+    pub fn debug_skip_next_ordering_seq(&self, dest: &PortAddr, count: u64) {
+        let sequencer = self.sequencer();
+        for _ in 0..count {
+            let _ = sequencer.assign_seq(dest);
+        }
+    }
+
     /// Return this instance's ID.
     pub fn instance_id(&self) -> Uuid {
         self.inner.id
@@ -4222,7 +4238,12 @@ impl<A: Actor> HandlerPorts<A> {
                 // considered drainable accepted work; after draining begins,
                 // that missing future sequence is rejected.
                 let enqueue = move |headers: Flattrs, msg: M| {
+                    // Extract values from headers BEFORE they're moved into
+                    // WorkCell — Flattrs::get returns owned typed values, so
+                    // these bindings don't borrow from `headers` and `headers`
+                    // can be moved into WorkCell freely.
                     let seq_info = headers.get(SEQ_INFO);
+                    let sender = headers.get(crate::mailbox::headers::SENDER_ACTOR_ID);
 
                     let work = WorkCell::new(move |actor: &mut A, instance: &Instance<A>| {
                         Box::pin(async move {
@@ -4246,7 +4267,7 @@ impl<A: Actor> HandlerPorts<A> {
                             Some(SeqInfo::Session { session_id, seq }) => {
                                 // TODO: return the message contained in the error instead of dropping them when converting
                                 // to anyhow::Error. In that way, the message can be picked up by mailbox and returned to sender.
-                                workq.send(session_id, seq, work).map_err(|e| match e {
+                                workq.send(session_id, seq, sender, work).map_err(|e| match e {
                                     OrderedSenderError::InvalidZeroSeq(_) => {
                                         let error_msg = format!(
                                             "in enqueue func for {}, got seq 0 for message type {}",
@@ -4912,6 +4933,74 @@ mod tests {
             monitored_return_handle(),
         );
         assert_eq!(forwarded.load(Ordering::SeqCst), 1);
+    }
+
+    /// `Instance::post` (-> `MailboxExt::post`) must stamp `SENDER_ACTOR_ID`
+    /// alongside the `SEQ_INFO` it assigns when the destination is a handler
+    /// port. Verified by forwarding to a different `ProcId` and capturing the
+    /// outbound envelope.
+    #[tokio::test]
+    async fn test_mailbox_ext_post_stamps_sender_actor_id() {
+        use typeuri::Named;
+
+        use crate::mailbox::headers::SENDER_ACTOR_ID;
+
+        #[derive(typeuri::Named)]
+        struct DestHandlerMsg;
+
+        #[derive(Clone, Default)]
+        struct CapturingSender(Arc<Mutex<Vec<MessageEnvelope>>>);
+
+        #[async_trait]
+        impl MailboxSender for CapturingSender {
+            fn post_unchecked(
+                &self,
+                envelope: MessageEnvelope,
+                _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+            ) {
+                self.0.lock().unwrap().push(envelope);
+            }
+        }
+
+        let proc_addr = ProcAddr::instance(ChannelAddr::Local(1), "stamping_test");
+        let captured: Arc<Mutex<Vec<MessageEnvelope>>> = Arc::new(Mutex::new(Vec::new()));
+        let proc = Proc::configured(
+            proc_addr,
+            BoxedMailboxSender::new(CapturingSender(captured.clone())),
+        );
+
+        let client = proc.client("client");
+        let client_addr = client.mailbox().actor_addr().clone();
+
+        // Distinct ProcId so the envelope routes through the configured
+        // forwarder (CapturingSender), where we can inspect the headers.
+        let remote_dest = ProcAddr::instance(ChannelAddr::Local(2), "remote")
+            .actor_addr("worker")
+            .port_addr(Port::from(DestHandlerMsg::port()));
+
+        // UFCS to select MailboxExt::post over Endpoint::post (also in
+        // scope at module level via `use ... as _`). Client implements
+        // `context::Actor` so the MailboxExt blanket impl applies.
+        <Client as context::MailboxExt>::post(
+            &client,
+            remote_dest,
+            Flattrs::new(),
+            wirevalue::Any::serialize(&1u64).unwrap(),
+            false,
+            context::SeqInfoPolicy::AssignNew,
+        );
+
+        let captured = captured.lock().unwrap();
+        assert_eq!(
+            captured.len(),
+            1,
+            "exactly one envelope should be forwarded"
+        );
+        assert_eq!(
+            captured[0].headers().get(SENDER_ACTOR_ID),
+            Some(client_addr),
+            "MailboxExt::post must stamp SENDER_ACTOR_ID with the client's actor_addr"
+        );
     }
 
     #[test]

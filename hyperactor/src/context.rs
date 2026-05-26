@@ -164,6 +164,15 @@ impl<T: Actor + Send + Sync> MailboxExt for T {
             // without worrying about rollback.
             let sequencer = self.instance().sequencer();
             let seq_info = sequencer.assign_seq(&dest);
+            // Pair the SENDER_ACTOR_ID stamp with the seq we just assigned.
+            // Helper applies the (seq<=4 || stale) gate, the handler-port +
+            // non-bypass guard, and the framework-owned overwrite semantics.
+            crate::mailbox::headers::stamp_sender_actor_id(
+                &mut headers,
+                &seq_info,
+                &dest,
+                self.mailbox().actor_addr(),
+            );
             headers.set(SEQ_INFO, seq_info);
         }
 

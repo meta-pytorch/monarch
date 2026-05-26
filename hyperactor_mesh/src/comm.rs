@@ -313,14 +313,31 @@ impl CommActor {
         replace_with_self_ranks(&cast_point, message.data_mut())?;
 
         set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
-        cx.post_with_external_seq_info(
-            cx.self_addr()
-                .proc_addr()
-                .actor_addr_uid(message.dest_port().actor_uid().clone())
-                .port_addr(hyperactor::port::Port::from(message.dest_port().port())),
-            headers,
-            wirevalue::Any::serialize(message.data())?,
-        );
+
+        // Bind dest ONCE so we can pass to both the stamp helper and the
+        // post call.
+        let dest = cx
+            .self_addr()
+            .proc_addr()
+            .actor_addr_uid(message.dest_port().actor_uid().clone())
+            .port_addr(hyperactor::port::Port::from(message.dest_port().port()));
+
+        // Stamp SENDER_ACTOR_ID when headers already carry SEQ_INFO (V1
+        // path). V0 path leaves SEQ_INFO absent here; MailboxExt::post will
+        // assign it and stamp via its own helper call later. Flattrs::get
+        // returns an owned typed value, so seq_info isn't borrowed from
+        // headers and we can pass &mut headers to the helper without
+        // a borrow-checker conflict.
+        if let Some(seq_info) = headers.get(SEQ_INFO) {
+            hyperactor::mailbox::headers::stamp_sender_actor_id(
+                &mut headers,
+                &seq_info,
+                &dest,
+                message.sender(),
+            );
+        }
+
+        cx.post_with_external_seq_info(dest, headers, wirevalue::Any::serialize(message.data())?);
 
         Ok(())
     }

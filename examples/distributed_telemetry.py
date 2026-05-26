@@ -10,7 +10,7 @@ Distributed Telemetry with Real Tracing Data.
 
 This example demonstrates querying real tracing data collected from actors:
 
-1. Starts telemetry
+1. Enables job-level telemetry
 2. Spawns actors that do work (generating real tracing events)
 3. Queries the spans, span_events, events, and actors tables
 
@@ -36,7 +36,6 @@ import time
 
 import pyarrow as pa
 from monarch.actor import Actor, endpoint
-from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.job import ProcessJob, TelemetryConfig
 
 
@@ -470,10 +469,7 @@ def run_workload(job, summary=False, interactive=False):
     """Run the full telemetry demo: spawn actors, run work, query, and shut down.
 
     Args:
-        job: JobTrait whose state has a "workers" HostMesh.
-            If the job was created with ``telemetry=TelemetryConfig()``, the
-            query engine is available via ``state.query_engine`` and
-            ``start_telemetry()`` does not need to be called separately.
+        job: JobTrait whose state has a "workers" HostMesh and telemetry enabled.
         summary: If True, print summary output instead of full tables.
         interactive: If True, pause after setup so the dashboard can be browsed.
     """
@@ -482,11 +478,9 @@ def run_workload(job, summary=False, interactive=False):
 
     state = job.state(cached_path=None)
 
-    # Use engine from JobState if available (telemetry configured on job),
-    # otherwise fall back to manual start_telemetry() for backward compat.
     engine = state.query_engine
     if engine is None:
-        engine, _, _scanner = start_telemetry()
+        raise RuntimeError("run_workload requires job.enable_telemetry(...)")
 
     hosts = state.hosts
 
