@@ -25,7 +25,6 @@ use crate::RemoteSpawn;
 use crate::endpoint::Endpoint as _;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
-use crate::mailbox::UndeliverableMessageError;
 
 /// A message that can be passed around. It contains
 /// 0. the TTL of this PingPong game
@@ -85,19 +84,6 @@ impl RemoteSpawn for PingPongActor {
 
 #[async_trait]
 impl Actor for PingPongActor {
-    async fn handle_delivery_failure_event(
-        &mut self,
-        cx: &Instance<Self>,
-        undelivered: Undeliverable<MessageEnvelope>,
-    ) -> Result<(), anyhow::Error> {
-        match &self.undeliverable_port_ref {
-            Some(port) => port.post(cx, undelivered),
-            None => crate::actor::handle_delivery_failure_event(self, cx, undelivered).await?,
-        }
-
-        Ok(())
-    }
-
     // This is an override of the default actor behavior. It is used
     // for testing the mechanism for returning undeliverable messages to
     // their senders.
@@ -107,18 +93,28 @@ impl Actor for PingPongActor {
         undelivered: crate::mailbox::Undeliverable<crate::mailbox::MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         match &self.undeliverable_port_ref {
-            Some(port) => port.post(cx, undelivered),
-            None => match undelivered {
-                Undeliverable::Message(envelope) => {
-                    anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
-                }
-                Undeliverable::Lost(lost) => {
-                    anyhow::bail!(UndeliverableMessageError::Lost { lost });
-                }
-            },
+            Some(port) => {
+                port.post(cx, undelivered);
+                Ok(())
+            }
+            None => crate::actor::handle_undeliverable_message(cx, undelivered),
         }
+    }
 
-        Ok(())
+    // This actor is used by tests that need to observe delivery failures
+    // directly, including invalid references such as stopped mailboxes.
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        undelivered: crate::mailbox::Undeliverable<crate::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        match &self.undeliverable_port_ref {
+            Some(port) => {
+                port.post(cx, undelivered);
+                Ok(())
+            }
+            None => crate::actor::handle_invalid_reference(cx, undelivered),
+        }
     }
 }
 

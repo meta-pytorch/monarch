@@ -15,7 +15,6 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyperactor::Actor;
 use hyperactor::ActorAddr;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
@@ -840,11 +839,7 @@ impl ProcMeshRef {
                 crate::mesh_controller::ACTOR_MESH_CONTROLLER_NAME,
                 mesh.id()
             );
-            let controller = controller
-                .spawn_with_name(cx, &controller_name)
-                .map_err(|e| {
-                    Error::ControllerActorSpawnError(mesh.id().resource_id().clone(), e)
-                })?;
+            let controller = cx.spawn_with_label(&controller_name, controller);
             // Controller and ActorMesh both depend on references from each other, break
             // the cycle by setting the controller after the fact.
             mesh.set_controller(Some(controller.bind()));
@@ -1188,10 +1183,9 @@ mod tests {
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(cx, "test", &()).await.unwrap();
 
-        let (instance, _) = cx
+        let instance = cx
             .proc()
-            .client(&format!("random_casts_{}", Uuid::now_v7()))
-            .unwrap();
+            .client(&format!("random_casts_{}", Uuid::now_v7()));
         let n = 1;
         for _ in 0..n {
             actor_mesh.cast(&instance, ()).unwrap();
