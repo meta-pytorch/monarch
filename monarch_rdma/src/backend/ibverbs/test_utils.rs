@@ -303,10 +303,12 @@ pub async fn wait_for_completion(
             return Ok(true);
         }
 
-        let wr_ids_to_poll: Vec<u64> = remaining.iter().copied().collect();
-        match qp.poll_completion(poll_target, &wr_ids_to_poll) {
+        match qp.poll_completion(poll_target, &remaining) {
             Ok(completions) => {
-                for (wr_id, _wc) in completions {
+                for (wr_id, wc_result) in completions {
+                    if let Err(e) = wc_result {
+                        return Err(anyhow::anyhow!("WR {} completion failed: {}", wr_id, e));
+                    }
                     remaining.remove(&wr_id);
                 }
                 if remaining.is_empty() {
@@ -315,7 +317,7 @@ pub async fn wait_for_completion(
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
             Err(e) => {
-                return Err(anyhow::anyhow!(e));
+                return Err(anyhow::anyhow!("CQ poll failed: {}", e));
             }
         }
     }

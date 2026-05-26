@@ -73,7 +73,6 @@ use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::PeerInfo;
-use super::queue_pair::PollCompletionError;
 use super::queue_pair::PollTarget;
 use super::queue_pair::QpGuard;
 use super::queue_pair::QpKey;
@@ -1091,10 +1090,19 @@ impl IbvBackend {
                 return Ok(());
             }
 
-            let wr_ids_to_poll: Vec<u64> = remaining.iter().copied().collect();
-            match qp.poll_completion(poll_target, &wr_ids_to_poll) {
+            match qp.poll_completion(poll_target, &remaining) {
                 Ok(completions) => {
-                    for (wr_id, _wc) in completions {
+                    for (wr_id, wc_result) in completions {
+                        if let Err(e) = wc_result {
+                            return Err(anyhow::anyhow!(
+                                "RDMA polling completion failed: {} [lkey={}, rkey={}, addr=0x{:x}, size={}]",
+                                e,
+                                local_buf.lkey,
+                                local_buf.rkey,
+                                local_buf.addr,
+                                local_buf.size,
+                            ));
+                        }
                         remaining.remove(&wr_id);
                     }
                     if remaining.is_empty() {
@@ -1103,37 +1111,13 @@ impl IbvBackend {
                     poll_policy.yield_now().await;
                 }
                 Err(e) => {
-                    // When the returned error is WR_FLUSH_ERR, which is generally a
-                    // secondary error, drain the remaining completions to find the
-                    // original root cause error. WR_FLUSH_ERR means the QP entered
-                    // error state due to a DIFFERENT WR's failure, so the actual root
-                    // cause may be cached or still in the CQ.
-                    let mut root_cause: Option<PollCompletionError> = None;
-                    if e.is_wr_flush_err() {
-                        for &wr_id in &wr_ids_to_poll {
-                            if let Err(inner_err) = qp.poll_completion(poll_target, &[wr_id]) {
-                                if !inner_err.is_wr_flush_err() {
-                                    root_cause = Some(inner_err);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    let error_detail = if let Some(cause) = root_cause {
-                        format!(
-                            "RDMA polling completion failed: {} (root cause: {})",
-                            e, cause
-                        )
-                    } else {
-                        format!("RDMA polling completion failed: {}", e)
-                    };
                     return Err(anyhow::anyhow!(
-                        "{} [lkey={}, rkey={}, addr=0x{:x}, size={}]",
-                        error_detail,
+                        "RDMA CQ poll failed: {} [lkey={}, rkey={}, addr=0x{:x}, size={}]",
+                        e,
                         local_buf.lkey,
                         local_buf.rkey,
                         local_buf.addr,
-                        local_buf.size
+                        local_buf.size,
                     ));
                 }
             }
