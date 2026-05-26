@@ -242,6 +242,7 @@ impl UnixSocketSink {
                     line: *line,
                 });
             }
+            TraceEvent::Entity(_) => {}
         }
         Ok(())
     }

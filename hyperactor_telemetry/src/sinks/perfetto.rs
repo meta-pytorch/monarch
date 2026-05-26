@@ -723,6 +723,8 @@ impl TraceEventSink for PerfettoFileSink {
                 ));
                 self.write_instant(track, *timestamp, &display_name, fields);
             }
+
+            TraceEvent::Entity(_) => {}
         }
 
         Ok(())
