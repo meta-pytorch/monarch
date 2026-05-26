@@ -11,7 +11,7 @@
 //!
 //! These routes proxy to the Monarch dashboard and require
 //! `telemetry_url` to be configured. The Python dining_philosophers
-//! binary is launched with `--dashboard` so that `start_telemetry`
+//! binary is launched with `--dashboard` so that job-level telemetry
 //! starts the dashboard and passes `telemetry_url` to `_spawn_admin`.
 
 use std::time::Duration;

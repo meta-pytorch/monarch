@@ -351,9 +351,6 @@ pub(crate) enum ProfileExecOutcome {
         binary: String,
         error: String,
     },
-    WorkerSpawnFailure {
-        error: String,
-    },
     SubprocessSpawnFailure {
         pid: u32,
         binary: String,
@@ -410,9 +407,6 @@ impl From<ProfileExecOutcome> for PySpyProfileResult {
             }
             ProfileExecOutcome::OutputReadFailure { pid, binary, error } => {
                 PySpyProfileResult::OutputReadFailure { pid, binary, error }
-            }
-            ProfileExecOutcome::WorkerSpawnFailure { error } => {
-                PySpyProfileResult::WorkerSpawnFailure { error }
             }
             ProfileExecOutcome::SubprocessSpawnFailure { pid, binary, error } => {
                 PySpyProfileResult::SubprocessSpawnFailure { pid, binary, error }
@@ -551,26 +545,13 @@ impl Actor for PySpyWorker {}
 
 impl PySpyWorker {
     /// Spawn a PySpyWorker, forward the py-spy request, and let
-    /// the worker reply directly to the caller. On spawn failure,
-    /// sends a `Failed` result back via `reply_port`.
+    /// the worker reply directly to the caller.
     pub(crate) fn spawn_and_forward(
         cx: &impl hyperactor::context::Actor,
         opts: PySpyOpts,
         reply_port: hyperactor::OncePortRef<PySpyResult>,
     ) -> Result<(), anyhow::Error> {
-        let worker = match Self.spawn(cx) {
-            Ok(handle) => handle,
-            Err(e) => {
-                let fail = PySpyResult::Failed {
-                    pid: std::process::id(),
-                    binary: String::new(),
-                    exit_code: None,
-                    stderr: format!("failed to spawn pyspy worker: {}", e),
-                };
-                reply_port.post(cx, fail);
-                return Ok(());
-            }
-        };
+        let worker = cx.spawn(Self);
         worker.post(cx, RunPySpyDump { opts, reply_port });
         Ok(())
     }
@@ -607,23 +588,13 @@ pub struct PySpyProfileWorker;
 impl Actor for PySpyProfileWorker {}
 
 impl PySpyProfileWorker {
-    /// Spawn a profile worker and forward the request. On spawn
-    /// failure, sends `WorkerSpawnFailure` back via `reply_port`.
+    /// Spawn a profile worker and forward the request.
     pub(crate) fn spawn_and_forward(
         cx: &impl hyperactor::context::Actor,
         request: ValidatedProfileRequest,
         reply_port: hyperactor::OncePortRef<PySpyProfileResult>,
     ) -> Result<(), anyhow::Error> {
-        let worker = match Self.spawn(cx) {
-            Ok(handle) => handle,
-            Err(e) => {
-                let fail = ProfileExecOutcome::WorkerSpawnFailure {
-                    error: e.to_string(),
-                };
-                reply_port.post(cx, PySpyProfileResult::from(fail));
-                return Ok(());
-            }
-        };
+        let worker = cx.spawn(Self);
         worker.post(
             cx,
             RunPySpyProfile {
@@ -1721,10 +1692,6 @@ exit 0
             error: "permission denied".into(),
         });
         assert!(matches!(r, PySpyProfileResult::OutputReadFailure { .. }));
-
-        let r =
-            PySpyProfileResult::from(ProfileExecOutcome::WorkerSpawnFailure { error: "w".into() });
-        assert!(matches!(r, PySpyProfileResult::WorkerSpawnFailure { .. }));
 
         let r = PySpyProfileResult::from(ProfileExecOutcome::SubprocessSpawnFailure {
             pid: 1,
