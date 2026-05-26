@@ -150,6 +150,25 @@ impl TableStore {
         }
     }
 
+    /// Register an empty table with an authoritative schema.
+    pub fn register_table(&self, table_name: &str, schema: SchemaRef) -> anyhow::Result<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+
+        match guard.get(table_name) {
+            Some(table) if table.schema() != schema => {
+                anyhow::bail!("schema mismatch for registered table {table_name}")
+            }
+            Some(_) => Ok(()),
+            None => {
+                guard.insert(table_name.to_string(), Arc::new(LiveTableData::new(schema)));
+                Ok(())
+            }
+        }
+    }
+
     /// Ingest a `RecordBatch` into a named table (TS-2).
     ///
     /// Async so callers in async contexts can await directly without
@@ -169,6 +188,31 @@ impl TableStore {
                 .or_insert_with(|| Arc::new(LiveTableData::new(batch.schema())))
                 .clone()
         };
+        table.push(batch).await;
+        Ok(())
+    }
+
+    /// Push a batch to a table that must already be registered.
+    pub async fn push_to_registered(
+        &self,
+        table_name: &str,
+        batch: RecordBatch,
+    ) -> anyhow::Result<()> {
+        let table = {
+            let guard = self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+            guard
+                .get(table_name)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("unknown registered table {table_name}"))?
+        };
+
+        if table.schema() != batch.schema() {
+            anyhow::bail!("schema mismatch for registered table {table_name}");
+        }
+
         table.push(batch).await;
         Ok(())
     }
@@ -403,6 +447,38 @@ impl DatabaseScanner {
 }
 
 impl DatabaseScanner {
+    /// Register an empty table with an authoritative schema.
+    pub fn register_table(&self, table_name: &str, schema: SchemaRef) -> anyhow::Result<()> {
+        self.table_store().register_table(table_name, schema)
+    }
+
+    /// Push a batch to a table that must already be registered.
+    pub async fn push_to_registered(
+        &self,
+        table_name: &str,
+        batch: RecordBatch,
+    ) -> anyhow::Result<()> {
+        self.table_store()
+            .push_to_registered(table_name, batch)
+            .await
+    }
+
+    /// Push a batch to a registered table from synchronous callers.
+    pub fn push_to_registered_blocking(
+        &self,
+        table_name: &str,
+        batch: RecordBatch,
+    ) -> anyhow::Result<()> {
+        let store = self.table_store();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(store.push_to_registered(table_name, batch))
+            })
+        } else {
+            get_tokio_runtime().block_on(store.push_to_registered(table_name, batch))
+        }
+    }
+
     /// Push a batch into the named table in `table_data`.
     ///
     /// # Ingestion invariants (ID-*)
@@ -809,6 +885,12 @@ mod tests {
         RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap()
     }
 
+    fn make_other_batch(values: &[i64]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("y", DataType::Int64, false)]));
+        let col = Int64Array::from(values.to_vec());
+        RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap()
+    }
+
     async fn row_count(table: &LiveTableData) -> usize {
         table.mem_table.batches[0]
             .read()
@@ -846,6 +928,52 @@ mod tests {
         table.apply_retention("t", "1=1").await.unwrap();
 
         assert_eq!(row_count(&table).await, 3);
+    }
+
+    #[tokio::test]
+    async fn test_push_to_registered_appends_registered_table() {
+        let store = TableStore::new_empty();
+        store.register_table("t", make_batch(&[]).schema()).unwrap();
+
+        store
+            .push_to_registered("t", make_batch(&[1, 2]))
+            .await
+            .unwrap();
+
+        let table = store.inner.lock().unwrap().get("t").unwrap().clone();
+        assert_eq!(row_count(&table).await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_push_to_registered_rejects_unknown_table() {
+        let store = TableStore::new_empty();
+
+        let err = store
+            .push_to_registered("missing", make_batch(&[1]))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("unknown registered table missing"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_push_to_registered_rejects_schema_mismatch() {
+        let store = TableStore::new_empty();
+        store.register_table("t", make_batch(&[]).schema()).unwrap();
+
+        let err = store
+            .push_to_registered("t", make_other_batch(&[1]))
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("schema mismatch for registered table t"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
