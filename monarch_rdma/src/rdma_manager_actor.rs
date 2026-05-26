@@ -129,7 +129,7 @@ impl<A: Actor> RdmaBackendActor<A> {
         } else {
             panic!("rdma backend actor already spawned");
         };
-        let handle = rdma_manager.spawn(actor)?;
+        let handle = rdma_manager.spawn(actor);
         *self = RdmaBackendActor::Spawned(handle);
         Ok(())
     }
