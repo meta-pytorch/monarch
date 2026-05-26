@@ -25,7 +25,15 @@ use hyperactor_telemetry::FieldValue;
 use hyperactor_telemetry::TraceEvent;
 use hyperactor_telemetry::TraceEventSink;
 use monarch_record_batch::RecordBatchBuffer;
-use monarch_record_batch::RecordBatchRow;
+use monarch_telemetry_schema::trace_tables::EVENTS;
+pub use monarch_telemetry_schema::trace_tables::Event;
+pub use monarch_telemetry_schema::trace_tables::EventBuffer;
+use monarch_telemetry_schema::trace_tables::SPAN_EVENTS;
+use monarch_telemetry_schema::trace_tables::SPANS;
+pub use monarch_telemetry_schema::trace_tables::Span;
+pub use monarch_telemetry_schema::trace_tables::SpanBuffer;
+pub use monarch_telemetry_schema::trace_tables::SpanEvent;
+pub use monarch_telemetry_schema::trace_tables::SpanEventBuffer;
 
 /// Global counter for the number of batches flushed by the counting sink.
 /// This can be checked from tests to verify that the sink is active.
@@ -45,8 +53,7 @@ use crate::timestamp_to_micros;
 
 /// Helper to convert FieldValue slice to JSON string.
 fn fields_to_json(fields: &[(&str, FieldValue)]) -> String {
-    let mut map = serde_json::Map::new();
-    for (key, value) in fields {
+    monarch_telemetry_schema::fields_to_json(fields.iter().map(|(key, value)| {
         let json_value = match value {
             FieldValue::Bool(b) => serde_json::Value::Bool(*b),
             FieldValue::I64(i) => serde_json::Value::Number((*i).into()),
@@ -57,48 +64,8 @@ fn fields_to_json(fields: &[(&str, FieldValue)]) -> String {
             FieldValue::Str(s) => serde_json::Value::String(s.clone()),
             FieldValue::Debug(d) => serde_json::Value::String(d.clone()),
         };
-        map.insert((*key).to_string(), json_value);
-    }
-    serde_json::Value::Object(map).to_string()
-}
-
-/// Row data for the spans table.
-#[derive(RecordBatchRow)]
-pub struct Span {
-    pub id: u64,
-    pub name: String,
-    pub target: String,
-    pub level: String,
-    pub fields_json: String,
-    pub timestamp_us: i64,
-    pub parent_id: Option<u64>,
-    pub thread_name: String,
-    pub file: Option<String>,
-    pub line: Option<u32>,
-}
-
-/// Row data for the span_events table.
-#[derive(RecordBatchRow)]
-pub struct SpanEvent {
-    pub id: u64,
-    pub timestamp_us: i64,
-    pub event_type: String,
-}
-
-/// Row data for the events table.
-#[derive(RecordBatchRow)]
-pub struct Event {
-    pub name: String,
-    pub target: String,
-    pub level: String,
-    pub fields_json: String,
-    pub timestamp_us: i64,
-    pub parent_span: Option<u64>,
-    pub thread_id: String,
-    pub thread_name: String,
-    pub module_path: Option<String>,
-    pub file: Option<String>,
-    pub line: Option<u32>,
+        (*key, json_value)
+    }))
 }
 
 use std::sync::Arc;
@@ -132,19 +99,19 @@ impl RecordBatchSinkInner {
     }
 
     fn flush(&mut self) -> anyhow::Result<()> {
-        Self::flush_buffer(&mut self.spans_buffer, "spans", &self.flush_callback)?;
+        Self::flush_buffer(&mut self.spans_buffer, SPANS, &self.flush_callback)?;
         Self::flush_buffer(
             &mut self.span_events_buffer,
-            "span_events",
+            SPAN_EVENTS,
             &self.flush_callback,
         )?;
-        Self::flush_buffer(&mut self.events_buffer, "events", &self.flush_callback)?;
+        Self::flush_buffer(&mut self.events_buffer, EVENTS, &self.flush_callback)?;
         Ok(())
     }
 
     fn flush_spans_if_full(&mut self) -> anyhow::Result<()> {
         if self.spans_buffer.len() >= self.batch_size {
-            Self::flush_buffer(&mut self.spans_buffer, "spans", &self.flush_callback)?;
+            Self::flush_buffer(&mut self.spans_buffer, SPANS, &self.flush_callback)?;
         }
         Ok(())
     }
@@ -153,7 +120,7 @@ impl RecordBatchSinkInner {
         if self.span_events_buffer.len() >= self.batch_size {
             Self::flush_buffer(
                 &mut self.span_events_buffer,
-                "span_events",
+                SPAN_EVENTS,
                 &self.flush_callback,
             )?;
         }
@@ -162,7 +129,7 @@ impl RecordBatchSinkInner {
 
     fn flush_events_if_full(&mut self) -> anyhow::Result<()> {
         if self.events_buffer.len() >= self.batch_size {
-            Self::flush_buffer(&mut self.events_buffer, "events", &self.flush_callback)?;
+            Self::flush_buffer(&mut self.events_buffer, EVENTS, &self.flush_callback)?;
         }
         Ok(())
     }
