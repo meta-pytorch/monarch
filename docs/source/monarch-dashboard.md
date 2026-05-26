@@ -9,8 +9,8 @@ full DAG visualization.
 > **Note** — The Monarch Dashboard is in early development and may change
 > significantly between releases.
 
-The dashboard is included in the `torchmonarch` PyPI package. When you call
-`start_telemetry(include_dashboard=True)`, it starts a local web server that
+The dashboard is included in the `torchmonarch` PyPI package. When a job enables
+`TelemetryConfig(include_dashboard=True)`, Monarch starts a local web server that
 serves the dashboard UI.
 
 ## Quick Start
