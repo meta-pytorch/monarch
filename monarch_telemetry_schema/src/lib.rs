@@ -12,6 +12,11 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use monarch_record_batch::RecordBatchRow;
 
+/// Maximum table-name length in a socket frame.
+pub const MAX_TABLE_NAME_LEN: usize = 256;
+/// Maximum Arrow IPC payload length in a socket frame.
+pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
+
 /// Convert pre-translated fields to a stable JSON object string.
 pub fn fields_to_json<'a>(
     fields: impl IntoIterator<Item = (&'a str, serde_json::Value)>,
@@ -32,6 +37,31 @@ pub fn serialize_batch(batch: &RecordBatch) -> anyhow::Result<Vec<u8>> {
     writer.write(batch)?;
     writer.finish()?;
     Ok(buf)
+}
+
+/// Append the Unix-socket frame header for an Arrow IPC payload.
+///
+/// The header contains the table name and payload length. Callers append the
+/// Arrow IPC payload bytes after this header.
+pub fn write_frame_header(
+    buf: &mut Vec<u8>,
+    table_name: &str,
+    payload_len: usize,
+) -> anyhow::Result<()> {
+    if table_name.is_empty() || table_name.len() > MAX_TABLE_NAME_LEN {
+        anyhow::bail!("invalid table name length {}", table_name.len());
+    }
+    if payload_len == 0 || payload_len > MAX_FRAME_LEN {
+        anyhow::bail!("invalid frame length {payload_len}");
+    }
+
+    let name_len = u16::try_from(table_name.len())?;
+    let frame_len = u32::try_from(payload_len)?;
+
+    buf.extend_from_slice(&name_len.to_be_bytes());
+    buf.extend_from_slice(table_name.as_bytes());
+    buf.extend_from_slice(&frame_len.to_be_bytes());
+    Ok(())
 }
 
 /// Trace table row schemas.
@@ -194,6 +224,42 @@ mod tests {
         assert_eq!(decoded["count"], json!(3));
         assert_eq!(decoded["enabled"], json!(true));
         assert_eq!(decoded["name"], json!("worker"));
+    }
+
+    #[test]
+    fn write_frame_header_uses_big_endian_lengths() {
+        let mut buf = vec![0xaa];
+        write_frame_header(&mut buf, "events", 0x00010203).unwrap();
+
+        assert_eq!(
+            buf,
+            vec![0xaa, 0, 6, b'e', b'v', b'e', b'n', b't', b's', 0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn write_frame_header_accepts_wire_bounds() {
+        let table_name = "x".repeat(MAX_TABLE_NAME_LEN);
+        let mut buf = Vec::new();
+
+        write_frame_header(&mut buf, &table_name, MAX_FRAME_LEN).unwrap();
+
+        assert_eq!(&buf[..2], &(MAX_TABLE_NAME_LEN as u16).to_be_bytes());
+        assert_eq!(&buf[2..2 + MAX_TABLE_NAME_LEN], table_name.as_bytes());
+        assert_eq!(
+            &buf[2 + MAX_TABLE_NAME_LEN..],
+            &(MAX_FRAME_LEN as u32).to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn write_frame_header_rejects_invalid_lengths() {
+        let oversized_table_name = "x".repeat(MAX_TABLE_NAME_LEN + 1);
+
+        assert!(write_frame_header(&mut Vec::new(), "", 1).is_err());
+        assert!(write_frame_header(&mut Vec::new(), &oversized_table_name, 1).is_err());
+        assert!(write_frame_header(&mut Vec::new(), "events", 0).is_err());
+        assert!(write_frame_header(&mut Vec::new(), "events", MAX_FRAME_LEN + 1).is_err());
     }
 
     #[test]
