@@ -22,119 +22,27 @@ use std::sync::Mutex;
 use hyperactor_telemetry::EntityEvent;
 use hyperactor_telemetry::EntityEventDispatcher;
 use monarch_record_batch::RecordBatchBuffer;
-use monarch_record_batch::RecordBatchRow;
+use monarch_telemetry_schema::entity_tables::ACTOR_STATUS_EVENTS;
+use monarch_telemetry_schema::entity_tables::ACTORS;
+pub use monarch_telemetry_schema::entity_tables::Actor;
+pub use monarch_telemetry_schema::entity_tables::ActorBuffer;
+pub use monarch_telemetry_schema::entity_tables::ActorStatusEvent;
+pub use monarch_telemetry_schema::entity_tables::ActorStatusEventBuffer;
+use monarch_telemetry_schema::entity_tables::MESHES;
+use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
+use monarch_telemetry_schema::entity_tables::MESSAGES;
+pub use monarch_telemetry_schema::entity_tables::Mesh;
+pub use monarch_telemetry_schema::entity_tables::MeshBuffer;
+pub use monarch_telemetry_schema::entity_tables::Message;
+pub use monarch_telemetry_schema::entity_tables::MessageBuffer;
+pub use monarch_telemetry_schema::entity_tables::MessageStatusEvent;
+pub use monarch_telemetry_schema::entity_tables::MessageStatusEventBuffer;
+use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
+pub use monarch_telemetry_schema::entity_tables::SentMessage;
+pub use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
 
 use crate::record_batch_sink::FlushCallback;
 use crate::timestamp_to_micros;
-
-/// Row data for the actors table.
-/// Logged when actors are created.
-#[derive(RecordBatchRow)]
-pub struct Actor {
-    /// Unique identifier for this actor
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// ID of the mesh this actor belongs to
-    pub mesh_id: u64,
-    /// Rank index into the mesh shape
-    pub rank: u64,
-    /// Full hierarchical name of this actor
-    pub full_name: String,
-    /// User-facing name for this actor
-    pub display_name: Option<String>,
-}
-
-/// Row data for the meshes table.
-/// Logged when meshes are created.
-#[derive(RecordBatchRow)]
-pub struct Mesh {
-    /// Unique identifier for this mesh
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// mesh class (e.g., "Proc", "Host", "Python<SomeUserDefinedActor>")
-    pub class: String,
-    /// User-provided name for this mesh
-    pub given_name: String,
-    /// Full hierarchical name as it appears in supervision events
-    pub full_name: String,
-    /// Shape of the mesh, serialized from ndslice::Extent
-    pub shape_json: String,
-    /// Parent mesh ID (None for root meshes)
-    pub parent_mesh_id: Option<u64>,
-    /// Region over which the parent spawned this mesh, serialized from ndslice::Region
-    pub parent_view_json: Option<String>,
-}
-
-/// Row data for the actor_status_events table.
-/// Logged when actors change status.
-#[derive(RecordBatchRow)]
-pub struct ActorStatusEvent {
-    /// Unique identifier for this event
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// ID of the actor whose status changed
-    pub actor_id: u64,
-    /// New status value (e.g. "Created", "Idle", "Failed")
-    pub new_status: String,
-    /// Reason for the status change (e.g. error message for Failed)
-    pub reason: Option<String>,
-}
-
-/// Row data for the sent_messages table.
-///
-/// Tracks messages from the perspective of the sending actor.
-#[derive(RecordBatchRow)]
-pub struct SentMessage {
-    /// Unique identifier for this sent message record
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// ID of the sending actor
-    pub sender_actor_id: u64,
-    /// ID of the actor mesh over which the message was sent (0 for point-to-point)
-    pub actor_mesh_id: u64,
-    /// Region over which the message was sent, serialized from ndslice::Region
-    pub view_json: String,
-    /// Shape of the message, serialized from ndslice::Shape
-    pub shape_json: String,
-}
-
-/// Row data for the messages table.
-///
-/// Tracks messages from the receiver's perspective.
-#[derive(RecordBatchRow)]
-pub struct Message {
-    /// Unique identifier for this received message
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// Hash of sender's ActorAddr
-    pub from_actor_id: u64,
-    /// Hash of receiver's ActorAddr
-    pub to_actor_id: u64,
-    /// Message handler type name
-    pub endpoint: Option<String>,
-    /// Port identifier (reserved)
-    pub port_id: Option<u64>,
-}
-
-/// Row data for the message_status_events table.
-///
-/// Logs status transitions for received messages.
-#[derive(RecordBatchRow)]
-pub struct MessageStatusEvent {
-    /// Unique identifier for this status event
-    pub id: u64,
-    /// Timestamp in microseconds since Unix epoch
-    pub timestamp_us: i64,
-    /// FK to messages.id
-    pub message_id: u64,
-    /// Status value: "queued", "active", or "complete"
-    pub status: String,
-}
 
 /// Inner state of EntityDispatcher.
 struct EntityDispatcherInner {
@@ -160,22 +68,22 @@ impl EntityDispatcherInner {
     }
 
     fn flush(&mut self) -> anyhow::Result<()> {
-        Self::flush_buffer(&mut self.actors_buffer, "actors", &self.flush_callback)?;
-        Self::flush_buffer(&mut self.meshes_buffer, "meshes", &self.flush_callback)?;
+        Self::flush_buffer(&mut self.actors_buffer, ACTORS, &self.flush_callback)?;
+        Self::flush_buffer(&mut self.meshes_buffer, MESHES, &self.flush_callback)?;
         Self::flush_buffer(
             &mut self.actor_status_events_buffer,
-            "actor_status_events",
+            ACTOR_STATUS_EVENTS,
             &self.flush_callback,
         )?;
         Self::flush_buffer(
             &mut self.sent_messages_buffer,
-            "sent_messages",
+            SENT_MESSAGES,
             &self.flush_callback,
         )?;
-        Self::flush_buffer(&mut self.messages_buffer, "messages", &self.flush_callback)?;
+        Self::flush_buffer(&mut self.messages_buffer, MESSAGES, &self.flush_callback)?;
         Self::flush_buffer(
             &mut self.message_status_events_buffer,
-            "message_status_events",
+            MESSAGE_STATUS_EVENTS,
             &self.flush_callback,
         )?;
         Ok(())
@@ -183,14 +91,14 @@ impl EntityDispatcherInner {
 
     fn flush_actors_if_full(&mut self) -> anyhow::Result<()> {
         if self.actors_buffer.len() >= self.batch_size {
-            Self::flush_buffer(&mut self.actors_buffer, "actors", &self.flush_callback)?;
+            Self::flush_buffer(&mut self.actors_buffer, ACTORS, &self.flush_callback)?;
         }
         Ok(())
     }
 
     fn flush_meshes_if_full(&mut self) -> anyhow::Result<()> {
         if self.meshes_buffer.len() >= self.batch_size {
-            Self::flush_buffer(&mut self.meshes_buffer, "meshes", &self.flush_callback)?;
+            Self::flush_buffer(&mut self.meshes_buffer, MESHES, &self.flush_callback)?;
         }
         Ok(())
     }
@@ -199,7 +107,7 @@ impl EntityDispatcherInner {
         if self.actor_status_events_buffer.len() >= self.batch_size {
             Self::flush_buffer(
                 &mut self.actor_status_events_buffer,
-                "actor_status_events",
+                ACTOR_STATUS_EVENTS,
                 &self.flush_callback,
             )?;
         }
@@ -210,7 +118,7 @@ impl EntityDispatcherInner {
         if self.sent_messages_buffer.len() >= self.batch_size {
             Self::flush_buffer(
                 &mut self.sent_messages_buffer,
-                "sent_messages",
+                SENT_MESSAGES,
                 &self.flush_callback,
             )?;
         }
@@ -219,7 +127,7 @@ impl EntityDispatcherInner {
 
     fn flush_messages_if_full(&mut self) -> anyhow::Result<()> {
         if self.messages_buffer.len() >= self.batch_size {
-            Self::flush_buffer(&mut self.messages_buffer, "messages", &self.flush_callback)?;
+            Self::flush_buffer(&mut self.messages_buffer, MESSAGES, &self.flush_callback)?;
         }
         Ok(())
     }
@@ -228,7 +136,7 @@ impl EntityDispatcherInner {
         if self.message_status_events_buffer.len() >= self.batch_size {
             Self::flush_buffer(
                 &mut self.message_status_events_buffer,
-                "message_status_events",
+                MESSAGE_STATUS_EVENTS,
                 &self.flush_callback,
             )?;
         }
