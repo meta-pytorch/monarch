@@ -18,11 +18,9 @@
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
 //! # use hyperactor::Endpoint as _;
-//! # use hyperactor::Proc;
-//! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
-//! # let proc = Proc::isolated();
-//! # let (client, _) = proc.client("client").unwrap();
+//! # let proc = hyperactor::Proc::current();
+//! # let client = hyperactor::client("client");
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
 //! let mbox = Mailbox::new(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
@@ -38,11 +36,9 @@
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
 //! # use hyperactor::Endpoint as _;
-//! # use hyperactor::Proc;
-//! # use hyperactor::{ActorAddr, ProcAddr};
 //! # tokio_test::block_on(async {
-//! # let proc = Proc::isolated();
-//! # let (client, _) = proc.client("client").unwrap();
+//! # let proc = hyperactor::Proc::current();
+//! # let client = hyperactor::client("client");
 //! # let actor_id = proc.proc_addr().actor_addr("actor");
 //! let mbox = Mailbox::new(actor_id);
 //!
@@ -1416,7 +1412,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 ))
                 .build()
                 .expect("mailbox server proc builder is valid");
-            let (client, _) = proc.client("undeliverable_supervisor").unwrap();
+            let client = proc.client("undeliverable_supervisor");
             while let Ok(undeliverable) = undeliverable_rx.recv().await {
                 match undeliverable {
                     Undeliverable::Message(mut envelope) => {
@@ -2513,6 +2509,17 @@ impl<M: Message> PortHandle<M> {
             let sequencer = cx.instance().sequencer();
             let bound_ref: PortAddr = bound_port.clone();
             let seq_info = sequencer.assign_seq(&bound_ref);
+            // Pair SENDER_ACTOR_ID stamp with SEQ_INFO. PortHandle::try_post
+            // starts with Flattrs::new(), so there's no caller-supplied stale
+            // header to defend against — use the simpler "fresh" helper.
+            if let SeqInfo::Session { seq, .. } = &seq_info {
+                crate::mailbox::headers::stamp_sender_actor_id_fresh(
+                    &mut headers,
+                    *seq,
+                    &bound_ref,
+                    cx.mailbox().actor_addr(),
+                );
+            }
             headers.set(SEQ_INFO, seq_info);
         } else {
             // Because the port is not bound, messages can only be sent through
@@ -3876,8 +3883,6 @@ mod tests {
 
     use super::*;
     use crate::Actor;
-    use crate::ActorHandle;
-    use crate::Instance;
     use crate::accum;
     use crate::accum::ReducerMode;
     use crate::channel::ChannelTransport;
@@ -4222,7 +4227,7 @@ mod tests {
     #[tokio::test]
     async fn test_mailbox_accum() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (port, mut receiver) = client
             .mailbox()
             .open_accum_port(accum::join_semilattice::<accum::Max<i64>>());
@@ -4278,7 +4283,7 @@ mod tests {
     #[ignore] // error behavior changed, but we will bring it back
     async fn test_mailbox_once() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let (port, receiver) = client.open_once_port::<u64>();
 
@@ -4509,7 +4514,7 @@ mod tests {
 
         let muxer_sender = muxer.clone();
         let proc = Proc::configured(test_proc_id("0"), BoxedMailboxSender::new(muxer));
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         port.post(&client, 123u64);
         assert_eq!(receiver.recv().await.unwrap(), 123u64);
@@ -4892,7 +4897,7 @@ mod tests {
     #[tokio::test]
     async fn test_enqueue_port() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         let count = Arc::new(AtomicUsize::new(0));
         let count_clone = count.clone();
@@ -4969,9 +4974,9 @@ mod tests {
         let proc_id = test_proc_id("quux_0");
         let mut proc = Proc::configured(proc_id.clone(), proc_forwarder);
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
-        let foo = proc.spawn("foo", Foo).unwrap();
+        let foo = proc.spawn(Foo);
         let return_handle = foo.port::<Undeliverable<MessageEnvelope>>();
         let message = MessageEnvelope::new(
             foo.actor_addr().clone(),
@@ -5021,7 +5026,7 @@ mod tests {
             Flattrs::new(),
         );
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         return_handle.post(&client, Undeliverable::Message(envelope.clone()));
         // Check we receive the undelivered message.
         assert!(
@@ -5205,10 +5210,8 @@ mod tests {
 
     struct Setup {
         receiver: PortReceiver<u64>,
-        actor0: Instance<()>,
-        actor1: Instance<()>,
-        _actor0_handle: ActorHandle<()>,
-        _actor1_handle: ActorHandle<()>,
+        actor0: crate::Client,
+        actor1: crate::Client,
         port_id: PortAddr,
         port_id1: PortAddr,
         port_id2: PortAddr,
@@ -5220,8 +5223,8 @@ mod tests {
         reducer_mode: ReducerMode,
     ) -> Setup {
         let proc = Proc::isolated();
-        let (actor0, actor0_handle) = proc.client("actor0").unwrap();
-        let (actor1, actor1_handle) = proc.client("actor1").unwrap();
+        let actor0 = proc.client("actor0");
+        let actor1 = proc.client("actor1");
 
         // Open a port on actor0
         let (port_handle, receiver) = actor0.open_port::<u64>();
@@ -5244,8 +5247,6 @@ mod tests {
             receiver,
             actor0,
             actor1,
-            _actor0_handle: actor0_handle,
-            _actor1_handle: actor1_handle,
             port_id,
             port_id1,
             port_id2,
@@ -5351,7 +5352,7 @@ mod tests {
         let _config_guard =
             config.override_key(crate::config::SPLIT_MAX_BUFFER_AGE, Duration::from_mins(10));
         let proc = Proc::isolated();
-        let (actor, _actor_handle) = proc.client("actor").unwrap();
+        let actor = proc.client("actor");
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
         // Split it
@@ -5393,7 +5394,7 @@ mod tests {
 
         let Setup {
             mut receiver,
-            actor0: _,
+            actor0: _actor0,
             actor1,
             port_id: _,
             port_id1,
@@ -5437,7 +5438,7 @@ mod tests {
 
         let Setup {
             mut receiver,
-            actor0: _,
+            actor0: _actor0,
             actor1,
             port_id: _,
             port_id1,
@@ -5474,7 +5475,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_once_mode_basic() {
         let proc = Proc::isolated();
-        let (actor, _actor_handle) = proc.client("actor").unwrap();
+        let actor = proc.client("actor");
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
 
@@ -5502,7 +5503,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_split_port_once_mode_teardown() {
         let proc = Proc::isolated();
-        let (actor, _actor_handle) = proc.client("actor").unwrap();
+        let actor = proc.client("actor");
         let (port_handle, mut receiver) = actor.open_port::<u64>();
         let port_id = port_handle.bind().port_addr().clone();
 
@@ -5540,7 +5541,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(2), undeliverable_receiver.recv())
                 .await
                 .expect("should receive undeliverable message")
-                .expect("receiver should not be closed");
+                .expect("undeliverable receiver closed");
 
         // Verify the undeliverable message has the correct destination
         let split_port_ref: PortAddr = split_port_id;
@@ -5773,7 +5774,7 @@ mod tests {
     #[tokio::test]
     async fn test_port_contramap() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (handle, mut rx) = client.open_port();
 
         handle
@@ -5929,7 +5930,7 @@ mod tests {
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         mailbox.close(ActorStatus::Stopped("test stop".to_string()));
 
@@ -5951,7 +5952,7 @@ mod tests {
 
         let (port_handle, _rx) = mailbox.open_port::<u64>();
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         mailbox.close(ActorStatus::Failed(ActorErrorKind::Generic(
             "test failure".to_string(),
@@ -5968,7 +5969,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_open_reduce_port() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         // Open an accumulator port with sum reducer
         let (port_handle, receiver) = client.mailbox().open_reduce_port(accum::sum::<u64>());
@@ -5988,7 +5989,7 @@ mod tests {
     #[async_timed_test(timeout_secs = 30)]
     async fn test_open_reduce_port_reducer_spec_preserved() {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
 
         // Test that different accumulators produce different reducer_specs
         let (sum_handle, _) = client.mailbox().open_reduce_port(accum::sum::<u64>());
