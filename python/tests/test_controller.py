@@ -34,6 +34,7 @@ sys.excepthook = custom_excepthook
 
 @pytest.fixture(scope="module", autouse=True)
 def testing_context():
+    # pyrefly: ignore [unknown-name]
     global local
     with TestingContext() as local:
         yield
@@ -60,6 +61,7 @@ class TestController:
         gpu_per_host,
         activate=True,
     ):
+        # pyrefly: ignore [unknown-name]
         return local.local_device_mesh(
             N,
             gpu_per_host,
@@ -82,6 +84,7 @@ class TestController:
             t = torch.rand(10).cuda()
             with pytest.raises(TypeError, match="WRONG_STREAM"):
                 with other.activate():
+                    # pyrefly: ignore [missing-attribute]
                     t = t.reduce("host", "sum")
 
     def test_sub_mesh(self):
@@ -211,15 +214,19 @@ class TestController:
             with pytest.raises(
                 ValueError, match="Reduce expects the shape to be torch.Size."
             ):
+                # pyrefly: ignore [missing-attribute]
                 _ = inp.reduce("host", reduction="sum", scatter=True, out=out_incorrect)
 
+            # pyrefly: ignore [missing-attribute]
             reduce_out = inp.reduce("host", reduction="sum", scatter=True)
             local_out = fetch_shard(out).result()
             local_reduce_out = fetch_shard(reduce_out).result()
+            # pyrefly: ignore [missing-attribute]
             assert out._fake is not reduce_out._fake
             with no_mesh.activate():
                 assert not torch.equal(local_out, local_reduce_out)
 
+            # pyrefly: ignore [missing-attribute]
             reduce_out = inp.reduce("host", reduction="sum", scatter=True, out=out)
             local_out = fetch_shard(out).result()
             local_reduce_out = fetch_shard(reduce_out).result()
@@ -242,6 +249,7 @@ class TestController:
             x = torch.rand(3, 4).cuda()
             x.abs_()
             s = Stream("other")
+            # pyrefly: ignore [bad-argument-type]
             b, drop = s.borrow(x)
             with pytest.raises(TypeError, match="would be mutated"):
                 x.abs_()
@@ -249,6 +257,7 @@ class TestController:
                 _ = b.add(b)
             drop.drop()
             x.abs_()
+            # pyrefly: ignore [bad-argument-type]
             b, drop = s.borrow(x, mutable=True)
             with s.activate():
                 b.abs_()
@@ -263,10 +272,12 @@ class TestController:
 
             with sm0.activate():
                 x = torch.rand(3, 4, device="cuda")
+                # pyrefly: ignore [missing-attribute]
                 _ = x.to_mesh(sm1)
 
             a = torch.rand(3, 4, device="cuda")
 
+            # pyrefly: ignore [missing-attribute]
             b = a.slice_mesh(host=0)
             _ = b.to_mesh(sm0)
             _ = b.to_mesh(sm1)
@@ -277,6 +288,7 @@ class TestController:
                 subset = device_mesh.slice(**{dim: 1})
                 with subset.activate():
                     x = torch.rand(3, device="cuda")
+                    # pyrefly: ignore [missing-attribute]
                     y = x.to_mesh(device_mesh)
 
                 with subset.activate():
@@ -291,6 +303,7 @@ class TestController:
             subset = device_mesh.slice(host=1, gpu=1)
             with subset.activate():
                 x = torch.rand(3, device="cuda")
+                # pyrefly: ignore [missing-attribute]
                 y = x.to_mesh(device_mesh)
 
             with subset.activate():
@@ -394,6 +407,7 @@ class TestController:
             with ppmesh.activate():
                 with pp_meshes[0].activate():
                     x = torch.randn((3, 3), device="cuda")
+                    # pyrefly: ignore [bad-argument-type]
                     x_borrowed_tensor, x_borrow = p2p_stream.borrow(x)
                     with p2p_stream.activate():
                         y_on_mesh_1_p2p_stream = x_borrowed_tensor.to_mesh(pp_meshes[1])
@@ -410,6 +424,7 @@ class TestController:
     def test_to_mesh_cow(self):
         with self.local_device_mesh(2, 2) as mesh:
             t = torch.zeros((), device="cuda")
+            # pyrefly: ignore [missing-attribute]
             t2 = t.to_mesh(mesh)
             t.add_(1)
             assert monarch.inspect(t2).item() == 0
@@ -421,6 +436,7 @@ class TestController:
             m0 = mesh.slice(host=0)
             m1 = mesh.slice(host=1)
             with m0.activate():
+                # pyrefly: ignore [missing-attribute]
                 t2 = torch.rand(3, 4, device="cuda").to_mesh(m1, stream=other)
             with m1.activate(), other.activate():
                 # assert doesn't fail
@@ -430,6 +446,7 @@ class TestController:
         with self.local_device_mesh(2, 2) as _:
             x = torch.rand(4, 4).cuda()
             s = Stream("other")
+            # pyrefly: ignore [bad-argument-type]
             b, drop = s.borrow(x)
             drop.drop()
             with s.activate():
@@ -475,11 +492,13 @@ class TestController:
                 r0 = torch.rand(1, device=device)
                 if device == "cuda":
                     for d in ("host", "gpu"):
+                        # pyrefly: ignore [missing-attribute]
                         r0 = r0.reduce(d, reduction="stack")
                 monarch.random.set_state(s3)
                 r1 = torch.rand(1, device=device)
                 if device == "cuda":
                     for d in ("host", "gpu"):
+                        # pyrefly: ignore [missing-attribute]
                         r1 = r1.reduce(d, reduction="stack")
                 r2, r3 = monarch.inspect((r0, r1))
                 monarch.random.set_state(a)
