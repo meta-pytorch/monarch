@@ -45,13 +45,13 @@
 
 #![allow(clippy::result_large_err)]
 
-use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::id::Label;
+use hyperactor::id::Uid;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -464,8 +464,8 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn(
-                "host_agent",
+            .spawn_with_uid(
+                Uid::singleton(Label::new(host_agent::HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Process {
                     host,
                     shutdown_tx: None,
@@ -528,8 +528,8 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn(
-                host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+            .spawn_with_uid(
+                Uid::singleton(Label::new(host_agent::HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
                 HostAgent::new(HostAgentMode::Local(host)),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
@@ -862,40 +862,29 @@ impl Drop for HostMeshShutdownGuard {
                                  relying on PDEATHSIG/manager Drop"
                             );
                         }
-                        Ok(proc) => match proc.client("drop") {
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "failed to create ephemeral instance for drop-cleanup; \
-                                     relying on PDEATHSIG/manager Drop"
-                                );
-                            }
-                            Ok((instance, _guard)) => {
-                                let mut attempted = 0usize;
-                                let mut ok = 0usize;
-                                let mut err = 0usize;
+                        Ok(proc) => {
+                            let client = proc.client("drop");
+                            let mut attempted = 0usize;
+                            let mut ok = 0usize;
+                            let mut err = 0usize;
 
-                                for host in hosts {
-                                    attempted += 1;
-                                    tracing::debug!(host = %host, "drop-cleanup: shutdown start");
-                                    match host.shutdown(&instance).await {
-                                        Ok(()) => {
-                                            ok += 1;
-                                            tracing::debug!(host = %host, "drop-cleanup: shutdown ok");
-                                        }
-                                        Err(e) => {
-                                            err += 1;
-                                            tracing::warn!(host = %host, error = %e, "drop-cleanup: shutdown failed");
-                                        }
+                            for host in hosts {
+                                attempted += 1;
+                                tracing::debug!(host = %host, "drop-cleanup: shutdown start");
+                                match host.shutdown(&client).await {
+                                    Ok(()) => {
+                                        ok += 1;
+                                        tracing::debug!(host = %host, "drop-cleanup: shutdown ok");
+                                    }
+                                    Err(e) => {
+                                        err += 1;
+                                        tracing::warn!(host = %host, error = %e, "drop-cleanup: shutdown failed");
                                     }
                                 }
-
-                                tracing::info!(
-                                    attempted, ok, err,
-                                    "hostmesh drop-cleanup summary"
-                                );
                             }
-                        },
+
+                            tracing::info!(attempted, ok, err, "hostmesh drop-cleanup summary");
+                        }
                     }
                 }
                 .instrument(span),
@@ -1434,12 +1423,7 @@ impl HostMeshRef {
             // hyperactor::proc AI-3: controller name must include mesh
             // identity for proc-wide ActorAddr uniqueness.
             let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.id());
-            let controller_handle =
-                controller
-                    .spawn_with_name(cx, &controller_name)
-                    .map_err(|e| {
-                        crate::Error::ControllerActorSpawnError(mesh.id().resource_id().clone(), e)
-                    })?;
+            let controller_handle = cx.spawn_with_label(&controller_name, controller);
             // Bind the actor's well-known ports (Signal, IntrospectMessage,
             // Undeliverable). Without this, the controller's mailbox has no
             // port entries and messages (including introspection queries)
@@ -1808,8 +1792,8 @@ pub async fn spawn_admin(
     // Spawn the admin on the caller's local proc. Placement now
     // follows the caller context rather than mesh topology.
     let local_proc = cx.instance().proc();
-    let agent_handle = local_proc.spawn(
-        crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
+    let agent_handle = local_proc.spawn_with_uid(
+        Uid::singleton(Label::new(crate::mesh_admin::MESH_ADMIN_ACTOR_NAME).unwrap()),
         crate::mesh_admin::MeshAdminAgent::new(
             hosts,
             Some(root_client_id),

@@ -66,6 +66,7 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::id::Label;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::DeliveryFailure;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
@@ -236,42 +237,10 @@ impl GlobalClientActor {
                 .handle_unhandled_supervision_event(instance, event);
         })
     }
-}
 
-/// Handle a returned (undeliverable) message observed by the
-/// process-global root client.
-///
-/// The global root client is a **monitor**, not a participant: it
-/// must not crash or propagate failures just because a routed message
-/// could not be delivered.
-///
-/// Instead, we translate the undeliverable into an
-/// `ActorSupervisionEvent` and forward it to the **active**
-/// `ProcMesh` via the process-global supervision sink ("last sink
-/// wins"). If no sink has been installed yet (e.g., before the first
-/// `ProcMesh` allocation completes), we log and drop the event.
-#[async_trait]
-impl Actor for GlobalClientActor {
-    /// The global root client is the root of the supervision tree:
-    /// there is no parent to escalate to. Child-actor failures (e.g.
-    /// ActorMeshControllers detecting dead procs after mesh teardown)
-    /// are expected and must not crash the process.
-    async fn handle_supervision_event(
-        &mut self,
-        _this: &Instance<Self>,
-        event: &ActorSupervisionEvent,
-    ) -> Result<bool, anyhow::Error> {
-        tracing::warn!(
-            %event,
-            "global root client absorbed child supervision event",
-        );
-        Ok(true)
-    }
-
-    async fn handle_undeliverable_message(
+    async fn report_delivery_failure(
         &mut self,
         cx: &Instance<Self>,
-        _reason: UndeliverableReason,
         undeliverable: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         let mut env = match undeliverable {
@@ -336,6 +305,63 @@ impl Actor for GlobalClientActor {
     }
 }
 
+/// Handle a returned (undeliverable) message observed by the
+/// process-global root client.
+///
+/// The global root client is a **monitor**, not a participant: it
+/// must not crash or propagate failures just because a routed message
+/// could not be delivered.
+///
+/// Instead, we translate the undeliverable into an
+/// `ActorSupervisionEvent` and forward it to the **active**
+/// `ProcMesh` via the process-global supervision sink ("last sink
+/// wins"). If no sink has been installed yet (e.g., before the first
+/// `ProcMesh` allocation completes), we log and drop the event.
+#[async_trait]
+impl Actor for GlobalClientActor {
+    /// The global root client is the root of the supervision tree:
+    /// there is no parent to escalate to. Child-actor failures (e.g.
+    /// ActorMeshControllers detecting dead procs after mesh teardown)
+    /// are expected and must not crash the process.
+    async fn handle_supervision_event(
+        &mut self,
+        _this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
+    ) -> Result<bool, anyhow::Error> {
+        tracing::warn!(
+            %event,
+            "global root client absorbed child supervision event",
+        );
+        Ok(true)
+    }
+
+    async fn handle_delivery_failure_event(
+        &mut self,
+        cx: &Instance<Self>,
+        undeliverable: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.report_delivery_failure(cx, undeliverable).await
+    }
+
+    async fn handle_undeliverable_message(
+        &mut self,
+        cx: &Instance<Self>,
+        _reason: UndeliverableReason,
+        undeliverable: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.report_delivery_failure(cx, undeliverable).await
+    }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        _invalid: hyperactor::mailbox::InvalidReference,
+        undeliverable: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.report_delivery_failure(cx, undeliverable).await
+    }
+}
+
 /// `MeshFailure` is a terminal supervision signal for an `ActorMesh`.
 ///
 /// The process-global root client should never be a consumer of
@@ -390,8 +416,8 @@ async fn bootstrap_host() -> GlobalState {
 
     // 3. Spawn HostAgent on system_proc (takes ownership of Host).
     let host_agent = system_proc
-        .spawn(
-            HOST_MESH_AGENT_ACTOR_NAME,
+        .spawn_with_uid(
+            Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
             HostAgent::new(HostAgentMode::Local(host)),
         )
         .expect("failed to spawn host agent");
@@ -411,9 +437,7 @@ async fn bootstrap_host() -> GlobalState {
     // — intentionally acceptable for cross-language symmetry and easier
     // reasoning about the bootstrap sequence.
     let temp_proc = Proc::isolated();
-    let (bootstrap_cx, _guard) = temp_proc
-        .client("bootstrap")
-        .expect("failed to create bootstrap instance");
+    let bootstrap_cx = temp_proc.client("bootstrap");
     let local_proc_agent: ActorHandle<ProcAgent> = host_agent
         .get_local_proc(&bootstrap_cx)
         .await

@@ -905,7 +905,7 @@ impl axum::serve::Listener for TlsListener {
 impl Actor for MeshAdminAgent {
     /// Initializes the mesh admin agent and its HTTP server.
     ///
-    /// 1. Binds well-known handler ports (`proc.spawn()` does not
+    /// 1. Binds well-known handler ports (`proc.spawn_with_label()` does not
     ///    call `bind()` — unlike `gspawn` — so the actor must do it
     ///    itself before becoming reachable).
     /// 2. Binds a TCP listener (ephemeral or fixed port).
@@ -3292,12 +3292,10 @@ mod tests {
                 .unwrap();
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
-        let host_agent_handle = system_proc
-            .spawn(
-                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostAgent::new(HostAgentMode::Local(host)),
-            )
-            .unwrap();
+        let host_agent_handle = system_proc.spawn_with_label(
+            crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+            HostAgent::new(HostAgentMode::Local(host)),
+        );
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
@@ -3310,24 +3308,22 @@ mod tests {
         // Without one, actor teardown triggers std::process::exit(1).
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
-        let admin_handle = admin_proc
-            .spawn(
-                MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(
-                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
-                    None,
-                    Some("[::]:0".parse().unwrap()),
-                    None,
-                ),
-            )
-            .unwrap();
+        let admin_handle = admin_proc.spawn_with_label(
+            MESH_ADMIN_ACTOR_NAME,
+            MeshAdminAgent::new(
+                vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                None,
+                Some("[::]:0".parse().unwrap()),
+                None,
+            ),
+        );
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
 
         // -- 3. Create a bare client instance for sending messages --
         // Only a mailbox is needed for reply ports — no actor message
         // loop required.
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // -- 4. Resolve "root" --
         let root_resp = admin_ref
@@ -3462,12 +3458,10 @@ mod tests {
         let system_proc_id: ProcAddr = host.system_proc().proc_addr().clone();
         let local_proc_id: ProcAddr = host.local_proc().proc_addr().clone();
         let system_proc = host.system_proc().clone();
-        let host_agent_handle = system_proc
-            .spawn(
-                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostAgent::new(HostAgentMode::Local(host)),
-            )
-            .unwrap();
+        let host_agent_handle = system_proc.spawn_with_label(
+            crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+            HostAgent::new(HostAgentMode::Local(host)),
+        );
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
@@ -3477,22 +3471,20 @@ mod tests {
         let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
-        let admin_handle = admin_proc
-            .spawn(
-                MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(
-                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
-                    None,
-                    Some("[::]:0".parse().unwrap()),
-                    None,
-                ),
-            )
-            .unwrap();
+        let admin_handle = admin_proc.spawn_with_label(
+            MESH_ADMIN_ACTOR_NAME,
+            MeshAdminAgent::new(
+                vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                None,
+                Some("[::]:0".parse().unwrap()),
+                None,
+            ),
+        );
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
 
         // Create a bare client instance for sending messages.
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Spawn a user proc via CreateOrUpdate<ProcSpec>.
         let user_proc_name = ResourceId::instance(Label::new("user-proc").unwrap());
@@ -3535,7 +3527,7 @@ mod tests {
                 if matches!(
                     child_ref,
                     crate::introspect::NodeRef::Proc(proc_id)
-                        if proc_id != &system_proc_id && proc_id != &local_proc_id
+                        if *proc_id != system_proc_id && *proc_id != local_proc_id
                 ) {
                     found_user = true;
                 } else {
@@ -3615,16 +3607,14 @@ mod tests {
         // moving the host into HostAgentMode).
         let local_proc = host.local_proc();
         let local_proc_id = local_proc.proc_addr().clone();
-        let root_client_handle = local_proc.spawn("client", TestIntrospectableActor).unwrap();
+        let root_client_handle = local_proc.spawn_with_label("client", TestIntrospectableActor);
         let root_client_ref: ActorRef<TestIntrospectableActor> = root_client_handle.bind();
         let root_client_actor_id = root_client_ref.actor_addr().clone();
 
-        let host_agent_handle = system_proc
-            .spawn(
-                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostAgent::new(HostAgentMode::Local(host)),
-            )
-            .unwrap();
+        let host_agent_handle = system_proc.spawn_with_label(
+            crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+            HostAgent::new(HostAgentMode::Local(host)),
+        );
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
@@ -3636,23 +3626,21 @@ mod tests {
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
-        let admin_handle = admin_proc
-            .spawn(
-                MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(
-                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
-                    Some(root_client_actor_id.clone()),
-                    Some("[::]:0".parse().unwrap()),
-                    None,
-                ),
-            )
-            .unwrap();
+        let admin_handle = admin_proc.spawn_with_label(
+            MESH_ADMIN_ACTOR_NAME,
+            MeshAdminAgent::new(
+                vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                Some(root_client_actor_id.clone()),
+                Some("[::]:0".parse().unwrap()),
+                None,
+            ),
+        );
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
 
         // Client for sending messages.
         let client_proc =
             hyperactor::Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Resolve "root" — should contain only the host.
         let root_resp = admin_ref
@@ -3776,12 +3764,10 @@ mod tests {
                 .unwrap();
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
-        let host_agent_handle = system_proc
-            .spawn(
-                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostAgent::new(HostAgentMode::Local(host)),
-            )
-            .unwrap();
+        let host_agent_handle = system_proc.spawn_with_label(
+            crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+            HostAgent::new(HostAgentMode::Local(host)),
+        );
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
@@ -3791,21 +3777,19 @@ mod tests {
         let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
-        let admin_handle = admin_proc
-            .spawn(
-                MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(
-                    vec![(host_addr_str, host_agent_ref)],
-                    None,
-                    Some("[::]:0".parse().unwrap()),
-                    None,
-                ),
-            )
-            .unwrap();
+        let admin_handle = admin_proc.spawn_with_label(
+            MESH_ADMIN_ACTOR_NAME,
+            MeshAdminAgent::new(
+                vec![(host_addr_str, host_agent_ref)],
+                None,
+                Some("[::]:0".parse().unwrap()),
+                None,
+            ),
+        );
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Walk the tree breadth-first, checking the invariant at every node.
         // Each entry is (reference_string, expected_parent_identity).
@@ -3880,12 +3864,10 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let system_proc_id = system_proc.proc_addr().clone();
-        let host_agent_handle = system_proc
-            .spawn(
-                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostAgent::new(HostAgentMode::Local(host)),
-            )
-            .unwrap();
+        let host_agent_handle = system_proc.spawn_with_label(
+            crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+            HostAgent::new(HostAgentMode::Local(host)),
+        );
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
@@ -3896,22 +3878,20 @@ mod tests {
         let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
-        let admin_handle = admin_proc
-            .spawn(
-                MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(
-                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
-                    None,
-                    Some("[::]:0".parse().unwrap()),
-                    None,
-                ),
-            )
-            .unwrap();
+        let admin_handle = admin_proc.spawn_with_label(
+            MESH_ADMIN_ACTOR_NAME,
+            MeshAdminAgent::new(
+                vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                None,
+                Some("[::]:0".parse().unwrap()),
+                None,
+            ),
+        );
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
 
         // -- 3. Create a bare client instance for sending messages --
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // -- 4. Resolve the host to get its children --
         let host_ref_str =
@@ -4127,7 +4107,7 @@ mod tests {
         // 2. Create a separate caller proc with an actor instance.
         let caller_proc = Proc::direct(ChannelTransport::Unix.any(), "caller".to_string()).unwrap();
         let _supervision = ProcSupervisionCoordinator::set(&caller_proc).await.unwrap();
-        let (caller_cx, _caller_handle) = caller_proc.client("caller").unwrap();
+        let caller_cx = caller_proc.client("caller");
 
         // 3. Call the real public entrypoint.
         let admin_ref = crate::host_mesh::spawn_admin(
@@ -4202,12 +4182,10 @@ mod tests {
                 .await
                 .unwrap();
         let system_proc = host.system_proc().clone();
-        let host_agent_handle = system_proc
-            .spawn(
-                HOST_MESH_AGENT_ACTOR_NAME,
-                HostAgent::new(HostAgentMode::Local(host)),
-            )
-            .unwrap();
+        let host_agent_handle = system_proc.spawn_with_label(
+            HOST_MESH_AGENT_ACTOR_NAME,
+            HostAgent::new(HostAgentMode::Local(host)),
+        );
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
 
         // User proc: own ephemeral Unix socket, own ProcAgent.
@@ -4228,21 +4206,19 @@ mod tests {
         // White-box test of proc-agent fallback, not placement.
         let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
-        let admin_handle = admin_proc
-            .spawn(
-                MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(
-                    vec![(user_proc_addr, host_agent_ref.clone())],
-                    None,
-                    Some("[::]:0".parse().unwrap()),
-                    None,
-                ),
-            )
-            .unwrap();
+        let admin_handle = admin_proc.spawn_with_label(
+            MESH_ADMIN_ACTOR_NAME,
+            MeshAdminAgent::new(
+                vec![(user_proc_addr, host_agent_ref.clone())],
+                None,
+                Some("[::]:0".parse().unwrap()),
+                None,
+            ),
+        );
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
 
         let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
-        let (client, _client_handle) = client_proc.client("client").unwrap();
+        let client = client_proc.client("client");
 
         // Resolve the user proc via MeshAdminAgent. HostMeshAgent
         // returns Error for QueryChild → fallback to proc_agent[0]
@@ -4269,9 +4245,7 @@ mod tests {
 
         // Spawn an actor directly on the user proc, bypassing gspawn.
         // This simulates how sieve[0] spawns sieve[1], sieve[2], etc.
-        user_proc
-            .spawn("extra_actor", TestIntrospectableActor)
-            .unwrap();
+        user_proc.spawn_with_label("extra_actor", TestIntrospectableActor);
 
         // Resolve again — the new actor must appear immediately
         // without any republish, proving PA-1 is satisfied.

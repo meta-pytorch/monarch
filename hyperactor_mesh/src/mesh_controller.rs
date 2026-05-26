@@ -796,6 +796,41 @@ where
             handle_undeliverable_message(cx, reason, envelope)
         }
     }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        invalid: hyperactor::mailbox::InvalidReference,
+        envelope: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        let envelope = update_undeliverable_envelope_for_casting(envelope);
+        let Some(returned) = envelope.as_message() else {
+            return hyperactor::actor::handle_invalid_reference(cx, invalid, envelope);
+        };
+        if let Some(true) = returned.headers().get(ACTOR_MESH_SUBSCRIBER_MESSAGE) {
+            let dest_port_id = returned.dest().clone();
+            let port = hyperactor::PortRef::<Option<MeshFailure>>::attest(dest_port_id);
+            let did_exist = self.health_state.subscribers.remove(&port);
+            if did_exist {
+                tracing::debug!(
+                    actor_id = %cx.self_addr(),
+                    num_subscribers = self.health_state.subscribers.len(),
+                    "ResourceController: removed subscriber {} from mesh controller",
+                    port.port_addr()
+                );
+            }
+            Ok(())
+        } else if returned.headers().get(CAST_ACTOR_MESH_ID).is_some() {
+            tracing::warn!(
+                actor_id = %cx.self_addr(),
+                dest = %returned.dest(),
+                "ResourceController: ignoring undeliverable cast message",
+            );
+            Ok(())
+        } else {
+            hyperactor::actor::handle_invalid_reference(cx, invalid, envelope)
+        }
+    }
 }
 
 #[async_trait]

@@ -434,6 +434,43 @@ mod tests {
     }
 
     #[test]
+    fn try_map_visible_wraps_user_error_as_map_variant() {
+        // User-supplied fn returns `Err` for one visible rank.
+        let space = host_gpu_space();
+        let values = (0..8).map(|rank| rank * 10).collect::<Vec<_>>();
+        let view = BaseView::new(space, values);
+
+        let result = view.try_map_visible(|rank, _item: &usize| -> Result<usize, &'static str> {
+            if rank == Rank(4) {
+                Err("rank 4 not allowed")
+            } else {
+                Ok(rank.get())
+            }
+        });
+
+        assert_eq!(result.unwrap_err(), ViewMapError::Map("rank 4 not allowed"));
+    }
+
+    #[test]
+    fn try_map_visible_wraps_rank_out_of_bounds_as_view_variant() {
+        // Storage too small for the visible ranks; the first OOB rank surfaces
+        // as `ViewMapError::View(ViewError::RankOutOfBounds { ... })`.
+        let space = host_gpu_space();
+        let view = BaseView::new(space, vec![0usize, 1, 2, 3]);
+
+        let result = view
+            .try_map_visible(|_rank, item: &usize| -> Result<usize, &'static str> { Ok(*item) });
+
+        assert_eq!(
+            result.unwrap_err(),
+            ViewMapError::View(ViewError::RankOutOfBounds {
+                rank: Rank(4),
+                len: 4,
+            }),
+        );
+    }
+
+    #[test]
     fn compact_view_uses_visible_rank_order() {
         let space = host_gpu_space();
         let values = vec!["r0", "r1", "r2", "r3", "r4", "r6", "r7"];
