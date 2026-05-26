@@ -15,6 +15,7 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::Client;
 use hyperactor::Context;
 use hyperactor::Endpoint as _;
 use hyperactor::Handler;
@@ -1584,11 +1585,9 @@ async fn handle_async_endpoint_panic(
     } {
         // Record error and panic metrics
         ENDPOINT_ACTOR_ERROR.add(1, attributes);
-        static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-        let client = &CLIENT
-            .get_or_init(|| get_proc_runtime().client("async_endpoint_handler").unwrap())
-            .0;
-        panic_sender.post(&client, Signal::Kill(panic.to_string()));
+        static CLIENT: OnceLock<Client> = OnceLock::new();
+        let client = CLIENT.get_or_init(|| get_proc_runtime().client("async_endpoint_handler"));
+        panic_sender.post(client, Signal::Kill(panic.to_string()));
     }
 
     // Record latency in microseconds
