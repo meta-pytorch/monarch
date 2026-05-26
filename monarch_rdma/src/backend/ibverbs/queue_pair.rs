@@ -1700,7 +1700,7 @@ mod tests {
                 state: state.clone(),
                 response,
             };
-            let mock_handle = proc.spawn("mock", mock)?;
+            let mock_handle = proc.spawn(mock);
             let mock_ref = mock_handle.bind::<MockManager>();
             let qp_key = QpKey {
                 self_device: "mock0".into(),
@@ -1708,7 +1708,7 @@ mod tests {
                 other_device: "mock0".into(),
             };
             let initializer = QueuePairInitializer::new(mock_handle, mock_ref, qp_key.clone(), qp);
-            let init_handle = proc.spawn("initializer", initializer)?;
+            let init_handle = proc.spawn(initializer);
             // Bind well-known ports so PeerInfo/NotifyRts can route.
             let _ = init_handle.bind::<QueuePairInitializer<MockManager>>();
             Ok(Harness {
@@ -1796,7 +1796,7 @@ mod tests {
         };
         let harness = Harness::build(qp, MockResponse::Success(info))?;
 
-        let (peer, _) = harness.proc.client("peer")?;
+        let peer = harness.proc.client("peer");
         harness.init_handle.post(&peer, NotifyRts);
 
         let key = harness.await_done().await;
@@ -1862,7 +1862,7 @@ mod tests {
     async fn test_undeliverable_in_awaiting_transitions_to_failed() {
         let harness = Harness::build(QpGuard::new(fake_qp()), MockResponse::DropReply).unwrap();
         let undeliverable = fake_undeliverable(&harness.proc, "simulated bounce");
-        let (peer, _) = harness.proc.client("peer").unwrap();
+        let peer = harness.proc.client("peer");
         harness.init_handle.post(&peer, undeliverable);
         let (key, error) = harness.await_failed().await;
         assert_eq!(key, harness.qp_key);
@@ -1904,7 +1904,7 @@ mod tests {
         let _ = harness.await_failed().await;
 
         let undeliverable = fake_undeliverable(&harness.proc, "late bounce");
-        let (peer, _) = harness.proc.client("peer").unwrap();
+        let peer = harness.proc.client("peer");
         harness.init_handle.post(&peer, undeliverable);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(harness.state.lock().unwrap().failed.len(), 1);

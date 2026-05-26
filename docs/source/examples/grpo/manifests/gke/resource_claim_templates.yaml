@@ -1,0 +1,29 @@
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: generator-rdma
+  namespace: monarch-tests
+spec:
+  spec:
+    devices:
+      requests:
+      - name: req-mrdma
+        exactly:
+          deviceClassName: mrdma.google.com
+          allocationMode: ExactCount
+          count: 3  # match the number of GPUs requested for the generator pod
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: learner-rdma
+  namespace: monarch-tests
+spec:
+  spec:
+    devices:
+      requests:
+      - name: req-mrdma
+        exactly:
+          deviceClassName: mrdma.google.com
+          allocationMode: ExactCount
+          count: 2  # match the number of GPUs requested for the learner pod
