@@ -66,6 +66,7 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::id::Label;
+use hyperactor::id::Uid;
 use hyperactor::mailbox::DeliveryFailure;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
@@ -333,6 +334,14 @@ impl Actor for GlobalClientActor {
         }
         Ok(())
     }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        cx: &Instance<Self>,
+        undeliverable: Undeliverable<MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        self.handle_undeliverable_message(cx, undeliverable).await
+    }
 }
 
 /// `MeshFailure` is a terminal supervision signal for an `ActorMesh`.
@@ -389,8 +398,8 @@ async fn bootstrap_host() -> GlobalState {
 
     // 3. Spawn HostAgent on system_proc (takes ownership of Host).
     let host_agent = system_proc
-        .spawn(
-            HOST_MESH_AGENT_ACTOR_NAME,
+        .spawn_with_uid(
+            Uid::singleton(Label::new(HOST_MESH_AGENT_ACTOR_NAME).unwrap()),
             HostAgent::new(HostAgentMode::Local(host)),
         )
         .expect("failed to spawn host agent");
@@ -410,9 +419,7 @@ async fn bootstrap_host() -> GlobalState {
     // — intentionally acceptable for cross-language symmetry and easier
     // reasoning about the bootstrap sequence.
     let temp_proc = Proc::isolated();
-    let (bootstrap_cx, _guard) = temp_proc
-        .client("bootstrap")
-        .expect("failed to create bootstrap instance");
+    let bootstrap_cx = temp_proc.client("bootstrap");
     let local_proc_agent: ActorHandle<ProcAgent> = host_agent
         .get_local_proc(&bootstrap_cx)
         .await

@@ -127,7 +127,7 @@ impl _Controller {
                         rank_map,
                     })
                     .await,
-                )?;
+                );
                 Ok::<_, anyhow::Error>(Arc::new(Mutex::new(controller_handle)))
             })??;
 
