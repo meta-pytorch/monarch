@@ -19,6 +19,7 @@ mod entity_dispatcher;
 pub mod pyspy_table;
 pub mod query_engine;
 mod record_batch_sink;
+pub mod socket_ingest;
 
 pub use database_scanner::DatabaseScanner;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -106,9 +107,18 @@ fn reset_record_batch_flush_count() {
     reset_flush_count()
 }
 
+/// Start Unix-socket ingest for a database scanner.
+#[pyfunction]
+fn _start_socket_ingest(scanner: PyRef<'_, DatabaseScanner>, socket_path: &str) -> PyResult<bool> {
+    scanner
+        .start_socket_ingest(std::path::Path::new(socket_path))
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(enable_record_batch_tracing, module)?)?;
     module.add_function(wrap_pyfunction!(get_record_batch_flush_count, module)?)?;
     module.add_function(wrap_pyfunction!(reset_record_batch_flush_count, module)?)?;
+    module.add_function(wrap_pyfunction!(_start_socket_ingest, module)?)?;
     Ok(())
 }
