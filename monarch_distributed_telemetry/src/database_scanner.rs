@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -33,6 +34,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyModule;
 use serde_multipart::Part;
+use tokio::task::AbortHandle;
 
 use crate::EntityBatchSink;
 use crate::QueryResponse;
@@ -255,6 +257,9 @@ const DEFAULT_RETENTION_SECS: u64 = 10 * 60;
 /// Tables that keep only recent data; all others have unlimited retention.
 const RETENTION_TABLES: &[&str] = &["sent_messages", "messages", "message_status_events"];
 
+/// Interval between routine retention sweeps.
+const RETENTION_INTERVAL: Duration = Duration::from_secs(30);
+
 #[pyclass(
     name = "DatabaseScanner",
     module = "monarch._rust_bindings.monarch_distributed_telemetry.database_scanner"
@@ -275,6 +280,11 @@ pub struct DatabaseScanner {
     /// lifetime. Dropping the scanner drops each handle, which aborts the
     /// corresponding background task.
     socket_ingest_handles: StdMutex<Vec<crate::socket_ingest::IngestServerHandle>>,
+    /// Collector-side retention task owned by this scanner.
+    ///
+    /// Producer-side `UnixSocketSink` flushes only move frames into storage;
+    /// retention policy belongs here where the table store is owned.
+    retention_task: StdMutex<Option<AbortHandle>>,
 }
 
 #[pymethods]
@@ -289,6 +299,7 @@ impl DatabaseScanner {
             sink: None,
             entity_sink: None,
             socket_ingest_handles: StdMutex::new(Vec::new()),
+            retention_task: StdMutex::new(None),
         };
 
         // Create and register a RecordBatchSink for trace events (spans, events)
@@ -493,6 +504,7 @@ impl DatabaseScanner {
         match crate::socket_ingest::non_destructive_bind(socket_path)? {
             crate::socket_ingest::BindOutcome::Bound(listener) => {
                 let handle = crate::socket_ingest::run_ingest_server(listener, self.table_store())?;
+                self.start_periodic_retention()?;
                 self.socket_ingest_handles
                     .lock()
                     .map_err(|_| anyhow::anyhow!("lock poisoned"))?
@@ -501,6 +513,90 @@ impl DatabaseScanner {
             }
             crate::socket_ingest::BindOutcome::SkippedExistingCollector => Ok(false),
         }
+    }
+
+    fn start_periodic_retention(&self) -> anyhow::Result<()> {
+        if self.retention_us == 0 {
+            return Ok(());
+        }
+
+        // Socket ingest can append directly into `TableStore` without a
+        // scanner query/flush. Keep retention as low-frequency collector
+        // maintenance instead of coupling DataFusion filtering to producer
+        // flushes or per-frame ingest.
+        let mut guard = self
+            .retention_task
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+        if guard.is_some() {
+            return Ok(());
+        }
+
+        *guard = Some(Self::spawn_periodic_retention_task(
+            self.table_data.clone(),
+            self.retention_us,
+        ));
+        Ok(())
+    }
+
+    fn spawn_periodic_retention_task(
+        table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+        retention_us: i64,
+    ) -> AbortHandle {
+        let handle = get_tokio_runtime().spawn(async move {
+            loop {
+                tokio::time::sleep(RETENTION_INTERVAL).await;
+                let now_us = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("system clock before unix epoch")
+                    .as_micros() as i64;
+                let where_clause = Self::retention_where_clause(retention_us, now_us);
+                if let Err(error) =
+                    Self::apply_retention_policies_to_tables(&table_data, &where_clause).await
+                {
+                    tracing::warn!("periodic telemetry retention failed: {error}");
+                }
+            }
+        });
+        handle.abort_handle()
+    }
+
+    async fn apply_retention_policies_to_tables(
+        table_data: &Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+        where_clause: &str,
+    ) -> anyhow::Result<()> {
+        for &table_name in RETENTION_TABLES {
+            let table = table_data
+                .lock()
+                .map_err(|_| anyhow::anyhow!("lock poisoned"))?
+                .get(table_name)
+                .cloned();
+            if let Some(table) = table {
+                table.apply_retention(table_name, where_clause).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn retention_where_clause(retention_us: i64, now_us: i64) -> String {
+        let cutoff = now_us - retention_us;
+        format!("timestamp_us > {cutoff}")
+    }
+
+    #[cfg(test)]
+    fn spawn_triggered_retention_task(
+        table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+        retention_us: i64,
+        mut receiver: tokio::sync::mpsc::Receiver<(i64, tokio::sync::oneshot::Sender<()>)>,
+    ) -> AbortHandle {
+        let handle = get_tokio_runtime().spawn(async move {
+            while let Some((now_us, ack)) = receiver.recv().await {
+                let where_clause = Self::retention_where_clause(retention_us, now_us);
+                let _ = Self::apply_retention_policies_to_tables(&table_data, &where_clause).await;
+                let _ = ack.send(());
+            }
+        });
+        handle.abort_handle()
     }
 
     /// Push a batch into the named table in `table_data`.
@@ -764,13 +860,21 @@ impl DatabaseScanner {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before unix epoch")
             .as_micros() as i64;
-        let cutoff = now_us - self.retention_us;
-        let where_clause = format!("timestamp_us > {cutoff}");
-
-        for &table_name in RETENTION_TABLES {
-            self.apply_retention(table_name, &where_clause)?;
-        }
-        Ok(())
+        let where_clause = Self::retention_where_clause(self.retention_us, now_us);
+        let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(Self::apply_retention_policies_to_tables(
+                    &self.table_data,
+                    &where_clause,
+                ))
+            })
+        } else {
+            get_tokio_runtime().block_on(Self::apply_retention_policies_to_tables(
+                &self.table_data,
+                &where_clause,
+            ))
+        };
+        result.map_err(|e| PyException::new_err(e.to_string()))
     }
 
     /// Return an opaque [`TableStore`] handle for external callers.
@@ -881,6 +985,16 @@ impl DatabaseScanner {
     }
 }
 
+impl Drop for DatabaseScanner {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.retention_task.lock()
+            && let Some(handle) = guard.take()
+        {
+            handle.abort();
+        }
+    }
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<DatabaseScanner>()?;
     Ok(())
@@ -900,6 +1014,18 @@ mod tests {
     use datafusion::arrow::datatypes::Field;
     use datafusion::arrow::datatypes::Schema;
     use datafusion::arrow::record_batch::RecordBatch;
+    use monarch_telemetry_schema::entity_tables::ACTORS;
+    use monarch_telemetry_schema::entity_tables::Actor;
+    use monarch_telemetry_schema::entity_tables::ActorBuffer;
+    use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
+    use monarch_telemetry_schema::entity_tables::MESSAGES;
+    use monarch_telemetry_schema::entity_tables::Message;
+    use monarch_telemetry_schema::entity_tables::MessageBuffer;
+    use monarch_telemetry_schema::entity_tables::MessageStatusEvent;
+    use monarch_telemetry_schema::entity_tables::MessageStatusEventBuffer;
+    use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
+    use monarch_telemetry_schema::entity_tables::SentMessage;
+    use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
 
     use super::*;
 
@@ -922,6 +1048,118 @@ mod tests {
             .iter()
             .map(|b| b.num_rows())
             .sum()
+    }
+
+    fn test_scanner(retention_us: i64) -> DatabaseScanner {
+        DatabaseScanner {
+            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            rank: 0,
+            retention_us,
+            sink: None,
+            entity_sink: None,
+            socket_ingest_handles: StdMutex::new(Vec::new()),
+            retention_task: StdMutex::new(None),
+        }
+    }
+
+    async fn ingest_batch(scanner: &DatabaseScanner, table_name: &str, batch: RecordBatch) {
+        scanner
+            .table_store()
+            .ingest_batch(table_name, batch)
+            .await
+            .unwrap();
+    }
+
+    async fn ingest_retention_rows(scanner: &DatabaseScanner, old_us: i64, fresh_us: i64) {
+        let mut sent = SentMessageBuffer::default();
+        sent.insert(SentMessage {
+            id: 1,
+            timestamp_us: old_us,
+            sender_actor_id: 10,
+            actor_mesh_id: 20,
+            view_json: "{}".to_string(),
+            shape_json: "{}".to_string(),
+        });
+        sent.insert(SentMessage {
+            id: 2,
+            timestamp_us: fresh_us,
+            sender_actor_id: 11,
+            actor_mesh_id: 21,
+            view_json: "{}".to_string(),
+            shape_json: "{}".to_string(),
+        });
+        ingest_batch(
+            scanner,
+            SENT_MESSAGES,
+            sent.drain_to_record_batch().unwrap(),
+        )
+        .await;
+
+        let mut messages = MessageBuffer::default();
+        messages.insert(Message {
+            id: 3,
+            timestamp_us: old_us,
+            from_actor_id: 10,
+            to_actor_id: 30,
+            endpoint: Some("old".to_string()),
+            port_id: None,
+        });
+        messages.insert(Message {
+            id: 4,
+            timestamp_us: fresh_us,
+            from_actor_id: 11,
+            to_actor_id: 31,
+            endpoint: Some("fresh".to_string()),
+            port_id: Some(4),
+        });
+        ingest_batch(scanner, MESSAGES, messages.drain_to_record_batch().unwrap()).await;
+
+        let mut statuses = MessageStatusEventBuffer::default();
+        statuses.insert(MessageStatusEvent {
+            id: 5,
+            timestamp_us: old_us,
+            message_id: 3,
+            status: "queued".to_string(),
+        });
+        statuses.insert(MessageStatusEvent {
+            id: 6,
+            timestamp_us: fresh_us,
+            message_id: 4,
+            status: "complete".to_string(),
+        });
+        ingest_batch(
+            scanner,
+            MESSAGE_STATUS_EVENTS,
+            statuses.drain_to_record_batch().unwrap(),
+        )
+        .await;
+
+        let mut actors = ActorBuffer::default();
+        actors.insert(Actor {
+            id: 7,
+            timestamp_us: old_us,
+            mesh_id: 70,
+            rank: 0,
+            full_name: "old".to_string(),
+            display_name: None,
+        });
+        actors.insert(Actor {
+            id: 8,
+            timestamp_us: fresh_us,
+            mesh_id: 80,
+            rank: 1,
+            full_name: "fresh".to_string(),
+            display_name: Some("fresh".to_string()),
+        });
+        ingest_batch(scanner, ACTORS, actors.drain_to_record_batch().unwrap()).await;
+    }
+
+    async fn table_row_count_async(scanner: &DatabaseScanner, table_name: &str) -> usize {
+        let table = scanner.table_data.lock().unwrap().get(table_name).cloned();
+        match table {
+            Some(table) => row_count(&table).await,
+            None => 0,
+        }
     }
 
     #[tokio::test]
@@ -1023,6 +1261,43 @@ mod tests {
         assert_eq!(row_count(&table).await, 5);
     }
 
+    #[tokio::test]
+    async fn test_periodic_retention_task_filters_retention_tables() {
+        let scanner = test_scanner(10_000_000);
+        let now_us = 100_000_000;
+        let old_us = now_us - 20_000_000;
+        let fresh_us = now_us - 5_000_000;
+        ingest_retention_rows(&scanner, old_us, fresh_us).await;
+
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let handle = DatabaseScanner::spawn_triggered_retention_task(
+            scanner.table_data.clone(),
+            scanner.retention_us,
+            receiver,
+        );
+        let (ack_sender, ack_receiver) = tokio::sync::oneshot::channel();
+        sender.send((now_us, ack_sender)).await.unwrap();
+        ack_receiver.await.unwrap();
+        handle.abort();
+
+        assert_eq!(table_row_count_async(&scanner, SENT_MESSAGES).await, 1);
+        assert_eq!(table_row_count_async(&scanner, MESSAGES).await, 1);
+        assert_eq!(
+            table_row_count_async(&scanner, MESSAGE_STATUS_EVENTS).await,
+            1
+        );
+        assert_eq!(table_row_count_async(&scanner, ACTORS).await, 2);
+    }
+
+    #[test]
+    fn test_retention_secs_zero_starts_no_task() {
+        let scanner = test_scanner(0);
+
+        scanner.start_periodic_retention().unwrap();
+
+        assert!(scanner.retention_task.lock().unwrap().is_none());
+    }
+
     fn table_row_count(scanner: &DatabaseScanner, table_name: &str) -> usize {
         let guard = scanner.table_data.lock().unwrap();
         match guard.get(table_name) {
@@ -1049,14 +1324,7 @@ mod tests {
 
     #[test]
     fn test_store_pyspy_dump_creates_normalized_rows() {
-        let scanner = DatabaseScanner {
-            table_data: Arc::new(StdMutex::new(HashMap::new())),
-            rank: 0,
-            retention_us: 0,
-            sink: None,
-            entity_sink: None,
-            socket_ingest_handles: StdMutex::new(Vec::new()),
-        };
+        let scanner = test_scanner(0);
 
         let json = r#"{
             "Ok": {
@@ -1285,14 +1553,7 @@ mod tests {
 
     #[test]
     fn test_store_pyspy_dump_failed_result_no_rows() {
-        let scanner = DatabaseScanner {
-            table_data: Arc::new(StdMutex::new(HashMap::new())),
-            rank: 0,
-            retention_us: 0,
-            sink: None,
-            entity_sink: None,
-            socket_ingest_handles: StdMutex::new(Vec::new()),
-        };
+        let scanner = test_scanner(0);
 
         let json =
             r#"{"Failed": {"pid": 1, "binary": "py-spy", "exit_code": 1, "stderr": "error"}}"#;
@@ -1305,27 +1566,13 @@ mod tests {
 
     #[test]
     fn test_store_pyspy_dump_invalid_json_errors() {
-        let scanner = DatabaseScanner {
-            table_data: Arc::new(StdMutex::new(HashMap::new())),
-            rank: 0,
-            retention_us: 0,
-            sink: None,
-            entity_sink: None,
-            socket_ingest_handles: StdMutex::new(Vec::new()),
-        };
+        let scanner = test_scanner(0);
         assert!(scanner.store_pyspy_dump("x", "p", "not json").is_err());
     }
 
     #[test]
     fn test_store_pyspy_dump_multiple_threads() {
-        let scanner = DatabaseScanner {
-            table_data: Arc::new(StdMutex::new(HashMap::new())),
-            rank: 0,
-            retention_us: 0,
-            sink: None,
-            entity_sink: None,
-            socket_ingest_handles: StdMutex::new(Vec::new()),
-        };
+        let scanner = test_scanner(0);
 
         let json = r#"{
             "Ok": {
