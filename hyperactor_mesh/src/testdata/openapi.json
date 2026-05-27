@@ -100,6 +100,67 @@
         ],
         "type": "object"
       },
+      "InboundOrdering": {
+        "description": "Mesh-admin presentation of inbound ordering state.\n\nRollups marked `returned_*` are computed over `sessions` only and\nare LOWER BOUNDS when `snapshot_complete == false` (IO-6).\n`known_session_count` is the only rollup that totals returned +\nskipped sessions.",
+        "properties": {
+          "enabled": {
+            "description": "`true` when reorder buffering is enabled for this sender.",
+            "type": "boolean"
+          },
+          "known_session_count": {
+            "description": "IO-5: `sessions.len() + skipped_session_count`. The only rollup\nthat totals returned + skipped sessions.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "returned_buffered_message_count": {
+            "description": "IO-6: sum of `buffered_count` OVER RETURNED sessions.\nReorder-buffer scope only (independent of `queue_depth`; see\nIO-3). Lower bound if `!snapshot_complete`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "returned_buffered_session_count": {
+            "description": "IO-6: sessions with `buffered_count > 0` AMONG RETURNED\nsessions. Lower bound if `!snapshot_complete`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "returned_max_buffered_count": {
+            "description": "IO-6: max of `buffered_count` OVER RETURNED sessions. Lower\nbound if `!snapshot_complete`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sessions": {
+            "description": "Per-session entries, sorted by `session_id`.",
+            "items": {
+              "$ref": "#/components/schemas/OrderingSessionSnapshot"
+            },
+            "type": "array"
+          },
+          "skipped_session_count": {
+            "description": "Sessions held by a concurrent send at snapshot time.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapshot_complete": {
+            "description": "IO-4: `true` iff `skipped_session_count == 0`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "snapshot_complete",
+          "skipped_session_count",
+          "known_session_count",
+          "returned_buffered_session_count",
+          "returned_buffered_message_count",
+          "returned_max_buffered_count",
+          "sessions"
+        ],
+        "type": "object"
+      },
       "NodePayload": {
         "description": "Uniform response for any node in the mesh topology.\n\nEvery addressable entity (root, host, proc, actor) is represented\nas a `NodePayload`. The client navigates the mesh by fetching a\nnode and following its `children` references.\n\n`identity`, `children`, and `parent` are plain reference strings.\n`as_of` is an ISO 8601 timestamp string.",
         "properties": {
@@ -315,6 +376,21 @@
                       "null"
                     ]
                   },
+                  "inbound_ordering": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/InboundOrdering"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Per-session reorder-buffer state. `None` means no snapshot\ncallback installed (IO-1 structural absence);\n`Some({enabled: false, ...})` means buffering disabled;\n`Some({enabled: true, ...})` means active. See IO-1 in\n`hyperactor::introspect`."
+                  },
+                  "instance_id": {
+                    "description": "Stable per-instance Uuid::now_v7() identity assigned at\n`Instance::new` (string form).",
+                    "type": "string"
+                  },
                   "is_system": {
                     "type": "boolean"
                   },
@@ -329,6 +405,12 @@
                     "minimum": 0,
                     "type": "integer"
                   },
+                  "queue_depth": {
+                    "description": "Accepted handler work not yet dequeued by the actor loop\n(PD-5a/b in `hyperactor::proc`). Independent diagnostic from\n`inbound_ordering`; no arithmetic contract -- see IO-3 in\n`hyperactor::introspect`.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "total_processing_time_us": {
                     "format": "uint64",
                     "minimum": 0,
@@ -338,8 +420,10 @@
                 "required": [
                   "actor_status",
                   "actor_type",
+                  "instance_id",
                   "messages_processed",
                   "total_processing_time_us",
+                  "queue_depth",
                   "is_system"
                 ],
                 "type": "object"
@@ -376,6 +460,65 @@
             "type": "object"
           }
         ]
+      },
+      "OrderingSessionSnapshot": {
+        "description": "Per-session reorder-buffer snapshot at the HTTP boundary.",
+        "properties": {
+          "buffered_count": {
+            "description": "Messages held in the reorder buffer waiting for a seq gap.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expected_next_seq": {
+            "description": "`last_released_seq.saturating_add(1)`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_released_seq": {
+            "description": "Highest seq released from the reorder buffer into the actor\nwork queue.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "newest_buffered_seq": {
+            "description": "Highest seq currently buffered. `None` when `buffered_count == 0`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "oldest_buffered_seq": {
+            "description": "Lowest seq currently buffered. `None` when `buffered_count == 0`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sender": {
+            "description": "Session owner actor address (string form; `None` only in rare\nbypass paths).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "description": "Session identifier (UUID string form).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "last_released_seq",
+          "expected_next_seq",
+          "buffered_count"
+        ],
+        "type": "object"
       },
       "ProcDebugStats": {
         "description": "Proc-level debug/operational stats (DTO mirror of\n`ProcDebugStats`).",
