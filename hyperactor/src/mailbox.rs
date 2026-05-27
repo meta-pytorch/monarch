@@ -3886,7 +3886,7 @@ mod tests {
             undelivered
                 .error_msg()
                 .expect("expected error")
-                .contains("cannot deliver to")
+                .contains("wrong mailbox owner")
         );
         let root_failure = undelivered
             .root_delivery_failure()
