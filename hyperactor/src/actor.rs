@@ -1301,12 +1301,10 @@ mod tests {
 
     async fn assert_delivery_policy_actor_remains_live(failure: DeliveryFailure) {
         let proc = Proc::isolated();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (sync_port, mut sync_rx) = client.open_port::<()>();
         let actor = DeliveryPolicyActor(sync_port.bind());
-        let handle = proc
-            .spawn::<DeliveryPolicyActor>("delivery_policy", actor)
-            .unwrap();
+        let handle = proc.spawn_with_label("delivery_policy", actor);
         let dest = handle.actor_addr().port_addr(Port::from(1234));
         let envelope = delivery_policy_envelope(handle.actor_addr(), dest, failure);
 
@@ -1324,12 +1322,10 @@ mod tests {
     async fn assert_delivery_policy_actor_fails(failure: DeliveryFailure) {
         let proc = Proc::isolated();
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
-        let (client, _) = proc.client("client").unwrap();
+        let client = proc.client("client");
         let (sync_port, _sync_rx) = client.open_port::<()>();
         let actor = DeliveryPolicyActor(sync_port.bind());
-        let handle = proc
-            .spawn::<DeliveryPolicyActor>("delivery_policy", actor)
-            .unwrap();
+        let handle = proc.spawn_with_label("delivery_policy", actor);
         let dest = handle.actor_addr().port_addr(Port::from(1234));
         let envelope = delivery_policy_envelope(handle.actor_addr(), dest, failure);
 
