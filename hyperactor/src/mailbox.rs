@@ -3361,11 +3361,15 @@ mod tests {
     use timed_test::async_timed_test;
 
     use super::*;
+    use crate as hyperactor;
     use crate::Actor;
+    use crate::ActorRef;
+    use crate::Handler;
     use crate::accum;
     use crate::accum::ReducerMode;
     use crate::channel::ChannelTransport;
     use crate::context::Mailbox as MailboxContext;
+    use crate::context::MailboxExt as _;
     use crate::endpoint::Endpoint as _;
     use crate::proc::Proc;
     use crate::testing::ids::test_actor_id;
@@ -4525,6 +4529,76 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
+    }
+
+    #[derive(Debug)]
+    #[hyperactor::export(handlers = [u64])]
+    struct SplitPortReceivingActor {
+        received: PortRef<String>,
+    }
+
+    impl Actor for SplitPortReceivingActor {}
+
+    #[async_trait]
+    impl Handler<u64> for SplitPortReceivingActor {
+        async fn handle(&mut self, cx: &crate::Context<Self>, msg: u64) -> anyhow::Result<()> {
+            let endpoint = cx
+                .headers()
+                .get(headers::OPERATION_ENDPOINT)
+                .unwrap_or_default();
+            self.received
+                .post(cx, format!("OPERATION_ENDPOINT={endpoint} sum={msg}"));
+            Ok(())
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_split_port_preserves_operation_context_headers() {
+        let proc = Proc::isolated();
+        let client = proc.client("client");
+        let (received_handle, mut observed_rx) = client.open_port::<String>();
+        let capture_handle = proc.spawn_with_label(
+            "split_port_receiver",
+            SplitPortReceivingActor {
+                received: received_handle.bind(),
+            },
+        );
+        let capture_ref: ActorRef<SplitPortReceivingActor> = capture_handle.bind();
+        let port_id = capture_ref.port::<u64>().port_addr().clone();
+
+        let split_port_id = port_id
+            .split(
+                &client,
+                // Accumulate 2 messages, sum the values, and send them
+                accum::sum::<u64>().reducer_spec(),
+                ReducerMode::Once(2),
+                true,
+            )
+            .unwrap();
+
+        let mut headers = Flattrs::new();
+        headers.set(headers::OPERATION_ENDPOINT, "endpoint.call()".to_string());
+        client.post(
+            split_port_id.clone(),
+            headers.clone(),
+            // Send "1"
+            wirevalue::Any::serialize(&1u64).unwrap(),
+            true,
+            crate::context::SeqInfoPolicy::AssignNew,
+        );
+        client.post(
+            split_port_id,
+            headers,
+            // Send "2"
+            wirevalue::Any::serialize(&2u64).unwrap(),
+            true,
+            crate::context::SeqInfoPolicy::AssignNew,
+        );
+
+        assert_eq!(
+            observed_rx.recv().await.unwrap(),
+            "OPERATION_ENDPOINT=endpoint.call() sum=3"
+        );
     }
 
     #[async_timed_test(timeout_secs = 30)]
