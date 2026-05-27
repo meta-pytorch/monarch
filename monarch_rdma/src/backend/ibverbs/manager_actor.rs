@@ -34,6 +34,7 @@
 //! `Failed(error)` as a tombstone after a fatal error.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -53,6 +54,8 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
+use hyperactor::OncePortRef;
+use hyperactor::PortHandle;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::actor::Referable;
@@ -72,10 +75,13 @@ use super::primitives::ibverbs_supported;
 use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
+use super::queue_pair::OpResult;
 use super::queue_pair::PeerInfo;
 use super::queue_pair::PollTarget;
+use super::queue_pair::ProcessOps;
 use super::queue_pair::QpGuard;
 use super::queue_pair::QpKey;
+use super::queue_pair::QueuePairActor;
 use super::queue_pair::QueuePairInitializer;
 use super::queue_pair::destroy_qp;
 use crate::RdmaOp;
@@ -88,6 +94,10 @@ use crate::rdma_manager_actor::GetIbvActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
 
+// DEPRECATED — replaced by [`CreatePeerQueuePair`] + [`QueuePairActor`].
+// Kept only so [`QueuePairInitializer`] still compiles; the handler
+// on [`IbvManagerActor`] will be removed in a follow-up diff together
+// with the rest of the legacy QP machinery.
 /// Cross-proc message: peer asks for our endpoint, lazily creating
 /// the entry on our side if absent. Generic over the manager actor
 /// type so tests can swap in a mock.
@@ -101,6 +111,46 @@ pub(super) struct EnsureQueuePair<A: Referable> {
 }
 wirevalue::register_type!(EnsureQueuePair<IbvManagerActor>);
 
+/// Cross-proc message: the active side asks the peer's manager to
+/// create and connect a mirror QP for an in-flight [`QueuePairActor`].
+/// Generic over the manager actor type so test code can swap in a
+/// mock.
+#[derive(Debug, Serialize, Deserialize, Named)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub(super) struct CreatePeerQueuePair<M: Referable> {
+    /// The active side's manager.
+    pub(super) sender: ActorRef<M>,
+    /// Device the active side picked for its QP.
+    pub(super) sender_device: String,
+    /// Device the peer should create its mirror QP on.
+    pub(super) receiver_device: String,
+    /// Active side's endpoint, captured right after QP creation.
+    pub(super) sender_info: IbvQpInfo,
+    /// One-shot reply carrying the peer's endpoint, or an error.
+    pub(super) reply: OncePortRef<Result<IbvQpInfo, String>>,
+}
+wirevalue::register_type!(CreatePeerQueuePair<IbvManagerActor>);
+
+/// Local-only message: submit a batch of RDMA ops for end-to-end
+/// execution. The manager iterates the batch, resolves each op's
+/// local MR via [`IbvManagerActor::resolve_local_mr`], looks up
+/// (or spawns) the active-side [`QueuePairActor`] for the op's
+/// [`QpKey`], and immediately dispatches a one-item [`ProcessOps`]
+/// to that QP — so the QP can start posting op `i` while the
+/// manager resolves the MR for op `i+1`.
+///
+/// Per-op completion notifications stream back on `reply` as
+/// [`OpResult`] values.
+pub(super) struct SubmitOps {
+    pub(super) ops: Vec<IbvOp<IbvManagerActor>>,
+    pub(super) reply: PortHandle<OpResult>,
+}
+
+// DEPRECATED — slated for removal in the follow-up diff that deletes
+// the symmetric `QueuePairInitializer` handshake. Active-side
+// queue pairs now live behind [`IbvManagerActor::qp_handles`] (one
+// [`QueuePairActor`] per peer); passive-side mirror QPs live in
+// [`IbvManagerActor::peer_created_qps`].
 /// Per-QpKey state in [`IbvManagerActor::qps`].
 ///
 /// `Pending` covers the entire handshake (an initializer is running);
@@ -108,10 +158,6 @@ wirevalue::register_type!(EnsureQueuePair<IbvManagerActor>);
 /// records the error so subsequent `RequestQueuePair` / `EnsureQueuePair`
 /// calls for the same key surface the same error rather than retrying
 /// or hanging.
-///
-/// TODO: add recovery — allow retries via an explicit message or after
-/// a backoff. For now the entry stays `Failed` for the life of the
-/// manager.
 #[derive(Debug)]
 enum QpState {
     Pending {
@@ -165,6 +211,11 @@ pub enum IbvManagerLocalMessage {
         #[reply]
         reply: OncePortHandle<Result<IbvBuffer, String>>,
     },
+    /// DEPRECATED — slated for removal in the follow-up diff. Callers
+    /// now submit ops directly via [`SubmitOps`]; per-peer QPs are
+    /// managed internally by [`IbvManagerActor`] through
+    /// [`QueuePairActor`].
+    ///
     /// User-facing entry point: get a connected `IbvQueuePair` for
     /// `(self_device, other actor's id, other_device)`. Lazily creates
     /// the QP + initializer if absent; if a handshake is in flight,
@@ -182,6 +233,7 @@ pub enum IbvManagerLocalMessage {
     },
 }
 
+// DEPRECATED — slated for removal in the follow-up diff.
 /// Local-only handshake-success report. The initializer sends this
 /// to its owning manager once both sides have reached RTS, handing
 /// over the freshly-connected [`QpGuard`].
@@ -191,6 +243,7 @@ pub(super) struct QpInitializerDone {
     pub(super) qp: QpGuard,
 }
 
+// DEPRECATED — slated for removal in the follow-up diff.
 /// Local-only handshake-failure report. The initializer sends this
 /// to its owning manager when the handshake aborted; the underlying
 /// QP has already been dropped on the initializer side.
@@ -200,6 +253,9 @@ pub(super) struct QpInitializerFailed {
     pub(super) error: String,
 }
 
+/// DEPRECATED — slated for removal in the follow-up diff together
+/// with [`IbvBackend::execute_op`] and [`IbvBackend::wait_for_completion`].
+///
 /// Adaptive wait between completion polls.
 ///
 /// While the elapsed time since [`Self::yield_now`] was first called
@@ -319,13 +375,29 @@ pub(super) struct SegmentInfo {
     handlers = [
         IbvManagerMessage,
         EnsureQueuePair<IbvManagerActor>,
+        CreatePeerQueuePair<IbvManagerActor>,
     ],
 )]
 pub struct IbvManagerActor {
     owner: OnceLock<ActorHandle<RdmaManagerActor>>,
 
+    /// DEPRECATED — slated for removal in the follow-up diff together
+    /// with the rest of the legacy QP machinery.
+    ///
     /// Per-QP state, keyed from this manager's perspective. See [`QpKey`].
     qps: HashMap<QpKey, QpState>,
+
+    /// Active-side [`QueuePairActor`] children, keyed from this
+    /// manager's perspective. Lazily populated on the first
+    /// [`SubmitOps`] that targets a new `(self_device, peer,
+    /// other_device)` triple.
+    qp_handles: HashMap<QpKey, ActorHandle<QueuePairActor<IbvManagerActor, IbvQueuePair>>>,
+
+    /// Passive-side mirror QPs, created in response to a peer's
+    /// [`CreatePeerQueuePair`]. The peer's [`QueuePairActor`] owns
+    /// the active side; we hold the connected mirror here so the
+    /// peer can read/write our memory.
+    peer_created_qps: HashMap<QpKey, IbvQueuePair>,
 
     /// Map of RDMA device names to their domains and loopback QPs.
     /// Created lazily when memory is registered for a specific
@@ -369,14 +441,35 @@ impl Actor for IbvManagerActor {
             .expect("owner should only be set once during init");
         Ok(())
     }
+
+    /// Absorb `Undeliverable::Lost` for per-op [`OpResult`] replies —
+    /// the typical case is that the submitting caller dropped its
+    /// receiver mid-batch (e.g. test teardown, `IbvBackend::submit`
+    /// timing out) and we just want to drop those replies on the
+    /// floor rather than letting the default impl kill the actor.
+    /// Everything else (including any other lost message type or any
+    /// `Undeliverable::Message`) falls through to the default which
+    /// bails into supervision.
+    async fn handle_undeliverable_message(
+        &mut self,
+        this: &Instance<Self>,
+        undeliverable: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        if let hyperactor::mailbox::Undeliverable::Lost(lost) = &undeliverable
+            && lost.message_type.as_deref() == Some(std::any::type_name::<OpResult>())
+        {
+            return Ok(());
+        }
+        hyperactor::actor::handle_undeliverable_message(this, undeliverable)
+    }
 }
 
 impl Drop for IbvManagerActor {
     fn drop(&mut self) {
-        // 1. Clean up QPs. `Pending` entries hold the qp via the
-        // initializer; signal the initializer to stop and let the
-        // runtime tear it down. `Failed` is a tombstone with no
-        // resources. Pending waiters won't be answered and their
+        // 1. DEPRECATED legacy QP state. `Pending` entries hold the
+        // qp via the initializer; signal the initializer to stop and
+        // let the runtime tear it down. `Failed` is a tombstone with
+        // no resources. Pending waiters won't be answered and their
         // callers will observe the dropped reply ports as `Err(_)`.
         for (_key, state) in self.qps.drain() {
             match state {
@@ -392,19 +485,38 @@ impl Drop for IbvManagerActor {
             }
         }
 
-        // 2. Drop buffer registrations. Each entry's
+        // 2. Drain active-side QP actors. Each child owns its
+        // `IbvQueuePair`; `drain_and_stop` schedules the actor to
+        // finish in-flight ops and exit. The owned `IbvQueuePair`
+        // currently leaks on actor drop because the type is still
+        // `Clone` — same TODO as `QpState::Ready` above; the
+        // follow-up diff that makes `IbvQueuePair: !Clone` fixes both.
+        for (_key, handle) in self.qp_handles.drain() {
+            let _ = handle.drain_and_stop("IbvManagerActor dropped");
+        }
+
+        // 3. Destroy passive-side mirror QPs. The manager is their
+        // sole owner.
+        for (_key, qp) in self.peer_created_qps.drain() {
+            // SAFETY: We just drained `peer_created_qps`; the
+            // manager is being dropped and no other code holds a
+            // clone of this QP's `rdmaxcel_qp_t` pointer.
+            unsafe { destroy_qp(&qp) };
+        }
+
+        // 4. Drop buffer registrations. Each entry's
         // `IbvMemoryRegionView` carries the only manager-side
         // reference to that MR's `Arc<IbvMemoryRegion>` and its
         // `Arc<IbvDomain>`. They run their FFI cleanup from their
         // `Drop`s once no surviving view holds a clone.
         self.buffer_registrations.clear();
 
-        // 3. Drop the segments-owner Arc. `deregister_segments`
+        // 5. Drop the segments-owner Arc. `deregister_segments`
         // runs from `IbvMemoryRegion::Segments::Drop` when the last
         // segment-backed view also goes away.
         self.segments_mr.take();
 
-        // 4. Drop device domains (PDs + loopback QPs). Loopback QPs
+        // 6. Drop device domains (PDs + loopback QPs). Loopback QPs
         // are tied to this map only; destroy them explicitly. PD
         // teardown waits on the last `Arc<IbvDomain>` clone (held
         // by any outstanding view) to drop.
@@ -469,6 +581,8 @@ impl IbvManagerActor {
         let actor = Self {
             owner: OnceLock::new(),
             qps: HashMap::new(),
+            qp_handles: HashMap::new(),
+            peer_created_qps: HashMap::new(),
             device_domains: HashMap::new(),
             config,
             mlx5dv_enabled,
@@ -763,6 +877,97 @@ impl IbvManagerActor {
         }
     }
 
+    /// Resolve `mem` to an [`IbvMemoryRegionView`] using the slot
+    /// shared by every clone of `mem`. On a cold slot, calls
+    /// [`Self::register_mr_impl`] and installs the result; on a warm
+    /// slot, returns the previously-installed view.
+    fn resolve_local_mr(
+        &mut self,
+        mem: &KeepaliveLocalMemory,
+    ) -> Result<IbvMemoryRegionView, anyhow::Error> {
+        if let Some(mrv) = mem.mr_slot().get() {
+            return Ok(mrv.clone());
+        }
+        let (mrv, _device_name) = self.register_mr_impl(mem.addr(), mem.size())?;
+        Ok(mem.mr_slot().get_or_init(|| mrv).clone())
+    }
+
+    /// Build a passive-side mirror QP for `qp_key`, connect it to
+    /// `sender_info`, and store it in [`Self::peer_created_qps`].
+    /// Returns the local endpoint the active side needs to finish
+    /// its own `connect`. Called from
+    /// [`Handler<CreatePeerQueuePair>`].
+    fn create_peer_qp(
+        &mut self,
+        qp_key: &QpKey,
+        sender_info: &IbvQpInfo,
+    ) -> Result<IbvQpInfo, anyhow::Error> {
+        if self.peer_created_qps.contains_key(qp_key) {
+            anyhow::bail!("peer queue pair already exists for {qp_key:?}");
+        }
+        let self_device = &qp_key.self_device;
+        let rdma_device = super::primitives::get_all_devices()
+            .into_iter()
+            .find(|d| d.name() == self_device)
+            .ok_or_else(|| anyhow::anyhow!("RDMA device '{}' not found", self_device))?;
+        let (domain, _) = self.get_or_create_device_domain(self_device, &rdma_device)?;
+        // The `QpGuard` here destroys the underlying `rdmaxcel_qp_t`
+        // on early returns from `get_qp_info` / `connect`. Once
+        // `IbvQueuePair` becomes single-owner (with its own `Drop`)
+        // in a follow-up diff, the guard goes away.
+        let mut qp = QpGuard::new(
+            IbvQueuePair::new(domain.context, domain.pd, self.config.clone())
+                .map_err(|e| anyhow::anyhow!("could not create peer IbvQueuePair: {}", e))?,
+        );
+        let local_info = qp
+            .get_qp_info()
+            .map_err(|e| anyhow::anyhow!("could not extract peer QP info: {}", e))?;
+        qp.connect(sender_info)
+            .map_err(|e| anyhow::anyhow!("could not connect peer QP: {}", e))?;
+        self.peer_created_qps
+            .insert(qp_key.clone(), qp.into_inner());
+        Ok(local_info)
+    }
+
+    /// Lazy active-side QP actor: if `qp_key` is absent from
+    /// [`Self::qp_handles`], create an [`IbvQueuePair`] on the
+    /// requested device and spawn a [`QueuePairActor`] to drive its
+    /// handshake + data path. Returns a clone of the actor handle.
+    fn ensure_qp_actor(
+        &mut self,
+        cx: &Context<'_, Self>,
+        qp_key: &QpKey,
+        peer_manager: ActorRef<Self>,
+    ) -> Result<ActorHandle<QueuePairActor<Self, IbvQueuePair>>, anyhow::Error> {
+        if let Some(h) = self.qp_handles.get(qp_key) {
+            return Ok(h.clone());
+        }
+        let self_device = &qp_key.self_device;
+        let rdma_device = super::primitives::get_all_devices()
+            .into_iter()
+            .find(|d| d.name() == self_device)
+            .ok_or_else(|| anyhow::anyhow!("RDMA device '{}' not found", self_device))?;
+        let (domain, _) = self.get_or_create_device_domain(self_device, &rdma_device)?;
+        let qp = IbvQueuePair::new(domain.context, domain.pd, self.config.clone())
+            .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair for {qp_key:?}: {}", e))?;
+        let local_manager: ActorRef<Self> = cx.bind();
+        let is_loopback = local_manager.actor_addr() == peer_manager.actor_addr()
+            && qp_key.self_device == qp_key.other_device;
+        let actor = cx.spawn(QueuePairActor::new(
+            qp_key.clone(),
+            local_manager,
+            peer_manager,
+            qp,
+            is_loopback,
+            self.config.max_send_wr,
+            self.config.max_rd_atomic as u32,
+        ));
+        self.qp_handles.insert(qp_key.clone(), actor.clone());
+        Ok(actor)
+    }
+
+    /// DEPRECATED — slated for removal in the follow-up diff.
+    ///
     /// Lazy QP creation: if `qp_key` is absent, create the local
     /// `IbvQueuePair`, capture its `IbvQpInfo`, and spawn a
     /// `QueuePairInitializer` to drive the handshake. Returns the
@@ -826,6 +1031,87 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         // the view's MR and PD; FFI cleanup happens via their `Drop`s
         // once the last referencing view is gone.
         self.buffer_registrations.remove(&remote_buf_id);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<SubmitOps> for IbvManagerActor {
+    async fn handle(&mut self, cx: &Context<Self>, msg: SubmitOps) -> Result<(), anyhow::Error> {
+        let SubmitOps { ops, reply } = msg;
+
+        // Interleave MR resolution with QP dispatch: as soon as op `i`'s
+        // local MR is resolved and its QP actor is in place, ship a
+        // one-item `ProcessOps` to that QP. The QP can then post and
+        // poll op `i` while we run `resolve_local_mr` for op `i+1`.
+        for (i, op) in ops.into_iter().enumerate() {
+            let mrv = match self.resolve_local_mr(&op.local_memory) {
+                Ok(mrv) => mrv,
+                Err(e) => {
+                    reply.post(
+                        cx,
+                        OpResult {
+                            op_idx: i,
+                            result: Err(e.to_string()),
+                        },
+                    );
+                    continue;
+                }
+            };
+            let qp_key = QpKey {
+                self_device: mrv.device_name.clone(),
+                other_id: op.remote_manager.actor_addr().id().clone(),
+                other_device: op.remote_buffer.device_name.clone(),
+            };
+            let peer_manager = op.remote_manager.clone();
+            let handle = match self.ensure_qp_actor(cx, &qp_key, peer_manager) {
+                Ok(h) => h,
+                Err(e) => {
+                    reply.post(
+                        cx,
+                        OpResult {
+                            op_idx: i,
+                            result: Err(e.to_string()),
+                        },
+                    );
+                    continue;
+                }
+            };
+            handle.post(
+                cx,
+                ProcessOps {
+                    items: vec![(i, op, mrv)],
+                    reply: reply.clone(),
+                },
+            );
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<CreatePeerQueuePair<IbvManagerActor>> for IbvManagerActor {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: CreatePeerQueuePair<IbvManagerActor>,
+    ) -> Result<(), anyhow::Error> {
+        let CreatePeerQueuePair {
+            sender,
+            sender_device,
+            receiver_device,
+            sender_info,
+            reply,
+        } = msg;
+        let qp_key = QpKey {
+            self_device: receiver_device,
+            other_id: sender.actor_addr().id().clone(),
+            other_device: sender_device,
+        };
+        match self.create_peer_qp(&qp_key, &sender_info) {
+            Ok(local_info) => reply.post(cx, Ok(local_info)),
+            Err(e) => reply.post(cx, Err(e.to_string())),
+        }
         Ok(())
     }
 }
@@ -1030,6 +1316,8 @@ impl Handler<QpInitializerFailed> for IbvManagerActor {
     }
 }
 
+/// DEPRECATED — slated for removal in the follow-up diff.
+///
 /// Free helper around [`IbvManagerLocalMessage::RequestQueuePair`] — opens
 /// a `OncePortHandle` for the reply, sends the message, and awaits the
 /// answer. Exists because `RequestQueuePair` doesn't use `#[reply]`
@@ -1067,7 +1355,10 @@ impl std::ops::Deref for IbvBackend {
     }
 }
 
+#[expect(dead_code, reason = "DEPRECATED, removed in the follow-up diff")]
 impl IbvBackend {
+    /// DEPRECATED — replaced by [`QueuePairActor`]-driven CQ polling.
+    ///
     /// Waits for the completion of RDMA operations.
     ///
     /// Polls the completion queue until all specified work requests complete
@@ -1133,6 +1424,9 @@ impl IbvBackend {
         ))
     }
 
+    /// DEPRECATED — replaced by [`SubmitOps`] dispatch into per-peer
+    /// [`QueuePairActor`]s.
+    ///
     /// Core submit logic: registers a local MR via actor message,
     /// resolves the remote `IbvBuffer` lazily, and executes the op.
     /// `local_mrv` is kept in scope for the duration of the op so
@@ -1190,8 +1484,16 @@ impl RdmaBackend for IbvBackend {
 
     /// Submit a batch of RDMA operations.
     ///
-    /// Resolves ibv ops, then executes each directly — registering/deregistering
-    /// MRs via actor messages, while performing QP put/get and CQ polling locally.
+    /// Translates each `RdmaOp` to an `IbvOp`, then ships the whole
+    /// batch to [`IbvManagerActor`] via [`SubmitOps`]. The manager
+    /// interleaves local-MR resolution with per-op dispatch: each
+    /// op is sent to its [`QueuePairActor`] as a one-item
+    /// [`ProcessOps`] the moment its MR is ready, so QP work on
+    /// op `i` overlaps MR registration for op `i+1`.
+    ///
+    /// Always waits for exactly `ops.len()` per-op replies before
+    /// returning. Per-op failures are collected and formatted into a single
+    /// multi-line `Err` listing each `op_idx` and its error message.
     async fn submit(
         &mut self,
         cx: &(impl hyperactor::context::Actor + Send + Sync),
@@ -1210,16 +1512,63 @@ impl RdmaBackend for IbvBackend {
                 remote_manager,
             });
         }
+        let n = ibv_ops.len();
 
-        let deadline = Instant::now() + timeout;
-        for op in ibv_ops {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(anyhow::anyhow!("submit timed out"));
+        let (reply, mut reply_rx) = cx.mailbox().open_port::<OpResult>();
+
+        self.0.post(
+            cx,
+            SubmitOps {
+                ops: ibv_ops,
+                reply,
+            },
+        );
+
+        let mut failures: Vec<(usize, String)> = Vec::with_capacity(n);
+        let mut received = 0usize;
+        let mut terminal: Option<String> = None;
+        let deadline = tokio::time::Instant::now() + timeout;
+        while received < n {
+            tokio::select! {
+                () = tokio::time::sleep_until(deadline) => {
+                    terminal = Some(format!(
+                        "submit timed out after {received}/{n} replies with {} failures",
+                        failures.len()
+                    ));
+                    break;
+                }
+                recv = reply_rx.recv() => {
+                    match recv {
+                        Ok(OpResult { result: Ok(()), .. }) => received += 1,
+                        Ok(OpResult { op_idx, result: Err(e) }) => {
+                            received += 1;
+                            failures.push((op_idx, e));
+                        }
+                        Err(e) => {
+                            terminal = Some(format!(
+                                "SubmitOps reply port closed after {received}/{n} replies with {} failures: {e}",
+                                failures.len()
+                            ));
+                            break;
+                        }
+                    }
+                }
             }
-            self.execute_op(cx, op, remaining).await?;
         }
-        Ok(())
+
+        if terminal.is_none() && failures.is_empty() {
+            return Ok(());
+        }
+
+        failures.sort_by_key(|(idx, _)| *idx);
+        let mut msg = terminal.unwrap_or_else(|| format!("{}/{n} ops failed", failures.len()));
+        if !failures.is_empty() {
+            msg.push(':');
+            for (idx, err) in &failures {
+                write!(msg, "\n  op {idx}: {err}").expect("infallible String write");
+            }
+        }
+        Err(anyhow::anyhow!(msg))
     }
 
     fn transport_level(&self) -> RdmaTransportLevel {
@@ -1228,5 +1577,1103 @@ impl RdmaBackend for IbvBackend {
 
     fn transport_info(&self) -> Option<Self::TransportInfo> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! End-to-end coverage of the [`SubmitOps`] → [`ProcessOps`] →
+    //! [`QueuePairActor`] data path.
+    //!
+    //! Each test stands up two RDMA participants in two
+    //! [`Proc::direct`] procs in the test process. Each proc hosts an
+    //! [`RdmaManagerActor`] and a [`BufferHelperActor`]. Tests
+    //! allocate buffers on either side via the helpers, drive RDMA
+    //! through [`IbvBackend::submit`] (called inside the helper
+    //! actor), and verify by reading back local contents through
+    //! [`BufferHelperMessage::ReadContents`]. The
+    //! [`BufferHelperActor::cleanup`] impl releases any CUDA
+    //! allocations when the actor stops; [`TestEnv::shutdown`]
+    //! explicitly drains both procs.
+
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use hyperactor::Actor;
+    use hyperactor::ActorRef;
+    use hyperactor::Context;
+    use hyperactor::Handler;
+    use hyperactor::Instance;
+    use hyperactor::Label;
+    use hyperactor::OncePortRef;
+    use hyperactor::Proc;
+    use hyperactor::RefClient;
+    use hyperactor::RemoteSpawn;
+    use hyperactor::Uid;
+    use hyperactor::actor::ActorError;
+    use hyperactor::channel::ChannelAddr;
+    use hyperactor::channel::ChannelTransport;
+    use hyperactor_config::Flattrs;
+    use serde::Deserialize;
+    use serde::Serialize;
+    use typeuri::Named;
+
+    use super::IbvBackend;
+    use super::IbvManagerActor;
+    use crate::IbvConfig;
+    use crate::RdmaManagerActor;
+    use crate::RdmaManagerMessageClient;
+    use crate::RdmaOp;
+    use crate::RdmaOpType;
+    use crate::RdmaRemoteBuffer;
+    use crate::backend::RdmaBackend;
+    use crate::backend::cuda_test_utils::CudaAllocation;
+    use crate::backend::cuda_test_utils::CudaAllocator;
+    use crate::backend::ibverbs::primitives::IbvQpType;
+    use crate::backend::ibverbs::primitives::get_all_devices;
+    use crate::local_memory::KeepaliveLocalMemory;
+
+    // ====================================================================
+    // BufferHelperActor
+    // ====================================================================
+
+    /// Device a test buffer is allocated on.
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize, Named)]
+    pub enum BufferDevice {
+        Cpu,
+        Cuda(i32),
+    }
+
+    /// One op for [`BufferHelperMessage::Submit`]. The helper looks up
+    /// the local memory behind `local_buf` (registered earlier via
+    /// `Allocate`) and pairs it with `remote_buf` to form an
+    /// [`RdmaOp`].
+    #[derive(Debug, Clone, Serialize, Deserialize, Named)]
+    pub struct BufferHelperOp {
+        op_type: RdmaOpType,
+        local_buf: RdmaRemoteBuffer,
+        remote_buf: RdmaRemoteBuffer,
+    }
+
+    /// Test helper that owns local buffers (CPU or CUDA) and drives
+    /// [`IbvBackend::submit`] against its own [`RdmaManagerActor`].
+    #[hyperactor::export(handlers = [BufferHelperMessage])]
+    #[hyperactor::spawnable]
+    #[derive(Debug)]
+    pub struct BufferHelperActor {
+        rdma_manager: ActorRef<RdmaManagerActor>,
+        /// CUDA allocations tracked for cleanup. Each is also held as
+        /// `Keepalive` inside the registered `KeepaliveLocalMemory`;
+        /// both clones must drop before the FFI memory is released.
+        cuda_allocs: Vec<CudaAllocation>,
+    }
+
+    #[async_trait]
+    impl Actor for BufferHelperActor {
+        async fn cleanup(
+            &mut self,
+            _this: &Instance<Self>,
+            _err: Option<&ActorError>,
+        ) -> Result<(), anyhow::Error> {
+            for alloc in self.cuda_allocs.drain(..) {
+                alloc.try_free();
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl RemoteSpawn for BufferHelperActor {
+        type Params = ActorRef<RdmaManagerActor>;
+
+        async fn new(
+            rdma_manager: ActorRef<RdmaManagerActor>,
+            _env: Flattrs,
+        ) -> Result<Self, anyhow::Error> {
+            Ok(Self {
+                rdma_manager,
+                cuda_allocs: Vec::new(),
+            })
+        }
+    }
+
+    #[derive(Handler, RefClient, Named, Serialize, Deserialize, Debug)]
+    pub enum BufferHelperMessage {
+        /// Allocate `size` bytes on `device`, pre-fill with `pattern`,
+        /// register with the local `RdmaManagerActor`, and reply with
+        /// the resulting `RdmaRemoteBuffer`.
+        Allocate {
+            size: usize,
+            device: BufferDevice,
+            pattern: u8,
+            #[reply]
+            reply: OncePortRef<RdmaRemoteBuffer>,
+        },
+        /// Look up the local memory behind `remote.id` and reply with
+        /// the byte range `[offset, offset + len)`. Tests use this to
+        /// sample buffers too large to ship over a single actor
+        /// message in one piece.
+        ReadContents {
+            remote: RdmaRemoteBuffer,
+            offset: usize,
+            len: usize,
+            #[reply]
+            reply: OncePortRef<Vec<u8>>,
+        },
+        /// Drive a batch of RDMA ops through `IbvBackend::submit`.
+        /// Each op's `local_buf` is resolved against this helper's
+        /// `RdmaManagerActor`; `remote_buf` is shipped as-is to the
+        /// peer.
+        Submit {
+            ops: Vec<BufferHelperOp>,
+            timeout_secs: u64,
+            #[reply]
+            reply: OncePortRef<Result<(), String>>,
+        },
+    }
+
+    impl BufferHelperActor {
+        async fn allocate_impl(
+            &mut self,
+            cx: &Context<'_, Self>,
+            size: usize,
+            device: BufferDevice,
+            pattern: u8,
+        ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
+            let local = match device {
+                BufferDevice::Cpu => {
+                    let buf: Box<[u8]> = vec![pattern; size].into_boxed_slice();
+                    let addr = buf.as_ptr() as usize;
+                    Arc::new(KeepaliveLocalMemory::new(addr, size, Arc::new(buf)))
+                }
+                BufferDevice::Cuda(device_id) => {
+                    let alloc = CudaAllocator::get().allocate(device_id, size, size);
+                    let addr = alloc.ptr();
+                    let local = Arc::new(KeepaliveLocalMemory::new(
+                        addr,
+                        size,
+                        Arc::new(alloc.clone()),
+                    ));
+                    self.cuda_allocs.push(alloc);
+                    let fill = vec![pattern; size];
+                    // SAFETY: `local` is freshly constructed; no other
+                    // holder touches this CUDA range yet.
+                    unsafe { local.write_at(0, &fill) }?;
+                    local
+                }
+            };
+            let handle = self
+                .rdma_manager
+                .downcast_handle(cx)
+                .ok_or_else(|| anyhow::anyhow!("rdma_manager not local to BufferHelperActor"))?;
+            handle.request_buffer(cx, local).await
+        }
+
+        async fn read_contents_impl(
+            &mut self,
+            cx: &Context<'_, Self>,
+            remote: RdmaRemoteBuffer,
+            offset: usize,
+            len: usize,
+        ) -> Result<Vec<u8>, anyhow::Error> {
+            let handle = self
+                .rdma_manager
+                .downcast_handle(cx)
+                .ok_or_else(|| anyhow::anyhow!("rdma_manager not local"))?;
+            let local = handle
+                .request_local_memory(cx, remote.id)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no local memory registered on this side for remote_buf_id={}",
+                        remote.id,
+                    )
+                })?;
+            let mut out = vec![0u8; len];
+            // SAFETY: by convention the caller has ensured all RDMA
+            // ops against this buffer have completed before invoking
+            // ReadContents.
+            unsafe { local.read_at(offset, &mut out)? };
+            Ok(out)
+        }
+
+        async fn submit_impl(
+            &mut self,
+            cx: &Context<'_, Self>,
+            ops: Vec<BufferHelperOp>,
+            timeout_secs: u64,
+        ) -> Result<Result<(), String>, anyhow::Error> {
+            let handle = self
+                .rdma_manager
+                .downcast_handle(cx)
+                .ok_or_else(|| anyhow::anyhow!("rdma_manager not local"))?;
+            let mut rdma_ops = Vec::with_capacity(ops.len());
+            for (i, op) in ops.into_iter().enumerate() {
+                let local = handle
+                    .request_local_memory(cx, op.local_buf.id)
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "op {i}: no local memory registered for remote_buf_id={}",
+                            op.local_buf.id,
+                        )
+                    })?;
+                rdma_ops.push(RdmaOp {
+                    op_type: op.op_type,
+                    local,
+                    remote: op.remote_buf,
+                });
+            }
+            let ibv_handle = IbvManagerActor::local_handle(cx).await?;
+            let mut backend = IbvBackend(ibv_handle);
+            let result = backend
+                .submit(cx, rdma_ops, Duration::from_secs(timeout_secs))
+                .await;
+            Ok(result.map_err(|e| format!("{e}")))
+        }
+    }
+
+    #[async_trait]
+    #[hyperactor::handle(BufferHelperMessage)]
+    impl BufferHelperMessageHandler for BufferHelperActor {
+        async fn allocate(
+            &mut self,
+            cx: &Context<Self>,
+            size: usize,
+            device: BufferDevice,
+            pattern: u8,
+        ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
+            self.allocate_impl(cx, size, device, pattern).await
+        }
+
+        async fn read_contents(
+            &mut self,
+            cx: &Context<Self>,
+            remote: RdmaRemoteBuffer,
+            offset: usize,
+            len: usize,
+        ) -> Result<Vec<u8>, anyhow::Error> {
+            self.read_contents_impl(cx, remote, offset, len).await
+        }
+
+        async fn submit(
+            &mut self,
+            cx: &Context<Self>,
+            ops: Vec<BufferHelperOp>,
+            timeout_secs: u64,
+        ) -> Result<Result<(), String>, anyhow::Error> {
+            self.submit_impl(cx, ops, timeout_secs).await
+        }
+    }
+
+    // ====================================================================
+    // TestEnv
+    // ====================================================================
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// Two-sided test environment.
+    ///
+    /// Each side is a `Proc::direct` in the test process hosting its
+    /// own `RdmaManagerActor` and `BufferHelperActor`. A client minted
+    /// from `proc_b` drives both helpers through their `ActorRef`s.
+    struct TestEnv {
+        client: hyperactor::Client,
+        proc_a: Proc,
+        helper_a: ActorRef<BufferHelperActor>,
+        proc_b: Proc,
+        helper_b: ActorRef<BufferHelperActor>,
+    }
+
+    impl TestEnv {
+        /// Asymmetric setup: side A uses `config_a`, side B uses `config_b`.
+        async fn new(config_a: IbvConfig, config_b: IbvConfig) -> Result<Self, anyhow::Error> {
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let proc_a = Proc::direct(
+                ChannelAddr::any(ChannelTransport::Unix),
+                format!("rdma_side_a_{id}"),
+            )?;
+            let helper_a = Self::spawn_side(&proc_a, config_a).await?;
+            let proc_b = Proc::direct(
+                ChannelAddr::any(ChannelTransport::Unix),
+                format!("rdma_side_b_{id}"),
+            )?;
+            let helper_b = Self::spawn_side(&proc_b, config_b).await?;
+            let client = proc_b.client("test_client");
+            Ok(Self {
+                client,
+                proc_a,
+                helper_a,
+                proc_b,
+                helper_b,
+            })
+        }
+
+        /// Symmetric setup: both sides use `config`.
+        async fn same_config(config: IbvConfig) -> Result<Self, anyhow::Error> {
+            Self::new(config.clone(), config).await
+        }
+
+        /// Spawn an `RdmaManagerActor` + `BufferHelperActor` on `proc`
+        /// and return the helper's `ActorRef`.
+        async fn spawn_side(
+            proc: &Proc,
+            config: IbvConfig,
+        ) -> Result<ActorRef<BufferHelperActor>, anyhow::Error> {
+            let rdma_actor = RdmaManagerActor::new(Some(config), Flattrs::default()).await?;
+            // Must match `RdmaManagerActor::local_handle`'s singleton lookup of "rdma_manager".
+            let rdma_handle =
+                proc.spawn_with_uid(Uid::singleton(Label::strip("rdma_manager")), rdma_actor)?;
+            let rdma: ActorRef<RdmaManagerActor> = rdma_handle.bind();
+            let helper_actor = BufferHelperActor::new(rdma, Flattrs::default()).await?;
+            let helper_handle = proc.spawn_with_label("helper", helper_actor);
+            Ok(helper_handle.bind())
+        }
+
+        async fn shutdown(mut self) -> Result<(), anyhow::Error> {
+            let _ = self
+                .proc_a
+                .destroy_and_wait(Duration::from_secs(10), "TestEnv shutdown proc_a")
+                .await?;
+            let _ = self
+                .proc_b
+                .destroy_and_wait(Duration::from_secs(10), "TestEnv shutdown proc_b")
+                .await?;
+            Ok(())
+        }
+    }
+
+    // ====================================================================
+    // Shared test bodies
+    // ====================================================================
+
+    async fn assert_remote_pattern(
+        helper: &ActorRef<BufferHelperActor>,
+        cx: &hyperactor::Client,
+        remote: RdmaRemoteBuffer,
+        size: usize,
+        pattern: u8,
+    ) -> Result<(), anyhow::Error> {
+        let got = helper.read_contents(cx, remote, 0, size).await?;
+        assert_eq!(got, vec![pattern; size]);
+        Ok(())
+    }
+
+    /// Drive a single write from side A's buffer into side B's buffer
+    /// and assert the destination now matches the pattern.
+    async fn run_cross_actor_write(
+        env: &TestEnv,
+        src_dev: BufferDevice,
+        dst_dev: BufferDevice,
+        size: usize,
+        pattern: u8,
+        timeout_secs: u64,
+    ) -> Result<(), anyhow::Error> {
+        let src = env
+            .helper_a
+            .allocate(&env.client, size, src_dev, pattern)
+            .await?;
+        let dst = env.helper_b.allocate(&env.client, size, dst_dev, 0).await?;
+        env.helper_a
+            .submit(
+                &env.client,
+                vec![BufferHelperOp {
+                    op_type: RdmaOpType::WriteFromLocal,
+                    local_buf: src,
+                    remote_buf: dst.clone(),
+                }],
+                timeout_secs,
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+        assert_remote_pattern(&env.helper_b, &env.client, dst, size, pattern).await
+    }
+
+    /// Drive a single read from side B's buffer into side A's buffer
+    /// and assert the destination now matches the pattern.
+    async fn run_cross_actor_read(
+        env: &TestEnv,
+        dst_dev: BufferDevice,
+        src_dev: BufferDevice,
+        size: usize,
+        pattern: u8,
+        timeout_secs: u64,
+    ) -> Result<(), anyhow::Error> {
+        let dst = env.helper_a.allocate(&env.client, size, dst_dev, 0).await?;
+        let src = env
+            .helper_b
+            .allocate(&env.client, size, src_dev, pattern)
+            .await?;
+        env.helper_a
+            .submit(
+                &env.client,
+                vec![BufferHelperOp {
+                    op_type: RdmaOpType::ReadIntoLocal,
+                    local_buf: dst.clone(),
+                    remote_buf: src,
+                }],
+                timeout_secs,
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+        assert_remote_pattern(&env.helper_a, &env.client, dst, size, pattern).await
+    }
+
+    /// Drive both a write and a read in a single
+    /// `IbvBackend::submit` batch — both ops target the same peer
+    /// QP and so resolve to a single `ProcessOps` group. After the
+    /// batch completes, side B's `write_dst` and side A's `read_dst`
+    /// both contain their respective patterns.
+    async fn run_multi_op_same_qp(
+        env: &TestEnv,
+        dev_a: BufferDevice,
+        dev_b: BufferDevice,
+        size: usize,
+        timeout_secs: u64,
+    ) -> Result<(), anyhow::Error> {
+        const WRITE_PATTERN: u8 = 0xa1;
+        const READ_PATTERN: u8 = 0xb2;
+        let write_src = env
+            .helper_a
+            .allocate(&env.client, size, dev_a, WRITE_PATTERN)
+            .await?;
+        let write_dst = env.helper_b.allocate(&env.client, size, dev_b, 0).await?;
+        let read_dst = env.helper_a.allocate(&env.client, size, dev_a, 0).await?;
+        let read_src = env
+            .helper_b
+            .allocate(&env.client, size, dev_b, READ_PATTERN)
+            .await?;
+        env.helper_a
+            .submit(
+                &env.client,
+                vec![
+                    BufferHelperOp {
+                        op_type: RdmaOpType::WriteFromLocal,
+                        local_buf: write_src,
+                        remote_buf: write_dst.clone(),
+                    },
+                    BufferHelperOp {
+                        op_type: RdmaOpType::ReadIntoLocal,
+                        local_buf: read_dst.clone(),
+                        remote_buf: read_src,
+                    },
+                ],
+                timeout_secs,
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+        assert_remote_pattern(&env.helper_b, &env.client, write_dst, size, WRITE_PATTERN).await?;
+        assert_remote_pattern(&env.helper_a, &env.client, read_dst, size, READ_PATTERN).await
+    }
+
+    /// Drive a write + read between two buffers registered with the
+    /// *same* `RdmaManagerActor` on the *same* device. Exercises the
+    /// loopback path (`is_loopback = true`) where the active actor
+    /// connects its QP to its own endpoint and skips the
+    /// `CreatePeerQueuePair` round trip.
+    async fn run_true_loopback(
+        env: &TestEnv,
+        dev: BufferDevice,
+        size: usize,
+    ) -> Result<(), anyhow::Error> {
+        const PATTERN: u8 = 0x5d;
+        let src = env
+            .helper_a
+            .allocate(&env.client, size, dev, PATTERN)
+            .await?;
+        let dst = env.helper_a.allocate(&env.client, size, dev, 0).await?;
+        env.helper_a
+            .submit(
+                &env.client,
+                vec![BufferHelperOp {
+                    op_type: RdmaOpType::WriteFromLocal,
+                    local_buf: src,
+                    remote_buf: dst.clone(),
+                }],
+                5,
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+        assert_remote_pattern(&env.helper_a, &env.client, dst, size, PATTERN).await
+    }
+
+    // ====================================================================
+    // Helpers
+    // ====================================================================
+
+    fn require_rdma() {
+        if get_all_devices().is_empty() {
+            panic!("SKIPPED: no RDMA devices available");
+        }
+    }
+
+    fn require_cuda() {
+        if !crate::is_cuda_available() {
+            panic!("SKIPPED: CUDA not available");
+        }
+    }
+
+    // ====================================================================
+    // Tests
+    // ====================================================================
+
+    /// Cross-actor RDMA write over a single device (both sides target
+    /// `cpu:0`). The two `RdmaManagerActor`s differ — this exercises
+    /// the asymmetric `CreatePeerQueuePair` handshake even though the
+    /// underlying device is shared.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_cross_actor_same_device_write() -> Result<(), anyhow::Error> {
+        require_rdma();
+        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0xa5, 5).await?;
+        env.shutdown().await
+    }
+
+    /// Cross-actor RDMA read over a single device.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_cross_actor_same_device_read() -> Result<(), anyhow::Error> {
+        require_rdma();
+        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        run_cross_actor_read(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x3c, 5).await?;
+        env.shutdown().await
+    }
+
+    /// True loopback write: both buffers registered with the same
+    /// `RdmaManagerActor` on the same device. The `QueuePairActor`
+    /// sees `is_loopback = true` and connects its QP to its own
+    /// endpoint without going through `CreatePeerQueuePair`.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_loopback_write() -> Result<(), anyhow::Error> {
+        require_rdma();
+        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        run_true_loopback(&env, BufferDevice::Cpu, 32).await?;
+        env.shutdown().await
+    }
+
+    /// Cross-device write (cpu:0 → cpu:1).
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_cross_device_write() -> Result<(), anyhow::Error> {
+        require_rdma();
+        let env =
+            TestEnv::new(IbvConfig::targeting("cpu:0"), IbvConfig::targeting("cpu:1")).await?;
+        run_cross_actor_write(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x77, 5).await?;
+        env.shutdown().await
+    }
+
+    /// Cross-device read (cpu:0 ← cpu:1).
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_cross_device_read() -> Result<(), anyhow::Error> {
+        require_rdma();
+        let env =
+            TestEnv::new(IbvConfig::targeting("cpu:0"), IbvConfig::targeting("cpu:1")).await?;
+        run_cross_actor_read(&env, BufferDevice::Cpu, BufferDevice::Cpu, 32, 0x88, 5).await?;
+        env.shutdown().await
+    }
+
+    /// One write + one read in a single `IbvBackend::submit` batch.
+    /// Both ops share the same `QpKey` so the manager groups them
+    /// into a single `ProcessOps` dispatched to one `QueuePairActor`.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_multi_op_same_qp_cpu() -> Result<(), anyhow::Error> {
+        require_rdma();
+        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        run_multi_op_same_qp(&env, BufferDevice::Cpu, BufferDevice::Cpu, 64, 5).await?;
+        env.shutdown().await
+    }
+
+    /// Same as `test_multi_op_same_qp_cpu` but with 2 MiB CUDA buffers,
+    /// pulled apart into a separate test because the buffer-size +
+    /// device split is the only thing that differs.
+    #[timed_test::async_timed_test(timeout_secs = 120)]
+    async fn test_multi_op_same_qp_cuda() -> Result<(), anyhow::Error> {
+        require_rdma();
+        require_cuda();
+        const SIZE: usize = 2 * 1024 * 1024;
+        let env = TestEnv::new(
+            IbvConfig::targeting("cuda:0"),
+            IbvConfig::targeting("cuda:1"),
+        )
+        .await?;
+        run_multi_op_same_qp(&env, BufferDevice::Cuda(0), BufferDevice::Cuda(1), SIZE, 10).await?;
+        env.shutdown().await
+    }
+
+    /// CUDA → CPU write.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_cuda_to_cpu_write() -> Result<(), anyhow::Error> {
+        require_rdma();
+        require_cuda();
+        const SIZE: usize = 2 * 1024 * 1024;
+        let env = TestEnv::new(
+            IbvConfig::targeting("cuda:0"),
+            IbvConfig::targeting("cpu:1"),
+        )
+        .await?;
+        run_cross_actor_write(
+            &env,
+            BufferDevice::Cuda(0),
+            BufferDevice::Cpu,
+            SIZE,
+            0x9b,
+            10,
+        )
+        .await?;
+        env.shutdown().await
+    }
+
+    /// CUDA → CPU read (source is the CUDA side).
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_cuda_to_cpu_read() -> Result<(), anyhow::Error> {
+        require_rdma();
+        require_cuda();
+        const SIZE: usize = 2 * 1024 * 1024;
+        let env = TestEnv::new(
+            IbvConfig::targeting("cpu:0"),
+            IbvConfig::targeting("cuda:1"),
+        )
+        .await?;
+        run_cross_actor_read(
+            &env,
+            BufferDevice::Cpu,
+            BufferDevice::Cuda(1),
+            SIZE,
+            0x37,
+            10,
+        )
+        .await?;
+        env.shutdown().await
+    }
+
+    /// CPU → CUDA write.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_cpu_to_cuda_write() -> Result<(), anyhow::Error> {
+        require_rdma();
+        require_cuda();
+        const SIZE: usize = 2 * 1024 * 1024;
+        let env = TestEnv::new(
+            IbvConfig::targeting("cpu:0"),
+            IbvConfig::targeting("cuda:1"),
+        )
+        .await?;
+        run_cross_actor_write(
+            &env,
+            BufferDevice::Cpu,
+            BufferDevice::Cuda(1),
+            SIZE,
+            0x5a,
+            10,
+        )
+        .await?;
+        env.shutdown().await
+    }
+
+    /// CPU → CUDA read (source is the CPU side).
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_cpu_to_cuda_read() -> Result<(), anyhow::Error> {
+        require_rdma();
+        require_cuda();
+        const SIZE: usize = 2 * 1024 * 1024;
+        let env = TestEnv::new(
+            IbvConfig::targeting("cuda:0"),
+            IbvConfig::targeting("cpu:1"),
+        )
+        .await?;
+        run_cross_actor_read(
+            &env,
+            BufferDevice::Cuda(0),
+            BufferDevice::Cpu,
+            SIZE,
+            0x4e,
+            10,
+        )
+        .await?;
+        env.shutdown().await
+    }
+
+    /// CUDA → CUDA write.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_cuda_to_cuda_write() -> Result<(), anyhow::Error> {
+        require_rdma();
+        require_cuda();
+        const SIZE: usize = 2 * 1024 * 1024;
+        let env = TestEnv::new(
+            IbvConfig::targeting("cuda:0"),
+            IbvConfig::targeting("cuda:1"),
+        )
+        .await?;
+        run_cross_actor_write(
+            &env,
+            BufferDevice::Cuda(0),
+            BufferDevice::Cuda(1),
+            SIZE,
+            0xee,
+            10,
+        )
+        .await?;
+        env.shutdown().await
+    }
+
+    /// CUDA → CUDA read.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_cuda_to_cuda_read() -> Result<(), anyhow::Error> {
+        require_rdma();
+        require_cuda();
+        const SIZE: usize = 2 * 1024 * 1024;
+        let env = TestEnv::new(
+            IbvConfig::targeting("cuda:0"),
+            IbvConfig::targeting("cuda:1"),
+        )
+        .await?;
+        run_cross_actor_read(
+            &env,
+            BufferDevice::Cuda(0),
+            BufferDevice::Cuda(1),
+            SIZE,
+            0x42,
+            10,
+        )
+        .await?;
+        env.shutdown().await
+    }
+
+    /// CUDA buffers with `IbvQpType::Standard` (no mlx5dv).
+    /// Exercises the per-buffer dmabuf MR-registration path: without
+    /// mlx5dv the manager cannot use indirect mkeys via segment
+    /// scanning and instead registers each buffer as a standalone
+    /// dmabuf MR (`ibv_reg_dmabuf_mr`).
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_standard_qp_cuda_dmabuf_fallback() -> Result<(), anyhow::Error> {
+        require_rdma();
+        require_cuda();
+        const SIZE: usize = 16 * 1024 * 1024;
+        let mut config_a = IbvConfig::targeting("cuda:0");
+        config_a.qp_type = IbvQpType::Standard;
+        let mut config_b = IbvConfig::targeting("cuda:1");
+        config_b.qp_type = IbvQpType::Standard;
+        let env = TestEnv::new(config_a, config_b).await?;
+        run_cross_actor_write(
+            &env,
+            BufferDevice::Cuda(0),
+            BufferDevice::Cuda(1),
+            SIZE,
+            0x33,
+            10,
+        )
+        .await?;
+        env.shutdown().await
+    }
+
+    /// Two `IbvBackend::submit` calls back-to-back through the same
+    /// helper. The second batch reuses the cached `QueuePairActor`
+    /// from the first (the manager's `qp_handles` entry persists
+    /// across submits).
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_multi_batch_same_qp() -> Result<(), anyhow::Error> {
+        require_rdma();
+        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let src1 = env
+            .helper_a
+            .allocate(&env.client, 32, BufferDevice::Cpu, 0xa1)
+            .await?;
+        let dst1 = env
+            .helper_b
+            .allocate(&env.client, 32, BufferDevice::Cpu, 0)
+            .await?;
+        env.helper_a
+            .submit(
+                &env.client,
+                vec![BufferHelperOp {
+                    op_type: RdmaOpType::WriteFromLocal,
+                    local_buf: src1,
+                    remote_buf: dst1.clone(),
+                }],
+                5,
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+        assert_remote_pattern(&env.helper_b, &env.client, dst1, 32, 0xa1).await?;
+
+        let src2 = env
+            .helper_a
+            .allocate(&env.client, 32, BufferDevice::Cpu, 0xb2)
+            .await?;
+        let dst2 = env
+            .helper_b
+            .allocate(&env.client, 32, BufferDevice::Cpu, 0)
+            .await?;
+        env.helper_a
+            .submit(
+                &env.client,
+                vec![BufferHelperOp {
+                    op_type: RdmaOpType::WriteFromLocal,
+                    local_buf: src2,
+                    remote_buf: dst2.clone(),
+                }],
+                5,
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+        assert_remote_pattern(&env.helper_b, &env.client, dst2, 32, 0xb2).await?;
+        env.shutdown().await
+    }
+
+    /// Single submit batch with ops landing on multiple `QpKey`
+    /// groups: loopback (helper_a → helper_a), cross-actor cpu↔cpu,
+    /// cpu↔cuda, cuda↔cpu, cuda↔cuda. Exercises the manager's
+    /// per-QP slicing and concurrent multi-QP dispatch.
+    #[timed_test::async_timed_test(timeout_secs = 120)]
+    async fn test_multi_op_multi_qp() -> Result<(), anyhow::Error> {
+        require_rdma();
+        require_cuda();
+        const SIZE: usize = 2 * 1024 * 1024;
+
+        let env = TestEnv::same_config(IbvConfig::default()).await?;
+
+        const LOOPBACK_PAT: u8 = 0x11;
+        let lb_src = env
+            .helper_a
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, LOOPBACK_PAT)
+            .await?;
+        let lb_dst = env
+            .helper_a
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, 0)
+            .await?;
+
+        const CC_PAT: u8 = 0x22;
+        let cc_src = env
+            .helper_a
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, CC_PAT)
+            .await?;
+        let cc_dst = env
+            .helper_b
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, 0)
+            .await?;
+
+        const CG_PAT: u8 = 0x33;
+        let cg_src = env
+            .helper_a
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, CG_PAT)
+            .await?;
+        let cg_dst = env
+            .helper_b
+            .allocate(&env.client, SIZE, BufferDevice::Cuda(1), 0)
+            .await?;
+
+        const GC_PAT: u8 = 0x44;
+        let gc_src = env
+            .helper_a
+            .allocate(&env.client, SIZE, BufferDevice::Cuda(0), GC_PAT)
+            .await?;
+        let gc_dst = env
+            .helper_b
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, 0)
+            .await?;
+
+        const GG_PAT: u8 = 0x55;
+        let gg_src = env
+            .helper_b
+            .allocate(&env.client, SIZE, BufferDevice::Cuda(1), GG_PAT)
+            .await?;
+        let gg_dst = env
+            .helper_a
+            .allocate(&env.client, SIZE, BufferDevice::Cuda(0), 0)
+            .await?;
+
+        env.helper_a
+            .submit(
+                &env.client,
+                vec![
+                    BufferHelperOp {
+                        op_type: RdmaOpType::WriteFromLocal,
+                        local_buf: lb_src,
+                        remote_buf: lb_dst.clone(),
+                    },
+                    BufferHelperOp {
+                        op_type: RdmaOpType::WriteFromLocal,
+                        local_buf: cc_src,
+                        remote_buf: cc_dst.clone(),
+                    },
+                    BufferHelperOp {
+                        op_type: RdmaOpType::WriteFromLocal,
+                        local_buf: cg_src,
+                        remote_buf: cg_dst.clone(),
+                    },
+                    BufferHelperOp {
+                        op_type: RdmaOpType::WriteFromLocal,
+                        local_buf: gc_src,
+                        remote_buf: gc_dst.clone(),
+                    },
+                    BufferHelperOp {
+                        op_type: RdmaOpType::ReadIntoLocal,
+                        local_buf: gg_dst.clone(),
+                        remote_buf: gg_src,
+                    },
+                ],
+                30,
+            )
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        assert_remote_pattern(&env.helper_a, &env.client, lb_dst, SIZE, LOOPBACK_PAT).await?;
+        assert_remote_pattern(&env.helper_b, &env.client, cc_dst, SIZE, CC_PAT).await?;
+        assert_remote_pattern(&env.helper_b, &env.client, cg_dst, SIZE, CG_PAT).await?;
+        assert_remote_pattern(&env.helper_b, &env.client, gc_dst, SIZE, GC_PAT).await?;
+        assert_remote_pattern(&env.helper_a, &env.client, gg_dst, SIZE, GG_PAT).await?;
+
+        env.shutdown().await
+    }
+
+    /// Force the timeout branch in `IbvBackend::submit`. A near-zero
+    /// timeout fires before any per-op replies arrive, so the
+    /// aggregated error reports the timeout terminal cause.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_submit_timeout() -> Result<(), anyhow::Error> {
+        require_rdma();
+        const SIZE: usize = 1024 * 1024;
+        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+        let src = env
+            .helper_a
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, 0x77)
+            .await?;
+        let dst = env
+            .helper_b
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, 0)
+            .await?;
+        let result = env
+            .helper_a
+            .submit(
+                &env.client,
+                vec![BufferHelperOp {
+                    op_type: RdmaOpType::WriteFromLocal,
+                    local_buf: src,
+                    remote_buf: dst,
+                }],
+                0,
+            )
+            .await?;
+        let err = result.expect_err("expected submit to time out");
+        assert!(
+            err.contains("submit timed out"),
+            "unexpected error message: {err}",
+        );
+        env.shutdown().await
+    }
+
+    /// Submit a batch with a bogus op in the middle. RC
+    /// completions fire in posting order, so the good op before it
+    /// completes normally, the bogus op fails with `REM_ACCESS_ERR`
+    /// (it puts the QP into error state), and the good op after it
+    /// gets flushed with `WC_WR_FLUSH_ERR`. Verifies (a) op 0 is
+    /// absent from the aggregated error and its bytes transferred,
+    /// (b) ops 1 and 2 both appear in the error, and (c) op 2's
+    /// destination was *not* written (the flush meant nothing was
+    /// transferred).
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_partial_failure_batch() -> Result<(), anyhow::Error> {
+        use crate::backend::RdmaRemoteBackendContext;
+
+        require_rdma();
+        const SIZE: usize = 32;
+        let env = TestEnv::same_config(IbvConfig::targeting("cpu:0")).await?;
+
+        const GOOD_PAT: u8 = 0xc3;
+        const POST_FLUSH_PAT: u8 = 0xde;
+
+        let good_src_0 = env
+            .helper_a
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, GOOD_PAT)
+            .await?;
+        let good_dst_0 = env
+            .helper_b
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, 0)
+            .await?;
+
+        let bogus_src = env
+            .helper_a
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, 0xee)
+            .await?;
+        let real_remote = env
+            .helper_b
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, 0)
+            .await?;
+        let mut bogus_remote = real_remote.clone();
+        for backend in bogus_remote.backends.iter_mut() {
+            if let RdmaRemoteBackendContext::Ibverbs(_, buf) = backend {
+                buf.rkey = 0xdead_beef;
+                buf.addr = 0xdead_0000;
+            }
+        }
+
+        let post_flush_src = env
+            .helper_a
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, POST_FLUSH_PAT)
+            .await?;
+        let post_flush_dst = env
+            .helper_b
+            .allocate(&env.client, SIZE, BufferDevice::Cpu, 0)
+            .await?;
+
+        let result = env
+            .helper_a
+            .submit(
+                &env.client,
+                vec![
+                    BufferHelperOp {
+                        op_type: RdmaOpType::WriteFromLocal,
+                        local_buf: good_src_0,
+                        remote_buf: good_dst_0.clone(),
+                    },
+                    BufferHelperOp {
+                        op_type: RdmaOpType::WriteFromLocal,
+                        local_buf: bogus_src,
+                        remote_buf: bogus_remote,
+                    },
+                    BufferHelperOp {
+                        op_type: RdmaOpType::WriteFromLocal,
+                        local_buf: post_flush_src,
+                        remote_buf: post_flush_dst.clone(),
+                    },
+                ],
+                10,
+            )
+            .await?;
+        let err = result.expect_err("expected at least one op to fail");
+        let rem_access = format!(
+            "status={:?}",
+            rdmaxcel_sys::ibv_wc_status::IBV_WC_REM_ACCESS_ERR,
+        );
+        let wr_flush = format!(
+            "status={:?}",
+            rdmaxcel_sys::ibv_wc_status::IBV_WC_WR_FLUSH_ERR,
+        );
+        assert!(
+            !err.contains("op 0:"),
+            "op 0 should not appear in error: {err}",
+        );
+        let op1 = err
+            .split("\n  ")
+            .find(|line| line.starts_with("op 1:"))
+            .unwrap_or_else(|| panic!("expected op 1 line in error: {err}"));
+        assert!(
+            op1.contains("Completion status not successful") && op1.contains(&rem_access),
+            "expected op 1 to fail with REM_ACCESS_ERR: {op1}",
+        );
+        let op2 = err
+            .split("\n  ")
+            .find(|line| line.starts_with("op 2:"))
+            .unwrap_or_else(|| panic!("expected op 2 line in error: {err}"));
+        assert!(
+            op2.contains("Completion status not successful") && op2.contains(&wr_flush),
+            "expected op 2 to be flushed with WR_FLUSH_ERR: {op2}",
+        );
+
+        assert_remote_pattern(&env.helper_b, &env.client, good_dst_0, SIZE, GOOD_PAT).await?;
+        // The flushed op was never transferred; destination stays zero.
+        assert_remote_pattern(&env.helper_b, &env.client, post_flush_dst, SIZE, 0).await?;
+
+        env.shutdown().await
     }
 }
