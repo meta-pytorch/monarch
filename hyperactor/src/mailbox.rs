@@ -156,6 +156,7 @@ use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
+use crate::channel::CloseReason;
 use crate::channel::SendError;
 use crate::channel::TxStatus;
 use crate::context;
@@ -1210,6 +1211,10 @@ pub struct MailboxClient {
     completed: Arc<AtomicUsize>,
     // Notifies flush waiters when `completed` changes.
     completed_notify: Arc<tokio::sync::Notify>,
+
+    // Watcher exposing the underlying Tx's health. Callers can peek to detect
+    // a closed client before submitting, e.g. for routing-cache eviction.
+    tx_status: watch::Receiver<TxStatus>,
 }
 
 impl fmt::Debug for MailboxClient {
@@ -1273,9 +1278,17 @@ impl MailboxClient {
             submitted: Arc::new(AtomicUsize::new(0)),
             completed,
             completed_notify,
+            tx_status: tx_status.clone(),
         };
         Self::monitor_tx_health(tx_status, tx_monitoring, addr);
         this
+    }
+
+    /// A means to monitor the health of the underlying [`channel::Tx`]. The
+    /// watcher transitions to [`TxStatus::Closed`] when the tx is no longer
+    /// usable for message delivery (e.g. peer rejected the session).
+    pub fn tx_status(&self) -> &watch::Receiver<TxStatus> {
+        &self.tx_status
     }
 
     /// Convenience constructor, to set up a mailbox client that forwards messages
@@ -3125,6 +3138,19 @@ impl MailboxSender for WeakMailboxRouter {
     }
 }
 
+/// Returns true if `status` is `Closed` with a typed reason identifying a
+/// stale session — the K8s "out-of-sequence message, expected seq 0, got N"
+/// case where the peer's dispatcher GC'd the `SessionId` but our cached
+/// `NetTx` still holds an `Outbox.next_seq` past 0. Re-dialing produces a
+/// fresh session that the peer accepts.
+///
+/// Other close reasons (oversized frame, codec errors, etc.) intentionally
+/// do not match: the message or peer is the problem and re-dialing would
+/// just hit the same failure.
+fn is_stale_session_close(status: &TxStatus) -> bool {
+    matches!(status, TxStatus::Closed(CloseReason::SequenceMismatch(_)))
+}
+
 /// A dynamic mailbox router that supports remote delivery.
 ///
 /// `DialMailboxRouter` maintains a runtime address book mapping
@@ -3276,21 +3302,45 @@ impl DialMailboxRouter {
         addr: &ChannelAddr,
         actor_ref: &ActorAddr,
     ) -> Result<Arc<MailboxClient>, MailboxSenderError> {
-        // Get the sender. Create it if needed. Do not send the
-        // messages inside this block so we do not hold onto the
-        // reference of the dashmap entries.
-        match self.sender_cache.entry(addr.clone()) {
-            Entry::Occupied(entry) => Ok(entry.get().clone()),
-            Entry::Vacant(entry) => {
-                let tx = channel::dial(addr.clone()).map_err(|err| {
-                    MailboxSenderError::new_unbound_type(
-                        actor_ref.clone(),
-                        MailboxSenderErrorKind::Channel(err),
-                        "unknown",
-                    )
-                })?;
-                let sender = MailboxClient::new(tx);
-                Ok(entry.insert(Arc::new(sender)).value().clone())
+        // The cache must self-heal when a peer rejects a stale session
+        // (e.g. its dispatcher GC'd the SessionId after the prior connection
+        // ended, but our cached NetTx has an Outbox.next_seq past 0). Without
+        // eviction, the cached client is dead-on-arrival forever, since the
+        // server rejects every reconnect with "out-of-sequence message,
+        // expected seq 0, got N".
+        //
+        // Eviction is narrowly gated on this exact close reason. Re-dialing
+        // a client closed for any other reason (oversized frame, codec
+        // error, etc.) just produces a fresh session that fails the same
+        // way and would turn the cache into an unbounded redial loop under
+        // upstream retry. Other reasons stay cached so the existing
+        // closed-channel fast-fail path can drain the retry budget cleanly.
+        loop {
+            match self.sender_cache.entry(addr.clone()) {
+                Entry::Occupied(entry) => {
+                    let status = entry.get().tx_status().borrow().clone();
+                    if is_stale_session_close(&status) {
+                        tracing::info!(
+                            ?addr,
+                            reason = ?status.as_closed(),
+                            "evicting stale-session MailboxClient from DialMailboxRouter cache"
+                        );
+                        entry.remove();
+                        continue;
+                    }
+                    return Ok(entry.get().clone());
+                }
+                Entry::Vacant(entry) => {
+                    let tx = channel::dial(addr.clone()).map_err(|err| {
+                        MailboxSenderError::new_unbound_type(
+                            actor_ref.clone(),
+                            MailboxSenderErrorKind::Channel(err),
+                            "unknown",
+                        )
+                    })?;
+                    let sender = Arc::new(MailboxClient::new(tx));
+                    return Ok(entry.insert(sender).value().clone());
+                }
             }
         }
     }
@@ -3931,6 +3981,67 @@ mod tests {
                 assert_eq!(receiver.recv().await.unwrap(), 123u64);
             }
         }
+    }
+
+    #[test]
+    fn test_is_stale_session_close() {
+        // Only the typed SequenceMismatch variant identifies a stale session.
+        let stale = TxStatus::Closed(CloseReason::SequenceMismatch(
+            "out-of-sequence message, expected seq 0, got 7".into(),
+        ));
+        assert!(is_stale_session_close(&stale));
+
+        // Other close reasons must NOT match — re-dialing would just hit the
+        // same failure and create an unbounded evict/redial loop.
+        let oversize = TxStatus::Closed(CloseReason::OversizedFrame {
+            size: 55_001_392,
+            max: 50_000_000,
+        });
+        assert!(!is_stale_session_close(&oversize));
+
+        let generic = TxStatus::Closed(CloseReason::Other("test teardown".into()));
+        assert!(!is_stale_session_close(&generic));
+
+        // Active is never stale.
+        assert!(!is_stale_session_close(&TxStatus::Active));
+    }
+
+    #[tokio::test]
+    async fn test_dial_router_keeps_client_closed_for_non_stale_reason() {
+        // A client closed for any reason other than the K8s sequence-mismatch
+        // pattern must stay cached — re-dialing on, say, an oversize-frame
+        // rejection would just produce a fresh session that fails the same
+        // way under upstream retry, turning the cache into an unbounded
+        // evict/redial loop. The closed entry sticks; upstream retries
+        // fast-fail via the existing channel-closed path.
+        let mbox = Mailbox::new(test_actor_id("non_stale_close_0", "actor0"));
+        let (addr, rx) =
+            channel::serve::<MessageEnvelope>(ChannelAddr::any(ChannelTransport::Local)).unwrap();
+        let h = mbox.clone().serve(rx);
+
+        let router = DialMailboxRouter::new();
+        router.bind(Addr::from(mbox.actor_addr().clone()), addr.clone());
+
+        let client1 = router.dial(&addr, mbox.actor_addr()).unwrap();
+        let mut status = client1.tx_status().clone();
+
+        // LocalRx::drop closes the watcher with a non-stale reason — the
+        // string never contains "out-of-sequence message", so it must not
+        // trigger eviction.
+        h.stop("test teardown");
+        let _ = h.await;
+        while !status.borrow_and_update().is_closed() {
+            status.changed().await.unwrap();
+        }
+        assert!(!is_stale_session_close(&status.borrow()));
+
+        let client2 = router.dial(&addr, mbox.actor_addr()).unwrap();
+        assert!(
+            Arc::ptr_eq(&client1, &client2),
+            "router must not evict a client closed for a non-stale reason"
+        );
+        let client3 = router.dial(&addr, mbox.actor_addr()).unwrap();
+        assert!(Arc::ptr_eq(&client1, &client3));
     }
 
     #[tokio::test]
