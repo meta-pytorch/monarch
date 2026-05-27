@@ -8,6 +8,9 @@
 
 //! Shared telemetry table schemas and Arrow IPC helpers.
 
+use std::io::Cursor;
+
+use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use monarch_record_batch::RecordBatchRow;
@@ -37,6 +40,18 @@ pub fn serialize_batch(batch: &RecordBatch) -> anyhow::Result<Vec<u8>> {
     writer.write(batch)?;
     writer.finish()?;
     Ok(buf)
+}
+
+/// Deserialize one Arrow record batch from an IPC stream.
+pub fn deserialize_one_batch(data: &[u8]) -> anyhow::Result<RecordBatch> {
+    let mut reader = StreamReader::try_new(Cursor::new(data), None)?;
+    let Some(batch) = reader.next().transpose()? else {
+        anyhow::bail!("ipc stream contained no record batch");
+    };
+    if reader.next().transpose()?.is_some() {
+        anyhow::bail!("ipc stream contained multiple record batches");
+    }
+    Ok(batch)
 }
 
 /// Append the Unix-socket frame header for an Arrow IPC payload.
@@ -200,11 +215,8 @@ pub mod entity_tables {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::array::UInt64Array;
-    use datafusion::arrow::ipc::reader::StreamReader;
     use monarch_record_batch::RecordBatchBuffer;
     use serde_json::json;
 
@@ -279,8 +291,7 @@ mod tests {
         });
 
         let data = serialize_batch(&buffer.drain_to_record_batch().unwrap()).unwrap();
-        let mut reader = StreamReader::try_new(Cursor::new(data), None).unwrap();
-        let batch = reader.next().transpose().unwrap().unwrap();
+        let batch = deserialize_one_batch(&data).unwrap();
 
         assert_eq!(batch.num_rows(), 1);
         let ids = batch
@@ -297,6 +308,5 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(names.value(0), "span");
-        assert!(reader.next().transpose().unwrap().is_none());
     }
 }

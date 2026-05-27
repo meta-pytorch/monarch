@@ -8,8 +8,8 @@
 
 //! Producer-side Unix-socket sink for telemetry sidecars.
 //!
-//! This module is the producer-side transport for trace telemetry. It installs
-//! an inactive process-global `UnixSocketSink`, buffers trace events into
+//! This module is the producer-side transport for telemetry. It installs
+//! an inactive process-global `UnixSocketSink`, buffers trace and entity events into
 //! schema-specific `RecordBatchBuffer`s, and, once activated with a socket
 //! path, forwards flushed batches to the sidecar over a Unix socket.
 //!
@@ -35,6 +35,24 @@ use std::time::SystemTime;
 
 use monarch_record_batch::RecordBatchBuffer;
 use monarch_telemetry_schema::MAX_FRAME_LEN;
+use monarch_telemetry_schema::entity_tables::ACTOR_STATUS_EVENTS;
+use monarch_telemetry_schema::entity_tables::ACTORS;
+use monarch_telemetry_schema::entity_tables::Actor;
+use monarch_telemetry_schema::entity_tables::ActorBuffer;
+use monarch_telemetry_schema::entity_tables::ActorStatusEvent as ActorStatusEventRow;
+use monarch_telemetry_schema::entity_tables::ActorStatusEventBuffer;
+use monarch_telemetry_schema::entity_tables::MESHES;
+use monarch_telemetry_schema::entity_tables::MESSAGE_STATUS_EVENTS;
+use monarch_telemetry_schema::entity_tables::MESSAGES;
+use monarch_telemetry_schema::entity_tables::Mesh;
+use monarch_telemetry_schema::entity_tables::MeshBuffer;
+use monarch_telemetry_schema::entity_tables::Message;
+use monarch_telemetry_schema::entity_tables::MessageBuffer;
+use monarch_telemetry_schema::entity_tables::MessageStatusEvent as MessageStatusEventRow;
+use monarch_telemetry_schema::entity_tables::MessageStatusEventBuffer;
+use monarch_telemetry_schema::entity_tables::SENT_MESSAGES;
+use monarch_telemetry_schema::entity_tables::SentMessage;
+use monarch_telemetry_schema::entity_tables::SentMessageBuffer;
 use monarch_telemetry_schema::trace_tables::EVENTS;
 use monarch_telemetry_schema::trace_tables::Event;
 use monarch_telemetry_schema::trace_tables::EventBuffer;
@@ -47,10 +65,12 @@ use monarch_telemetry_schema::trace_tables::SpanEventBuffer;
 use monarch_telemetry_schema::write_frame_header;
 use tracing_subscriber::filter::Targets;
 
+use crate::EntityEvent;
 use crate::FieldValue;
 use crate::TraceEvent;
 use crate::TraceEventSink;
 use crate::config::get_tracing_targets;
+use crate::generate_sent_message_id;
 
 /// Maximum queued table batches before the tracing path starts dropping frames.
 const WORKER_QUEUE_CAPACITY: usize = 10_000;
@@ -72,19 +92,31 @@ struct UnixSocketSinkInner {
     spans_buffer: SpanBuffer,
     span_events_buffer: SpanEventBuffer,
     events_buffer: EventBuffer,
+    actors_buffer: ActorBuffer,
+    meshes_buffer: MeshBuffer,
+    actor_status_events_buffer: ActorStatusEventBuffer,
+    sent_messages_buffer: SentMessageBuffer,
+    messages_buffer: MessageBuffer,
+    message_status_events_buffer: MessageStatusEventBuffer,
     path: Option<PathBuf>,
     worker: Option<WorkerHandle>,
 }
 
 struct WorkerHandle {
-    sender: mpsc::SyncSender<TraceTableBuffer>,
+    sender: mpsc::SyncSender<TelemetryTableBuffer>,
     _join_handle: std::thread::JoinHandle<()>,
 }
 
-enum TraceTableBuffer {
+enum TelemetryTableBuffer {
     Spans(SpanBuffer),
     SpanEvents(SpanEventBuffer),
     Events(EventBuffer),
+    Actors(ActorBuffer),
+    Meshes(MeshBuffer),
+    ActorStatusEvents(ActorStatusEventBuffer),
+    SentMessages(SentMessageBuffer),
+    Messages(MessageBuffer),
+    MessageStatusEvents(MessageStatusEventBuffer),
 }
 
 struct UnixSocketSinkAdapter {
@@ -102,6 +134,12 @@ impl UnixSocketSink {
                 spans_buffer: SpanBuffer::default(),
                 span_events_buffer: SpanEventBuffer::default(),
                 events_buffer: EventBuffer::default(),
+                actors_buffer: ActorBuffer::default(),
+                meshes_buffer: MeshBuffer::default(),
+                actor_status_events_buffer: ActorStatusEventBuffer::default(),
+                sent_messages_buffer: SentMessageBuffer::default(),
+                messages_buffer: MessageBuffer::default(),
+                message_status_events_buffer: MessageStatusEventBuffer::default(),
                 path: None,
                 worker: None,
             }),
@@ -242,7 +280,7 @@ impl UnixSocketSink {
                     line: *line,
                 });
             }
-            TraceEvent::Entity(_) => {}
+            TraceEvent::Entity(event) => buffer_entity_event(&mut inner, event),
         }
         Ok(())
     }
@@ -262,6 +300,12 @@ impl UnixSocketSink {
             inner.spans_buffer = SpanBuffer::default();
             inner.span_events_buffer = SpanEventBuffer::default();
             inner.events_buffer = EventBuffer::default();
+            inner.actors_buffer = ActorBuffer::default();
+            inner.meshes_buffer = MeshBuffer::default();
+            inner.actor_status_events_buffer = ActorStatusEventBuffer::default();
+            inner.sent_messages_buffer = SentMessageBuffer::default();
+            inner.messages_buffer = MessageBuffer::default();
+            inner.message_status_events_buffer = MessageStatusEventBuffer::default();
             return Ok(());
         }
 
@@ -274,19 +318,55 @@ impl UnixSocketSink {
 
         flush_buffer(
             &mut inner.spans_buffer,
-            TraceTableBuffer::Spans,
+            TelemetryTableBuffer::Spans,
             &sender,
             &self.dropped,
         );
         flush_buffer(
             &mut inner.span_events_buffer,
-            TraceTableBuffer::SpanEvents,
+            TelemetryTableBuffer::SpanEvents,
             &sender,
             &self.dropped,
         );
         flush_buffer(
             &mut inner.events_buffer,
-            TraceTableBuffer::Events,
+            TelemetryTableBuffer::Events,
+            &sender,
+            &self.dropped,
+        );
+        flush_buffer(
+            &mut inner.actors_buffer,
+            TelemetryTableBuffer::Actors,
+            &sender,
+            &self.dropped,
+        );
+        flush_buffer(
+            &mut inner.meshes_buffer,
+            TelemetryTableBuffer::Meshes,
+            &sender,
+            &self.dropped,
+        );
+        flush_buffer(
+            &mut inner.actor_status_events_buffer,
+            TelemetryTableBuffer::ActorStatusEvents,
+            &sender,
+            &self.dropped,
+        );
+        flush_buffer(
+            &mut inner.sent_messages_buffer,
+            TelemetryTableBuffer::SentMessages,
+            &sender,
+            &self.dropped,
+        );
+        flush_buffer(
+            &mut inner.messages_buffer,
+            TelemetryTableBuffer::Messages,
+            &sender,
+            &self.dropped,
+        );
+        flush_buffer(
+            &mut inner.message_status_events_buffer,
+            TelemetryTableBuffer::MessageStatusEvents,
             &sender,
             &self.dropped,
         );
@@ -345,8 +425,8 @@ pub fn unix_socket_sink_dropped_frames() -> Option<u64> {
 
 fn flush_buffer<B>(
     buffer: &mut B,
-    table_buffer: impl FnOnce(B) -> TraceTableBuffer,
-    sender: &mpsc::SyncSender<TraceTableBuffer>,
+    table_buffer: impl FnOnce(B) -> TelemetryTableBuffer,
+    sender: &mpsc::SyncSender<TelemetryTableBuffer>,
     dropped: &AtomicU64,
 ) where
     B: RecordBatchBuffer + Default,
@@ -366,8 +446,80 @@ fn flush_buffer<B>(
     }
 }
 
+fn buffer_entity_event(inner: &mut UnixSocketSinkInner, event: &EntityEvent) {
+    match event {
+        EntityEvent::Actor(event) => {
+            inner.actors_buffer.insert(Actor {
+                id: event.id,
+                timestamp_us: timestamp_to_micros(&event.timestamp),
+                mesh_id: event.mesh_id,
+                rank: event.rank,
+                full_name: event.full_name.clone(),
+                display_name: event.display_name.clone(),
+            });
+        }
+        EntityEvent::Mesh(event) => {
+            inner.meshes_buffer.insert(Mesh {
+                id: event.id,
+                timestamp_us: timestamp_to_micros(&event.timestamp),
+                class: event.class.clone(),
+                given_name: event.given_name.clone(),
+                full_name: event.full_name.clone(),
+                shape_json: event.shape_json.clone(),
+                parent_mesh_id: event.parent_mesh_id,
+                parent_view_json: event.parent_view_json.clone(),
+            });
+        }
+        EntityEvent::ActorStatus(event) => {
+            inner
+                .actor_status_events_buffer
+                .insert(ActorStatusEventRow {
+                    id: event.id,
+                    timestamp_us: timestamp_to_micros(&event.timestamp),
+                    actor_id: event.actor_id,
+                    new_status: event.new_status.clone(),
+                    reason: event.reason.clone(),
+                });
+        }
+        EntityEvent::SentMessage(event) => {
+            inner.sent_messages_buffer.insert(SentMessage {
+                id: generate_sent_message_id(event.sender_actor_id),
+                timestamp_us: timestamp_to_micros(&event.timestamp),
+                sender_actor_id: event.sender_actor_id,
+                actor_mesh_id: event.actor_mesh_id,
+                view_json: event.view_json.clone(),
+                shape_json: event.shape_json.clone(),
+            });
+        }
+        EntityEvent::Message(event) => {
+            inner.messages_buffer.insert(Message {
+                id: event.id,
+                timestamp_us: timestamp_to_micros(&event.timestamp),
+                from_actor_id: event.from_actor_id,
+                to_actor_id: event.to_actor_id,
+                endpoint: event.endpoint.clone(),
+                port_id: event.port_id,
+            });
+        }
+        EntityEvent::MessageStatus(event) => {
+            inner
+                .message_status_events_buffer
+                .insert(MessageStatusEventRow {
+                    id: event.id,
+                    timestamp_us: timestamp_to_micros(&event.timestamp),
+                    message_id: event.message_id,
+                    status: event.status.clone(),
+                });
+        }
+    }
+}
+
 /// Serialize drained table buffers and write framed Arrow IPC payloads to the sidecar.
-fn writer_loop(path: PathBuf, receiver: mpsc::Receiver<TraceTableBuffer>, dropped: Arc<AtomicU64>) {
+fn writer_loop(
+    path: PathBuf,
+    receiver: mpsc::Receiver<TelemetryTableBuffer>,
+    dropped: Arc<AtomicU64>,
+) {
     let mut stream = None;
 
     while let Ok(mut buffer) = receiver.recv() {
@@ -378,9 +530,23 @@ fn writer_loop(path: PathBuf, receiver: mpsc::Receiver<TraceTableBuffer>, droppe
         // Keep the table-name selection next to the concrete buffer variant so
         // adding a socket table requires an explicit writer-loop update.
         let (table_name, batch) = match &mut buffer {
-            TraceTableBuffer::Spans(buffer) => (SPANS, buffer.drain_to_record_batch()),
-            TraceTableBuffer::SpanEvents(buffer) => (SPAN_EVENTS, buffer.drain_to_record_batch()),
-            TraceTableBuffer::Events(buffer) => (EVENTS, buffer.drain_to_record_batch()),
+            TelemetryTableBuffer::Spans(buffer) => (SPANS, buffer.drain_to_record_batch()),
+            TelemetryTableBuffer::SpanEvents(buffer) => {
+                (SPAN_EVENTS, buffer.drain_to_record_batch())
+            }
+            TelemetryTableBuffer::Events(buffer) => (EVENTS, buffer.drain_to_record_batch()),
+            TelemetryTableBuffer::Actors(buffer) => (ACTORS, buffer.drain_to_record_batch()),
+            TelemetryTableBuffer::Meshes(buffer) => (MESHES, buffer.drain_to_record_batch()),
+            TelemetryTableBuffer::ActorStatusEvents(buffer) => {
+                (ACTOR_STATUS_EVENTS, buffer.drain_to_record_batch())
+            }
+            TelemetryTableBuffer::SentMessages(buffer) => {
+                (SENT_MESSAGES, buffer.drain_to_record_batch())
+            }
+            TelemetryTableBuffer::Messages(buffer) => (MESSAGES, buffer.drain_to_record_batch()),
+            TelemetryTableBuffer::MessageStatusEvents(buffer) => {
+                (MESSAGE_STATUS_EVENTS, buffer.drain_to_record_batch())
+            }
         };
         let Ok(batch) = batch else {
             dropped.fetch_add(1, Ordering::Relaxed);
@@ -486,8 +652,19 @@ mod tests {
     use monarch_record_batch::RecordBatchBuffer;
 
     use super::*;
+    use crate::ActorEvent;
+    use crate::ActorStatusEvent;
+    use crate::MeshEvent;
+    use crate::MessageEvent;
+    use crate::MessageStatusEvent;
+    use crate::SentMessageEvent;
 
     static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    struct Frame {
+        table_name: String,
+        payload: Vec<u8>,
+    }
 
     fn socket_path(name: &str) -> PathBuf {
         let seq = TEST_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -549,7 +726,58 @@ mod tests {
         }
     }
 
-    fn read_frame_table(stream: &mut UnixStream) -> String {
+    fn entity_events() -> Vec<TraceEvent> {
+        vec![
+            TraceEvent::Entity(EntityEvent::Actor(ActorEvent {
+                id: 1,
+                timestamp: timestamp(),
+                mesh_id: 2,
+                rank: 3,
+                full_name: "actor/full".to_string(),
+                display_name: Some("actor".to_string()),
+            })),
+            TraceEvent::Entity(EntityEvent::Mesh(MeshEvent {
+                id: 2,
+                timestamp: timestamp(),
+                class: "Host".to_string(),
+                given_name: "hosts".to_string(),
+                full_name: "hosts/full".to_string(),
+                shape_json: r#"{"dims":[1]}"#.to_string(),
+                parent_mesh_id: None,
+                parent_view_json: None,
+            })),
+            TraceEvent::Entity(EntityEvent::ActorStatus(ActorStatusEvent {
+                id: 3,
+                timestamp: timestamp(),
+                actor_id: 1,
+                new_status: "Running".to_string(),
+                reason: Some("test".to_string()),
+            })),
+            TraceEvent::Entity(EntityEvent::SentMessage(SentMessageEvent {
+                timestamp: timestamp(),
+                sender_actor_id: 1,
+                actor_mesh_id: 2,
+                view_json: r#"{"rank":0}"#.to_string(),
+                shape_json: r#"{"dims":[1]}"#.to_string(),
+            })),
+            TraceEvent::Entity(EntityEvent::Message(MessageEvent {
+                timestamp: timestamp(),
+                id: 4,
+                from_actor_id: 1,
+                to_actor_id: 5,
+                endpoint: Some("endpoint".to_string()),
+                port_id: Some(6),
+            })),
+            TraceEvent::Entity(EntityEvent::MessageStatus(MessageStatusEvent {
+                timestamp: timestamp(),
+                id: 7,
+                message_id: 4,
+                status: "complete".to_string(),
+            })),
+        ]
+    }
+
+    fn read_frame(stream: &mut UnixStream) -> Frame {
         let mut name_len_bytes = [0; 2];
         stream.read_exact(&mut name_len_bytes).unwrap();
         let name_len = u16::from_be_bytes(name_len_bytes) as usize;
@@ -565,20 +793,25 @@ mod tests {
 
         let mut payload = vec![0; payload_len];
         stream.read_exact(&mut payload).unwrap();
-        table_name
+        Frame {
+            table_name,
+            payload,
+        }
     }
 
-    fn read_frame_tables(mut stream: UnixStream, count: usize) -> Vec<String> {
+    fn read_frame_tables(stream: UnixStream, count: usize) -> Vec<String> {
+        read_frames(stream, count)
+            .into_iter()
+            .map(|frame| frame.table_name)
+            .collect()
+    }
+
+    fn read_frames(mut stream: UnixStream, count: usize) -> Vec<Frame> {
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
 
-        let mut tables = Vec::new();
-        for _ in 0..count {
-            tables.push(read_frame_table(&mut stream));
-        }
-
-        tables
+        (0..count).map(|_| read_frame(&mut stream)).collect()
     }
 
     fn assert_no_frame_available(stream: &mut UnixStream) {
@@ -604,6 +837,29 @@ mod tests {
         assert_eq!(sink.dropped_frames(), expected);
     }
 
+    fn assert_frame_batch<B>(frame: &Frame)
+    where
+        B: RecordBatchBuffer + Default,
+    {
+        let batch = monarch_telemetry_schema::deserialize_one_batch(&frame.payload).unwrap();
+        let expected = B::default().drain_to_record_batch().unwrap();
+
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.schema(), expected.schema());
+    }
+
+    fn assert_entity_frame_schema(frame: &Frame) {
+        match frame.table_name.as_str() {
+            ACTORS => assert_frame_batch::<ActorBuffer>(frame),
+            MESHES => assert_frame_batch::<MeshBuffer>(frame),
+            ACTOR_STATUS_EVENTS => assert_frame_batch::<ActorStatusEventBuffer>(frame),
+            SENT_MESSAGES => assert_frame_batch::<SentMessageBuffer>(frame),
+            MESSAGES => assert_frame_batch::<MessageBuffer>(frame),
+            MESSAGE_STATUS_EVENTS => assert_frame_batch::<MessageStatusEventBuffer>(frame),
+            other => panic!("unexpected entity table frame: {other}"),
+        }
+    }
+
     #[test]
     fn inactive_flush_discards_buffered_events_without_counting_drops() {
         let sink = UnixSocketSink::new();
@@ -611,12 +867,21 @@ mod tests {
         sink.consume_shared(&span()).unwrap();
         sink.consume_shared(&span_enter()).unwrap();
         sink.consume_shared(&event()).unwrap();
+        for event in entity_events() {
+            sink.consume_shared(&event).unwrap();
+        }
 
         {
             let inner = sink.inner.lock().unwrap();
             assert_eq!(inner.spans_buffer.len(), 1);
             assert_eq!(inner.span_events_buffer.len(), 1);
             assert_eq!(inner.events_buffer.len(), 1);
+            assert_eq!(inner.actors_buffer.len(), 1);
+            assert_eq!(inner.meshes_buffer.len(), 1);
+            assert_eq!(inner.actor_status_events_buffer.len(), 1);
+            assert_eq!(inner.sent_messages_buffer.len(), 1);
+            assert_eq!(inner.messages_buffer.len(), 1);
+            assert_eq!(inner.message_status_events_buffer.len(), 1);
         }
 
         sink.flush_shared().unwrap();
@@ -626,6 +891,12 @@ mod tests {
             assert_eq!(inner.spans_buffer.len(), 0);
             assert_eq!(inner.span_events_buffer.len(), 0);
             assert_eq!(inner.events_buffer.len(), 0);
+            assert_eq!(inner.actors_buffer.len(), 0);
+            assert_eq!(inner.meshes_buffer.len(), 0);
+            assert_eq!(inner.actor_status_events_buffer.len(), 0);
+            assert_eq!(inner.sent_messages_buffer.len(), 0);
+            assert_eq!(inner.messages_buffer.len(), 0);
+            assert_eq!(inner.message_status_events_buffer.len(), 0);
         }
         assert!(!sink.is_active());
         assert_eq!(sink.dropped_frames(), 0);
@@ -681,6 +952,44 @@ mod tests {
     }
 
     #[test]
+    fn active_flush_sends_one_frame_per_non_empty_entity_table() {
+        let path = socket_path("entities.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let read_handle = std::thread::spawn(move || {
+            let (stream, _addr) = listener.accept().unwrap();
+            sender.send(read_frames(stream, 6)).unwrap();
+        });
+
+        let sink = UnixSocketSink::new();
+        sink.set_path(path).unwrap();
+        for event in entity_events() {
+            sink.consume_shared(&event).unwrap();
+        }
+
+        sink.flush_shared().unwrap();
+
+        let frames = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        read_handle.join().unwrap();
+        assert_eq!(
+            frames
+                .iter()
+                .map(|frame| frame.table_name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                ACTORS,
+                MESHES,
+                ACTOR_STATUS_EVENTS,
+                SENT_MESSAGES,
+                MESSAGES,
+                MESSAGE_STATUS_EVENTS,
+            ]
+        );
+        frames.iter().for_each(assert_entity_frame_schema);
+        assert_eq!(sink.dropped_frames(), 0);
+    }
+
+    #[test]
     fn active_flush_omits_empty_trace_tables() {
         let path = socket_path("events_only.sock");
         let listener = UnixListener::bind(&path).unwrap();
@@ -690,7 +999,7 @@ mod tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            let table_name = read_frame_table(&mut stream);
+            let table_name = read_frame(&mut stream).table_name;
             assert_no_frame_available(&mut stream);
             sender.send(table_name).unwrap();
         });
