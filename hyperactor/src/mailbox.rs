@@ -1543,6 +1543,10 @@ impl MailboxClient {
                             reason,
                         }) => {
                             let target = message.dest().clone();
+                            let reason_text = reason
+                                .as_ref()
+                                .map(ToString::to_string)
+                                .unwrap_or_else(|| "channel closed".to_owned());
                             let reason = match reason {
                                 Some(SendErrorReason::OversizedFrame { len, max }) => {
                                     TransportFailureReason::OversizedFrame { len, max }
@@ -1556,6 +1560,7 @@ impl MailboxClient {
                             ));
                             tracing::debug!(
                                 %error,
+                                send_error_reason = %reason_text,
                                 ?reason,
                                 "failed to enqueue in mailbox client while processing buffer",
                             );
