@@ -404,10 +404,7 @@ impl ClientActor {
     fn attach(&mut self, py: Python, controller_id: PyActorAddr) -> PyResult<()> {
         let instance_wrapper = self.instance.blocking_lock();
         let actor_id = instance_wrapper.actor_addr().clone();
-        let (instance, _handler) = instance_wrapper
-            .instance()
-            .child()
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        let instance = instance_wrapper.instance().child();
 
         signal_safe_block_on(py, async move {
             reference::ActorRef::<ControllerActor>::attest(reference::ActorAddr::from(
@@ -421,10 +418,7 @@ impl ClientActor {
 
     fn drop_refs(&self, py: Python, controller_id: PyActorAddr, refs: Vec<Ref>) -> PyResult<()> {
         let instance_wrapper = self.instance.blocking_lock();
-        let (instance, _handler) = instance_wrapper
-            .instance()
-            .child()
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        let instance = instance_wrapper.instance().child();
 
         signal_safe_block_on(py, async move {
             reference::ActorRef::<ControllerActor>::attest(reference::ActorAddr::from(

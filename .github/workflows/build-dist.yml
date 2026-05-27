@@ -10,7 +10,7 @@ on:
       torch-spec:
         description: 'Torch installation specification'
         type: string
-        default: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
+        default: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu132'
       gpu-arch-type:
         description: 'GPU architecture type'
         type: string
@@ -18,7 +18,7 @@ on:
       gpu-arch-version:
         description: 'GPU architecture version'
         type: string
-        default: '12.8'
+        default: '13.2'
       runner:
         description: 'Runner to use for the build'
         type: string
@@ -35,6 +35,10 @@ on:
         description: 'Target platform architecture (e.g., x86_64, aarch64)'
         type: string
         default: 'x86_64'
+      arch-label:
+        description: 'Label used in the artifact name to identify the build arch (e.g. cuda13.2, rocm7.1). Defaults to gpu-arch-type + gpu-arch-version when empty. Set explicitly when those inputs do not describe the toolkit baked into docker-image (e.g. CUDA wheel built on a CPU runner with gpu-arch-type=cpu).'
+        type: string
+        default: ''
       timeout:
         description: 'Job timeout in minutes'
         type: number
@@ -55,7 +59,7 @@ jobs:
       gpu-arch-type: ${{ inputs.gpu-arch-type }}
       gpu-arch-version: ${{ inputs.gpu-arch-version }}
       submodules: recursive
-      upload-artifact: monarch-py${{ matrix.python-version }}-${{ inputs.gpu-arch-type }}${{ inputs.gpu-arch-version }}-${{ inputs.platform }}
+      upload-artifact: monarch-py${{ matrix.python-version }}-${{ inputs.arch-label != '' && inputs.arch-label || format('{0}{1}', inputs.gpu-arch-type, inputs.gpu-arch-version) }}-${{ inputs.platform }}
       script: |
         source scripts/common-setup.sh
         setup_build_environment ${{ matrix.python-version }}

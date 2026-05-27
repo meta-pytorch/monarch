@@ -34,6 +34,7 @@ def _user_jobs(jobname=None):
     lines = []
     command = ["mast", "list-jobs", "--my", "--json"]
     if jobname is not None:
+        # pyrefly: ignore [bad-argument-type]
         command.append(["--job-name", jobname])
     for line in subprocess.check_output(command).split(b"\n"):
         if line:

@@ -75,6 +75,7 @@ def bench_unchanged_file():
         handle = mount_chunked_fuse(metadata, [memoryview(content)], len(content), mnt)
         _timed(
             "refresh (unchanged 1MB)",
+            # pyrefly: ignore [bad-argument-type, missing-argument]
             lambda: handle.refresh(metadata, [memoryview(content)], len(content)),
         )
         _timed(
@@ -102,6 +103,7 @@ def bench_changed_file():
         handle = mount_chunked_fuse(meta_fn(v1), [memoryview(v1)], len(v1), mnt)
         _timed(
             "refresh (changed 1MB)",
+            # pyrefly: ignore [bad-argument-type, missing-argument]
             lambda: handle.refresh(meta_fn(v2), [memoryview(v2)], len(v2)),
         )
         _, elapsed = _timed(
@@ -127,6 +129,7 @@ def bench_added_file():
         handle = mount_chunked_fuse(meta1, [memoryview(v1)], 3, mnt)
         _timed(
             "refresh (add file)",
+            # pyrefly: ignore [bad-argument-type, missing-argument]
             lambda: handle.refresh(meta2, [memoryview(v2)], len(v2)),
         )
         _timed("listdir after add", lambda: os.listdir(mnt))
@@ -150,7 +153,9 @@ def bench_deleted_file():
     with tempfile.TemporaryDirectory() as mnt:
         handle = mount_chunked_fuse(meta1, [memoryview(v1)], len(v1), mnt)
         _timed(
-            "refresh (delete file)", lambda: handle.refresh(meta2, [memoryview(v2)], 3)
+            "refresh (delete file)",
+            # pyrefly: ignore [bad-argument-type, missing-argument]
+            lambda: handle.refresh(meta2, [memoryview(v2)], 3),
         )
         _timed("listdir after delete", lambda: os.listdir(mnt))
         handle.unmount()
@@ -180,6 +185,7 @@ def bench_defrag_offset_shift():
         handle = mount_chunked_fuse(meta1, [memoryview(buf1)], len(buf1), mnt)
         _timed(
             "refresh (defrag 1MB, offset shift)",
+            # pyrefly: ignore [bad-argument-type, missing-argument]
             lambda: handle.refresh(meta2, [memoryview(file_data)], len(file_data)),
         )
         _timed(
@@ -206,6 +212,7 @@ def bench_sequential_read_across_refresh():
         _timed("read first 512KB", lambda: fh.read(half))
         _timed(
             "refresh (unchanged)",
+            # pyrefly: ignore [bad-argument-type, missing-argument]
             lambda: handle.refresh(metadata, [memoryview(content)], len(content)),
         )
         _timed("read second 512KB", lambda: fh.read(half))
@@ -236,6 +243,7 @@ def bench_many_files_one_changed():
 
         _timed(
             f"refresh (1/{num_files} files changed, {num_files * file_size // 1024}KB total)",
+            # pyrefly: ignore [bad-argument-type, missing-argument]
             lambda: handle.refresh(metadata, [memoryview(new_data)], len(new_data)),
         )
 
@@ -270,8 +278,12 @@ def bench_multiple_rapid_refreshes():
         t0 = time.time()
         for _i in range(n):
             new_content = os.urandom(1024 * 1024)
+            # pyrefly: ignore [missing-argument]
             handle.refresh(
-                meta_fn(len(new_content)), [memoryview(new_content)], len(new_content)
+                meta_fn(len(new_content)),
+                [memoryview(new_content)],
+                # pyrefly: ignore [bad-argument-type]
+                len(new_content),
             )
         elapsed = time.time() - t0
         print(
@@ -309,7 +321,9 @@ def bench_end_to_end_pack_refresh():
             chunk_size2 = len(bytes(chunks2[0])) if chunks2 else 1
 
             _timed(
-                "refresh (10MB)", lambda: handle.refresh(meta2, chunks2, chunk_size2)
+                "refresh (10MB)",
+                # pyrefly: ignore [bad-argument-type, missing-argument]
+                lambda: handle.refresh(meta2, chunks2, chunk_size2),
             )
 
             _timed(

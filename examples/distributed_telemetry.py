@@ -10,7 +10,7 @@ Distributed Telemetry with Real Tracing Data.
 
 This example demonstrates querying real tracing data collected from actors:
 
-1. Starts telemetry
+1. Enables job-level telemetry
 2. Spawns actors that do work (generating real tracing events)
 3. Queries the spans, span_events, events, and actors tables
 
@@ -36,7 +36,6 @@ import time
 
 import pyarrow as pa
 from monarch.actor import Actor, endpoint
-from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.job import ProcessJob, TelemetryConfig
 
 
@@ -70,7 +69,6 @@ class ComputeActor(Actor):
 
         child_procs = this_host().spawn_procs(name="child_worker")
         child = child_procs.spawn("child_compute", ComputeActor)
-        # pyre-ignore[29]: child is an ActorMesh
         return child.compute.call_one(100).get()
 
 
@@ -106,7 +104,6 @@ class SenderActor(Actor):
     @endpoint
     def send_compute(self, target: ComputeActor, iterations: int) -> int:
         """Send a compute request to the target actor mesh."""
-        # pyre-ignore[29]: target is an ActorMesh
         return sum(target.compute.call(iterations).get().values())
 
 
@@ -472,10 +469,7 @@ def run_workload(job, summary=False, interactive=False):
     """Run the full telemetry demo: spawn actors, run work, query, and shut down.
 
     Args:
-        job: JobTrait whose state has a "workers" HostMesh.
-            If the job was created with ``telemetry=TelemetryConfig()``, the
-            query engine is available via ``state.query_engine`` and
-            ``start_telemetry()`` does not need to be called separately.
+        job: JobTrait whose state has a "workers" HostMesh and telemetry enabled.
         summary: If True, print summary output instead of full tables.
         interactive: If True, pause after setup so the dashboard can be browsed.
     """
@@ -484,41 +478,33 @@ def run_workload(job, summary=False, interactive=False):
 
     state = job.state(cached_path=None)
 
-    # Use engine from JobState if available (telemetry configured on job),
-    # otherwise fall back to manual start_telemetry() for backward compat.
     engine = state.query_engine
     if engine is None:
-        engine, _, _scanner = start_telemetry()
+        raise RuntimeError("run_workload requires job.enable_telemetry(...)")
 
     hosts = state.hosts
 
     procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers")
 
     print("Spawning compute actors...")
-    # pyre-ignore[29]: procs is a ProcMesh
     actors = procs.spawn("compute", ComputeActor)
 
     print("Doing computation work...")
-    # pyre-ignore[29]: actors is an ActorMesh
     results = actors.compute.call(1000).get()
     print(f"Computation results: {list(results)}")
 
     print("Doing nested work...")
-    # pyre-ignore[29]: actors is an ActorMesh
     nested_results = actors.nested_work.call(3).get()
     print(f"Nested work results: {list(nested_results)}")
 
     print("Spawning sender actor for actor-to-actor messaging...")
-    # pyre-ignore[29]: procs is a ProcMesh
     sender = procs.slice(hosts=0, workers=0).spawn("sender", SenderActor)
 
     print("Sending from sender actor to compute actors...")
-    # pyre-ignore[29]: sender is an ActorMesh
     result = sender.send_compute.call_one(actors, 42).get()
     print(f"Sender-to-compute result: {result}")
 
     print("Spawning a child process...")
-    # pyre-ignore[29]: actors is an ActorMesh
     actors.slice(hosts=0, workers=0).spawn_child_work.call_one().get()
 
     print("Stopping sender actor...")
@@ -533,17 +519,13 @@ def run_workload(job, summary=False, interactive=False):
     engine.query("SELECT COUNT(*) FROM actors")
 
     print("Spawning an actor that stops itself with a reason...")
-    # pyre-ignore[29]: procs is a ProcMesh
     stopper = procs.slice(hosts=0, workers=0).spawn("stopper", StoppingActor)
-    # pyre-ignore[29]: stopper is an ActorMesh
     result = stopper.do_work_then_stop.call_one().get()
     print(f"Stopper result before stopping: {result}")
 
     print("Spawning an actor that fails...")
-    # pyre-ignore[29]: procs is a ProcMesh
     failer = procs.slice(hosts=0, workers=0).spawn("failer", FailingActor)
     try:
-        # pyre-ignore[29]: failer is an ActorMesh
         failer.fail.call_one().get()
         time.sleep(2.0)
     except KeyboardInterrupt:
