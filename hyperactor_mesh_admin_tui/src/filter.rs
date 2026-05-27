@@ -72,6 +72,9 @@ mod tests {
             last_message_handler: None,
             total_processing_time_us: 0,
             flight_recorder: None,
+            instance_id: String::new(),
+            queue_depth: 0,
+            inbound_ordering: None,
             failure_info: None,
             is_system: false,
         }
@@ -141,6 +144,9 @@ mod tests {
             last_message_handler: None,
             total_processing_time_us: 0,
             flight_recorder: None,
+            instance_id: String::new(),
+            queue_depth: 0,
+            inbound_ordering: None,
             failure_info: Some(FailureInfo {
                 error_message: "boom".to_string(),
                 root_cause_actor: mock_actor_id(),
