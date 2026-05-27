@@ -37,6 +37,8 @@ use std::time::Duration;
 use anyhow::Context;
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
+use monarch_telemetry_schema::MAX_FRAME_LEN;
+use monarch_telemetry_schema::MAX_TABLE_NAME_LEN;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
@@ -45,10 +47,6 @@ use tokio::task::JoinHandle;
 
 use crate::database_scanner::TableStore;
 
-/// Maximum table-name length in a socket frame.
-pub const MAX_TABLE_NAME_LEN: usize = 256;
-/// Maximum Arrow IPC payload length in a socket frame.
-pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 /// Buffered read capacity for producer socket connections.
 const READER_BUFFER_CAPACITY: usize = 64 * 1024;
 
@@ -245,7 +243,12 @@ mod tests {
     use datafusion::arrow::datatypes::Schema;
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::prelude::SessionContext;
+    use hyperactor_telemetry::initialize_logging_for_test;
+    use hyperactor_telemetry::set_unix_socket_sink_path;
+    use monarch_record_batch::RecordBatchBuffer;
     use monarch_telemetry_schema::serialize_batch;
+    use monarch_telemetry_schema::trace_tables::EVENTS;
+    use monarch_telemetry_schema::trace_tables::EventBuffer;
     use tokio::io::AsyncWriteExt;
 
     use super::*;
@@ -325,6 +328,38 @@ mod tests {
         assert_eq!(count_rows(store, table_name).await, expected);
     }
 
+    async fn count_event_rows_for_target(store: &TableStore, target: &str) -> usize {
+        let provider = store.table_provider(EVENTS).unwrap().unwrap();
+        let ctx = SessionContext::new();
+        ctx.register_table(EVENTS, provider).unwrap();
+        let batches = ctx
+            .sql(&format!(
+                "SELECT COUNT(*) AS cnt FROM {EVENTS} WHERE target = '{target}'"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let counts = batches[0]
+            .column_by_name("cnt")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        counts.value(0) as usize
+    }
+
+    async fn wait_for_event_target(store: &TableStore, target: &str, expected: usize) {
+        for _ in 0..50 {
+            if count_event_rows_for_target(store, target).await == expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(count_event_rows_for_target(store, target).await, expected);
+    }
+
     #[test]
     fn non_destructive_bind_skips_live_collector() {
         let path = socket_path("telemetry.sock");
@@ -361,6 +396,35 @@ mod tests {
         write_frame(&path, "t", &make_batch(&[1, 2, 3])).await;
 
         wait_for_rows(&store, "t", 3).await;
+    }
+
+    #[tokio::test]
+    async fn ingest_server_receives_unix_socket_sink_frame() {
+        let path = socket_path("integration.sock");
+        let listener = match non_destructive_bind(&path).unwrap() {
+            BindOutcome::Bound(listener) => listener,
+            BindOutcome::SkippedExistingCollector => panic!("test socket should be unowned"),
+        };
+        let store = TableStore::new_empty();
+        let mut buffer = EventBuffer::default();
+        // Register the generated schema without rows; the socket producer must
+        // create the first stored event.
+        store
+            .register_table(EVENTS, buffer.drain_to_record_batch().unwrap().schema())
+            .unwrap();
+        let _handle = run_ingest_server(listener, store.clone()).unwrap();
+
+        // Use the public producer API, not the local `write_frame` helper, so
+        // this catches drift between the Unix sink and ingest server.
+        initialize_logging_for_test();
+        set_unix_socket_sink_path(path).unwrap();
+        tracing::info!(
+            target: "telemetry_socket_integration_test",
+            count = 3u64,
+            "producer event"
+        );
+
+        wait_for_event_target(&store, "telemetry_socket_integration_test", 1).await;
     }
 
     #[tokio::test]
