@@ -95,13 +95,15 @@ impl<T> Default for BufferState<T> {
     }
 }
 
-/// A sender that ensures messages are delivered in per-client sequence order.
+/// The sending half of an ordered channel; internally tracks one ordering
+/// stream per remote sender session.
 pub(crate) struct OrderedSender<T> {
     tx: mpsc::UnboundedSender<T>,
-    /// Map's key is session ID, and value is the buffer state of that session.
+    /// Per-session reorder state keyed by `SeqInfo::Session.session_id`; one
+    /// entry corresponds to one logical sender stream.
     states: Arc<DashMap<Uuid, Arc<Mutex<BufferState<T>>>>>,
     pub(crate) enable_buffering: bool,
-    /// The identify of this object, which is used to distiguish it in debugging.
+    /// The identity of this object, used to distinguish it in debugging.
     log_id: String,
 }
 
@@ -233,6 +235,140 @@ impl<T> OrderedSender<T> {
 
     pub(crate) fn direct_send(&self, msg: T) -> Result<(), SendError<T>> {
         self.tx.send(msg)
+    }
+
+    /// Out-of-band snapshot of per-session ordering state. Reads each
+    /// session's state via `try_lock`; sessions held by a concurrent
+    /// `send` are counted in `skipped_session_count`, not silently
+    /// dropped. Returned `sessions` are sorted by `session_id` so output
+    /// is stable across calls and across DashMap iteration order.
+    #[allow(dead_code)]
+    pub(crate) fn snapshot(&self) -> OrderingSnapshot {
+        let mut sessions = Vec::new();
+        let mut skipped = 0usize;
+        for entry in self.states.iter() {
+            let session_id = *entry.key();
+            match entry.value().try_lock() {
+                Ok(state) => {
+                    let oldest = state.buffer.keys().min().copied();
+                    let newest = state.buffer.keys().max().copied();
+                    sessions.push(OrderingSessionSnapshot {
+                        session_id,
+                        sender: state.sender.clone(),
+                        last_released_seq: state.last_seq,
+                        expected_next_seq: state.last_seq.saturating_add(1),
+                        buffered_count: state.buffer.len(),
+                        oldest_buffered_seq: oldest,
+                        newest_buffered_seq: newest,
+                    });
+                }
+                Err(_) => skipped += 1,
+            }
+        }
+        // DashMap iter is nondeterministic; sort by session_id for
+        // stable output.
+        sessions.sort_by_key(|s| s.session_id);
+        OrderingSnapshot {
+            enabled: self.enable_buffering,
+            sessions,
+            skipped_session_count: skipped,
+        }
+    }
+}
+
+/// Per-session ordering snapshot. Read out-of-band from `OrderedSender`;
+/// does not lock the work queue or hold per-session mutexes across awaits.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Named, AttrValue)]
+pub struct OrderingSessionSnapshot {
+    /// Identifier of the session whose ordering state this snapshot
+    /// describes; matches `SeqInfo::Session { session_id, .. }` on the
+    /// wire and the DashMap key in `OrderedSender::states`.
+    pub session_id: Uuid,
+
+    /// Sender `ActorAddr` captured by `BufferState`'s first-non-None-wins
+    /// rule. `None` when every message in this session bypassed the
+    /// normal stamping sites (rare: test fixtures, non-handler routes).
+    pub sender: Option<ActorAddr>,
+
+    /// Highest seq released from the reorder buffer into the actor work
+    /// queue. NOT "handler processed" -- that's downstream of the queue.
+    pub last_released_seq: u64,
+
+    /// `last_released_seq + 1` -- the seq the next contiguous send must
+    /// carry for delivery without further buffering.
+    pub expected_next_seq: u64,
+
+    /// Number of messages currently sitting in the reorder buffer waiting
+    /// for a seq gap to be filled. Zero on healthy in-order sessions.
+    pub buffered_count: usize,
+
+    /// Lowest seq currently buffered. `None` when `buffered_count == 0`.
+    pub oldest_buffered_seq: Option<u64>,
+
+    /// Highest seq currently buffered. `None` when `buffered_count == 0`.
+    pub newest_buffered_seq: Option<u64>,
+}
+
+/// Diagnostic projection of an `OrderedSender`.
+///
+/// `OrderedSender` is the sending half of an ordered channel for one actor
+/// work queue, but it multiplexes many remote sender sessions internally.
+/// Each `OrderingSessionSnapshot` corresponds to one `BufferState` entry,
+/// keyed by `SeqInfo::Session.session_id`. Sequence progress here means
+/// "released into the actor work queue", not "processed by the actor handler".
+///
+/// Carries completeness metadata so callers can distinguish "no stalled
+/// sessions" from "snapshot was partial" from "buffering is disabled".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Named, AttrValue)]
+pub struct OrderingSnapshot {
+    /// Whether reorder buffering is enabled for this sender. When
+    /// `false`, messages flow via `direct_send` and `sessions` is empty
+    /// even under load. Sourced from `OrderedSender::enable_buffering`.
+    pub enabled: bool,
+
+    /// Per-session entries, sorted by `session_id` for stable output.
+    /// Includes idle (drained) sessions with `buffered_count == 0`.
+    pub sessions: Vec<OrderingSessionSnapshot>,
+
+    /// Sessions whose mutex was held by a concurrent send when we tried
+    /// to snapshot. NOT in `sessions`. Zero means the snapshot is
+    /// complete.
+    pub skipped_session_count: usize,
+}
+
+impl OrderingSnapshot {
+    /// True when no session was skipped due to a concurrent send -- i.e.,
+    /// every live session's state was successfully captured in
+    /// `sessions`.
+    pub fn is_complete(&self) -> bool {
+        self.skipped_session_count == 0
+    }
+}
+
+impl fmt::Display for OrderingSessionSnapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Infallible for this struct (all fields serialize cleanly).
+        write!(f, "{}", serde_json::to_string(self).unwrap())
+    }
+}
+
+impl std::str::FromStr for OrderingSessionSnapshot {
+    type Err = serde_json::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(s)
+    }
+}
+
+impl fmt::Display for OrderingSnapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string(self).unwrap())
+    }
+}
+
+impl std::str::FromStr for OrderingSnapshot {
+    type Err = serde_json::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(s)
     }
 }
 
@@ -730,7 +866,7 @@ mod tests {
     }
 
     /// Sender is captured even for messages that are buffered (not yet
-    /// delivered) — capture runs before the seq match.
+    /// delivered) -- capture runs before the seq match.
     #[test]
     fn test_ordered_send_sender_capture_runs_before_seq_match() {
         let session_id = Uuid::now_v7();
@@ -771,5 +907,144 @@ mod tests {
 
         // Next assignment is seq 4, not 2.
         assert_eq!(get_seq(sequencer.assign_seq(&dest)), 4);
+    }
+
+    // --------------------------------------------------------------------
+    // OrderedSender::snapshot accessor tests.
+
+    #[test]
+    fn test_snapshot_empty() {
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+        let snap = tx.snapshot();
+        assert!(snap.enabled);
+        assert!(snap.sessions.is_empty());
+        assert_eq!(snap.skipped_session_count, 0);
+        assert!(snap.is_complete());
+    }
+
+    #[test]
+    fn test_snapshot_in_order() {
+        let addr: ActorAddr = test_actor_id("sender_actor", "client");
+        let session_id = Uuid::from_u128(1);
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+        for s in 1..=3u64 {
+            tx.send(session_id, s, Some(addr.clone()), s).unwrap();
+        }
+
+        let snap = tx.snapshot();
+        assert_eq!(snap.sessions.len(), 1);
+        let session = &snap.sessions[0];
+        assert_eq!(session.session_id, session_id);
+        assert_eq!(session.sender, Some(addr));
+        assert_eq!(session.last_released_seq, 3);
+        assert_eq!(session.expected_next_seq, 4);
+        assert_eq!(session.buffered_count, 0);
+        assert_eq!(session.oldest_buffered_seq, None);
+        assert_eq!(session.newest_buffered_seq, None);
+    }
+
+    #[test]
+    fn test_snapshot_out_of_order() {
+        let addr: ActorAddr = test_actor_id("sender_actor", "client");
+        let session_id = Uuid::from_u128(1);
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+
+        tx.send(session_id, 1, Some(addr.clone()), 1).unwrap();
+        tx.send(session_id, 3, None, 3).unwrap();
+        tx.send(session_id, 5, None, 5).unwrap();
+
+        let snap = tx.snapshot();
+        assert_eq!(snap.sessions.len(), 1);
+        let session = &snap.sessions[0];
+        assert_eq!(session.last_released_seq, 1);
+        assert_eq!(session.expected_next_seq, 2);
+        assert_eq!(session.buffered_count, 2);
+        assert_eq!(session.oldest_buffered_seq, Some(3));
+        assert_eq!(session.newest_buffered_seq, Some(5));
+        assert_eq!(session.sender, Some(addr));
+    }
+
+    /// The sender captured in `BufferState` during `OrderedSender::send`
+    /// flows out through the snapshot accessor's `sender` field.
+    #[test]
+    fn test_snapshot_includes_sender() {
+        let addr: ActorAddr = test_actor_id("captured", "client");
+        let session_id = Uuid::from_u128(1);
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+        tx.send(session_id, 1, Some(addr.clone()), 1).unwrap();
+
+        let snap = tx.snapshot();
+        assert_eq!(snap.sessions[0].sender, Some(addr));
+    }
+
+    #[test]
+    fn test_snapshot_completeness_under_concurrent_send() {
+        let session_a = Uuid::from_u128(1);
+        let session_b = Uuid::from_u128(2);
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+        tx.send(session_a, 1, None, 1).unwrap();
+        tx.send(session_b, 1, None, 1).unwrap();
+
+        // Hold session_a's mutex; snapshot's try_lock on this session
+        // should fail and be counted as skipped.
+        let state_a = tx.states.get(&session_a).unwrap().value().clone();
+        let _guard = state_a.lock().unwrap();
+
+        let snap = tx.snapshot();
+        assert_eq!(snap.skipped_session_count, 1);
+        assert!(!snap.is_complete());
+        // session_b's mutex is free; it should still appear in `sessions`.
+        assert_eq!(snap.sessions.len(), 1);
+        assert_eq!(snap.sessions[0].session_id, session_b);
+    }
+
+    #[test]
+    fn test_snapshot_disabled_buffering() {
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), false);
+        let snap = tx.snapshot();
+        assert!(!snap.enabled);
+        assert!(snap.sessions.is_empty());
+    }
+
+    /// Pins the `sort_by_key(|s| s.session_id)` guarantee. Uses fixed
+    /// UUIDs (not `Uuid::now_v7()`) so the test is independent of
+    /// timestamp ordering. Sends `session_hi` first, then `session_lo`,
+    /// then asserts the snapshot orders them low -> high.
+    #[test]
+    fn test_snapshot_sorted_by_session_id() {
+        let session_lo = Uuid::from_u128(1);
+        let session_hi = Uuid::from_u128(2);
+        let (tx, _rx) = ordered_channel::<u64>("test".to_string(), true);
+        tx.send(session_hi, 1, None, 1).unwrap();
+        tx.send(session_lo, 1, None, 1).unwrap();
+
+        let snap = tx.snapshot();
+        assert_eq!(snap.sessions.len(), 2);
+        assert_eq!(snap.sessions[0].session_id, session_lo);
+        assert_eq!(snap.sessions[1].session_id, session_hi);
+    }
+
+    /// Pins the exact `AttrValue` contract used by `declare_attrs!`
+    /// storage: `AttrValue::display(&self) -> String` then
+    /// `AttrValue::parse(&str) -> Result<Self, _>`.
+    #[test]
+    fn test_snapshot_attr_roundtrip() {
+        let addr: ActorAddr = test_actor_id("a", "client");
+        let snap = OrderingSnapshot {
+            enabled: true,
+            sessions: vec![OrderingSessionSnapshot {
+                session_id: Uuid::from_u128(42),
+                sender: Some(addr),
+                last_released_seq: 7,
+                expected_next_seq: 8,
+                buffered_count: 2,
+                oldest_buffered_seq: Some(9),
+                newest_buffered_seq: Some(11),
+            }],
+            skipped_session_count: 3,
+        };
+        let s = AttrValue::display(&snap);
+        let parsed = <OrderingSnapshot as AttrValue>::parse(&s).unwrap();
+        assert_eq!(snap, parsed);
     }
 }
