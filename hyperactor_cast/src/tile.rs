@@ -117,7 +117,7 @@ impl Tile {
 /// 6 -> A6
 /// 7 -> A7
 ///
-/// representative_item() = item_at(4) = A4
+/// root_item() = item_at(4) = A4
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MaterializedTile<T> {
@@ -171,6 +171,24 @@ impl<T> MaterializedTile<T> {
         }
     }
 
+    /// Construct a materialized tile from an explicit rank-addressed item map.
+    ///
+    /// This is useful when callers already know the domain rank for each item
+    /// and want to avoid passing through a dense vector whose ordering must
+    /// match `tile.space().iter()`.
+    pub(crate) fn from_map(tile: Tile, items_by_rank: HashMap<usize, T>) -> Self {
+        assert_eq!(tile.space().len(), items_by_rank.len());
+        assert!(
+            tile.space()
+                .iter()
+                .all(|rank| items_by_rank.contains_key(&rank))
+        );
+        Self {
+            tile,
+            items_by_rank: Arc::new(items_by_rank),
+        }
+    }
+
     pub(crate) fn tile(&self) -> &Tile {
         &self.tile
     }
@@ -188,8 +206,8 @@ impl<T> MaterializedTile<T> {
         self.items_by_rank.get(&rank)
     }
 
-    /// Item stored at this tile's representative/root rank.
-    pub(crate) fn representative_item(&self) -> Option<&T> {
+    /// Item stored at this tile's geometric root rank.
+    pub(crate) fn root_item(&self) -> Option<&T> {
         self.item_at(self.root_rank())
     }
 
@@ -223,7 +241,7 @@ impl<T> MaterializedTile<T> {
     ///
     /// subtile(child):
     /// tile.space().iter() = 4 5 6 7
-    /// representative_item() = item_at(4) = A4
+    /// root_item() = item_at(4) = A4
     /// ```
     pub(crate) fn subtile(&self, tile: Tile) -> Self {
         debug_assert!(
@@ -312,6 +330,25 @@ impl Tiling for BlockPartitioning {
         };
 
         siblings.chain(std::iter::once(anchor)).collect()
+    }
+}
+
+/// Serializable selector for a concrete tiling algorithm.
+///
+/// This keeps the tiling family open internally via [`Tiling`], while giving
+/// cross-process setup messages a small data value that can be serialized and
+/// reconstructed by remote actors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TilingPolicy {
+    /// Recursively split the first varying dimension and contract anchor edges.
+    BlockPartitioning,
+}
+
+impl TilingPolicy {
+    pub(crate) fn children(&self, tile: &Tile) -> Vec<Tile> {
+        match self {
+            Self::BlockPartitioning => BlockPartitioning.children(tile),
+        }
     }
 }
 
@@ -574,7 +611,7 @@ mod tests {
         // child tile:
         // 4 5 6 7
         //
-        // child.representative_item() = A4
+        // child.root_item() = A4
         // child.items() = A4 A5 A6 A7
         // ```
         let view = Region::from(shape!(row = 2, col = 4));
@@ -587,7 +624,7 @@ mod tests {
             materialized.subtile(Tile::from_space(root.space().select(0, 1, 2, 1).unwrap()));
 
         assert_eq!(materialized.item_at(4).map(String::as_str), Some("A4"));
-        assert_eq!(child.representative_item().map(String::as_str), Some("A4"),);
+        assert_eq!(child.root_item().map(String::as_str), Some("A4"),);
         assert_eq!(
             child.items().map(String::as_str).collect::<Vec<_>>(),
             vec!["A4", "A5", "A6", "A7"],
