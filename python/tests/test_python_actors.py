@@ -45,6 +45,7 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import _spawn_admin, HostMesh, this_host, this_proc
+from monarch._src.actor.logging import _pending_flush_tasks
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, HyProcMesh
 from monarch._src.job.job import LoginJob, ProcessState
 from monarch._src.job.process import ProcessJob
@@ -881,19 +882,18 @@ async def test_flush_logs_ipython() -> None:
                     await am1.print.call("ipython1 test log")
                     await am2.print.call("ipython2 test log")
 
-                # Trigger the post_run_cell event which should flush logs
+                # Trigger the post_run_cell event which should flush logs.
+                # Inside an async loop the callback schedules an async flush
+                # task rather than blocking, so wait for those tasks to finish
+                # before moving on (the next iteration / final assertions rely
+                # on the flush actually having happened).
                 mock_ipython.events.trigger("post_run_cell", unittest.mock.MagicMock())
+                if _pending_flush_tasks:
+                    await asyncio.gather(*list(_pending_flush_tasks))
 
         # We expect to register post_run_cell hook only once per notebook/ipython session
         assert mock_ipython.events.registers == 1
         assert len(mock_ipython.events.callbacks["post_run_cell"]) == 1
-
-        # Flush to ensure all output is written before reading
-        sys.stdout.flush()
-
-        # Read the captured output
-        with open(paths.stdout, "r") as f:
-            stdout_content = f.read()
 
         # We triggered post_run_cell three times; in the current
         # implementation that yields three aggregated groups per
@@ -901,6 +901,24 @@ async def test_flush_logs_ipython() -> None:
         # all 10).
         pattern1 = r"\[\d+ similar log lines\].*ipython1 test log"
         pattern2 = r"\[\d+ similar log lines\].*ipython2 test log"
+
+        # The rust flush task completes via the awaited future, but the
+        # aggregated bytes still have to flow through the FD pipe set up by
+        # enable_fd_capture_if_in_ipython and the pump thread before they
+        # land in the captured temp file. Poll until both patterns appear
+        # the expected number of times, with a deadline.
+        deadline = time.monotonic() + 10
+        stdout_content = ""
+        while time.monotonic() < deadline:
+            sys.stdout.flush()
+            with open(paths.stdout, "r") as f:
+                stdout_content = f.read()
+            if (
+                len(re.findall(pattern1, stdout_content)) >= 3
+                and len(re.findall(pattern2, stdout_content)) >= 3
+            ):
+                break
+            await asyncio.sleep(0.5)
 
         assert len(re.findall(pattern1, stdout_content)) >= 3, stdout_content
         assert len(re.findall(pattern2, stdout_content)) >= 3, stdout_content
