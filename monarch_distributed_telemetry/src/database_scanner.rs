@@ -9,6 +9,7 @@
 //! DatabaseScanner - Local MemTable operations, scans with child stream merging
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::SystemTime;
@@ -268,6 +269,12 @@ pub struct DatabaseScanner {
     sink: Option<RecordBatchSink>,
     /// Handle to flush the EntityDispatcher for entity events (actors, meshes)
     dispatcher: Option<EntityDispatcher>,
+    /// Socket ingest tasks owned by this scanner.
+    ///
+    /// Keeping the handles here keeps the listener tasks alive for the scanner
+    /// lifetime. Dropping the scanner drops each handle, which aborts the
+    /// corresponding background task.
+    socket_ingest_handles: StdMutex<Vec<crate::socket_ingest::IngestServerHandle>>,
 }
 
 #[pymethods]
@@ -281,6 +288,7 @@ impl DatabaseScanner {
             retention_us: retention_secs as i64 * 1_000_000,
             sink: None,
             dispatcher: None,
+            socket_ingest_handles: StdMutex::new(Vec::new()),
         };
 
         // Create and register a RecordBatchSink for trace events (spans, events)
@@ -476,6 +484,21 @@ impl DatabaseScanner {
             })
         } else {
             get_tokio_runtime().block_on(store.push_to_registered(table_name, batch))
+        }
+    }
+
+    /// Start Unix-socket ingest for this scanner if no collector owns the path.
+    pub fn start_socket_ingest(&self, socket_path: &Path) -> anyhow::Result<bool> {
+        match crate::socket_ingest::non_destructive_bind(socket_path)? {
+            crate::socket_ingest::BindOutcome::Bound(listener) => {
+                let handle = crate::socket_ingest::run_ingest_server(listener, self.table_store())?;
+                self.socket_ingest_handles
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?
+                    .push(handle);
+                Ok(true)
+            }
+            crate::socket_ingest::BindOutcome::SkippedExistingCollector => Ok(false),
         }
     }
 
@@ -1031,6 +1054,7 @@ mod tests {
             retention_us: 0,
             sink: None,
             dispatcher: None,
+            socket_ingest_handles: StdMutex::new(Vec::new()),
         };
 
         let json = r#"{
@@ -1266,6 +1290,7 @@ mod tests {
             retention_us: 0,
             sink: None,
             dispatcher: None,
+            socket_ingest_handles: StdMutex::new(Vec::new()),
         };
 
         let json =
@@ -1285,6 +1310,7 @@ mod tests {
             retention_us: 0,
             sink: None,
             dispatcher: None,
+            socket_ingest_handles: StdMutex::new(Vec::new()),
         };
         assert!(scanner.store_pyspy_dump("x", "p", "not json").is_err());
     }
@@ -1297,6 +1323,7 @@ mod tests {
             retention_us: 0,
             sink: None,
             dispatcher: None,
+            socket_ingest_handles: StdMutex::new(Vec::new()),
         };
 
         let json = r#"{
