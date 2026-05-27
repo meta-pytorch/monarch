@@ -1763,6 +1763,16 @@ mod tests {
             let _ = self.tx.send(message);
             Ok(())
         }
+
+        async fn handle_invalid_reference(
+            &mut self,
+            _cx: &Instance<Self>,
+            _invalid: hyperactor::mailbox::InvalidReference,
+            message: Undeliverable<MessageEnvelope>,
+        ) -> Result<(), anyhow::Error> {
+            let _ = self.tx.send(message);
+            Ok(())
+        }
     }
 
     #[async_trait]

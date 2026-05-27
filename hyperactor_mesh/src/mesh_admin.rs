@@ -1074,6 +1074,34 @@ impl Actor for MeshAdminAgent {
         }
         Ok(())
     }
+
+    async fn handle_invalid_reference(
+        &mut self,
+        _cx: &Instance<Self>,
+        invalid: hyperactor::mailbox::InvalidReference,
+        undeliverable: hyperactor::mailbox::Undeliverable<hyperactor::mailbox::MessageEnvelope>,
+    ) -> Result<(), anyhow::Error> {
+        tracing::debug!(
+            %invalid,
+            "admin agent: invalid reference from introspection probe, ignoring",
+        );
+        match undeliverable {
+            hyperactor::mailbox::Undeliverable::Returned(envelope) => {
+                tracing::debug!(
+                    "admin agent: undeliverable message to {} (invalid reference), ignoring",
+                    envelope.dest(),
+                );
+            }
+            hyperactor::mailbox::Undeliverable::Report(report) => {
+                tracing::debug!(
+                    "admin agent: undeliverable message report to {} ({}), ignoring",
+                    report.dest,
+                    report.error_msg().unwrap_or_default(),
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Manual Handler impl — swallows `reply.send()` failures so the
