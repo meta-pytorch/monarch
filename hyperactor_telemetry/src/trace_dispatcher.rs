@@ -617,10 +617,17 @@ impl Drop for WorkerHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+    use std::os::unix::net::UnixListener;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
 
     use super::*;
+
+    static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
 
     #[derive(Default)]
     struct RecordingSink {
@@ -643,6 +650,43 @@ mod tests {
             id,
             timestamp: SystemTime::now(),
         }
+    }
+
+    fn event() -> TraceEvent {
+        TraceEvent::Event {
+            name: "test_event",
+            target: "test",
+            level: tracing::Level::INFO,
+            fields: TraceFields::new(),
+            timestamp: SystemTime::now(),
+            parent_span: None,
+            thread_id: "1",
+            thread_name: "test",
+            module_path: Some("test"),
+            file: Some("test.rs"),
+            line: Some(1),
+        }
+    }
+
+    fn socket_path(name: &str) -> std::path::PathBuf {
+        let seq = TEST_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "monarch_trace_dispatcher_{}_{}",
+            std::process::id(),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    fn read_frame_table(listener: UnixListener) -> String {
+        let (mut stream, _addr) = listener.accept().unwrap();
+        let mut name_len_bytes = [0; 2];
+        stream.read_exact(&mut name_len_bytes).unwrap();
+        let name_len = u16::from_be_bytes(name_len_bytes) as usize;
+        let mut name_bytes = vec![0; name_len];
+        stream.read_exact(&mut name_bytes).unwrap();
+        String::from_utf8(name_bytes).unwrap()
     }
 
     #[test]
@@ -674,5 +718,27 @@ mod tests {
 
         drop(dispatcher);
         assert!(recorded.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unix_socket_sink_receives_dispatched_event() {
+        let path = socket_path("telemetry.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let read_handle = std::thread::spawn(move || {
+            sender.send(read_frame_table(listener)).unwrap();
+        });
+
+        let sink = Arc::new(crate::unix_sink::UnixSocketSink::new());
+        sink.set_path(path).unwrap();
+        let dispatcher =
+            TraceEventDispatcher::new(vec![crate::unix_sink::adapter_for_test(Arc::clone(&sink))]);
+
+        dispatcher.send_event(event());
+
+        drop(dispatcher);
+        let table_name = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        read_handle.join().unwrap();
+        assert_eq!(table_name, monarch_telemetry_schema::trace_tables::EVENTS);
     }
 }
