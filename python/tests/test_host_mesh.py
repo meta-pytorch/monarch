@@ -374,10 +374,8 @@ def test_spawn_procs_proc_bind_length_mismatch() -> None:
 def test_spawn_procs_with_numactl_bind() -> None:
     numa_node0 = pathlib.Path("/sys/devices/system/node/node0")
     if not numa_node0.exists():
-        # pyre-fixme[29]: skip is a function
         pytest.skip("NUMA node0 not available")
     if shutil.which("numactl") is None:
-        # pyre-fixme[29]: skip is a function
         pytest.skip("numactl binary not found")
 
     node0_cpus = _parse_cpu_list((numa_node0 / "cpulist").read_text())
@@ -403,11 +401,9 @@ def test_spawn_procs_with_numactl_bind() -> None:
 @pytest.mark.timeout(120)
 def test_spawn_procs_with_taskset_bind() -> None:
     if not hasattr(os, "sched_getaffinity"):
-        # pyre-fixme[29]: skip is a function
         pytest.skip("os.sched_getaffinity not available on this platform")
     available = sorted(os.sched_getaffinity(0))
     if len(available) < 2:
-        # pyre-fixme[29]: skip is a function
         pytest.skip("fewer than 2 CPUs available")
 
     cpu_a = available[0]

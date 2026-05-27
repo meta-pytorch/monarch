@@ -73,7 +73,6 @@ class CompiledBlock:
     def define_formal(self, stream: "Stream", argument_index: int):
         self.used_formals.add(argument_index)
         n = self.graphs[stream].call_module("formal", (argument_index,))
-        # pyre-ignore
         n.context = self.current_context
         return n
 
@@ -97,6 +96,7 @@ class CompiledBlock:
 
     @property
     def recording_graph(self):
+        # pyrefly: ignore [bad-index]
         return self.graphs[self.recording_stream]
 
     @contextmanager
@@ -146,6 +146,7 @@ class CompiledBlock:
                 sym = Symbol(graph._graph_namespace.create_name(candidate, None))
                 external_names.append(sym.name)
                 external.append(x)
+                # pyrefly: ignore [unsupported-operation]
                 external_id_to_name[id(x)] = sym
                 return sym
 
@@ -162,6 +163,7 @@ class CompiledBlock:
                 if error_context is None or error_context.ident is None:
                     raise exc
                 exc = stream.report_error(
+                    # pyrefly: ignore [bad-argument-type]
                     stream.current_recording,
                     error_context.ident,
                     exc,

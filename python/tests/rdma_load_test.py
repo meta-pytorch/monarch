@@ -80,7 +80,6 @@ else:
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
-# pyre-ignore
 import torch
 from monarch.actor import Actor, endpoint, ProcMesh, this_host
 from monarch.rdma import RDMABuffer
@@ -170,6 +169,7 @@ class RDMATest(Actor):
         assert buffer_size == size_elem, f"{buffer_size=} != {size_elem=}"
 
         # Call recv - timing happens there
+        # pyrefly: ignore [missing-attribute]
         await self.other_actor.recv.call(buffer, tensor.shape, tensor.dtype, is_warmup)
 
         # cleanup
@@ -242,8 +242,11 @@ class RDMATest(Actor):
                     return 0.0
                 return size_bytes / (time_seconds * 1e9)
 
+            # pyrefly: ignore [bad-argument-type]
             avg_throughput = calc_throughput_gbs(avg_size, avg_time)
+            # pyrefly: ignore [bad-argument-type]
             max_throughput = calc_throughput_gbs(avg_size, min_time)
+            # pyrefly: ignore [bad-argument-type]
             min_throughput = calc_throughput_gbs(avg_size, max_time)
 
             # Print results
@@ -292,8 +295,11 @@ class RDMATest(Actor):
                 return 0.0
             return size_bytes / (time_seconds * 1e9)
 
+        # pyrefly: ignore [bad-argument-type]
         avg_aggregate_tp = calc_throughput_gbs(avg_batch_size, avg_batch_time)
+        # pyrefly: ignore [bad-argument-type]
         max_aggregate_tp = calc_throughput_gbs(avg_batch_size, min_batch_time)
+        # pyrefly: ignore [bad-argument-type]
         min_aggregate_tp = calc_throughput_gbs(avg_batch_size, max_batch_time)
 
         print(f"\nAGGREGATE THROUGHPUT (concurrency={concurrency}, GB = 1000^3 bytes):")

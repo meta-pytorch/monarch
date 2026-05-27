@@ -42,6 +42,7 @@ from monarch.actor import (
 )
 from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.distributed_telemetry.engine import QueryEngine
+from typing_extensions import Self
 
 
 @contextlib.contextmanager
@@ -527,7 +528,7 @@ class JobTrait(ABC):
 
     def enable_telemetry(
         self, config: "Optional[TelemetryConfig]" = None, **kwargs
-    ) -> "JobTrait":
+    ) -> Self:
         """Configure automatic telemetry startup on the next :meth:`state` call.
 
         Args:
@@ -542,7 +543,7 @@ class JobTrait(ABC):
 
     def enable_admin(
         self, config: "Optional[MeshAdminConfig]" = None, **kwargs
-    ) -> "JobTrait":
+    ) -> Self:
         """Configure automatic mesh admin agent startup on the next :meth:`state` call.
 
         Args:

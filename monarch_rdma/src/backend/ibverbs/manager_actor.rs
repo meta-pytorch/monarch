@@ -793,9 +793,12 @@ impl IbvManagerActor {
             let info = qp
                 .get_qp_info()
                 .map_err(|e| anyhow::anyhow!("could not extract QP info: {}", e))?;
-            let initializer =
-                QueuePairInitializer::new(Instance::handle(cx), other, qp_key.clone(), qp)
-                    .spawn(cx)?;
+            let initializer = cx.spawn(QueuePairInitializer::new(
+                Instance::handle(cx),
+                other,
+                qp_key.clone(),
+                qp,
+            ));
             self.qps.insert(
                 qp_key.clone(),
                 QpState::Pending {
