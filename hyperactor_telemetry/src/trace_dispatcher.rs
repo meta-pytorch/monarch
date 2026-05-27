@@ -531,6 +531,21 @@ fn worker_loop(
         }
     }
 
+    fn process_control_messages(
+        control_receiver: Option<&mpsc::Receiver<DispatcherControl>>,
+        sinks: &mut Vec<Box<dyn TraceEventSink>>,
+    ) {
+        if let Some(ctrl_rx) = control_receiver {
+            while let Ok(control) = ctrl_rx.try_recv() {
+                match control {
+                    DispatcherControl::AddSink(sink) => {
+                        sinks.push(sink);
+                    }
+                }
+            }
+        }
+    }
+
     fn dispatch_to_sinks(sinks: &mut [Box<dyn TraceEventSink>], event: TraceEvent) {
         for sink in sinks {
             if match &event {
@@ -561,19 +576,13 @@ fn worker_loop(
             events_since_flush += 1;
         }
 
-        // Process any pending control messages (e.g., adding new sinks)
-        if let Some(ref ctrl_rx) = control_receiver {
-            while let Ok(control) = ctrl_rx.try_recv() {
-                match control {
-                    DispatcherControl::AddSink(sink) => {
-                        sinks.push(sink);
-                    }
-                }
-            }
-        }
-
         match receiver.recv_timeout(FLUSH_INTERVAL) {
             Ok(event) => {
+                // A control message may have arrived while we were blocked in
+                // `recv_timeout`. Drain it before dispatching the event that
+                // woke us so dynamically registered sinks see subsequent
+                // replayed events.
+                process_control_messages(control_receiver.as_ref(), &mut sinks);
                 dispatch_to_sinks(&mut sinks, event);
                 events_since_flush += 1;
 
@@ -594,6 +603,11 @@ fn worker_loop(
             }
         }
     }
+
+    // The event queues are closing, but the control queue is independent.
+    // Apply any sink registrations already queued before draining telemetry
+    // events so shutdown delivery follows the same ordering as the live loop.
+    process_control_messages(control_receiver.as_ref(), &mut sinks);
 
     while let Ok(event) = dropped_receiver.try_recv() {
         dispatch_to_sinks(&mut sinks, event);
@@ -776,6 +790,45 @@ mod tests {
 
         drop(dispatcher);
         assert_eq!(entity_events.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn shutdown_drain_processes_pending_sink_registration() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let (dropped_sender, dropped_receiver) = mpsc::channel();
+        let (control_sender, control_receiver) = mpsc::channel();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let dropped_events = Arc::new(AtomicU64::new(0));
+
+        let worker = std::thread::spawn(move || {
+            worker_loop(
+                receiver,
+                dropped_receiver,
+                Some(control_receiver),
+                Vec::new(),
+                dropped_events,
+            );
+        });
+
+        // Let the worker pass its top-of-loop dropped-event drain and block on
+        // the main event receiver. The queued dropped event below then reaches
+        // the shutdown drain path, where pending sink registrations must be
+        // applied first.
+        std::thread::sleep(Duration::from_millis(200));
+
+        control_sender
+            .send(DispatcherControl::AddSink(Box::new(RecordingSink {
+                events: Arc::clone(&recorded),
+            })))
+            .unwrap();
+        dropped_sender.send(span_close(7)).unwrap();
+
+        drop(sender);
+        drop(dropped_sender);
+        drop(control_sender);
+        worker.join().unwrap();
+
+        assert_eq!(recorded.lock().unwrap().len(), 1);
     }
 
     #[test]
