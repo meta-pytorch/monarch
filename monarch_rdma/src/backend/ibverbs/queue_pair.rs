@@ -15,6 +15,7 @@
 /// Maximum size for a single RDMA operation in bytes (1 GiB).
 const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
 
+use std::collections::HashSet;
 use std::io::Error;
 use std::result::Result;
 use std::time::Duration;
@@ -945,22 +946,25 @@ impl IbvQueuePair {
         }
     }
 
-    /// Polls for work completions by wr_ids.
-    ///
-    /// # Arguments
-    ///
-    /// * `target` - Which completion queue to poll (Send, Receive)
-    /// * `expected_wr_ids` - Slice of work request IDs to wait for
+    /// Polls for work completions for each of `expected_wr_ids`.
     ///
     /// # Returns
     ///
-    /// * `Ok(Vec<(u64, IbvWc)>)` - Vector of (wr_id, completion) pairs found
-    /// * `Err(e)` - An error occurred
+    /// * Outer `Ok` — the CQ poll itself succeeded. Each element is
+    ///   `(wr_id, Ok(IbvWc))` for a completed WR or `(wr_id,
+    ///   Err(PollCompletionError))` for a WR whose completion landed
+    ///   with a non-success status (per-WR failure; the QP may or may
+    ///   not be in error state). wr_ids that have no completion yet
+    ///   are omitted.
+    /// * Outer `Err` — the CQ itself is unusable (`ibv_poll_cq`
+    ///   returned a negative value, i.e. `RDMAXCEL_CQ_POLL_FAILED`,
+    ///   or some other non-classifiable rdmaxcel return code). The
+    ///   QP should be treated as poisoned.
     pub fn poll_completion(
         &mut self,
         target: PollTarget,
-        expected_wr_ids: &[u64],
-    ) -> Result<Vec<(u64, IbvWc)>, PollCompletionError> {
+        expected_wr_ids: &HashSet<u64>,
+    ) -> Result<Vec<(u64, Result<IbvWc, PollCompletionError>)>, PollCompletionError> {
         if expected_wr_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -1000,55 +1004,67 @@ impl IbvQueuePair {
                         if !wc.is_valid()
                             && let Some((status, vendor_err)) = wc.error()
                         {
-                            return Err(PollCompletionError {
-                                status: Some(status),
-                                vendor_err: Some(vendor_err),
-                                message: format!(
-                                    "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
-                                    cq_type, expected_wr_id, status, vendor_err,
-                                ),
-                            });
+                            results.push((
+                                expected_wr_id,
+                                Err(PollCompletionError {
+                                    status: Some(status),
+                                    vendor_err: Some(vendor_err),
+                                    message: format!(
+                                        "{} completion failed for wr_id={}: status={:?}, vendor_err={}",
+                                        cq_type, expected_wr_id, status, vendor_err,
+                                    ),
+                                }),
+                            ));
+                        } else {
+                            results.push((expected_wr_id, Ok(IbvWc::from(wc))));
                         }
-                        results.push((expected_wr_id, IbvWc::from(wc)));
                     }
                     0 => {
                         // Not found yet
                     }
+                    // RDMAXCEL_COMPLETION_FAILED: per-WR completion landed
+                    // with a non-success status. Surface as an inner Err
+                    // so the caller can report the failure for this op
+                    // without poisoning the QP.
                     -17 => {
                         let error_msg =
                             std::ffi::CStr::from_ptr(rdmaxcel_sys::rdmaxcel_error_string(ret))
                                 .to_str()
                                 .unwrap_or("Unknown error");
-                        if let Some((status, vendor_err)) = wc.error() {
-                            return Err(PollCompletionError {
-                                status: Some(status),
-                                vendor_err: Some(vendor_err),
-                                message: format!(
-                                    "Failed to poll {} CQ for wr_id={}: {} [status={:?}, vendor_err={}, qp_num={}, byte_len={}]",
-                                    cq_type,
-                                    expected_wr_id,
-                                    error_msg,
-                                    status,
-                                    vendor_err,
-                                    wc.qp_num,
-                                    wc.len(),
-                                ),
-                            });
-                        } else {
-                            return Err(PollCompletionError {
-                                status: None,
-                                vendor_err: None,
-                                message: format!(
-                                    "Failed to poll {} CQ for wr_id={}: {} [qp_num={}, byte_len={}]",
-                                    cq_type,
-                                    expected_wr_id,
-                                    error_msg,
-                                    wc.qp_num,
-                                    wc.len(),
-                                ),
-                            });
-                        }
+                        let (status, vendor_err) =
+                            wc.error().map_or((None, None), |(s, v)| (Some(s), Some(v)));
+                        let message = match (status, vendor_err) {
+                            (Some(s), Some(v)) => format!(
+                                "{} wr_id={} completed with non-success status: {} [status={:?}, vendor_err={}, qp_num={}, byte_len={}]",
+                                cq_type,
+                                expected_wr_id,
+                                error_msg,
+                                s,
+                                v,
+                                wc.qp_num,
+                                wc.len(),
+                            ),
+                            _ => format!(
+                                "{} wr_id={} completed with non-success status: {} [qp_num={}, byte_len={}]",
+                                cq_type,
+                                expected_wr_id,
+                                error_msg,
+                                wc.qp_num,
+                                wc.len(),
+                            ),
+                        };
+                        results.push((
+                            expected_wr_id,
+                            Err(PollCompletionError {
+                                status,
+                                vendor_err,
+                                message,
+                            }),
+                        ));
                     }
+                    // RDMAXCEL_CQ_POLL_FAILED (-16) and any other
+                    // non-classifiable rdmaxcel return code: fatal at
+                    // the CQ level; the QP is no longer pollable.
                     _ => {
                         let error_msg =
                             std::ffi::CStr::from_ptr(rdmaxcel_sys::rdmaxcel_error_string(ret))
@@ -1058,8 +1074,8 @@ impl IbvQueuePair {
                             status: None,
                             vendor_err: None,
                             message: format!(
-                                "Failed to poll {} CQ for wr_id={}: {}",
-                                cq_type, expected_wr_id, error_msg,
+                                "{} CQ poll failed (ret={}) while looking up wr_id={}: {}",
+                                cq_type, ret, expected_wr_id, error_msg,
                             ),
                         });
                     }
