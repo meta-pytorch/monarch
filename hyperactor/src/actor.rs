@@ -190,13 +190,11 @@ pub trait Actor: Sized + Send + 'static {
 /// as a free function so that `Actor` implementations that override
 /// [`Actor::handle_undeliverable_message`] can fallback to this default.
 pub fn handle_undeliverable_message<A: Actor>(
-    cx: &Instance<A>,
+    _cx: &Instance<A>,
     undeliverable: Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
     match undeliverable {
         Undeliverable::Message(envelope) => {
-            assert_eq!(envelope.sender(), cx.self_addr());
-
             if matches!(
                 envelope
                     .root_delivery_failure()
@@ -210,7 +208,6 @@ pub fn handle_undeliverable_message<A: Actor>(
             anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
         }
         Undeliverable::Lost(lost) => {
-            assert_eq!(&lost.sender, cx.self_addr());
             anyhow::bail!(UndeliverableMessageError::Lost { lost });
         }
     }
@@ -231,16 +228,14 @@ fn undeliverable_reason_fails_actor(reason: &UndeliverableReason) -> bool {
 /// as a free function so that `Actor` implementations that override
 /// [`Actor::handle_invalid_reference`] can fallback to this default.
 pub fn handle_invalid_reference<A: Actor>(
-    cx: &Instance<A>,
+    _cx: &Instance<A>,
     undeliverable: Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
     match undeliverable {
         Undeliverable::Message(envelope) => {
-            assert_eq!(envelope.sender(), cx.self_addr());
             anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
         }
         Undeliverable::Lost(lost) => {
-            assert_eq!(&lost.sender, cx.self_addr());
             anyhow::bail!(UndeliverableMessageError::Lost { lost });
         }
     }
@@ -1342,6 +1337,14 @@ mod tests {
     }
 
     async fn assert_delivery_policy_actor_fails(failure: DeliveryFailure) {
+        assert_delivery_policy_actor_fails_with_sender(failure, |actor_addr| actor_addr.clone())
+            .await;
+    }
+
+    async fn assert_delivery_policy_actor_fails_with_sender(
+        failure: DeliveryFailure,
+        envelope_sender: impl FnOnce(&ActorAddr) -> ActorAddr,
+    ) {
         let proc = Proc::isolated();
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let client = proc.client("client");
@@ -1349,7 +1352,8 @@ mod tests {
         let actor = DeliveryPolicyActor(sync_port.bind());
         let handle = proc.spawn_with_label("delivery_policy", actor);
         let dest = handle.actor_addr().port_addr(Port::from(1234));
-        let envelope = delivery_policy_envelope(handle.actor_addr(), dest, failure);
+        let sender = envelope_sender(handle.actor_addr());
+        let envelope = delivery_policy_envelope(&sender, dest, failure);
 
         handle.post(&client, Undeliverable::Message(envelope));
 
@@ -1401,6 +1405,19 @@ mod tests {
             target,
             InvalidReferenceReason::ActorNotExist,
         )))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_default_invalid_reference_policy_allows_return_handle_sender_mismatch() {
+        let target = test_proc_id("target").actor_addr("actor");
+        assert_delivery_policy_actor_fails_with_sender(
+            DeliveryFailure::new(InvalidReference::new(
+                target,
+                InvalidReferenceReason::ActorNotExist,
+            )),
+            |_| test_proc_id("sender").actor_addr("actor"),
+        )
         .await;
     }
 
