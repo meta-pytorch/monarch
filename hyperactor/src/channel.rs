@@ -98,9 +98,13 @@ pub enum ChannelError {
 }
 
 /// Structured context for a send error.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum SendErrorReason {
     /// The serialized frame exceeded the configured channel frame limit.
+    #[error(
+        "rejecting oversize frame: len={len} > max={max}. \
+        ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow."
+    )]
     OversizedFrame {
         /// The serialized frame length.
         len: usize,
@@ -110,21 +114,8 @@ pub enum SendErrorReason {
     },
 
     /// Other human-readable context.
+    #[error("{0}")]
     Other(String),
-}
-
-impl fmt::Display for SendErrorReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OversizedFrame { len, max } => write!(
-                f,
-                "rejecting oversize frame: len={} > max={}. \
-                ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow.",
-                len, max
-            ),
-            Self::Other(reason) => write!(f, "{}", reason),
-        }
-    }
 }
 
 /// An error that occurred during send. Returns the message that failed to send.
